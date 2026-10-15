@@ -245,6 +245,12 @@ templates:
     playbook: platform/playbooks/provision-o11y-watcher-token.yml
     dev_variant: true
 
+  # Dev source; preserve the existing production inventory ID 2; no service deployment.
+  # Provisions the MCP Grafana Editor account and verifies/promotes its staged token.
+  - name: Provision o11y MCP Grafana Token (Dev)
+    playbook: platform/playbooks/provision-o11y-mcp-grafana-token.yml
+    repository: agent-cloud dev
+
   - name: Verify o11y Metrics Target (Dev)
     playbook: platform/playbooks/verify-o11y-metrics-target.yml
     repository: agent-cloud dev
@@ -905,7 +911,7 @@ templates:
     survey_vars:
       - name: client
         title: "Client identity"
-        description: "Name from agw_clients (rotate) or a name already removed from it (revoke)"
+        description: "Name in the merged identity list (rotate) or a name already removed from it (revoke)"
         type: string
         required: true
       - name: action
@@ -974,6 +980,25 @@ templates:
   - name: Probe agentgateway Gate (Dev)
     playbook: platform/playbooks/probe-agentgateway-gate.yml
     repository: agent-cloud dev
+
+  # Encoded proof of gateway task 4.5 "One client cannot exceed its share": drive one low-budget
+  # identity to HTTP 429 budget_exceeded and show a second identity is still served 200. Real
+  # (tiny) completions; refuses an identity whose budget is above 1000 tokens/hour. Reads the two
+  # client keys from OpenBao in no_log tasks, never prints one. Dev-bound until promotion.
+  - name: Probe agentgateway Isolation (Dev)
+    playbook: platform/playbooks/probe-agentgateway-isolation.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: agw_isolation_burst
+        title: "Burst identity"
+        description: "A dedicated probe identity declared in agw_clients with agw_client_policies.<name>.tokens_per_hour of at most 1000 (the probe drives it past its budget)"
+        type: string
+        required: true
+      - name: agw_isolation_control
+        title: "Control identity"
+        description: "The identity that must stay served (leave blank for the first other declared identity)"
+        type: string
+        required: false
 
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
@@ -2100,6 +2125,32 @@ templates:
     # host. Reports coarse aggregate counts/bands only; no node, device, storage,
     # capacity value, or private identifier is visible. No selection or writes.
 
+  - name: Identify o11y PBS Storage Candidate (Dev)
+    playbook: platform/playbooks/survey-o11y-pbs-storage-candidate.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only storage-candidate selector"
+        type: string
+        required: true
+    # Reuses the protected physical-storage survey. Reports only the candidate
+    # storage ID for private review; no selection is written and no Proxmox API
+    # mutation is performed.
+
+  - name: Identify o11y PBS Backing Disk Identity (Dev)
+    playbook: platform/playbooks/identify-o11y-pbs-backing-identity.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for private backing-disk identity capture"
+        type: string
+        required: true
+    # Reuses protected GET responses after the private declaration exactly
+    # matches. Serial and optional WWN are for private operator review only;
+    # reported identity does not prove physical locality or authorize writes.
+
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
     repository: agent-cloud dev
@@ -2123,6 +2174,93 @@ templates:
         required: true
     # Reports fixed Alloy state fields only; inspect JSON, logs, paths, addresses,
     # command details, and subprocess output remain private.
+
+  - name: Verify o11y Profile Pilot Candidates (Dev)
+    playbook: platform/playbooks/verify-o11y-profile-pilot.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact reviewed public revision required on the controller"
+        type: string
+        required: true
+    # Public SHA is guarded; the receipt fingerprints rendered candidates and reports
+    # private inventory revision as unverified for separate reviewed comparison.
+
+  - name: Accept o11y Profile Pilot (Dev)
+    playbook: platform/playbooks/accept-o11y-profile-pilot.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact Dev checkout revision required for this acceptance run"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Reviewed deployed receiver commit SHA"
+        description: "Exact source revision currently deployed on the Dev receiver"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config integration branch"
+        description: "Private inventory branch used by the provenance comparison"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config commit SHA"
+        description: "Exact private inventory revision required before activation"
+        type: string
+        required: true
+    # Revalidates provenance, candidates, and live resource headroom before touching
+    # only the existing Alloy config inode; the operation restores the disabled config.
+
+  - name: Prove o11y Pyroscope Restart Durability (Dev)
+    playbook: platform/playbooks/restart-o11y-pyroscope-durability.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact Dev checkout revision required for this proof"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Reviewed deployed receiver commit SHA"
+        description: "Exact receiver revision bound by the accepted sample"
+        type: string
+        required: true
+      - name: expected_acceptance_sha
+        title: "Reviewed acceptance commit SHA"
+        description: "Exact agent-cloud revision recorded by the successful acceptance task"
+        type: string
+        required: true
+      - name: o11y_profile_acceptance_task_id
+        title: "Successful profile acceptance task ID"
+        description: "Semaphore task whose exact successful receipt defines the historical query window"
+        type: string
+        required: true
+    # Reads a prior exact acceptance receipt, then re-queries its historical sample
+    # around a restart of only Pyroscope; it changes no config or volume.
+
+  - name: Survey o11y Profile Pilot Inventory Provenance (Dev)
+    playbook: platform/playbooks/survey-o11y-inventory-provenance.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact reviewed Dev revision required on the controller"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config integration branch"
+        description: "Private branch whose current tip must equal the supplied reviewed SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config commit SHA"
+        description: "Exact private integration commit whose production inventory is compared"
+        type: string
+        required: true
+    # GET-only comparison; output contains only fixed status/reason and the two reviewed SHAs.
 
   - name: Survey o11y Receiver Capabilities (Dev)
     playbook: platform/playbooks/survey-o11y-receiver-capabilities.yml

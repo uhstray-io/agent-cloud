@@ -132,7 +132,8 @@ step_oidc_admin() {
   # self-signup DISABLED (no open registration on the ERP) and instead create the
   # one known admin here, mirroring the platform model (akadmin/Administrator =
   # break-glass; agent-cloud-admin = the daily SSO admin with full access). The
-  # email MUST equal the Authentik agent-cloud-admin email (agent-cloud-admin.yaml)
+  # email MUST equal the Authentik agent-cloud-admin email (the agent_cloud_admin
+  # entry of the administrator list)
   # or the claim won't match this User. We grant EVERY assignable role (not just
   # System Manager): System Manager is an ADMIN role only — the functional module
   # doctypes (Purchase/Stock/Accounts/Projects/...) each gate on their own roles,

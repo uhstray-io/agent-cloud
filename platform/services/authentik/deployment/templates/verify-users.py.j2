@@ -21,6 +21,15 @@ import http.client, json, os, sys, time, urllib.parse
 # defaults (the same lists the create/delete collision guard compared).
 EXPECT_PRESENT = {{ (_active_usernames | default([])) | to_json }}
 EXPECT_ABSENT = {{ (_retired_usernames | default([])) | to_json }}
+# platform-admins MEMBERSHIP. The declared administrator list plus the declared exceptions
+# (platform_admins_exceptions, names only, empty by default) is the whole truth about who
+# holds the admin tier: a member added by hand in the UI, or by a blueprint block outside the
+# list, would hold it with no gateway identity and no record. Compared exactly, in both
+# directions, and reported by account name only.
+ADMIN_GROUP = "platform-admins"
+EXPECT_ADMINS = {{ ((_platform_admins | default([]) | map(attribute='username') | map('string') | map('trim') | list)
+                    + (_platform_admins_exceptions | default([]) | map('string') | map('trim') | list))
+                   | unique | list | to_json }}
 # blueprints-active/ is mounted at /blueprints/custom; every instance under that
 # prefix is one this deploy is responsible for.
 CUSTOM_PREFIX = "custom/"
@@ -31,7 +40,8 @@ CUSTOM_PREFIX = "custom/"
 # never picked up. Measured in review, 2026-08-28.
 EXPECT_BLUEPRINTS = {{ ((_shared_blueprints | default([]))
                         + ((_enabled_apps | default([])) | map('extract', authentik_app_catalog | default({}), 'file') | list)
-                        + ['zz-sso-bindings.yaml']) | map('regex_replace', '^', 'custom/') | list | to_json }}
+                        + ['zz-sso-bindings.yaml', 'platform-admins.yaml']
+                        + (_retired_blueprints | default([]))) | map('regex_replace', '^', 'custom/') | list | to_json }}
 SETTLE_SECONDS = {{ authentik_blueprint_settle_seconds | default(120) | int }}
 
 tok = os.environ.get("AUTHENTIK_BOOTSTRAP_TOKEN")
@@ -105,7 +115,26 @@ for name in EXPECT_PRESENT:
         continue
     print("OK   user      %-40s active, groups=%s" % (name, groups))
 
-# ── 3. The accounts declared retired are gone ─────────────────────────────────
+# ── 3. platform-admins has exactly the declared members ───────────────────────
+# Read from the GROUP (direct members, users_obj), not by probing the declared names: a
+# probe can only find what it already knows to look for, which is the failure this closes.
+groups = [g for g in get("/api/v3/core/groups/?name=%s&include_users=true&page_size=50" % ADMIN_GROUP)["results"]
+          if g.get("name") == ADMIN_GROUP]
+drift = []
+if len(groups) != 1:
+    drift.append("group %s: expected exactly 1, found %d" % (ADMIN_GROUP, len(groups)))
+else:
+    members = sorted(u.get("username") for u in (groups[0].get("users_obj") or []))
+    for name in sorted(set(members) - set(EXPECT_ADMINS)):
+        drift.append("%s member %s: not in the declared administrator list or its exceptions" % (ADMIN_GROUP, name))
+    for name in sorted(set(EXPECT_ADMINS) - set(members)):
+        drift.append("%s: declared administrator %s is not a member" % (ADMIN_GROUP, name))
+    if not drift:
+        print("OK   group     %-40s members=%s" % (ADMIN_GROUP, members))
+
+bad.extend(drift)
+
+# ── 4. The accounts declared retired are gone ─────────────────────────────────
 for name in EXPECT_ABSENT:
     found = find_user(name)
     if found:

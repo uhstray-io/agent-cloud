@@ -1,0 +1,52 @@
+---
+# validate-platform-admins.yml — refuse a malformed or hostile administrator list.
+#
+# The list (`_platform_admins`, vars/platform-admins.yml) is declared in inventory, which an
+# extra var can also set, and every entry's `key` is used to BUILD a secret field name
+# (`<key>_password`) and a worker env name. A crafted key such as `db` or `bootstrap` would
+# otherwise collide with the Authentik database or akadmin bootstrap password. So the list is
+# validated before anything acts on it; deploy-authentik.yml includes this file.
+#
+# The credential print (print-platform-user-credentials.yml) does NOT read this list: what it may
+# print is a committed constant, because the list is launcher-controllable.
+#
+# Needs in scope: _platform_admins (vars/platform-admins.yml) and, from
+# vars/secret-declarations/authentik.yml, _static_secret_definitions + _secret_definitions.
+# The static set is every secret that is NOT a per-user password (db, bootstrap, secret_key,
+# the OIDC client secrets, the service-account token, andrew's password): a key whose
+# `<key>_password` field, or whose own name, is one of those is refused.
+- name: "Refuse a malformed administrator list"
+  ansible.builtin.assert:
+    that:
+      - item.key is defined and (item.key | string) is match('^[a-z][a-z0-9_]*$')
+      - item.username is defined and (item.username | string | trim | length) > 0
+      - item.name is defined and (item.name | string | trim | length) > 0
+      - (item.type | default('user')) in ['user', 'service_account']
+      - (item.type | default('user')) == 'service_account' or (item.email | default('') | string | trim | length) > 0
+      - ((item.key | default('') | string) ~ '_password') not in (_static_secret_definitions | map(attribute='name') | list)
+      - (item.key | default('') | string) not in (_static_secret_definitions | map(attribute='name') | list)
+    fail_msg: >-
+      platform_admins entry {{ item.key | default('<no key>') }} is refused: it needs a
+      lowercase key (letters, digits, underscore) whose `<key>_password` field and own name are
+      not an existing non-user secret (database, bootstrap, secret key, OIDC client secrets,
+      service-account token, another user's password), a username, a name, a type of user or
+      service_account, and an email unless it is a service account.
+    quiet: true
+  loop: "{{ _platform_admins }}"
+  loop_control:
+    label: "{{ item.key | default('<no key>') }}"
+
+- name: "Refuse an empty list, duplicate administrators and secret-field collisions"
+  ansible.builtin.assert:
+    that:
+      - _platform_admins is sequence and _platform_admins is not string
+      - _platform_admins | length > 0
+      - (_platform_admins | map(attribute='key') | list | unique | length) == (_platform_admins | length)
+      - (_platform_admins | map(attribute='username') | list | unique | length) == (_platform_admins | length)
+      - (_platform_admins | selectattr('type', 'defined') | selectattr('type', 'equalto', 'service_account') | list | length) <= 1
+      - (_secret_definitions | map(attribute='name') | list | unique | length) == (_secret_definitions | length)
+    fail_msg: >-
+      platform_admins is empty or not a list, or has a repeated key or username, more than one
+      service account (they share one API token), or a key whose `<key>_password` field collides
+      with another declared secret. Keys: {{ _platform_admins | map(attribute='key') | join(', ') }}.
+    quiet: true

@@ -154,8 +154,10 @@ see no change of base URL.
   team members and agents (the old shared key keeps working at the gateway for a
   dated grace period, then is retired from client use).
 - Out of scope, recorded: MCP and A2A routing (the gateway supports them; no consumer
-  yet); the skynet-to-gateway relationship beyond "distinct authorities" (open question
-  below); moving the vLLM API into this estate (dgx-spark roadmap record).
+  yet; MCP is now taken up by change `agentgateway-mcp`, see
+  `plan/development/openspec/changes/agentgateway-mcp/proposal.md`); the skynet-to-gateway
+  relationship beyond "distinct authorities" (open question below); moving the vLLM API into
+  this estate (dgx-spark roadmap record).
 
 ## Rollback Plan
 

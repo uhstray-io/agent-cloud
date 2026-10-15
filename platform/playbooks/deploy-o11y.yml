@@ -131,6 +131,9 @@
           if _probe_enabled | bool else []) }}
 
   tasks:
+    - name: Refuse an unverified profile pilot operation before o11y mutation
+      ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
+
     - name: "Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
         that:
@@ -417,6 +420,11 @@
               leaf_name {{ _probe_leaf_name }} after Deploy step-ca (Dev) has the leaf's SANs.
             quiet: true
 
+    - name: Select the reviewed expected-target alert mode privately
+      ansible.builtin.set_fact:
+        _o11y_expected_target_mode: "{{ o11y_expected_metrics_targets_mode | default('grouped') }}"
+      no_log: true
+
     - name: Validate the reviewed expected-target declaration before placement
       ansible.builtin.command:
         argv:
@@ -446,6 +454,39 @@
           (_o11y_expected_target_validation.stdout | from_json).status == 'valid'
         fail_msg: "The reviewed expected-target declaration is invalid; no o11y files were placed."
         quiet: true
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Build validated expected-target groups privately for alert rendering
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+          - --group-expected-targets
+        stdin: >-
+          {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+              'targets': o11y_expected_metrics_targets | default([]),
+              'retired_uids': o11y_expected_metrics_targets_retired_uids | default([])} | to_json }}
+      delegate_to: localhost
+      register: _o11y_expected_target_groups_result
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Retain validated expected-target groups privately for alert rendering
+      ansible.builtin.set_fact:
+        _o11y_expected_target_groups: >-
+          {{ (_o11y_expected_target_groups_result.stdout | from_json).groups }}
       no_log: true
       when: >-
         not (local_mode | default(false) | bool) and
@@ -1367,7 +1408,6 @@
 
     - name: Verify Grafana alert provisioning after every real deploy
       when: not ansible_check_mode
-      no_log: true
       block:
         - name: Read live o11y alert rules
           ansible.builtin.command:
@@ -1382,6 +1422,7 @@
                 curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
           register: _active_rules
           changed_when: false
+          no_log: true
           retries: 6
           delay: 5
           until: _active_rules.rc == 0
@@ -1411,6 +1452,7 @@
                 curl -fsS --config - 'http://127.0.0.1:3000/api/folders?limit=1000'
           register: _live_folders
           changed_when: false
+          no_log: true
 
         # The live set must MIRROR the provisioned file: the rules Grafana holds in the
         # file's folder+group scope are exactly the file's rules, each paused and routed
@@ -1441,14 +1483,30 @@
             fail_msg: "Live Grafana alert rules do not match the provisioned rules file (missing, extra or withdrawn)."
 
         # Same uid order on both sides (asserted above), so each field compares rule by
-        # rule; an absent or null notification_settings, or field, compares as ''. The
-        # durations are strings in the 11.4 AlertRuleNotificationSettings schema.
-        - name: Require each live rule's pause and routing to equal the provisioned rule's
+        # rule; absent or null maps compare as empty maps. The durations are strings in
+        # the 11.4 AlertRuleNotificationSettings schema.
+        - name: Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's
           ansible.builtin.assert:
             that:
               - _o11y_rules | map(attribute='isPaused', default='') | list == _o11y_expected_rules | map(attribute='isPaused', default='') | list
+              - >-
+                _o11y_rules | map(attribute='labels', default={}) | map('default', {}, true) | list ==
+                _o11y_expected_rules | map(attribute='labels', default={}) | map('default', {}, true) |
+                map('to_json') | map('replace', '$$', '$') | map('from_json') | list
+              - >-
+                _o11y_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list ==
+                _o11y_expected_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list
+              - _o11y_rules | map(attribute='for', default='') | list ==
+                _o11y_expected_rules | map(attribute='for', default='') | list
+            fail_msg: >-
+              Live Grafana rules differ from the provisioned file in pause state,
+              labels, annotations or duration.
+
+        - name: Require each live rule's notification settings to equal the provisioned rule's
+          ansible.builtin.assert:
+            that:
               - _live_settings | map(attribute=item, default='') | list == _file_settings | map(attribute=item, default='') | list
-            fail_msg: "Live Grafana rules differ from the provisioned file in isPaused or notification_settings.{{ item }}."
+            fail_msg: "Live Grafana rules differ from the provisioned file in notification_settings.{{ item }}."
           vars:
             _live_settings: "{{ _o11y_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"
             _file_settings: "{{ _o11y_expected_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"

@@ -123,6 +123,7 @@ groups:
 {% else %}
 {% set _missing_targets = [] %}
 {% endif %}
+{% if local_mode | default(false) | bool or _o11y_expected_target_mode | default(o11y_expected_metrics_targets_mode | default('legacy')) == 'legacy' %}
 {% for target in _missing_targets %}
       - uid: {{ target.uid }}
         title: {{ ('Missing telemetry for ' ~ target.service ~ ' at ' ~ target.instance) | to_json }}
@@ -157,7 +158,7 @@ groups:
         execErrState: Alerting
         for: 2m
         annotations:
-          summary: {{ ('Expected metrics have disappeared for ' ~ target.service ~ '.') | to_json }}
+          summary: {{ ('Expected metrics have disappeared for ' ~ target.service ~ ' at ' ~ target.instance ~ '.') | to_json }}
           dashboard_url: {{ ('/d/service-overview?var-service=' ~ target.service) | to_json }}
           description: Check the declared metrics target and its service onboarding receipt.
         labels:
@@ -169,7 +170,7 @@ groups:
           environment: {{ target.environment | default(o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) | to_json }}
           cluster: {{ target.cluster | default(o11y_cluster | default('agent-cloud-local')) | to_json }}
         isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined else 'true' }}
-{% if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined %}
+{% if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined and (local_mode | default(false) | bool or _o11y_expected_target_mode | default(o11y_expected_metrics_targets_mode | default('legacy')) == 'legacy') %}
         notification_settings:
           receiver: agent-cloud-ops
           group_by: [service, environment, cluster, alertname]
@@ -178,11 +179,68 @@ groups:
           repeat_interval: 4h
 {% endif %}
 {% endfor %}
+{% else %}
+{% for target_group in (_o11y_expected_target_groups | default([])) %}
+      - uid: {{ target_group.uid }}
+        title: {{ ('Missing telemetry group (' ~ target_group.uid ~ ')') | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ target_group.expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: {{ 'Expected metrics have disappeared for {{ $labels.service }} at {{ $labels.instance }}.' | to_json }}
+          dashboard_url: {{ ('/d/service-overview?var-service=' ~ target_group.service) | to_json }}
+          description: Check the declared metrics target and its service onboarding receipt.
+        labels:
+          severity: critical
+          job: {{ '{{ $$labels.job }}' | to_json }}
+          instance: {{ '{{ $$labels.instance }}' | to_json }}
+          service: {{ target_group.service | to_json }}
+          owner: platform-operations
+          environment: {{ target_group.environment | to_json }}
+          cluster: {{ target_group.cluster | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and _expected_targets_reviewed and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and _expected_targets_reviewed and o11y_alert_canary_service is not defined %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endfor %}
+{% endif %}
 {# Grafana keeps omitted rules; retain validated owners and retired UID tombstones. #}
 {% if not (local_mode | default(false) | bool) %}
-{% for uid in ((_o11y_previous_expected_target_uids | default([])) + (_o11y_retired_expected_target_uids | default([]))) %}
-      - uid: {{ uid }}
-        title: {{ 'Expected metrics target explicitly retired' if uid in (_o11y_retired_expected_target_uids | default([])) else 'Expected metrics target previously declared' }}
+{% for tombstone in (_o11y_expected_target_tombstones | default([])) %}
+      - uid: {{ tombstone.uid }}
+        title: {{ tombstone.title | to_json }}
         condition: B
         data:
           - refId: A
@@ -214,12 +272,21 @@ groups:
         execErrState: OK
         for: 0s
         annotations:
-          summary: Expected metrics target rule is disabled.
-          description: {{ 'This owned UID was explicitly retired and remains inert.' if uid in (_o11y_retired_expected_target_uids | default([])) else 'No target identity is retained while the reviewed alert gate is disabled.' }}
+          summary: {{ tombstone.summary | to_json }}
+          description: {{ tombstone.description | to_json }}
         labels:
-          severity: warning
+          severity: {{ tombstone.labels.severity | to_json }}
+{% if tombstone.labels.job is defined %}
+          job: {{ tombstone.labels.job | to_json }}
+          instance: {{ tombstone.labels.instance | to_json }}
+          service: {{ tombstone.labels.service | to_json }}
+          cluster: {{ tombstone.labels.cluster | to_json }}
+{% elif tombstone.labels.service is defined %}
+          service: {{ tombstone.labels.service | to_json }}
+          cluster: {{ tombstone.labels.cluster | to_json }}
+{% endif %}
           owner: platform-operations
-          environment: disabled
+          environment: {{ tombstone.labels.environment | to_json }}
         isPaused: true
 {% endfor %}
 {% endif %}
@@ -476,7 +543,7 @@ groups:
 {# The synthetic probe rules read the probe's textfile samples, scraped by the
    receiver-host job, so they follow o11y_inference_probe_enabled instead of the
    DGX scrape; turning the probe off deletes them the same way. #}
-{% set _inference_uids = ['inference_queue_stalled', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
 {% set _probe_uids = ['inference_probe_failing', 'inference_probe_stale'] %}
 {% set _dgx_on = dgx_spark_scrape_enabled | default(false) | bool %}
 {% set _probe_on = o11y_inference_probe_enabled | default(false) | bool %}
@@ -549,6 +616,18 @@ groups:
      'gt', 0, '5m', 'critical', 'vllm',
      'vLLM has queued requests and has generated no tokens for five minutes.',
      'Health can still answer while inference is stuck. Check the head and worker ranks and the lifecycle state before restarting anything.',
+     '/d/inference-latency-capacity') }}
+{# Capacity warning from the measured baseline: over the production 7-day window
+   (receipt task 5349) waiting requests peaked at 3 while running peaked at 8, the
+   serving slot count. The default of 6 is twice that waiting peak; override it per
+   inventory with o11y_inference_queue_waiting_warn when the baseline moves. The
+   alert text renders the threshold in use, so it never states a stale number. #}
+{% set _queue_warn = o11y_inference_queue_waiting_warn | default(6) | int %}
+{{ inference_rule('inference_queue_depth_high', 'vLLM request queue deeper than the measured baseline',
+     'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"})',
+     'gt', _queue_warn, '10m', 'warning', 'vllm',
+     'More than ' ~ _queue_warn ~ ' requests have been waiting for a vLLM slot for ten minutes.',
+     'Requests are queueing for a vLLM slot: the queue has stayed over the configured threshold of ' ~ _queue_warn ~ ' for ten minutes. Clients see first-token latency grow; check for a load test or a runaway client before changing capacity. Never restart on this alert.',
      '/d/inference-latency-capacity') }}
 {% endif %}
 {% if _probe_on %}

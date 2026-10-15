@@ -22,6 +22,10 @@ PRE_PARTITION_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
 INTERMEDIATE_PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-python-partition.txt").read_bytes()
 
+# The workflow as it stood before the Agentgateway job was split out of Python core.
+PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-playbook-safety-partition.txt").read_bytes()
+
 
 def _blob_sha(source):
     return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
@@ -29,7 +33,8 @@ def _blob_sha(source):
 
 assert _blob_sha(PRE_PARTITION_WORKFLOW) == guard.PRE_PARTITION_WORKFLOW_BLOB_SHA
 assert _blob_sha(INTERMEDIATE_PARTITIONED_WORKFLOW) == "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
-assert _blob_sha(CURRENT_WORKFLOW) == guard.PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(PARTITIONED_WORKFLOW) == guard.PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.AGW_PARTITIONED_WORKFLOW_BLOB_SHA
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -141,8 +146,16 @@ class FakeGitHub:
         self.workflow_sources[BASE] = value
         self.workflow_sources[HEAD] = value
 
-    def set_partition_transition(self):
+    def set_legacy_partition_transition(self):
         self.workflow_sources[BASE] = PRE_PARTITION_WORKFLOW
+        self.workflow_sources[HEAD] = PARTITIONED_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_partition_transition(self):
+        self.workflow_sources[BASE] = PARTITIONED_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
@@ -222,6 +235,12 @@ class MergeGuardTests(unittest.TestCase):
                 conclusion="cancelled"), "is cancelled"),
             (lambda api: api.jobs["Python Playbook Safety"].update(
                 conclusion="skipped"), "was skipped"),
+            (lambda api: api.jobs["Python Agentgateway"].update(
+                status="in_progress", conclusion=None), "incomplete"),
+            (lambda api: api.jobs["Python Agentgateway"].update(
+                conclusion="cancelled"), "is cancelled"),
+            (lambda api: api.jobs["Python Agentgateway"].update(
+                conclusion="skipped"), "was skipped"),
             (lambda api: api.jobs["Bash Tests"].update(status="in_progress", conclusion=None), "incomplete"),
             (lambda api: api.jobs["Security Scan"].update(conclusion="failure"), "failure"),
             (lambda api: api.jobs["Static Analysis"].update(conclusion="skipped"), "was skipped"),
@@ -248,6 +267,18 @@ class MergeGuardTests(unittest.TestCase):
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
+    def test_legacy_pre_partition_to_playbook_safety_transition_is_still_allowed(self):
+        api = FakeGitHub()
+        api.set_legacy_partition_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_playbook_safety_partition_unchanged_is_still_allowed(self):
+        api = FakeGitHub()
+        api.workflow_source = PARTITIONED_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
     def test_identical_credential_safe_partition_is_allowed(self):
         api = FakeGitHub()
         api.set_partition_baseline()
@@ -265,7 +296,22 @@ class MergeGuardTests(unittest.TestCase):
             ("extra candidate byte", lambda api: api.workflow_sources.__setitem__(
                 HEAD, CURRENT_WORKFLOW + b"# extra\n")),
             ("reverse transition", lambda api: (api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
-                                                  api.workflow_sources.__setitem__(HEAD, PRE_PARTITION_WORKFLOW))),
+                                                  api.workflow_sources.__setitem__(HEAD, PARTITIONED_WORKFLOW))),
+            ("reverse to pre-partition", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PRE_PARTITION_WORKFLOW))),
+            ("skip the playbook safety state", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("agentgateway base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("agentgateway base to different head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+            ("playbook safety base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PARTITIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
             ("old baseline unchanged", lambda api: (api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
                                                       api.workflow_sources.__setitem__(HEAD, PRE_PARTITION_WORKFLOW))),
         ]
@@ -280,6 +326,7 @@ class MergeGuardTests(unittest.TestCase):
         cases = (
             ("intermediate head", PRE_PARTITION_WORKFLOW, INTERMEDIATE_PARTITIONED_WORKFLOW),
             ("intermediate base", INTERMEDIATE_PARTITIONED_WORKFLOW, CURRENT_WORKFLOW),
+            ("intermediate head after playbook safety", PARTITIONED_WORKFLOW, INTERMEDIATE_PARTITIONED_WORKFLOW),
         )
         for label, base, head in cases:
             with self.subTest(label=label):
@@ -307,6 +354,29 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
         run_refusal(self, api, "byte-identical on subsequent PRs")
+
+    def test_agentgateway_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Agentgateway partition may only remain byte-identical")
+
+    def test_agentgateway_job_must_succeed_and_be_present_exactly_once(self):
+        api = FakeGitHub()
+        api.jobs["Python Agentgateway"].update(conclusion="failure")
+        next(check for check in api.checks if check["name"] == "Python Agentgateway")["conclusion"] = "failure"
+        run_refusal(self, api, "Python Agentgateway is failure")
+
+        api = FakeGitHub()
+        api.jobs.pop("Python Agentgateway")
+        run_refusal(self, api, "Missing expected Actions jobs")
+
+        api = FakeGitHub()
+        api.extra_jobs = [dict(api.jobs["Python Agentgateway"])]
+        run_refusal(self, api, "Unknown or duplicate Actions job")
+
+        api = FakeGitHub()
+        next(check for check in api.checks if check["name"] == "Python Agentgateway")["head_sha"] = "f" * 40
+        run_refusal(self, api, "missing, stale, or incomplete")
 
     def test_partition_job_must_succeed_even_when_the_aggregate_run_is_green(self):
         api = FakeGitHub()
@@ -530,6 +600,20 @@ class MergeGuardTests(unittest.TestCase):
         changed = b"name: Changed\non:\n  pull_request:\n    branches: [dev]\n"
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
             guard.check_workflow_policy(changed, partitioned=True)
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, agw=True)
+
+    def test_each_policy_state_requires_exactly_its_own_job_set(self):
+        guard.check_workflow_policy(PARTITIONED_WORKFLOW, partitioned=True)
+        guard.check_workflow_policy(CURRENT_WORKFLOW, agw=True)
+        for label, source, kwargs in (
+            ("agentgateway workflow read as playbook safety", CURRENT_WORKFLOW, {"partitioned": True}),
+            ("playbook safety workflow read as agentgateway", PARTITIONED_WORKFLOW, {"agw": True}),
+            ("agentgateway job renamed", CURRENT_WORKFLOW.replace(
+                b"name: Python Agentgateway", b"name: Python Agw", 1), {"agw": True}),
+        ):
+            with self.subTest(label=label), self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+                guard.check_workflow_policy(source, **kwargs)
 
     def test_path_gate_drift_refuses_before_merge(self):
         changed = CURRENT_WORKFLOW.replace(
@@ -538,7 +622,7 @@ class MergeGuardTests(unittest.TestCase):
             1,
         )
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
-            guard.check_workflow_policy(changed, partitioned=True)
+            guard.check_workflow_policy(changed, agw=True)
 
     def test_ambiguous_merge_response_is_read_back_and_never_retried(self):
         api = FakeGitHub()

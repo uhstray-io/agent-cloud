@@ -12,7 +12,13 @@ RULE_REF = "o11y-api-bypass-challenge"
 RULE_INDEX = 5
 # These computed fields and the nested nullable field are pinned to provider v5.21.1.
 PROVIDER_COMPUTED_ROOT_FIELDS = {"id", "version", "last_updated"}
+PROVIDER_COMPUTED_ROOT_METADATA_FIELDS = {"version", "last_updated"}
 PROVIDER_COMPUTED_RULE_FIELDS = {"id"}
+# Only provider v5.21.1's top-level ruleset field names may leave the plan boundary.
+PROVIDER_ROOT_FIELD_NAMES = {
+    "account_id", "description", "id", "kind", "last_updated", "name", "phase", "rules", "version", "zone_id"
+}
+UNKNOWN_FIELD_MARKER = "unknown_field"
 EXPECTED_RULE = {
     "ref": RULE_REF,
     "action": "skip",
@@ -26,17 +32,36 @@ EXPECTED_RULE = {
     "logging": {"enabled": True},
 }
 RECEIPT_FIELDS = (
-    "safe", "status", "reason", "digest", "resource", "rule_ref", "position", "actions", "digest_matches"
+    "safe", "status", "reason", "digest", "resource", "rule_ref", "position", "actions", "digest_matches",
+    "root_field_changes",
 )
 
 
 class UnsafePlan(ValueError):
-    def __init__(self, reason):
+    def __init__(self, reason, root_field_changes=()):
         self.reason = reason
+        self.root_field_changes = root_field_changes
 
 
-def _reject(reason):
-    raise UnsafePlan(reason)
+def _reject(reason, root_field_changes=()):
+    raise UnsafePlan(reason, root_field_changes)
+
+
+def _root_field_changes(before, after, computed_unknown):
+    changed = set()
+    for key in before.keys() | after.keys():
+        if key not in before or key not in after:
+            if key in PROVIDER_COMPUTED_ROOT_METADATA_FIELDS and key in computed_unknown:
+                continue
+            changed.add(key if key in PROVIDER_ROOT_FIELD_NAMES else UNKNOWN_FIELD_MARKER)
+            continue
+        if key == "rules" and key in before and key in after:
+            continue
+        if key in computed_unknown and key in after and after[key] is None:
+            continue
+        if key not in before or key not in after or before[key] != after[key]:
+            changed.add(key if key in PROVIDER_ROOT_FIELD_NAMES else UNKNOWN_FIELD_MARKER)
+    return sorted(changed)
 
 
 def _unknown_paths(value, prefix=""):
@@ -80,9 +105,11 @@ def _validate_unknowns(change):
     after = change.get("after")
     if not isinstance(after, dict):
         _reject("unknown_values")
+    after_unknown = change.get("after_unknown")
     for path in paths:
         if path in PROVIDER_COMPUTED_ROOT_FIELDS:
-            if after.get(path) is not None:
+            if (not isinstance(after_unknown, dict) or after_unknown.get(path) is not True
+                    or after.get(path) is not None):
                 _reject("unknown_values")
         elif path == f"rules[{RULE_INDEX}].id":
             rules = after.get("rules")
@@ -141,12 +168,9 @@ def _target_state(target):
         field for field in PROVIDER_COMPUTED_ROOT_FIELDS
         if field in _unknown_paths(change.get("after_unknown", {})) and after.get(field) is None
     }
-    before_root = {k: v for k, v in before.items() if k != "rules"}
-    after_root = {k: v for k, v in after.items() if k != "rules"}
-    if before.keys() != after.keys() or {k: v for k, v in before_root.items() if k not in computed_unknown} != {
-        k: v for k, v in after_root.items() if k not in computed_unknown
-    }:
-        _reject("root_field_change")
+    root_field_changes = _root_field_changes(before, after, computed_unknown)
+    if root_field_changes:
+        _reject("root_field_change", root_field_changes)
     before_rules, after_rules = before.get("rules"), after.get("rules")
     if not isinstance(before_rules, list) or not isinstance(after_rules, list):
         _reject("missing_rules")
@@ -193,15 +217,15 @@ def inspect_plan(plan, action, reviewed_digest=""):
                         actions, matches)
     except UnsafePlan as exc:
         reason = exc.reason
-        return _receipt(False, "rejected", reason, None, [], False)
+        return _receipt(False, "rejected", reason, None, [], False, exc.root_field_changes)
     except (AttributeError, KeyError, TypeError):
         # Exception details may contain plan values; only fixed categories leave this boundary.
         return _receipt(False, "rejected", "invalid_plan_structure", None, [], False)
 
 
-def _receipt(safe, status, reason, digest, actions, matches):
+def _receipt(safe, status, reason, digest, actions, matches, root_field_changes=()):
     return dict(zip(RECEIPT_FIELDS, (
-        safe, status, reason, digest, RESOURCE, RULE_REF, RULE_INDEX, actions, matches
+        safe, status, reason, digest, RESOURCE, RULE_REF, RULE_INDEX, actions, matches, list(root_field_changes)
     ), strict=True))
 
 

@@ -12,7 +12,6 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-cloudflare-tofu.yml"
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
 TASKS = REPO / "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md"
-DESIGN = REPO / "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/design.md"
 FIXTURE = REPO / "platform/tests/fixtures/cloudflare-ruleset-v5.21.1-update.json"
 LOCK = REPO / "platform/infra/cloudflare/.terraform.lock.hcl"
 HELPER = REPO / "platform/playbooks/files/cloudflare_grafana_plan_guard.py"
@@ -67,7 +66,106 @@ def test_exact_insertion_has_stable_redacted_receipt():
     assert receipt["digest"] == guard.inspect_plan(reordered, "plan")["digest"]
     assert receipt["digest"] != guard.inspect_plan(metadata_changed, "plan")["digest"]
     assert set(receipt) == set(guard.RECEIPT_FIELDS)
+    assert receipt["root_field_changes"] == []
     assert "sensitive-zone-id" not in json.dumps(receipt)
+
+
+def test_root_field_refusal_reports_only_allowlisted_names_and_key_presence():
+    plan = _plan()
+    after = plan["resource_changes"][0]["change"]["after"]
+    after["description"] = "unrelated root drift"
+    del after["zone_id"]
+    after["private_metadata"] = "must not leave the plan boundary"
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert not receipt["safe"] and receipt["reason"] == "root_field_change"
+    assert receipt["root_field_changes"] == ["description", "unknown_field", "zone_id"]
+    assert "private_metadata" not in json.dumps(receipt)
+    assert "unrelated root drift" not in json.dumps(receipt)
+
+
+def test_root_field_diagnostic_uses_fixed_marker_for_unknown_field_names():
+    plan = _plan()
+    plan["resource_changes"][0]["change"]["after"]["private_metadata"] = "sensitive value"
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert receipt["reason"] == "root_field_change"
+    assert receipt["root_field_changes"] == ["unknown_field"]
+    assert "private_metadata" not in json.dumps(receipt)
+    assert "sensitive value" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize(("field", "missing_from"), [
+    ("version", "before"),
+    ("version", "after"),
+    ("last_updated", "before"),
+    ("last_updated", "after"),
+])
+def test_explicitly_unknown_computed_root_field_may_be_absent_or_null(field, missing_from):
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"][field] = True
+    change[missing_from].pop(field)
+    if missing_from == "before":
+        change["after"][field] = None
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert receipt["safe"] and receipt["status"] == "insert"
+    assert receipt["root_field_changes"] == []
+
+
+@pytest.mark.parametrize(("field", "missing_from"), [
+    ("version", "before"),
+    ("version", "after"),
+    ("last_updated", "before"),
+    ("last_updated", "after"),
+])
+@pytest.mark.parametrize("marker", [1, 2, "not-true"])
+def test_computed_metadata_presence_exception_rejects_nonboolean_unknown_markers(field, missing_from, marker):
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"][field] = marker
+    change[missing_from].pop(field)
+    if missing_from == "before":
+        change["after"][field] = None
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert not receipt["safe"] and receipt["reason"] == "unknown_values"
+
+
+def test_computed_resource_identity_presence_change_still_refuses():
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"]["id"] = True
+    change["after"].pop("id")
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert not receipt["safe"] and receipt["reason"] == "root_field_change"
+    assert receipt["root_field_changes"] == ["id"]
+
+
+def test_provider_computed_metadata_absent_after_is_accepted_when_marked_unknown():
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    for field in ("last_updated", "version"):
+        change["after_unknown"][field] = True
+        change["after"].pop(field)
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert receipt["safe"] and receipt["status"] == "insert"
+    assert receipt["root_field_changes"] == []
+
+
+def _change_computed_root_value_without_unknown(plan):
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"].pop("version")
+    change["after"]["version"] = "2"
 
 
 @pytest.mark.parametrize("mutate,reason", [
@@ -77,6 +175,7 @@ def test_exact_insertion_has_stable_redacted_receipt():
     (lambda p: p.update(resource_drift=[{"address": "cloudflare_record.drift"}]), "resource_drift"),
     (lambda p: p["resource_changes"][0]["change"]["after"].update(description="unrelated root drift"),
      "root_field_change"),
+    (_change_computed_root_value_without_unknown, "root_field_change"),
     (lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(expression="changed"),
      "not_exact_rule_insertion"),
     (_move_rule_before, "not_exact_rule_insertion"),
@@ -125,6 +224,7 @@ def test_unset_null_rule_fields_are_ignored_recursively(mutate):
 
 @pytest.mark.parametrize("mutate", [
     lambda p: p["resource_changes"][0]["change"]["after_unknown"].update(name=True),
+    lambda p: p["resource_changes"][0]["change"]["after_unknown"].update(version={"nested": True}),
     lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(custom_field="populated"),
     lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(ratelimit={"requests_per_period": 10}),
     lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5]["action_parameters"].update(
@@ -164,6 +264,16 @@ def _tasks():
 def test_apply_is_bound_to_the_saved_plan_and_digest_is_a_survey_input():
     tasks = _tasks()
     names = [t.get("name") for t in tasks]
+    receipt_keys = ["actions", "digest", "digest_matches", "position", "reason", "resource",
+                    "root_field_changes", "rule_ref", "safe", "status"]
+    for name, variable in (("Unpack the safe plan receipt", "_tf_plan_guard"),
+                           ("Unpack the post-apply zero-diff receipt", "_tf_verify_guard")):
+        unpack = next(t for t in tasks if t.get("name") == name)
+        conditions = unpack["block"][1]["ansible.builtin.assert"]["that"]
+        assert [" ".join(condition.split()) for condition in conditions] == [
+            f"{variable} is mapping",
+            f"({variable}.keys() | list | sort) == {receipt_keys!r} | sort",
+        ]
     gate_i = names.index("Require the reviewed Grafana rule insertion before apply")
     apply_i = names.index("OpenTofu apply")
     apply = tasks[apply_i]["ansible.builtin.command"]["argv"]
@@ -206,11 +316,27 @@ def test_generic_cloudflare_executor_stays_unrestricted_and_grafana_uses_wrapper
 
 def test_editor_exception_is_scoped_and_rollout_tasks_stay_open():
     tasks = TASKS.read_text()
-    design = DESIGN.read_text()
-    assert "- [ ] 2.2a" in tasks and "- [ ] 2.2b" in tasks
-    assert "requested Editor role" in tasks
-    assert "OpenBao remains the token source of truth" in tasks
-    assert "0600 client copy" in tasks and "~/.config/mcp-grafana/prod.token" in tasks
-    assert "remains Viewer" in tasks
-    assert "scoped grafana mcp write access" in design.lower()
-    assert "existing o11y liveness watcher" in design
+    task_status = {}
+    task_text = {}
+    for line in tasks.splitlines():
+        if line.startswith(("- [ ] ", "- [x] ")):
+            task_id = line.split("] ", 1)[1].split(maxsplit=1)[0]
+            task_status[task_id] = line[3] == "x"
+            task_text[task_id] = line.lower()
+
+    assert {task_id: task_status[task_id] for task_id in ("2.2a", "2.2b", "2.2c", "2.3", "5.4", "5.5")} == {
+        "2.2a": True,
+        "2.2b": True,
+        "2.2c": True,
+        "2.3": False,
+        "5.4": False,
+        "5.5": False,
+    }
+    editor_task = task_text["2.2b"]
+    assert "editor" in editor_task and "dedicated account" in editor_task and "scoped" in editor_task
+    assert "watcher" in editor_task and "viewer" in editor_task
+    assert "openbao" in editor_task and "source of truth" in editor_task
+    assert "mode 0600" in editor_task and "~/.config/mcp-grafana/prod.token" in editor_task
+    assert "local profile" in task_text["2.2c"] and "--disable-write" in task_text["2.2c"]
+    assert "production profile" in task_text["2.2c"]
+    assert "without `--disable-write`" in task_text["2.2c"]

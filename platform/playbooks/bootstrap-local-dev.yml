@@ -77,6 +77,10 @@
       # inference — vLLM edge shape (/v1 + /health allowlist, edge 401/404); the
       # upstream is the Mac-host stand-in, scripts/fake-inference-upstream.py.
       - {'host': 'inference.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8001', 'inference_api': true}
+      # agentgateway MCP endpoint — the exact /mcp path only (Bearer-shape 401 at the edge, the
+      # gateway's key check is the authentication, everything else 404); upstream is the
+      # gateway's `default` listener.
+      - {'host': 'mcp.{{ _dev_zone }}', 'upstream': 'agentgateway:4000', 'mcp_api': true}
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.

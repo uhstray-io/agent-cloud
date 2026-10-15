@@ -15,6 +15,8 @@
 #          then the keyed round-trip as one enrolled identity: /v1/models lists every
 #          model it may use and one chat completion comes back from the upstream. The
 #          key travels as a `uri` header from the target, never on any process's argv.
+#          With agw_mcp_enabled the verify also proves /mcp: keyless 401, an authenticated `initialize`
+#          and a non-empty `tools/list`; with it false, that a keyed `initialize` is not an MCP reply.
 #          Skipped under --check (nothing new to prove).
 #
 # Change: plan/development/openspec/changes/inference-gateway-agentgateway
@@ -23,8 +25,30 @@
 # Inventory (agentgateway_svc host):
 #   agw_upstream_base_url  e.g. http://<head>:8000/v1 (prod) or
 #                          http://host.containers.internal:1234/v1 (local LM Studio)
-#   agw_models             [{name, upstream_model?}] one entry per served name
+#   agw_models             [{name, upstream_model?, provider?}] one entry per served name
+#                          `provider: openrouter` (agentgateway-openrouter) serves the entry from OpenRouter
+#                          instead of the vLLM upstream: `upstream_model` (vendor/model) is then required,
+#                          a wildcard name is refused, and someone must be allowed to call it (below)
+#   agw_openrouter_identities / agw_openrouter_admins  who may call OpenRouter models, as a union: the
+#                          explicit identity list, plus (agw_openrouter_admins: true, default false) every
+#                          admin-derived identity. The union must not be empty while any entry has
+#                          provider: openrouter, else the deploy refuses. Every other identity is denied
+#                          them in config.yaml (allowedModels), because OpenRouter is billed per token. The key is
+#                          secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key; never generated)
+#   agw_verify_openrouter  (default false) send ONE completion (max_tokens 8) to the first OpenRouter model
+#                          the verifying identity may use; off, the verify only checks the keyed listing
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
+#   agw_admin_identities_enabled (default false) gate for the personal identities below: off,
+#                          agw_identities == agw_clients and the admin list is not read
+#   platform_admins        (REQUIRED when the gate is on, else the deploy refuses: declare it for this
+#                          host, the shared file's default is built from per-user vars that exist only on
+#                          the Authentik host)
+#   platform admin list    (read only when the gate is on: `_platform_admins` from
+#                          vars/platform-admins.yml, the list the Authentik admin entries are rendered
+#                          from) one personal identity per entry, service accounts included: its
+#                          `agw_identity` if set, else its `username`. Merged with agw_clients into
+#                          agw_identities (vars/secret-declarations/agentgateway.yml); a name in both
+#                          is one identity (the same client_<name>), reported as an overlap
 #   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
@@ -38,6 +62,15 @@
 #   agw_otlp_host          (optional) declared o11y Alloy OTLP host:port
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 #   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
+#   agw_mcp_enabled                      (default false) serve MCP at /mcp on the default gateway (key-gated: the admin-derived
+#                                        personal identities ONLY, never an agw_clients service client,
+#                                        legacy-shared or mcp-self) and render the loopback
+#                                        gateway its target calls; false renders none of it and the verify asserts /mcp
+#                                        is not served
+#   agw_mcp_openapi_targets              (required when enabled) [{name, schema}]: each an OpenAPI target over this
+#                                        gateway's own /v1, the schema a .json file in deployment/mcp-schemas/; nothing
+#                                        else is accepted (_agw_mcp_problems)
+#   agw_loopback_port                    (default 4002) the loopback gateway's port, never published
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -66,6 +99,8 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # The shipped MCP target schemas, on the controller beside config.yaml.j2 (the template src's directory).
+    _agw_mcp_schema_dir: "{{ playbook_dir ~ '/../services/' ~ service_name ~ '/deployment/mcp-schemas' }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
@@ -115,16 +150,61 @@
           agentgateway_svc needs agw_upstream_base_url and a non-empty agw_models
           list in inventory — an empty gateway would answer 404 for every model.
 
+    # The shared admin list, loaded only when admin identities are enabled
+    # (tasks/load-platform-admins.yml); every play that reads agw_identities includes it.
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
+    # One personal identity per declared platform admin joins agw_clients in agw_identities
+    # (vars/secret-declarations/agentgateway.yml). A derived name that repeats, is reserved
+    # (legacy-shared, mcp-self) or falls outside the charset below is refused here, naming the
+    # entry, before anything is rendered or restarted.
+    - name: "Refuse derived admin identities that collide, are reserved or are malformed"
+      ansible.builtin.assert:
+        that: _agw_identity_problems | length == 0
+        fail_msg: >-
+          platform_admins cannot be turned into gateway identities: {{ _agw_identity_problems | join('; ') }}.
+        quiet: true
+
+    # A name in both platform_admins and agw_clients is the same identity (the same client_<name>
+    # field), merged once. Reported by name so the migration overlap is visible; names only.
+    - name: "Report identities declared in both platform_admins and agw_clients"
+      ansible.builtin.debug:
+        msg: >-
+          Merged once, migration overlap (platform_admins and agw_clients): {{ _agw_identity_overlap | join(', ') }}.
+      when: _agw_identity_overlap | length > 0
+
     # Names are interpolated into YAML, JSON (the secret definitions) and a CEL
     # string literal; restrict them to a charset that is inert in all three.
     - name: "Refuse identity or group names outside the safe charset"
       ansible.builtin.assert:
         that:
-          - (agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
+          - (agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
           - agw_ui_admin_group | default('platform-admins') is match('^[a-z0-9][a-z0-9-]*$')
         fail_msg: >-
-          agw_clients entries and agw_ui_admin_group must match ^[a-z0-9][a-z0-9-]*$
-          (offending clients: {{ agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+          agw_identities (agw_clients plus the names derived from platform_admins) and agw_ui_admin_group
+          must match ^[a-z0-9][a-z0-9-]*$
+          (offending identities: {{ agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+
+    # OpenRouter is billed per token on the operator's account: a model must be listed by name with
+    # its OpenRouter id, and the identities allowed to call it must be declared before any render.
+    # A missing openrouter_api_key is refused by manage-secrets (it is a required `existing`
+    # secret exactly when an OpenRouter model is declared) before any value is written.
+    - name: "Refuse a malformed OpenRouter declaration"
+      ansible.builtin.assert:
+        that: _agw_openrouter_problems | length == 0
+        fail_msg: >-
+          The OpenRouter models cannot be rendered: {{ _agw_openrouter_problems | join('; ') }}.
+        quiet: true
+
+    # The MCP declaration (agentgateway-mcp tasks 3.2, 3.7, 3.8): an allowlist, refused before anything is
+    # rendered or restarted, naming the entry. A target is only {name, schema}; its kind, host and the
+    # listener it reaches are not inputs (vars/secret-declarations/agentgateway.yml, _agw_mcp_problems).
+    - name: "Refuse an MCP declaration that cannot render a safe target"
+      ansible.builtin.assert:
+        that: _agw_mcp_problems | length == 0
+        fail_msg: "agw_mcp_enabled cannot be rendered: {{ _agw_mcp_problems | join('; ') }}."
+        quiet: true
 
     # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
     # and its expiry must be a real calendar date in ISO form, or the string comparison above
@@ -359,6 +439,45 @@
       changed_when: false
       when: _keep_previous and not ansible_check_mode and not _cfg_before.results[0].stat.exists
 
+    # The shipped schema of each declared MCP target, read on the CONTROLLER from the same checkout that
+    # holds config.yaml.j2 (the template `src` is controller-side too), so it is the same revision as the
+    # template and exists under --check, which places no monorepo on the target (a first dry run of a
+    # revision that adds a schema would otherwise fail on a file the target does not have yet). It is embedded
+    # in the render as one compact JSON string (nothing to mount, and a schema edit is a config change the
+    # change-aware deploy sees). The name is a bare file name by the refusal above, so it cannot leave
+    # mcp-schemas/. The content is public (an OpenAPI description), so these tasks are visible.
+    - name: "Read the shipped OpenAPI schema of each declared MCP target"
+      ansible.builtin.set_fact:
+        _agw_mcp_schema_raw: >-
+          {%- set out = {} -%}
+          {%- for t in agw_mcp_openapi_targets -%}
+            {%- if out.update({t.schema: lookup('ansible.builtin.file', _agw_mcp_schema_dir ~ '/' ~ t.schema)}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      when: agw_mcp_enabled | default(false) | bool
+
+    - name: "Refuse a target schema that is not an OpenAPI document with paths"
+      ansible.builtin.assert:
+        that:
+          - (_agw_mcp_schema_raw[item.schema] | from_json).openapi is defined
+          - (_agw_mcp_schema_raw[item.schema] | from_json).paths | length > 0
+        fail_msg: "The schema of MCP target {{ item.name }} ({{ item.schema }}) is not an OpenAPI document with paths."
+        quiet: true
+      loop: "{{ agw_mcp_openapi_targets | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: agw_mcp_enabled | default(false) | bool
+
+    - name: "Hold each schema as compact JSON for the render"
+      ansible.builtin.set_fact:
+        _agw_mcp_schemas: >-
+          {%- set out = {} -%}
+          {%- for name, text in _agw_mcp_schema_raw.items() -%}
+            {%- if out.update({name: (text | from_json | to_json(separators=(',', ':')))}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      when: agw_mcp_enabled | default(false) | bool
+
     - name: "Manage secrets and render env + config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
@@ -396,6 +515,125 @@
         state: absent
       changed_when: false
       when: _keep_previous and not ansible_check_mode
+
+    # The render must enrol exactly the identities declared: every name in agw_identities (plus
+    # `legacy-shared` while its grace period runs) with one key entry each, nothing else. That
+    # catches a templating fault (a key loop that skips or repeats a name), not a membership
+    # drift: the identities are derived from the declared admin list, so "derived equals
+    # declared" holds by construction (the Authentik verify is the drift guard). The reader prints
+    # names and a count only, never a hash or key, so the task needs no no_log.
+    - name: "Read the identity names and key-entry count the render wrote"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, re, sys
+            text = open(sys.argv[1], encoding="utf-8").read()
+            # The llm block only: it runs from `llm:` to the next top-level key, so another policy's
+            # key list (the mcp one) is never counted as this one's.
+            block = text.split("\nllm:\n", 1)[1] if "\nllm:\n" in text else ""
+            block = re.split(r"^[^\s#]", block, maxsplit=1, flags=re.M)[0]
+            # The mcp block the same way, and the loopback gateway: whether each was rendered, whether the
+            # mcp block carries its own strict key policy, and the identities that policy enrols.
+            mcp = text.split("\nmcp:\n", 1)[1] if "\nmcp:\n" in text else None
+            if mcp is not None:
+                mcp = re.split(r"^[^\s#]", mcp, maxsplit=1, flags=re.M)[0]
+            names = r"^[ \t]+metadata:\n[ \t]+name: (\S+)[ \t]*$"
+            print(json.dumps({
+                "names": re.findall(names, block, re.M),
+                "entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", block, re.M)),
+                "mcp": mcp is not None,
+                "mcp_apikey": bool(mcp and re.search(r"^    apiKey:$", mcp, re.M) and re.search(r"^      mode: strict$", mcp, re.M)),
+                "mcp_names": re.findall(names, mcp, re.M) if mcp else [],
+                "mcp_entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", mcp, re.M)) if mcp else 0,
+                "loopback": bool(re.search(r"^  loopback:$", text, re.M)),
+            }))
+          - "{{ _deploy_dir }}/config.yaml"
+      register: _agw_render_read
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    # One assert per property, each with its own message, so a missing name, an extra name and a
+    # wrong count are told apart (and each can be broken on its own in the tests).
+    - name: "Require the rendered config to enrol every declared identity"
+      ansible.builtin.assert:
+        that: _missing | length == 0
+        fail_msg: "The rendered config.yaml does not enrol these declared identities: {{ _missing | join(', ') }}."
+        quiet: true
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+        _missing: "{{ _expected | difference((_agw_render_read.stdout | from_json).names) | sort }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered config to enrol only declared identities"
+      ansible.builtin.assert:
+        that: _extra | length == 0
+        fail_msg: "The rendered config.yaml enrols identities that are not declared: {{ _extra | join(', ') }}."
+        quiet: true
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+        _extra: "{{ (_agw_render_read.stdout | from_json).names | difference(_expected) | sort }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered config to hold one key entry per declared identity"
+      ansible.builtin.assert:
+        that: (_agw_render_read.stdout | from_json).entries | int == _expected | length
+        fail_msg: >-
+          The rendered config.yaml holds {{ (_agw_render_read.stdout | from_json).entries }} key entries
+          for {{ _expected | length }} declared identities (a name rendered twice or a key without a name).
+        quiet: true
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+      when: not ansible_check_mode
+
+    # The MCP surface in the render (agentgateway-mcp tasks 3.2, 3.7). One assert per property again. Names and
+    # counts only. The first two are the fail-closed ones: an mcp block with no key policy answers every
+    # request (spike 1.1), so it must never reach a restart; and with the flag false nothing MCP may render.
+    - name: "Require the rendered MCP surface to match agw_mcp_enabled"
+      ansible.builtin.assert:
+        that:
+          - _render.mcp | bool == (agw_mcp_enabled | default(false) | bool)
+          - _render.loopback | bool == (agw_mcp_enabled | default(false) | bool)
+        fail_msg: >-
+          The rendered config.yaml has an mcp block: {{ _render.mcp }}, a loopback gateway: {{ _render.loopback }},
+          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }}; the two must agree.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered mcp block to carry its own strict key policy"
+      ansible.builtin.assert:
+        that: not (_render.mcp | bool) or (_render.mcp_apikey | bool)
+        fail_msg: >-
+          The rendered config.yaml has an mcp block with no strict apiKey policy: /mcp would answer every
+          request without a key.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the mcp key policy to enrol exactly the admin-derived identities"
+      ansible.builtin.assert:
+        that:
+          - _missing | length == 0
+          - _extra | length == 0
+          - _render.mcp_entries | int == _expected | length
+        fail_msg: >-
+          The rendered mcp key policy does not enrol exactly the admin-derived personal identities (never an
+          agw_clients service client, mcp-self or legacy-shared): missing {{ _missing | join(', ') }}; not allowed
+          {{ _extra | join(', ') }}; {{ _render.mcp_entries }} key entries for {{ _expected | length }} identities.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+        _expected: "{{ _agw_admin_identities | map(attribute='name') | reject('equalto', 'mcp-self') | list }}"
+        _missing: "{{ _expected | difference(_render.mcp_names) | sort }}"
+        _extra: "{{ _render.mcp_names | difference(_expected) | sort }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
 
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client
@@ -576,8 +814,19 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  # agw_identities for the default verifying identity below (a play's vars_files do not cross plays).
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
+    # The keyed round-trip is sent as agw_verify_client, else the first identity: agw_clients first,
+    # then the personal identities derived from the admin list, so it runs whenever any identity is
+    # enrolled. The fallback to agw_clients is for a caller that lacks the declaration.
+    _verify_default: "{{ (agw_identities | default(agw_clients | default([]))) | first | default('') }}"
     _engine: "{{ container_engine | default('podman') }}"
+    # The access-log lines of the MCP chat call's own /v1 request: the internal identity, on the loopback listener,
+    # on the chat path. The match runs on the host (awk, colour codes stripped), so the registered stdout is the
+    # one number `_mcp_log_hits` reads and no log line ever reaches the task output (task 4.6).
+    _mcp_log_hits: "{{ (_mcp_log.stdout | default('0')) | trim | int }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
     # The name the probes use with listener TLS: one of the server leaf's SANs, and the name
@@ -598,6 +847,10 @@
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
 
   tasks:
+    # The admin list the identities above derive from (a no-op with the gate off).
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
     # A dry run skipped the deploy, so on a fresh host agentgateway does not exist and every
     # probe below would fail on it (PR 203 Codex review): check, and stop the dry run there.
     - name: "Dry run: is agentgateway running?"
@@ -747,15 +1000,26 @@
     # Semaphore container, declares agw_verify_base_url. `select('in', ...)` keeps allowed_models
     # order so `_verify_models[0]` is the same model every run; `intersect` is a set operation
     # whose order follows per-process hashing (test_no_first_of_set_operation.py).
+    #
+    # OpenRouter models (agentgateway-openrouter) are in the list only for an identity allowed them
+    # (agw_openrouter_identities, or an admin identity with agw_openrouter_admins; the others are
+    # denied them by config.yaml), and come LAST, so `_verify_models[0]`, the model the default
+    # completion asks for, is never a paid OpenRouter one.
     - name: "Keyed probes: pick the verifying identity, its models and the gateway URL"
       ansible.builtin.set_fact:
-        _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
-        _verify_models: >-
-          {{ ((agw_client_policies | default({}))[agw_verify_client | default((agw_clients | default([]) | first) | default(''))]
-              | default({})).allowed_models
-             | default(agw_models | map(attribute='name') | list)
-             | select('in', agw_models | map(attribute='name') | list) | list }}
+        _verify_client: "{{ _vc }}"
+        _verify_models: "{{ _vm | reject('in', _orn) | list + _vm | select('in', _orn) | list }}"
         _verify_url: "{{ _agwp_base }}"
+      vars:
+        _vc: "{{ agw_verify_client | default(_verify_default) }}"
+        _orn: >-
+          {{ agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+             | map(attribute='name') | list }}
+        _vm: >-
+          {{ ((agw_client_policies | default({}))[_vc] | default({})).allowed_models
+             | default(agw_models | map(attribute='name') | list)
+             | select('in', agw_models | map(attribute='name') | list)
+             | reject('in', [] if _vc in (_agw_openrouter_identities | default([])) else _orn) | list }}
 
     - name: "Keyed probes: the identity may use at least one declared model"
       ansible.builtin.assert:
@@ -764,6 +1028,22 @@
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
+
+    - name: "Keyed probes: the identity may use a model that is not an OpenRouter one"
+      ansible.builtin.assert:
+        that: _verify_models[0] not in _orn
+        fail_msg: >-
+          {{ _verify_client }} is allowed only OpenRouter models, and the verify does not spend OpenRouter
+          tokens on its default completion; set agw_verify_client to an identity that may use a vLLM model.
+        quiet: true
+      vars:
+        _orn: >-
+          {{ agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+             | map(attribute='name') | list }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - _verify_models | length > 0
 
     - name: "An enrolled identity lists the served models"
       ansible.builtin.include_tasks: tasks/agw-probe.yml
@@ -828,6 +1108,7 @@
       when:
         - not ansible_check_mode
         - _legacy_shared_active | bool
+        - not (_legacy_key_rotated | default(false) | bool)
 
     - name: "Shared-key grace period: keep the probe's status"
       ansible.builtin.set_fact:
@@ -835,6 +1116,7 @@
       when:
         - not ansible_check_mode
         - _legacy_shared_active | bool
+        - not (_legacy_key_rotated | default(false) | bool)
 
     - name: "Require the shared key to be admitted until legacy_shared_expires"
       ansible.builtin.assert:
@@ -849,6 +1131,23 @@
       when:
         - not ansible_check_mode
         - _legacy_shared_active | bool
+        - not (_legacy_key_rotated | default(false) | bool)
+
+    # Rotation before expiry (gateway 5.1): legacy-shared is pinned to the recorded PRE-rotation
+    # fingerprint, so once the vLLM key has been rotated the gateway never enrolled the current key
+    # and the probe above would 401 although the grace period works for clients holding the old key.
+    # The old key is not held here, so admission cannot be probed; the render check still proves
+    # legacy-shared is enrolled. Prints no secret, so it is not no_log.
+    - name: "Shared-key grace period: the vLLM key was rotated, so admission is not probed"
+      ansible.builtin.debug:
+        msg: >-
+          The vLLM key was rotated during the grace period (before legacy_shared_expires,
+          {{ legacy_shared_expires }}): the pre-rotation shared key is not held, so its admission as
+          legacy-shared cannot be probed. The render check still proves legacy-shared is enrolled.
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_active | bool
+        - _legacy_key_rotated | default(false) | bool
 
     - name: "The shared key is refused once retired"
       ansible.builtin.include_tasks: tasks/agw-probe.yml
@@ -943,6 +1242,504 @@
         - _verify_client | length > 0
         - not (_verify_refused | bool)
 
+    # Opt-in (agw_verify_openrouter): ONE completion with max_tokens 8 to the first OpenRouter model
+    # the verifying identity may use, so a deploy proves the OpenRouter path only when the operator
+    # asks and pays for it. The keyed listing above already requires every allowed OpenRouter name.
+    # Names and status only: the key is a `uri` header, the response body is never printed.
+    - name: "Keyed probes: pick the OpenRouter model for the opt-in completion"
+      ansible.builtin.set_fact:
+        _verify_or_model: "{{ _vo | first | default('') }}"
+      vars:
+        _vo: >-
+          {{ _verify_models | select('in', agw_models | selectattr('provider', 'defined')
+             | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list) | list }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+
+    - name: "Require an OpenRouter model for the verifying identity when the opt-in is set"
+      ansible.builtin.assert:
+        that: _verify_or_model | length > 0
+        fail_msg: >-
+          agw_verify_openrouter is set, but {{ _verify_client }} may use no OpenRouter model: add it to
+          agw_openrouter_identities (or enable agw_openrouter_admins) or set agw_verify_client to an identity that is in it.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+
+    - name: "An enrolled identity completes one OpenRouter request (opt-in)"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [200]
+        _agwp_timeout: 120
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
+          model: "{{ _verify_or_model }}"
+          max_tokens: 8
+          messages: [{role: user, content: "Reply with one word: pong"}]
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+        - not (_verify_refused | bool)
+
+    - name: "Keyed probes: keep the OpenRouter completion's response"
+      ansible.builtin.set_fact:
+        _keyed_or_chat: "{{ _agwp_out }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+        - not (_verify_refused | bool)
+
+    - name: "Require a completion OpenRouter produced"
+      ansible.builtin.assert:
+        that:
+          - (_keyed_or_chat.status | int) == 200
+          - _keyed_or_chat.json.object == 'chat.completion'
+          - _keyed_or_chat.json.choices | length > 0
+        fail_msg: >-
+          Keyed chat completion as {{ _verify_client }} for the OpenRouter model {{ _verify_or_model }}
+          failed: HTTP {{ _keyed_or_chat.status }} {{ _keyed_or_chat.msg | default('') }}
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+        - not (_verify_refused | bool)
+
+    # ── MCP (agentgateway-mcp task 3.4) ─────────────────────────────────────────────────────────
+    # agw_mcp_enabled true: a request with no key is 401 (answered before any target is contacted), an
+    # authenticated `initialize` returns an MCP session, and `tools/list` shows at least one tool. The last
+    # is a check of its own because the validator accepts an mcpAuthorization rule that names a wrong field,
+    # which then denies every tool without a word (spike 1.1, 1.3): an empty list fails the deploy, it does
+    # not pass. agw_mcp_enabled false: a KEYED `initialize` must not be an MCP reply (keyless is 401 with MCP
+    # on or off, since the /v1 route answers any path with the key check first, so it proves nothing).
+    # Every verdict reads the BODY: a self-call 401/403 comes back as HTTP 200 with the error in a tool
+    # result, and the gateway's own rate-limit refusal is HTTP 200 with JSON-RPC error -32003 (spike 1.5,
+    # 1.7). With MCP on the identity is an admin-derived one (the only kind /mcp admits); never mcp-self. A check that cannot run reports
+    # itself unproven, and an unproven MCP check fails the deploy unless agw_verify_allow_unproven accepts it,
+    # exactly as the keyed /v1 round-trip does. Every call is the one probe path: the key is a `uri` header
+    # from this host, never any process's argv, and no key-bearing step is added to the no_log set.
+    - name: "MCP probes: pick the identity and the requests"
+      ansible.builtin.set_fact:
+        _mcp_client: >-
+          {%- set pick = agw_verify_client | default(_verify_default) -%}
+          {%- set admins = _agw_admin_identities | default([]) | map(attribute='name') | reject('equalto', 'mcp-self') | list -%}
+          {%- if agw_mcp_enabled | default(false) | bool -%}
+            {{ pick if pick in admins else (admins | first | default('')) }}
+          {%- else -%}
+            {{ pick if pick != 'mcp-self' else ((agw_identities | default(agw_clients | default([]))) | reject('equalto', 'mcp-self') | first | default('')) }}
+          {%- endif -%}
+        _mcp_headers: {Accept: "application/json, text/event-stream"}
+        _mcp_initialize:
+          jsonrpc: "2.0"
+          id: 1
+          method: initialize
+          params: {protocolVersion: "2025-03-26", capabilities: {}, clientInfo: {name: agw-verify, version: "1"}}
+        _mcp_tools_list: {jsonrpc: "2.0", id: 2, method: tools/list}
+        _mcp_unproven: false
+      when: not ansible_check_mode
+
+    - name: "MCP: a request with no key is refused before any target is contacted"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_initialize }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+
+    - name: "Require the keyless MCP refusal"
+      ansible.builtin.assert:
+        that: (_agwp_out.status | int) == 401
+        fail_msg: >-
+          Keyless POST /mcp at {{ _agwp_base }} answered {{ _agwp_out.status }}; with MCP enabled the
+          gateway must refuse a request with no key with 401 and reach no target (an mcp block with no key
+          policy answers every request).
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+
+    - name: "MCP: an enrolled identity initialises a session"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_initialize }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+
+    - name: "MCP: keep the initialize response"
+      ansible.builtin.set_fact:
+        _mcp_init: "{{ _agwp_out }}"
+        _mcp_init_refused: >-
+          {{ (_agwp_out.rpc.get('error', {}).get('code', 0) | int) == -32003
+             or ((_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+
+    - name: "Require an MCP session for an enrolled identity"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_init.status | int) == 200
+          - _mcp_init.rpc.get('result', {}).get('serverInfo') is not none
+          - "'error' not in _mcp_init.rpc"
+        fail_msg: >-
+          Authenticated MCP initialize as {{ _mcp_client }} at {{ _agwp_base }}/mcp answered HTTP
+          {{ _mcp_init.status }}{{ ' (JSON-RPC error ' ~ _mcp_init.rpc.error.get('code', '') ~ ')' if 'error' in _mcp_init.rpc else '' }};
+          an enrolled identity must get an MCP session.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+
+    - name: "MCP: an enrolled identity lists the tools"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_tools_list }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+
+    - name: "MCP: keep the tool listing"
+      ansible.builtin.set_fact:
+        _mcp_tools: "{{ _agwp_out }}"
+        _mcp_tools_refused: >-
+          {{ (_agwp_out.rpc.get('error', {}).get('code', 0) | int) == -32003
+             or ((_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+
+    - name: "Require an authorised tool to be listed"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_tools.status | int) == 200
+          - "'error' not in _mcp_tools.rpc"
+          - _mcp_tools.rpc.get('result', {}).get('tools', []) | length > 0
+        fail_msg: >-
+          MCP tools/list as {{ _mcp_client }} at {{ _agwp_base }}/mcp listed no tool (HTTP {{ _mcp_tools.status }}).
+          An authorization rule that names a wrong field denies every tool without an error, so an empty
+          listing is a failed deploy.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    # Task 4.6: one model call through the chat tool, as the admin identity that listed the tools. Body-based
+    # (a self-call refusal is HTTP 200 with the error in the result, spike 1.5): the result must not be an error
+    # and must carry a completion. Then the gateway's access log must show the /v1 request the self-call made:
+    # identity mcp-self, listener loopback, the chat path. Only the count of matching lines is kept, never a line.
+    - name: "MCP: pick the chat tool and the model"
+      ansible.builtin.set_fact:
+        _mcp_chat_tool: >-
+          {{ _mcp_tools.rpc.get('result', {}).get('tools', []) | map(attribute='name')
+             | select('search', '(^|_)chat_completions$') | first | default('') }}
+        # The model the chat call asks for is one `mcp-self` may use: its allowed_models when it declares any
+        # (agw_models order), else every declared name; never an OpenRouter one, which is billed per token and
+        # which mcp-self cannot be granted. Empty when none qualifies; the next task fails the verify by name.
+        _mcp_model: >-
+          {% set _mcp_allowed = ((agw_client_policies | default({})).get('mcp-self') or {}).get('allowed_models') or [] -%}
+          {% set _mcp_names = agw_models | map(attribute='name') | list -%}
+          {{ ((_mcp_names | select('in', _mcp_allowed) | list) if _mcp_allowed | length > 0 else _mcp_names)
+             | reject('in', agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+                      | map(attribute='name') | list) | first | default('') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "Require a model mcp-self may use for the chat call"
+      ansible.builtin.assert:
+        that: _mcp_model | length > 0
+        fail_msg: >-
+          The MCP chat call has no model to ask for: none of the declared agw_models is both allowed for mcp-self
+          (agw_client_policies.mcp-self.allowed_models, when set) and not an OpenRouter model. The chat tool
+          was not exercised, so MCP is unproven; declare a vLLM model mcp-self may use.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "Require the chat tool to be listed"
+      ansible.builtin.assert:
+        that: _mcp_chat_tool | length > 0
+        fail_msg: >-
+          MCP tools/list as {{ _mcp_client }} does not show the chat tool (an operationId ending in
+          chat_completions); the first MCP target is the gateway's own /v1 schema.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    # The log-count task below is a shell command: its two templated values are refused unless well formed, and
+    # quoted in the command besides. The engine is the one this playbook already uses (podman or docker); the
+    # clock is whatever `date` printed inside a container, which is container-controlled output.
+    - name: "Require a known container engine for the MCP log count"
+      ansible.builtin.assert:
+        that: _engine in ['podman', 'docker']
+        fail_msg: "container_engine must be podman or docker for the MCP log count; refusing before any command is built."
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "MCP: read the engine's clock before the model call"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, agentgateway-db, date, -u, "+%Y-%m-%dT%H:%M:%SZ"]
+      register: _mcp_clock
+      changed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "MCP: an enrolled identity makes one model call through the chat tool"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_timeout: 120
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+        _agwp_body:
+          jsonrpc: "2.0"
+          id: 3
+          method: tools/call
+          params:
+            name: "{{ _mcp_chat_tool }}"
+            arguments:
+              body:
+                model: "{{ _mcp_model }}"
+                max_tokens: 16
+                messages: [{role: user, content: "Reply with one word: pong"}]
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+
+    - name: "MCP: keep the model call's response"
+      ansible.builtin.set_fact:
+        _mcp_call: "{{ _agwp_out }}"
+        _mcp_call_refused: >-
+          {{ (_agwp_out.rpc.get('error', {}).get('code', 0) | int) == -32003
+             or ((_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+
+    - name: "Require a completion from the chat tool"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_call.status | int) == 200
+          - "'error' not in _mcp_call.rpc"
+          - not (_mcp_call.rpc.get('result', {}).get('isError', false) | bool)
+          - _mcp_call.rpc.get('result', {}).get('structuredContent', {}).get('choices', []) | length > 0
+        fail_msg: >-
+          The MCP chat tool call as {{ _mcp_client }} at {{ _agwp_base }}/mcp for {{ _mcp_model }} returned no
+          completion (HTTP {{ _mcp_call.status }}, tool error: {{ _mcp_call.rpc.get('result', {}).get('isError', false) }}).
+          A self-call refusal comes back as HTTP 200 with the error in the tool result.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
+    - name: "Require a well-formed engine clock before the MCP log count"
+      ansible.builtin.assert:
+        that: (_mcp_clock.stdout | trim) is match('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')
+        fail_msg: "The engine clock read for the MCP log count is not an RFC 3339 UTC time; refusing before any command is built."
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
+    # The match runs on the host and prints a count, so no log line (client addresses, paths) can reach the task
+    # output, with or without a failure: the task needs no no_log. pipefail makes a failed `logs` fail the task
+    # instead of counting zero lines. The line is written when the self-call's response completes, so allow it a
+    # moment to appear.
+    - name: "MCP: count the access-log lines of the model call's /v1 request"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          {{ _engine | quote }} logs --since {{ (_mcp_clock.stdout | trim) | quote }} agentgateway 2>&1 \
+            | awk '{ gsub(/\033\[[0-9;]*m/, "") }
+                   /listener=loopback/ && /identity="mcp-self"/ && /http\.path="\/v1\/chat\/completions"/ { n++ }
+                   END { print n + 0 }'
+      register: _mcp_log
+      changed_when: false
+      # Retries exhausted is not a failure of this task: the assert below judges the count and names it.
+      failed_when: false
+      check_mode: false
+      retries: 5
+      delay: 2
+      until: (_mcp_log_hits | int) > 0
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
+    - name: "Require the model call's /v1 request to be logged as mcp-self on the loopback listener"
+      ansible.builtin.assert:
+        that: (_mcp_log_hits | int) > 0
+        fail_msg: >-
+          No access-log line from the last minutes shows a /v1/chat/completions request on the loopback
+          listener as identity mcp-self ({{ _mcp_log_hits }} matching lines; log read exit {{ _mcp_log.rc | default('?') }}), so the MCP chat call was not
+          attributed to the internal identity. Log lines are never printed.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
+    - name: "MCP: with MCP disabled a keyed initialize is not an MCP reply"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 202, 400, 401, 403, 404, 405, 415, 422, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_initialize }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+      when:
+        - not ansible_check_mode
+        - not (agw_mcp_enabled | default(false) | bool)
+        - _mcp_client | length > 0
+
+    - name: "MCP: keep the disabled-endpoint response"
+      ansible.builtin.set_fact:
+        _mcp_off: "{{ _agwp_out }}"
+      when:
+        - not ansible_check_mode
+        - not (agw_mcp_enabled | default(false) | bool)
+        - _mcp_client | length > 0
+
+    - name: "Require /mcp not to be served while MCP is disabled"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_off.status | int) not in [200, 202]
+          - "'result' not in _mcp_off.rpc"
+        fail_msg: >-
+          Keyed POST /mcp at {{ _agwp_base }} as {{ _mcp_client }} answered HTTP {{ _mcp_off.status }} with an
+          MCP reply although agw_mcp_enabled is false; the endpoint must not be served.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - not (agw_mcp_enabled | default(false) | bool)
+        - _mcp_client | length > 0
+        - (_mcp_off.status | int) != 429
+
+    # Unproven, never passed: MCP on with no identity that may call it, or the gateway's own bucket refusing
+    # a probe; MCP off with the probe refused by that bucket. (MCP off and no identity at all is the same
+    # "not run" the keyed /v1 round-trip reports, and does not fail a gateway with no clients.)
+    - name: "MCP: record whether the checks were proven"
+      ansible.builtin.set_fact:
+        _mcp_unproven: >-
+          {{ (agw_mcp_enabled | default(false) | bool)
+               and (_mcp_client | length == 0 or (_mcp_init_refused | default(false) | bool) or (_mcp_tools_refused | default(false) | bool) or (_mcp_call_refused | default(false) | bool))
+             or (not (agw_mcp_enabled | default(false) | bool)
+               and _mcp_client | length > 0 and ((_mcp_off | default({})).get('status', 0) | int) == 429) }}
+      when: not ansible_check_mode
+
+    - name: "Refuse an unproven MCP check unless it is accepted"
+      ansible.builtin.assert:
+        that: not (_mcp_unproven | bool) or (agw_verify_allow_unproven | default(false) | bool)
+        fail_msg: >-
+          The MCP checks were not proven on this run (no identity that may call /mcp, or the gateway's own
+          request bucket refused a probe). Rerun after the window, or -e agw_verify_allow_unproven=true to
+          accept an unproven redeploy.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Report the MCP checks"
+      ansible.builtin.debug:
+        msg: >-
+          {% if ansible_check_mode %}Check mode: the MCP checks run only in a real run.
+          {% elif agw_mcp_enabled | default(false) | bool and (_mcp_unproven | bool) %}WARNING: the MCP checks were
+          NOT proven on this run (accepted by agw_verify_allow_unproven).
+          {% elif agw_mcp_enabled | default(false) | bool %}MCP: /mcp without a key is 401; as {{ _mcp_client }}
+          initialize returned a session, tools/list listed
+          {{ _mcp_tools.rpc.result.tools | map(attribute='name') | join(', ') }}, and one chat call returned a
+          completion logged as mcp-self on the loopback listener.
+          {% elif _mcp_client | length > 0 %}MCP is disabled: a keyed initialize at /mcp is not an MCP reply (HTTP
+          {{ _mcp_off.status }}).
+          {% else %}MCP is disabled; no enrolled identity, so /mcp was not probed.{% endif %}
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
@@ -958,7 +1755,9 @@
           {{ _verify_models[0] }} came back from upstream model
           {{ _keyed_chat.json.model }} at {{ agw_upstream_base_url }}
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
-          {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
+          {% if _keyed_or_chat is defined %}One OpenRouter completion for {{ _verify_or_model }}
+          answered HTTP {{ _keyed_or_chat.status }}.{% endif %}
+          {% else %}No enrolled identity (agw_identities is empty): the keyed round-trip was not
           run.{% endif %}
 
     # Last: every verify task above passed (a failure stops the play before this records).
@@ -970,7 +1769,7 @@
         _service_deploy_result:
           skipped: "{{ _deploy is not defined or _deploy is skipped }}"
           changed: "{{ (_deploy | default({})).changed | default(false) }}"
-          verified: "{{ not (_verify_refused | default(false) | bool) }}"
+          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) }}"
 
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml

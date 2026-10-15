@@ -1,0 +1,5 @@
+{
+  "type": "http",
+  "url": "https://mcp.example.invalid/mcp",
+  "headersHelper": "<helper command, set by scripts/agw-mcp-client.py>"
+}

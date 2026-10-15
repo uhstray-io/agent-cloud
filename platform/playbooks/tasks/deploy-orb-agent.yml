@@ -57,32 +57,43 @@
       register: _orb_start
       when: not ansible_check_mode
 
-    - name: "Wait for orb-agent to be running"
-      ansible.builtin.shell: |
-        {{ container_engine | default('docker') }} inspect netbox-orb-agent --format '{{ '{{' }}.State.Running{{ '}}' }}'
-      # Local-dev runs inside the Semaphore container on the rootful engine socket: no
-      # sudo there and none needed. Production escalates as before.
-      become: "{{ not (local_mode | default(false) | bool) }}"
-      register: _orb_running
-      retries: 6
-      delay: 10
-      until: _orb_running.stdout == 'true'
-      changed_when: false
-      check_mode: false
-
-    - name: "Check agent logs for vault auth"
-      ansible.builtin.shell: |
-        set -o pipefail
-        {{ container_engine | default('docker') }} logs netbox-orb-agent 2>&1 | tail -5
-      args:
-        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
-      # Local-dev runs inside the Semaphore container on the rootful engine socket: no
-      # sudo there and none needed. Production escalates as before.
-      become: "{{ not (local_mode | default(false) | bool) }}"
-      register: _orb_logs
-      changed_when: false
-      check_mode: false
-
-    - name: "Orb Agent status"
+    # The start above is skipped under --check, so on a host with no running agent (for example
+    # after a NetBox stack recreate) there is no container to inspect: the wait would burn all
+    # six retries and fail the dry run. Verification of the started container runs on a real run.
+    - name: "Report skipped orb-agent running-state verification (check mode)"
       ansible.builtin.debug:
-        var: _orb_logs.stdout_lines
+        msg: "check mode: orb-agent would be (re)started; running-state verification happens on a real run"
+      when: ansible_check_mode
+
+    - name: "Verify the started orb-agent"
+      when: not ansible_check_mode
+      block:
+        - name: "Wait for orb-agent to be running"
+          ansible.builtin.shell: |
+            {{ container_engine | default('docker') }} inspect netbox-orb-agent --format '{{ '{{' }}.State.Running{{ '}}' }}'
+          # Local-dev runs inside the Semaphore container on the rootful engine socket: no
+          # sudo there and none needed. Production escalates as before.
+          become: "{{ not (local_mode | default(false) | bool) }}"
+          register: _orb_running
+          retries: 6
+          delay: 10
+          until: _orb_running.stdout == 'true'
+          changed_when: false
+          check_mode: false
+
+        - name: "Check agent logs for vault auth"
+          ansible.builtin.shell: |
+            set -o pipefail
+            {{ container_engine | default('docker') }} logs netbox-orb-agent 2>&1 | tail -5
+          args:
+            executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
+          # Local-dev runs inside the Semaphore container on the rootful engine socket: no
+          # sudo there and none needed. Production escalates as before.
+          become: "{{ not (local_mode | default(false) | bool) }}"
+          register: _orb_logs
+          changed_when: false
+          check_mode: false
+
+        - name: "Orb Agent status"
+          ansible.builtin.debug:
+            var: _orb_logs.stdout_lines

@@ -1,0 +1,55 @@
+# Identify the declared thick-LVM backing-disk identity for private review only.
+- name: Refuse internal extra vars
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Survey PBS physical storage
+  ansible.builtin.import_playbook: survey-o11y-pbs-physical-storage.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Identify the declared thick-LVM backing-disk identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_pbs_physical_storage.py"
+  tasks:
+    - name: Identify exact declared candidate backing identity
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", identify-thick-lvm-backing-identity]
+        stdin: "{{ _physical_storage_payload }}"
+      register: _thick_lvm_candidate_selection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require exact declared candidate with reported 1024-GiB headroom and direct disk proof
+      ansible.builtin.assert:
+        that: _thick_lvm_candidate_selection.rc == 0
+        fail_msg: "The declared thick-LVM candidate lacks unique complete disk identity evidence."
+
+    - name: Keep validated candidate identity private until report
+      ansible.builtin.set_fact:
+        _thick_lvm_backing_identity: "{{ _thick_lvm_candidate_selection.stdout | from_json }}"
+      no_log: true
+
+    - name: Validate the candidate identity output shape
+      ansible.builtin.assert:
+        that:
+          - _thick_lvm_backing_identity | type_debug == 'dict'
+          - _thick_lvm_backing_identity.keys() | list | sort == ['backing_disk_serial', 'backing_disk_wwn', 'candidate_storage_id']
+          - _thick_lvm_backing_identity.candidate_storage_id is string
+          - _thick_lvm_backing_identity.candidate_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _thick_lvm_backing_identity.backing_disk_serial is string
+          - _thick_lvm_backing_identity.backing_disk_serial is match('^[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}$')
+          - _thick_lvm_backing_identity.backing_disk_wwn is none or (_thick_lvm_backing_identity.backing_disk_wwn is string and _thick_lvm_backing_identity.backing_disk_wwn is match('^[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}$'))
+        fail_msg: "The candidate identity output did not match the reviewed private shape."
+      no_log: true
+
+    - name: Report candidate storage and backing-disk identity for private review
+      ansible.builtin.debug:
+        msg: >-
+          Candidate storage ID for private review: {{ _thick_lvm_backing_identity.candidate_storage_id }};
+          backing disk serial: {{ _thick_lvm_backing_identity.backing_disk_serial }};
+          backing disk WWN: {{ _thick_lvm_backing_identity.backing_disk_wwn if _thick_lvm_backing_identity.backing_disk_wwn is not none else 'not reported' }}.

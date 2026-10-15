@@ -106,8 +106,8 @@ and why.
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | 1 | Convention |
 | 4.6 | **x3** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 3 | Test (static guard, `test_no_request_in_loop_items.py`; `test_no_log_error_redaction.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
-| 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
-| 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
+| 4.8 | **x2** — A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs (the second time the scan was already scoped, and the PR was replaced) | Data handling | 2 | CI (scan scoped to the PR's commits); pre-commit hook flags a staged literal; the fixture rule itself Convention |
+| 4.9 | **x3** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids; a plan note naming the operator's gateway key field | Data handling | 3 | Test (`test_no_site_identity.py`, the three account shapes; caught by CI both times it fired); other private values Convention |
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
@@ -129,6 +129,9 @@ and why.
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
+| 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
+| 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 1 | Convention (operator rule; no hook) |
+| 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s | Process | 1 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -162,7 +165,7 @@ and why.
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | 1 | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | 1 | Test (real evaluation, current ansible-core) |
 | 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) | Mechanism never exercised | 2 | Test (`test_manage_secrets_scope.py`) |
-| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x2** | Mechanism never exercised | 2 | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
+| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
 | 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
@@ -174,7 +177,7 @@ and why.
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
-| 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
+| 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | 1 | Convention |
 | 12.2 | Pi showed no models and OpenCode omitted its provider because a sandboxed `$HOME`/XDG hid the config | Environment visibility | 1 | Convention |
 
@@ -2665,6 +2668,8 @@ other inventory host claims as `ansible_host` or `vm_ip`, on every run, and
 
 ### 4.8 A credential-shaped test fixture was pushed, and one branch failed every PR's scan
 
+**Occurrences: 2** — 2026-09-23, 2026-10-14
+
 **What happened.** On 2026-09-23 a new BATS file for container diagnostics (PR 230) fed its
 redaction test a literal Postgres connection string carrying a user and a password. CI's all-detectors TruffleHog
 scan flagged it as an unverified Postgres credential. Replacing the literal in a later commit
@@ -2685,9 +2690,26 @@ Every CI scan is scoped to the PR's own commits.
 **Enforced by.** CI: both secret scans pass `--branch "$HEAD_SHA"` (PR 233, which made the same
 fix independently the same evening). The fixture rule itself is Convention.
 
+**Occurrence 2 — 2026-10-14.** PR 639 (`feat/agw-openrouter`, the OpenRouter models change) wrote its
+test's environment file with a literal Postgres connection URL carrying a user and a password, assigned to `AGW_DATABASE_URL`, in
+the PR's feature commit. CI's all-detectors scan flagged it (`Security Scan`, run 38653992385, head `485a2b19`), and
+by then the literal was in the branch's history, where a later commit cannot remove it and a force push is
+never used. The PR was closed and the same change, with its review fixes, went onto a clean single-commit
+branch as PR 642. Why the rule did not fire: it was Convention, and nothing in the change's brief repeated it.
+The local gate is the part to read carefully. The pre-commit hook's scan command
+(`trufflehog git file://. --since-commit HEAD --fail --no-update`, `.pre-commit-config.yaml`) DOES flag this
+literal when it is staged: reproduced on 2026-10-15 with trufflehog 3.99.2 in a scratch repository, exit 183,
+with the line taken from the PR's diff. So the commit should have been stopped locally. This record cannot say
+why it was not (a skipped hook through `SKIP_SECRET_SCAN=1`, or the commit made where the hook did not run);
+the cause was not captured at the time. Which half of the hook decides: the command is a git scan OR a
+filesystem scan, and in a checkout whose refs hold a branch with such a literal (this one, after fetching the
+PR's branch) the git half exits 183 on history it does not own, since it has no `--branch`, so the filesystem
+half decides; both halves flagged a staged literal in the scratch repository. The fixture shape is the 4.8 rule's own: assemble the string at run
+time, or carry `trufflehog:ignore` with the reason.
+
 ### 4.9 Private Discord destination IDs in a public test fixture
 
-**Occurrences: 2** — 2026-09-25, 2026-10-05
+**Occurrences: 3** — 2026-09-25, 2026-10-05, 2026-10-14
 
 **What happened.** The first PR revision copied the real guild and channel IDs
 from private site-config into a public Python test. The values are destination
@@ -2720,6 +2742,20 @@ is gone (the plays refuse an empty stored token id), the fixtures are synthetic,
 `platform/tests/test_no_site_identity.py` now fails on the three account shapes in any
 tracked file. Private values without a fixed shape (destination IDs, other usernames) stay
 convention and review.
+
+**Occurrence 3 — 2026-10-14.** A progress note in the `agentgateway-mcp` change's `tasks.md`, added by PR 638
+(`docs(plans): record 2026-10-14 night production evidence`), named the operator's gateway key field, which is
+`client_` followed by the operator's account name: the shape `test_no_site_identity.py` fails on. The test did
+its job, but only in CI: `Python core` failed on head `8307e31d` (run 38663246946) at
+`test_no_committed_file_names_a_site_account`, after 22 minutes in the job (01:00:38 to 01:22:28 UTC). A fix
+commit (`9a548e52`, which rewrites the note to name the field without the account, in two files) and a second
+full run (38665418332, green) followed. The test itself takes under a second (`python3 -m pytest
+platform/tests/test_no_site_identity.py -q`, 2 passed in 0.47 s on 2026-10-15). Why the rule did not fire: the
+failure was found by CI; whether the test had been run locally before that push, or the pre-push hook (it runs
+the suite unless `SKIP_TESTS=1`) was skipped, was not established. Records written about a live system name an
+identity by its role (the operator's gateway key), never by the field or account that spells the identity.
+The enforcement is the existing test; what this occurrence adds is that the test is cheap enough to run before
+every push of a docs change, and that the 22-minute round trip is the cost of finding it in CI.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
@@ -3210,6 +3246,8 @@ This remains a convention because `dev` intentionally has no required-check rule
 main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can bypass the
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
 
+Widened by 5.20 (2026-10-14): the same pin applies to promotions.
+
 ### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
 
 **Occurrences: 1** — 2026-10-12
@@ -3296,6 +3334,74 @@ in the worker's brief said the machine was shared, and nothing stopped the comma
 operator-private and not visible in this repository, so the only repo-visible guard is the
 proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
 5.10, 5.14.
+
+### 5.20 A promotion merged a head newer than the one its review covered (widens 5.16)
+
+**What happened.** On 2026-10-14 the `dev` to `main` promotion, PR #607, was merged through
+merge-when-green, which was given the PR's live head `4e365db4`. The review and its last note
+covered `2b58f5ce`. In between, a peer PR (#608, the Cloudflare Grafana API skip rule, with
+CodeRabbit changes requested on it) merged to `dev` at 05:11 UTC, so it reached `main` without
+the promotion's review. It changed the main-bound Apply Cloudflare Tofu playbook. That playbook
+has no schedule and was not run, so there was no production effect.
+
+**Root cause.** 5.16's rule, pin the merge to the exact reviewed head with
+`--match-head-commit FULL_HEAD_SHA`, is written for feature-to-Dev merges. The promotion merge
+passed the live head rather than the reviewed one, so the pin compared the head to itself and
+checked nothing.
+
+**The rule.** Every merge, including a `dev` to `main` promotion, passes the full SHA that the
+last review, or its last note, covered. A head newer than that SHA gets its delta reviewed
+first. Widens 5.16.
+
+**Enforced by.** Convention. The pin is an operator-side practice; nothing refuses a merge
+whose head is newer than the reviewed one when the caller passes the live head.
+
+### 5.21 A worker was told amending an unpushed commit was acceptable
+
+**Occurrences: 1** — 2026-10-14/15 (the change's working days; the hour was not recorded)
+
+**What happened.** During the `agentgateway-mcp` work the lead told a worker that amending its unpushed local
+commit was acceptable. The operator's rule for this repository's work is no amend, no rebase and no force
+push: history changes by new commits only. One local, unpushed commit was amended. This record rests on the
+lead's own account; no commit identifier was recorded, and nothing amended had been pushed.
+
+**Root cause.** The brief carried an exception the operator's rule does not have. The rule was not restated in
+the brief, and nothing checks a brief against it.
+
+**The rule.** The operator's no-amend, no-rebase, no-force rule has no exception for an unpushed commit. A
+mistake in a local commit is fixed by a new commit. A brief may not relax an operator rule; when a worker's
+situation seems to need an exception, it stops and asks the operator.
+
+**Enforced by.** Convention. The rule is stated in the operator's session instructions; `AGENTS.md` and
+`CONTRIBUTING.md` do not carry it, and `.githooks` and `.claude` contain no hook that refuses `git commit
+--amend` (searched 2026-10-15). Proposal: a PreToolUse hook refusing `git commit --amend`, `git rebase` and
+`git push --force*` for workers, outside the one secret-in-a-commit path the operator's global instructions
+define. Related: 5.10, 5.14, 5.19. Entries 5.2, 5.5 and 5.6 record amending an unpushed commit as their fix;
+the rule as given for this change does not allow it.
+
+### 5.22 The `Python core` CI job outgrew its 30-minute timeout as the suite grew
+
+**Occurrences: 1** — 2026-10-14
+
+**What happened.** On the `docs/records-2026-10-14-night` branch (PR 638), `Python core` was cancelled by
+`timeout-minutes: 30` twice: run 38650903648 (22:55:59 to 23:26:15 UTC) and run 38651137374 (00:30:59 to
+01:01:15 UTC), each at 30m16s. Each cancellation also failed the `Unit Tests` aggregate job
+with it, so the branch's next green run came only after the split. PR 641 (`ci: run the agentgateway tests in their own
+Python job`) moved the agentgateway tests into a `Python Agentgateway` job; on the next run (38665418332) the
+`Python core` job took 14m23s (01:23:53 to 01:38:16 UTC) and `Python Agentgateway` 7m54s (01:23:54 to 01:31:48).
+
+**Root cause.** Tests accumulated in one shard (the agentgateway tests are the ones PR 641 moved out), and
+nothing watched the shard's duration against the timeout. The workflow's own comment calls the timeout a backstop and says the
+parallel run keeps the job well under it; no check tests that claim.
+
+**The rule.** A CI shard that nears its timeout is split before it is cancelled: when a change adds a test
+family, look at the shard's last green duration. A timeout is a backstop, not a capacity plan.
+
+**Enforced by.** Test for the partition only: `platform/tests/test_ci_python_partition.py` keeps the shards
+complete, disjoint and mandatory (extended with 641), so a split cannot lose a test. It does not
+measure runtime: a shard growing back toward 30 minutes is caught by nothing but the cancellation itself, so
+that part is Convention. Proposal: have the workflow report each Python shard's duration against its timeout
+and warn above a fraction of it.
 
 ## 6. Working from assumptions about files
 
@@ -4439,7 +4545,7 @@ already names it.
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 
-**Occurrences: 2** — 2026-09-28, 2026-09-30
+**Occurrences: 3** — 2026-09-28, 2026-09-30, 2026-10-14
 
 **What happened.** On 2026-09-28, onboarding the internal DNS and CA VMs, every step's dry run
 was run before its real run, and five playbooks failed their dry run or were found unable to
@@ -4488,6 +4594,34 @@ with changes pending. This is a second recurrence of the class the proposed data
 would catch only in part (the plan is read, not a skipped register), so the proposal gains
 a case: a post-change assertion in a later play must be conditioned on the plan under
 `--check`.
+
+**Occurrence 3 — 2026-10-14.** Two more dry runs failed on a first-time ADDITION, the shape of occurrence 2,
+both found by the local dry run before the real run, which is what the rule asks for. (a) `Deploy agentgateway`
+under `--check` (local task 6582, as reported by the lead) read the MCP schema file from the target, where the
+file does not exist until the real run places it; fixed in commit `03e9d32f` (PR 634), which reads the schema from
+the controller's checkout instead. (b) `Deploy Caddy` under `--check` (local task 6698) asserted that every declared
+route was already loaded in the running Caddy, so the first dry run with the new `mcp` route failed on the
+addition itself; fixed in PR 644, whose dry run now reports the new routes by name and a real run still fails on
+them. Why the rule did not stop either before merge: it asks for a dry run to be executed once before a change is
+called safe, and that was done, locally, after the code was written; both defects sat in the code until then. Each
+fix carries its own tests: `test_a_dry_run_reads_the_schema_from_the_controller_when_the_target_has_none` in
+`platform/tests/test_agw_mcp_guard.py`, and in `platform/tests/test_service_caddy.bats` the four cases "dry run with
+a declared route not yet loaded passes and names it", "real run with a declared route not yet loaded fails with the
+route message", "dry run does not fail on a local metrics listener that is not loaded yet" and "real run still
+fails on a missing local metrics listener". This is the third occurrence, so `Convention` is no longer an acceptable
+status for the class: the proposal above (a data-flow rule in `test_check_mode_contract.py`) is now owed, with one
+more case it must cover: **a task that reads state the dry run is about to create, whether a file on the target or
+a loaded configuration, must read it from where it already exists (the controller's checkout, the plan) or be
+skipped under `--check`.**
+
+**Update 2026-10-15.** CodeRabbit's review of PR 644 (merged) found that the fix itself was loose in two
+ways, both closed on the closing documentation branch. The dry run's final report still said "Caddy healthy"
+for a run that deployed and verified nothing, and a route counted as loaded when its hostname appeared
+anywhere in the running config's text (an upstream dial would do). Now a dry run reports "dry run: N declared,
+M loaded, K would be added" and never claims health, and a route is loaded only when a host matcher in the
+running config's JSON carries it. Tests: in `platform/tests/test_service_caddy.bats`, "a dry run reports counts
+and names, and never claims Caddy is healthy" and "a host that only appears in an upstream is not a loaded
+route" (dry run and real run); each was mutation-checked.
 
 ### 10.19 Harden SSH's "password auth is rejected" probe could not fail
 
@@ -4845,6 +4979,8 @@ satisfied by the explanatory comment beside it.
 
 ### 11.3 Committed without running the suite, a third time
 
+**Occurrences: 2** — 2026-08-24 (recorded), 2026-10-15
+
 **What happened.** A documentation commit added a line quoting a forbidden address
 in order to prohibit it. A test scanned the whole directory for that address and
 so failed — in CI, after the push. The suite was not run between the edit and the
@@ -4877,6 +5013,28 @@ Tests` as required checks, but only for the default branch (`main`), and the liv
 through the GitHub API on 2026-10-02 is in `evaluate` mode, not enforcing. `dev` has no branch
 protection and no ruleset. The Index cell now reads `Pre-push hook`; the paragraph above is left
 as written.
+
+**Occurrence 2 — 2026-10-15.** PR #647 added the pi provider package as a new directory under
+`platform/services/agentgateway/context/clients/`. A guard in
+`platform/tests/test_agw_mcp_client_templates.py` lists that directory and expects exactly the two
+MCP client templates, so it failed in CI's `Python Agentgateway` shard on every head of the branch
+(`ba8a7c6a`, `ae60ba8e`, `ba4149ab`). Every push of that branch was made with `SKIP_TESTS=1`. The lead's
+brief told the worker to push that way and named only `test_no_site_identity.py` in its done-check.
+The lead later skipped again on the stated ground that the local suite does not cover the changed
+files, and told the operator so. That claim was never checked, and it was false: a test that scans
+the directory covered them. The merge guard held, so nothing merged on a red head, but the failure
+went unnoticed for over an hour while the lead reported the PR as waiting on CI. Fix pushed in `53441a25`: the
+guard now counts files only, and a mutation check showed a stray template still fails it.
+
+Why the rule did not fire: the pre-push hook is the gate, and `SKIP_TESTS=1` is its documented escape
+hatch, "for a reason you can defend in review". A reason built on an unchecked statement about what
+the tests cover is not defensible. That statement is an unverified claim, the same class as section 1.
+Whether the tests cover a change is cheap to check before skipping: search `platform/tests` for the
+changed path and its parent directory (`grep -rln <dir> platform/tests`), then run what it returns.
+Here `grep -rln context/clients platform/tests` returns exactly the failing test file, which runs in
+under a second. Proposal for a mechanical guard: under `SKIP_TESTS=1`, have the pre-push hook still
+run every test file that names a changed path or its parent directory. It costs seconds and closes
+the gap that the skip opens. Until that lands, a push made under the escape hatch is Convention.
 
 
 ---

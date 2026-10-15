@@ -37,6 +37,33 @@ all:
     local_home_dir: "__GENESIS_DIR__"
     ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
+    # The platform administrators (members of the Authentik platform-admins group) are ONE
+    # declared list, read by the Authentik deploy (accounts, passwords) and the agentgateway
+    # deploy (a gateway identity per entry). It is NOT set here: with no `platform_admins` the
+    # committed default in platform/playbooks/vars/platform-admins.yml applies, built from the
+    # per-user vars (wisward_*, jacob_*, stray_admin_email). Declaring it in an inventory
+    # REPLACES that default entirely; production declares its real list in site-config. The
+    # default's shape, with placeholders only:
+    #   platform_admins:
+    #   - { key: stray_admin, username: stray, name: stray, email: stray@agent-cloud.test }
+    #   - { key: agent_cloud_admin, username: agent-cloud-admin, name: "agent-cloud Admin", email: agent-cloud-admin@agent-cloud.test }
+    #   - { key: wisward, username: wisward, name: "Platform Admin", email: wisward@agent-cloud.test }
+    #   - { key: jacob, username: jacob, name: "Platform Admin 2", email: jacob@agent-cloud.test }
+    #   - { key: svc_automation, username: svc-automation, name: "Platform Service Account", type: service_account }
+    # `key` (lowercase) names the existing OpenBao field `<key>_password` and the worker env
+    # prefix, so it must equal today's name: renaming one re-keys a stored password.
+    # `type: service_account` is Authentik-only (no email, no password); `agw_identity` is
+    # optional and gateway-only. What the credential print playbook may print is NOT driven by
+    # this list: it is a committed constant (`_platform_admins_printable_keys`) next to the
+    # default, because the list is launcher-controllable. `platform_admins_exceptions` (names only, default empty)
+    # lists platform-admins members that are deliberately not in the list; the Authentik
+    # verify accepts them and fails on any other member.
+    # Accounts to DELETE are declared as ONE list of usernames, `platform_retired_accounts`
+    # (default empty, so nothing is retired). Remove the account from `platform_admins` first:
+    # the deploy refuses a name that is also active (or an exception) and the system accounts. Shape:
+    #   platform_retired_accounts: []
+    # List the usernames to retire, then run Deploy Authentik; its verify proves each one gone.
+
   children:
     # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
     # Local zone: `agent-cloud.test` — under the RFC 6761 reserved `.test` TLD
@@ -143,6 +170,12 @@ all:
             # agentgateway operator UI — the gateway runs its own OIDC login against
             # Authentik (ui.policies), so this is a plain proxy to its UI listener.
             - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
+            # agentgateway MCP endpoint (change agentgateway-mcp) — mcp_api renders the same
+            # allowlist shape for the EXACT path /mcp only (Bearer-shape 401 at the edge, the
+            # gateway's key check is the authentication; everything else, /sse included, is a
+            # 404). The upstream is the gateway's `default` listener (:4000), the one that
+            # serves /mcp; the single-label host sits under the wildcard certificate.
+            - { host: "mcp.agent-cloud.test", upstream: "agentgateway:4000", mcp_api: true }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -263,6 +296,41 @@ all:
           # into secret/services/agentgateway and reuses it on every deploy.
           agw_clients:
             - dev-local
+            - isolation-probe
+            # The MCP target's own identity (agentgateway-mcp task 4.2): the gateway presents its key
+            # to its own /v1 over the loopback listener, so a model request made through MCP is
+            # charged to it and logged as `mcp-self`. Never handed out, and refused on /mcp. Enrolled
+            # on /v1 whether or not MCP is on; keep it AFTER the person identities (the deploy's verify
+            # defaults to the first one).
+            - mcp-self
+          # isolation-probe: local probe identity for "Probe agentgateway Isolation (Dev)", a budget
+          # small enough to exhaust in two requests. Prod declares its own probe identity in site-config.
+          agw_client_policies:
+            isolation-probe:
+              tokens_per_hour: 50
+            mcp-self: { tokens_per_hour: 500000 }
+          # MCP (agentgateway-mcp): the key-gated /mcp endpoint on the default gateway. OFF by default:
+          # false renders no mcp block and no loopback gateway, and the verify asserts /mcp is not served.
+          # /mcp admits the PERSONAL ADMIN identities only (derived from platform_admins), never an
+          # agw_clients service client: the chat tool's call runs as mcp-self, so a service client on
+          # /mcp would escape its own allowedModels and hourly budget. Turning it on therefore needs
+          # agw_admin_identities_enabled: true with platform_admins declared for this host, no
+          # allowed_models on an admin identity, and agw_client_policies.mcp-self.tokens_per_hour (the
+          # aggregate cap on every model request made through MCP); the deploy refuses otherwise.
+          agw_mcp_enabled: false
+          # The hostname Caddy fronts /mcp on (the Caddy route is section 5 of the change; the gateway
+          # deploy does not read it).
+          agw_mcp_hostname: mcp.agent-cloud.test
+          # The loopback gateway's port: plain HTTP, attached to the LLM surface only, restricted to the
+          # container's own address, never published. It is where the MCP target calls /v1.
+          agw_loopback_port: 4002
+          # The MCP targets: ONLY name + schema (a .json file in
+          # platform/services/agentgateway/deployment/mcp-schemas/). Each is rendered as an OpenAPI target
+          # over this gateway's own /v1 on the loopback listener; its kind and host are not inputs and
+          # anything else is refused before the deploy renders. The first entry is the gateway's own
+          # chat-completions and model-listing tools (task 4.3).
+          agw_mcp_openapi_targets:
+            - { name: gateway, schema: agentgateway-v1.json }
           # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
           # playground lists them as saved keys. Never set in prod inventory.
           agw_plaintext_keys: true
@@ -270,7 +338,19 @@ all:
           # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
           # Prod leaves this unset (true = refuse an empty key).
           agw_upstream_requires_key: false
-
+          # OpenRouter models (change agentgateway-openrouter), OFF here: nothing below is declared
+          # until you uncomment it. It is billed per token, so a model is listed by name with its
+          # OpenRouter id and only the identities named in agw_openrouter_identities may call it
+          # (every other identity is denied it in config.yaml). Needs
+          # secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key). A local gateway
+          # cannot verify openrouter.ai's certificate: compose.local.yml points SSL_CERT_FILE at the
+          # step-ca bundle only, so use this against production-shaped inventory, not here.
+          #   agw_models:
+          #     - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+          #     - { name: or-mini, provider: openrouter, upstream_model: openai/gpt-4o-mini }
+          #   agw_openrouter_identities: [dev-local]
+          #   agw_openrouter_admins: false   # true: every admin-derived identity may call them too
+          #   agw_verify_openrouter: false   # true: the deploy spends one 8-token completion to prove it
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs

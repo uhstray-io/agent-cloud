@@ -384,10 +384,12 @@ remote_writes RED + service-graph series back into Prometheus - standing it up b
 inverts the value-to-cost order and risks the o11y stack eating the disk it's meant to watch.*
 
 **Every signal path is self-hosted, least-privilege, and free of secrets-in-labels.** Telemetry
-never leaves the platform (analytics disabled). The Grafana MCP token is OpenBao-managed and
-read-only; human metrics access goes through Caddy + Authentik, while collector-only scrape
-listeners stay on private container networks and are never published publicly. Never put secrets
-or PII in metric names or labels.
+never leaves the platform (analytics disabled). Grafana MCP credentials are OpenBao-managed and
+read-only by default; the sole exception is the explicitly authorized production `mcp-grafana`
+Editor account, whose production launcher has write tools enabled. The local MCP profile and
+separate o11y liveness watcher remain read-only. Human metrics access goes through Caddy +
+Authentik, while collector-only scrape listeners stay on private container networks and are never
+published publicly. Never put secrets or PII in metric names or labels.
 *Why: socket access for Alloy/Prometheus is the same trust surface already accepted - a deliberate,
 bounded decision keeps observability from quietly becoming an exfiltration channel.*
 

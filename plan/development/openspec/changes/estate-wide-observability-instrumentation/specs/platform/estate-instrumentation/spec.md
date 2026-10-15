@@ -253,6 +253,36 @@ When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destru
 - **THEN** the workflow verifies the exact job and VM, adds the VM only to an enabled explicit-VMID selection, preserves other job settings and members, verifies the readback, and reports a no-op on repetition; jobs selected by all, pool, or exclusion fail closed
 - **AND** backup artifact presence and an isolated restore remain required before guest disk growth or longer retention
 
+#### Scenario: Node-wide archived vzdump history remains bounded and unattributed
+- **WHEN** inspect mode reads archived `vzdump` tasks for the declared Proxmox node using the existing OpenBao token after the exact-node permission response reports integer `Sys.Audit: 1`
+- **THEN** the GET fixes `source=archive`, `typefilter=vzdump`, and a 72-hour `since`/`until` window, omits `vmid`, paginates in 50-row pages, and refuses totals above 250
+- **AND** zero, boolean, string, missing, wrong-path, or failed permission responses report `permission_unverified` and prevent the task GET
+- **AND** HTTP failures, malformed or duplicate task rows, out-of-window timestamps, invalid IDs/statuses, incomplete pages, and over-cap results report `status=unknown`, a fixed reason, and no counts or recency
+- **AND** a complete response reports only the total node-level task count, count of task IDs equal to the declared VMID, `potential_multi_vm_or_unattributed_task_count` (the count of missing/empty task IDs), latest task outcome plus coarse recency, and `job_attribution: unavailable`
+- **AND** an unknown latest task outcome reports the fixed `task_status_unavailable` unknown receipt with counts and recency unknown
+- **AND** task status follows Proxmox's normalized status: `OK` is success, `WARNINGS: N` is incomplete, exact `unexpected status` is unknown, and other nonempty status text is failure; status text remains private ([`PVE::UPID::read_status` and `normalize_status_type`](https://raw.githubusercontent.com/proxmox/pve-common/master/src/PVE/UPID.pm#L64-L97))
+- **AND** raw API responses, credentials, UPIDs, task IDs, user, node, VMID, and status text remain under `no_log` and do not enter visible or durable output
+- **AND** a missing/empty task ID does not prove multi-VM work, and the result does not attribute a task to the selected backup job, prove that job ran or included o11y, or infer backup success without a matching fresh artifact; parent 4.6e, immutable restore, and retention gates remain open
+
+#### Scenario: Recent unique node-task failure gets a bounded sanitized diagnostic
+- **WHEN** inspect mode has passed exact-node integer `Sys.Audit: 1` and complete bounded pagination of the existing 72-hour node-wide `vzdump` listing
+- **THEN** only one unique latest failed task within 26 hours may trigger a read-only task-log GET; the workflow first reads one metadata line for `total`, then reads at most the final 100 lines; `start` is a zero-based offset and returned row numbers are one-based (`n = start + 1` through `start + limit`)
+- **AND** the UPID must match the validated inventory node, exact `vzdump` type, eight-hex PID, eight- or nine-hex process start, eight-hex start time, empty or decimal VMID, supported `user@realm` or `user@realm!tokenid`, and terminal colon; malformed fields, path characters, unsupported identities, missing permission, incomplete or drifting pagination, unknown status, tied latest tasks, zero-based or otherwise invalid log numbering/schema, synthetic `no content` or `unable to open file` rows, oversized responses, or changed totals fail closed
+- **AND** exact `unexpected status` and any missing or non-string status fail closed as unknown; other nonempty Proxmox error text may select the bounded metadata/log GET but is never printed; if no unique recent failed task exists, no log GET occurs
+- **AND** output contains only fixed status/reason values and a conservative hint from `no_space`, `storage_unavailable`, `permission_denied`, `guest_lock`, `transport`, or `unknown`; sanitized history and diagnostic `set_fact` summaries stay visible while task identity, status text, raw log lines, URL, node, VMID, and exceptions remain protected and are never published
+- **AND** the diagnostic does not attribute the failed node task to a scheduled job or the o11y VM and does not satisfy backup readiness, immutability, isolated restore, capacity, or retention gates
+
+#### Scenario: Failed task identity and selected destination remain sanitized
+- **WHEN** inspect mode has a unique recent failed node task and reads its one-line metadata response
+- **THEN** the workflow parses only the exact `INFO: starting new backup job: vzdump ` prefix with `shlex.split` as a parser, never executes it, and accepts options only as `--name value` or `--name=value`, consuming a standalone option's following token literally even when it begins with `-`
+- **AND** malformed option names, empty or missing option values, short options, and positional VMIDs after options fail closed; `--job-id` and `--storage` are compared only when they are actual option names, never when they occur inside another option's value
+- **AND** the declared VMID is compared against unique exact positional VMIDs, with at most one `--job-id` and one `--storage` compared against the private declarations
+- **AND** before comparing any identity, every protected backup-list row has one well-formed unique ID and the unique selected row's stable configuration matches the selected detail; malformed or duplicate list identities, missing/duplicate selection, detail drift, malformed/duplicate options, synthetic or oversized lines, API errors, or unavailable private details return unknown/null comparisons
+- **AND** inspect mode reads `/nodes/{declared node}/storage` with the existing protected token and reports only the exact selected job destination's state and coarse free band (`zero`, `below_10_percent`, `10_to_30_percent`, `at_least_30_percent`, or `unknown`) after matching exactly one active row declaring `backup` content
+- **AND** selected destination capacity is read only after a valid, uniquely listed private job is selected; its detail must match that list row's stable configuration. Missing, ambiguous, malformed, permission-invisible, or incomplete selected destination data returns unknown; no other storage row supplies the selected destination's capacity
+- **AND** raw command text, IDs, VMID, storage ID, path, URL, UPID, log line, exact capacities, API response, and errors remain private; the free band is point-in-time evidence and does not prove a full backup fits or that `no_space` came from this destination
+- **AND** existing final-100-line failure classification remains unchanged, and backup execution, immutable copy, isolated restore, VM growth, and longer-retention gates remain open
+
 ### Requirement: Artifact selection is exact and remains private
 The read-only artifact survey MAY accept an optional private selector containing exactly the artifact volid, backend, format, creation epoch, and byte size. It SHALL match every supplied value against exactly one enumerated artifact for the declared VM and its source storage. With no selector it SHALL preserve census behavior and SHALL NOT infer a choice from recency. Malformed, missing, duplicate, stale, or changed selections SHALL fail closed with a fixed nonprivate refusal. Visible output SHALL omit artifact identifiers, selector values, raw API rows, and helper stderr. A selected result MAY expose only its census index and sanitized candidate metadata to the feasibility inspector; the original census count SHALL remain intact. Current VM configuration SHALL NOT be treated as proof of the selected archive's disk contents. Artifact selection SHALL NOT establish immutability, isolated restore, or restore success.
 
@@ -307,6 +337,14 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 - **AND** `/storage` and node storage status may silently omit rows without `Datastore.Audit` or `Datastore.AllocateSpace` on the store, so counts describe visible stores and may be incomplete; `shared=0` does not prove local physical backing or rule out thin allocation behind a SAN/LUN
 - **AND** no storage/VG name or ID, exact capacity, device path, serial, or private topology is reported; raw API responses remain hidden by `no_log`
 
+#### Scenario: Dedicated selector reports one candidate ID for private review
+- **WHEN** an operator runs the separate Dev-bound candidate-identification workflow
+- **THEN** it imports the existing GET-only physical-storage survey and reuses its protected API responses without issuing duplicate Proxmox reads
+- **AND** it reports one candidate storage ID only when visible config/VG mappings are complete, every candidate PV has complete exact disk-path lineage with reported `used=LVM`, and exactly one candidate meets the reported 1024-GiB VG-headroom threshold
+- **AND** ambiguous candidates, malformed or incomplete inventory/lineage, or insufficient headroom produce one fixed refusal without private identifiers or topology
+- **AND** the regular aggregate survey continues to emit no storage IDs, and the selector emits no node, VG, PV, path, serial, or exact capacity
+- **AND** backing media, device safety, filesystem readiness, PBS suitability/readiness, allocation, write authorization, immutable restore, VM growth, and retention remain unverified or false; the selector makes no Proxmox mutation and does not complete tasks 4.6c, 4.6d, or 4.6e
+
 #### Scenario: Candidate thick-LVM PV path lineage reports inventory facts only
 - **WHEN** the survey has a non-empty set of eligible visible thick-LVM candidates
 - **THEN** it joins candidate VG PV `name` values against the already-fetched disk inventory by exact path and reports aggregate PV count, exact direct disk-path joins, exact partition-to-parent joins, `thick_lvm_pv_path_join_unknown_used_count`, missing paths, unverifiable joins, and candidate VGs with missing or empty PV-child inventories
@@ -319,7 +357,11 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 #### Scenario: Private declared thick-LVM store reports fixed reported-headroom facts
 - **WHEN** the private declared PBS VM-image store is an LVM-thin store or an eligible thick-LVM store
 - **THEN** the existing LVM-thin snapshot-unverified path retains its current behavior, while the thick-LVM path requires an exact match between the private declared storage ID's detail config, its visible cluster config, its target-node status row, and the linked VG candidate facts
-- **AND** it reports only `declared_thick_lvm_candidate_exact_match` and fixed `declared_thick_lvm_reported_vg_headroom_passes_{256,512,1024}_gib` booleans for an eligible exact match; absent, non-eligible, or inconsistent declarations leave these facts false
+- **AND** it reports `declared_thick_lvm_candidate_in_visible_eligible_set`, `declared_thick_lvm_required_config_fields_match`, `declared_thick_lvm_optional_config_fields_match`, and `declared_thick_lvm_status_content_matches_config` as fixed-schema booleans that decompose the exact-match diagnosis without exposing identifiers
+- **AND** required `content` and optional `nodes` lists are validated for non-empty, unique, whitespace-free well-formed members, then compared as sets regardless of order; missing-versus-present `nodes`, malformed lists, and changed sets do not match
+- **AND** `type`, `vgname`, and optional `disable` retain literal value and presence comparisons
+- **AND** `declared_thick_lvm_candidate_exact_match` remains fail-closed and is true only when the declared candidate is in the visible eligible set and all three config/status comparisons match; absent or non-eligible candidates leave the diagnostic booleans false
+- **AND** it reports fixed `declared_thick_lvm_reported_vg_headroom_passes_{256,512,1024}_gib` booleans only for an eligible exact match; mismatches leave these facts false
 - **AND** fixed headroom booleans describe reported VG free extents after a hypothetical allocation retaining at least 30% of reported VG size; they do not reserve capacity or authorize allocation
 - **AND** `storage_allocation_authorized`, `thick_lvm_allocation_authorized`, `thick_lvm_backing_media_verified`, `pbs_readiness_verified`, and `write_authorized` remain false, and no store ID, VG name, path, or exact capacity is reported
 

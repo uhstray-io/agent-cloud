@@ -514,7 +514,10 @@ leaves the file, so turning a flag off would otherwise leave the rules live and 
 
 - `inference-failing`: requests are waiting while vLLM has generated no tokens for five
   minutes (`inference_queue_stalled`, DGX scrape). Health can still answer while this
-  fires. With the probe on, two more rules read the probe's samples from the
+  fires. `inference_queue_depth_high` is a warning (10 minutes) when more requests are
+  waiting than `o11y_inference_queue_waiting_warn` (default 6: twice the 7-day peak of 3 in
+  the production baseline, task 5349; an override replaces it and the alert text follows).
+  With the probe on, two more rules read the probe's samples from the
   `receiver-host` job, per `model_name`: `inference_probe_failing` when
   `inference_probe_success` stays 0 for five minutes, and `inference_probe_stale` when the
   newest `inference_probe_last_run_timestamp_seconds` is more than 15 minutes old, or no
@@ -1024,6 +1027,40 @@ without all three receipts. The only initial target is Alloy's own
 seconds. Compare CPU, memory, profile ingestion, and retained disk before
 adding another producer. Runtime sampling, restart persistence, and measured
 resource headroom still require the Dev-bound Semaphore evidence run.
+
+Before any apply, run `Verify o11y Profile Pilot Candidates (Dev)` with the exact
+reviewed `agent-cloud` commit SHA. The playbook binds that public SHA through the
+existing reviewed-checkout guard and refuses a local-mode receiver, non-Podman
+engine, or rootful Podman. It does not verify the private `site-config` revision;
+the receipt says `private_revision=unverified` and includes SHA-256 digests of both
+rendered candidate configs plus a fixed, non-secret receiver inventory projection.
+A separate reviewer with access to site-config can compare the rendered candidates
+and projection against the intended private inventory. A supplied private SHA is
+not accepted as proof of the inventory revision.
+It renders both the disabled and enabled full Alloy configs from that inventory
+into receiver tmpfs. A cached `docker.io/grafana/alloy:v1.5.1` image is required;
+the check refuses an absent or digest-unpinned local image and never pulls. It
+read-only inspects the fixed, running `o11y-alloy` receiver and requires its image
+ID to match the cached candidate image ID before calling image parity verified.
+
+Each rendered candidate runs in a short-lived, read-only container with no
+network, socket, or persistent volume, bounded CPU, memory, process count, and
+tmpfs storage. The verifier reads only the five bounded numeric
+`O11Y_SCRAPE_*` values from the running receiver's environment and passes those
+values to both candidates. Podman logging is disabled for both temporary
+containers. The enabled candidate must expose a healthy
+`pyroscope.scrape.alloy_self_profile` component through Alloy's local component
+API; a listening HTTP port alone is not accepted. The disabled candidate must
+show the rendered config's existing `prometheus.scrape.local_containers`
+component and no profile component through that same API. The receipt also
+records that the enabled candidate contains only the fixed CPU self-profile
+target and profile type set.
+Both temporary containers must be absent after checked cleanup; otherwise the
+preflight reports `cleanup_failed`. This proves public-revision-bound rendering,
+candidate config digests, image parity, and isolated config/component loading. It
+does not prove reachability of the live Pyroscope backend, delivery, persistent
+storage across restart, or production sampling. Ansible check mode reports
+`check_mode_unverified` and skips rendering/runtime validation.
 
 ## Receiver disk warning and backup readiness
 

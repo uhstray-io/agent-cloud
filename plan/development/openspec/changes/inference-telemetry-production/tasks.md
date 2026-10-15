@@ -3,7 +3,7 @@
 ## 0. Branch and inventory
 - [x] 0.1 Feature branch from `dev`: `feat/inference-telemetry-production`. Pull requests
       only when Joe asks for them (repo rule)
-- [ ] 0.2 Read-only inventory through Semaphore: confirm no o11y containers run on any
+- [x] 0.2 Read-only inventory through Semaphore: confirm no o11y containers run on any
       production host today; record the result in `design.md` Context
       2026-10-02 rescope: PARTIAL — tasks 1105/1134 found no `o11y-*` on every reachable host;
       `grafanapodman` retired by the operator 2026-09-26 (site-config#33). `nemoclaw`,
@@ -24,6 +24,11 @@
       2026-10-13: investigation so far (task ids as reported by the coordinator): the nocodb,
       nemoclaw and openhands VMs were network-unreachable from the controller and from Caddy
       (tasks 4857-4862). The operator's decision on their VM state is pending. Not ticked.
+      2026-10-14: ticked. Operator decision 2026-10-13: the nocodb, nemoclaw and openhands VMs
+      are RETIRED, which closes the inventory (they were unreachable in tasks 4857-4862). Open
+      and separate: root `CLAUDE.md` still lists OpenHands as deployed at `canvas.uhstray.io`,
+      and the Caddy route for canvas is still declared and live; removing the route, the
+      inventory entries and those docs is its own step.
 - [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
@@ -100,7 +105,7 @@
       defaults are `O11Y_PROM_RETENTION` 15d (`templates/env.j2:26`) and `O11Y_LOKI_RETENTION`
       7d (`templates/env.j2:29`), and compose reads both (`compose.yml:43`, `compose.yml:67`).
       The Loki and Grafana VM-address binds rest on site-config #24/#36, not re-read here.
-- [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
+- [x] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
       no data) and `/api/datasources/uid/*/health` (Grafana validates the watcher's
@@ -117,6 +122,15 @@
       because it requires a failure category (`diagnose-o11y-grafana-auth.yml:85-97`). Next: the
       operator attempts a Grafana sign-in and, if it fails, reruns the diagnostic inside the window.
       Not ticked.
+      2026-10-14: half of the incident's phase 3 acceptance is met: the operator confirmed
+      Grafana's Authentik sign-in on 2026-10-09 (recorded in `estate-wide-observability-instrumentation`
+      tasks.md 1.1). The other half, the operator confirming direct Authentik sign-in, is outstanding
+      (O11Y-GRAFANA-AUTH-INCIDENT.md stays PROPOSED). Manual receipt only. Not ticked.
+      2026-10-14 23:23 EDT (reported by the operator; manual receipt, no Semaphore task): direct
+      Grafana sign-in works. The incident's phase 3 acceptance is now fully met: Grafana's
+      Authentik sign-in (2026-10-09) and direct sign-in (2026-10-14). The root cause was never
+      identified and no automated OAuth validation is claimed. Ticked; the incident record is
+      RESOLVED (O11Y-GRAFANA-AUTH-INCIDENT.md).
 - [x] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661
@@ -209,7 +223,7 @@
       docs/HARDWARE.md (PR #29) records 451 spark-1 and 131 spark-2 `service=vllm`,
       `cluster=dgx-spark` entries after the paired restart. The GPU exporter is deliberately
       not scraped.
-- [ ] 2.5 Fault drill, encoded: `o11y-fault-drill.yml -e drill=exporter` stops one node
+- [x] 2.5 Fault drill, encoded: `o11y-fault-drill.yml -e drill=exporter` stops one node
       exporter, waits twelve minutes (longer than the alert's five-minute pending window
       plus scrape and evaluation delay), asserts the target is `up == 0` and the
       `telemetry-missing` rule is firing in Grafana, then restores the exporter in an
@@ -261,13 +275,41 @@
       `ansible_user`) and the `o11y_fault_drill_exporters` map; dgx-spark applies
       `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real
       run in the agreed window and its evidence recorded here. Left unticked.
-- [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
+      2026-10-14 evening (prerequisites done; reported by the dgx-spark session): dgx-spark
+      drill access applied from its branch 2026-10-14 16:52 EDT, then dgx-spark PR #32 merged
+      as `51faf88` (17:18 EDT): account
+      `o11y-drill` on both nodes, key-only, sshd reachable from the Semaphore host only, and
+      polkit limited to starting and stopping `node-exporter.service`. site-config #74 merged
+      as `433aa4f5` (the `dgx_drill_svc` group and `o11y_fault_drill_exporters`); the
+      inventory was synced (task output read from production Semaphore by the lead). Verify
+      Host Access cannot prove key-only login for `o11y-drill`: its first probe uses
+      Semaphore's own key and the account has no sudo, so the drill run itself is the proof.
+      o11y Fault Drill (Dev) task 5648 (check mode) refused by design without
+      `drill_window_confirmed=true` ("No fault was induced"; same source). Remaining: the
+      operator names a window outside 04:15 to 05:00 EDT, then a dry run and the real run.
+      Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): the operator named
+      the window, 17:37 EDT, outside 04:15 to 05:00. o11y Fault Drill (Dev) task 5654, check
+      mode, at dev 0e4f4ada: "check mode: drill=exporter would stop node-exporter.service on
+      spark-1 and wait for inference_target_down; nothing was changed." The real run, task
+      5655 at the same commit (`drill_node=spark-1`, `drill_window_confirmed=true`): "drill=exporter:
+      fault induced, inference_target_down (DGX Spark scrape target down) fired for node
+      spark-1; restored and verified." The real run is also the key-only login proof for the
+      o11y-drill account from the Semaphore runner (sshd admits it only from the Semaphore
+      host). Ticked: the drill induced the fault, the alert fired, the exporter was restored.
+- [x] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
       a push to the Loki port from the controller Mac is refused, proving scenario
       "Unlisted source cannot push"
       2026-10-02 rescope: PARTIAL — "All node targets up" and "Boot journal is queryable" are
       proven by the 2.4 evidence. Still missing: the DGX exporter drill (2.5). The controller Mac's refused push is recorded: dgx-spark `node-telemetry-and-placement-benchmark` task 3.1 notes its push timed out while both Sparks' pushes returned 204.
+      2026-10-14 (task output read from production Semaphore by the lead): the one missing
+      item, the DGX exporter drill, is proven by o11y Fault Drill (Dev) task 5655
+      (`inference_target_down` fired for spark-1, then restored and verified), which is the
+      evidence for scenario "Missing scrape is a telemetry failure" including the alert
+      firing. With 2.4's evidence for the other two scenarios and the recorded refused push,
+      every scenario of the gate is proven. Ticked.
 
 ## 3. Dashboards, alerts, synthetic probe
 - [x] 3.1 Import the metric-name list from dgx-spark `results/vllm-metric-names-*.txt`
@@ -525,6 +567,22 @@
       multi-day baseline would firm up the Prometheus rate. Remaining: alert thresholds from the
       baseline (operator decision on the figures), and the retention increase, still blocked
       on the estate-wide 4.6e isolated-restore receipt. Not ticked.
+      2026-10-14: the alert threshold draft is agent-cloud #610 (`inference_queue_depth_high`:
+      warn when more than 6 requests wait for 10 minutes, twice the 7-day peak of 3 waiting read
+      by Verify o11y Production Budgets (Dev) task 5349). It awaits operator review. Not
+      ticked.
+      2026-10-14: read-only Dev-bound budget task 5474 at controller `bac2e451` and receiver
+      `95554ab4` succeeded with no changed tasks. All five named data volumes still share the
+      103.7 GB guest root filesystem, with 84.1 GB available (81.15%); memory headroom is
+      85.41%. Prometheus reports 13,789 active series, 73,695,682 appended samples in 24 h,
+      1.02 GB of TSDB blocks and a 28.5 MB net block-size increase in 24 h. Loki received
+      110,843,256 bytes and 60,863 lines in 24 h. Live and declared retention still match at
+      Prometheus 15d (0B size cap), Loki 7d, and Tempo 168h. These are one-day observations,
+      not the seven-day capacity forecast or isolated-restore proof; 4.1 remains open.
+      2026-10-14: the threshold half is live. PR #610 (the `inference_queue_depth_high` queue
+      alert) was deployed by Deploy o11y (Dev) task 5525 at 11019dd9 (task output read from
+      production Semaphore by the lead). The remaining half, the retention increase, stays
+      blocked on the estate-wide 4.6e isolated-restore receipt. Not ticked.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines

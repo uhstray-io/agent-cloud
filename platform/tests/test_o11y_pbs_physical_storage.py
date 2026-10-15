@@ -13,7 +13,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
 
-from inspect_o11y_pbs_physical_storage import inspect, main, validate_node  # noqa: E402
+from inspect_o11y_pbs_physical_storage import (  # noqa: E402
+    identify_thick_lvm_backing_identity,
+    inspect,
+    main,
+    select_thick_lvm_candidate,
+    validate_node,
+)
 
 GIB = 1024**3
 
@@ -110,6 +116,15 @@ def set_thick_capacity(data, total, free):
     group["children"][0].update(size=total, free=free)
 
 
+def selectable_thick_candidate():
+    data = sample()
+    declare_thick_candidate(data)
+    total = 5 * 1024 * GIB
+    set_thick_capacity(data, total, total // 2)
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a"
+    return data
+
+
 def test_target_node_must_be_private_declared_unique_and_online():
     assert validate_node({"target_node": "private-node", "nodes": [
         {"node": "private-node", "status": "online"},
@@ -191,6 +206,10 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk": False,
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk": False,
         "storage_allocation_authorized": False,
+        "declared_thick_lvm_candidate_in_visible_eligible_set": False,
+        "declared_thick_lvm_required_config_fields_match": False,
+        "declared_thick_lvm_optional_config_fields_match": False,
+        "declared_thick_lvm_status_content_matches_config": False,
         "declared_thick_lvm_candidate_exact_match": False,
         "declared_thick_lvm_reported_vg_headroom_passes_256_gib": False,
         "declared_thick_lvm_reported_vg_headroom_passes_512_gib": False,
@@ -245,7 +264,10 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
         "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
-        "storage_allocation_authorized", "declared_thick_lvm_candidate_exact_match",
+        "storage_allocation_authorized", "declared_thick_lvm_candidate_in_visible_eligible_set",
+        "declared_thick_lvm_required_config_fields_match",
+        "declared_thick_lvm_optional_config_fields_match",
+        "declared_thick_lvm_status_content_matches_config", "declared_thick_lvm_candidate_exact_match",
         "declared_thick_lvm_reported_vg_headroom_passes_256_gib",
         "declared_thick_lvm_reported_vg_headroom_passes_512_gib",
         "declared_thick_lvm_reported_vg_headroom_passes_1024_gib", "device_selected",
@@ -374,6 +396,10 @@ def test_declared_thick_lvm_store_matches_visible_candidate_and_reports_fixed_he
     result = inspect(data)
 
     assert result["declared_thick_lvm_candidate_exact_match"] is True
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is True
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
     assert result["declared_thick_lvm_reported_vg_headroom_passes_256_gib"] is True
     assert result["declared_thick_lvm_reported_vg_headroom_passes_512_gib"] is True
     assert result["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is True
@@ -386,6 +412,105 @@ def test_declared_thick_lvm_store_matches_visible_candidate_and_reports_fixed_he
     assert "private-lvm" not in rendered
     assert "private-vg" not in rendered
     assert "/dev/private-pv" not in rendered
+
+
+def test_declared_thick_lvm_content_and_nodes_match_as_validated_sets():
+    data = sample()
+    declare_thick_candidate(data)
+    config = data["storage_config_rows"]["json"]["data"][0]
+    config.update(content="images,backup", nodes="other-node,private-node")
+    data["storage"]["json"]["data"][0]["content"] = "backup,images"
+    detail = data["storage_config"]["json"]["data"]
+    detail.update(content="backup,images", nodes="private-node,other-node")
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is True
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
+    assert result["declared_thick_lvm_candidate_exact_match"] is True
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is True
+    assert result["storage_allocation_authorized"] is False
+    assert result["thick_lvm_allocation_authorized"] is False
+    assert result["thick_lvm_backing_media_verified"] is False
+    assert result["pbs_readiness_verified"] is False
+    assert result["write_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "images,other",
+        "images,backup,images",
+        "images,,backup",
+        "images, backup",
+        "images;backup",
+        None,
+    ),
+)
+def test_declared_thick_lvm_invalid_or_changed_detail_content_fails_closed(content):
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage_config"]["json"]["data"]["content"] = content
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is False
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    (
+        "other-node",
+        "other-node,private-node,private-node",
+        "private-node,,other-node",
+        "private-node, other-node",
+        ".",
+    ),
+)
+def test_declared_thick_lvm_changed_or_malformed_detail_nodes_fail_closed(nodes):
+    data = sample()
+    declare_thick_candidate(data)
+    config = data["storage_config_rows"]["json"]["data"][0]
+    config["nodes"] = "other-node,private-node"
+    data["storage_config"]["json"]["data"]["nodes"] = nodes
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is False
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+
+
+def test_declared_thick_lvm_nodes_presence_mismatch_fails_closed():
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage_config_rows"]["json"]["data"][0]["nodes"] = "private-node"
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_optional_config_fields_match"] is False
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
 
 
 def test_unrelated_thick_lvm_headroom_cannot_pass_declared_store_gate():
@@ -419,15 +544,17 @@ def test_unrelated_thick_lvm_headroom_cannot_pass_declared_store_gate():
 
 
 @pytest.mark.parametrize(
-    "detail_override",
+    ("detail_override", "expected_required", "expected_optional"),
     (
-        {"vgname": "other-vg"},
-        {"content": "images"},
-        {"disable": 0},
-        {"nodes": "private-node"},
+        ({"vgname": "other-vg"}, False, True),
+        ({"content": "images"}, False, True),
+        ({"disable": 0}, True, False),
+        ({"nodes": "private-node"}, True, False),
     ),
 )
-def test_declared_thick_lvm_config_mismatch_never_sets_exact_or_headroom(detail_override):
+def test_declared_thick_lvm_config_mismatch_is_diagnosed_without_passing_headroom(
+    detail_override, expected_required, expected_optional
+):
     data = sample()
     declare_thick_candidate(data)
     data["storage_config"]["json"]["data"].update(detail_override)
@@ -437,12 +564,24 @@ def test_declared_thick_lvm_config_mismatch_never_sets_exact_or_headroom(detail_
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is expected_required
+    assert result["declared_thick_lvm_optional_config_fields_match"] is expected_optional
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
     assert result["declared_thick_lvm_candidate_exact_match"] is False
     assert all(
         result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
         for size in (256, 512, 1024)
     )
-    assert result["thick_lvm_allocation_authorized"] is False
+
+
+def test_declared_thick_lvm_type_mismatch_uses_existing_fail_closed_path():
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage_config"]["json"]["data"]["type"] = "lvmthin"
+
+    with pytest.raises(ValueError, match="incomplete declared storage linkage"):
+        inspect(data)
 
 
 def test_unsupported_declared_storage_detail_type_fails_closed():
@@ -464,6 +603,10 @@ def test_declared_thick_lvm_status_config_mismatch_never_sets_exact_or_headroom(
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is True
+    assert result["declared_thick_lvm_status_content_matches_config"] is False
     assert result["declared_thick_lvm_candidate_exact_match"] is False
     assert all(
         result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
@@ -482,6 +625,10 @@ def test_declared_thick_lvm_noneligible_shared_store_is_not_an_exact_candidate()
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 0
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is False
+    assert result["declared_thick_lvm_required_config_fields_match"] is False
+    assert result["declared_thick_lvm_optional_config_fields_match"] is False
+    assert result["declared_thick_lvm_status_content_matches_config"] is False
     assert result["declared_thick_lvm_candidate_exact_match"] is False
     assert all(
         result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
@@ -1300,15 +1447,287 @@ def test_cli_refusal_has_only_fixed_safe_text(monkeypatch, capsys):
 
 
 def test_cli_success_prints_no_candidate_id_or_exact_capacity(monkeypatch, capsys):
-    data = sample()
-    add_candidate(data)
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", wwn="0x5000abcd")
     monkeypatch.setattr(sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "inspect"])
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
 
     assert main() == 0
     captured = capsys.readouterr()
     assert "private-candidate" not in captured.out
+    assert "private-lvm" not in captured.out
+    assert "private-vg" not in captured.out
+    assert "SERIAL-123" not in captured.out
+    assert "0x5000abcd" not in captured.out
+    assert "/dev/" not in captured.out
     assert str(8192 * GIB) not in captured.out
+    assert captured.err == ""
+
+
+def test_candidate_selector_returns_only_the_unique_storage_id():
+    result = select_thick_lvm_candidate(selectable_thick_candidate())
+
+    assert result == {"candidate_storage_id": "private-lvm"}
+
+
+def test_candidate_selector_cli_emits_only_the_storage_id(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "select-thick-lvm-candidate"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert captured.out == '{"candidate_storage_id":"private-lvm"}\n'
+    assert "/dev/" not in captured.out
+    assert "private-node" not in captured.out
+    assert "private-vg" not in captured.out
+    assert str(5 * 1024 * GIB) not in captured.out
+    assert captured.err == ""
+
+
+def test_candidate_selector_refuses_two_eligible_stores():
+    data = selectable_thick_candidate()
+    total = 5 * 1024 * GIB
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-lvm-two", "type": "lvm", "content": "images,backup",
+        "vgname": "private-vg-two",
+    })
+    data["storage"]["json"]["data"].append({
+        "storage": "private-lvm-two", "type": "lvm", "content": "images,backup",
+        "active": 1, "shared": 0, "total": total, "used": total // 2,
+        "avail": total // 2,
+    })
+    data["lvm"]["json"]["data"]["children"].append({
+        "name": "private-vg-two", "size": total, "free": total // 2,
+        "children": [{"name": "/dev/private-disk-c", "size": total, "free": total // 2}],
+    })
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-disk-c", "size": total, "used": "LVM",
+    })
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        select_thick_lvm_candidate(data)
+
+
+def test_candidate_selector_refuses_insufficient_reported_headroom():
+    data = selectable_thick_candidate()
+    set_thick_capacity(data, 5 * 1024 * GIB, 2 * 1024 * GIB)
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        select_thick_lvm_candidate(data)
+
+
+def test_candidate_selector_refuses_incomplete_pv_lineage():
+    data = selectable_thick_candidate()
+    data["lvm"]["json"]["data"]["children"][0]["children"] = []
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        select_thick_lvm_candidate(data)
+
+
+def test_declared_backing_identity_requires_one_direct_lvm_pv_and_reports_optional_wwn():
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk.update(serial="SERIAL-123", wwn="0x5000abcd")
+
+    result = identify_thick_lvm_backing_identity(data)
+
+    assert result == {
+        "candidate_storage_id": "private-lvm",
+        "backing_disk_serial": "SERIAL-123",
+        "backing_disk_wwn": "0x5000abcd",
+    }
+    disk.pop("wwn")
+    assert identify_thick_lvm_backing_identity(data)["backing_disk_wwn"] is None
+    sanitized = inspect(data)
+    assert sanitized["thick_lvm_backing_media_verified"] is False
+    assert sanitized["thick_lvm_allocation_authorized"] is False
+    assert sanitized["device_safety_verified"] is False
+    assert sanitized["write_authorized"] is False
+    assert "SERIAL-123" not in json.dumps(sanitized)
+    assert "0x5000abcd" not in json.dumps(sanitized)
+
+
+def test_declared_backing_identity_accepts_direct_physical_disk_path():
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk.update(devpath="/dev/sda", serial="SERIAL-123", model="ST8000NM", vendor="ATA")
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/sda"
+
+    assert identify_thick_lvm_backing_identity(data)["backing_disk_serial"] == "SERIAL-123"
+
+
+@pytest.mark.parametrize(
+    ("devpath", "model", "vendor"),
+    (
+        ("/dev/vda", None, None),
+        ("/dev/private-disk-a", "QEMU HARDDISK", None),
+        ("/dev/private-disk-a", "VIRTIO Block Device", None),
+        ("/dev/private-disk-a", None, "VMware, Inc."),
+        ("/dev/private-disk-a", 123, None),
+        ("/dev/private-disk-a", None, ["vendor"]),
+    ),
+)
+def test_declared_backing_identity_refuses_virtual_or_malformed_disk_classification(devpath, model, vendor):
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk.update(serial="SERIAL-123", model=model, vendor=vendor, type="unknown")
+    disk["devpath"] = devpath
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = devpath
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+
+@pytest.mark.parametrize("serial", (None, "", "   ", "bad\nserial", 123))
+def test_declared_backing_identity_refuses_missing_blank_or_malformed_serial(serial):
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    if serial is None:
+        disk.pop("serial", None)
+    else:
+        disk["serial"] = serial
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+
+def test_declared_backing_identity_refuses_duplicate_serial():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0]["serial"] = "SERIAL-123"
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-other", "size": GIB, "serial": "serial-123",
+    })
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+
+def test_declared_backing_identity_refuses_malformed_or_duplicate_wwn():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", wwn="bad\nwwn")
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+    data["disks"]["json"]["data"][0]["wwn"] = "0x5000abcd"
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-other", "size": GIB, "wwn": "0X5000ABCD",
+    })
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+
+@pytest.mark.parametrize("disk_change", ("partition", "unknown_use"))
+def test_declared_backing_identity_refuses_partition_or_unknown_disk_use(disk_change):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0]["serial"] = "SERIAL-123"
+    if disk_change == "partition":
+        data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a1"
+    else:
+        data["disks"]["json"]["data"][0].pop("used")
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+
+@pytest.mark.parametrize("invalid_proof", ("config_mismatch", "headroom", "multiple_pvs"))
+def test_declared_backing_identity_refuses_inexact_or_nonunique_proof(invalid_proof):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0]["serial"] = "SERIAL-123"
+    if invalid_proof == "config_mismatch":
+        data["storage_config"]["json"]["data"]["content"] = "images"
+    elif invalid_proof == "headroom":
+        set_thick_capacity(data, 5 * 1024 * GIB, 2 * 1024 * GIB)
+    else:
+        data["lvm"]["json"]["data"]["children"][0]["children"].append({
+            "name": "/dev/private-disk-b", "size": GIB, "free": 0,
+        })
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+
+def test_declared_backing_identity_cli_reports_only_the_validated_private_shape(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", wwn="0x5000abcd")
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "identify-thick-lvm-backing-identity"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        '{"candidate_storage_id":"private-lvm","backing_disk_serial":"SERIAL-123",'
+        '"backing_disk_wwn":"0x5000abcd"}\n'
+    )
+    assert "/dev/" not in captured.out
+    assert "private-vg" not in captured.out
+    assert captured.err == ""
+
+
+def test_declared_backing_identity_cli_refusal_is_fixed_and_sanitized(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="private-serial", wwn="private-wwn")
+    data["disks"]["json"]["data"][0].pop("serial")
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "identify-thick-lvm-backing-identity"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == (
+        '{"refusal":"No unique thick-LVM storage candidate with complete visible mapping '
+        'and lineage was identified."}\n'
+    )
+    assert "private-serial" not in captured.out
+    assert "private-wwn" not in captured.out
+    assert "/dev/" not in captured.out
+    assert captured.err == ""
+
+
+def test_declared_backing_identity_cli_refuses_virtual_disk_without_disclosing_metadata(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk.update(
+        devpath="/dev/vda", serial="private-serial", wwn="private-wwn", model="QEMU HARDDISK"
+    )
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/vda"
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "identify-thick-lvm-backing-identity"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == (
+        '{"refusal":"No unique thick-LVM storage candidate with complete visible mapping '
+        'and lineage was identified."}\n'
+    )
+    for private_value in ("/dev/vda", "private-serial", "private-wwn", "QEMU HARDDISK"):
+        assert private_value not in captured.out
+    assert captured.err == ""
+
+
+def test_candidate_selector_cli_refusal_hides_malformed_private_data(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    data["storage_config_rows"]["status"] = 403
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "select-thick-lvm-candidate"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == (
+        '{"refusal":"No unique thick-LVM storage candidate with complete visible mapping '
+        'and lineage was identified."}\n'
+    )
+    assert "private-" not in captured.out
+    assert "/dev/" not in captured.out
     assert captured.err == ""
 
 
@@ -1388,10 +1807,16 @@ def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():
         task for task in tasks
         if task.get("name") == "Build fixed aggregate physical and virtual-disk capacity receipt"
     )
-    assert "declared_storage_id" in str(inspection)
-    assert "target_node" in str(inspection)
-    assert "_validated_target_node" in str(inspection)
+    assert inspection["ansible.builtin.command"]["stdin"] == "{{ _physical_storage_payload }}"
     assert inspection.get("no_log") is True
+    payload = next(
+        task for task in tasks
+        if task.get("name") == "Assemble protected physical-storage inspection payload"
+    )
+    assert "declared_storage_id" in str(payload)
+    assert "target_node" in str(payload)
+    assert "_validated_target_node" in str(payload)
+    assert payload.get("no_log") is True
     assert all("{{ _target_node" not in str(task) for task in api_reads)
 
 
@@ -1399,6 +1824,97 @@ def test_semaphore_template_requires_exact_sha_and_has_no_node_input():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(item for item in templates if item.get("name") == "Survey o11y PBS Physical Storage (Dev)")
     assert template["playbook"] == "platform/playbooks/survey-o11y-pbs-physical-storage.yml"
+    assert template["repository"] == "agent-cloud dev"
+    vars_by_name = {item["name"]: item for item in template["survey_vars"]}
+    assert vars_by_name["expected_repository_sha"]["required"] is True
+    assert len(vars_by_name) == 1
+
+
+def test_candidate_workflow_still_selects_candidate_and_reports_only_storage_id():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-pbs-storage-candidate.yml").read_text())
+    assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    survey_import = plays[1]
+    assert survey_import["ansible.builtin.import_playbook"] == "survey-o11y-pbs-physical-storage.yml"
+    assert survey_import["vars"]["_extra_var_guard_nested"] is True
+    play = plays[2]
+    assert play["hosts"] == "localhost"
+    assert not any("ansible.builtin.uri" in task for task in play["tasks"])
+    selector = next(
+        task for task in play["tasks"]
+        if task.get("name") == "Select candidate from the protected survey responses"
+    )
+    command = selector["ansible.builtin.command"]
+    assert command["argv"][-1] == "select-thick-lvm-candidate"
+    assert command["stdin"] == "{{ _physical_storage_payload }}"
+    assert selector["no_log"] is True
+    assert selector["changed_when"] is False
+    assert selector["check_mode"] is False
+    assert selector["failed_when"] is False
+    refusal = next(
+        task for task in play["tasks"]
+        if task.get("name", "").startswith("Require one complete candidate")
+    )
+    assert refusal["ansible.builtin.assert"]["that"] == "_thick_lvm_candidate_selection.rc == 0"
+    assert "{{" not in refusal["ansible.builtin.assert"]["fail_msg"]
+    report = next(
+        task for task in play["tasks"]
+        if task.get("name", "").startswith("Report the candidate storage ID")
+    )
+    report_message = report["ansible.builtin.debug"]["msg"]
+    assert "candidate_storage_id" in report_message
+    assert "serial" not in report_message.lower()
+    assert "wwn" not in report_message.lower()
+    assert "node" not in report_message.lower()
+
+
+def test_backing_identity_workflow_reuses_get_only_survey_and_protects_output():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/identify-o11y-pbs-backing-identity.yml").read_text())
+    assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    survey_import = plays[1]
+    assert survey_import["ansible.builtin.import_playbook"] == "survey-o11y-pbs-physical-storage.yml"
+    assert survey_import["vars"]["_extra_var_guard_nested"] is True
+    play = plays[2]
+    assert play["hosts"] == "localhost"
+    assert not any("ansible.builtin.uri" in task for task in play["tasks"])
+    selector = next(
+        task for task in play["tasks"]
+        if task.get("name") == "Identify exact declared candidate backing identity"
+    )
+    command = selector["ansible.builtin.command"]
+    assert command["argv"][-1] == "identify-thick-lvm-backing-identity"
+    assert command["stdin"] == "{{ _physical_storage_payload }}"
+    assert selector["no_log"] is True
+    assert selector["changed_when"] is False
+    assert selector["check_mode"] is False
+    assert selector["failed_when"] is False
+    report = next(
+        task for task in play["tasks"]
+        if task.get("name", "").startswith("Report candidate storage and backing-disk identity")
+    )
+    assert "backing_disk_serial" in report["ansible.builtin.debug"]["msg"]
+    assert "not reported" in report["ansible.builtin.debug"]["msg"]
+    shape = next(task for task in play["tasks"] if task.get("name") == "Validate the candidate identity output shape")
+    assert shape.get("no_log") is True
+    assert "backing_disk_wwn" in str(shape)
+
+
+def test_candidate_semaphore_template_is_dev_bound_and_accepts_only_reviewed_sha():
+    templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    template = next(
+        item for item in templates
+        if item.get("name") == "Identify o11y PBS Storage Candidate (Dev)"
+    )
+    assert template["playbook"] == "platform/playbooks/survey-o11y-pbs-storage-candidate.yml"
+    assert template["repository"] == "agent-cloud dev"
+    vars_by_name = {item["name"]: item for item in template["survey_vars"]}
+    assert vars_by_name["expected_repository_sha"]["required"] is True
+    assert len(vars_by_name) == 1
+
+
+def test_backing_identity_template_is_separate_dev_bound_and_accepts_only_reviewed_sha():
+    templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    template = next(item for item in templates if item.get("name") == "Identify o11y PBS Backing Disk Identity (Dev)")
+    assert template["playbook"] == "platform/playbooks/identify-o11y-pbs-backing-identity.yml"
     assert template["repository"] == "agent-cloud dev"
     vars_by_name = {item["name"]: item for item in template["survey_vars"]}
     assert vars_by_name["expected_repository_sha"]["required"] is True

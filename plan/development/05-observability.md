@@ -68,13 +68,120 @@ gates.
 > receipts above are recorded.
 
 Pyroscope is private on the o11y network with a persistent named volume and a
-seven-day initial retention policy. Its Alloy self-profile pilot is disabled
-unless private inventory explicitly enables it after the pinned Alloy config,
-target reachability, privacy, and VM headroom are verified. The initial pilot
-uses only Alloy's own pprof endpoint at `alloy:12345` under `service_name=o11y/alloy`
-and a 60-second scrape interval. Record the before/after CPU, memory, profile
-ingestion, and retained-disk measurements before adding another producer. A
-normal deploy preserves this volume and every existing telemetry volume.
+seven-day initial retention policy. Alloy profiling remains disabled. A shared
+early guard in `deploy-o11y.yml` and `clean-deploy-o11y.yml` refuses an enabled
+pilot or profile-operation selector before either broad workflow mutates files,
+containers, or volumes. The existing deploy-time receipt-ID check validates only
+numeric references; it does not authenticate private inventory provenance or
+prove successful config, privacy, or resource-gate outcomes. Do not enable
+profiling through either broad workflow.
+
+The candidate verifier binds the public code revision but reports
+`private_revision=unverified`; that result is not private inventory provenance.
+The Dev-bound `Survey o11y Profile Pilot Inventory Provenance` template compares
+the exact Semaphore `production` static-YAML bytes with
+`inventory/production.yml` from a caller-supplied site-config integration branch
+and SHA. It requires the current remote branch tip to equal that SHA, binds the
+named production inventory to the uniquely named survey template and the
+`agent-cloud dev` repository, accepts only a regular private inventory file,
+parses both YAML documents with duplicate-key rejection, and emits only fixed
+status/reason plus the reviewed public/private SHAs. API reads use OpenBao-sourced
+credentials; the private deploy key and clone are removed in an unconditional
+cleanup block. Dev-bound inventory provenance task 5818 later matched these
+exact private inventory bytes at site-config `main` SHA
+`e3e04294442e7e88baa3ca6ff233572f31eacdd4`.
+
+The dedicated Dev-bound **Accept o11y Profile Pilot (Dev)** operation reruns the
+bounded candidate verifier and current budget verifier, checks the current
+private inventory against its reviewed site-config branch/SHA in the same run,
+and requires the deployed receiver checkout to match an explicit revision. It
+refuses an enabled inventory switch, a non-baseline rendered config, a mismatched
+or writable Alloy config bind mount, an unhealthy receiver set, or less than
+30% guest-root free space / 25% memory headroom. It snapshots every `o11y-*`
+container identity and mount plus all rootless Podman named-volume metadata.
+The helper writes the temporary enabled config through the existing
+`config.alloy` inode, POSTs Alloy's `/-/reload` endpoint from inside the Alloy
+container, checks the profile component, and queries Pyroscope for
+`service_name="o11y/alloy"`. SIGTERM and SIGINT are recorded without raising so
+the cleanup can restore the disabled config through that same inode, reload
+Alloy, verify the profile component is absent, query Pyroscope again with the
+same activation boundary, and require a positive timeline sample at or after
+that boundary. After cleanup, a pending signal produces a sanitized failed
+receipt. SIGKILL or host power loss can still stop the process before cleanup;
+the operation does not protect against those events. The receipt reports
+`post_disable_query=observed`; this proves a post-disable query result, not disk
+durability across a Pyroscope restart. It compares the container and volume
+snapshots, emits only fixed status/reason, bounded service identity, and
+revision/config hashes, and does not change retention or restart/recreate a
+receiver container.
+
+The operation gate checks the fetched Semaphore metadata for exactly one
+production inventory, one acceptance template for this playbook, and the expected
+repository. It binds the template's inventory ID to that unique production record;
+the imported provenance survey separately requires `observed` with
+`exact_bytes_match` for the same fetched production inventory. The inventory ID
+stays inside the `no_log` acceptance validation and is not added to the survey's
+public receipt. This proves the configured template binding. As recorded in
+`docs/MISTAKES.md` §1.20, no trusted task-ID environment variable is available, so
+this source gate cannot prove which template launched the current invocation. It
+refuses duplicate same-playbook templates and does not require
+`SEMAPHORE_TASK_ID`.
+
+**Prior receipts (2026-10-15):** Dev-bound inventory provenance task 5818
+matched the exact private inventory bytes at site-config `main` SHA
+`e3e04294442e7e88baa3ca6ff233572f31eacdd4`. Candidate task 5819 validated the
+disabled and enabled Alloy configs and bounded component loading. Current
+budget task 5821, at deployed receiver SHA
+`23cc35595ca1aa0358f409920f40a48a80a6a100`, observed 80.85% guest-root free
+space and 83.31% memory headroom. These are prior observations; the acceptance
+operation rechecks its gates, and these receipts do not authorize retention
+expansion. Dev-bound Semaphore task 5842 ran against public merge
+`c70735cc03e92842f4ed4ac13011d7f22119d5a4` and private main merge
+`b14f6cb1`; its receipt was unavailable with sampling and delivery unverified,
+restored disabled, post-disable query unverified, and reason
+`post_disable_query_not_observed`. That final reason overwrote the initial
+`profile_not_observed` failure. A separate bounded, read-only Grafana
+Pyroscope datasource-proxy query for the same profile and pilot window returned
+HTTP 200 with seven positive CPU timeline samples; this does not establish that
+the acceptance operation's initial query succeeded. The helper now reads the
+fixed internal render URL with `podman exec o11y-grafana wget -q -O -`, and
+preserves `profile_not_observed` unless initial sampling and delivery succeeded.
+Keep the pilot disabled: reviewed Dev-bound acceptance must still prove live
+sampling, delivery, and a successful post-disable query. Durable storage
+persistence across a Pyroscope restart remains a separate open gate. The only
+profile target remains Alloy's own `alloy:12345` pprof endpoint, with the
+bounded `service_name="o11y/alloy"` identity and 60-second interval.
+
+Dev-bound durability task 5880 (source `f696d208813e753bcd519fc57b001353b2d50920`)
+refused at the initial localhost assertion because the configured Semaphore
+variable group's OpenBao input names were treated as forged extra vars. It
+stopped before contacting the receiver or restarting Pyroscope, so it provides
+no durability evidence. The playbook-specific forged-name set now permits those
+three names while retaining its internal-override checks; task 2.3 remains open
+until a reviewed durability run succeeds.
+
+Dev-bound acceptance task 5854 subsequently succeeded against the exact reviewed
+receiver revision. Its fixed receipt reports `verified`,
+`sampled_delivered_restored_post_disable_query_observed`, observed sampling and
+delivery, disabled restoration, an observed post-disable query, exact private
+inventory bytes, a validated candidate, and a passed resource gate. The task ran
+from `2026-10-15T09:17:36.844212Z` through `2026-10-15T09:21:59.271931Z` UTC;
+the only profile identity is `service_name="o11y/alloy"`, CPU. This closes the
+prior live sampling/delivery/post-disable acceptance gap but does not establish
+restart durability. The Dev-bound **Prove o11y Pyroscope Restart Durability
+(Dev)** operation reads the selected successful task, its output, template, and
+repository from Semaphore and refuses unless their revision-bound receipt is
+exact. It uses that task's bounded UTC window for the same fixed CPU query,
+requires the disabled rendered config to match the live config, and queries the
+historical sample before and after restarting only `o11y-pyroscope`. It compares
+all o11y container identity/mount snapshots and all named-volume metadata and
+requires the Pyroscope container ID and `/data` volume to remain unchanged. The
+operation gives the restart a 10-second stop grace and a 45-second command
+deadline. If restart fails, it makes one bounded `podman start` recovery attempt
+with a 15-second command timeout and still emits the fixed `restart_failed`
+refusal. Recovery never counts as a durability success. The operation has no
+volume or retention mutation path. Task 2.3 stays open until a successful
+reviewed Dev-bound durability receipt records this result.
 
 Use the existing Discord contact point. Group notifications by the bounded
 service and environment context, wait 30 seconds before the first grouped
