@@ -4614,6 +4614,15 @@ more case it must cover: **a task that reads state the dry run is about to creat
 a loaded configuration, must read it from where it already exists (the controller's checkout, the plan) or be
 skipped under `--check`.**
 
+**Update 2026-10-15.** CodeRabbit's review of PR 644 (merged) found that the fix itself was loose in two
+ways, both closed on the closing documentation branch. The dry run's final report still said "Caddy healthy"
+for a run that deployed and verified nothing, and a route counted as loaded when its hostname appeared
+anywhere in the running config's text (an upstream dial would do). Now a dry run reports "dry run: N declared,
+M loaded, K would be added" and never claims health, and a route is loaded only when a host matcher in the
+running config's JSON carries it. Tests: in `platform/tests/test_service_caddy.bats`, "a dry run reports counts
+and names, and never claims Caddy is healthy" and "a host that only appears in an upstream is not a loaded
+route" (dry run and real run); each was mutation-checked.
+
 ### 10.19 Harden SSH's "password auth is rejected" probe could not fail
 
 **What happened.** `harden-ssh.yml`'s "Verify password auth is rejected" runs `ssh -o
