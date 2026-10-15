@@ -1195,17 +1195,55 @@ Local development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 
-The `Deploy o11y Journal Collector (Dev)` apply action gates the named
-`journal-collector-state` volume before it starts the collector. A missing volume
-can bootstrap only after bounded volume inventory proves no exact-name collision
-and an all-container query, including stopped containers, proves
-`o11y-journal-collector` absent. An existing pending volume can bootstrap only
-with exact project/name identity, zero consumers and mounts, effective template
-flags `NeedsChown=false` and `NeedsCopyUp=true`, and a read-only observation of
-an empty root owned by `0:0`, owner RWX, no group/other write or special bits,
-no ACL or nested mount, and no metadata ambiguity. Require at least 16 MiB free
-bytes and 128 free inodes both on GraphRoot and on the pending volume filesystem
-for this small first mount; this gate is separate from the 30% retention headroom gate.
+The `Deploy o11y Journal Collector (Dev)` workflow uses the fresh Compose
+volume `journal-collector-state-v2`, mounted at `/alloy-state` with long-syntax
+`volume.nocopy: true`. The old `journal-collector-state` volume remains intact
+for later independent forensic/disposition review. Survey, repair, verify, apply,
+and stop resolve only the v2 logical volume; no action mounts, repairs, deletes,
+or admits the legacy volume.
+
+After this playbook reaches Dev, select `stage` with the exact reviewed Dev SHA.
+The stage action uses the shared `place-monorepo.yml` task, reads back receiver
+`HEAD`, and refuses check mode. That shared task also ensures Podman/Compose and
+rootless boot prerequisites. Stage does not start or recreate containers or
+inspect, mount, or change either positions volume. Next run
+the separate read-only `survey` action. Survey never calls placement; its provider
+gate first requires the installed receiver checkout to equal
+`expected_repository_sha`, then runs the provider config parser. Run `apply` as a
+third, separate action only after reviewing survey evidence. Apply repeats the
+same pre-provider SHA gate and retains the idempotent shared placement at the exact
+reviewed SHA before its existing positions and collector start gates.
+Check mode skips provider runtime reads and reports `check_mode_unverified`; the
+`stage` action refuses check mode.
+
+First bootstrap requires the v2 volume to be absent: bounded volume inventory
+must prove no exact-name collision, and an all-container query, including stopped
+containers, must prove `o11y-journal-collector` absent. An unexpected existing
+v2 volume without a valid cursor refuses bootstrap; there is no automatic repair
+or cursorless retry. When v2 is absent, the pre-start gate checks at least 16 MiB
+free bytes and 128 free inodes on GraphRoot before Compose creates the volume.
+The volume filesystem's own counters can be checked only after a volume exists;
+pending-volume repair checks both GraphRoot and that existing volume filesystem.
+This threshold is separate from the 30% retention headroom gate.
+
+The `stage`, read-only `survey`, and `apply` actions require the installed target
+checkout to equal `expected_repository_sha` before they run the installed
+`podman-compose config` parser under `no_log`, then require its resolved journal
+service to retain the v2 volume source, `/alloy-state` destination, and
+`nocopy: true`. This is a provider-rendered configuration check. It is not proof
+that Podman applied the mount behavior; the operator must verify the actual new
+volume identity and runtime mount in the fresh Dev survey before any production
+collector start.
+
+`nocopy: true` controls only volume creation. Docker documents it as a long-syntax
+volume option in its [Compose service reference](https://docs.docker.com/reference/compose-file/services/);
+Podman's [volume documentation](https://docs.podman.io/en/latest/markdown/podman-volume-create.1.html)
+says create options do not apply to an existing
+volume. The versioned key therefore isolates the fresh start from the legacy
+state. A fresh collector start can replay only Alloy's supported
+[`max_age` window](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/)
+(configured as 15 minutes), not older journal entries. This replay boundary is a
+data limitation, not evidence of full history.
 
 Podman may omit false-valued initialization flags from JSON. The helper therefore
 uses one fixed `podman volume inspect --format` template, accepts only literal
@@ -1223,7 +1261,8 @@ initialized repair requires it on the volume filesystem. Counter changes above
 threshold do not invalidate root, child, ACL, or mount evidence, while a below-
 threshold reading refuses the repair.
 
-The separate `repair-positions` action keeps its initialized-volume behavior:
+The separate `repair-positions` action is scoped to v2 only and keeps its
+initialized-volume behavior:
 fresh evidence must prove an unused root with only safe regular direct files has
 an owner mismatch that alone blocks collector access; repair changes only root
 owner/group, reads it back, and runs the restricted write/rename/delete probe in
@@ -1242,14 +1281,11 @@ history cannot be proved from a later empty state. A converged rerun reports
 `already_correct` without another mutation.
 
 Compose `up` is the only volume creation/initialization action. The pre-apply and
-immediate pre-start `verify` gates accept `bootstrap_allowed` only for the proven
-missing-volume or safe pending-volume cases above. They also permit a bounded
-cursorless retry when a complete read-only observation proves an exact volume
-with both initialization flags false, the
-collector absent from all containers, zero consumers and mounts, safe `0:0` root
-and allowlisted layout, `positions.yml` absent, access, ACL/mount checks, and
-capacity on GraphRoot and the volume filesystem. This `ready` result authorizes
-only a start attempt; it does not prove delivery. A present invalid or unreadable
+immediate pre-start `verify` gates accept `bootstrap_allowed` only when the v2
+volume is absent and bounded inventory proves its expected name unused. They do
+not bootstrap an existing pending v2 volume and do not allow a cursorless retry.
+An existing v2 volume must pass strict identity, access, layout, and parsed-cursor
+checks before it can be started again. A present invalid or unreadable
 cursor, unknown cursor presence, or any incomplete evidence refuses. `cursor_checked`
 is true only when the safe, bounded file was read completely with stable identity
 and its contents were parsed; absent, unsafe, oversized, or unreadable files leave
@@ -1268,9 +1304,10 @@ valid journal cursor. Also require healthy status, unchanged seven receiver
 containers, and a fresh exact-target Loki receipt. An empty image destination
 may leave copy-up pending. After start, an absent cursor, a present invalid or
 unreadable cursor file, a pending temporary positions file, or any layout outside
-the allowlist refuses as incomplete state; the cursorless pre-start retry is not
-post-start acceptance. Failed-start rollback removes only the pilot container
-without `-v`. The positions helper reports `check_mode_unverified` without its
+the allowlist refuses as incomplete state. An existing v2 volume without a valid
+parsed cursor refuses before start; only a proven-missing v2 volume can bootstrap.
+Failed-start rollback removes only the pilot container without `-v`. The
+positions helper reports `check_mode_unverified` without its
 own Podman or filesystem operations; the surrounding playbook may still run
 other checks. Survey exceptions produce a bounded unavailable receipt
 with fixed reason `survey_failed`.

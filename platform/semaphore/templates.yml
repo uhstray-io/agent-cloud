@@ -86,11 +86,12 @@ templates:
         required: true
       - name: journal_collector_action
         title: "Collector action"
-        description: "Survey journal and positions metadata, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
+        description: "Stage the exact reviewed Dev checkout, survey read-only, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
         type: enum
         required: true
         default_value: survey
         values:
+          - { name: "Stage reviewed checkout", value: "stage" }
           - { name: "Survey journal paths", value: "survey" }
           - { name: "Repair positions root ownership", value: "repair-positions" }
           - { name: "Apply pilot", value: "apply" }

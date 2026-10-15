@@ -33,6 +33,10 @@ POSITIONS_HELPER = ROOT / "platform/playbooks/files/o11y-journal-positions.py"
 POSITIONS_SPEC = importlib.util.spec_from_file_location("o11y_journal_positions", POSITIONS_HELPER)
 POSITIONS = importlib.util.module_from_spec(POSITIONS_SPEC)
 POSITIONS_SPEC.loader.exec_module(POSITIONS)
+COMPOSE_HELPER = ROOT / "platform/playbooks/files/verify-o11y-journal-compose.py"
+COMPOSE_SPEC = importlib.util.spec_from_file_location("o11y_journal_compose", COMPOSE_HELPER)
+COMPOSE = importlib.util.module_from_spec(COMPOSE_SPEC)
+COMPOSE_SPEC.loader.exec_module(COMPOSE)
 
 
 def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
@@ -118,7 +122,7 @@ def _positions_state(
 def _positions_found(metadata=None, users=0):
     return {
         "status": "observed",
-        "volume_name": "o11y_journal-collector-state",
+        "volume_name": "o11y_journal-collector-state-v2",
         "mountpoint": "/private/podman/volume/_data",
         "volume_use_count": users,
         "mount_count": users,
@@ -167,10 +171,10 @@ def _flag_volume_template(volume, needs_chown="false", needs_copy_up="false"):
 
 def test_positions_template_flags_accept_omitted_json_false_and_preserve_presence():
     volume = {
-        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
+        "Name": "o11y_journal-collector-state-v2", "Driver": "local", "Scope": "local",
         "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 0,
         "NeedsCopyUp": True,
-        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"},
+        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v2"},
     }
     calls = []
 
@@ -194,8 +198,8 @@ def test_positions_template_flags_accept_omitted_json_false_and_preserve_presenc
 @pytest.mark.parametrize("raw", ["<no value>", "False", "false ", "0", "", "unknown"])
 def test_positions_template_flags_refuse_unknown_or_nonliteral_producer(raw):
     volume = {
-        "Name": "o11y_journal-collector-state", "Labels": {
-            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"
+        "Name": "o11y_journal-collector-state-v2", "Labels": {
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v2"
         },
         "NeedsChown": False, "NeedsCopyUp": True,
     }
@@ -210,8 +214,8 @@ def test_positions_template_flags_refuse_unknown_or_nonliteral_producer(raw):
 
 def test_positions_template_flags_refuse_identity_mismatch_and_bracket_race():
     volume = {
-        "Name": "o11y_journal-collector-state", "Labels": {
-            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"
+        "Name": "o11y_journal-collector-state-v2", "Labels": {
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v2"
         },
         "NeedsChown": False, "NeedsCopyUp": True,
     }
@@ -514,7 +518,7 @@ print(json.dumps(results))
 @needs_ansible
 def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_rendering():
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     apply_block = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -689,14 +693,14 @@ def test_survey_initialization_diagnostics_expose_only_type_and_real_boolean(
     field, value, expected_type, expected_value, monkeypatch
 ):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v2",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -753,7 +757,7 @@ def test_survey_initialization_diagnostics_expose_only_type_and_real_boolean(
     ]
     named_calls = [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"] and "--all" not in argv]
     assert len(named_calls) == 3
-    assert named_calls[0] == named_calls[2] == ["podman", "volume", "inspect", "o11y_journal-collector-state"]
+    assert named_calls[0] == named_calls[2] == ["podman", "volume", "inspect", "o11y_journal-collector-state-v2"]
     assert named_calls[1][3] == "--format"
     assert "PRIVATE_MARKER" not in json.dumps(report)
     assert "/private/" not in json.dumps(report)
@@ -771,14 +775,14 @@ def test_survey_named_volume_diagnostic_is_categorical_and_redacted(
     named_result, expected_outcome, expected_identity, monkeypatch
 ):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v2",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
         "MountCount": 0,
         "NeedsChown": "PRIVATE_MARKER_FIELD",
@@ -827,14 +831,14 @@ def test_survey_named_volume_diagnostic_is_categorical_and_redacted(
 
 def test_survey_named_volume_version_queries_run_only_after_exact_identity(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v2",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
         "MountCount": 0,
         "NeedsChown": "invalid",
@@ -881,12 +885,12 @@ def test_survey_named_volume_version_queries_run_only_after_exact_identity(monke
 
 def test_survey_default_discovery_has_exact_diagnostic_schema(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
+        "Name": "o11y_journal-collector-state-v2", "Driver": "local", "Scope": "local",
         "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 0,
         "NeedsChown": False, "NeedsCopyUp": True,
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
     }
     calls = []
@@ -985,14 +989,14 @@ def test_survey_flag_assertions_require_literal_booleans():
 
 def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v2",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -1040,9 +1044,15 @@ def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(mon
     ("volumes", "containers", "expected"),
     [
         ([], [], "bootstrap_allowed"),
-        ([{"Name": "o11y_journal-collector-state", "Labels": {"com.docker.compose.project": "other"}}], [], "refused"),
+        ([{"Name": "o11y_journal-collector-state", "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        }}], [], "bootstrap_allowed"),
+        ([{"Name": "o11y_journal-collector-state-v2", "Labels": {
+            "com.docker.compose.project": "other"
+        }}], [], "refused"),
         ([{"Name": "old_volume", "Labels": {
-            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v2"
         }}], [], "refused"),
         ([], [{"Names": [POSITIONS.COLLECTOR]}], "refused"),
         ([], None, "refused"),
@@ -1094,14 +1104,14 @@ def test_positions_missing_volume_requires_complete_inventory_no_collision_and_n
 )
 def test_positions_discovery_requires_boolean_initialization_flags(field, value, expected, monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v2",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -1137,14 +1147,14 @@ def test_positions_discovery_requires_boolean_initialization_flags(field, value,
 
 def test_positions_discovery_allows_repair_of_initialized_empty_volume(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v2",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -1196,14 +1206,14 @@ def test_positions_discovery_allows_repair_of_initialized_empty_volume(monkeypat
 
 def test_positions_survey_allowlist_accepts_helper_initialization_status(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v2",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v2",
         },
         "MountCount": 0,
         "NeedsChown": True,
@@ -1246,7 +1256,7 @@ def _missing_volume_found(**overrides):
     return {
         "status": "volume_missing",
         "project": "o11y",
-        "volume_name": "o11y_journal-collector-state",
+        "volume_name": "o11y_journal-collector-state-v2",
         "volume_inventory_complete": True,
         "name_collision": False,
         "collector_present": False,
@@ -1259,7 +1269,7 @@ def _empty_pending_volume_found(needs_chown=False, needs_copy_up=False, **overri
     return {
         "status": "volume_initialization_pending",
         "project": "o11y",
-        "volume_name": "o11y_journal-collector-state",
+        "volume_name": "o11y_journal-collector-state-v2",
         "mountpoint": "/private/podman/volume/_data",
         "volume_inventory_complete": True,
         "name_collision": False,
@@ -1270,11 +1280,11 @@ def _empty_pending_volume_found(needs_chown=False, needs_copy_up=False, **overri
         "needs_chown": needs_chown,
         "needs_copy_up": needs_copy_up,
         "volume": {
-            "Name": "o11y_journal-collector-state",
+            "Name": "o11y_journal-collector-state-v2",
             "CreatedAt": "2026-10-09T12:00:00Z",
             "Labels": {
                 "com.docker.compose.project": "o11y",
-                "com.docker.compose.volume": "journal-collector-state",
+                "com.docker.compose.volume": "journal-collector-state-v2",
             },
             "NeedsChown": needs_chown,
             "NeedsCopyUp": needs_copy_up,
@@ -1497,7 +1507,9 @@ def test_pending_diagnostic_is_read_only_and_sanitized(monkeypatch):
 
 
 def test_positions_bootstrap_allows_only_proven_missing_volume_without_collision_or_collector():
-    assert POSITIONS.verify(lambda: _missing_volume_found())["status"] == "bootstrap_allowed"
+    missing_volume = _missing_volume_found()
+    assert missing_volume.get("metadata") is None
+    assert POSITIONS.verify(lambda: missing_volume)["status"] == "bootstrap_allowed"
     for found in (
         _missing_volume_found(volume_inventory_complete=False),
         _missing_volume_found(name_collision=True),
@@ -1507,11 +1519,9 @@ def test_positions_bootstrap_allows_only_proven_missing_volume_without_collision
 
 
 @pytest.mark.parametrize("needs_chown,needs_copy_up", [(False, False), (True, False), (False, True), (True, True)])
-def test_positions_bootstrap_allows_empty_unique_volume_with_boolean_flags(needs_chown, needs_copy_up):
+def test_positions_bootstrap_refuses_any_preexisting_volume_state(needs_chown, needs_copy_up):
     found = _empty_pending_volume_found(needs_chown, needs_copy_up)
-    assert POSITIONS.verify(lambda: found)["status"] == (
-        "bootstrap_allowed" if (needs_chown, needs_copy_up) == (False, True) else "refused"
-    )
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
 
 
 @pytest.mark.parametrize(
@@ -2267,8 +2277,8 @@ def test_positions_post_start_refuses_partial_copy_hidden_entry_or_missing_curso
     found = _positions_found(metadata, users=1)
     found["needs_copy_up"] = True
     found["volume"] = {
-        "Name": "o11y_journal-collector-state",
-        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"},
+        "Name": "o11y_journal-collector-state-v2",
+        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v2"},
         "NeedsChown": False,
         "NeedsCopyUp": True,
     }
@@ -2279,10 +2289,10 @@ def test_positions_post_start_refuses_partial_copy_hidden_entry_or_missing_curso
 @pytest.mark.parametrize("source_matches", [True, False])
 def test_positions_discovery_verifies_live_collector_volume_source(source_matches, monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
+        "Name": "o11y_journal-collector-state-v2", "Driver": "local", "Scope": "local",
         "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 1,
         "NeedsChown": False, "NeedsCopyUp": False,
-        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"},
+        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v2"},
     }
 
     def run(argv, **_kwargs):
@@ -2369,8 +2379,8 @@ def test_positions_repair_rechecks_fresh_evidence_before_chown_and_verifies_acce
 
     assert result == {"status": "repaired", "reason": "verified"}
     assert calls == [
-        ("chown", "o11y_journal-collector-state"),
-        ("access-test", "o11y_journal-collector-state"),
+        ("chown", "o11y_journal-collector-state-v2"),
+        ("access-test", "o11y_journal-collector-state-v2"),
     ]
 
 
@@ -2512,7 +2522,7 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
     assert "_journal_positions_gate_summary.status in ['ready', 'bootstrap_allowed']" in source
     assert "_journal_positions_pre_mount_status in ['ready', 'bootstrap_allowed']" in source
     plays = yaml.safe_load(source)
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     def walk(tasks):
         for task in tasks or []:
             yield task
@@ -2538,7 +2548,7 @@ def _cursorless_prestart_found(**overrides):
     found.update({
         "project": "o11y",
         "volume": {
-            "Name": "o11y_journal-collector-state",
+            "Name": "o11y_journal-collector-state-v2",
             "Driver": "local",
             "Scope": "local",
             "Options": {},
@@ -2546,7 +2556,7 @@ def _cursorless_prestart_found(**overrides):
             "MountCount": 0,
             "Labels": {
                 "com.docker.compose.project": "o11y",
-                "com.docker.compose.volume": "journal-collector-state",
+                "com.docker.compose.volume": "journal-collector-state-v2",
             },
         },
         "needs_chown": False,
@@ -2562,14 +2572,14 @@ def _cursorless_prestart_found(**overrides):
 
 @pytest.mark.parametrize("children", [[], [{"kind": "file", "uid": 0, "gid": 0, "nlink": 1}],
     [{"kind": "dir", "uid": 0, "gid": 0, "nlink": 2}]])
-def test_positions_prestart_allows_only_observed_absent_cursor_safe_layout(children):
+def test_positions_prestart_refuses_existing_v2_state_without_cursor(children):
     found = _cursorless_prestart_found(metadata=_positions_state(
         owner=(0, 0), children=children, journal_cursor_valid=False,
         journal_cursor_presence="absent",
     ))
     result = POSITIONS.verify(lambda: found)
-    assert result["status"] == "ready"
-    assert result["reason"] == "positions_cursor_absent_prestart_retry"
+    assert result["status"] == "refused"
+    assert result["reason"] == "metadata_ambiguous"
     result = POSITIONS.verify_live(lambda: found)
     assert result["status"] == "refused"
     assert result["reason"] == "collector_mount_unverified"
@@ -3241,7 +3251,7 @@ def test_positions_access_test_uses_isolated_collector_restrictions_and_cleans_c
             return SimpleNamespace(returncode=0, stdout="[]")
         raise AssertionError("unexpected access-test command")
 
-    assert POSITIONS._access_test("o11y_journal-collector-state", run=run)
+    assert POSITIONS._access_test("o11y_journal-collector-state-v2", run=run)
     probe = calls[0]
     assert probe[probe.index("--entrypoint") + 1] == "/bin/bash"
     assert "--network" in probe and probe[probe.index("--network") + 1] == "none"
@@ -3605,16 +3615,168 @@ def test_compose_mount_is_read_only_and_state_is_separate():
     assert journal["read_only"] is True
     assert journal["bind"]["create_host_path"] is False
     assert "--storage.path=/alloy-state" in service["command"]
-    assert "journal-collector-state:/alloy-state" in service["volumes"]
-    assert "journal-collector-state" in compose["volumes"]
-    assert compose["volumes"]["journal-collector-state"]["labels"] == {
-        "com.docker.compose.volume": "journal-collector-state"
+    positions_volume = next(volume for volume in service["volumes"] if volume.get("target") == "/alloy-state")
+    assert positions_volume == {
+        "type": "volume", "source": "journal-collector-state-v2", "target": "/alloy-state",
+        "volume": {"nocopy": True},
+    }
+    assert "journal-collector-state-v2" in compose["volumes"]
+    assert compose["volumes"]["journal-collector-state-v2"]["labels"] == {
+        "com.docker.compose.volume": "journal-collector-state-v2"
     }
     assert POSITIONS.DATA_PATH == "/alloy-state"
+    assert POSITIONS.VOLUME_KEY == "journal-collector-state-v2"
     playbook_source = PLAYBOOK.read_text()
     assert "/alloy-state/.positions-live-gate." in playbook_source
     assert playbook_source.count('eq .Destination \\"/alloy-state\\"') == 2
     assert "select('search', '/var/lib/alloy|/alloy-state')" in playbook_source
+
+
+def test_resolved_compose_gate_requires_the_v2_volume_and_nocopy():
+    resolved = {
+        "services": {"journal-collector": {"volumes": [{
+            "type": "volume",
+            "source": "journal-collector-state-v2",
+            "target": "/alloy-state",
+            "volume": {"nocopy": True},
+        }]}},
+        "volumes": {"journal-collector-state-v2": {"labels": {}}},
+    }
+    assert COMPOSE.verify_config(resolved)
+    for mismatch in (
+        {**resolved, "services": {"journal-collector": {"volumes": [
+            {**resolved["services"]["journal-collector"]["volumes"][0], "source": "journal-collector-state"}
+        ]}}},
+        {**resolved, "services": {"journal-collector": {"volumes": [
+            {**resolved["services"]["journal-collector"]["volumes"][0], "volume": {"nocopy": False}}
+        ]}}},
+        {**resolved, "services": {"journal-collector": {"volumes": [
+            *resolved["services"]["journal-collector"]["volumes"],
+            resolved["services"]["journal-collector"]["volumes"][0],
+        ]}}},
+        {**resolved, "volumes": {}},
+    ):
+        assert not COMPOSE.verify_config(mismatch)
+
+
+def test_provider_config_command_output_is_redacted(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(COMPOSE_HELPER), "/tmp/deployment"])
+    monkeypatch.setattr(
+        COMPOSE.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=yaml.safe_dump({
+                "services": {"journal-collector": {"volumes": [{
+                    "type": "volume", "source": "journal-collector-state-v2",
+                    "target": "/alloy-state", "volume": {"nocopy": True},
+                }]}},
+                "volumes": {"journal-collector-state-v2": {"labels": {}}},
+                "x-private": "PRIVATE_CONFIG_MARKER",
+            }),
+        ),
+    )
+    COMPOSE.main()
+    report = capsys.readouterr().out
+    assert json.loads(report) == {"status": "verified", "reason": "provider_config_exact"}
+    assert "PRIVATE_CONFIG_MARKER" not in report
+
+
+def test_survey_and_apply_use_redacted_resolved_compose_gate():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    gate = next(play for play in plays if "Verify resolved journal Compose configuration" in play.get("name", ""))
+    revision = next(
+        index for index, task in enumerate(gate["tasks"])
+        if task.get("name") == "Read the installed receiver checkout revision before Compose configuration"
+    )
+    sha_guard = next(
+        index for index, task in enumerate(gate["tasks"])
+        if task.get("name") == "Require the installed receiver checkout to equal the reviewed SHA"
+    )
+    config = next(
+        index for index, task in enumerate(gate["tasks"])
+        if task.get("name") == "Resolve Compose configuration and verify the exact v2 no-copy mount"
+    )
+    assert revision < sha_guard < config
+    assert gate["tasks"][sha_guard]["ansible.builtin.assert"]["that"] == (
+        "_journal_provider_revision.stdout | default('') | trim == expected_repository_sha"
+    )
+    assert "no_log" not in gate["tasks"][revision]
+    assert "no_log" not in gate["tasks"][sha_guard]
+    assert "not in ['stage', 'survey', 'apply']" in gate["tasks"][0]["when"]
+    command = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Resolve Compose configuration and verify the exact v2 no-copy mount"
+    )
+    assert command["no_log"] is True
+    assert "podman-compose" not in json.dumps(command)
+
+
+def test_provider_gate_check_mode_skips_runtime_reads_and_reports_unverified():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    gate = next(play for play in plays if "Verify resolved journal Compose configuration" in play.get("name", ""))
+    check_mode_report = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Report provider configuration as unverified in check mode"
+    )
+    assert check_mode_report["when"] == "ansible_check_mode"
+    assert "check_mode_unverified" in check_mode_report["ansible.builtin.debug"]["msg"]
+    assert "configuration: verified" not in check_mode_report["ansible.builtin.debug"]["msg"]
+    sha_guard = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Require the installed receiver checkout to equal the reviewed SHA"
+    )
+    provider_assert = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Require the provider-resolved v2 no-copy mount"
+    )
+    verified_report = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Report the fixed provider configuration result"
+    )
+    assert sha_guard["when"] == "not ansible_check_mode"
+    assert provider_assert["when"] == "not ansible_check_mode"
+    assert verified_report["when"] == "not ansible_check_mode"
+    runtime_reads = {
+        "Read the installed receiver checkout revision before Compose configuration",
+        "Resolve Compose configuration and verify the exact v2 no-copy mount",
+    }
+    for task in gate["tasks"]:
+        if task.get("name") in runtime_reads:
+            assert task["when"] == "not ansible_check_mode"
+            assert task.get("check_mode") is not False
+
+
+def test_stage_places_exact_sha_without_starting_collector_or_touching_positions():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    stage = next(
+        play for play in plays
+        if play.get("name") == "Stage exact reviewed checkout for the journal collector"
+    )
+    tasks = json.dumps(stage["tasks"])
+    placement = next(
+        task for task in stage["tasks"]
+        if task.get("name") == "Place the reviewed SHA through the shared monorepo mechanism"
+    )
+    stage_assert = next(
+        task for task in stage["tasks"]
+        if task.get("name") == "Require a Dev-bound non-check-mode stage"
+    )
+    assert placement["ansible.builtin.include_tasks"] == "tasks/place-monorepo.yml"
+    assert placement["vars"]["_branch"] == "{{ expected_repository_sha }}"
+    assert "not ansible_check_mode" in stage_assert["ansible.builtin.assert"]["that"]
+    assert "journal-collector-state" not in tasks
+    assert "o11y-journal-collector" not in tasks
+    assert "podman-compose" not in tasks
+    assert "journal_collector_action | default('apply') != 'stage'" in stage["tasks"][0]["when"]
+    survey = next(play for play in plays if play.get("name") == "Survey fixed standard journal directory candidates")
+    assert "tasks/place-monorepo.yml" not in json.dumps(survey["tasks"])
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    apply_placement = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Place the reviewed monorepo on the receiver through the shared mechanism"
+    )
+    assert apply_placement["vars"]["_branch"] == "{{ expected_repository_sha }}"
 
 
 def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, capsys):
@@ -3705,11 +3867,15 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
 
     assert guard < reviewed < place < positions_gate < validate < apply < verify < stop
     assert "groups.get('o11y_svc', []) | length == 1" in source
-    assert "journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']" in source
+    assert (
+        "journal_collector_action | default('apply') in "
+        "['stage', 'survey', 'repair-positions', 'apply', 'stop']"
+    ) in source
+    assert "journal_collector_action | default('apply') != 'stage' or not ansible_check_mode" in source
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     pre_apply_gate = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Verify positions volume identity and access before apply"
@@ -4235,7 +4401,7 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
 
 def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume():
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     apply_task = next(
         task for task in apply["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -4714,6 +4880,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert variables["service_branch"]["default_value"] == "dev"
     assert variables["journal_collector_action"]["default_value"] == "survey"
     assert variables["journal_collector_action"]["values"] == [
+        {"name": "Stage reviewed checkout", "value": "stage"},
         {"name": "Survey journal paths", "value": "survey"},
         {"name": "Repair positions root ownership", "value": "repair-positions"},
         {"name": "Apply pilot", "value": "apply"},
@@ -4723,7 +4890,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
 
 def test_live_namespace_create_failure_reports_create_without_relative_cleanup(tmp_path):
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     apply_block = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -4765,7 +4932,7 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     normalized_status = status if status in {"ready", "bootstrap_allowed"} else "unavailable"
 
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     tasks = apply_play["tasks"]
     boundary = next(
         task for task in tasks

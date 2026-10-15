@@ -30,7 +30,11 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - journal-collector-state:/alloy-state
+      - type: volume
+        source: journal-collector-state-v2
+        target: /alloy-state
+        volume:
+          nocopy: true
       - ./config/journal.alloy:/etc/alloy/journal.alloy:ro
     networks:
       - o11y
@@ -42,6 +46,6 @@ services:
       start_period: 20s
 
 volumes:
-  journal-collector-state:
+  journal-collector-state-v2:
     labels:
-      com.docker.compose.volume: journal-collector-state
+      com.docker.compose.volume: journal-collector-state-v2

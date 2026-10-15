@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 IMAGE = "docker.io/grafana/alloy:v1.9.2"
 RECEIVER = "o11y-alloy"
 COLLECTOR = "o11y-journal-collector"
-VOLUME_KEY = "journal-collector-state"
+VOLUME_KEY = "journal-collector-state-v2"
 DATA_PATH = "/alloy-state"
 MAX_VOLUMES = 256
 MAX_CONTAINERS = 1024
@@ -1388,46 +1388,6 @@ def _pending_diagnostic(found):
     }
 
 
-def _cursorless_prestart_safe(found):
-    metadata = found.get("metadata")
-    volume = found.get("volume")
-    labels = volume.get("Labels") if isinstance(volume, dict) else None
-    project = found.get("project")
-    expected_name = f"{project}_{VOLUME_KEY}" if isinstance(project, str) else None
-    return (
-        found.get("status") == "observed"
-        and isinstance(volume, dict)
-        and isinstance(labels, dict)
-        and project
-        and found.get("volume_name") == expected_name
-        and volume.get("Name") == expected_name
-        and labels.get("com.docker.compose.project") == project
-        and labels.get("com.docker.compose.volume") in (None, VOLUME_KEY)
-        and volume.get("Driver") == "local"
-        and volume.get("Scope") == "local"
-        and volume.get("Options") in ({}, None)
-        and volume.get("Mountpoint") == found.get("mountpoint")
-        and type(volume.get("MountCount")) is int
-        and volume["MountCount"] == 0
-        and volume.get("Anonymous", False) is False
-        and found.get("needs_chown") is False
-        and found.get("needs_copy_up") is False
-        and found.get("collector_present") is False
-        and type(found.get("volume_use_count")) is int
-        and found["volume_use_count"] == 0
-        and type(found.get("mount_count")) is int
-        and found["mount_count"] == 0
-        and _live_safe_metadata(found, require_cursor=False)
-        and metadata.get("journal_cursor_presence") == "absent"
-        and metadata.get("journal_cursor_valid") is False
-        and isinstance(metadata.get("root", {}).get("mode"), int)
-        and metadata["root"]["mode"] & 0o700 == 0o700
-        and metadata["root"]["mode"] & (0o022 | 0o7000) == 0
-        and _access(metadata)
-        and _space_is_sufficient(found, require_storage=True)
-    )
-
-
 def _stable_metadata(metadata):
     return {key: value for key, value in metadata.items() if key not in {"free_bytes", "free_inodes"}}
 
@@ -1698,67 +1658,32 @@ def repair_positions(
 def verify(discover_fn=None):
     found = discover(read_cursor=True) if discover_fn is None else discover_fn()
     summary = _summary(found)
-    if found.get("status") in {"volume_missing", "volume_initialization_pending"}:
-        volume = found.get("volume")
-        metadata = found.get("metadata")
-        root = metadata.get("root") if isinstance(metadata, dict) else None
+    if found.get("status") == "volume_missing":
         bootstrap_safe = (
             found.get("volume_inventory_complete") is True
             and found.get("collector_present") is False
             and found.get("name_collision") is False
         )
-        if found.get("status") == "volume_initialization_pending":
-            mode = root.get("mode") if isinstance(root, dict) else None
-            bootstrap_safe = bootstrap_safe and (
-                isinstance(volume, dict)
-                and found.get("needs_chown", volume.get("NeedsChown")) is False
-                and found.get("needs_copy_up", volume.get("NeedsCopyUp")) is True
-                and found.get("volume_use_count") == 0
-                and found.get("mount_count") == 0
-                and isinstance(metadata, dict)
-                and metadata.get("status") == "observed"
-                and metadata.get("child_count") == 0
-                and metadata.get("children") == []
-                and metadata.get("acl") is False
-                and metadata.get("root_is_mount") is False
-                and metadata.get("child_mount") is False
-                and isinstance(root, dict)
-                and root.get("uid") == 0
-                and root.get("gid") == 0
-                and isinstance(mode, int)
-                and mode & 0o700 == 0o700
-                and mode & (0o022 | 0o7000) == 0
-                and _space_is_sufficient(found, require_storage=True)
-            )
-        elif found.get("status") == "volume_missing":
-            bootstrap_safe = bootstrap_safe and _space_is_sufficient(found, require_storage=True)
+        bootstrap_safe = bootstrap_safe and _space_is_sufficient(found, require_storage=True)
         if bootstrap_safe:
             return {
                 **summary,
                 "status": "bootstrap_allowed",
                 "reason": "collector_absent_and_volume_safe_to_initialize",
             }
-        if (
-            found.get("status") == "volume_initialization_pending"
-            and isinstance(volume, dict)
-            and found.get("needs_chown", volume.get("NeedsChown")) is False
-            and found.get("needs_copy_up", volume.get("NeedsCopyUp")) is True
-            and found.get("collector_present") is True
-            and found.get("volume_use_count") == 1
-            and found.get("mount_count") == 1
-        ):
-            found = {**found, "status": "observed"}
-            summary = _summary(found)
+    if (
+        found.get("status") == "volume_initialization_pending"
+        and found.get("needs_chown", found.get("volume", {}).get("NeedsChown")) is False
+        and found.get("needs_copy_up", found.get("volume", {}).get("NeedsCopyUp")) is True
+        and found.get("collector_present") is True
+        and found.get("volume_use_count") == 1
+        and found.get("mount_count") == 1
+    ):
+        found = {**found, "status": "observed"}
+        summary = _summary(found)
     if found.get("status") != "observed":
         return {"status": "refused", "reason": found.get("status", "unavailable")}
     if not _live_safe_metadata(found):
-        if _cursorless_prestart_safe(found):
-            return {
-                **summary,
-                "children": "alloy_component_layout",
-                "status": "ready",
-                "reason": "positions_cursor_absent_prestart_retry",
-            }
         return {"status": "refused", "reason": "metadata_ambiguous"}
     if not _access(found["metadata"]):
         return {"status": "refused", "reason": "positions_access_blocked"}
