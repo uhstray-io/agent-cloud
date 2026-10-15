@@ -23,12 +23,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 import yaml
 from ansible_python import ansible_python
+from fake_http import DrainingHandler
 from test_agw_admin_identities import CONFIG, DEPLOY, PHASE1, PHASE3, SECRETS, _ansible, _task, admin
 from test_agw_mcp_render import SCHEMA_FILE, SCHEMA_TEXT, TARGETS
 from test_agw_stream_usage import IMAGE, _free_port, _image_present
@@ -647,7 +648,7 @@ def test_the_render_passes_the_pinned_images_validator(tmp_path):
     assert r.returncode == 0 and "Configuration is valid" in (r.stdout + r.stderr), r.stdout + r.stderr
 
 
-class Recorder(BaseHTTPRequestHandler):
+class Recorder(DrainingHandler):
     """A stand-in OpenRouter: records the Authorization header and the body, answers a chat."""
 
     seen: list = []
