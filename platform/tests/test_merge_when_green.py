@@ -24,7 +24,7 @@ INTERMEDIATE_PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpat
 
 # The workflow as it stood before the Agentgateway job was split out of Python core.
 PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
-    "lint-and-test-agw-partition.txt").read_bytes()
+    "lint-and-test-playbook-safety-partition.txt").read_bytes()
 
 
 def _blob_sha(source):
