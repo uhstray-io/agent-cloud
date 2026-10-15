@@ -1,7 +1,8 @@
 ---
 # Production-only drill against the already-active alert/contact baseline. It
-# adds one uniquely labeled failed scrape, reuses the common firing/Discord
-# receipt probe, then removes only that scrape and reloads Prometheus.
+# adds two failed scrape targets sharing one service label, reuses the common
+# firing/Discord receipt probe, then removes only its generated scrape and
+# reloads Prometheus. An interruption marker enables that cleanup after a halt.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
