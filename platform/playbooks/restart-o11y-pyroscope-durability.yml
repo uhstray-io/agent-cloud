@@ -365,7 +365,7 @@
             _durability_operation_raw.rc == 0 and
             (_durability_operation_raw.stdout | from_json).restarted == 'completed'
           failed_when: false
-          check_mode: false
+          when: not ansible_check_mode
           no_log: true
 
         - name: Validate the fixed durability receipt JSON
