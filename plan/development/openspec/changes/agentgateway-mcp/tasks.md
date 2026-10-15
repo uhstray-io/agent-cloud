@@ -535,7 +535,7 @@ operator's go for it. site-config changes land through its own pull requests.
       `credential_service=agentgateway`, `credential_fields=client_<name>` listed
       explicitly (never empty, Open Question 6); output carries names only
       2026-10-14 (task output read from production Semaphore by the lead): handed out so far:
-      `client_stray`, task 5638 (branch `backup/agentgateway-20261014T204513Z-ba2dec`), and
+      the operator's key, task 5638 (branch `backup/agentgateway-20261014T204513Z-ba2dec`), and
       `client_jacob`, dry run 5672 then real run 5673 (branch
       `backup/agentgateway-20261014T222727Z-f28619`), the fields named explicitly. The other
       admins (`agent-cloud-admin`, `wisward`, `svc-automation`) are not handed out yet.
