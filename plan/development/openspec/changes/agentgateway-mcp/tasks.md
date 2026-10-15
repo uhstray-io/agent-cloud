@@ -794,10 +794,12 @@ operator's go for it. site-config changes land through its own pull requests.
       #636, #637, #640, #641, #642 and #644, and site-config #86, #87, #89 and #90, are all MERGED
       (read with `gh pr view` on 2026-10-15; #639 was closed and replaced by #642, see MISTAKES 4.8).
       Read by this author: on the final head of each of the eight agent-cloud pull requests no check
-      failed or was cancelled, and site-config's `inventory` check and
-      CodeRabbit status are success on each of its four. Reported by the lead, not re-read here: each was
-      merged after one review round with every finding fixed or answered on the pull request. Ticked on
-      that basis.
+      failed or was cancelled, and site-config's `inventory` check and CodeRabbit status are success on
+      each of its four (all four read). The review round is not visible as a GitHub review state on most of
+      them: `gh pr view --json reviews` shows none on #626, #636, #637, #640 and #642, and
+      CodeRabbit's CHANGES_REQUESTED as the only state on #634 and #644 (APPROVED on #641). That the round
+      happened and that every finding was fixed or answered is the lead's report (likely comment-only or
+      agent reviews), not something read here. Ticked on that basis, as the brief decided.
 - [ ] 9.4 After the production rollout, `openspec archive agentgateway-mcp`, and retain one
       memory in the repo's Hindsight bank: whether it worked, the root cause of anything
       that failed, and the constraint found (worked / dead end / corrected)

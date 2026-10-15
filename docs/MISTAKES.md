@@ -2701,7 +2701,10 @@ The local gate is the part to read carefully. The pre-commit hook's scan command
 literal when it is staged: reproduced on 2026-10-15 with trufflehog 3.99.2 in a scratch repository, exit 183,
 with the line taken from the PR's diff. So the commit should have been stopped locally. This record cannot say
 why it was not (a skipped hook through `SKIP_SECRET_SCAN=1`, or the commit made where the hook did not run);
-the cause was not captured at the time. The fixture shape is the 4.8 rule's own: assemble the string at run
+the cause was not captured at the time. Which half of the hook decides: the command is a git scan OR a
+filesystem scan, and in a checkout whose refs hold a branch with such a literal (this one, after fetching the
+PR's branch) the git half exits 183 on history it does not own, since it has no `--branch`, so the filesystem
+half decides; both halves flagged a staged literal in the scratch repository. The fixture shape is the 4.8 rule's own: assemble the string at run
 time, or carry `trufflehog:ignore` with the reason.
 
 ### 4.9 Private Discord destination IDs in a public test fixture
@@ -3373,7 +3376,8 @@ situation seems to need an exception, it stops and asks the operator.
 `CONTRIBUTING.md` do not carry it, and `.githooks` and `.claude` contain no hook that refuses `git commit
 --amend` (searched 2026-10-15). Proposal: a PreToolUse hook refusing `git commit --amend`, `git rebase` and
 `git push --force*` for workers, outside the one secret-in-a-commit path the operator's global instructions
-define. Related: 5.10, 5.14, 5.19.
+define. Related: 5.10, 5.14, 5.19. Entries 5.2, 5.5 and 5.6 record amending an unpushed commit as their fix;
+the rule as given for this change does not allow it.
 
 ### 5.22 The `Python core` CI job outgrew its 30-minute timeout as the suite grew
 
