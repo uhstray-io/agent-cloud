@@ -621,13 +621,24 @@ operator's go for it. site-config changes land through its own pull requests.
       Remaining: `agent-cloud-admin` and `svc-automation`. Not ticked.
       2026-10-14 (reported by the operator): `client_jacob` was handed to its person by the operator.
       The handout task above is the only record of the file; delivery is the operator's report.
-- [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
+- [x] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
       exist and removal would drop the key). The render changes only on deploy, so after the
       site-config merge: sync the inventory into Semaphore (`sync-inventory.yml`, check
       mode first), then `Deploy agentgateway (Dev)`, dry run then real; read the rendered
       `keyHash` count on the host (or the deploy's own report) before and after, as in 6.3.
       A drop is a dead key: revert branch B, sync, redeploy
+      2026-10-15 (task output read from production Semaphore by the lead): site-config #91 (reviewed,
+      held until agent-cloud promotion #656 merged to `main` as 9874f30e) merged as 17dcc8ef.
+      Inventory synced (check mode, then real; key-path diff empty after). Deploy agentgateway
+      (Dev) dry run 5899, real run 5900, both `failed=0`. Before, 5771 reported "Merged once,
+      migration overlap (platform_admins and agw_clients)" for the operator's identity. In 5900
+      that report is skipped, because there is no overlap. The deploy's own checks passed:
+      the rendered config enrols every declared identity, only declared identities, and one key
+      entry per identity. The raw key-entry count is asserted, not printed, so no number is
+      recorded here. The operator's key still lists all nine models afterwards, read by the lead
+      with that key. The verifying identity is now `opencode`, which lists only
+      `qwen3.8-flash-next`, as the PR predicted. The MCP verify still runs as an admin.
 - [ ] 6.9 Validation gate, production: an unauthenticated `initialize` to the MCP hostname
       is 401 with no challenge header, proving scenario "The MCP hostname is not reachable
       without a key"; the newly declared admin's `client_<name>` exists and its key
