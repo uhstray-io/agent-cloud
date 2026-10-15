@@ -1042,6 +1042,11 @@ VG mappings are complete and unique, and whose reported VG retains the fixed
 path join, and the literal reported disk use `LVM`. A nonblank, well-formed
 serial must be unique across visible disk rows. A reported WWN is optional, but
 when present it must be well-formed and unique; absence is reported explicitly.
+Refuse a direct PV path beginning `/dev/vd` and any selected-disk `model` or
+`vendor` value containing a QEMU, Virtio, VMware, or virtual-device marker,
+case-insensitively. Present `model`/`vendor` fields must be strings. These
+positive virtual-device signals fail closed while ordinary paths such as
+`/dev/sda` remain eligible; missing model/vendor data remains unknown.
 
 Only the separate private identity task may print the storage ID and reported
 serial/optional WWN. The existing candidate selector continues to print only
@@ -1051,5 +1056,6 @@ text. These Proxmox-reported identifiers and joins do not establish physical
 locality or device safety; `thick_lvm_backing_media_verified`,
 `thick_lvm_allocation_authorized`, `device_safety_verified`, and
 `write_authorized` remain false. No Proxmox API request or write was added, and
-parent tasks 4.6c, 4.6d, and 4.6e remain open. This records a source slice only;
-no live candidate-identity receipt is claimed.
+parent tasks 4.6c, 4.6d, and 4.6e remain open. Operator attestation remains
+mandatory because the identity still does not prove physical locality. This
+records a source slice only; no live candidate-identity receipt is claimed.

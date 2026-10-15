@@ -978,6 +978,15 @@ def identify_thick_lvm_backing_identity(payload: object) -> dict[str, object]:
         and disk.get("used") == "LVM",
         SELECTOR_REFUSAL,
     )
+    _require(not pv_path.startswith("/dev/vd"), SELECTOR_REFUSAL)
+    for attribute in ("model", "vendor"):
+        value = disk.get(attribute)
+        _require(value is None or isinstance(value, str), SELECTOR_REFUSAL)
+        _require(
+            value is None
+            or not any(marker in value.casefold() for marker in ("qemu", "virtio", "vmware", "virtual")),
+            SELECTOR_REFUSAL,
+        )
 
     serial = disk.get("serial")
     _require(

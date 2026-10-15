@@ -1550,6 +1550,37 @@ def test_declared_backing_identity_requires_one_direct_lvm_pv_and_reports_option
     assert "0x5000abcd" not in json.dumps(sanitized)
 
 
+def test_declared_backing_identity_accepts_direct_physical_disk_path():
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk.update(devpath="/dev/sda", serial="SERIAL-123", model="ST8000NM", vendor="ATA")
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/sda"
+
+    assert identify_thick_lvm_backing_identity(data)["backing_disk_serial"] == "SERIAL-123"
+
+
+@pytest.mark.parametrize(
+    ("devpath", "model", "vendor"),
+    (
+        ("/dev/vda", None, None),
+        ("/dev/private-disk-a", "QEMU HARDDISK", None),
+        ("/dev/private-disk-a", "VIRTIO Block Device", None),
+        ("/dev/private-disk-a", None, "VMware, Inc."),
+        ("/dev/private-disk-a", 123, None),
+        ("/dev/private-disk-a", None, ["vendor"]),
+    ),
+)
+def test_declared_backing_identity_refuses_virtual_or_malformed_disk_classification(devpath, model, vendor):
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk.update(serial="SERIAL-123", model=model, vendor=vendor, type="unknown")
+    disk["devpath"] = devpath
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = devpath
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        identify_thick_lvm_backing_identity(data)
+
+
 @pytest.mark.parametrize("serial", (None, "", "   ", "bad\nserial", 123))
 def test_declared_backing_identity_refuses_missing_blank_or_malformed_serial(serial):
     data = selectable_thick_candidate()
@@ -1655,6 +1686,29 @@ def test_declared_backing_identity_cli_refusal_is_fixed_and_sanitized(monkeypatc
     assert "private-serial" not in captured.out
     assert "private-wwn" not in captured.out
     assert "/dev/" not in captured.out
+    assert captured.err == ""
+
+
+def test_declared_backing_identity_cli_refuses_virtual_disk_without_disclosing_metadata(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk.update(
+        devpath="/dev/vda", serial="private-serial", wwn="private-wwn", model="QEMU HARDDISK"
+    )
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/vda"
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "identify-thick-lvm-backing-identity"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == (
+        '{"refusal":"No unique thick-LVM storage candidate with complete visible mapping '
+        'and lineage was identified."}\n'
+    )
+    for private_value in ("/dev/vda", "private-serial", "private-wwn", "QEMU HARDDISK"):
+        assert private_value not in captured.out
     assert captured.err == ""
 
 
