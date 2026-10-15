@@ -28,6 +28,7 @@ def payload():
         "private_tree_entry": "100644 blob " + "c" * 40 + "\tinventory/production.yml",
         "project_id": 7,
         "repository_id": 12,
+        "semaphore_statuses": [200, 200, 200],
         "inventories": [{
             "id": 31, "project_id": 7, "name": "production",
             "type": "static-yaml", "inventory": PRIVATE_INVENTORY,
@@ -125,6 +126,32 @@ def test_api_failure_and_unexpected_repository_are_unavailable():
     assert SURVEY.evaluate(wrong_repository)["reason"] == "identity_ambiguous"
 
 
+def test_non_200_semaphore_response_is_unavailable_even_with_valid_rows():
+    candidate = payload()
+    candidate["semaphore_statuses"] = [200, 503, 200]
+
+    report = SURVEY.evaluate(candidate)
+
+    assert report["status"] == "unavailable"
+    assert report["reason"] == "semaphore_api_error"
+
+
+def test_missing_or_malformed_semaphore_statuses_are_unavailable():
+    candidates = []
+    missing = payload()
+    missing.pop("semaphore_statuses")
+    candidates.append(missing)
+    candidates.extend(
+        {**payload(), "semaphore_statuses": statuses}
+        for statuses in (None, [200, 200], [200, "200", 200], [200, True, 200])
+    )
+
+    for candidate in candidates:
+        report = SURVEY.evaluate(candidate)
+        assert report["status"] == "unavailable"
+        assert report["reason"] == "semaphore_api_error"
+
+
 def test_playbook_uses_only_get_api_reads_and_cleans_private_checkout():
     plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
@@ -141,6 +168,14 @@ def test_playbook_uses_only_get_api_reads_and_cleans_private_checkout():
     assert all(task["ansible.builtin.uri"].get("method", "GET") == "GET" for task in api_tasks)
     assert all(task.get("no_log") is True for task in api_tasks)
     compare = next(task for task in tasks if "block" in task and "always" in task)
+    comparator = next(
+        item for item in compare["block"]
+        if item.get("name") == "Run the strict fixed-schema inventory comparison"
+    )
+    comparator_input = comparator["ansible.builtin.command"]["stdin"]
+    assert "'semaphore_statuses':" in comparator_input
+    assert all(f"_survey_{name}.status | default(none)" in comparator_input
+               for name in ("inventories", "templates", "repositories"))
     assert any("site-config-clone.yml" in str(item) for item in compare["block"])
     assert any("ls-remote" in str(item) for item in compare["block"])
     assert any("ls-tree" in str(item) for item in compare["block"])

@@ -107,6 +107,11 @@ def evaluate(payload: object) -> dict:
         if not _positive_id(project_id) or not _positive_id(repository_id):
             raise Refusal("invalid_input")
 
+        semaphore_statuses = payload.get("semaphore_statuses")
+        if (not isinstance(semaphore_statuses, list) or len(semaphore_statuses) != 3
+                or any(type(status) is not int or status != 200 for status in semaphore_statuses)):
+            raise Refusal("semaphore_api_error")
+
         inventory = _single_named(payload.get("inventories"), "production")
         if not _positive_id(inventory.get("id")) or inventory.get("project_id") != project_id:
             raise Refusal("identity_ambiguous")
