@@ -569,7 +569,8 @@ def _destroy_only(tmp_path: Path) -> Path:
     kept = [p for p in plays if p.get("name") != "Fresh deploy"]
     assert len(kept) == len(plays) - 1
     text = yaml.safe_dump(kept)
-    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml", "tasks/assert-reset-confirmed.yml"):
+    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml", "tasks/assert-reset-confirmed.yml",
+                "tasks/assert-o11y-profile-pilot-operation.yml"):
         assert rel in text
         text = text.replace(rel, str(PLAYBOOKS / rel))
     out = tmp_path / "destroy-only.yml"

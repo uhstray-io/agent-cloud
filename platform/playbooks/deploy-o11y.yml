@@ -131,6 +131,9 @@
           if _probe_enabled | bool else []) }}
 
   tasks:
+    - name: Refuse an unverified profile pilot operation before o11y mutation
+      ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
+
     - name: "Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
         that:
