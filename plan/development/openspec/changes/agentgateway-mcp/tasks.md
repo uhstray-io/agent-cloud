@@ -499,6 +499,11 @@ finding that contradicts a decision stops the work and reopens that decision.
       8001) was not running; not a regression (the inference block renders byte-identical,
       golden BATS). Probes used a dummy key, not a valid one; the 404s do not depend on the key.
       Ticked.
+      2026-10-15 (local Semaphore state, probes by the lead): with the repository's fake upstream
+      (`scripts/fake-inference-upstream.py 8001`) running, the inference hostname answers as designed:
+      `/health` 200, `/v1/models` without a key 401 and with a Bearer-shaped key 200, `/metrics` 404.
+      The MCP hostname's 401 for a keyless `/mcp` carries no challenge or `WWW-Authenticate` header
+      (only `HTTP/2 401`). That closes the "/health and /v1/* as before" and "no challenge header" parts live.
 
 ## 6. Production rollout
 Operator-run, one `(Dev)` template at a time, dry run first (`--check` shows a diff and

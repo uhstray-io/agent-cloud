@@ -64,6 +64,10 @@ templates, never one-off writes.
       tokens. Ticked: the optional `-e agw_verify_openrouter=true` run was not made (it is not a
       Semaphore survey field). NOT proven: a real completion from OpenRouter through the
       gateway; the operator's test is pending.
+- [ ] 3.8 First real completion from an OpenRouter model through the gateway, with an allowed
+      identity's key against https://inference.uhstray.io/v1 (one small request), and the same request
+      refused for a service identity. Deploy 5740 proved only the listing; `agw_verify_openrouter` is
+      not a survey field of the Deploy template. Added 2026-10-15 so this proof cannot be lost.
 - [ ] 3.5 Measure whether OpenRouter tolerates `continuous_usage_stats`; if so, use the vLLM
       transformation for OpenRouter models too (design D5)
 - [x] 3.6 `mcp-self` excludes the OpenRouter names through the shared macro; it and `legacy-shared`
