@@ -2253,7 +2253,7 @@ for label in ('request_id', 'user_id', 'client_id', 'session_id', 'trace_id', 'e
               'http_request_id', 'x_user_id', 'user_email', 'request_path', 'http_url',
               'client_ip_address', 'gen_ai_prompt', 'url_path'):
     assert forbidden.fullmatch(label), label
-for label in ('service', 'cluster', 'environment', 'component', 'identity', 'status', 'model_name',
+for label in ('service', 'target_id', 'cluster', 'environment', 'component', 'identity', 'status', 'model_name',
               'gen_ai_request_model', 'gen_ai_token_type', 'gpu', 'device', 'node'):
     assert not forbidden.fullmatch(label), label
 repo = deploy.parents[3]

@@ -4,11 +4,22 @@ loki.source.journal "o11y_alloy" {
   path       = "/var/log/journal"
   matches    = "CONTAINER_NAME=o11y-alloy"
   max_age    = "15m"
-  labels     = { service = "o11y/alloy", signal = "container" }
+  labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }
   forward_to = [otelcol.receiver.loki.journal.receiver]
 }
 
 otelcol.receiver.loki "journal" {
+  output {
+    logs = [otelcol.processor.attributes.journal_labels.input]
+  }
+}
+
+otelcol.processor.attributes "journal_labels" {
+  action {
+    key    = "loki.attribute.labels"
+    action = "upsert"
+    value  = "service,signal,target_id"
+  }
   output {
     logs = [otelcol.exporter.otlp.journal.input]
   }
