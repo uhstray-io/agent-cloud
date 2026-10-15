@@ -81,10 +81,11 @@ def test_grouped_firing_predicate_requires_exact_instance_alerts():
     probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
     task = _task(probe, "Wait for Grafana's service-down rule to fire for the probe")
 
-    def alert(instance, state="Alerting", cluster="prod-a", environment="prod"):
+    def alert(instance, state="Alerting", cluster="prod-a", environment="prod", rule_uid="o11y_service_down"):
         return {
             "labels": {
                 "service": SERVICE,
+                "__alert_rule_uid__": rule_uid,
                 "instance": instance,
                 "cluster": cluster,
                 "environment": environment,
@@ -106,6 +107,7 @@ def test_grouped_firing_predicate_requires_exact_instance_alerts():
     assert _expression(task["until"], context)
 
     for rejected in (
+        [alert(i, rule_uid="unrelated_rule") for i in INSTANCES],
         [alert(INSTANCES[0])],
         [alert(INSTANCES[0]), alert(INSTANCES[1], state="Normal")],
         [alert(INSTANCES[0]), alert(INSTANCES[1], cluster="other")],
@@ -121,8 +123,9 @@ def test_discord_receipt_requires_one_owned_message_with_both_details_and_dashbo
     facts = task["ansible.builtin.set_fact"]["_discord_receipt_summary"]
     marker = f"o11y-delivery-status=firing service={SERVICE}"
     content = (
-        f"{marker}\n{marker}\n{INSTANCES[0]}\n{INSTANCES[1]}\n"
-        f"/d/service-overview?var-service={SERVICE}"
+        f"{marker}\n{marker}\n**Firing**\nLabels:\n"
+        f" - instance = {INSTANCES[0]}\n - instance = {INSTANCES[1]}\n"
+        f"Annotations:\n - dashboard_url = https://grafana.test/d/service-overview?var-service={SERVICE}"
     )
     context = {
         "_discord_messages": {"json": [{"webhook_id": "owned", "content": content}]},
@@ -138,32 +141,42 @@ def test_discord_receipt_requires_one_owned_message_with_both_details_and_dashbo
     env.tests["succeeded"] = lambda result: not result.get("failed", False)
     rendered = {name: env.from_string(value).render(context) for name, value in facts.items()}
     assert rendered["grouped_message_count"].strip() == "1"
-    assert rendered["grouped_details_present"].strip() == "True"
+    assert rendered["grouped_details_present"] == "True"
 
     context["_discord_messages"]["json"] = [
         {"webhook_id": "owned", "content": content.replace(marker + "\n", "", 1)}
     ]
     rendered = {name: env.from_string(value).render(context) for name, value in facts.items()}
-    assert rendered["grouped_details_present"].strip() == "False"
+    assert rendered["grouped_details_present"] == "False"
 
     context["_discord_messages"]["json"] = [{"webhook_id": "owned", "content": content}]
     context["_discord_messages"]["json"].append({"webhook_id": "owned", "content": content})
     rendered = {name: env.from_string(value).render(context) for name, value in facts.items()}
     assert rendered["grouped_message_count"].strip() == "2"
-    assert rendered["grouped_details_present"].strip() == "False"
+    assert rendered["grouped_details_present"] == "False"
 
     context["_discord_messages"]["json"] = [
         {"webhook_id": "owned", "content": content.replace(INSTANCES[1], "")}
     ]
     rendered = {name: env.from_string(value).render(context) for name, value in facts.items()}
-    assert rendered["grouped_details_present"].strip() == "False"
+    assert rendered["grouped_details_present"] == "False"
 
     context["_discord_messages"]["json"] = [
         {"webhook_id": "owned", "content": content.replace(INSTANCES[1], "")},
         {"webhook_id": "owned", "content": INSTANCES[1]},
     ]
     rendered = {name: env.from_string(value).render(context) for name, value in facts.items()}
-    assert rendered["grouped_details_present"].strip() == "False"
+    assert rendered["grouped_details_present"] == "False"
+
+    for bad in (
+        content.replace(marker, marker + "-other", 1),
+        content.replace(INSTANCES[0], INSTANCES[0] + "0", 1),
+        content.replace(INSTANCES[1], INSTANCES[1] + "0", 1),
+        content.replace(f"var-service={SERVICE}", f"var-service={SERVICE}-other"),
+    ):
+        context["_discord_messages"]["json"] = [{"webhook_id": "owned", "content": bad}]
+        rendered = {name: env.from_string(value).render(context) for name, value in facts.items()}
+        assert rendered["grouped_details_present"] == "False", bad
 
 
 def test_grouped_discord_wait_retries_until_the_single_complete_owned_message_exists():
@@ -171,8 +184,9 @@ def test_grouped_discord_wait_retries_until_the_single_complete_owned_message_ex
     task = _task(probe, "Wait for the matching Discord webhook message")
     marker = f"o11y-delivery-status=firing service={SERVICE}"
     complete = (
-        f"{marker}\n{marker}\n{INSTANCES[0]}\n{INSTANCES[1]}\n"
-        f"/d/service-overview?var-service={SERVICE}"
+        f"{marker}\n{marker}\n**Firing**\nLabels:\n"
+        f" - instance = {INSTANCES[0]}\n - instance = {INSTANCES[1]}\n"
+        f"Annotations:\n - dashboard_url = https://grafana.test/d/service-overview?var-service={SERVICE}"
     )
     context = {
         "_discord_messages": {"json": []},
@@ -194,6 +208,15 @@ def test_grouped_discord_wait_retries_until_the_single_complete_owned_message_ex
         {"webhook_id": "owned", "content": complete.replace(marker + "\n", "", 1)}
     ]
     assert not _expression(task["until"], context)
+
+    for bad in (
+        complete.replace(marker, marker + "-other", 1),
+        complete.replace(INSTANCES[0], INSTANCES[0] + "0", 1),
+        complete.replace(INSTANCES[1], INSTANCES[1] + "0", 1),
+        complete.replace(f"var-service={SERVICE}", f"var-service={SERVICE}-other"),
+    ):
+        context["_discord_messages"]["json"] = [{"webhook_id": "owned", "content": bad}]
+        assert not _expression(task["until"], context), bad
 
     context["_discord_messages"]["json"] = [
         {"webhook_id": "owned", "content": complete.replace(INSTANCES[1], "")},

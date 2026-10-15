@@ -174,6 +174,8 @@
            selectattr('labels', 'defined') |
            selectattr('labels.service', 'defined') |
            selectattr('labels.service', 'equalto', expected_service) |
+          selectattr('labels.__alert_rule_uid__', 'defined') |
+          selectattr('labels.__alert_rule_uid__', 'equalto', 'o11y_service_down') |
            selectattr('labels.cluster', 'defined') |
            selectattr('labels.cluster', 'equalto', _drill_cluster) |
            selectattr('labels.environment', 'defined') |
@@ -212,34 +214,34 @@
            selectattr('content', 'defined') |
            selectattr('content', 'search', _delivery_marker) |
            list | length) == 1 and
-          (_probe_expected_instances[0] in
-           (_discord_messages.json | default([]) |
+          (_discord_messages.json | default([]) |
              selectattr('webhook_id', 'defined') |
              selectattr('webhook_id', 'equalto', _webhook_id) |
              selectattr('content', 'defined') |
              selectattr('content', 'search', _delivery_marker) |
-             map(attribute='content') | list | first | default(''))) and
-          (_probe_expected_instances[1] in
-           (_discord_messages.json | default([]) |
-             selectattr('webhook_id', 'defined') |
-             selectattr('webhook_id', 'equalto', _webhook_id) |
-             selectattr('content', 'defined') |
-             selectattr('content', 'search', _delivery_marker) |
-             map(attribute='content') | list | first | default(''))) and
-          (('/d/service-overview?var-service=' ~ expected_service) in
-           (_discord_messages.json | default([]) |
-             selectattr('webhook_id', 'defined') |
-             selectattr('webhook_id', 'equalto', _webhook_id) |
-             selectattr('content', 'defined') |
-             selectattr('content', 'search', _delivery_marker) |
-             map(attribute='content') | list | first | default(''))) and
+             map(attribute='content') | list | first | default('')).splitlines() |
+             select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length) and
+          ((' - instance = ' ~ _probe_expected_instances[0]) in
+             (_discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               selectattr('content', 'search', _delivery_marker) |
+               map(attribute='content') | list | first | default('')).splitlines()) and
+          ((' - instance = ' ~ _probe_expected_instances[1]) in
+             (_discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               selectattr('content', 'search', _delivery_marker) |
+               map(attribute='content') | list | first | default('')).splitlines()) and
           ((_discord_messages.json | default([]) |
              selectattr('webhook_id', 'defined') |
              selectattr('webhook_id', 'equalto', _webhook_id) |
              selectattr('content', 'defined') |
              selectattr('content', 'search', _delivery_marker) |
-             map(attribute='content') | list | first | default('')).count(_delivery_marker) ==
-           (_probe_expected_instances | length)))
+             map(attribute='content') | list | first | default('')).splitlines() |
+             select('search', '/d/service-overview[?]var-service=' ~ expected_service ~ '$') | list | length > 0))
       no_log: true
       ignore_errors: true
       when: not ansible_check_mode and (drill_expect_alert | default(false) | bool)
@@ -265,17 +267,17 @@
                selectattr('content', 'defined') |
                selectattr('content', 'search', _delivery_marker) | list | length }}
           grouped_details_present: >-
-            {% set owned = _discord_messages.json | default([]) |
+            {%- set owned = _discord_messages.json | default([]) |
                selectattr('webhook_id', 'defined') |
                selectattr('webhook_id', 'equalto', _webhook_id) |
                selectattr('content', 'defined') |
                selectattr('content', 'search', _delivery_marker) | list %}
-            {% set content = owned[0].content if owned | length == 1 else '' %}
+            {%- set content = owned[0].content if owned | length == 1 else '' -%}
             {{ not (o11y_grouped_probe | default(false) | bool) or (owned | length == 1 and
-               (_probe_expected_instances[0] in content) and
-               (_probe_expected_instances[1] in content) and
-               (('/d/service-overview?var-service=' ~ expected_service) in content) and
-               (content.count(_delivery_marker) == (_probe_expected_instances | length))) }}
+               (content.splitlines() | select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length)) and
+               ((' - instance = ' ~ _probe_expected_instances[0]) in content.splitlines()) and
+               ((' - instance = ' ~ _probe_expected_instances[1]) in content.splitlines()) and
+               (content.splitlines() | select('search', '/d/service-overview[?]var-service=' ~ expected_service ~ '$') | list | length > 0)) }}
       no_log: true
       when: drill_expect_alert | default(false) | bool
 

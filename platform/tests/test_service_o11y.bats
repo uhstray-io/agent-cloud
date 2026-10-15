@@ -325,6 +325,7 @@ assert any(task['name'] == 'Require Discord message-history access before the pr
 wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
 rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
 env = Environment(undefined=StrictUndefined)
+env.filters['bool'] = bool
 env.filters['from_json'] = json.loads
 env.filters['to_json'] = json.dumps
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
@@ -364,13 +365,53 @@ for webhook_id, body, expected in [('123', marker, True),
     assert bool(received(_discord_messages={'json': messages},
                          _webhook_id='123', _delivery_marker=marker)) is expected
 assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt from the owned webhook')['ansible.builtin.assert']['fail_msg']
+
+grouped_wait = env.compile_expression(receipt['until'])
+grouped_alerts = {'data': {'alerts': [
+    {'labels': {'__alert_rule_uid__': 'o11y_service_down', 'service': 'pilot', 'cluster': 'c',
+                'environment': 'prod', 'instance': '127.0.0.1:65534'}, 'state': 'Alerting'},
+    {'labels': {'__alert_rule_uid__': 'o11y_service_down', 'service': 'pilot', 'cluster': 'c',
+                'environment': 'prod', 'instance': '127.0.0.1:65535'}, 'state': 'firing'},
+]}}
+grouped_firing = json.loads(json.dumps(grouped_alerts))
+for alert in grouped_firing['data']['alerts']:
+    alert['labels']['__alert_rule_uid__'] = 'unrelated_rule'
+grouped_until = env.compile_expression(wait['until'])
+grouped_facts = {'_firing_alerts': {'rc': 0, 'stdout': json.dumps(grouped_alerts)},
+                 'o11y_grouped_probe': True, 'expected_service': 'pilot', '_drill_cluster': 'c',
+                 '_drill_environment': 'prod', '_probe_expected_instances': ['127.0.0.1:65534', '127.0.0.1:65535']}
+assert grouped_until(**grouped_facts)
+grouped_facts['_firing_alerts']['stdout'] = json.dumps(grouped_firing)
+assert not grouped_until(**grouped_facts)
+
+grouped_marker = 'o11y-delivery-status=firing service=o11y-fault-probe-new'
+grouped_content = (grouped_marker + '\n' + grouped_marker + '\n**Firing**\nLabels:\n'
+    ' - instance = 127.0.0.1:65534\n - instance = 127.0.0.1:65535\n'
+    'Annotations:\n - dashboard_url = https://grafana.test/d/service-overview?var-service=o11y-fault-probe-new')
+grouped_facts = {'_discord_messages': {'json': [{'webhook_id': '123', 'content': grouped_content}]},
+                 '_webhook_id': '123', '_delivery_marker': grouped_marker, 'o11y_grouped_probe': True,
+                 'expected_service': 'o11y-fault-probe-new',
+                 '_probe_expected_instances': ['127.0.0.1:65534', '127.0.0.1:65535']}
+assert grouped_wait(**grouped_facts)
+for bad in (grouped_content.replace(grouped_marker, grouped_marker + '-other', 1),
+            grouped_content.replace('127.0.0.1:65534', '127.0.0.1:655340'),
+            grouped_content.replace('127.0.0.1:65535', '127.0.0.1:655350'),
+            grouped_content.replace('var-service=o11y-fault-probe-new', 'var-service=o11y-fault-probe-new-other')):
+    grouped_facts['_discord_messages']['json'][0]['content'] = bad
+    assert not grouped_wait(**grouped_facts), bad
+grouped_facts['_discord_messages']['json'] = [
+    {'webhook_id': '123', 'content': grouped_marker},
+    {'webhook_id': '123', 'content': grouped_content.replace(grouped_marker + '\n', '', 2)},
+]
+assert not grouped_wait(**grouped_facts)
 PY
 }
 
 @test "o11y: visible Discord receipt assertion emits counts only" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  local playbook="$BATS_TEST_TMPDIR/discord-count-only.yml"
-  python3 - "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$playbook" <<'PY'
+  local valid_playbook="$BATS_TEST_TMPDIR/discord-valid.yml"
+  local invalid_playbook="$BATS_TEST_TMPDIR/discord-invalid.yml"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$valid_playbook" "$invalid_playbook" <<'PY'
 import pathlib
 import sys
 import yaml
@@ -387,17 +428,26 @@ while pending:
         pending[0:0] = task.get(key, [])
 summary = next(task for task in tasks if task.get("name") == "Count the matching Discord receipt without retaining its content")
 assertion = next(task for task in tasks if task.get("name") == "Require a readable firing receipt from the owned webhook")
-play = [{
+marker = "o11y-delivery-status=firing service=o11y-fault-probe-new"
+content = "\n".join([
+    marker, marker, "**Firing**", "Labels:", " - instance = 127.0.0.1:65534",
+    " - instance = 127.0.0.1:65535", "Annotations:",
+    " - dashboard_url = https://grafana.test/d/service-overview?var-service=o11y-fault-probe-new",
+])
+def write_play(path, body, failed):
+    play = [{
     "hosts": "localhost",
     "gather_facts": False,
-    "vars": {"drill_expect_alert": True},
+    "vars": {"drill_expect_alert": True, "o11y_grouped_probe": True,
+             "_delivery_marker": marker, "expected_service": "o11y-fault-probe-new",
+             "_probe_expected_instances": ["127.0.0.1:65534", "127.0.0.1:65535"]},
     "tasks": [
         {
             "name": "seed synthetic protected Discord response",
             "ansible.builtin.set_fact": {
                 "_discord_messages": {
-                    "failed": True,
-                    "json": [{"webhook_id": "synthetic-webhook", "content": "SYNTHETIC_CONTENT_SECRET"}],
+                    "failed": failed,
+                    "json": [{"webhook_id": "synthetic-webhook", "content": body}],
                     "request": {"headers": {"Authorization": "Bot SYNTHETIC_TOKEN_SECRET"}},
                 },
                 "_webhook_id": "synthetic-webhook",
@@ -407,15 +457,20 @@ play = [{
         summary,
         assertion,
     ],
-}]
-pathlib.Path(sys.argv[2]).write_text(yaml.safe_dump(play), encoding="utf-8")
+    }]
+    pathlib.Path(path).write_text(yaml.safe_dump(play), encoding="utf-8")
+write_play(sys.argv[2], content, False)
+write_play(sys.argv[3], marker, False)
 PY
   mkdir -p "$BATS_TEST_TMPDIR/ansible-local"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
-    ansible-playbook -i localhost, "$playbook"
+  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
+    ansible-playbook -i localhost, "$valid_playbook"
+  [ "$status" -eq 0 ]
+  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
+    ansible-playbook -i localhost, "$invalid_playbook"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "Discord firing receipt absent after the wait: webhook messages=1, readable messages=1"
-  refute_contains "$output" "SYNTHETIC_CONTENT_SECRET"
+  assert_contains "$output" "Discord firing receipt was incomplete after the wait: webhook messages=1, readable messages=1, owned messages=1"
+  refute_contains "$output" "o11y-delivery-status=firing service=o11y-fault-probe-new"
   refute_contains "$output" "SYNTHETIC_TOKEN_SECRET"
 }
 
