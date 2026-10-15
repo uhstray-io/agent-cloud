@@ -95,6 +95,12 @@ Such a run has not proved the upstream is reachable. Conditions:
    at least one choice and `usage.completion_tokens > 0`, which the gateway can only produce
    by reaching `agw_upstream_base_url`.
 
+With `agw_mcp_enabled` true the same phase also proves `/mcp`: a request with no key is 401, an
+authenticated `initialize` returns a session, `tools/list` lists at least one tool, and one chat call made
+through MCP shows in the gateway's access log as `mcp-self` on the loopback listener. With the flag false it
+asserts `/mcp` is not served (`context/architecture.md`, "MCP (change `agentgateway-mcp`, gateway side)").
+The probing identity is then an admin-derived one, never `mcp-self`.
+
 A 429 with body `rate limit exceeded` (the gateway's own request bucket) fails the deploy as
 **unproven** unless the run passes `-e agw_verify_allow_unproven=true`; any other 429 fails
 like any other status (`deploy-agentgateway.yml`, "Keyed probes: note a policy refusal").
@@ -182,6 +188,25 @@ Decided by OPA on the committed catalog
 - **Rotate the key at vLLM.** Nothing in this repository can; vLLM reads it from the
   dgx-spark repository (`rollback-inference-route.yml` header, "WHAT THIS DOES NOT DO").
 
+## Operations: admin identities, MCP, OpenRouter
+
+One row per operation, each naming only templates, variables and commands that exist (the full table,
+with sources, is "Operator operations" in `context/architecture.md`). Who may launch which template is
+decided by OPA, as under "What an agent may do" and "What an agent may not do" above; this table lists
+the operations, not the permissions. Each template has a generated `(Dev)` variant.
+
+| Operation | Template or command | Variables and notes |
+|---|---|---|
+| Add an admin identity | `Deploy Authentik`, then `Deploy agentgateway` | an entry in `platform_admins` (site-config `agent_cloud.vars`); `agw_admin_identities_enabled: true`; optional `agw_identity` renames the gateway identity |
+| Remove an admin identity | `Deploy Authentik`, then `Manage agentgateway Client Key` | drop the entry from `platform_admins` and list its username in `platform_retired_accounts` in the same change; then `client=<identity> action=revoke` |
+| Set the MCP hostname | `Manage Caddy Sites`, `Apply Cloudflare Tofu` | `agw_mcp_hostname` is inventory documentation that no gateway playbook reads; the hostname is the Caddy block (`caddy_managed_sites`, or `caddy_routes` with `mcp_api: true` locally) plus `platform/infra/cloudflare` (`dns.tf`, `waf.tf`, `ratelimit.tf`) |
+| Enable or disable MCP | `Deploy agentgateway` | `agw_mcp_enabled`; refused before any render unless the admin identities, a target, `mcp-self` and its `tokens_per_hour` are declared |
+| Hand out a key | `Back Up Credentials to site-config` | `credential_service=agentgateway`, `credential_fields=client_<identity>`; never leave `credential_fields` empty |
+| Install or remove client configuration | `make agw-mcp-client`, `make agw-mcp-client-remove` | `HOST=`, `IDENTITY=`, optional `KEY_FILE=`; Keychain service `agentgateway-mcp` |
+| Roll back | `Rollback Inference Route` | `mode=gateway-config`, `direct` or `restore`; across the MCP flag, redeploy the older flag state |
+| Serve an OpenRouter model | `Deploy agentgateway` | an `agw_models` entry with `provider: openrouter` and `upstream_model`; `agw_openrouter_identities`, `agw_openrouter_admins` |
+| Seed the OpenRouter key | `Seed OpenBao Key` | `bao_path=services/agentgateway`, `bao_key=openrouter_api_key`, value as the `BAO_VALUE` environment secret |
+
 ## Secrets boundary
 
 - All values live at `secret/services/agentgateway`: `vllm_api_key` (`existing`),
@@ -233,6 +258,10 @@ note, 2026-10-02).
 
 ## Known quirks
 
+- `/config_dump` on the admin listener (container loopback, never published) prints
+  `config.database.url`, the budget Postgres password, in clear text; it redacts the key policies and
+  `backendAuth`. Existing in every deployment and handed to the operator as its own change; the loopback
+  pin is what protects it (`context/architecture.md`, "Known issues").
 - The gateway image has no shell: every probe runs from `agentgateway-db` (busybox `wget`)
   or as a `uri` call from the target (`deploy-agentgateway.yml`, Phase 3 comment).
 - Probes address the gateway by compose-network IP, not by name: by name, a VM named

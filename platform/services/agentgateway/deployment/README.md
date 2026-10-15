@@ -51,6 +51,29 @@ rollback refuses, before any write, a kept copy that enrols an identity the live
 only; and `manage-agentgateway-client-key.yml` removes the copy once its deploy succeeds, so a
 rotation or revocation leaves no rollback path to the old key.
 
+## MCP and the declared admin list: variables
+
+All are inventory values (site-config in production, `platform/inventory/local-dev.yml.example` locally);
+none is a survey variable. The reference for what each does is `../context/architecture.md` ("Identity and
+limits", "MCP (change `agentgateway-mcp`, gateway side)", "Operator operations").
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `platform_admins` | the shared default in `platform/playbooks/vars/platform-admins.yml` | The ONE declared admin list: each entry is `key`, `username`, `name`, `email` (not for a service account), optional `type` and `agw_identity`. An inventory that sets it replaces the default entirely. Authentik renders its admin accounts from it; the gateway derives one personal identity per entry |
+| `agw_admin_identities_enabled` | `false` | Gate for the derivation. Off, the gateway's identities are exactly `agw_clients` and the list is not read. On, `platform_admins` must be declared for the gateway host (the default list is built from per-user variables that exist only on the Authentik host, so the deploy refuses the run) |
+| `platform_admins_exceptions` | empty | Names of `platform-admins` members deliberately outside the list; read by the Authentik drift guard only |
+| `platform_retired_accounts` | empty | Usernames Deploy Authentik deletes. Retiring an administrator: remove it from `platform_admins` in the same change, deploy Authentik, then revoke its gateway key with `Manage agentgateway Client Key` (`action=revoke`) |
+| `agw_mcp_enabled` | `false` | Serve the key-gated `/mcp` endpoint. False renders no `mcp` block and no loopback gateway, and the verify asserts `/mcp` is not served |
+| `agw_mcp_hostname` | none | The hostname Caddy fronts `/mcp` on. Declared for the record: no gateway playbook reads it, the Caddy block and `platform/infra/cloudflare` carry the name |
+| `agw_loopback_port` | `4002` | The loopback gateway's container port, never published; the MCP target calls `/v1` here |
+| `agw_mcp_openapi_targets` | none | List of `{name, schema}`; `schema` is a `*.json` file in `deployment/mcp-schemas/`. Anything else on an entry is refused |
+| `agw_client_policies.mcp-self.tokens_per_hour` | none | The aggregate hourly token cap on every model request made through MCP; required while `agw_mcp_enabled` is true, with `mcp-self` in `agw_clients` |
+| `agw_openrouter_identities`, `agw_openrouter_admins` | empty, `false` | Who may call `provider: openrouter` models (`agentgateway-openrouter`); the union must not be empty while one is declared |
+
+Declared admin list, as of this change: the list itself lives in site-config (private); this repository
+holds only the local-dev placeholders. Declared retired list: `platform_retired_accounts`, also in
+site-config, empty in this repository.
+
 ## A deploy recreates the gateway only when its inputs changed
 
 A recreate drops every in-flight stream, and scheduled or imported runs call this deploy, so
