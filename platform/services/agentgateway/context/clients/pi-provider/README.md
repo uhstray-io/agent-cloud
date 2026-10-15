@@ -13,7 +13,7 @@ pi in `auth.json` (written `0600`), never in this directory.
 | Gateway | `https://inference.uhstray.io/v1` (OpenAI-compatible, `Authorization: Bearer <key>`) |
 | Sign-in | `/login uhstray`, paste the key (masked) |
 | Key check | `GET /v1/models`; a 401 refuses the login and stores nothing |
-| Models | The ids the gateway lists for your key. Context windows come from a table in `gateway.ts`; an id not in it gets 131072 tokens of context, 16384 output, reasoning on, text input, zero cost |
+| Models | The ids the gateway lists for your key. Context windows come from a table in `gateway.ts`; an id not in it gets 131072 tokens of context, 16384 output, reasoning on, text input, zero cost. Ids are kept only if they are 1-128 characters of `A-Z a-z 0-9 . _ : / @ + -`, and at most 500 are used; any other id is dropped without a message |
 | Streaming | `openai-completions`, no custom code |
 
 ## Install
@@ -43,8 +43,9 @@ the variable. Prefer `/login`: an exported variable is visible to every process 
 
 To use another gateway, for example the local-dev one, set `UHSTRAY_INFERENCE_BASE_URL`
 (`https://inference.agent-cloud.test:8443/v1`). It must be https; plain http is accepted only for
-`localhost`, `127.0.0.1` and `[::1]`, because the key travels on it. A URL carrying credentials, a query or a fragment is refused. Whatever that variable points
-at receives the stored key as well, so only processes you trust should be able to set it.
+`localhost`, `127.0.0.1` and `[::1]`, because the key travels on it. A URL carrying credentials,
+a query or a fragment is refused. Whatever that variable points at receives the stored key as
+well, so only processes you trust should be able to set it.
 
 ## Verify
 
