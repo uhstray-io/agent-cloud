@@ -343,15 +343,15 @@ PY
 @test "caddy: dry run with a declared route not yet loaded passes and names it" {
   _run_caddy_phase3 --check
   [ "$status" -eq 0 ]
-  [[ "$output" == *"would be added on a real run: new.z.test"* ]]
-  [[ "$output" == *"already loaded: loaded.z.test"* ]]
+  assert_contains "$output" "would be added on a real run: new.z.test"
+  assert_contains "$output" "already loaded: loaded.z.test"
 }
 
 @test "caddy: real run with a declared route not yet loaded fails with the route message" {
   _run_caddy_phase3
   [ "$status" -ne 0 ]
-  [[ "$output" == *"route new.z.test not found in Caddy's running config"* ]]
-  [[ "$output" != *"would be added on a real run"* ]]
+  assert_contains "$output" "route new.z.test not found in Caddy's running config"
+  refute_contains "$output" "would be added on a real run"
 }
 
 @test "caddy: dry run does not fail on a local metrics listener that is not loaded yet" {
@@ -362,5 +362,5 @@ PY
 @test "caddy: real run still fails on a missing local metrics listener" {
   FAKE_METRICS_RC=1 _run_caddy_phase3 -e local_mode=true -e '{"caddy_routes":[]}'
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Require the private local metrics listener"* ]]
+  assert_contains "$output" "Require the private local metrics listener"
 }
