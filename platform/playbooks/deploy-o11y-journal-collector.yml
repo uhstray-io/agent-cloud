@@ -23,12 +23,129 @@
         that:
           - groups.get('o11y_svc', []) | length == 1
           - service_branch | default('dev') == 'dev'
-          - journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']
+          - journal_collector_action | default('apply') in ['stage', 'survey', 'repair-positions', 'apply', 'stop']
+          - journal_collector_action | default('apply') != 'stage' or not ansible_check_mode
         fail_msg: >-
           This workflow requires one o11y_svc host, service_branch=dev, and
-          journal_collector_action=survey|repair-positions|apply|stop.
+          journal_collector_action=stage|survey|repair-positions|apply|stop; stage cannot run in check mode.
         quiet: true
       tags: [always]
+
+- name: Stage exact reviewed checkout for the journal collector
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _journal_stage_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: Leave the stage play unless the explicit stage action was selected
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'stage'
+      tags: [always]
+
+    - name: Require a Dev-bound non-check-mode stage
+      ansible.builtin.assert:
+        that:
+          - service_branch | default('dev') == 'dev'
+          - not (local_mode | default(false) | bool)
+          - not ansible_check_mode
+        fail_msg: "Staging requires the reviewed Dev checkout and cannot run in check mode."
+        quiet: true
+
+    - name: Place the reviewed SHA through the shared monorepo mechanism
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+      vars:
+        _monorepo_dir: "{{ _journal_stage_monorepo_dir }}"
+        _branch: "{{ expected_repository_sha }}"
+
+    - name: Read the staged receiver checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _journal_stage_monorepo_dir }}"
+      register: _journal_stage_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the staged checkout to equal the reviewed SHA
+      ansible.builtin.assert:
+        that: _journal_stage_revision.stdout | trim == expected_repository_sha
+        fail_msg: "The receiver checkout does not match the reviewed SHA after stage."
+        quiet: true
+
+- name: Verify resolved journal Compose configuration before stage, survey, or apply
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _journal_provider_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _journal_provider_deploy_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/platform/services/o11y/deployment"
+    _journal_provider_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/verify-o11y-journal-compose.py') }}"
+  tasks:
+    - name: Leave the provider gate for actions without a Compose start
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') not in ['stage', 'survey', 'apply']
+      tags: [always]
+
+    - name: Report provider configuration as unverified in check mode
+      ansible.builtin.debug:
+        msg: "Resolved journal Compose configuration: check_mode_unverified (runtime reads skipped)."
+      changed_when: false
+      when: ansible_check_mode
+
+    - name: Read the installed receiver checkout revision before Compose configuration
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _journal_provider_monorepo_dir }}"
+      register: _journal_provider_revision
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Require the installed receiver checkout to equal the reviewed SHA
+      ansible.builtin.assert:
+        that: _journal_provider_revision.stdout | default('') | trim == expected_repository_sha
+        fail_msg: "The installed receiver checkout does not match the reviewed SHA; provider config was not read."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Require a standard reviewed journal source for resolved Compose configuration
+      ansible.builtin.assert:
+        that:
+          - o11y_journal_directory | default('') in ['/var/log/journal', '/run/log/journal']
+        fail_msg: "Declare the reviewed standard journal directory before surveying Compose configuration."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Resolve Compose configuration and verify the exact v2 no-copy mount
+      ansible.builtin.command:
+        argv: [python3, "-", "{{ _journal_provider_deploy_dir }}"]
+        stdin: "{{ _journal_provider_helper }}"
+        stdin_add_newline: false
+      args:
+        chdir: "{{ _journal_provider_deploy_dir }}"
+      environment:
+        O11Y_JOURNAL_DIRECTORY: "{{ o11y_journal_directory }}"
+        O11Y_JOURNAL_CONFIG_SHA: survey
+      register: _journal_provider_config
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require the provider-resolved v2 no-copy mount
+      ansible.builtin.assert:
+        that:
+          - _journal_provider_config.rc | default(1) == 0
+          - (_journal_provider_config.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_provider_config.stdout | from_json).reason == 'provider_config_exact'
+        fail_msg: "The installed Compose provider did not resolve the exact v2 no-copy volume declaration."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Report the fixed provider configuration result
+      ansible.builtin.debug:
+        msg: "Resolved journal Compose configuration: verified (v2 volume, /alloy-state, nocopy=true)."
+      changed_when: false
+      when: not ansible_check_mode
 
 - name: "Deploy the bounded journal collector"
   hosts: o11y_svc
@@ -224,7 +341,7 @@
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
       vars:
         _monorepo_dir: "{{ _journal_monorepo_dir }}"
-        _branch: "{{ service_branch | default('dev') }}"
+        _branch: "{{ expected_repository_sha }}"
       when: not ansible_check_mode
 
     - name: Read the receiver checkout revision

@@ -48,7 +48,8 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
-  Compose named `journal-collector-state` volume mounted at `/alloy-state`; Alloy's
+  fresh Compose named `journal-collector-state-v2` volume mounted at `/alloy-state`
+  with long-syntax `volume.nocopy: true`; Alloy's
   `--storage.path` and exact live-mount/rollback checks use that same root-level path.
   This avoids traversing the image's `/var/lib/alloy` directory, which the pinned
   [Alloy v1.9.2 Dockerfile](https://github.com/grafana/alloy/blob/v1.9.2/Dockerfile)
@@ -65,11 +66,26 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
   The explicit `survey` action resolves the positions volume from the receiver
-  Compose project and `journal-collector-state` identity, including when the pilot
+  Compose project and `journal-collector-state-v2` identity, including when the pilot
   container is absent. New volumes carry the explicit `com.docker.compose.volume`
   label; an existing volume remains compatible when that label is absent only if
   its exact expected name and project label match. Conflicting labels or names refuse.
-  Survey reads bounded owner/mode and direct-child metadata in the rootless Podman
+  The legacy `journal-collector-state` volume remains untouched for later independent
+  forensic/disposition review; all journal helper actions resolve only v2. First
+  bootstrap requires v2 to be absent. Unexpected existing v2 state without a valid
+  cursor refuses the start gate. A fresh start can replay only Alloy's supported
+  `max_age` window, not older journal entries. Use the explicit Dev-bound `stage`
+  action to place the exact `expected_repository_sha` through the shared
+  `place-monorepo.yml` task; it refuses check mode and does not start/recreate a
+  container or inspect, mount, or change either positions volume. The required
+  order is `stage` -> read-only `survey` -> separate `apply`. Survey never places
+  the checkout. Stage, survey, and apply first require installed target `HEAD` to
+  equal `expected_repository_sha`, then run the installed `podman-compose config`
+  parser under `no_log` and require the resolved v2 source,
+  `/alloy-state` destination, and `nocopy: true`; this does not prove the runtime
+  applied the option. Check mode skips provider runtime reads and reports
+  `check_mode_unverified`; stage refuses check mode. Survey reads bounded owner/mode
+  and direct-child metadata in the rootless Podman
   namespace; it does not mount or initialize the volume and never reads
   positions-file content. Review this survey before choosing
   `repair-positions`, which is a separate action. Both repair paths require an
