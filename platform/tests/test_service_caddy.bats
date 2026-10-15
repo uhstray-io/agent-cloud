@@ -311,3 +311,56 @@ PY2
   run ansible-playbook "$BATS_TEST_TMPDIR/sancheck.yml" -e '{"_mint_extra_sans":["x$(id).z.test"]}'
   [ "$status" -ne 0 ]
 }
+
+# Phase 3 of deploy-caddy.yml, EXTRACTED from the file and run against a fake container
+# engine, so the tasks under test are the ones the playbook carries. The fake answers the
+# admin-API read with a running config that holds only `loaded.z.test`, and answers the
+# :2021 metrics probe with $FAKE_METRICS_RC.
+_run_caddy_phase3() {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local pb="$BATS_TEST_DIRNAME/../playbooks/deploy-caddy.yml"
+  local fake="$BATS_TEST_TMPDIR/fake-engine"
+  cat >"$fake" <<'SH'
+#!/bin/sh
+case "$*" in
+  *2021/metrics*) exit "${FAKE_METRICS_RC:-0}" ;;
+  *2019/config/*) echo '{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":["loaded.z.test"]}]}]}}}}}' ;;
+esac
+SH
+  chmod +x "$fake"
+  python3 - "$pb" "$BATS_TEST_TMPDIR/phase3.yml" <<'PY'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+play = next(p for p in plays if p.get('name') == 'Phase 3: Verify Caddy config')
+play['hosts'] = 'localhost'
+play['connection'] = 'local'
+yaml.safe_dump([play], open(sys.argv[2], 'w'))
+PY
+  local routes='{"caddy_routes":[{"host":"loaded.z.test","upstream":"a:1"},{"host":"new.z.test","upstream":"b:2"}]}'
+  run ansible-playbook "$BATS_TEST_TMPDIR/phase3.yml" -e "container_engine=$fake" -e "$routes" "$@"
+}
+
+@test "caddy: dry run with a declared route not yet loaded passes and names it" {
+  _run_caddy_phase3 --check
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "would be added on a real run: new.z.test"
+  assert_contains "$output" "already loaded: loaded.z.test"
+}
+
+@test "caddy: real run with a declared route not yet loaded fails with the route message" {
+  _run_caddy_phase3
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "route new.z.test not found in Caddy's running config"
+  refute_contains "$output" "would be added on a real run"
+}
+
+@test "caddy: dry run does not fail on a local metrics listener that is not loaded yet" {
+  FAKE_METRICS_RC=1 _run_caddy_phase3 --check -e local_mode=true
+  [ "$status" -eq 0 ]
+}
+
+@test "caddy: real run still fails on a missing local metrics listener" {
+  FAKE_METRICS_RC=1 _run_caddy_phase3 -e local_mode=true -e '{"caddy_routes":[]}'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Require the private local metrics listener"
+}
