@@ -13,7 +13,7 @@ pi in `auth.json` (written `0600`), never in this directory.
 | Gateway | `https://inference.uhstray.io/v1` (OpenAI-compatible, `Authorization: Bearer <key>`) |
 | Sign-in | `/login uhstray`, paste the key (masked) |
 | Key check | `GET /v1/models`; a 401 refuses the login and stores nothing |
-| Models | The ids the gateway lists for your key. Context windows come from a table in `gateway.ts`; an id not in it gets 131072 tokens of context, 16384 output, reasoning on, text input, zero cost. Ids are kept only if they are 1-128 characters of `A-Z a-z 0-9 . _ : / @ + -`, and at most 500 are used; any other id is dropped without a message |
+| Models | The ids the gateway lists for your key. A table in `gateway.ts` gives each known id its context window, output cap and role setting. Output caps follow the OpenRouter catalog, capped at 131072; `qwen3.8-flash-next` is not in that catalog and keeps 16384. The six models whose catalog entry refuses the `developer` role get the system prompt as `system`. An id not in the table gets 131072 tokens of context, 16384 output, the `developer` role, reasoning on, text input, zero cost. Ids are kept only if they are 1-128 characters of `A-Z a-z 0-9 . _ : / @ + -`, and at most 500 are used; any other id is dropped without a message |
 | Streaming | `openai-completions`, no custom code |
 
 ## Install
@@ -59,6 +59,8 @@ Pi keeps the model list from the last successful refresh in `models-store.json` 
 or RPC session starts and right after `/login`, not for `--list-models` or `-p`. So on a fresh
 install, run `/login` (or open pi once, with the key already stored or exported) before the two
 commands above show models. If the gateway is unreachable at start, the last list stays in use.
+A list stored before the output caps and roles in the table above changed keeps the old values until
+that refresh, so after updating this package, open an interactive session or run `/login` once.
 
 `pi auth check --provider uhstray` prints `not_ready` even with a valid key (`--json` gives the
 reason `provider_not_found`): that command builds its own runtime without loading extensions, so it

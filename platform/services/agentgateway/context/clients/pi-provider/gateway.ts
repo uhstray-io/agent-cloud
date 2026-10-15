@@ -17,22 +17,33 @@ export const BASE_URL_ENV = "UHSTRAY_INFERENCE_BASE_URL";
 
 export type GatewayModel = Model<"openai-completions">;
 
-/** What `/v1/models` does not tell us, per model id. Unknown ids get the conservative defaults. */
+interface ModelProfile {
+  contextWindow: number;
+  maxTokens: number;
+  /** `false` when the catalog refuses the developer role: pi then sends the system prompt as `system`. */
+  developerRole?: false;
+}
+
+/**
+ * What `/v1/models` does not tell us, per model id. Unknown ids get the conservative defaults.
+ * Output caps are the OpenRouter catalog's maxTokens, capped at 131072.
+ */
 // A Map, not an object literal: ids come from the network, and `constructor` or `__proto__` must
 // not resolve to something off Object.prototype.
-const CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
-  ["qwen3.8-flash-next", 262144],
-  ["xiaomi/mimo-v2.6-flash", 1050000],
-  ["deepseek/deepseek-v4.1-flash", 1048576],
-  ["z-ai/glm-5.3-flash", 1048576],
-  ["xiaomi/mimo-v2.6-pro", 1050000],
-  ["openai/gpt-6-luna", 1050000],
-  ["mistralai/mistral-large-4-0", 1048576],
-  ["z-ai/glm-5.3", 1048576],
-  ["anthropic/claude-opus-5.5", 1000000],
+// ponytail: 131072 is 8x the old flat 16384. A runaway reply can spend up to it, so raise a model
+// past that only with evidence.
+const MODEL_PROFILES: ReadonlyMap<string, ModelProfile> = new Map<string, ModelProfile>([
+  ["qwen3.8-flash-next", { contextWindow: 262144, maxTokens: 16384 }],
+  ["xiaomi/mimo-v2.6-flash", { contextWindow: 1050000, maxTokens: 131072, developerRole: false }],
+  ["deepseek/deepseek-v4.1-flash", { contextWindow: 1048576, maxTokens: 131072, developerRole: false }],
+  ["z-ai/glm-5.3-flash", { contextWindow: 1048576, maxTokens: 131072, developerRole: false }],
+  ["xiaomi/mimo-v2.6-pro", { contextWindow: 1050000, maxTokens: 131072, developerRole: false }],
+  ["openai/gpt-6-luna", { contextWindow: 1050000, maxTokens: 128000 }],
+  ["mistralai/mistral-large-4-0", { contextWindow: 1048576, maxTokens: 131072, developerRole: false }],
+  ["z-ai/glm-5.3", { contextWindow: 1048576, maxTokens: 131072, developerRole: false }],
+  ["anthropic/claude-opus-5.5", { contextWindow: 1000000, maxTokens: 128000 }],
 ]);
-const DEFAULT_CONTEXT_WINDOW = 131072;
-const MAX_TOKENS = 16384;
+const DEFAULT_PROFILE: ModelProfile = { contextWindow: 131072, maxTokens: 16384 };
 /** Ids reach a terminal and a request body: keep a conservative alphabet and bound the list. */
 const MODEL_ID_PATTERN = /^[A-Za-z0-9._:/@+_-]{1,128}$/;
 const MAX_MODELS = 500;
@@ -84,6 +95,7 @@ function assertWellFormedKey(key: string): void {
 }
 
 function modelFor(id: string, baseUrl: string): GatewayModel {
+  const profile = MODEL_PROFILES.get(id) ?? DEFAULT_PROFILE;
   return {
     id,
     name: id,
@@ -93,8 +105,10 @@ function modelFor(id: string, baseUrl: string): GatewayModel {
     reasoning: true,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: CONTEXT_WINDOWS.get(id) ?? DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_TOKENS,
+    contextWindow: profile.contextWindow,
+    maxTokens: profile.maxTokens,
+    // Only a model that refuses the developer role carries a compat key; the rest keep pi's detection.
+    ...(profile.developerRole === false ? { compat: { supportsDeveloperRole: false } } : {}),
   };
 }
 
