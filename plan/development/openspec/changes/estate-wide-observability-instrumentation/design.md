@@ -1015,3 +1015,47 @@ sets remain mismatches. Keep scalar comparisons, exact-match/headroom gates, and
 all allocation, backing, readiness, and write-authority fields fail-closed. The
 survey and source review add no Proxmox reads or writes and do not complete
 parent tasks 4.6c, 4.6d, or 4.6e.
+
+**Live comparison readback (2026-10-14):** PR #630 merged to `dev` as
+`93520fc6246afcc6d9550dff777d49cf1eaac214` after independent approval and
+green final-head CI. Dev-bound GET-only survey task 5644 succeeded at that exact
+revision. The declared thick-LVM candidate was visible and matched the required
+and optional config fields, status content, and exact candidate check. Its fixed
+256/512/1024-GiB reported-VG-headroom checks were true. The result is consistent
+with a list-order mismatch in the previous run, but a changed live response
+cannot be excluded by these point-in-time receipts. It does not establish
+physical backing, device safety,
+allocation authority, PBS readiness, filesystem readiness, write authority, or
+restore. Those fields stayed false, and parent tasks 4.6c, 4.6d, and 4.6e
+remain open.
+
+### Declared backing-disk identity capture source slice
+
+The separate private identity-capture workflow consumes the already protected
+GET payload. The existing `Identify o11y PBS Storage Candidate (Dev)` selector
+and its storage-ID-only output contract remain unchanged. Identity capture
+accepts only one eligible
+visible candidate whose storage ID matches the private declaration exactly,
+whose declared config/status content and optional fields match, whose visible
+VG mappings are complete and unique, and whose reported VG retains the fixed
+1024-GiB headroom. It then requires exactly one PV, an exact direct PV-to-disk
+path join, and the literal reported disk use `LVM`. A nonblank, well-formed
+serial must be unique across visible disk rows. A reported WWN is optional, but
+when present it must be well-formed and unique; absence is reported explicitly.
+Refuse a direct PV path beginning `/dev/vd` and any selected-disk `model` or
+`vendor` value containing a QEMU, Virtio, VMware, or virtual-device marker,
+case-insensitively. Present `model`/`vendor` fields must be strings. These
+positive virtual-device signals fail closed while ordinary paths such as
+`/dev/sda` remain eligible; missing model/vendor data remains unknown.
+
+Only the separate private identity task may print the storage ID and reported
+serial/optional WWN. The existing candidate selector continues to print only
+the storage ID. The general physical-storage receipt remains aggregate and
+contains no disk identity fields. All selector failures use fixed sanitized
+text. These Proxmox-reported identifiers and joins do not establish physical
+locality or device safety; `thick_lvm_backing_media_verified`,
+`thick_lvm_allocation_authorized`, `device_safety_verified`, and
+`write_authorized` remain false. No Proxmox API request or write was added, and
+parent tasks 4.6c, 4.6d, and 4.6e remain open. Operator attestation remains
+mandatory because the identity still does not prove physical locality. This
+records a source slice only; no live candidate-identity receipt is claimed.
