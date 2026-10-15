@@ -18,12 +18,12 @@
 ## 3. Actionable alerts
 
 - [x] 3.1 Add bounded ownership/context labels, dashboard/runbook annotations, and rule-level grouping/timing to existing Grafana rules without provisioning the policy tree.
-- [ ] 3.2 Extend deploy read-back and focused tests for rule settings and run a bounded Discord delivery drill.
-- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.”
+- [ ] 3.2 Extend deploy read-back and focused tests for rule settings and run a bounded Discord delivery drill. Source validation now compares grouped and legacy rule labels, annotations, duration, pause state, notification settings, and explicit target/group tombstones; focused tests inject label, annotation, duration, pause, and routing drift and cover migration plus reviewed rollback. Live deploy read-back and the delivery drill remain pending.
+- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.” Source tests now verify one deterministic rule per service/environment/cluster, exact per-target selectors and instance labels, and explicit tombstoning of grouped UIDs before legacy rollback. The separate estate inventory acceptance is recorded in the related OpenSpec evidence; live grouped alerting and notification-change receipts remain pending.
 
 ## 4. Promotion and evidence
 
-- [ ] 4.1 Run focused tests, lint, and strict OpenSpec validation; review the diff for secrets, volume preservation, and architecture compliance.
+- [x] 4.1 Run focused tests, lint, and strict OpenSpec validation; review the diff for secrets, volume preservation, and architecture compliance. The expected-target Python suite passed 64 tests, including local-compatibility result shape and CLI-to-Ansible consumer coverage, prepared retired-UID readback coverage, reserved group UID namespace refusal, exact grouped expressions through the 100-target/128-character selector bound, UID collision refusal, migration and explicit rollback retries, stopped-Grafana recovery, interrupted transitions, Grafana label interpolation, and grouped live-readback drift. Three focused alert BATS tests passed, Ruff and Ansible lint passed, yamllint exited 0 with existing line-length warnings, and strict OpenSpec validation passed on an exact temporary copy of the change. Live acceptance remains under 3.2/3.3 and 4.3.
 - [ ] 4.2 Push one PR against `dev`, obtain one CodeRabbit or Claude review, resolve feedback, and merge only with green CI.
 - [ ] 4.3 Deploy non-destructively through Semaphore from `dev`, record runtime and resource evidence, and validate the spec scenario “Configuration is promoted.”
 

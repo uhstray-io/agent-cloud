@@ -112,6 +112,8 @@
           'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
           'targets': o11y_expected_metrics_targets | default([]),
           'retired_uids': o11y_expected_metrics_targets_retired_uids | default([]),
+          'group_retired_uids': o11y_expected_metrics_group_retired_uids | default([]),
+          'mode': o11y_expected_metrics_targets_mode | default('grouped'),
           'check_mode': ansible_check_mode,
           'grafana_running': (not ansible_check_mode and
             (_o11y_grafana_running.rc | default(1) | int == 0) and
@@ -143,4 +145,5 @@
   ansible.builtin.set_fact:
     _o11y_previous_expected_target_uids: "{{ (_o11y_expected_target_transition.stdout | from_json).paused_uids }}"
     _o11y_retired_expected_target_uids: "{{ (_o11y_expected_target_transition.stdout | from_json).retired_uids }}"
+    _o11y_expected_target_tombstones: "{{ (_o11y_expected_target_transition.stdout | from_json).tombstones }}"
   no_log: true
