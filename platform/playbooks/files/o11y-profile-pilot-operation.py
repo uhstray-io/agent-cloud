@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import selectors
 import signal
 import stat
 import subprocess
@@ -34,6 +35,7 @@ REASONS = {
     "container_state_changed", "volume_state_changed", "config_write_failed",
     "reload_failed", "profile_component_unhealthy", "profile_not_observed",
     "rollback_failed", "post_disable_query_not_observed", "operation_failed",
+    "operation_interrupted",
 }
 REQUIRED_CONTAINERS = {
     "o11y-prometheus", "o11y-loki", "o11y-alloy", "o11y-tempo",
@@ -79,18 +81,87 @@ def _candidate_module(path: str):
     return module
 
 
-def _run(argv: list[str], runner: Callable = subprocess.run) -> bytes:
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
     try:
-        result = runner(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=COMMAND_TIMEOUT, check=False,
-        )
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    process.kill()
+                process.wait(timeout=2)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Refusal("receiver_unavailable") from exc
-    output = result.stdout if isinstance(result.stdout, bytes) else str(result.stdout or "").encode()
-    if result.returncode != 0 or len(output) > MAX_COMMAND_BYTES:
-        raise Refusal("receiver_unavailable")
-    return output
+
+
+def _run(argv: list[str], runner: Callable | None = None) -> bytes:
+    if runner is not None and runner is not subprocess.run:
+        try:
+            result = runner(
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=COMMAND_TIMEOUT, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Refusal("receiver_unavailable") from exc
+        output = result.stdout if isinstance(result.stdout, bytes) else str(result.stdout or "").encode()
+        if result.returncode != 0 or len(output) > MAX_COMMAND_BYTES:
+            raise Refusal("receiver_unavailable")
+        return output
+
+    process: subprocess.Popen[bytes] | None = None
+    selector = selectors.DefaultSelector()
+    output = bytearray()
+    try:
+        process = subprocess.Popen(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+        if process.stdout is None:
+            raise Refusal("receiver_unavailable")
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + COMMAND_TIMEOUT
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Refusal("receiver_unavailable")
+            for key, _ in selector.select(remaining):
+                chunk = os.read(key.fd, min(65_536, MAX_COMMAND_BYTES + 1 - len(output)))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                output.extend(chunk)
+                if len(output) > MAX_COMMAND_BYTES:
+                    raise Refusal("receiver_unavailable")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Refusal("receiver_unavailable")
+        return_code = process.wait(timeout=remaining)
+        if return_code != 0:
+            raise Refusal("receiver_unavailable")
+        return bytes(output)
+    except Refusal:
+        raise
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal("receiver_unavailable") from exc
+    finally:
+        selector.close()
+        if process is not None:
+            try:
+                _stop_process(process)
+            finally:
+                if process.stdout is not None:
+                    process.stdout.close()
 
 
 def _decode_json(data: bytes) -> object:
@@ -333,17 +404,25 @@ def _query_profile(activation_start: int, runner: Callable) -> bool:
 
 
 def _wait_for_profile(
-    activation_start: int, runner: Callable, sleep_fn: Callable, attempts: int
+    activation_start: int, runner: Callable, sleep_fn: Callable, attempts: int,
+    interrupted: Callable[[], bool] = lambda: False,
 ) -> bool:
     for index in range(attempts):
+        if interrupted():
+            return False
         if _query_profile(activation_start, runner):
             return True
+        if interrupted():
+            return False
         if index + 1 < attempts:
             sleep_fn(10)
     return False
 
 
-def evaluate(payload: object, *, runner: Callable = subprocess.run, sleep_fn: Callable = time.sleep) -> dict:
+def evaluate(
+    payload: object, *, runner: Callable | None = None, sleep_fn: Callable = time.sleep,
+    interrupted: Callable[[], bool] = lambda: False,
+) -> dict:
     result = dict(SCHEMA)
     if not isinstance(payload, dict) or set(payload) != {
         "config_path", "receiver_sha", "disabled", "enabled", "candidate_helper",
@@ -380,6 +459,8 @@ def evaluate(payload: object, *, runner: Callable = subprocess.run, sleep_fn: Ca
         before_volumes, before_volume_names = _volume_snapshot(runner)
         if before_state["pyroscope_volume"] not in before_volume_names:
             raise Refusal("mount_mismatch")
+        if interrupted():
+            raise Refusal("operation_interrupted")
         if before == enabled_bytes:
             changed = True
             raise Refusal("baseline_ambiguous")
@@ -389,12 +470,18 @@ def evaluate(payload: object, *, runner: Callable = subprocess.run, sleep_fn: Ca
         temporary_enable_attempted = True
         activation_start = int(time.time())
         _write_config_in_place(path, enabled_bytes, inode)
+        if interrupted():
+            raise Refusal("operation_interrupted")
         current, current_inode = _read_config(path)
         if current != enabled_bytes or current_inode != inode:
             raise Refusal("config_write_failed")
         _reload(runner)
         _component_state(candidate_module, "healthy", runner)
-        delivery = _wait_for_profile(activation_start, runner, sleep_fn, attempts=19)
+        delivery = _wait_for_profile(
+            activation_start, runner, sleep_fn, attempts=19, interrupted=interrupted
+        )
+        if interrupted():
+            raise Refusal("operation_interrupted")
         sampling = delivery
         if not delivery:
             raise Refusal("profile_not_observed")
@@ -415,7 +502,7 @@ def evaluate(payload: object, *, runner: Callable = subprocess.run, sleep_fn: Ca
                 restored = True
                 if temporary_enable_attempted:
                     post_disable_query = _wait_for_profile(
-                        activation_start, runner, sleep_fn, attempts=7
+                        activation_start, runner, sleep_fn, attempts=7, interrupted=interrupted
                     )
                     if not post_disable_query:
                         reason = "post_disable_query_not_observed"
@@ -426,13 +513,24 @@ def evaluate(payload: object, *, runner: Callable = subprocess.run, sleep_fn: Ca
         if changed and before_containers is not None and before_volumes is not None:
             try:
                 after_containers, _ = _container_snapshot(path, runner)
-                after_volumes, _ = _volume_snapshot(runner)
-                if after_containers != before_containers:
+                if after_containers != before_containers and reason != "rollback_failed":
                     reason = "container_state_changed"
-                if after_volumes != before_volumes:
+            except Exception:
+                if reason not in ("rollback_failed", "container_state_changed"):
+                    reason = "receiver_unavailable"
+            try:
+                after_volumes, _ = _volume_snapshot(runner)
+                if (after_volumes != before_volumes
+                        and reason not in ("rollback_failed", "container_state_changed")):
                     reason = "volume_state_changed"
             except Exception:
-                reason = "receiver_unavailable"
+                if reason not in ("rollback_failed", "container_state_changed"):
+                    reason = "receiver_unavailable"
+    preserved_failure = {
+        "rollback_failed", "container_state_changed", "volume_state_changed", "receiver_unavailable",
+    }
+    if interrupted() and reason not in preserved_failure:
+        reason = "operation_interrupted"
     if reason == "verified" and not (sampling and delivery and restored and post_disable_query):
         reason = "operation_failed"
     if reason == "verified":
@@ -452,18 +550,33 @@ def evaluate(payload: object, *, runner: Callable = subprocess.run, sleep_fn: Ca
     return result
 
 
-def main() -> int:
-    def interrupt(_signum, _frame):
-        raise Refusal("operation_failed")
+def _evaluate_with_signal_handlers(payload: object) -> dict:
+    pending_signals: set[int] = set()
 
-    signal.signal(signal.SIGTERM, interrupt)
-    signal.signal(signal.SIGINT, interrupt)
+    def defer(signum, _frame):
+        pending_signals.add(signum)
+
+    previous = {
+        signum: signal.signal(signum, defer)
+        for signum in (signal.SIGTERM, signal.SIGINT)
+    }
+    try:
+        result = evaluate(payload, interrupted=lambda: bool(pending_signals))
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if pending_signals and result["status"] == "verified":
+        result.update(status="unavailable", reason="operation_interrupted")
+    return result
+
+
+def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeError):
         payload = None
     try:
-        result = evaluate(payload)
+        result = _evaluate_with_signal_handlers(payload)
     except Exception:
         result = dict(SCHEMA)
         result["reason"] = "operation_failed"

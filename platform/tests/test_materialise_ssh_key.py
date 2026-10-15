@@ -315,6 +315,7 @@ TEMPFILE_USERS = {
     "generate-service-ssh-key.yml": "ssh-keygen output scratch",
     "run-agw-conformance.yml": "conformance key files and results, removed in an always: block",
     "verify-o11y-profile-pilot.yml": "disposable profile candidates in tmpfs, removed in an always: block",
+    "accept-o11y-profile-pilot.yml": "rendered candidates and helper files in tmpfs, removed in an always: block",
 }
 
 

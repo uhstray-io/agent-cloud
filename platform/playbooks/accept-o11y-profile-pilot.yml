@@ -1,6 +1,6 @@
 ---
 # Temporarily enable only Alloy's existing self-profile pipeline, prove delivery,
-# then restore the disabled bind-mounted config and prove the stored sample remains.
+# then restore the disabled bind-mounted config and prove a post-disable query.
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
@@ -10,17 +10,24 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/accept-o11y-profile-pilot.yml
       - platform/playbooks/files/o11y-profile-pilot-operation.py
+      - platform/playbooks/files/validate-o11y-profile-acceptance-binding.py
       - platform/playbooks/files/verify-o11y-profile-candidates.py
       - platform/services/o11y/deployment/templates/config.alloy.j2
 
 - name: Verify current private inventory provenance
   ansible.builtin.import_playbook: survey-o11y-inventory-provenance.yml
+  vars:
+    _extra_var_guard_nested: true
 
 - name: Revalidate the exact disabled and enabled Alloy candidates
   ansible.builtin.import_playbook: verify-o11y-profile-pilot.yml
+  vars:
+    _extra_var_guard_nested: true
 
 - name: Revalidate current receiver budgets and exact deployed revision
   ansible.builtin.import_playbook: verify-o11y-production-budgets.yml
+  vars:
+    _extra_var_guard_nested: true
 
 - name: Require all profile pilot gates before the live operation
   hosts: localhost
@@ -44,10 +51,34 @@
       - estate_coverage_semaphore_repository_id
     _profile_forgeries: "{{ _profile_forged_names | intersect('' | extra_var_names) }}"
     _profile_provenance: "{{ hostvars['localhost']._survey_comparison | default({}) }}"
+    _profile_semaphore_inventories: "{{ hostvars['localhost']._survey_inventories.json | default(none) }}"
+    _profile_semaphore_templates: "{{ hostvars['localhost']._survey_templates.json | default(none) }}"
+    _profile_semaphore_repositories: "{{ hostvars['localhost']._survey_repositories.json | default(none) }}"
     _profile_candidate: "{{ hostvars[_profile_receiver]._profile_receipt | default({}) if _profile_receiver | length > 0 else {} }}"
     _profile_budget_disk: "{{ hostvars[_profile_receiver]._guest_root_disk | default({}) if _profile_receiver | length > 0 else {} }}"
     _profile_budget_memory: "{{ hostvars[_profile_receiver]._guest_memory_headroom | default({}) if _profile_receiver | length > 0 else {} }}"
   tasks:
+    - name: Verify the acceptance template binds to the surveyed production inventory
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/validate-o11y-profile-acceptance-binding.py"]
+        stdin: >-
+          {{ {'project_id': estate_coverage_semaphore_project_id | default(none),
+              'repository_id': estate_coverage_semaphore_repository_id | default(none),
+              'inventories': _profile_semaphore_inventories,
+              'templates': _profile_semaphore_templates,
+              'repositories': _profile_semaphore_repositories} | to_json }}
+        stdin_add_newline: false
+      register: _profile_binding_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Parse the fixed acceptance-template binding receipt
+      ansible.builtin.set_fact:
+        _profile_binding: "{{ _profile_binding_raw.stdout | default('{}', true) | from_json }}"
+      no_log: true
+
     - name: Require exact controller, receiver, inventory, candidate, and resource gates
       ansible.builtin.assert:
         that:
@@ -67,6 +98,9 @@
           - _profile_provenance.reason == 'exact_bytes_match'
           - _profile_provenance.public_sha == expected_repository_sha
           - _profile_provenance.private_sha == site_config_base_sha
+          - _profile_binding.schema_version == 1
+          - _profile_binding.status == 'verified'
+          - _profile_binding.reason == 'unique_acceptance_template_bound_to_production_inventory'
           - _profile_candidate.status == 'validated'
           - _profile_candidate.target_count == 1
           - _profile_candidate.profile_type_count == 9
@@ -78,7 +112,7 @@
         fail_msg: "Profile acceptance refused: a reviewed revision, private inventory, candidate, or current resource gate is missing or mismatched."
         quiet: true
 
-- name: Temporarily sample Alloy and prove persistent delivery
+- name: Temporarily sample Alloy and prove post-disable query
   hosts: o11y_svc
   gather_facts: false
   become: false
@@ -256,6 +290,7 @@
                 'container_state_changed', 'volume_state_changed', 'config_write_failed', 'reload_failed',
                 'profile_component_unhealthy', 'profile_not_observed', 'rollback_failed',
                 'post_disable_query_not_observed', 'operation_failed',
+                'operation_interrupted',
                 'sampled_delivered_restored_post_disable_query_observed']
               - _profile_operation_receipt.status in ['verified', 'unavailable']
               - _profile_operation_receipt.sampling in ['observed', 'unverified']

@@ -102,15 +102,30 @@ container identity and mount plus all rootless Podman named-volume metadata.
 The helper writes the temporary enabled config through the existing
 `config.alloy` inode, POSTs Alloy's `/-/reload` endpoint from inside the Alloy
 container, checks the profile component, and queries Pyroscope for
-`service_name="o11y/alloy"`. Its unconditional `finally` restores the disabled
-config through that same inode, reloads Alloy, verifies the profile component is
-absent, queries Pyroscope again with the same activation boundary, and requires
-a positive timeline sample at or after that boundary. The receipt reports
+`service_name="o11y/alloy"`. SIGTERM and SIGINT are recorded without raising so
+the cleanup can restore the disabled config through that same inode, reload
+Alloy, verify the profile component is absent, query Pyroscope again with the
+same activation boundary, and require a positive timeline sample at or after
+that boundary. After cleanup, a pending signal produces a sanitized failed
+receipt. SIGKILL or host power loss can still stop the process before cleanup;
+the operation does not protect against those events. The receipt reports
 `post_disable_query=observed`; this proves a post-disable query result, not disk
 durability across a Pyroscope restart. It compares the container and volume
 snapshots, emits only fixed status/reason, bounded service identity, and
 revision/config hashes, and does not change retention or restart/recreate a
 receiver container.
+
+The operation gate checks the fetched Semaphore metadata for exactly one
+production inventory, one acceptance template for this playbook, and the expected
+repository. It binds the template's inventory ID to that unique production record;
+the imported provenance survey separately requires `observed` with
+`exact_bytes_match` for the same fetched production inventory. The inventory ID
+stays inside the `no_log` acceptance validation and is not added to the survey's
+public receipt. This proves the configured template binding. As recorded in
+`docs/MISTAKES.md` §1.20, no trusted task-ID environment variable is available, so
+this source gate cannot prove which template launched the current invocation. It
+refuses duplicate same-playbook templates and does not require
+`SEMAPHORE_TASK_ID`.
 
 **Prior receipts (2026-10-15):** Dev-bound inventory provenance task 5818
 matched the exact private inventory bytes at site-config `main` SHA
