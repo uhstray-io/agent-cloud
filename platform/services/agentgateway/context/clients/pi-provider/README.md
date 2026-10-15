@@ -60,8 +60,9 @@ or RPC session starts and right after `/login`, not for `--list-models` or `-p`.
 install, run `/login` (or open pi once, with the key already stored or exported) before the two
 commands above show models. If the gateway is unreachable at start, the last list stays in use.
 
-`pi auth check --provider uhstray` reports `provider_not_found`: that command builds its own
-runtime without loading extensions, so it cannot see extension providers. Use the two commands
+`pi auth check --provider uhstray` prints `not_ready` even with a valid key (`--json` gives the
+reason `provider_not_found`): that command builds its own runtime without loading extensions, so it
+cannot see extension providers. Use the two commands
 above instead.
 
 ## Uninstall
