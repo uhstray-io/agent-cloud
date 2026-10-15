@@ -1,0 +1,14 @@
+# Managed by deploy-o11y.yml. Read-only measurement; only the textfile output is writable.
+[Unit]
+Description=Collect a complete o11y named-volume capacity sample
+
+[Service]
+Type=oneshot
+User={{ _capacity_user }}
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+ExecStart=/usr/bin/python3 {{ _capacity_sampler }}
+TimeoutStartSec=600
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ReadWritePaths={{ _capacity_textfile_dir }}

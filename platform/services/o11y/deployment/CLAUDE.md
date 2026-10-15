@@ -132,7 +132,7 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
 | Variable | Effect |
 |---|---|
 | `dgx_spark_scrape_enabled` | Renders `config/scrape.d/dgx-spark.yml` and the `inference-failing`, `telemetry-missing`, `memory-thermal` and `benchmark-gate` alert groups; off lists those rules under `deleteRules` |
-| `o11y_inference_probe_enabled` | Installs the five-minute probe timer, its textfile collector and the two probe rules; off removes any leftover artefacts |
+| `o11y_inference_probe_enabled` | Installs the five-minute probe timer and two probe rules; off removes only the probe artefacts. The shared textfile collector remains active for daily capacity samples |
 | `o11y_inference_probe_client_leaf` | With the probe enabled, sends it straight to the gateway's mutual-TLS listener as a gateway client identity, presenting this declared internal-CA client leaf; places the CA bundle beside the leaf and maps the gateway's name on this host (README, "Gateway client identity") |
 | `o11y_alerts_enabled` | Unpauses the rendered rules and routes them to the Discord contact point, except the `benchmark-gate` placeholder, which stays paused and unrouted (`templates/alerts.yml.j2:340-349,428-432`) |
 | `o11y_expected_metrics_targets_reviewed` | Defaults false; enables production per-target missing-telemetry rules only with alerts enabled and a reviewed bounded five-label target declaration. See README, “Expected metrics target contract.” |
