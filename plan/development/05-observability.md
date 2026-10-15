@@ -196,6 +196,20 @@ notification, then use a five-minute group interval and a four-hour repeat
 interval. Verify the provisioned rule settings by read-back; a Discord delivery
 drill is a separate runtime receipt.
 
+Dev-bound task 5925 at merged `dev` revision
+`bb66c323386299a9bb2f52453078540d0db7a19c` completed the grouped delivery
+proof: two unreachable scrape instances under one service, two matching Grafana
+service-down alerts, and one owned Discord message with both instance details
+and the service dashboard link. Its always-run recovery removed the temporary
+scrape job, preserved the active rule and target baselines, and cleared the
+marker. Task 5913 had timed out because Grafana's evaluated-alert API lacks
+`__alert_rule_uid__`; the reviewed correction matches the provisioned title
+through `alertname` and checks `grafana_folder` with exact service, cluster,
+environment, and instance labels. Non-destructive deploy task 5784 verified
+provisioned labels and timing, and delivery task 5795 confirmed the Discord
+destination. Together these receipts close OpenSpec alert task 3.3. Resource
+promotion and retention capacity remain separate gates.
+
 > **As-built check, 2026-09-22 (branch `feat/observability-estate`):** The
 > committed local o11y compose defines Grafana, Prometheus, Loki and Alloy;
 > `config/prometheus.yml` scrapes only Prometheus, and `config/config.alloy`

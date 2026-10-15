@@ -331,7 +331,7 @@ def test_editor_exception_is_scoped_and_capacity_gates_stay_open():
         "2.2b": True,
         "2.2c": True,
         "2.3": True,
-        "3.3": False,
+        "3.3": True,
         "4.3": False,
         "5.3": False,
         "5.4": False,
