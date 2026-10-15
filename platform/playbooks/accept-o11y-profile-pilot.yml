@@ -1,0 +1,343 @@
+---
+# Temporarily enable only Alloy's existing self-profile pipeline, prove delivery,
+# then restore the disabled bind-mounted config and prove a post-disable query.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed operation source
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/accept-o11y-profile-pilot.yml
+      - platform/playbooks/files/o11y-profile-pilot-operation.py
+      - platform/playbooks/files/validate-o11y-profile-acceptance-binding.py
+      - platform/playbooks/files/verify-o11y-profile-candidates.py
+      - platform/services/o11y/deployment/templates/config.alloy.j2
+
+- name: Verify current private inventory provenance
+  ansible.builtin.import_playbook: survey-o11y-inventory-provenance.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Revalidate the exact disabled and enabled Alloy candidates
+  ansible.builtin.import_playbook: verify-o11y-profile-pilot.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Revalidate current receiver budgets and exact deployed revision
+  ansible.builtin.import_playbook: verify-o11y-production-budgets.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Require all profile pilot gates before the live operation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _profile_receiver_hosts: "{{ groups.get('o11y_svc', []) }}"
+    _profile_receiver: "{{ _profile_receiver_hosts | first | default('') }}"
+    _profile_forged_names:
+      - local_mode
+      - container_engine
+      - podman_rootful
+      - monorepo_deploy_path
+      - local_monorepo_dir
+      - o11y_alloy_profile_pilot_enabled
+      - o11y_profile_pilot_config_receipt_id
+      - o11y_profile_pilot_privacy_receipt_id
+      - o11y_profile_pilot_resource_receipt_id
+      - estate_coverage_semaphore_project_id
+      - estate_coverage_semaphore_repository_id
+    _profile_forgeries: "{{ _profile_forged_names | intersect('' | extra_var_names) }}"
+    _profile_provenance: "{{ hostvars['localhost']._survey_comparison | default({}) }}"
+    _profile_semaphore_inventories: "{{ hostvars['localhost']._survey_inventories.json | default(none) }}"
+    _profile_semaphore_templates: "{{ hostvars['localhost']._survey_templates.json | default(none) }}"
+    _profile_semaphore_repositories: "{{ hostvars['localhost']._survey_repositories.json | default(none) }}"
+    _profile_candidate: "{{ hostvars[_profile_receiver]._profile_receipt | default({}) if _profile_receiver | length > 0 else {} }}"
+    _profile_budget_disk: "{{ hostvars[_profile_receiver]._guest_root_disk | default({}) if _profile_receiver | length > 0 else {} }}"
+    _profile_budget_memory: "{{ hostvars[_profile_receiver]._guest_memory_headroom | default({}) if _profile_receiver | length > 0 else {} }}"
+  tasks:
+    - name: Verify the acceptance template binds to the surveyed production inventory
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/validate-o11y-profile-acceptance-binding.py"]
+        stdin: >-
+          {{ {'project_id': estate_coverage_semaphore_project_id | default(none),
+              'repository_id': estate_coverage_semaphore_repository_id | default(none),
+              'inventories': _profile_semaphore_inventories,
+              'templates': _profile_semaphore_templates,
+              'repositories': _profile_semaphore_repositories} | to_json }}
+        stdin_add_newline: false
+      register: _profile_binding_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Parse the fixed acceptance-template binding receipt
+      ansible.builtin.set_fact:
+        _profile_binding: "{{ _profile_binding_raw.stdout | default('{}', true) | from_json }}"
+      no_log: true
+
+    - name: Require exact controller, receiver, inventory, candidate, and resource gates
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - site_config_base_sha | default('') is match('^[0-9a-f]{40}$')
+          - _profile_receiver_hosts | length == 1
+          - _profile_forgeries | length == 0
+          - not (hostvars[_profile_receiver].local_mode | default(false) | bool)
+          - hostvars[_profile_receiver].container_engine | default('') == 'podman'
+          - not (hostvars[_profile_receiver].podman_rootful | default(false) | bool)
+          - not (hostvars[_profile_receiver].o11y_alloy_profile_pilot_enabled | default(false) | bool)
+          - hostvars[_profile_receiver].o11y_profile_pilot_config_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - hostvars[_profile_receiver].o11y_profile_pilot_privacy_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - hostvars[_profile_receiver].o11y_profile_pilot_resource_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - _profile_provenance.status == 'observed'
+          - _profile_provenance.reason == 'exact_bytes_match'
+          - _profile_provenance.public_sha == expected_repository_sha
+          - _profile_provenance.private_sha == site_config_base_sha
+          - _profile_binding.schema_version == 1
+          - _profile_binding.status == 'verified'
+          - _profile_binding.reason == 'unique_acceptance_template_bound_to_production_inventory'
+          - _profile_candidate.status == 'validated'
+          - _profile_candidate.target_count == 1
+          - _profile_candidate.profile_type_count == 9
+          - _profile_budget_disk.stdout_lines | length == 2
+          - _profile_budget_disk.stdout_lines[1].split() | length == 2
+          - _profile_budget_disk.stdout_lines[1].split()[0] | int > 0
+          - (_profile_budget_disk.stdout_lines[1].split()[1] | int) / (_profile_budget_disk.stdout_lines[1].split()[0] | int) >= 0.30
+          - _profile_budget_memory.stdout | float >= 25.0
+        fail_msg: "Profile acceptance refused: a reviewed revision, private inventory, candidate, or current resource gate is missing or mismatched."
+        quiet: true
+
+- name: Temporarily sample Alloy and prove post-disable query
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars_files:
+    - vars/o11y-metric-labels.yml
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _profile_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _profile_deploy_dir: "{{ _profile_monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _profile_internal_names:
+      - ansible_python_interpreter
+      - ansible_connection
+      - ansible_host
+      - ansible_user
+      - ansible_port
+      - ansible_become
+      - become
+      - ansible_become_user
+      - become_user
+      - ansible_become_method
+      - become_method
+      - ansible_remote_tmp
+    _profile_internal_forgeries: "{{ _profile_internal_names | intersect('' | extra_var_names) }}"
+  tasks:
+    - name: Refuse overridden receiver identity or runtime paths
+      ansible.builtin.assert:
+        that:
+          - _profile_internal_forgeries | length == 0
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - container_engine | default('') == 'podman'
+          - not (local_mode | default(false) | bool)
+          - not (podman_rootful | default(false) | bool)
+          - monorepo_deploy_path | default('') == 'platform/services/o11y/deployment'
+        fail_msg: "Profile acceptance refused: the Dev receiver scope or its paths are ambiguous."
+        quiet: true
+
+    - name: Read the currently deployed receiver source revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _profile_monorepo_dir }}"
+      register: _profile_receiver_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed receiver source revision
+      ansible.builtin.assert:
+        that: _profile_receiver_revision.stdout == expected_receiver_sha
+        fail_msg: "Profile acceptance refused: the deployed receiver source differs from the reviewed revision."
+        quiet: true
+
+    - name: Require tmpfs for rendered candidate files
+      ansible.builtin.import_tasks: tasks/require-tmpfs-remote-tmp.yml
+
+    - name: Allocate a private tmpfs workspace
+      ansible.builtin.tempfile:
+        state: directory
+        path: /dev/shm/ansible-tmp
+        prefix: o11y-profile-acceptance-
+      register: _profile_workspace
+      no_log: true
+
+    - name: Render candidates, execute the guarded operation, and remove temporary files
+      block:
+        - name: Render the disabled configuration
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+            dest: "{{ _profile_workspace.path }}/disabled.alloy"
+            mode: "0600"
+          vars:
+            o11y_alloy_profile_pilot_enabled: false
+          no_log: true
+
+        - name: Render the single-target enabled configuration
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+            dest: "{{ _profile_workspace.path }}/enabled.alloy"
+            mode: "0600"
+          vars:
+            o11y_alloy_profile_pilot_enabled: true
+          no_log: true
+
+        - name: Copy the bounded operation verifier into tmpfs
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/o11y-profile-pilot-operation.py"
+            dest: "{{ _profile_workspace.path }}/operation.py"
+            mode: "0700"
+          no_log: true
+
+        - name: Copy the candidate component parser into tmpfs
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/verify-o11y-profile-candidates.py"
+            dest: "{{ _profile_workspace.path }}/candidates.py"
+            mode: "0700"
+          no_log: true
+
+        - name: Read rendered candidate files without displaying contents
+          ansible.builtin.slurp:
+            src: "{{ _profile_workspace.path }}/{{ item }}.alloy"
+          loop: [disabled, enabled]
+          register: _profile_configs
+          no_log: true
+
+        - name: Run the Alloy-only activation, delivery, restoration, and post-disable query proof
+          ansible.builtin.command:
+            argv: [python3, "{{ _profile_workspace.path }}/operation.py"]
+            stdin: >-
+              {{ {'config_path': _profile_deploy_dir ~ '/config/config.alloy',
+                  'receiver_sha': expected_receiver_sha,
+                  'disabled': (_profile_configs.results[0].content | b64decode),
+                  'enabled': (_profile_configs.results[1].content | b64decode),
+                  'candidate_helper': _profile_workspace.path ~ '/candidates.py'} | to_json }}
+            stdin_add_newline: false
+          register: _profile_operation_raw
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Validate the fixed operation receipt JSON
+          ansible.builtin.command:
+            argv: [python3, -c, "import json,sys; json.load(sys.stdin)"]
+            stdin: "{{ _profile_operation_raw.stdout | default('', true) }}"
+            stdin_add_newline: false
+          register: _profile_receipt_json
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Report a fixed failure when the operation receipt is unavailable
+          ansible.builtin.debug:
+            msg:
+              schema_version: 1
+              status: unavailable
+              reason: operation_failed
+              service: o11y/alloy
+              restored: unverified
+          changed_when: false
+          when: _profile_operation_raw.rc != 0 or _profile_receipt_json.rc != 0
+
+        - name: Require valid operation receipt JSON
+          ansible.builtin.assert:
+            that:
+              - _profile_operation_raw.rc == 0
+              - _profile_receipt_json.rc == 0
+            fail_msg: "Profile acceptance helper did not return its fixed receipt; raw output is suppressed."
+            quiet: true
+          no_log: true
+
+        - name: Parse the fixed sanitized operation receipt
+          ansible.builtin.set_fact:
+            _profile_operation_receipt: "{{ _profile_operation_raw.stdout | from_json }}"
+          no_log: true
+
+        - name: Require the closed operation receipt schema and fixed values
+          ansible.builtin.assert:
+            that:
+              - >-
+                _profile_operation_receipt.keys() | sort ==
+                ['delivery', 'disabled_config_sha256', 'enabled_config_sha256', 'post_disable_query', 'reason',
+                'receiver_sha', 'restored', 'sampling', 'schema_version', 'service', 'status']
+              - _profile_operation_receipt.schema_version == 1
+              - _profile_operation_receipt.service == 'o11y/alloy'
+              - >-
+                _profile_operation_receipt.receiver_sha == expected_receiver_sha or
+                (_profile_operation_receipt.status == 'unavailable' and
+                _profile_operation_receipt.reason == 'invalid_input' and
+                _profile_operation_receipt.receiver_sha == '')
+              - >-
+                _profile_operation_receipt.reason in
+                ['invalid_input', 'receiver_unavailable', 'baseline_ambiguous', 'mount_mismatch',
+                'container_state_changed', 'volume_state_changed', 'config_write_failed', 'reload_failed',
+                'profile_component_unhealthy', 'profile_not_observed', 'rollback_failed',
+                'post_disable_query_not_observed', 'operation_failed',
+                'operation_interrupted',
+                'sampled_delivered_restored_post_disable_query_observed']
+              - _profile_operation_receipt.status in ['verified', 'unavailable']
+              - _profile_operation_receipt.sampling in ['observed', 'unverified']
+              - _profile_operation_receipt.delivery in ['observed', 'unverified']
+              - _profile_operation_receipt.restored in ['disabled', 'unverified']
+              - _profile_operation_receipt.post_disable_query in ['observed', 'unverified']
+              - >-
+                _profile_operation_receipt.disabled_config_sha256 | default('') == '' or
+                _profile_operation_receipt.disabled_config_sha256 is match('^[0-9a-f]{64}$')
+              - >-
+                _profile_operation_receipt.enabled_config_sha256 | default('') == '' or
+                _profile_operation_receipt.enabled_config_sha256 is match('^[0-9a-f]{64}$')
+            fail_msg: "Profile acceptance helper returned an invalid fixed receipt; raw output is suppressed."
+            quiet: true
+          no_log: true
+
+        - name: Report the bounded profile acceptance receipt
+          ansible.builtin.debug:
+            msg: >-
+              {{ _profile_operation_receipt | combine({
+                'public_sha': expected_repository_sha,
+                'private_sha': site_config_base_sha,
+                'inventory_provenance': 'exact_bytes_match',
+                'candidate': 'validated',
+                'resource_gate': 'passed',
+                'profile_config_state_after_run': _profile_operation_receipt.restored
+              }) | to_json }}
+          changed_when: false
+
+        - name: Require complete live profile acceptance
+          ansible.builtin.assert:
+            that:
+              - _profile_operation_receipt.status == 'verified'
+              - _profile_operation_receipt.reason == 'sampled_delivered_restored_post_disable_query_observed'
+              - _profile_operation_receipt.sampling == 'observed'
+              - _profile_operation_receipt.delivery == 'observed'
+              - _profile_operation_receipt.restored == 'disabled'
+              - _profile_operation_receipt.post_disable_query == 'observed'
+            fail_msg: >-
+              Profile acceptance unavailable ({{ _profile_operation_receipt.reason }});
+              restored={{ _profile_operation_receipt.restored }}. Raw profile data and runtime output are suppressed.
+            quiet: true
+
+      always:
+        - name: Remove candidate files from tmpfs
+          ansible.builtin.file:
+            path: "{{ _profile_workspace.path }}"
+            state: absent
+          no_log: true
+          when: _profile_workspace.path is defined

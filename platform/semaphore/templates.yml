@@ -2187,6 +2187,33 @@ templates:
     # Public SHA is guarded; the receipt fingerprints rendered candidates and reports
     # private inventory revision as unverified for separate reviewed comparison.
 
+  - name: Accept o11y Profile Pilot (Dev)
+    playbook: platform/playbooks/accept-o11y-profile-pilot.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact Dev checkout revision required for this acceptance run"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Reviewed deployed receiver commit SHA"
+        description: "Exact source revision currently deployed on the Dev receiver"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config integration branch"
+        description: "Private inventory branch used by the provenance comparison"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config commit SHA"
+        description: "Exact private inventory revision required before activation"
+        type: string
+        required: true
+    # Revalidates provenance, candidates, and live resource headroom before touching
+    # only the existing Alloy config inode; the operation restores the disabled config.
+
   - name: Survey o11y Profile Pilot Inventory Provenance (Dev)
     playbook: platform/playbooks/survey-o11y-inventory-provenance.yml
     repository: agent-cloud dev

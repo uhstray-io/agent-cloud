@@ -71,6 +71,12 @@ def test_inventory_byte_difference_is_not_promoted_to_match():
     assert report["reason"] == "inventory_bytes_differ"
 
 
+def test_public_receipt_keeps_the_exact_fixed_schema():
+    report = SURVEY.evaluate(payload())
+
+    assert set(report) == {"schema_version", "status", "reason", "public_sha", "private_sha"}
+
+
 def test_stale_private_branch_tip_refuses_comparison():
     candidate = payload()
     candidate["private_tip_sha"] = "c" * 40
