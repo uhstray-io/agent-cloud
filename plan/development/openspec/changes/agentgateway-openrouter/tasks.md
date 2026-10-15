@@ -48,8 +48,8 @@ templates, never one-off writes.
 - [ ] 3.1 Create an OpenRouter API key with a credit limit at the provider (the hard spend cap)
 - [x] 3.2 Seed `secret/services/agentgateway:openrouter_api_key` with the `Seed OpenBao Key`
       template (done by the operator, Semaphore task 5659)
-- [x] 3.3 Operator decision 2026-10-14: the seven models in `design.md` D4 (client name = OpenRouter
-      id); the operator's own identity in `agw_openrouter_identities`, with `agw_openrouter_admins: true`. The key is
+- [x] 3.3 Operator decision 2026-10-14: the seven models first listed in `design.md` D4 (an eighth
+      was added in 3.9; client name = OpenRouter id); the operator's own identity in `agw_openrouter_identities`, with `agw_openrouter_admins: true`. The key is
       already seeded in production (Seed OpenBao Key, Semaphore task 5659)
 - [x] 3.4 Declare them in site-config's gateway inventory; deploy through the Semaphore template
       (`(Dev)` first); optionally `-e agw_verify_openrouter=true` once
@@ -75,7 +75,8 @@ templates, never one-off writes.
       live: no service key has been handed out, so that half rests on the render and test proof
       (3.6), not on a request. Not ticked: the task text asks for both.
 - [x] 3.9 Add `anthropic/claude-opus-5.5` (operator request 2026-10-15, after adding it to the
-      OpenRouter account allowlist). site-config #94 (merged 8ee123d1, reviewed) declares it;
+      OpenRouter account allowlist). Evidence read by the lead from production Semaphore and the probe
+      response, not re-read here: site-config #94 (merged 8ee123d1, reviewed) declares it;
       inventory synced; Deploy agentgateway (Dev) dry run 5770, real run 5771: the verifying identity
       lists `qwen3.8-flash-next` and all eight OpenRouter models. Lead probe 2026-10-15 with the
       operator's key: `anthropic/claude-opus-5.5` answered 200 through
