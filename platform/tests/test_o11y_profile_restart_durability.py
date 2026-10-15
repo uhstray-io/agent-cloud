@@ -444,6 +444,15 @@ def test_success_restarts_only_pyroscope_and_preserves_exact_sample(monkeypatch,
     assert (restart_command, 45) in runner.timeout_calls
 
 
+def test_durability_guard_allows_openbao_variable_group_names_only():
+    plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
+    internal_names = set(plays[2]["vars"]["_durability_internal_names"])
+    configured_variable_group_names = {"openbao_addr", "bao_role_id", "bao_secret_id"}
+
+    assert configured_variable_group_names.isdisjoint(internal_names)
+    assert "_durability_controller_sha" in internal_names
+
+
 def test_restart_playbook_is_dev_bound_and_reports_only_a_fixed_receipt():
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"

@@ -152,6 +152,14 @@ persistence across a Pyroscope restart remains a separate open gate. The only
 profile target remains Alloy's own `alloy:12345` pprof endpoint, with the
 bounded `service_name="o11y/alloy"` identity and 60-second interval.
 
+Dev-bound durability task 5880 (source `f696d208813e753bcd519fc57b001353b2d50920`)
+refused at the initial localhost assertion because the configured Semaphore
+variable group's OpenBao input names were treated as forged extra vars. It
+stopped before contacting the receiver or restarting Pyroscope, so it provides
+no durability evidence. The playbook-specific forged-name set now permits those
+three names while retaining its internal-override checks; task 2.3 remains open
+until a reviewed durability run succeeds.
+
 Dev-bound acceptance task 5854 subsequently succeeded against the exact reviewed
 receiver revision. Its fixed receipt reports `verified`,
 `sampled_delivered_restored_post_disable_query_observed`, observed sampling and
