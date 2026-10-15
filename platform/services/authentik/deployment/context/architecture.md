@@ -94,8 +94,9 @@ inventory list `platform_retired_accounts` (default empty) and run Deploy Authen
 
 1. If the account is a platform administrator, remove it from `platform_admins` in the same
    change. The deploy refuses a username that is both retired and active (an administrator, or a
-   user the users blueprint creates, including env.j2 defaults), and refuses `akadmin`, before it
-   applies anything.
+   user the users blueprint creates, including env.j2 defaults, or a declared
+   `platform_admins_exceptions` member; names are compared without regard to case), and refuses the
+   system accounts `akadmin`, `AnonymousUser` and `ak-outpost-*`, before it applies anything.
 2. The deploy renders `templates/platform-retired.yaml.j2` into `blueprints-active/platform-retired.yaml`:
    one `state: absent` `authentik_core.user` per name. With an empty list nothing is rendered and a
    stale copy is pruned, so a platform that retires nobody carries no extra blueprint.

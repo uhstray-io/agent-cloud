@@ -60,7 +60,7 @@ all:
     # verify accepts them and fails on any other member.
     # Accounts to DELETE are declared as ONE list of usernames, `platform_retired_accounts`
     # (default empty, so nothing is retired). Remove the account from `platform_admins` first:
-    # the deploy refuses a name that is also active, and `akadmin`. Shape:
+    # the deploy refuses a name that is also active (or an exception) and the system accounts. Shape:
     #   platform_retired_accounts: []
     # List the usernames to retire, then run Deploy Authentik; its verify proves each one gone.
 

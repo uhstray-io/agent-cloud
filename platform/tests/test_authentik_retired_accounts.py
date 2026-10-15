@@ -6,9 +6,10 @@ each name gone. This file runs the deploy's REAL tasks (lifted out of deploy-aut
 name, as test_authentik_platform_admins.py does for the collision guard) and the REAL templates:
 
   - the names reach the retired set the verify reads, joined with the legacy env-derived ones;
-  - a name that is also an active account (an administrator, or a user the users blueprint
-    creates) or the bootstrap `akadmin` is refused before anything is applied, as is a list that
-    is not a list of distinct non-empty strings;
+  - a name that is also an active account (an administrator, a user the users blueprint creates,
+    or a declared platform-admins exception; compared without regard to case) or a system account
+    (`akadmin`, `AnonymousUser`, `ak-outpost-*`) is refused before anything is applied, as is a
+    list that is not a list of distinct non-empty strings;
   - the blueprint renders one `state: absent` user per name, safely quoted, and is not placed at
     all (and a stale copy is pruned) when the list is empty, so an empty declaration changes
     nothing a deploy did before the list existed;
@@ -150,10 +151,62 @@ def test_the_legacy_variable_is_still_checked_against_the_active_set(tmp_path):
     assert "A retired username is also an ACTIVE username: stray" in done.stdout
 
 
-def test_the_bootstrap_account_cannot_be_retired(tmp_path):
-    done, _ = _facts(tmp_path, {"platform_retired_accounts": ["akadmin"]})
+@pytest.mark.parametrize(
+    "name",
+    ["akadmin", "AKADMIN", "AnonymousUser", "anonymoususer", "ak-outpost-1234", "Ak-Outpost-embedded"],
+)
+def test_a_system_account_cannot_be_retired(tmp_path, name):
+    done, _ = _facts(tmp_path, {"platform_retired_accounts": [name]})
     assert done.returncode != 0, done.stdout
-    assert "must be a list of non-empty, distinct username" in done.stdout
+    assert "is a SYSTEM account" in done.stdout
+
+
+@pytest.mark.parametrize("name", ["ak-outposts", "my-akadmin", "xak-outpost-1"])
+def test_a_name_that_only_resembles_a_system_account_is_allowed(tmp_path, name):
+    done, facts = _facts(tmp_path, {"platform_retired_accounts": [name]})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert facts["accounts"] == [name]
+
+
+def test_a_declared_platform_admins_exception_cannot_be_retired(tmp_path):
+    done, _ = _facts(
+        tmp_path, {"platform_admins_exceptions": ["  hand.added "], "platform_retired_accounts": ["hand.added"]}
+    )
+    assert done.returncode != 0, done.stdout
+    assert "A retired username is also an ACTIVE username: hand.added" in done.stdout
+
+
+def test_an_exception_does_not_become_an_expected_present_account(tmp_path):
+    # Exceptions are PROTECTED from deletion, not asserted present: the verify's present-set is untouched.
+    done, facts = _facts(
+        tmp_path, {"platform_admins_exceptions": ["hand.added"], "platform_retired_accounts": ["gone.one"]}
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert facts["usernames"][-1] == "gone.one"
+
+
+@pytest.mark.parametrize("name", ["Stray", "STRAY", "AGENT-CLOUD-ADMIN", "Developer"])
+def test_the_collision_check_ignores_case(tmp_path, name):
+    done, _ = _facts(tmp_path, {"platform_retired_accounts": [name]})
+    assert done.returncode != 0, done.stdout
+    assert "A retired username is also an ACTIVE username: " + name.lower() in done.stdout
+
+
+def test_the_collision_check_ignores_the_case_of_the_protected_name_too(tmp_path):
+    admins = [{"key": "carol", "username": "Carol@example.invalid", "name": "Carol", "email": "carol@example.invalid"}]
+    done, _ = _facts(tmp_path, {"platform_admins": admins, "platform_retired_accounts": ["carol@example.invalid"]})
+    assert done.returncode != 0, done.stdout
+    assert "A retired username is also an ACTIVE username: carol@example.invalid" in done.stdout
+    other = tmp_path / "exc"
+    other.mkdir()
+    done, _ = _facts(other, {"platform_admins_exceptions": ["Hand.Added"], "platform_retired_accounts": ["hand.added"]})
+    assert done.returncode != 0, done.stdout
+
+
+def test_the_legacy_variable_collision_check_ignores_case_too(tmp_path):
+    done, _ = _facts(tmp_path, {"andrew_legacy_username": "Stray"})
+    assert done.returncode != 0, done.stdout
+    assert "A retired username is also an ACTIVE username: stray" in done.stdout
 
 
 @pytest.mark.parametrize(
