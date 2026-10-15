@@ -897,7 +897,7 @@
           - wget
           - -qO-
           - >-
-            http://127.0.0.1:9090/api/v1/query?query=%7Bjob%3D%22receiver-host%22%2Cservice%3D%22o11y%2Freceiver-host%22%2C__name__%3D~%22node_cpu_seconds_total%7Cnode_memory_MemAvailable_bytes%7Cnode_memory_MemTotal_bytes%7Cnode_load1%7Cnode_filesystem_size_bytes%7Cnode_filesystem_avail_bytes%22%7D
+            http://127.0.0.1:9090/api/v1/query?query=%7Bjob%3D%22receiver-host%22%2Cservice%3D%22o11y%2Freceiver-host%22%2Ctarget_id%3D%22service%3Ao11y%22%2C__name__%3D~%22node_cpu_seconds_total%7Cnode_memory_MemAvailable_bytes%7Cnode_memory_MemTotal_bytes%7Cnode_load1%7Cnode_filesystem_size_bytes%7Cnode_filesystem_avail_bytes%22%7D
       register: _receiver_host_metrics
       changed_when: false
       check_mode: false
