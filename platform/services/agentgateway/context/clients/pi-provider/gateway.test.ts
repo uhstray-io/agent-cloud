@@ -30,23 +30,28 @@ const json = (body: unknown, status = 200) =>
 
 const modelsBody = (...ids: string[]) => ({ object: "list", data: ids.map((id) => ({ id, object: "model" })) });
 
-const KNOWN: Record<string, number> = {
-  "qwen3.8-flash-next": 262144,
-  "xiaomi/mimo-v2.6-flash": 1050000,
-  "deepseek/deepseek-v4.1-flash": 1048576,
-  "z-ai/glm-5.3-flash": 1048576,
-  "xiaomi/mimo-v2.6-pro": 1050000,
-  "openai/gpt-6-luna": 1050000,
-  "mistralai/mistral-large-4-0": 1048576,
-  "z-ai/glm-5.3": 1048576,
+/** Per id, what gateway.ts must give pi. Output caps and roles follow the OpenRouter catalog. */
+const KNOWN: Record<string, { contextWindow: number; maxTokens: number; developerRole: boolean }> = {
+  "qwen3.8-flash-next": { contextWindow: 262144, maxTokens: 16384, developerRole: true },
+  "xiaomi/mimo-v2.6-flash": { contextWindow: 1050000, maxTokens: 131072, developerRole: false },
+  "deepseek/deepseek-v4.1-flash": { contextWindow: 1048576, maxTokens: 131072, developerRole: false },
+  "z-ai/glm-5.3-flash": { contextWindow: 1048576, maxTokens: 131072, developerRole: false },
+  "xiaomi/mimo-v2.6-pro": { contextWindow: 1050000, maxTokens: 131072, developerRole: false },
+  "openai/gpt-6-luna": { contextWindow: 1050000, maxTokens: 128000, developerRole: true },
+  "mistralai/mistral-large-4-0": { contextWindow: 1048576, maxTokens: 131072, developerRole: false },
+  "z-ai/glm-5.3": { contextWindow: 1048576, maxTokens: 131072, developerRole: false },
+  "anthropic/claude-opus-5.5": { contextWindow: 1000000, maxTokens: 128000, developerRole: true },
 };
 
-test("every known id maps to its context window and the shared metadata", () => {
+test("every known id maps to its own context window, output cap and role setting", () => {
   const models = parseModelList(modelsBody(...Object.keys(KNOWN)), BASE);
-  assert.equal(models.length, 8);
+  assert.equal(models.length, 9);
   for (const model of models) {
-    assert.equal(model.contextWindow, KNOWN[model.id], model.id);
-    assert.equal(model.maxTokens, 16384);
+    const expected = KNOWN[model.id];
+    assert.equal(model.contextWindow, expected.contextWindow, model.id);
+    assert.equal(model.maxTokens, expected.maxTokens, model.id);
+    if (expected.developerRole) assert.equal(Object.hasOwn(model, "compat"), false, model.id);
+    else assert.deepEqual(model.compat, { supportsDeveloperRole: false }, model.id);
     assert.equal(model.api, "openai-completions");
     assert.equal(model.provider, PROVIDER_ID);
     assert.equal(model.baseUrl, BASE);
@@ -61,6 +66,7 @@ test("an unknown id gets the conservative defaults", () => {
   assert.equal(model.id, "some/new-model");
   assert.equal(model.contextWindow, 131072);
   assert.equal(model.maxTokens, 16384);
+  assert.equal(Object.hasOwn(model, "compat"), false);
   assert.equal(model.reasoning, true);
   assert.deepEqual(model.input, ["text"]);
 });
@@ -90,7 +96,11 @@ test("ids that name Object.prototype members get the default window, not a funct
     models.map((model) => model.id),
     ids,
   );
-  for (const model of models) assert.equal(model.contextWindow, 131072, model.id);
+  for (const model of models) {
+    assert.equal(model.contextWindow, 131072, model.id);
+    assert.equal(model.maxTokens, 16384, model.id);
+    assert.equal(Object.hasOwn(model, "compat"), false, model.id);
+  }
 });
 
 test("ids outside the safe alphabet or length are dropped; the list is capped", () => {
