@@ -152,6 +152,29 @@ persistence across a Pyroscope restart remains a separate open gate. The only
 profile target remains Alloy's own `alloy:12345` pprof endpoint, with the
 bounded `service_name="o11y/alloy"` identity and 60-second interval.
 
+Dev-bound acceptance task 5854 subsequently succeeded against the exact reviewed
+receiver revision. Its fixed receipt reports `verified`,
+`sampled_delivered_restored_post_disable_query_observed`, observed sampling and
+delivery, disabled restoration, an observed post-disable query, exact private
+inventory bytes, a validated candidate, and a passed resource gate. The task ran
+from `2026-10-15T09:17:36.844212Z` through `2026-10-15T09:21:59.271931Z` UTC;
+the only profile identity is `service_name="o11y/alloy"`, CPU. This closes the
+prior live sampling/delivery/post-disable acceptance gap but does not establish
+restart durability. The Dev-bound **Prove o11y Pyroscope Restart Durability
+(Dev)** operation reads the selected successful task, its output, template, and
+repository from Semaphore and refuses unless their revision-bound receipt is
+exact. It uses that task's bounded UTC window for the same fixed CPU query,
+requires the disabled rendered config to match the live config, and queries the
+historical sample before and after restarting only `o11y-pyroscope`. It compares
+all o11y container identity/mount snapshots and all named-volume metadata and
+requires the Pyroscope container ID and `/data` volume to remain unchanged. The
+operation gives the restart a 10-second stop grace and a 45-second command
+deadline. If restart fails, it makes one bounded `podman start` recovery attempt
+with a 15-second command timeout and still emits the fixed `restart_failed`
+refusal. Recovery never counts as a durability success. The operation has no
+volume or retention mutation path. Task 2.3 stays open until a successful
+reviewed Dev-bound durability receipt records this result.
+
 Use the existing Discord contact point. Group notifications by the bounded
 service and environment context, wait 30 seconds before the first grouped
 notification, then use a five-minute group interval and a four-hour repeat
