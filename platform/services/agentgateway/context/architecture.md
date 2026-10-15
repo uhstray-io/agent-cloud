@@ -202,6 +202,7 @@ per-client layer. Everything is inventory-driven code (design §10):
 | Rotate | Semaphore `Manage agentgateway Client Key`, `client=<name> action=rotate` (name must be declared); merges a new value, re-renders, reloads |
 | Revoke | Remove the name from `agw_clients` and `platform_admins` FIRST, then `action=revoke`: deletes the field (KV-v2 merge-patch null), re-renders, reloads; the old key is 401 |
 | Hand out | `Back Up Credentials to site-config` with `credential_service=agentgateway credential_fields=client_<name>`: a site-config branch, names only in the task output |
+| pi client | `context/clients/pi-provider/` (README there): a pi package, `pi install <path>`; `/login uhstray` validates the key against `GET /v1/models` and pi stores it in `auth.json`; the model list is the gateway's own, per key, discovered live and kept as pi's persisted snapshot; streaming is pi's built-in OpenAI Chat Completions client. No secret in the package; `UHSTRAY_INFERENCE_BASE_URL` points it at the local-dev gateway |
 | UI key editor | Disabled on purpose: `UI_READ_ONLY=true` in `.env` puts the config store in read-only mode (writes get 403), and `config.yaml` is mounted `:ro`; configuration is code |
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
