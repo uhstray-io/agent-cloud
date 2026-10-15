@@ -5023,7 +5023,7 @@ brief told the worker to push that way and named only `test_no_site_identity.py`
 The lead later skipped again on the stated ground that the local suite does not cover the changed
 files, and told the operator so. That claim was never checked, and it was false: a test that scans
 the directory covered them. The merge guard held, so nothing merged on a red head, but the failure
-went unnoticed for hours while the lead reported the PR as waiting on CI. Fixed in `53441a25`: the
+went unnoticed for over an hour while the lead reported the PR as waiting on CI. Fix pushed in `53441a25`: the
 guard now counts files only, and a mutation check showed a stray template still fails it.
 
 Why the rule did not fire: the pre-push hook is the gate, and `SKIP_TESTS=1` is its documented escape
