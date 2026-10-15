@@ -1918,6 +1918,7 @@ PY
   python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-active-alert-delivery.yml" \
     "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" \
     "$REPO_ROOT/platform/playbooks/tasks/o11y-recover-active-alert-drill.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-assert-provisioned-rule-pause-baseline.yml" \
     "$REPO_ROOT/platform/playbooks/recover-o11y-active-alert-drill.yml" \
     "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
     "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
@@ -1925,13 +1926,16 @@ import sys
 import yaml
 
 # Each playbook's [0] imports the extra-var guard.
-drill, probe, recover, recovery, deploy, catalog = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:])]
+drill, probe, recover, pause_baseline, recovery, deploy, catalog = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:])]
 assert drill[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 tasks = drill[2]['tasks']
 names = [task['name'] for task in tasks]
 assert names.index('Require exactly one active service-down rule') < names.index('Verify Discord receipt credentials and history access')
+assert names.index('Require the provisioned alert pause baseline before the drill') < names.index('Atomically claim the active-drill interruption marker')
 assert names.index('Verify Discord receipt credentials and history access') < names.index('Atomically claim the active-drill interruption marker')
 flight = next(task for task in tasks if 'block' in task)
+assert names.index('Require the provisioned alert pause baseline before the drill') < tasks.index(flight)
+assert names.index('Atomically claim the active-drill interruption marker') < tasks.index(flight)
 target = flight['block'][0]
 assert target['ansible.builtin.copy']['dest'].endswith('/config/scrape.d/o11y-prod-alert-drill.yml')
 assert 'o11y-production-active-alert-drill' in target['ansible.builtin.copy']['content']
@@ -1941,8 +1945,17 @@ assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert
 assert flight['block'][-1]['vars']['drill_expect_alert'] is True
 assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-recover-active-alert-drill.yml'
 recover_names = [task['name'] for task in recover]
-for before in ('Require the drill scrape job to be absent', 'Require every o11y alert rule to remain active', 'Require the production Discord contact point to remain present once'):
+for before in ('Require the drill scrape job to be absent', 'Require the provisioned alert pause baseline after recovery', 'Require the production Discord contact point to remain present once'):
     assert recover_names.index(before) < recover_names.index('Clear the active-drill marker after recovery checks pass')
+assert recover_names.index('Read all production o11y alert rules after drill recovery') < recover_names.index('Require the provisioned alert pause baseline after recovery')
+assert 'Require all provisioned o11y rules to remain active' not in names
+assert 'Require every o11y alert rule to remain active' not in recover_names
+assert pause_baseline[0]['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
+assert all(task.get('no_log') is True for task in pause_baseline)
+assert any('unique' in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
+assert any("selectattr('isPaused', 'defined')" in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
+assert any("selectattr('isPaused', 'boolean')" in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
+assert any('sort(attribute=\'uid\')' in check and 'isPaused' in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
 assert recovery[-1]['tasks'][-2]['ansible.builtin.include_tasks'] == 'tasks/o11y-recover-active-alert-drill.yml'
 normal = next(p for p in deploy if p.get('name') == 'Phase 1: Place repo + manage o11y secrets')['tasks']
 normal_names = [task['name'] for task in normal]

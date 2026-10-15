@@ -1,5 +1,7 @@
+import base64
 import importlib.util
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from jinja2 import Environment
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py"
 TEMPLATE = ROOT / "platform/services/o11y/deployment/templates/alerts.yml.j2"
+PAUSE_BASELINE_TASK = ROOT / "platform/playbooks/tasks/o11y-assert-provisioned-rule-pause-baseline.yml"
 SPEC = importlib.util.spec_from_file_location("scrape_baseline", HELPER)
 assert SPEC and SPEC.loader
 SURVEY = importlib.util.module_from_spec(SPEC)
@@ -78,6 +81,90 @@ def _grouped_render(targets, **values):
         _o11y_expected_target_groups=groups,
         **values,
     )
+
+
+def _pause_baseline_checks(baseline, live):
+    tasks = yaml.safe_load(PAUSE_BASELINE_TASK.read_text())
+    parse = next(task for task in tasks if task["name"] == "Parse the provisioned and live o11y rule baselines")
+    assertion = next(task for task in tasks if task["name"].startswith("Refuse any o11y alert rule drift"))
+    env = Environment()
+    env.filters.update(
+        from_json=json.loads,
+        from_yaml=yaml.safe_load,
+        b64decode=lambda value: base64.b64decode(value).decode(),
+    )
+    env.filters["flatten"] = lambda values: [item for group in values for item in group]
+    env.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
+    env.tests["boolean"] = lambda value: isinstance(value, bool)
+    context = {
+        "_o11y_alert_baseline_file": {
+            "content": base64.b64encode(yaml.safe_dump(baseline).encode()).decode()
+        },
+        "o11y_live_alert_rules_json": json.dumps(live),
+    }
+    for name, expression in parse["ansible.builtin.set_fact"].items():
+        expression = expression.strip().removeprefix("{{").removesuffix("}}")
+        context[name] = env.compile_expression(expression)(**context)
+    for name, expression in assertion["vars"].items():
+        expression = expression.strip().removeprefix("{{").removesuffix("}}")
+        context[name] = env.compile_expression(expression)(**context)
+    checks = [
+        env.compile_expression(expression)(**context)
+        for expression in assertion["ansible.builtin.assert"]["that"]
+    ]
+    return all(checks)
+
+
+def test_active_alert_pause_baseline_accepts_matching_active_and_intentionally_paused_rules():
+    baseline = {"groups": [{"rules": [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_missing_api", "isPaused": True},
+    ]}]}
+    assert _pause_baseline_checks(baseline, baseline["groups"][0]["rules"])
+
+
+@pytest.mark.parametrize("live", [
+    [{"uid": "o11y_service_down", "isPaused": False}],
+    [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_missing_api", "isPaused": True},
+        {"uid": "o11y_extra", "isPaused": False},
+    ],
+    [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_missing_api", "isPaused": True},
+        {"uid": "o11y_missing_api", "isPaused": True},
+    ],
+    [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_missing_api", "isPaused": False},
+    ],
+    [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_missing_api"},
+    ],
+])
+def test_active_alert_pause_baseline_refuses_missing_extra_duplicate_or_drifted_rules(live):
+    baseline = {"groups": [{"rules": [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_missing_api", "isPaused": True},
+    ]}]}
+    assert not _pause_baseline_checks(baseline, live)
+
+
+@pytest.mark.parametrize("rules", [
+    [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_missing_api"},
+    ],
+    [
+        {"uid": "o11y_service_down", "isPaused": False},
+        {"uid": "o11y_service_down", "isPaused": False},
+    ],
+])
+def test_active_alert_pause_baseline_refuses_missing_pause_state_or_duplicate_provisioned_uid(rules):
+    baseline = {"groups": [{"rules": rules}]}
+    assert not _pause_baseline_checks(baseline, rules)
 
 
 def _live_rules(document, folder_uid="agent-cloud-folder"):
@@ -1198,7 +1285,7 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
             "Read the active production service-down rule",
             "Require exactly one active service-down rule",
             "Read every provisioned o11y alert rule before the drill",
-            "Require all provisioned o11y rules to remain active",
+            "Require the provisioned alert pause baseline before the drill",
         ),
         "platform/playbooks/tasks/o11y-recover-active-alert-drill.yml": (
             "Read active Prometheus targets after recovery",
@@ -1207,7 +1294,7 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
             "Require the production service-down rule to remain active",
             "Read all production o11y alert rules after drill recovery",
         "Validate expected-target ownership before active-drill recovery",
-            "Require every o11y alert rule to remain active",
+            "Require the provisioned alert pause baseline after recovery",
         ),
     }
     for relative_path, names in protected_tasks.items():
