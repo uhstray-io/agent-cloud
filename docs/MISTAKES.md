@@ -177,7 +177,7 @@ and why.
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
-| 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
+| 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | 1 | Convention |
 | 12.2 | Pi showed no models and OpenCode omitted its provider because a sandboxed `$HOME`/XDG hid the config | Environment visibility | 1 | Convention |
 
@@ -4979,6 +4979,8 @@ satisfied by the explanatory comment beside it.
 
 ### 11.3 Committed without running the suite, a third time
 
+**Occurrences: 2** — 2026-08-24 (recorded), 2026-10-15
+
 **What happened.** A documentation commit added a line quoting a forbidden address
 in order to prohibit it. A test scanned the whole directory for that address and
 so failed — in CI, after the push. The suite was not run between the edit and the
@@ -5011,6 +5013,28 @@ Tests` as required checks, but only for the default branch (`main`), and the liv
 through the GitHub API on 2026-10-02 is in `evaluate` mode, not enforcing. `dev` has no branch
 protection and no ruleset. The Index cell now reads `Pre-push hook`; the paragraph above is left
 as written.
+
+**Occurrence 2 — 2026-10-15.** PR #647 added the pi provider package as a new directory under
+`platform/services/agentgateway/context/clients/`. A guard in
+`platform/tests/test_agw_mcp_client_templates.py` lists that directory and expects exactly the two
+MCP client templates, so it failed in CI's `Python Agentgateway` shard on every head of the branch
+(`ba8a7c6a`, `ae60ba8e`, `ba4149ab`). Every push of that branch was made with `SKIP_TESTS=1`. The lead's
+brief told the worker to push that way and named only `test_no_site_identity.py` in its done-check.
+The lead later skipped again on the stated ground that the local suite does not cover the changed
+files, and told the operator so. That claim was never checked, and it was false: a test that scans
+the directory covered them. The merge guard held, so nothing merged on a red head, but the failure
+went unnoticed for hours while the lead reported the PR as waiting on CI. Fixed in `53441a25`: the
+guard now counts files only, and a mutation check showed a stray template still fails it.
+
+Why the rule did not fire: the pre-push hook is the gate, and `SKIP_TESTS=1` is its documented escape
+hatch, "for a reason you can defend in review". A reason built on an unchecked statement about what
+the tests cover is not defensible. That statement is an unverified claim, the same class as section 1.
+Whether the tests cover a change is cheap to check before skipping: search `platform/tests` for the
+changed path and its parent directory (`grep -rln <dir> platform/tests`), then run what it returns.
+Here `grep -rln context/clients platform/tests` returns exactly the failing test file, which runs in
+under a second. Proposal for a mechanical guard: under `SKIP_TESTS=1`, have the pre-push hook still
+run every test file that names a changed path or its parent directory. It costs seconds and closes
+the gap that the skip opens. Until that lands, a push made under the escape hatch is Convention.
 
 
 ---
