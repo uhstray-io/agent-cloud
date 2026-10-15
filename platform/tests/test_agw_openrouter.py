@@ -499,6 +499,31 @@ def test_the_mcp_verify_asks_the_first_vllm_model_not_an_openrouter_one_declared
     assert _templar(play, ["_mcp_model"], {"agw_models": [VLLM, OR_MINI]})["_mcp_model"] == "gpt-oss-120b"
 
 
+def _mcp_model(models, policies=None):
+    expr = _task(PHASE3, "MCP: pick the chat tool and the model")["ansible.builtin.set_fact"]["_mcp_model"]
+    inputs = {"agw_models": models, **({"agw_client_policies": policies} if policies is not None else {})}
+    return _templar({"vars": {"_mcp_model": expr}}, ["_mcp_model"], inputs)["_mcp_model"]
+
+
+def test_the_mcp_verify_asks_a_model_mcp_self_may_use():
+    models = [OR_MINI, VLLM, {"name": "m2"}]
+    only_second = {"mcp-self": {"allowed_models": ["m2"]}}
+    assert _mcp_model(models, only_second) == "m2"  # not the first declared name, which mcp-self may not use
+    both = {"mcp-self": {"allowed_models": ["m2", "gpt-oss-120b", "or-mini"]}}
+    assert _mcp_model(models, both) == "gpt-oss-120b"  # agw_models order, never an OpenRouter name
+    assert _mcp_model(models, {"mcp-self": {"tokens_per_hour": 5}}) == "gpt-oss-120b"  # no list: every name
+    assert _mcp_model(models, {}) == "gpt-oss-120b"
+
+
+def test_the_mcp_verify_has_no_model_when_none_qualifies_and_says_so():
+    assert _mcp_model([OR_MINI, VLLM], {"mcp-self": {"allowed_models": ["or-mini", "elsewhere"]}}) == ""
+    assert _mcp_model([OR_MINI]) == ""
+    assert _mcp_model([]) == ""
+    task = _task(PHASE3, "Require a model mcp-self may use for the chat call")
+    assert task["ansible.builtin.assert"]["that"] == "_mcp_model | length > 0"
+    assert "unproven" in task["ansible.builtin.assert"]["fail_msg"]
+
+
 # -- The credential: declared and required only when a model needs it -----------------------------
 
 
