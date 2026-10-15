@@ -1938,8 +1938,9 @@ templates:
         description: "Exact current receiver revision, checked before the drill"
         type: string
         required: true
-    # Exercises an already-active production rule/contact with one failed
-    # scrape. Recovery removes only its generated scrape and reloads Prometheus.
+    # Exercises an already-active production rule/contact with two failed scrape
+    # targets sharing one service label. Marker-based recovery removes its generated
+    # scrape and reloads Prometheus, including after an interrupted drill.
 
   - name: Recover o11y Active Alert Drill (Dev)
     playbook: platform/playbooks/recover-o11y-active-alert-drill.yml

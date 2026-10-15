@@ -314,7 +314,7 @@ def test_generic_cloudflare_executor_stays_unrestricted_and_grafana_uses_wrapper
     assert wrapper[1]["vars"] == {"_extra_var_guard_nested": True, "_cloudflare_grafana_guard": True}
 
 
-def test_editor_exception_is_scoped_and_rollout_tasks_stay_open():
+def test_editor_exception_is_scoped_and_capacity_gates_stay_open():
     tasks = TASKS.read_text()
     task_status = {}
     task_text = {}
@@ -324,11 +324,16 @@ def test_editor_exception_is_scoped_and_rollout_tasks_stay_open():
             task_status[task_id] = line[3] == "x"
             task_text[task_id] = line.lower()
 
-    assert {task_id: task_status[task_id] for task_id in ("2.2a", "2.2b", "2.2c", "2.3", "5.4", "5.5")} == {
+    assert {task_id: task_status[task_id] for task_id in (
+        "2.2a", "2.2b", "2.2c", "2.3", "3.3", "4.3", "5.3", "5.4", "5.5",
+    )} == {
         "2.2a": True,
         "2.2b": True,
         "2.2c": True,
-        "2.3": False,
+        "2.3": True,
+        "3.3": False,
+        "4.3": False,
+        "5.3": False,
         "5.4": False,
         "5.5": False,
     }
