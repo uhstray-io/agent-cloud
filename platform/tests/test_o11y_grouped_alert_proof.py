@@ -81,11 +81,19 @@ def test_grouped_firing_predicate_requires_exact_instance_alerts():
     probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
     task = _task(probe, "Wait for Grafana's service-down rule to fire for the probe")
 
-    def alert(instance, state="Alerting", cluster="prod-a", environment="prod", rule_uid="o11y_service_down"):
+    def alert(
+        instance,
+        state="Alerting",
+        cluster="prod-a",
+        environment="prod",
+        title="Service metrics endpoint down",
+        folder="agent-cloud",
+    ):
         return {
             "labels": {
                 "service": SERVICE,
-                "__alert_rule_uid__": rule_uid,
+                "alertname": title,
+                "grafana_folder": folder,
                 "instance": instance,
                 "cluster": cluster,
                 "environment": environment,
@@ -99,6 +107,7 @@ def test_grouped_firing_predicate_requires_exact_instance_alerts():
             "stdout": json.dumps({"data": {"alerts": [alert(i) for i in INSTANCES]}}),
         },
         "_probe_expected_instances": INSTANCES,
+        "_service_down_rule": {"stdout": json.dumps({"title": "Service metrics endpoint down"})},
         "_drill_cluster": "prod-a",
         "_drill_environment": "prod",
         "expected_service": SERVICE,
@@ -107,7 +116,8 @@ def test_grouped_firing_predicate_requires_exact_instance_alerts():
     assert _expression(task["until"], context)
 
     for rejected in (
-        [alert(i, rule_uid="unrelated_rule") for i in INSTANCES],
+        [alert(i, title="Unrelated rule") for i in INSTANCES],
+        [alert(i, folder="unrelated-folder") for i in INSTANCES],
         [alert(INSTANCES[0])],
         [alert(INSTANCES[0]), alert(INSTANCES[1], state="Normal")],
         [alert(INSTANCES[0]), alert(INSTANCES[1], cluster="other")],
