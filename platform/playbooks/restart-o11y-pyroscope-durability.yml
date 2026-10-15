@@ -33,9 +33,6 @@
       - _durability_repository
       - _durability_acceptance_raw
       - _durability_acceptance
-      - openbao_addr
-      - bao_role_id
-      - bao_secret_id
       - estate_coverage_semaphore_project_id
     _durability_forgeries: "{{ _durability_internal_names | intersect('' | extra_var_names) }}"
     _durability_task_id: "{{ o11y_profile_acceptance_task_id | default('') | string }}"
