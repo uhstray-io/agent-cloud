@@ -170,6 +170,18 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    # A route is loaded when the running config carries a HOST MATCHER for it: a hostname that merely
+    # appears somewhere in the JSON (an upstream, a log field, a longer name) is not a loaded route.
+    # Caddy's JSON: apps.http.servers.<name>.routes[].match[].host[]; each Caddyfile site block renders
+    # as one such top-level route. Lazily evaluated: nothing reads these before `_cfg` is registered.
+    _declared_hosts: "{{ caddy_routes | default([]) | map(attribute='host') | map('lower') | list }}"
+    _running_hosts: >-
+      {{ ((((_cfg.stdout | from_json).get('apps') or {}).get('http') or {}).get('servers') or {})
+         | dict2items | map(attribute='value') | map(attribute='routes', default=[]) | flatten
+         | map(attribute='match', default=[]) | flatten
+         | map(attribute='host', default=[]) | flatten | map('lower') | list }}
+    _pending_hosts: "{{ _declared_hosts | reject('in', _running_hosts) | list }}"
+    _loaded_hosts: "{{ _declared_hosts | difference(_pending_hosts) }}"
 
   tasks:
     - name: "Read the running config from the admin API"
@@ -186,7 +198,7 @@
 
     - name: "Assert each configured route is present in the running config"
       ansible.builtin.assert:
-        that: (item.host) in _cfg.stdout
+        that: (item.host | lower) in _running_hosts
         fail_msg: "route {{ item.host }} not found in Caddy's running config"
         success_msg: "route {{ item.host }} -> {{ item.upstream }} loaded"
       loop: "{{ caddy_routes | default([]) }}"
@@ -201,12 +213,8 @@
     - name: "Dry run: report which declared routes a real run would add"
       ansible.builtin.debug:
         msg:
-          - "already loaded: {{ _loaded | join(', ') | default('(none)', true) }}"
-          - "would be added on a real run: {{ _pending | join(', ') | default('(none)', true) }}"
-      vars:
-        _hosts: "{{ caddy_routes | default([]) | map(attribute='host') | list }}"
-        _pending: "{{ _hosts | reject('in', _cfg.stdout) | list }}"
-        _loaded: "{{ _hosts | difference(_pending) }}"
+          - "already loaded: {{ _loaded_hosts | join(', ') | default('(none)', true) }}"
+          - "would be added on a real run: {{ _pending_hosts | join(', ') | default('(none)', true) }}"
       when:
         - caddy_routes | default([]) | length > 0
         - ansible_check_mode
@@ -225,8 +233,18 @@
       ignore_errors: "{{ ansible_check_mode }}"
       when: local_mode | default(false) | bool
 
+    # A dry run deployed nothing, so it claims nothing about health: it reports what a real run would change.
+    - name: "Report (dry run)"
+      ansible.builtin.debug:
+        msg: >-
+          dry run: {{ _declared_hosts | length }} declared, {{ _loaded_hosts | length }} loaded,
+          {{ _pending_hosts | length }} would be added
+          ({{ _pending_hosts | join(', ') | default('none', true) }}); nothing was deployed or verified.
+      when: ansible_check_mode
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           Caddy healthy with {{ caddy_routes | default([]) | length }} route(s):
           {{ caddy_routes | default([]) | map(attribute='host') | join(', ') | default('(none — fragments only)') }}
+      when: not ansible_check_mode

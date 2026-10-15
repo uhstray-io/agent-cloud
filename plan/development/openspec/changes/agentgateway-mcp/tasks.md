@@ -603,6 +603,10 @@ operator's go for it. site-config changes land through its own pull requests.
       Remaining: an `initialize` and an idle stream past 125 s THROUGH `mcp.uhstray.io` (needs
       the operator's client, 7.7), confirming `statefulMode: stateless` holds, and the
       rate-bucket measurement that flips the rate-limit rule from `log` to `block`.
+      2026-10-14/15 (lead probe through `mcp.uhstray.io`, not a Semaphore task): `initialize` answered
+      200, stateless (no session header); after a 130 s idle, `tools/list` answered 200 with both
+      tools. The idle-past-125-seconds half is PROVEN, and `statefulMode: stateless` holds. Remaining:
+      the rate-bucket measurement and the `log` to `block` flip. Not ticked.
 - [ ] 6.7 Hand out each declared admin's key with `Back Up Credentials to site-config (Dev)`,
       `credential_service=agentgateway`, `credential_fields=client_<name>` listed
       explicitly (never empty, Open Question 6); output carries names only
@@ -615,6 +619,8 @@ operator's go for it. site-config changes land through its own pull requests.
       2026-10-14/15: the `wisward` identity is retired (see the gw 4.1 note), so it is no longer
       owed a key. The operator's key and `client_jacob` were handed out earlier (see above).
       Remaining: `agent-cloud-admin` and `svc-automation`. Not ticked.
+      2026-10-14 (reported by the operator): `client_jacob` was handed to its person by the operator.
+      The handout task above is the only record of the file; delivery is the operator's report.
 - [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
       exist and removal would drop the key). The render changes only on deploy, so after the
@@ -671,36 +677,121 @@ operator's go for it. site-config changes land through its own pull requests.
       fails with a 401 reported by name only; record each harness's handshake request count
       against the bucket (spike 1.7 measured only a scripted client's three) and, if it
       differs, correct task 5.4's figure in a follow-up plan
+      2026-10-14/15 (reported by the operator, from the operator's workstation; no task output):
+      Claude Code `claude mcp list` shows `agentgateway` Connected; `pi mcp list` shows it
+      connected with 2 tools (`list_models`, `chat_completions`); an `initialize` with a wrong key
+      through `mcp.uhstray.io` is 401. NOT measured: each harness's handshake request count against
+      the rate bucket. Not ticked.
 - [ ] 7.8 Validation gate: the scan finds no secret and no `.mcp.json`, proving scenario
       "Client templates contain no secret"; the temporary-home run proves scenario
       "Installing client configuration preserves existing servers"; the repeat run proves
       scenario "Installing client configuration twice changes nothing"
 
 ## 8. Documentation and records
-- [ ] 8.1 `platform/services/agentgateway/context/architecture.md` and `agent-practices.md`:
+- [x] 8.1 `platform/services/agentgateway/context/architecture.md` and `agent-practices.md`:
       a row for each operation (add and remove an admin identity, set the hostname, enable
       and disable MCP, hand out a key with explicit fields, install and remove client
       configuration, roll back), naming only templates and variables that exist
-- [ ] 8.2 `platform/services/agentgateway/deployment/README.md` and the Authentik README:
+      Done 2026-10-15: "Operator operations" in `context/architecture.md` (nine rows: the eight
+      above, OpenRouter model, OpenRouter key seed, each with its source) and "Operations: admin
+      identities, MCP, OpenRouter" in `context/agent-practices.md` (same rows, templates and
+      variables only; permissions stay under that file's existing "What an agent may do"). Also
+      updated: the MCP section's stale line saying the edge and client templates were "later
+      sections"; agent-practices "What healthy means" gains the MCP conditions. `agw_mcp_hostname`
+      is documented as what it is: declared in inventory, read by no gateway playbook; the
+      hostname is carried by the Caddy block and `platform/infra/cloudflare`.
+- [x] 8.2 `platform/services/agentgateway/deployment/README.md` and the Authentik README:
       the new variables and the declared admin list
-- [ ] 8.3 AGENTS.md: the Deploy agentgateway and Manage agentgateway Client Key rows gain
+      Done 2026-10-15: `deployment/README.md` gains "MCP and the declared admin list: variables"
+      (ten variables with defaults, from the code). The Authentik service has no README: its
+      documentation is `platform/services/authentik/deployment/context/architecture.md`, which
+      already carried "Platform administrators" and "Retiring an account"; it gains the gateway side
+      (the gate, the scope the list must be declared at, where the declared lists live). The declared
+      admin list and the retired list themselves are site-config values and are not copied into this
+      public repository.
+- [x] 8.3 AGENTS.md: the Deploy agentgateway and Manage agentgateway Client Key rows gain
       the MCP verify and the merged identity list; the Cloudflare edge paragraph names the
       MCP record and rules
-- [ ] 8.4 A Proposed amendment in `plan/architecture/05-platform-infra.md` recording the
+      Done 2026-10-15. Already present, not duplicated: the Deploy row named the optional `/mcp`
+      behind `agw_mcp_enabled`, and the Client Key row said "merged identity list". Added: the
+      merged list's definition in the Deploy row, the four-step MCP verify (and the flag-false
+      assertion), the retirement order in the Client Key row, and a paragraph in "Cloudflare edge as
+      code" naming the `mcp` record, `mcp-api-bypass-challenge` and `mcp-api-ratelimit-log` (log mode).
+- [x] 8.4 A Proposed amendment in `plan/architecture/05-platform-infra.md` recording the
       MCP hostname decision and the one-list admin authority, for the operator to ratify
       (never marked Accepted by the implementer); the sibling change's "Out of scope: MCP"
       line gains a pointer here
-- [ ] 8.5 `docs/MISTAKES.md`: an entry for any mistake that survived long enough to cost
+      Done 2026-10-15: "MCP endpoint and the one admin list (PROPOSED 2026-10-15, awaiting operator
+      confirmation)", status Proposed, three decisions (hostname, one admin list, retirement as a
+      declared list) and five rejected alternatives (D1's three, D3's two). It is NOT marked Accepted;
+      the operator ratifies it by an appended line, as the inference-gateway record above it was. The
+      pointer is in `inference-gateway-agentgateway/proposal.md`, the "Out of scope, recorded" line.
+- [x] 8.5 `docs/MISTAKES.md`: an entry for any mistake that survived long enough to cost
       work during this change, in that file's format, naming where it is enforced
-- [ ] 8.6 Operator hand-off, no fix in this change: `/config_dump` leaves
+      Done 2026-10-15, after reading the ledger format and the Index: repeats of an existing class
+      are recorded on the original entry, new classes as new entries. Credential-shaped fixture in
+      PR 639's history (replaced by 642): occurrence 2 of 4.8. Plan note naming the operator's key
+      field (PR 638): occurrence 3 of 4.9. Check-mode reads of state the dry run never creates
+      (the MCP schema file, the new Caddy route): occurrence 3 of 10.18, which now owes a guard.
+      New: 5.21 (a worker told an unpushed commit may be amended) and 5.22 (the `Python core` job
+      outgrew its timeout). Enforced-by is stated per entry; 5.21 is Convention and says so, and 4.8
+      records that the pre-commit hook does flag the literal when staged and that why the commit was
+      not stopped locally is not established.
+- [x] 8.6 Operator hand-off, no fix in this change: `/config_dump` leaves
       `config.database.url` (the budget Postgres password, expanded from `$AGW_DATABASE_URL`)
       unredacted on the admin listener, which is pinned to the container loopback (spike
       1.8). This is existing in every current deployment; record it in the PR description
       and track it as its own change (for example a read-only database role, or removing the
       password from the URL)
-- [ ] 8.7 Validation gate: every row added in 8.1 names a template or variable found by
+      2026-10-15, recorded and not fixed: spike 1.8 (`design.md` "Findings") measured that
+      `GET /config_dump` on the admin listener redacts `backendAuth` keys and every `apiKey` policy
+      but prints `config.database.url`, expanded from `$AGW_DATABASE_URL`, with the budget Postgres
+      password in clear text. The listener is pinned to the container loopback and never published,
+      and that pin is what protects the credential; the finding holds for every current deployment,
+      MCP or not. Hand-off to the operator: track it as its own change (a read-only database role
+      for the gateway, or a URL without the password). One line in `context/architecture.md` "Known
+      issues" and one in `context/agent-practices.md` "Known quirks". This change touches neither
+      the URL nor the listener.
+- [x] 8.7 Validation gate: every row added in 8.1 names a template or variable found by
       search in the repository, proving scenario "The operator documentation covers every
       MCP change"
+      2026-10-15: searched with `git grep -n` from the repository root on this branch; every name
+      in the 8.1 rows was found. `name -> file:line` (first authoritative hit; `(Dev)` is the
+      generated variant of a template that declares `dev_variant: true` on the line shown):
+      - Templates, all in `platform/semaphore/templates.yml`: `Deploy Authentik` 564 (dev_variant
+        572); `Deploy agentgateway` 794 (799); `Manage agentgateway Client Key` 905 (910);
+        `Back Up Credentials to site-config` 716 (723); `Manage Caddy Sites` 2375 (2380);
+        `Apply Cloudflare Tofu` 2206 (2210); `Rollback Inference Route` 2394 (2396);
+        `Seed OpenBao Key` 1649 (1651).
+      - Admin list: `platform_admins` `platform/playbooks/vars/platform-admins.yml:21` (read by
+        `platform/playbooks/tasks/load-platform-admins.yml:25`); `agw_identity` same file `:18`;
+        `platform_admins_exceptions` same file `:32`; `agw_admin_identities_enabled`
+        `platform/playbooks/deploy-agentgateway.yml:41`; `platform_retired_accounts`
+        `platform/playbooks/deploy-authentik.yml:113`.
+      - MCP: `agw_mcp_enabled` `deploy-agentgateway.yml:18` (read at `:457`);
+        `agw_mcp_openapi_targets` `:70`; `agw_loopback_port` `:73`; `mcp-self` with
+        `agw_client_policies` `platform/inventory/local-dev.yml.example:305,311`; `agw_mcp_hostname`
+        `platform/inventory/local-dev.yml.example:323` ONLY: declared in inventory and read by no
+        playbook, which the rows say.
+      - Edge: `caddy_managed_sites` `platform/playbooks/manage-caddy-sites.yml:24`; `mcp_api: true`
+        `platform/services/caddy/deployment/templates/Caddyfile.local.j2:27` and
+        `platform/inventory/local-dev.yml.example:178`; Cloudflare record `mcp`
+        `platform/infra/cloudflare/dns.tf:24`, rule `mcp-api-bypass-challenge` `waf.tf:184`, rule
+        `mcp-api-ratelimit-log` `ratelimit.tf:110`, `local.mcp_endpoint` `ratelimit.tf:54`.
+      - Hand-out and clients: `credential_service` `platform/playbooks/backup-credentials-to-site-config.yml:49`;
+        `credential_fields` `:50`; `make agw-mcp-client` `Makefile:133-137` and
+        `agw-mcp-client-remove` `Makefile:140-142` (`HOST`, `IDENTITY`, `KEY_FILE`, `HARNESS`,
+        `DRY_RUN` all there); Keychain service `agentgateway-mcp` `scripts/agw-mcp-key:6`;
+        `scripts/agw-mcp-client.py`.
+      - Rollback: `mode` values `gateway-config`, `direct`, `restore`
+        `platform/playbooks/rollback-inference-route.yml:12`.
+      - OpenRouter: `agw_models` (`provider`, `upstream_model`) `deploy-agentgateway.yml:28`;
+        `agw_openrouter_identities` and `agw_openrouter_admins` `:32`; `agw_verify_openrouter` `:38`;
+        `openrouter_api_key` `platform/playbooks/vars/secret-declarations/agentgateway.yml:240`;
+        `bao_path`, `bao_key`, `BAO_VALUE` `platform/playbooks/seed-openbao-key.yml:27,21`;
+        `scripts/semaphore-seed-input.py`.
+      Note: the `(Dev)` names are not literal lines; they are produced from `dev_variant: true`,
+      which is what the 8.1 rows say.
 
 ## 9. Final validation and close-out
 - [ ] 9.1 The full local replay on a clean local stack, in order: sections 2 to 5's gates
@@ -708,8 +799,18 @@ operator's go for it. site-config changes land through its own pull requests.
       collection from `pyproject.toml`, `ruff`, `shellcheck`, `ansible-lint`, `yamllint`,
       `tofu fmt -check`; then the pre-push audit on the staged diff (the greps and the
       scanner) and `/simplify` and `/security-review`
-- [ ] 9.3 Push and open the pull request into `dev` only when the operator asks; one review
+- [x] 9.3 Push and open the pull request into `dev` only when the operator asks; one review
       round, every finding fixed or answered, checks green on the final head
+      2026-10-15: the change landed as several pull requests rather than one. agent-cloud #626, #634,
+      #636, #637, #640, #641, #642 and #644, and site-config #86, #87, #89 and #90, are all MERGED
+      (read with `gh pr view` on 2026-10-15; #639 was closed and replaced by #642, see MISTAKES 4.8).
+      Read by this author: on the final head of each of the eight agent-cloud pull requests no check
+      failed or was cancelled, and site-config's `inventory` check and CodeRabbit status are success on
+      each of its four (all four read). The review round is not visible as a GitHub review state on most of
+      them: `gh pr view --json reviews` shows none on #626, #636, #637, #640 and #642, and
+      CodeRabbit's CHANGES_REQUESTED as the only state on #634 and #644 (APPROVED on #641). That the round
+      happened and that every finding was fixed or answered is the lead's report (likely comment-only or
+      agent reviews), not something read here. Ticked on that basis, as the brief decided.
 - [ ] 9.4 After the production rollout, `openspec archive agentgateway-mcp`, and retain one
       memory in the repo's Hindsight bank: whether it worked, the root cause of anything
       that failed, and the constraint found (worked / dead end / corrected)
@@ -717,3 +818,12 @@ operator's go for it. site-config changes land through its own pull requests.
       after everything above, proving scenario "The inference allowlist is unchanged"; an
       unauthenticated `initialize` is still 401 on the MCP hostname in production, proving
       scenario "Unauthenticated MCP request is refused"
+      2026-10-15 (recorded from the lead's production probes; NOT ticked, for the operator to decide):
+      the text says 404 and production answered something stricter. `/mcp` on the inference hostname
+      returns 403 with `cf-mitigated: challenge`: the Cloudflare skip rule covers `/v1/*` and `/health`
+      only, so the request never reaches Caddy. A Caddy-level 404 was proven locally (the probes under
+      5.7, after local Deploy Caddy task 6700), and production Manage Caddy Sites (Dev) dry run 5695
+      showed the inference block unchanged (see 6.5), so the allowlist itself is not widened. The MCP
+      hostname: an unauthenticated POST to `/mcp` is 401 with no challenge (6.5), which is the second
+      half of this gate. The first half's literal outcome (404) was not observed in production; the
+      observed 403 challenge is a stricter refusal of the same request, not a regression.

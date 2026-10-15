@@ -62,8 +62,9 @@
 #   agw_otlp_host          (optional) declared o11y Alloy OTLP host:port
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 #   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
-#   agw_mcp_enabled                      (default false) serve MCP at /mcp on the default gateway (key-gated by the same
-#                                        identities as /v1, minus legacy-shared and mcp-self) and render the loopback
+#   agw_mcp_enabled                      (default false) serve MCP at /mcp on the default gateway (key-gated: the admin-derived
+#                                        personal identities ONLY, never an agw_clients service client,
+#                                        legacy-shared or mcp-self) and render the loopback
 #                                        gateway its target calls; false renders none of it and the verify asserts /mcp
 #                                        is not served
 #   agw_mcp_openapi_targets              (required when enabled) [{name, schema}]: each an OpenAPI target over this
@@ -614,7 +615,7 @@
         _render: "{{ _agw_render_read.stdout | from_json }}"
       when: not ansible_check_mode
 
-    - name: "Require the mcp key policy to enrol exactly the client identities"
+    - name: "Require the mcp key policy to enrol exactly the admin-derived identities"
       ansible.builtin.assert:
         that:
           - _missing | length == 0
@@ -1467,10 +1468,30 @@
         _mcp_chat_tool: >-
           {{ _mcp_tools.rpc.get('result', {}).get('tools', []) | map(attribute='name')
              | select('search', '(^|_)chat_completions$') | first | default('') }}
+        # The model the chat call asks for is one `mcp-self` may use: its allowed_models when it declares any
+        # (agw_models order), else every declared name; never an OpenRouter one, which is billed per token and
+        # which mcp-self cannot be granted. Empty when none qualifies; the next task fails the verify by name.
         _mcp_model: >-
-          {{ agw_models | map(attribute='name')
+          {% set _mcp_allowed = ((agw_client_policies | default({})).get('mcp-self') or {}).get('allowed_models') or [] -%}
+          {% set _mcp_names = agw_models | map(attribute='name') | list -%}
+          {{ ((_mcp_names | select('in', _mcp_allowed) | list) if _mcp_allowed | length > 0 else _mcp_names)
              | reject('in', agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
-                      | map(attribute='name') | list) | first }}
+                      | map(attribute='name') | list) | first | default('') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "Require a model mcp-self may use for the chat call"
+      ansible.builtin.assert:
+        that: _mcp_model | length > 0
+        fail_msg: >-
+          The MCP chat call has no model to ask for: none of the declared agw_models is both allowed for mcp-self
+          (agw_client_policies.mcp-self.allowed_models, when set) and not an OpenRouter model. The chat tool
+          was not exercised, so MCP is unproven; declare a vLLM model mcp-self may use.
+        quiet: true
       when:
         - not ansible_check_mode
         - agw_mcp_enabled | default(false) | bool

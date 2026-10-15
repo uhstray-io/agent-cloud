@@ -324,7 +324,9 @@ _run_caddy_phase3() {
 #!/bin/sh
 case "$*" in
   *2021/metrics*) exit "${FAKE_METRICS_RC:-0}" ;;
-  *2019/config/*) echo '{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":["loaded.z.test"]}]}]}}}}}' ;;
+  *2019/config/*)
+    if [ -n "${FAKE_CONFIG:-}" ]; then printf '%s\n' "$FAKE_CONFIG"
+    else echo '{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":["loaded.z.test"]}]}]}}}}}'; fi ;;
 esac
 SH
   chmod +x "$fake"
@@ -363,4 +365,35 @@ PY
   FAKE_METRICS_RC=1 _run_caddy_phase3 -e local_mode=true -e '{"caddy_routes":[]}'
   [ "$status" -ne 0 ]
   assert_contains "$output" "Require the private local metrics listener"
+}
+
+# A hostname is a loaded route only when a HOST MATCHER carries it; the old substring test accepted a host that
+# merely appears in the config (an upstream dial, here) and so passed a route Caddy never loaded.
+_UPSTREAM_ONLY='{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":["loaded.z.test"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"new.z.test:80"}]}]}]}}}}}'
+_BOTH_MATCHED='{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":["Loaded.Z.test"]}]}]},"srv1":{"routes":[{"match":[{"path":["/x"]},{"host":["new.z.test"]}]},{"handle":[]}]}}}}}'
+
+@test "caddy: a host that only appears in an upstream is not a loaded route (dry run names it pending)" {
+  FAKE_CONFIG="$_UPSTREAM_ONLY" _run_caddy_phase3 --check
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "would be added on a real run: new.z.test"
+  assert_contains "$output" "already loaded: loaded.z.test"
+}
+
+@test "caddy: a host that only appears in an upstream is not a loaded route (real run fails)" {
+  FAKE_CONFIG="$_UPSTREAM_ONLY" _run_caddy_phase3
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "route new.z.test not found in Caddy's running config"
+}
+
+@test "caddy: host matchers are read from every server, any case, and routes without a host match are tolerated" {
+  FAKE_CONFIG="$_BOTH_MATCHED" _run_caddy_phase3
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "Caddy healthy with 2 route(s)"
+}
+
+@test "caddy: a dry run reports counts and names, and never claims Caddy is healthy" {
+  _run_caddy_phase3 --check
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "dry run: 2 declared, 1 loaded, 1 would be added (new.z.test)"
+  refute_contains "$output" "Caddy healthy"
 }

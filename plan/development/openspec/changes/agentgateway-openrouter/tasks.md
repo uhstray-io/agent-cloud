@@ -68,6 +68,12 @@ templates, never one-off writes.
       identity's key against https://inference.uhstray.io/v1 (one small request), and the same request
       refused for a service identity. Deploy 5740 proved only the listing; `agw_verify_openrouter` is
       not a survey field of the Deploy template. Added 2026-10-15 so this proof cannot be lost.
+      2026-10-15 03:19Z (lead probe, with the operator's key; the response was read by the lead, not
+      re-read here): the first real completion through the gateway. `deepseek/deepseek-v4.1-flash`
+      answered 200 with 53 tokens, an OpenRouter-reported cost of 1.01624e-05 USD and `is_byok`
+      false; `qwen3.8-flash-next` answered 200. The refusal for a service identity is NOT proven
+      live: no service key has been handed out, so that half rests on the render and test proof
+      (3.6), not on a request. Not ticked: the task text asks for both.
 - [ ] 3.5 Measure whether OpenRouter tolerates `continuous_usage_stats`; if so, use the vLLM
       transformation for OpenRouter models too (design D5)
 - [x] 3.6 `mcp-self` excludes the OpenRouter names through the shared macro; it and `legacy-shared`

@@ -81,13 +81,13 @@ The gateway serves MCP as a second surface of the same process, behind the inven
 `agw_mcp_enabled` (default `false`). With the flag false nothing below renders and the verify asserts
 `/mcp` is not served. Spike findings (v1.5.0, measured 2026-10-14) are in
 `plan/development/openspec/changes/agentgateway-mcp/design.md`, "Findings". The edge (Caddy hostname,
-Cloudflare record and rules) and the harness client templates are later sections of that change and
-are not described here.
+Cloudflare record and rules) is summarised in "Operator operations" below; the harness client entry is
+under "MCP clients".
 
 | Piece | Where | Notes |
 |---|---|---|
 | Endpoint | `/mcp` on gateway `default` only (`mcp.gateways: [default]`) | Not on the `ui` listener. `statefulMode: stateless`: no session id and no held server stream, `GET /mcp` is 405. `prefixMode: conditional`: a tool is named by its OpenAPI `operationId` while there is one target, prefixed with the target name once there are several. `dnsRebindingProtection` unset (the gateway is reached by a non-local Host) |
-| Authentication | `mcp.policies.apiKey`, `mode: strict`, the same header and the same key list as `/v1` | Rendered by the one `apikey_policy` macro in `config.yaml.j2` that `llm` also calls, so the lists cannot drift. Over the admin-derived personal identities ONLY (`_agw_admin_identities`, never an `agw_clients` service client: the chat tool's self-call runs as `mcp-self`, so a service client admitted here would escape its own `allowedModels` and hourly budget; an admin's model spend through MCP is bounded by `mcp-self`'s budget, not their own). Never `legacy-shared`, never `mcp-self`, and with no `budgets` or `allowedModels` (a budget under the MCP policy is accepted and never charged, spike 1.4). An `mcp` block with no key policy answers every request (spike 1.1), so the deploy asserts the policy is rendered whenever the flag is true |
+| Authentication | `mcp.policies.apiKey`, `mode: strict`, the same header as `/v1`, over the admin-derived identities only | Rendered by the one `apikey_policy` macro in `config.yaml.j2` that `llm` also calls, so the key loop is written once. Over the admin-derived personal identities ONLY (`_agw_admin_identities`, never an `agw_clients` service client: the chat tool's self-call runs as `mcp-self`, so a service client admitted here would escape its own `allowedModels` and hourly budget; an admin's model spend through MCP is bounded by `mcp-self`'s budget, not their own). Never `legacy-shared`, never `mcp-self`, and with no `budgets` or `allowedModels` (a budget under the MCP policy is accepted and never charged, spike 1.4). An `mcp` block with no key policy answers every request (spike 1.1), so the deploy asserts the policy is rendered whenever the flag is true |
 | Loopback gateway | `gateways.loopback`, container port `agw_loopback_port` (default `4002`), rendered only with the flag | Plain HTTP, attached to `llm` only (`llm.gateways` gains `loopback`; `mcp` and `ui` never do), `authorization` rule `source.address == "127.0.0.1"` because v1.5.0 gateways have no bind address (a neighbour container is 403 with or without a key, spike 1.5). Never in any compose file's `ports:`. Needs no client certificate, so `agw_client_cert_allowlist` is not widened for the self-call |
 | Target | `agw_mcp_openapi_targets`: a list of `{name, schema}` | Rendered as an `openapi` target whose `host` is `127.0.0.1:<agw_loopback_port>` and whose `schema` is the shipped file `deployment/mcp-schemas/<schema>` read by the deploy and embedded in `config.yaml` as one compact JSON string (nothing to mount; a schema edit is a config change the change-aware deploy sees). Its `backendAuth` is the `mcp-self` key by environment reference |
 | Shipped schema | `deployment/mcp-schemas/agentgateway-v1.json` | `/v1/models` (`list_models`) and `/v1/chat/completions` (`chat_completions`) only, no `servers` |
@@ -104,7 +104,7 @@ at least one target, `mcp-self` in the merged identities with `agw_client_polici
 set, a non-empty admin-derived identity list (`agw_admin_identities_enabled` and `platform_admins`; the
 refusal names both), and no `allowed_models` on an admin identity (MCP would widen it). The rendered file is checked against the
 flag (no `mcp` block and no loopback gateway with the flag false; a strict key policy on any `mcp`
-block; exactly the client identities on it), then validated by the pinned image as for every render.
+block; exactly the admin-derived identities on it), then validated by the pinned image as for every render.
 
 Verify (`deploy-agentgateway.yml`, Phase 3, through the one probe path): flag true, a request with no
 key is 401, an authenticated `initialize` returns a session, and `tools/list` lists at least one tool
@@ -170,6 +170,25 @@ Client facts re-verified for task 7.1:
 | pi `headers` value starting `!` runs a command at connect (shell), stdout trimmed is the value, non-empty within 10 s, `!!` escapes; `${VAR}` interpolates | adapter `docs/servers.md`, `docs/auth.md`, `bearer-command-resolver.ts` (`shell: true`) | 2026-10-14 | Yes |
 | pi `url` is "StreamableHTTP with SSE fallback" | adapter `docs/servers.md` | 2026-10-14 | Differs from "SSE rejected": the adapter falls back to SSE; the gateway serves streamable HTTP, so nothing depends on it |
 | Keychain read `security find-generic-password -s <service> -a <account> -w`; add with `-w` last to be prompted, `-U` to update | `security find-generic-password -h`, `security add-generic-password -h` | 2026-10-14 | Yes |
+
+## Operator operations (changes `agentgateway-mcp` and `agentgateway-openrouter`)
+
+One row per operation. Every template below has a generated `(Dev)` variant (`dev_variant: true` in
+`platform/semaphore/templates.yml`); run a dry run (`--check`) before the real run. Every name in the
+table was found by search in the repository for task 8.7 of `agentgateway-mcp`; the search results are in
+that change's `tasks.md`.
+
+| Operation | How | Source |
+|---|---|---|
+| Add an admin identity | Add an entry to `platform_admins` in site-config `agent_cloud.vars` (the scope both the Authentik and the gateway hosts see). With `agw_admin_identities_enabled: true` the gateway derives the identity from it (the entry's `agw_identity`, else its `username`). Run `Deploy Authentik` (creates the account and the `platform-admins` membership), then `Deploy agentgateway` (mints `client_<name>` once and reuses it). Then hand the key out (below) | `platform/playbooks/vars/platform-admins.yml`; "Identity and limits"; `../../authentik/deployment/context/architecture.md` "Platform administrators" |
+| Remove an admin identity | In ONE site-config change: remove the entry from `platform_admins` and add its Authentik username to `platform_retired_accounts` (the deploy refuses a name that is both). Run `Deploy Authentik` (deletes the account; its verify reads the name gone), then `Manage agentgateway Client Key` with `client=<identity> action=revoke` (the identity must already be out of the list, or the next deploy mints it back); it reloads the gateway and the old key answers 401 | `platform/playbooks/deploy-authentik.yml`; `platform/playbooks/manage-agentgateway-client-key.yml`; "Virtual-key lifecycle" |
+| Set the MCP hostname | `agw_mcp_hostname` is declared in inventory but no gateway playbook reads it: the hostname lives in the places that serve it. Caddy: a site block in site-config `caddy_managed_sites` placed by `Manage Caddy Sites` (local-dev: a `caddy_routes` entry with `mcp_api: true`, `Caddyfile.local.j2`). Cloudflare: the `mcp` record in `dns.tf`, the skip rule `mcp-api-bypass-challenge` in `waf.tf` and the rate-limit rule `mcp-api-ratelimit-log` in `ratelimit.tf`, all matching `mcp.<var.zone_name>` through `local.mcp_endpoint`, applied by `Apply Cloudflare Tofu`. The rate-limit rule is in `log` mode until the bucket is measured | `platform/infra/cloudflare/`; `platform/inventory/local-dev.yml.example` (`agw_mcp_hostname`, `mcp_api: true`) |
+| Enable or disable MCP | `agw_mcp_enabled` (default `false`) in site-config, then `Deploy agentgateway`. Enabling needs `agw_admin_identities_enabled` with `platform_admins` declared for the gateway host, at least one `agw_mcp_openapi_targets` entry, `mcp-self` in `agw_clients` with `agw_client_policies.mcp-self.tokens_per_hour`, and no `allowed_models` on an admin identity; the deploy refuses otherwise, before rendering. Disabling renders no `mcp` block and no loopback gateway, and the verify then asserts `/mcp` is not served. Rolling back across the flag is a redeploy of the older flag state, not a `Rollback Inference Route` (see "Rollback across the flag") | "MCP (change `agentgateway-mcp`, gateway side)" |
+| Hand out a key | `Back Up Credentials to site-config` with `credential_service=agentgateway` and `credential_fields=client_<identity>`. Always list the field: an empty `credential_fields` copies every field at the path, including the upstream key. The task output names fields, never values | `platform/playbooks/backup-credentials-to-site-config.yml` header; "Virtual-key lifecycle" |
+| Install or remove client configuration | `make agw-mcp-client HOST=<mcp hostname> IDENTITY=<identity> [KEY_FILE=<handout file>]` merges one `agentgateway` entry into Claude Code and pi; the key is read at connect time from the Keychain item `agentgateway-mcp` (account `<identity>`), then from `KEY_FILE`. `make agw-mcp-client-remove` deletes exactly that entry. Both take `HARNESS=` and `DRY_RUN=1` | `Makefile` (`agw-mcp-client`, `agw-mcp-client-remove`); "MCP clients" |
+| Roll back | `Rollback Inference Route` with `mode=gateway-config` (put the last live config back, gateway stays in the path), `mode=direct` (publish the vLLM key as `direct_<name>` copies and point the route at vLLM) or `mode=restore` (point back at the gateway, retire the copies once rotated). A previous config on the other side of `agw_mcp_enabled` is refused or drops `/mcp`; redeploy that flag state instead | `platform/playbooks/rollback-inference-route.yml`; "Rollback across the flag" |
+| Serve an OpenRouter model | Add an `agw_models` entry `{ name, provider: openrouter, upstream_model: <vendor/model> }` and deploy. Name who may call it with `agw_openrouter_identities` and, to include every admin-derived identity, `agw_openrouter_admins: true`; the deploy refuses an empty union. `-e agw_verify_openrouter=true` adds one 8-token completion to the verify | "OpenRouter models" |
+| Seed the OpenRouter key | `Seed OpenBao Key` with `bao_path=services/agentgateway` and `bao_key=openrouter_api_key`; the value arrives as the `BAO_VALUE` environment secret, staged with `scripts/semaphore-seed-input.py`, never as an extra var. Required only while an OpenRouter model is declared; the deploy refuses its absence | `platform/playbooks/seed-openbao-key.yml` header; "OpenRouter models" |
 
 ## Virtual-key lifecycle (aligned with vLLM's single key)
 
@@ -571,6 +590,17 @@ counts. Both keys are read from OpenBao in `no_log` tasks; the report carries st
 codes only. A workable probe budget is below about five times the per-request charge of the chosen
 model (local-dev uses 50 against roughly 94 tokens per completion); a budget above what five attempts
 can exhaust ends the run "NOT proven", loudly, never as a false pass.
+
+## Known issues
+
+- **`/config_dump` leaves the budget database password unredacted (found by spike 1.8 of `agentgateway-mcp`,
+  2026-10-14; hand-off, not fixed there).** The dump on the admin listener redacts `backendAuth` keys and every
+  `apiKey` policy, but prints `config.database.url`, expanded from `$AGW_DATABASE_URL`, with the Postgres
+  password in clear text. The admin listener is pinned to the container loopback and never published, so
+  nothing outside the container reaches it, but that pin is what protects the credential. The condition
+  exists in every current deployment, MCP or not. Tracked as its own change (for example a read-only
+  database role, or a URL without the password); the MCP change records the finding and does not change it
+  (`plan/development/openspec/changes/agentgateway-mcp/design.md` "Findings" 1.8, `tasks.md` 8.6).
 
 ## Verification log
 

@@ -105,7 +105,7 @@
       defaults are `O11Y_PROM_RETENTION` 15d (`templates/env.j2:26`) and `O11Y_LOKI_RETENTION`
       7d (`templates/env.j2:29`), and compose reads both (`compose.yml:43`, `compose.yml:67`).
       The Loki and Grafana VM-address binds rest on site-config #24/#36, not re-read here.
-- [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
+- [x] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
       no data) and `/api/datasources/uid/*/health` (Grafana validates the watcher's
@@ -126,6 +126,11 @@
       Grafana's Authentik sign-in on 2026-10-09 (recorded in `estate-wide-observability-instrumentation`
       tasks.md 1.1). The other half, the operator confirming direct Authentik sign-in, is outstanding
       (O11Y-GRAFANA-AUTH-INCIDENT.md stays PROPOSED). Manual receipt only. Not ticked.
+      2026-10-14 23:23 EDT (reported by the operator; manual receipt, no Semaphore task): direct
+      Grafana sign-in works. The incident's phase 3 acceptance is now fully met: Grafana's
+      Authentik sign-in (2026-10-09) and direct sign-in (2026-10-14). The root cause was never
+      identified and no automated OAuth validation is claimed. Ticked; the incident record is
+      RESOLVED (O11Y-GRAFANA-AUTH-INCIDENT.md).
 - [x] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661
