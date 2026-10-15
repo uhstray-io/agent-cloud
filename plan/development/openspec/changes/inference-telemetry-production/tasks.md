@@ -218,7 +218,7 @@
       docs/HARDWARE.md (PR #29) records 451 spark-1 and 131 spark-2 `service=vllm`,
       `cluster=dgx-spark` entries after the paired restart. The GPU exporter is deliberately
       not scraped.
-- [ ] 2.5 Fault drill, encoded: `o11y-fault-drill.yml -e drill=exporter` stops one node
+- [x] 2.5 Fault drill, encoded: `o11y-fault-drill.yml -e drill=exporter` stops one node
       exporter, waits twelve minutes (longer than the alert's five-minute pending window
       plus scrape and evaluation delay), asserts the target is `up == 0` and the
       `telemetry-missing` rule is firing in Grafana, then restores the exporter in an
@@ -283,13 +283,28 @@
       `drill_window_confirmed=true` ("No fault was induced"; same source). Remaining: the
       operator names a window outside 04:15 to 05:00 EDT, then a dry run and the real run.
       Not ticked.
-- [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
+      2026-10-14 (task output read from production Semaphore by the lead): the operator named
+      the window, 17:37 EDT, outside 04:15 to 05:00. o11y Fault Drill (Dev) task 5654, check
+      mode, at dev 0e4f4ada: "check mode: drill=exporter would stop node-exporter.service on
+      spark-1 and wait for inference_target_down; nothing was changed." The real run, task
+      5655 at the same commit (`drill_node=spark-1`, `drill_window_confirmed=true`): "drill=exporter:
+      fault induced, inference_target_down (DGX Spark scrape target down) fired for node
+      spark-1; restored and verified." The real run is also the key-only login proof for the
+      o11y-drill account from the Semaphore runner (sshd admits it only from the Semaphore
+      host). Ticked: the drill induced the fault, the alert fired, the exporter was restored.
+- [x] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
       a push to the Loki port from the controller Mac is refused, proving scenario
       "Unlisted source cannot push"
       2026-10-02 rescope: PARTIAL — "All node targets up" and "Boot journal is queryable" are
       proven by the 2.4 evidence. Still missing: the DGX exporter drill (2.5). The controller Mac's refused push is recorded: dgx-spark `node-telemetry-and-placement-benchmark` task 3.1 notes its push timed out while both Sparks' pushes returned 204.
+      2026-10-14 (task output read from production Semaphore by the lead): the one missing
+      item, the DGX exporter drill, is proven by o11y Fault Drill (Dev) task 5655
+      (`inference_target_down` fired for spark-1, then restored and verified), which is the
+      evidence for scenario "Missing scrape is a telemetry failure" including the alert
+      firing. With 2.4's evidence for the other two scenarios and the recorded refused push,
+      every scenario of the gate is proven. Ticked.
 
 ## 3. Dashboards, alerts, synthetic probe
 - [x] 3.1 Import the metric-name list from dgx-spark `results/vllm-metric-names-*.txt`
