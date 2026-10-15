@@ -314,6 +314,7 @@ TEMPFILE_USERS = {
     "tasks/site-config-clone.yml": "clone and deploy-key scratch",
     "generate-service-ssh-key.yml": "ssh-keygen output scratch",
     "run-agw-conformance.yml": "conformance key files and results, removed in an always: block",
+    "verify-o11y-profile-pilot.yml": "disposable profile candidates in tmpfs, removed in an always: block",
 }
 
 

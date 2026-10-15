@@ -292,9 +292,9 @@ otelcol.exporter.otlp "tempo" {
   }
 }
 
-{% if o11y_alloy_profile_pilot_enabled | default(false) | bool %}
 // The sole profile pilot is Alloy's own documented pprof endpoint. Keep it
 // disabled until the pinned collector, privacy, and resource gates are proven.
+{% if o11y_alloy_profile_pilot_enabled | default(false) | bool %}
 pyroscope.write "private" {
   endpoint {
     url = "http://pyroscope:4040"
@@ -306,10 +306,45 @@ pyroscope.write "private" {
 }
 
 pyroscope.scrape "alloy_self_profile" {
+  job_name = "o11y/alloy"
   targets = [
     { "__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y" },
   ]
   scrape_interval = "60s"
+  scrape_timeout = "10s"
+  delta_profiling_duration = "5s"
+  follow_redirects = false
+  proxy_from_environment = false
   forward_to = [pyroscope.write.private.receiver]
+
+  profiling_config {
+    profile.process_cpu {
+      enabled = true
+    }
+    profile.memory {
+      enabled = false
+    }
+    profile.block {
+      enabled = false
+    }
+    profile.goroutine {
+      enabled = false
+    }
+    profile.mutex {
+      enabled = false
+    }
+    profile.fgprof {
+      enabled = false
+    }
+    profile.godeltaprof_memory {
+      enabled = false
+    }
+    profile.godeltaprof_mutex {
+      enabled = false
+    }
+    profile.godeltaprof_block {
+      enabled = false
+    }
+  }
 }
 {% endif %}
