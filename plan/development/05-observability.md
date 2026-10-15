@@ -68,13 +68,37 @@ gates.
 > receipts above are recorded.
 
 Pyroscope is private on the o11y network with a persistent named volume and a
-seven-day initial retention policy. Its Alloy self-profile pilot is disabled
-unless private inventory explicitly enables it after the pinned Alloy config,
-target reachability, privacy, and VM headroom are verified. The initial pilot
-uses only Alloy's own pprof endpoint at `alloy:12345` under `service_name=o11y/alloy`
-and a 60-second scrape interval. Record the before/after CPU, memory, profile
-ingestion, and retained-disk measurements before adding another producer. A
-normal deploy preserves this volume and every existing telemetry volume.
+seven-day initial retention policy. Alloy profiling remains disabled. A shared
+early guard in `deploy-o11y.yml` and `clean-deploy-o11y.yml` refuses an enabled
+pilot or profile-operation selector before either broad workflow mutates files,
+containers, or volumes. The existing deploy-time receipt-ID check validates only
+numeric references; it does not authenticate private inventory provenance or
+prove successful config, privacy, or resource-gate outcomes. Do not enable
+profiling through either broad workflow.
+
+The candidate verifier binds the public code revision but reports
+`private_revision=unverified`; that result is not private inventory provenance.
+The Dev-bound `Survey o11y Profile Pilot Inventory Provenance` template compares
+the exact Semaphore `production` static-YAML bytes with
+`inventory/production.yml` from a caller-supplied site-config integration branch
+and SHA. It requires the current remote branch tip to equal that SHA, binds the
+named production inventory to the uniquely named survey template and the
+`agent-cloud dev` repository, accepts only a regular private inventory file,
+parses both YAML documents with duplicate-key rejection, and emits only fixed
+status/reason plus the reviewed public/private SHAs. API reads use OpenBao-sourced
+credentials; the private deploy key and clone are removed in an unconditional
+cleanup block. This is only a source implementation; the survey has not run
+against Semaphore, so no live private-inventory provenance is claimed.
+
+A future dedicated Dev-bound operation must validate successful
+config/privacy/resource gates and apply or reload only Alloy while proving
+unrelated o11y containers and telemetry volumes are untouched. The exact
+Alloy-only apply/reload mechanism is not established in this source slice, so no
+activation template is added. Keep the pilot disabled until that design and its
+tests exist. The only proposed initial target remains Alloy's own `alloy:12345`
+pprof endpoint, labeled `service_name=o11y/alloy`, sampled every 60 seconds.
+Compare CPU, memory, profile ingestion, and retained disk before adding another
+producer. No live sampling, delivery, or storage-persistence evidence is claimed.
 
 Use the existing Discord contact point. Group notifications by the bounded
 service and environment context, wait 30 seconds before the first grouped
