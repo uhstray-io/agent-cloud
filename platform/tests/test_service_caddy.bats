@@ -73,17 +73,20 @@ setup() {
 
 @test "caddy: inference_api route allowlists /v1 (Bearer required) + /health, 404s the rest, streams" {
   local f="$DEPLOY_DIR/templates/Caddyfile.local.j2"
-  # Scope every assertion to the inference_api branch of the template, not the
-  # whole file: the forward_auth branch also carries matchers and a reverse_proxy.
-  sed -n '/r.inference_api/,/{% elif r.forward_auth/p' "$f" > "$BATS_TEST_TMPDIR/inference.j2"
+  # Scope every assertion to the allowlist edge, not the whole file: the forward_auth
+  # branch also carries matchers and a reverse_proxy. The edge is the shared api_edge
+  # macro (inference_api and mcp_api render through it) plus the inference_api call site.
+  sed -n '/macro api_edge/,/endmacro/p;/r.inference_api/,/{% elif r.mcp_api/p' "$f" > "$BATS_TEST_TMPDIR/inference.j2"
   local b="$BATS_TEST_TMPDIR/inference.j2"
   [ -s "$b" ]
+  # The inference route is the macro called with /v1/* and the /health handle on.
+  assert_grep -qF "api_edge(r, '/v1/*', true)" "$b"
   # The API allowlist is a named matcher on /v1/* consumed by a handle block —
   # the 401 must sit INSIDE it (Caddy orders `handle` before a top-level `respond`).
   # [[:space:]] rather than \s, and $'\t' rather than '\t': neither escape is
   # portable ERE, and BSD grep on macOS reads '\t' as a literal t — which would
   # turn the refute below into one that can never match.
-  assert_grep -qE '^[[:space:]]*@api path /v1/\*$' "$b"
+  assert_grep -qE '^[[:space:]]*@api path \{\{ path \}\}$' "$b"
   assert_grep -qE '^[[:space:]]*handle @api \{' "$b"
   # A regexp, not `header Authorization Bearer*`: the trailing * is a prefix
   # match, so `BearerX` would pass. The scheme, one space, a non-empty credential.
@@ -118,7 +121,10 @@ _render_caddy() {  # renders $DEPLOY_DIR/templates/Caddyfile.local.j2 with the g
   tasks:
     - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/Caddyfile.local.j2", dest: "$BATS_TEST_TMPDIR/Caddyfile", mode: "0644"}
 YML
-  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/render.yml" >/dev/null
+  # The output is kept in render.log: a test that expects a refusal checks ITS message there, because a
+  # nonzero status alone also comes from a broken render and would pass for the wrong reason.
+  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/render.yml" </dev/null >"$BATS_TEST_TMPDIR/render.log" 2>&1 \
+    || { cat "$BATS_TEST_TMPDIR/render.log" >&2; return 1; }
 }
 
 @test "caddy: an upstream_tls route proxies over mutual TLS with the mounted client leaf (task 6.2)" {
@@ -142,6 +148,90 @@ YML
   [ "$(head -n 1 "$c")" = "{" ]
   assert_grep -qE $'^\treverse_proxy x:1$' "$c"
   refute_grep -qE 'tls_client_auth|tls_trust_pool|https://x' "$c"
+}
+
+# The two inference sites of a render, nothing else (no global block, no trailing import).
+_inference_sites() { awk '/^(i|g)\.test \{/,/^}/' "$1"; }
+
+@test "caddy: the inference route renders byte-identical to the pre-macro template (golden)" {
+  _render_caddy '[{host: i.test, upstream: "inf:8001", inference_api: true}, {host: g.test, upstream: "gw:4000", inference_api: true, upstream_tls: {server_name: gateway.dc1.example.internal, client_leaf: caddy}}]'
+  _inference_sites "$BATS_TEST_TMPDIR/Caddyfile" > "$BATS_TEST_TMPDIR/inference.sites"
+  # The golden was rendered by the template as it stood BEFORE the api_edge macro was factored
+  # out (mcp edge, task 5.1). Any drift in the inference allowlist is a diff here.
+  [ -s "$BATS_TEST_TMPDIR/inference.sites" ]
+  diff "$BATS_TEST_TMPDIR/inference.sites" "$REPO_ROOT/platform/tests/fixtures/caddy-inference-sites.golden"
+}
+
+# One mcp_api site, without and with mutual TLS, extracted from the render.
+_render_mcp() {
+  _render_caddy '[{host: m.test, upstream: "gw:4000", mcp_api: true}, {host: t.test, upstream: "gw:4000", mcp_api: true, upstream_tls: {server_name: gateway.dc1.example.internal, client_leaf: caddy}}]'
+  awk '/^m\.test \{/,/^}/' "$BATS_TEST_TMPDIR/Caddyfile" > "$BATS_TEST_TMPDIR/mcp.site"
+  awk '/^t\.test \{/,/^}/' "$BATS_TEST_TMPDIR/Caddyfile" > "$BATS_TEST_TMPDIR/mcp-tls.site"
+  [ -s "$BATS_TEST_TMPDIR/mcp.site" ]
+  [ -s "$BATS_TEST_TMPDIR/mcp-tls.site" ]
+}
+
+@test "caddy: an mcp_api route proxies ONLY the exact path /mcp; /v1, /sse, /metrics, /health fall to the 404" {
+  _render_mcp
+  local m="$BATS_TEST_TMPDIR/mcp.site"
+  # The one matcher is the exact path: no wildcard, so /mcp/ and /mcp/x are not matched.
+  assert_grep -qE '^[[:space:]]*@api path /mcp$' "$m"
+  [ "$(grep -c '@api path' "$m")" -eq 1 ]
+  # Exactly two handle blocks: the gated /mcp one and the bare fallthrough. Any further handle
+  # (a /health liveness, a /v1 allowlist) would open another path.
+  [ "$(grep -cE '^[[:space:]]*handle ' "$m")" -eq 2 ]
+  assert_grep -qE '^[[:space:]]*handle @api \{$' "$m"
+  assert_grep -qE '^[[:space:]]*handle \{$' "$m"
+  refute_grep -qE 'handle /' "$m"
+  # No path other than /mcp appears in a directive (comments, which name /sse, are dropped).
+  sed '/^[[:space:]]*#/d' "$m" > "$BATS_TEST_TMPDIR/mcp.nocomment"
+  refute_grep -qE '/v1|/sse|/metrics|/health' "$BATS_TEST_TMPDIR/mcp.nocomment"
+  # The bare handle is the fallthrough and answers 404: its whole block, selected by construct.
+  sed -n '/^[[:space:]]*handle {$/,/^[[:space:]]*}$/p' "$m" > "$BATS_TEST_TMPDIR/mcp.fallthrough"
+  [ "$(tr -d '\t' < "$BATS_TEST_TMPDIR/mcp.fallthrough" | paste -sd'|' -)" = "handle {|respond 404|}" ]
+}
+
+@test "caddy: an mcp_api route answers 401 for a missing or malformed Bearer INSIDE the /mcp handle" {
+  _render_mcp
+  local m="$BATS_TEST_TMPDIR/mcp.site"
+  # The scheme, one space, a non-empty credential: Bearer alone, BearerX, Basic and an empty
+  # header all fail this regexp and hit the 401. Not the prefix form `Bearer*`.
+  assert_grep -qF '@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"' "$m"
+  refute_grep -qE 'header Authorization Bearer\*' "$m"
+  assert_grep -qE '^[[:space:]]*respond @noauth 401$' "$m"
+  # Inside the handle block (two tabs), not at site level (one tab): Caddy orders `handle`
+  # before a top-level `respond`, which would never run for /mcp.
+  assert_grep -qE $'^\t\trespond @noauth 401$' "$m"
+  refute_grep -qE $'^\trespond @noauth' "$m"
+  # The 401 precedes the proxy it guards.
+  [ "$(grep -n 'respond @noauth 401' "$m" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'reverse_proxy' "$m" | head -n 1 | cut -d: -f1)" ]
+}
+
+@test "caddy: an mcp_api route streams and takes its upstream (and mutual TLS) from the route" {
+  _render_mcp
+  local m="$BATS_TEST_TMPDIR/mcp.site" t="$BATS_TEST_TMPDIR/mcp-tls.site"
+  assert_grep -qE '^[[:space:]]*flush_interval -1$' "$m"
+  assert_grep -qE $'^\t\treverse_proxy gw:4000 \\{$' "$m"
+  refute_grep -qE 'tls_client_auth|tls_trust_pool|https://' "$m"
+  # upstream_tls: https, the verified server name, the mounted client leaf.
+  assert_grep -qE $'^\t\treverse_proxy https://gw:4000 \\{$' "$t"
+  assert_grep -qE '^[[:space:]]*tls_server_name gateway\.dc1\.example\.internal$' "$t"
+  assert_grep -qE '^[[:space:]]*tls_client_auth /etc/caddy/certs/caddy/current/cert\.pem /etc/caddy/certs/caddy/current/key\.pem$' "$t"
+  assert_grep -qE '^[[:space:]]*flush_interval -1$' "$t"
+}
+
+@test "caddy: a route that sets both edge flags, or mcp_api with forward_auth, is refused at render time" {
+  # Without the refusal the if/elif chain lets the first flag win silently, and mcp_api would
+  # drop the forward_auth gate the route asked for.
+  run _render_caddy '[{host: b.test, upstream: "x:1", inference_api: true, mcp_api: true}]'
+  [ "$status" -ne 0 ]
+  assert_grep -qF 'b.test sets both inference_api and mcp_api' "$BATS_TEST_TMPDIR/render.log"
+  run _render_caddy '[{host: f.test, upstream: "x:1", mcp_api: true, forward_auth: "a:1"}]'
+  [ "$status" -ne 0 ]
+  assert_grep -qF 'f.test sets mcp_api with forward_auth' "$BATS_TEST_TMPDIR/render.log"
+  # A route that sets one edge flag still renders.
+  _render_caddy '[{host: ok.test, upstream: "x:1", mcp_api: true}, {host: ok2.test, upstream: "x:1", inference_api: true}]'
+  assert_grep -qF 'ok.test {' "$BATS_TEST_TMPDIR/Caddyfile"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {

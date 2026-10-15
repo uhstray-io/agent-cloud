@@ -112,7 +112,64 @@ key is 401, an authenticated `initialize` returns a session, and `tools/list` li
 silently). Flag false, a keyed `initialize` must not be an MCP reply (keyless is 401 either way). The
 verdicts read the response body: the gateway's own rate-limit refusal is HTTP 200 with JSON-RPC error
 `-32003`, reported as unproven, which fails the deploy unless `-e agw_verify_allow_unproven=true`.
-The probing identity is `agw_verify_client`, else the first merged identity, never `mcp-self`.
+The probing identity is `agw_verify_client`, else the first merged identity, never `mcp-self`; with MCP on it is
+an admin-derived identity (`agw_verify_client` if it is one, else the first admin). After `tools/list` the verify makes one chat
+call and requires the gateway's access log to show the `/v1` request as `mcp-self` on the loopback listener.
+
+Rollback across the flag: with `agw_mcp_enabled` OFF live, a previous config that has the `mcp` block is refused by the
+validator (it references `$AGW_MCP_SELF_KEY`, which the flag-off `.env` does not carry); the reverse, flag ON live and a
+previous config without the block, validates and is put back, which drops `/mcp`. Both measured with `--validate-only`
+on the pinned image. Crossing back needs a redeploy of the older flag state (`agw_mcp_enabled`), not a
+`rollback-inference-route.yml` gateway-config rollback.
+
+### MCP clients (change `agentgateway-mcp`, task 7)
+
+Claude Code and pi reach `/mcp` through one user-level entry named `agentgateway`, installed by `make`:
+
+```bash
+make agw-mcp-client HOST=<mcp hostname> IDENTITY=<your gateway identity> KEY_FILE=<site-config clone>/secrets/agentgateway/client_<identity>.txt
+make agw-mcp-client DRY_RUN=1 HOST=... IDENTITY=...   # which entries would change, nothing written
+make agw-mcp-client-remove                            # deletes exactly the agentgateway entry
+```
+
+`scripts/agw-mcp-client.py` renders the templates in `context/clients/` (placeholder host, no key) for the
+hostname given and merges the one entry: Claude Code through its own CLI (`claude mcp add-json -s user`), pi by
+a merge-only edit of `~/.pi/agent/mcp.json` (atomic, mode kept, an unparseable file refused and untouched).
+Re-running is a no-op; every other server entry is left as parsed. `KEY_FILE` is optional; without it the helper
+reads the Keychain only.
+Install from a permanent checkout: each entry stores the helper's absolute path, so after moving or deleting
+the checkout re-run the installer. `make` hands the values to the installer as environment variables
+(`AGW_MCP_HOST`, `AGW_MCP_IDENTITY`, `AGW_MCP_KEY_FILE`, `AGW_MCP_HARNESS`), never as text in a shell line.
+Keep a handout file mode 0600; the helper still reads a group- or other-readable one but warns by name on stderr.
+If replacing an entry fails after the old one was removed, the installer says so and exits non-zero; re-run it.
+
+The key never sits in either file. Each entry runs `scripts/agw-mcp-key` at connect time (Claude Code
+`headersHelper`, pi `!command`), which reads the macOS Keychain item first, then the handout file. Store the
+key once, prompted (the value never appears on a command line):
+
+```bash
+security add-generic-password -s agentgateway-mcp -a <identity> -U -w
+```
+
+Verify with `claude mcp list` and `pi mcp list`. The fallback `${AGW_MCP_KEY}` in a client's `headers` is weaker
+(an exported variable is visible to every process the user starts) and is for a harness without a
+command-based header only. Never commit a repo-root `.mcp.json`: Claude Code loads a project one without
+asking in `claude -p`, Agent SDK and cloud sessions, so a live one would connect every automated session here
+to the gateway (it is gitignored, and a test asserts it does not exist).
+
+Client facts re-verified for task 7.1:
+
+| Fact | Source | Date | Matches design.md |
+|---|---|---|---|
+| `claude mcp add-json [options] <name> <json>`, `-s/--scope local\|user\|project`; `add-json` refuses an existing name (exit 1); `remove -s user` refuses an absent one (exit 1) | `claude mcp add-json --help`, `remove --help`, and a run in a temporary HOME + `CLAUDE_CONFIG_DIR`, Claude Code 2.1.299 | 2026-10-14 | Differs: `claude mcp add` has no `headersHelper` option, so the installer uses `add-json` |
+| `headersHelper`: runs in a shell, prints a JSON object of string pairs, gives up after 10 s, runs fresh on each connect, working directory is the configuration directory at user scope (absolute path needed), credential-named variables stripped for project and plugin servers only | https://code.claude.com/docs/en/mcp | 2026-10-14 | Yes |
+| `${VAR}` and `${VAR:-default}` expand in `url` and `headers`; a credential-named variable reads as empty in a remote server's `url`/`headers`, `:-default` ignored | same | 2026-10-14 | Yes (this is why no template uses an expanded variable) |
+| A project `.mcp.json` loads without a prompt in `claude -p`, Agent SDK and cloud sessions | same | 2026-10-14 | Yes |
+| User-scope Claude config lives at `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` | run with a temporary HOME, with and without `CLAUDE_CONFIG_DIR` | 2026-10-14 | n/a (installer reads it to detect a no-op) |
+| pi 1.1.0 reads `~/.pi/agent/mcp.json` (`mcpServers`); `pi mcp add`, `remove`, `list` | `pi mcp --help`; pi-mcp-adapter 5.1.0 `docs/configuration.md` | 2026-10-14 | Yes |
+| pi `headers` value starting `!` runs a command at connect (shell), stdout trimmed is the value, non-empty within 10 s, `!!` escapes; `${VAR}` interpolates | adapter `docs/servers.md`, `docs/auth.md`, `bearer-command-resolver.ts` (`shell: true`) | 2026-10-14 | Yes |
+| pi `url` is "StreamableHTTP with SSE fallback" | adapter `docs/servers.md` | 2026-10-14 | Differs from "SSE rejected": the adapter falls back to SSE; the gateway serves streamable HTTP, so nothing depends on it |
+| Keychain read `security find-generic-password -s <service> -a <account> -w`; add with `-w` last to be prompted, `-U` to update | `security find-generic-password -h`, `security add-generic-password -h` | 2026-10-14 | Yes |
 
 ## Virtual-key lifecycle (aligned with vLLM's single key)
 
@@ -129,6 +186,19 @@ per-client layer. Everything is inventory-driven code (design §10):
 | UI key editor | Disabled on purpose: `UI_READ_ONLY=true` in `.env` puts the config store in read-only mode (writes get 403), and `config.yaml` is mounted `:ro`; configuration is code |
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
+
+### Admin UI (production v1.5.0)
+
+- The Routes page shows nothing (operator report, 2026-10-14). This config declares no `binds:` or
+  routes: it uses the top-level `llm:` block, which the upstream LLM docs contrast with "traditional
+  HTTP routing configuration" (https://agentgateway.dev/docs/standalone/latest/llm/). An empty
+  Routes page does not mean traffic is
+  unrouted; the keyed deploy verify proves the `/v1` path end to end.
+- The Playground needs a pasted raw key: production config holds sha256 hashes only. Local-dev
+  sets `agw_plaintext_keys: true`, which renders values, so the local UI lists saved keys.
+- Two `agw_models` entries (`nvidia/Qwen3.8-Flash-Next-NVFP4` and `qwen3.8-flash-next`) are
+  declared; the operator asked (2026-10-14) to keep only the one active for the DGX
+  deployment; which name stays waits on dgx-spark.
 
 ## Shared-key retirement (gateway task 5.1)
 
@@ -232,17 +302,6 @@ fails. A keyless `GET /health` is **reported, not asserted**: the gateway config
 route and the key policy is strict on the listener, so the probe records what it actually does
 (200 means a public `/health` survives gateway mode; any other status means the route switch needs a
 `/health` handler). The report prints before the assertion. Read-only, no OpenBao call, no survey.
-
-Per-identity isolation (task 4.5, scenario "One client cannot exceed its share"): the Semaphore
-template `Probe agentgateway Isolation (Dev)` (`platform/playbooks/probe-agentgateway-isolation.yml`)
-sends up to five small chat completions as `agw_isolation_burst`, then one as `agw_isolation_control`.
-It passes when the burst identity gets HTTP 429 with error code `budget_exceeded` and the control
-identity gets 200. A 429 without that code is the global request bucket, not isolation, and fails.
-The burst identity must declare `agw_client_policies.<name>.tokens_per_hour` of at most 1000, so
-a run can never exhaust a real client's budget or burn meaningful GPU time. The budget window is a
-rolling hour, so a burst identity already exhausted answers 429 on its first request, which still
-counts. Both keys are read from OpenBao in `no_log` tasks; the report carries statuses and error
-codes only.
 
 A case **matches** when both targets succeeded (curl exit 0, a 2xx status, and for the stream
 an ending `[DONE]` with no error event) and returned the
@@ -444,6 +503,19 @@ only when every one of these holds; otherwise it fails and `failure` names each 
 The two bodies are not compared: generation over thousands of tokens is not bit-identical even at
 temperature 0 with a seed, and the usage-chunk check belongs to `stream-xhigh`. No result is
 recorded here yet; the first production run's task number and figures go in this section.
+
+Per-identity isolation (task 4.5, scenario "One client cannot exceed its share"): the Semaphore
+template `Probe agentgateway Isolation (Dev)` (`platform/playbooks/probe-agentgateway-isolation.yml`)
+sends up to five small chat completions as `agw_isolation_burst`, then one as `agw_isolation_control`.
+It passes when the burst identity gets HTTP 429 with error code `budget_exceeded` and the control
+identity gets 200. A 429 without that code is the global request bucket, not isolation, and fails.
+The burst identity must declare `agw_client_policies.<name>.tokens_per_hour` of at most 1000, so
+a run can never exhaust a real client's budget or burn meaningful GPU time. The budget window is a
+rolling hour, so a burst identity already exhausted answers 429 on its first request, which still
+counts. Both keys are read from OpenBao in `no_log` tasks; the report carries statuses and error
+codes only. A workable probe budget is below about five times the per-request charge of the chosen
+model (local-dev uses 50 against roughly 94 tokens per completion); a budget above what five attempts
+can exhaust ends the run "NOT proven", loudly, never as a false pass.
 
 ## Verification log
 

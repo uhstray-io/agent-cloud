@@ -381,37 +381,70 @@ finding that contradicts a decision stops the work and reopens that decision.
       Done 2026-10-14, read by the lead from the local gateway: only two tools exist (`list_models`,
       `chat_completions`), none mentions configuration, admin or dump; the admin port 15000 from a neighbour
       container is connection refused.
-- [ ] 4.8 Validation gate, local: `tools/list` returns the chat and model-listing tools,
+- [x] 4.8 Validation gate, local: `tools/list` returns the chat and model-listing tools,
       proving scenario "An enrolled identity lists tools"; a model request through MCP is
       attributed to `mcp-self`, proving scenario "A model request through MCP is charged
       to the internal identity"; the key value is absent from the rendered config, the
       committed templates and the docs, proving scenario "The internal identity is never
       handed out"; no tool returns configuration and the admin port is refused, proving
       scenario "No tool exposes the configuration dump"
-      Status 2026-10-14: the lead's manual run showed the chat call attributed to `mcp-self` (4.6 evidence) and
-      the tools and admin-port checks (4.7). Stays open until the lead reruns the local deploy with the 4.6 verify
-      (`4b396795`) and reads its output.
+      2026-10-14 evening (task output read from the LOCAL Semaphore by the lead, task 6601;
+      no production run): local deploy of the local Semaphore's repository state
+      at local merge `3a586151`, which contains `feat/agw-mcp-gateway` at `a2b23a42`, with
+      the flag on. Later commits on that branch (the merge of `dev` and the review fixes) are
+      not exercised by this run. Its verify: "MCP: /mcp without a key is 401; as stray initialize returned a
+      session, tools/list listed list_models, chat_completions, and one chat call returned a
+      completion logged as mcp-self on the loopback listener." Scenario evidence: tools listed
+      (yes); a model request through MCP is charged to `mcp-self` (log identity `mcp-self`,
+      loopback listener); the key value is absent from the rendered config (only the
+      `mcp-self` key hash; the value sits in the 0600 `.env`) and from committed files (tests
+      in PR #634); no tool returns configuration (only two tools exist) and the admin port is
+      refused from a neighbour container (connection refused, the lead's probe). Ticked with PR #634's merge: run 6601 includes the 4.6
+      verify (`4b396795` is an ancestor of `a2b23a42`), which the earlier status line asked for.
 ## 5. Edge: Caddy and Cloudflare
-- [ ] 5.1 `Caddyfile.local.j2`: a route flag (proposed `mcp_api`) rendering the allowlist
+- [x] 5.1 `Caddyfile.local.j2`: a route flag (proposed `mcp_api`) rendering the allowlist
       shape for the exact path `/mcp`: Bearer-shape 401 inside the handle block, `reverse_proxy`
       with
       `flush_interval -1` and the route's `upstream_tls`, bare `handle { respond 404 }`.
       Factor what it shares with the `inference_api` shape into one macro (no fork), and
       prove the inference route renders byte-identical before and after
-- [ ] 5.2 `platform/inventory/local-dev.yml.example`: the MCP route at
+      Done 2026-10-14: the `api_edge` macro renders both flags; `mcp_api` passes `/mcp` and no
+      `/health` handle, `inference_api` passes `/v1/*` with it. A render of the local example's
+      routes plus prod-like routes (plain, `upstream_tls`, `forward_auth`) is byte-identical to the
+      pre-change template, and `platform/tests/fixtures/caddy-inference-sites.golden`, rendered by
+      the pre-change template, pins the inference sites. The rendered MCP site was also run under a
+      real Caddy against a stand-in upstream: `/mcp` without a valid Bearer is 401, with one
+      200, and `/mcp/`, `/sse`, `/v1/models`, `/metrics`, `/health` are 404 (Caddy's `path`
+      matcher is case-insensitive, so `/MCP` and `//mcp` are proxied too; the gateway's key check
+      is the control there)
+- [x] 5.2 `platform/inventory/local-dev.yml.example`: the MCP route at
       `agw_mcp_hostname`'s local value, upstream the gateway's `default` listener; the
       single-label host needs no new certificate SAN
+      Done 2026-10-14: `mcp.agent-cloud.test` -> `agentgateway:4000` (the `default` listener,
+      `config.yaml.j2`), `mcp_api: true`, beside the `admin.inference` route
 - [ ] 5.3 Production site: the matching block in site-config's `caddy_managed_sites` for
       `agw_mcp_hostname`, on the site-config branch for this change (its own PR; the
       Caddy deploy that places it is task 6.5)
-- [ ] 5.4 `platform/infra/cloudflare`: the `mcp` record in `dns.tf` (proxied, like the
+- [x] 5.4 `platform/infra/cloudflare`: the `mcp` record in `dns.tf` (proxied, like the
       other platform names), the `mcp-api-bypass-challenge` skip rule in `waf.tf` limited to
       the MCP host and `/mcp`, and exactly one rate-limit rule in `ratelimit.tf` with its
       own bucket from finding 1.7 (G3). `tofu fmt -check` and `tofu validate` pass
-- [ ] 5.5 BATS: the MCP route answers 404 for `/v1/models`, `/sse`, `/metrics` and 401
+      Done 2026-10-14: one expression (`local.mcp_endpoint`: host `mcp.<zone>` and path equal
+      `/mcp`) feeds both the skip rule (appended LAST in `waf.tf`, so no existing rule moves) and
+      the rate-limit rule (second, last Pro slot, so the zone holds two; `action = "log"` first,
+      like the inference rule's rollout, flipped to `block` after 6.6 measures). The bucket
+      (`mcp_bucket`: per `cf.colo.id` + `ip.src`, 10 requests / 10 s, 10 s mitigation) is
+      PROVISIONAL: finding 1.7 measured the three-request handshake but set no ceiling, so it
+      reuses the inference bucket's shape; tasks 6.6 and 7.7 correct it from measurement.
+      OpenTofu v1.12.6 (container image): `fmt -check` clean, `init -backend=false` and `validate`
+      pass. No plan or apply was run
+- [x] 5.5 BATS: the MCP route answers 404 for `/v1/models`, `/sse`, `/metrics` and 401
       for a missing or malformed Bearer header; the inference route's rendering is
       unchanged; a Terraform test or grep asserts the Cloudflare expressions name the MCP
       host and not the inference host's rules. Mutation-check each
+      Done 2026-10-14: `test_service_caddy.bats` (MCP handle structure, 401 shape, streaming and
+      TLS, inference golden) and `test_cloudflare_mcp_edge.bats` (expressions, last-position
+      skip, two-rule cap, record). 19 mutations, each red, each restored byte-exact
 - [ ] 5.6 Local proof through the local Caddy deploy (`deploy-caddy.yml` through the local
       Semaphore): the MCP hostname, then the inference hostname's `/mcp`
 - [ ] 5.7 Validation gate, local: no key and a malformed key are each 401 with no
@@ -425,17 +458,36 @@ finding that contradicts a decision stops the work and reopens that decision.
 Operator-run, one `(Dev)` template at a time, dry run first (`--check` shows a diff and
 changes nothing), each result read before the next. No run is started without the
 operator's go for it. site-config changes land through its own pull requests.
-- [ ] 6.1 site-config branch A: the declared admin list, the declared exceptions list,
+- [x] 6.1 site-config branch A: the declared admin list, the declared exceptions list,
       `agw_mcp_*` variables (flag false) and the MCP Caddy block. `agw_clients` is left
       untouched in this change
-- [ ] 6.2 `Deploy Authentik (Dev)`: dry run, apply; the read-back verify passes (including
+      2026-10-14 (site-config pull requests, read by the lead with `gh`): landed as two
+      site-config pull requests. #86 (merged b95b65e6) declares `platform_admins` at
+      `agent_cloud.vars`: five entries, field-identical to the shared default per review;
+      the `jacob` identity is `agw_identity` `jacob`; `agw_admin_identities_enabled` is true.
+      #87 (merged cb38d044) declares `agw_mcp_enabled` false, `agw_mcp_hostname`
+      `mcp.uhstray.io`, `agw_loopback_port` 4002, `agw_mcp_openapi_targets` pointing at
+      `gateway/agentgateway-v1.json`, `mcp-self` in `agw_clients` with `tokens_per_hour`
+      2000000 (provisional, to be set from the 6.6 measurement), and the `mcp.uhstray.io`
+      Caddy block. `platform_admins_exceptions` was not declared: the live membership equals
+      the list, so it would be empty. `mcp-self` is a NEW internal client, not a derived admin;
+      the text's "`agw_clients` is left untouched" is about not removing the admin names
+      (that is 6.8), which this change does not do. Ticked.
+- [x] 6.2 `Deploy Authentik (Dev)`: dry run, apply; the read-back verify passes (including
       the drift guard, task 2.9) and no user changes (task 2.6's equality, live)
-      - [ ] 6.2a Preflight, before the FIRST production Authentik deploy of this change: read
+      2026-10-14 (task output read from production Semaphore by the lead): dry run task 5665
+      (changes read: the three old static blueprints removed, `platform-admins.yaml` rendered,
+      `platform-users.yaml` loses the admin entries; passwords and the `svc-automation` API
+      token identifier unchanged); real run task 5667 (changed 7; VERIFY OK: 12 blueprints,
+      6 accounts, 1 retired; group `platform-admins` members exactly the five declared);
+      rerun task 5669 changed=0. Ticked. The same runs are the live evidence for tasks 2.6
+      (no user change), 2.9 (drift guard) and 2.10 in section 2, which are not ticked here.
+      - [x] 6.2a Preflight, before the FIRST production Authentik deploy of this change: read
         the production `platform-admins` membership read-only (the group's member names, no
         values) and compare it with the declared list. Any member the list does not cover is
         declared in `platform_admins_exceptions` in site-config first; otherwise the drift
         guard fails the deploy after the blueprints have already applied
-      - [ ] 6.2b Preflight, before turning on `agw_admin_identities_enabled` in production:
+      - [x] 6.2b Preflight, before turning on `agw_admin_identities_enabled` in production:
         site-config declares `platform_admins` EXPLICITLY, at a scope both the Authentik and
         the agentgateway hosts see (the `agent_cloud` group vars or `all`). The shared default
         list is built from per-user vars (`wisward_*`, `jacob_*`, `stray_admin_email`) that
@@ -446,6 +498,11 @@ operator's go for it. site-config changes land through its own pull requests.
         Which administrators the credential print may print is NOT part of that list: it is the
         committed constant `_platform_admins_printable_keys`, changed by pull request, never by
         site-config or an extra var.
+        2026-10-14 (task output read from production Semaphore by the lead): 6.2a: NOT read as a
+        preflight before the deploy; read back from verify run 5667, after the apply: the
+        membership is exactly the declared list, so no exceptions are needed (the drift guard
+        passing confirms it). 6.2b: `platform_admins` is declared explicitly at `agent_cloud.vars`,
+        which both hosts see (site-config #86). Both ticked.
 - [ ] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
       derivation (task 2.4): dry run; apply; then read the rendered config on the host (or
       the deploy's own report), counting `keyHash` lines and never printing them: the count
@@ -453,10 +510,22 @@ operator's go for it. site-config changes land through its own pull requests.
       reported by name, existing hashes unchanged, verify asserts `/mcp` is not served.
       Whether `--check` output shows the rendered key-hash lines is UNVERIFIED, so the
       count is read from the host after the real deploy, not from the dry-run diff
+      2026-10-14 (task output read from production Semaphore by the lead): with admin
+      identities on, dry run task 5670 and real run task 5671 at 37ea003b: the render check
+      enrolled every identity, the overlap was reported ("Merged once, migration overlap
+      (platform_admins and agw_clients): stray."), and the keyed round-trip passed. With the
+      MCP code (#634, merged ec8da98b): dry run 5676, real run 5678: "MCP is disabled: a keyed
+      initialize at /mcp is not an MCP reply (HTTP 400)." After site-config #87: dry run 5681,
+      real run 5683 (`client_mcp-self` minted, MCP still disabled). NOT ticked: the
+      `keyHash` count before and after, and the unchanged-hash proof, were not read (the render
+      check asserts one entry per declared identity but prints no count and compares no
+      earlier state). Remaining: read the count from the host, read-only, names and counts only.
 - [ ] 6.4 `Apply Cloudflare Tofu (Dev)`, `tofu_action` plan: expected diff exactly the
       record and two rules, zero other change; then apply, then a zero-diff plan
+      2026-10-14: not started; waits on PR #636.
 - [ ] 6.5 `Manage Caddy Sites (Dev)`: dry run, apply; the inference block unchanged in the
       dry-run diff
+      2026-10-14: not started; waits on PR #636.
 - [ ] 6.6 Flip `agw_mcp_enabled`, `Deploy agentgateway (Dev)`; verify; then through the
       MCP hostname hold an `initialize` and an idle stream past 125 s, recording the
       observed status; `statefulMode: stateless` was chosen from the spike (3.2), so confirm it
@@ -465,6 +534,12 @@ operator's go for it. site-config changes land through its own pull requests.
 - [ ] 6.7 Hand out each declared admin's key with `Back Up Credentials to site-config (Dev)`,
       `credential_service=agentgateway`, `credential_fields=client_<name>` listed
       explicitly (never empty, Open Question 6); output carries names only
+      2026-10-14 (task output read from production Semaphore by the lead): handed out so far:
+      the operator's key, task 5638 (branch `backup/agentgateway-20261014T204513Z-ba2dec`), and
+      `client_jacob`, dry run 5672 then real run 5673 (branch
+      `backup/agentgateway-20261014T222727Z-f28619`), the fields named explicitly. The other
+      admins (`agent-cloud-admin`, `wisward`, `svc-automation`) are not handed out yet.
+      Not ticked.
 - [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
       exist and removal would drop the key). The render changes only on deploy, so after the
@@ -480,24 +555,24 @@ operator's go for it. site-config changes land through its own pull requests.
       authenticated initialize"
 
 ## 7. Client templates and installer
-- [ ] 7.1 Re-verify the client facts against the live documentation and the installed
+- [x] 7.1 Re-verify the client facts against the live documentation and the installed
       versions before any template depends on them (the Research bullets in `design.md`):
       `claude mcp add` flags and `-s user`, `headersHelper` and its time limit, `${VAR}`
       expansion, the `ANTHROPIC_*` header caveat; pi's `!command` and `${VAR}` forms,
       SSE rejection and the user-level file path; the Keychain read command on macOS. Record
       each with its date and source; a differing fact amends the template, not the design
-- [ ] 7.2 Templates under `platform/services/agentgateway/context/clients/`
+- [x] 7.2 Templates under `platform/services/agentgateway/context/clients/`
       (`claude-code.json`, `pi-mcp.json`): a placeholder URL (the installer takes the
       hostname as an argument; the repository is public and a workstation has no
       inventory), the key by command reference, no value
-- [ ] 7.3 The installer (proposed `scripts/agw-mcp-client.py`, Python standard library):
+- [x] 7.3 The installer (proposed `scripts/agw-mcp-client.py`, Python standard library):
       takes the MCP hostname as an argument; uses the harness CLI where one exists
       (`claude mcp add -s user`, `claude mcp remove`) and a merge-only JSON edit for pi's
       user-level file, atomic write preserving the file's mode; `--dry-run` showing which entries
       would change, a removal mode deleting exactly
       the agentgateway entry, names only in all output, exit non-zero when a harness file
       is unparseable rather than rewriting it
-- [ ] 7.4 The key helper, the one mechanism for both harnesses (Claude Code
+- [x] 7.4 The key helper, the one mechanism for both harnesses (Claude Code
       `headersHelper`, pi `!command`): at connect time reads the key from the Keychain or
       the site-config handout file (`secrets/agentgateway/client_<name>.txt` in the
       operator's clone) and prints the `Authorization` header JSON the harness expects, with
@@ -505,9 +580,9 @@ operator's go for it. site-config changes land through its own pull requests.
       fallback only where `headersHelper` is unavailable. It prints only what the harness
       requires on stdout, nothing on stderr but names, and
       fails with a names-only message when neither exists
-- [ ] 7.5 `make` targets with `##` help text (proposed `agw-mcp-client` and
+- [x] 7.5 `make` targets with `##` help text (proposed `agw-mcp-client` and
       `agw-mcp-client-remove`); `.gitignore` gains the repo-root `.mcp.json`
-- [ ] 7.6 Tests with a temporary home: every other server entry is unchanged as parsed JSON
+- [x] 7.6 Tests with a temporary home: every other server entry is unchanged as parsed JSON
       (entry-equal) after install, a second install changes nothing, removal restores the
       original parsed content, an unparseable file is left untouched. A scan test: no Bearer value
       or key-shaped string in any

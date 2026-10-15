@@ -40,7 +40,8 @@ CUSTOM_PREFIX = "custom/"
 # never picked up. Measured in review, 2026-08-28.
 EXPECT_BLUEPRINTS = {{ ((_shared_blueprints | default([]))
                         + ((_enabled_apps | default([])) | map('extract', authentik_app_catalog | default({}), 'file') | list)
-                        + ['zz-sso-bindings.yaml', 'platform-admins.yaml']) | map('regex_replace', '^', 'custom/') | list | to_json }}
+                        + ['zz-sso-bindings.yaml', 'platform-admins.yaml']
+                        + (_retired_blueprints | default([]))) | map('regex_replace', '^', 'custom/') | list | to_json }}
 SETTLE_SECONDS = {{ authentik_blueprint_settle_seconds | default(120) | int }}
 
 tok = os.environ.get("AUTHENTIK_BOOTSTRAP_TOKEN")

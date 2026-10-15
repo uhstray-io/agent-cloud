@@ -14,9 +14,10 @@ REPO = "uhstray-io/agent-cloud"
 WORKFLOW = ".github/workflows/lint-and-test.yml"
 PRE_PARTITION_WORKFLOW_BLOB_SHA = "da998c35a6bc5d3ea7eedc72ea228e48f9fc6b38"
 PARTITIONED_WORKFLOW_BLOB_SHA = "a4bd0d3db1de56fb2d7e0cf53fbbd879490838a0"
+AGW_PARTITIONED_WORKFLOW_BLOB_SHA = "0756135a07f33f103b1ea4b4bdd44f03e9af31a8"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
-    "Python Playbook Safety",
+    "Python Playbook Safety", "Python Agentgateway",
     "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
     "Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)",
 }
@@ -134,7 +135,7 @@ def required_jobs(files):
     go_build = go or any(p in DOCKERFILES for p in files)
     return {
         "Detect changes": True, "Static Analysis": True, "Security Scan": True,
-        "Python core": True, "Python Playbook Safety": True,
+        "Python core": True, "Python Playbook Safety": True, "Python Agentgateway": True,
         "Python Semaphore": True, "Python NetBox": True,
         "Bash Tests": True, "Rego Tests": True, "Unit Tests": True,
         "Go lint (uhhcraft)": go, "Go test (uhhcraft)": go,
@@ -181,7 +182,7 @@ def workflow_bytes(api, commit_sha):
     return source, blob_sha
 
 
-def check_workflow_policy(source, partitioned=False):
+def check_workflow_policy(source, partitioned=False, agw=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -193,8 +194,10 @@ def check_workflow_policy(source, partitioned=False):
         "test": "Unit Tests", "go-lint": "Go lint (uhhcraft)",
         "go-test": "Go test (uhhcraft)", "go-build": "Go build (uhhcraft image)",
     }
-    if partitioned:
+    if partitioned or agw:
         expected["python-playbook-safety"] = "Python Playbook Safety"
+    if agw:
+        expected["python-agentgateway"] = "Python Agentgateway"
     jobs = {}
     current = None
     in_jobs = False
@@ -282,11 +285,28 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Workflow transition requires one modified record at the protected path")
         return
     if base_blob_sha == PARTITIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == AGW_PARTITIONED_WORKFLOW_BLOB_SHA:
+            check_workflow_policy(base, partitioned=True)
+            check_workflow_policy(candidate, agw=True)
+            if base == candidate:
+                raise Refusal("Partitioned workflow must transition to the exact Agentgateway partition blob")
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != PARTITIONED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed credential-safe partition")
         check_workflow_policy(base, partitioned=True)
         if base != candidate or workflow_records:
             raise Refusal("Credential-safe partition may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == AGW_PARTITIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != AGW_PARTITIONED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed Agentgateway partition")
+        check_workflow_policy(base, agw=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Agentgateway partition may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 

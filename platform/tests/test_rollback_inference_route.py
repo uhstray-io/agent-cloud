@@ -384,6 +384,15 @@ def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(e
     assert "already published" in out and len(_calls(tmp, "restart caddy")) == 1 and _unchanged(out), out
 
 
+def test_direct_publishes_no_copy_for_the_internal_mcp_identity(env):
+    """mcp-self is enrolled on /v1 but is no client's: a direct_mcp-self copy of the vLLM key would be for nobody."""
+    Bao.store["direct_mcp-self"] = LIVE  # one a run before this change could have published
+    rc, out = _run(env, mode="direct", gateway={"agw_clients": ["workstation", "mcp-self"]})
+    assert rc == 0, out
+    assert Bao.store["direct_workstation"] == LIVE
+    assert "direct_mcp-self" not in Bao.store
+
+
 ADMINS = [{"key": "carol", "username": "carol", "name": "Carol", "email": "carol@example.invalid"}]
 
 

@@ -1,0 +1,77 @@
+i.test {
+	tls /etc/caddy/certs/wildcard.crt /etc/caddy/certs/wildcard.key
+	encode zstd gzip
+	request_body {
+		max_size 16MB
+	}
+	# Only the OpenAI-compatible API. The 401 must live INSIDE the handle block:
+	# Caddy orders `handle` before a top-level `respond`, so a top-level check
+	# would never run for /v1/* requests.
+	@api path /v1/*
+	handle @api {
+		# header_regexp, not `header ... Bearer*`: the trailing * is a PREFIX match,
+		# so `Bearer` alone or `BearerX` would pass the edge gate. Require the
+		# scheme, one space, and a non-empty credential.
+		@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"
+		respond @noauth 401
+		reverse_proxy inf:8001 {
+			# SSE token stream: flush every write; no read/write timeouts for
+			# long generations.
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+			}
+		}
+	}
+	# Liveness only: 200 with an empty body, no model data.
+	handle /health {
+		reverse_proxy inf:8001
+	}
+	# Everything else, including the upstream's unauthenticated endpoints.
+	handle {
+		respond 404
+	}
+}
+g.test {
+	tls /etc/caddy/certs/wildcard.crt /etc/caddy/certs/wildcard.key
+	encode zstd gzip
+	request_body {
+		max_size 16MB
+	}
+	# Only the OpenAI-compatible API. The 401 must live INSIDE the handle block:
+	# Caddy orders `handle` before a top-level `respond`, so a top-level check
+	# would never run for /v1/* requests.
+	@api path /v1/*
+	handle @api {
+		# header_regexp, not `header ... Bearer*`: the trailing * is a PREFIX match,
+		# so `Bearer` alone or `BearerX` would pass the edge gate. Require the
+		# scheme, one space, and a non-empty credential.
+		@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"
+		respond @noauth 401
+		reverse_proxy https://gw:4000 {
+			# SSE token stream: flush every write; no read/write timeouts for
+			# long generations.
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+				tls_server_name gateway.dc1.example.internal
+				tls_trust_pool file /etc/caddy/certs/step-ca-bundle.crt
+				tls_client_auth /etc/caddy/certs/caddy/current/cert.pem /etc/caddy/certs/caddy/current/key.pem
+			}
+		}
+	}
+	# Liveness only: 200 with an empty body, no model data.
+	handle /health {
+		reverse_proxy https://gw:4000 {
+			transport http {
+				tls_server_name gateway.dc1.example.internal
+				tls_trust_pool file /etc/caddy/certs/step-ca-bundle.crt
+				tls_client_auth /etc/caddy/certs/caddy/current/cert.pem /etc/caddy/certs/caddy/current/key.pem
+			}
+		}
+	}
+	# Everything else, including the upstream's unauthenticated endpoints.
+	handle {
+		respond 404
+	}
+}

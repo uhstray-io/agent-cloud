@@ -1,0 +1,26 @@
+#jinja2: lstrip_blocks: True
+# Authentik blueprint — the retired accounts (config-as-code, idempotent).
+# RENDERED by deploy-authentik.yml from `platform_retired_accounts` (a list of usernames
+# declared in site-config), one `state: absent` authentik_core.user per name. `state: absent`
+# DELETES the account Authentik matches on `username`; re-applying is a no-op once it is gone.
+#
+# Not rendered at all when the list is empty (the deploy skips this file and prunes a stale
+# copy), so a platform that retires nobody carries no extra blueprint.
+#
+# The deploy refuses a name that is also an active account (a platform administrator or a
+# user the users blueprint creates) or `akadmin`, before this file is placed, and its verify
+# step proves each name gone from the live API. Usernames are emitted as JSON strings, which
+# are valid YAML scalars, so a name carrying a colon or a quote cannot break the document.
+#
+# To retire an account: add its username to `platform_retired_accounts` in site-config, remove
+# it from `platform_admins` if it is listed there, and run Deploy Authentik.
+version: 1
+metadata:
+  name: agent-cloud - retired accounts
+entries:
+{% for u in _platform_retired_accounts %}
+  - model: authentik_core.user
+    state: absent
+    identifiers:
+      username: {{ u | tojson }}
+{% endfor %}

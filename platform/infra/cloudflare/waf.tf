@@ -164,5 +164,35 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # agentgateway MCP endpoint (agentgateway-mcp) — bypass the managed challenge for
+    # non-browser MCP clients.
+    #
+    # Why: the same failure the inference rule above records. A harness (Claude Code, pi) is a
+    # machine client with no browser flow, and the managed challenge answers it `cf-mitigated:
+    # challenge` (HTTP 403) before Caddy sees the request. Authentication is enforced behind this
+    # edge: Caddy answers 401 to any /mcp request without `Bearer <credential>` and the gateway's
+    # own key check is the real control, so a keyless caller gets a cheap 401, not a challenge page.
+    #
+    # Scope: the MCP host and its exact /mcp path ONLY, one expression shared with the rate-limit
+    # rule (local.mcp_endpoint, ratelimit.tf). The inference rule's expression is NOT widened, and
+    # every other path on the MCP host is a 404 at Caddy and stays under the challenge. The
+    # regional and AI-crawler BLOCK rules above still apply. Appended LAST so no existing rule
+    # changes position (a list reorder is a plan diff).
+    #
+    # Rate limiting for /mcp lives in the http_ratelimit phase: ratelimit.tf.
+    {
+      ref         = "mcp-api-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "MCP API - bypass challenge for non-browser clients on /mcp"
+      expression  = local.mcp_endpoint
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }

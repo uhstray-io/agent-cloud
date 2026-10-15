@@ -58,6 +58,11 @@ all:
     # default, because the list is launcher-controllable. `platform_admins_exceptions` (names only, default empty)
     # lists platform-admins members that are deliberately not in the list; the Authentik
     # verify accepts them and fails on any other member.
+    # Accounts to DELETE are declared as ONE list of usernames, `platform_retired_accounts`
+    # (default empty, so nothing is retired). Remove the account from `platform_admins` first:
+    # the deploy refuses a name that is also active (or an exception) and the system accounts. Shape:
+    #   platform_retired_accounts: []
+    # List the usernames to retire, then run Deploy Authentik; its verify proves each one gone.
 
   children:
     # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
@@ -165,6 +170,12 @@ all:
             # agentgateway operator UI — the gateway runs its own OIDC login against
             # Authentik (ui.policies), so this is a plain proxy to its UI listener.
             - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
+            # agentgateway MCP endpoint (change agentgateway-mcp) — mcp_api renders the same
+            # allowlist shape for the EXACT path /mcp only (Bearer-shape 401 at the edge, the
+            # gateway's key check is the authentication; everything else, /sse included, is a
+            # 404). The upstream is the gateway's `default` listener (:4000), the one that
+            # serves /mcp; the single-label host sits under the wildcard certificate.
+            - { host: "mcp.agent-cloud.test", upstream: "agentgateway:4000", mcp_api: true }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The

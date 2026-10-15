@@ -14,6 +14,7 @@ tasks run for real against a stub gateway that admits one key.
 """
 
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -39,6 +40,7 @@ TASKS = {t["name"]: t for t in PHASE1["tasks"]}
 VERIFY_TASKS = {t["name"]: t for t in PHASE3["tasks"]}
 ADMITTED = "The shared key is admitted as legacy-shared (grace period)"
 REFUSED = "The shared key is refused once retired"
+ROTATED_NOTE = "Shared-key grace period: the vLLM key was rotated, so admission is not probed"
 ADMITTED_ASSERT = "Require the shared key to be admitted until legacy_shared_expires"
 REFUSED_ASSERT = "Require the shared key to be refused after legacy_shared_expires"
 LEGACY_VARS = ("_legacy_expires", "_agw_today", "_legacy_shared_active", "_legacy_shared_retired")
@@ -90,7 +92,7 @@ def bao():
 
 
 def _run(tmp: Path, url: str, vllm: str, *args: str, fp: str = "", live_fp: str | None = None,
-         **hv) -> subprocess.CompletedProcess:
+         show: str = "", **hv) -> subprocess.CompletedProcess:
     """fp: the fingerprint manage-secrets read; live_fp: what the store holds now (default fp)."""
     secrets = {"client_workstation": "client-key-AAAA", "vllm_api_key": vllm, "agw_db_password": "p",
                "agw_oidc_cookie_seed": "s", "agentgateway_oidc_client_secret": "c"}
@@ -113,6 +115,9 @@ def _run(tmp: Path, url: str, vllm: str, *args: str, fp: str = "", live_fp: str 
     plays = [{"hosts": "all", "gather_facts": False, "vars": play_vars, "tasks": [TASKS[GUARD], render, include]},
              {"hosts": "all", "gather_facts": False, "tasks": [deploy]},
              dict(PHASE4, hosts="all")]
+    if show:
+        plays.append({"hosts": "all", "gather_facts": False, "tasks": [
+            {"name": "show", "ansible.builtin.debug": {"msg": f"{show}={{{{ {show} | default('unset') }}}}"}}]})
     (tmp / "inv.yml").write_text(yaml.safe_dump({"all": {"hosts": {"gw": host}}}))
     (tmp / "play.yml").write_text(yaml.safe_dump(plays))
     return harness_sandbox.run(["ansible-playbook", "-i", str(tmp / "inv.yml"), str(tmp / "play.yml"), *args],
@@ -232,6 +237,20 @@ def test_legacy_shared_as_a_client_is_refused(tmp_path, bao):
     assert not (tmp_path / "config.yaml").exists()
 
 
+@pytest.mark.parametrize("fp, vllm, want", [
+    (_sha(OLD), NEW, "True"),
+    (_sha(OLD), OLD, "False"),
+    ("", OLD, "False"),
+])
+def test_the_credential_task_flags_a_vllm_key_rotated_away_from_the_recorded_fingerprint(
+        tmp_path, bao, fp, vllm, want):
+    r = _run(tmp_path, bao, vllm, "-e", "agw_today=2026-10-19", fp=fp, show="_legacy_key_rotated",
+             legacy_shared_expires=EXPIRES)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"_legacy_key_rotated={want}" in r.stdout
+    _no_secret(r)
+
+
 def test_the_fingerprint_is_not_declared_through_manage_secrets():
     # A declared `existing` field absent from the store is written back as '' by manage-secrets.
     assert "'legacy_shared_key_sha256'" not in DECL.read_text()
@@ -268,7 +287,7 @@ def gateway():
 
 def _verify(tmp: Path, url: str, *args: str, **hv) -> subprocess.CompletedProcess:
     """The verify play's shared-key probe and assert tasks, run for real against the stub gateway."""
-    names = [ADMITTED, "Shared-key grace period: keep the probe's status", ADMITTED_ASSERT, REFUSED,
+    names = [ADMITTED, "Shared-key grace period: keep the probe's status", ADMITTED_ASSERT, ROTATED_NOTE, REFUSED,
              "Shared-key retirement: keep the probe's status", REFUSED_ASSERT]
     tasks = []
     for n in names:
@@ -285,6 +304,17 @@ def _verify(tmp: Path, url: str, *args: str, **hv) -> subprocess.CompletedProces
                                tmp, cwd=REPO, env=harness_sandbox.env_for(tmp))
 
 
+def test_the_rotated_key_flag_is_set_and_read_under_one_name():
+    # Phase 1's credential task sets it and Phase 3 reads it as a host fact: a rename on one side
+    # leaves the other defaulting to false, which silently restores the probe that 401s after rotation.
+    check = {t["name"]: t for t in yaml.safe_load(CHECK.read_text())}
+    set_names = set(check["Reduce the comparison to booleans"]["ansible.builtin.set_fact"])
+    probe_tasks = [ADMITTED, "Shared-key grace period: keep the probe's status", ADMITTED_ASSERT, ROTATED_NOTE]
+    read = {m for n in probe_tasks for c in VERIFY_TASKS[n]["when"] for m in re.findall(r"_legacy_key_\w+", c)}
+    assert read == {"_legacy_key_rotated"}
+    assert read <= set_names
+
+
 def test_the_verify_play_reads_the_grace_period_the_way_phase_one_does():
     assert all(PHASE3["vars"][k] == PHASE1["vars"][k] for k in LEGACY_VARS)
 
@@ -295,6 +325,28 @@ def test_the_shared_key_is_proven_admitted_before_expiry(tmp_path, gateway):
     assert r.returncode == 0, r.stdout + r.stderr
     assert Gateway.requests == [("GET", "/v1/models")]
     assert "is admitted as legacy-shared until 2026-10-20" in r.stdout
+    _no_secret(r)
+
+
+def test_the_shared_key_probe_is_skipped_when_the_vllm_key_was_rotated_before_expiry(tmp_path, gateway):
+    # legacy-shared is pinned to the pre-rotation key, so the current key was never enrolled: a
+    # probe with it would 401 although the grace period works for clients holding the old key.
+    r = _verify(tmp_path, gateway, "-e", "agw_today=2026-10-19", legacy_shared_expires=EXPIRES,
+                _legacy_key_rotated=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert Gateway.requests == []
+    assert "was rotated during the grace period" in " ".join(r.stdout.split())
+    assert "is admitted as legacy-shared until" not in r.stdout
+    _no_secret(r)
+
+
+def test_the_shared_key_is_still_probed_when_the_vllm_key_is_not_rotated(tmp_path, gateway):
+    Gateway.admitted = OLD
+    r = _verify(tmp_path, gateway, "-e", "agw_today=2026-10-19", legacy_shared_expires=EXPIRES,
+                _legacy_key_rotated=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert Gateway.requests == [("GET", "/v1/models")]
+    assert "was rotated during the grace period" not in " ".join(r.stdout.split())
     _no_secret(r)
 
 

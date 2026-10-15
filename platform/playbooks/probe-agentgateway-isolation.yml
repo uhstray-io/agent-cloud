@@ -22,6 +22,9 @@
 # `agw_client_policies.<burst>.tokens_per_hour`, or one whose budget exceeds 1000 tokens. The cap
 # protects the production GPU: this probe never drives an identity that has a real budget. Declare
 # a dedicated probe identity with a small budget (local-dev: `isolation-probe`, 50) and name it.
+# 1000 is a safety bound, not a recommendation: a workable probe budget is below about five times the
+# per-request charge of the chosen model (local-dev uses 50, a completion charges about 94 tokens);
+# a budget above what five attempts can exhaust ends the run "NOT proven", loudly, never a false pass.
 #
 # Keys. Both identities' client keys are read from secret/services/<service_name> (field
 # client_<name>) by the same AppRole login the conformance run uses; the login, the read and the
