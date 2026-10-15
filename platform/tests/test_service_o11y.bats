@@ -2335,13 +2335,17 @@ PY
 }
 
 @test "o11y: receiver-host readback compares exact root size with bounded free-space tolerance" {
-  python3 - "$REPO_ROOT/platform/playbooks/files/verify-o11y-receiver-host-metrics.py" <<'PY'
+  python3 - "$REPO_ROOT/platform/playbooks/files/verify-o11y-receiver-host-metrics.py" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
 import subprocess
 import sys
 
 script = sys.argv[1]
-labels = {'job': 'receiver-host', 'service': 'o11y/receiver-host', 'cluster': 'test', 'environment': 'prod'}
+playbook = open(sys.argv[2], encoding='utf-8').read()
+assert 'target_id%3D%22service%3Ao11y%22' in playbook
+labels = {'job': 'receiver-host', 'service': 'o11y/receiver-host', 'target_id': 'service:o11y',
+          'cluster': 'test', 'environment': 'prod'}
 metrics = []
 for name, value, extra in (
     ('node_cpu_seconds_total', '12', {'mode': 'idle'}),
@@ -2362,6 +2366,23 @@ def run(series, guest_df='Size Avail\n10000000000 5000000000'):
 
 valid = run(metrics)
 assert valid.returncode == 0, valid.stdout
+# An overlapping legacy series without target_id is stale and must not affect cardinality.
+legacy = [{**item, 'metric': {key: value for key, value in item['metric'].items()
+                              if key != 'target_id'}} for item in metrics]
+assert run(metrics + legacy).returncode == 0
+# Missing and wrong target identities are excluded, leaving the required metrics absent.
+missing_target = [{**item, 'metric': {key: value for key, value in item['metric'].items()
+                                     if key != 'target_id'}} for item in metrics]
+assert json.loads(run(missing_target).stdout)['reason'] == 'required_metric_missing'
+wrong_target = [{**item, 'metric': {**item['metric'], 'target_id': 'service:other'}}
+                for item in metrics]
+assert json.loads(run(wrong_target).stdout)['reason'] == 'required_metric_missing'
+# Selected-target cardinality and forbidden-label checks remain fail-closed.
+duplicate_selected = metrics + [dict(metrics[1])]
+assert json.loads(run(duplicate_selected).stdout)['reason'] == 'required_metric_ambiguous'
+forbidden_selected = [dict(item) for item in metrics]
+forbidden_selected[1] = {**metrics[1], 'metric': {**metrics[1]['metric'], 'device': 'private'}}
+assert json.loads(run(forbidden_selected).stdout)['reason'] == 'forbidden_label_present'
 # A 90 MiB scrape/write race is tolerated on a 10 GB filesystem.
 within_tolerance = [dict(item) for item in metrics]
 within_tolerance[-1] = {**metrics[-1], 'value': [1, '4900000000']}
