@@ -64,6 +64,8 @@ gain access as their identities are enabled. Production models (operator, 2026-1
 provider and model allow-list): `xiaomi/mimo-v2.6-flash`, `deepseek/deepseek-v4.1-flash`,
 `z-ai/glm-5.3-flash`, `xiaomi/mimo-v2.6-pro`, `openai/gpt-6-luna`, `mistralai/mistral-large-4-0`,
 `z-ai/glm-5.3`, each served under its own id as the client name, listed explicitly, no wildcard.
+Added 2026-10-15 at the operator's request: `anthropic/claude-opus-5.5` (eight models), by far
+the most expensive per token on the list, which the per-identity token budget does not price.
 
 **D5. Budget charging.** The per-model usage transformation is kept for OpenRouter models, with
 `include_usage` only. `continuous_usage_stats` is a vLLM extension; whether OpenRouter tolerates an
