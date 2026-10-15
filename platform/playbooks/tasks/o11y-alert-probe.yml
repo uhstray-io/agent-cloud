@@ -174,8 +174,10 @@
            selectattr('labels', 'defined') |
            selectattr('labels.service', 'defined') |
            selectattr('labels.service', 'equalto', expected_service) |
-          selectattr('labels.__alert_rule_uid__', 'defined') |
-          selectattr('labels.__alert_rule_uid__', 'equalto', 'o11y_service_down') |
+           selectattr('labels.alertname', 'defined') |
+           selectattr('labels.alertname', 'equalto', (_service_down_rule.stdout | from_json).title) |
+           selectattr('labels.grafana_folder', 'defined') |
+           selectattr('labels.grafana_folder', 'equalto', 'agent-cloud') |
            selectattr('labels.cluster', 'defined') |
            selectattr('labels.cluster', 'equalto', _drill_cluster) |
            selectattr('labels.environment', 'defined') |

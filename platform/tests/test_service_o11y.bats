@@ -368,16 +368,19 @@ assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt 
 
 grouped_wait = env.compile_expression(receipt['until'])
 grouped_alerts = {'data': {'alerts': [
-    {'labels': {'__alert_rule_uid__': 'o11y_service_down', 'service': 'pilot', 'cluster': 'c',
+    {'labels': {'alertname': 'Service metrics endpoint down', 'grafana_folder': 'agent-cloud',
+                'service': 'pilot', 'cluster': 'c',
                 'environment': 'prod', 'instance': '127.0.0.1:65534'}, 'state': 'Alerting'},
-    {'labels': {'__alert_rule_uid__': 'o11y_service_down', 'service': 'pilot', 'cluster': 'c',
+    {'labels': {'alertname': 'Service metrics endpoint down', 'grafana_folder': 'agent-cloud',
+                'service': 'pilot', 'cluster': 'c',
                 'environment': 'prod', 'instance': '127.0.0.1:65535'}, 'state': 'firing'},
 ]}}
 grouped_firing = json.loads(json.dumps(grouped_alerts))
 for alert in grouped_firing['data']['alerts']:
-    alert['labels']['__alert_rule_uid__'] = 'unrelated_rule'
+    alert['labels']['alertname'] = 'Unrelated rule'
 grouped_until = env.compile_expression(wait['until'])
 grouped_facts = {'_firing_alerts': {'rc': 0, 'stdout': json.dumps(grouped_alerts)},
+                 '_service_down_rule': {'stdout': json.dumps({'title': 'Service metrics endpoint down'})},
                  'o11y_grouped_probe': True, 'expected_service': 'pilot', '_drill_cluster': 'c',
                  '_drill_environment': 'prod', '_probe_expected_instances': ['127.0.0.1:65534', '127.0.0.1:65535']}
 assert grouped_until(**grouped_facts)
