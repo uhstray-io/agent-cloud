@@ -1939,10 +1939,15 @@ assert names.index('Atomically claim the active-drill interruption marker') < ta
 target = flight['block'][0]
 assert target['ansible.builtin.copy']['dest'].endswith('/config/scrape.d/o11y-prod-alert-drill.yml')
 assert 'o11y-production-active-alert-drill' in target['ansible.builtin.copy']['content']
+assert '127.0.0.1:65534' in target['ansible.builtin.copy']['content']
 assert '127.0.0.1:65535' in target['ansible.builtin.copy']['content']
 assert 'service: "{{ _probe }}"' in target['ansible.builtin.copy']['content']
+assert 'cluster: "{{ _drill_cluster }}"' in target['ansible.builtin.copy']['content']
+assert 'environment: "{{ _drill_environment }}"' in target['ansible.builtin.copy']['content']
 assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
 assert flight['block'][-1]['vars']['drill_expect_alert'] is True
+assert flight['block'][-1]['vars']['o11y_probe_expected_instances'] == ['127.0.0.1:65534', '127.0.0.1:65535']
+assert flight['block'][-1]['vars']['o11y_grouped_probe'] is True
 assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-recover-active-alert-drill.yml'
 recover_names = [task['name'] for task in recover]
 for before in ('Require the drill scrape job to be absent', 'Require the provisioned alert pause baseline after recovery', 'Require the production Discord contact point to remain present once'):

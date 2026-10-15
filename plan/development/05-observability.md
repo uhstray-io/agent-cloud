@@ -157,8 +157,8 @@ refused at the initial localhost assertion because the configured Semaphore
 variable group's OpenBao input names were treated as forged extra vars. It
 stopped before contacting the receiver or restarting Pyroscope, so it provides
 no durability evidence. The playbook-specific forged-name set now permits those
-three names while retaining its internal-override checks; task 2.3 remains open
-until a reviewed durability run succeeds.
+three names while retaining its internal-override checks; at that point task 2.3
+remained open until a reviewed durability run succeeded.
 
 Dev-bound acceptance task 5854 subsequently succeeded against the exact reviewed
 receiver revision. Its fixed receipt reports `verified`,
@@ -180,8 +180,15 @@ operation gives the restart a 10-second stop grace and a 45-second command
 deadline. If restart fails, it makes one bounded `podman start` recovery attempt
 with a 15-second command timeout and still emits the fixed `restart_failed`
 refusal. Recovery never counts as a durability success. The operation has no
-volume or retention mutation path. Task 2.3 stays open until a successful
-reviewed Dev-bound durability receipt records this result.
+volume or retention mutation path. Dev-bound durability task 5889 returned
+`status=verified`, reason `prior_sample_queryable_after_pyroscope_restart`, for
+acceptance task 5854 at `acceptance_sha=8cf5b90a2ca0b7362933fcba68a2b026ac1bf1ad`
+and `receiver_sha=23cc35595ca1aa0358f409920f40a48a80a6a100`. The same CPU profile
+query was observed before and after restart; restart/readiness were observed;
+container identity and volume metadata were preserved; and
+`fingerprint_present=true`. Together with task 5854, this closes OpenSpec task
+2.3. Task 5880 failed before receiver contact; PR #655 fixed its OpenBao
+pre-restart guard refusal. No retention or restore gate is claimed.
 
 Use the existing Discord contact point. Group notifications by the bounded
 service and environment context, wait 30 seconds before the first grouped
