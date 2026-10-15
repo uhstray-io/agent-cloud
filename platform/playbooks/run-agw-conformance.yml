@@ -101,11 +101,16 @@
     _client: "{{ agw_conformance_client | default(agw_verify_client | default((agw_clients | default([]) | first) | default(''))) }}"
     # Order-preserving filter, not `intersect`: intersect is a set operation whose order follows
     # per-process string hashing, so `first` picked a different model run to run (prod tasks 2614,
-    # 2681, 2698). This keeps allowed_models order, else agw_models order.
+    # 2681, 2698). This keeps allowed_models order, else agw_models order. OpenRouter models
+    # (agentgateway-openrouter) are never picked: the run compares the gateway with direct vLLM and
+    # OpenRouter is billed per token (agw_conformance_model still names one explicitly).
     _client_models: >-
       {{ ((agw_client_policies | default({}))[_client] | default({})).allowed_models
          | default(agw_models | default([]) | map(attribute='name') | list)
-         | select('in', agw_models | default([]) | map(attribute='name') | list) | list }}
+         | select('in', agw_models | default([]) | map(attribute='name') | list)
+         | reject('in', agw_models | default([]) | selectattr('provider', 'defined')
+                  | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list)
+         | list }}
     _model: "{{ agw_conformance_model | default(_client_models | first | default('')) }}"
     _direct_model: >-
       {{ (agw_models | default([]) | selectattr('name', 'equalto', _model) | first | default({})).upstream_model | default(_model) }}

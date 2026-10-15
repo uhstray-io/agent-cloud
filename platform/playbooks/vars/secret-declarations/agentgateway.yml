@@ -151,6 +151,84 @@ _client_defs: >-
 # legacy_shared_key_sha256 lives at this path too but is deliberately NOT declared here: a declared
 # `existing` field absent from the store is written back as '' by manage-secrets, which could erase
 # a fingerprint an overlapping deploy recorded. tasks/agw-legacy-key-check.yml owns it (CAS write).
+# OpenRouter models (agentgateway-openrouter): an `agw_models` entry with `provider: openrouter` is
+# served by the gateway's native OpenRouter provider instead of the vLLM upstream. Entries without
+# `provider` are untouched, so with none declared everything below is empty and the render, the
+# secret declaration and the required list are what they were before. OpenRouter is paid per token
+# on the operator's account, so it is opt-in twice: the model must be listed by name (never a
+# wildcard) and `agw_openrouter_identities` and/or `agw_openrouter_admins` must name who may call
+# it; an identity not in that union is denied every OpenRouter model in config.yaml.j2. An empty
+# union is refused rather than read as "everyone" or "nobody".
+_agw_openrouter_models: >-
+  {%- set out = [] -%}
+  {%- for m in agw_models | default([]) -%}
+    {%- if (m['provider'] | default('', true)) == 'openrouter' and out.append(m) -%}{%- endif -%}
+  {%- endfor -%}
+  {{ out }}
+# Who may call OpenRouter models: the explicit `agw_openrouter_identities` list, plus, when
+# `agw_openrouter_admins` is true (default false), every admin-derived identity above (so none until
+# `agw_admin_identities_enabled` derives them). A union, each name once.
+_agw_openrouter_identities: >-
+  {%- set out = [] -%}
+  {%- if agw_openrouter_identities is defined and agw_openrouter_identities is sequence
+         and agw_openrouter_identities is not string and agw_openrouter_identities is not mapping -%}
+    {%- for i in agw_openrouter_identities -%}
+      {%- if i not in out and out.append(i) -%}{%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {%- if agw_openrouter_admins | default(false) | bool -%}
+    {%- for a in _agw_admin_identities -%}
+      {%- if a['name'] not in out and out.append(a['name']) -%}{%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {{ out }}
+# Identities the gateway renders for itself, never as a person or a client: `legacy-shared` (the shared
+# vLLM key, config.yaml.j2) and `mcp-self` (the MCP target's own call). OpenRouter spend can never be
+# granted to them; config.yaml.j2 keeps its own copy of `mcp-self` in `_internal_ids`, and a test
+# pins that this list covers it.
+_agw_internal_identities: ['legacy-shared', 'mcp-self']
+# What is wrong with the OpenRouter declaration, one sentence per problem, empty when nothing is.
+# deploy-agentgateway.yml refuses a non-empty list before any restart or store write. Names only.
+_agw_openrouter_problems: >-
+  {%- set out = [] -%}
+  {%- for m in agw_models | default([]) -%}
+    {%- set p = (m['provider'] | default('', true)) | string -%}
+    {%- set n = (m['name'] | default('', true)) | string -%}
+    {%- set u = (m['upstream_model'] | default('', true)) | string -%}
+    {%- set who = 'agw_models entry "' ~ n ~ '"' -%}
+    {#- A glob character in ANY served name is refused: a model name is a literal, and a pattern in it would
+        be read as one by whatever matches names against allow-lists. -#}
+    {%- if p != 'openrouter' and (n is search('[*?\\[\\]]'))
+           and out.append(who ~ ': a model name must not contain a glob character (* ? [ ])') -%}{%- endif -%}
+    {%- if p not in ['', 'openrouter']
+           and out.append(who ~ ': provider "' ~ p ~ '" is not supported; the only value is openrouter, omit it for the vLLM upstream') -%}{%- endif -%}
+    {%- if p == 'openrouter' -%}
+      {%- if ('*' in n or '*' in u)
+             and out.append(who ~ ': an OpenRouter model must be named explicitly, never a wildcard (it is billed per token)') -%}{%- endif -%}
+      {%- if '*' not in n and not (n is match('^[A-Za-z0-9][A-Za-z0-9._:/-]*$'))
+             and out.append(who ~ ': the name must match ^[A-Za-z0-9][A-Za-z0-9._:/-]*$') -%}{%- endif -%}
+      {%- if '*' not in u and not (u is match('^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]*$'))
+             and out.append(who ~ ': upstream_model is required and must be an OpenRouter id of the form vendor/model') -%}{%- endif -%}
+      {%- if (agw_models | selectattr('name', 'equalto', n) | list | length) > 1
+             and out.append(who ~ ': the name is declared more than once') -%}{%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- if _agw_openrouter_models | length > 0 -%}
+    {%- if _agw_openrouter_identities | length == 0
+           and out.append('no identity may call the OpenRouter models: declare agw_openrouter_identities and/or set '
+                          ~ 'agw_openrouter_admins with admin identities enabled (agw_admin_identities_enabled)') -%}{%- endif -%}
+    {%- if agw_openrouter_identities is defined and (agw_openrouter_identities is string or agw_openrouter_identities is mapping or agw_openrouter_identities is not sequence)
+           and out.append('agw_openrouter_identities must be a list of identity names') -%}{%- endif -%}
+    {%- if agw_openrouter_identities is defined and agw_openrouter_identities is sequence and agw_openrouter_identities is not string and agw_openrouter_identities is not mapping -%}
+      {%- for i in agw_openrouter_identities -%}
+        {%- if i in _agw_internal_identities
+               and out.append('agw_openrouter_identities names "' ~ i ~ '", an internal identity that is never granted OpenRouter models') -%}{%- endif -%}
+        {%- if i not in agw_identities and i not in _agw_internal_identities
+               and out.append('agw_openrouter_identities names "' ~ i ~ '", which is not a declared gateway identity') -%}{%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+  {%- endif -%}
+  {{ out }}
 # agw_db_password: the gateway's own Postgres (budget usage only) — generated
 # once, reused; a new value would orphan the existing data directory.
 # agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
@@ -158,9 +236,15 @@ _client_defs: >-
 _secret_definitions: >-
   {{ [{'name': 'vllm_api_key', 'type': 'existing'},
       {'name': 'agw_db_password', 'type': 'random', 'length': 32},
-      {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
+      {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}]
+     + ([{'name': 'openrouter_api_key', 'type': 'existing'}] if _agw_openrouter_models | length > 0 else [])
+     + _client_defs }}
 # The upstream key must be present unless the inventory declares an upstream that takes none
-# (agw_upstream_requires_key: false, LM Studio without authentication). manage-secrets enforces
+# (agw_upstream_requires_key: false, LM Studio without authentication). The OpenRouter key
+# (`openrouter_api_key`, `existing` like the vLLM one: seeded by Seed OpenBao Key, never generated) is
+# required exactly when an OpenRouter model is declared, and declared only then, so a gateway
+# without one never writes an empty field into the store. manage-secrets enforces
 # this list at deploy time and check-secrets reads it, so both agree with the deploy's own assert.
 _required_existing_secrets: >-
-  {{ ['vllm_api_key'] if agw_upstream_requires_key | default(true) | bool else [] }}
+  {{ (['vllm_api_key'] if agw_upstream_requires_key | default(true) | bool else [])
+     + (['openrouter_api_key'] if _agw_openrouter_models | length > 0 else []) }}
