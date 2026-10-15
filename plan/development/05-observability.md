@@ -168,8 +168,12 @@ requires the disabled rendered config to match the live config, and queries the
 historical sample before and after restarting only `o11y-pyroscope`. It compares
 all o11y container identity/mount snapshots and all named-volume metadata and
 requires the Pyroscope container ID and `/data` volume to remain unchanged. The
-operation has no volume or retention mutation path. Task 2.3 stays open until a
-successful reviewed Dev-bound durability receipt records this result.
+operation gives the restart a 10-second stop grace and a 45-second command
+deadline. If restart fails, it makes one bounded `podman start` recovery attempt
+with a 15-second command timeout and still emits the fixed `restart_failed`
+refusal. Recovery never counts as a durability success. The operation has no
+volume or retention mutation path. Task 2.3 stays open until a successful
+reviewed Dev-bound durability receipt records this result.
 
 Use the existing Discord contact point. Group notifications by the bounded
 service and environment context, wait 30 seconds before the first grouped

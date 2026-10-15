@@ -27,9 +27,13 @@ Non-goals: instrumenting every service in this change, replacing the alert polic
    `o11y-pyroscope` container, waits on its `/ready` endpoint, then repeats the
    same query and requires an identical timeline fingerprint, unchanged
    container metadata and identity, and unchanged named-volume metadata. There
-   is no volume deletion, retention change, or deployment path. Task 5854's
-   successful receipt supplies prior live sampling/delivery/post-disable
-   evidence; implementation and test coverage of this operation do not close
+   is no volume deletion, retention change, or deployment path. The restart
+   uses a 10-second stop grace and 45-second command deadline; a failed restart
+   gets one `podman start` recovery attempt with a 15-second command timeout but
+   still returns the fixed `restart_failed` refusal. Recovery does not count as
+   a durability success. Task 5854's successful receipt supplies prior live
+   sampling, delivery, and post-disable evidence; implementation and test
+   coverage of this operation do not close
    task 2.3 until the Dev-bound durability receipt succeeds.
 4. **Alerting.** Keep the existing Discord contact. Add stable labels, dashboard/runbook annotations, and rule-level `notification_settings` grouping/timing. Expected-target alerts use one deterministic multidimensional rule per stable `(service, environment, cluster)` group, with a UID derived from that tuple; refuse collisions against declared targets, other provisioned rules, or a previously owned group identity. Each rule's PromQL expression is an exact OR of its declared `(job, instance, service, cluster, environment)` selectors, and resulting series retain their job and instance labels. Escape dynamic Grafana `$labels` references as `$$labels` in provisioned rule labels because Grafana applies environment interpolation when reading those labels. Grafana 11.4 adds `alertname` and `grafana_folder` to group-by keys, so a single rule title per stable group is required for same-service target failures to share a notification group. Preserve the old per-target UIDs as paused, UID-qualified tombstones during migration. A rollback to per-target rules must explicitly tombstone every active group UID before reactivating legacy target UIDs; reverting source alone is unsafe because Grafana retains omitted provisioned UIDs. Do not file-provision the shared policy tree, whose replacement semantics could overwrite unrelated routes. Read back rule labels, annotations, duration, pause state, and routing settings, then run a bounded delivery drill.
 5. **Estate adoption.** Amend the open estate-wide instrumentation plan with a per-service signal/label/profile/owner declaration and a phased capacity gate. Service onboarding references that contract. Avoid duplicating source truth in dashboard JSON or a second inventory.

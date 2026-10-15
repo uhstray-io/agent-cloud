@@ -268,12 +268,18 @@ def _mock_snapshots(monkeypatch, config_path, *, changed=False):
 
 def _runner(*, restart_failure=False, query_failure=False):
     calls = []
+    timeout_calls = []
     query = json.dumps({"timeline": {"startTime": WINDOW_START, "durationDelta": 60, "samples": [2, 0]}}).encode()
 
-    def run(argv, **_kwargs):
+    def run(argv, **kwargs):
         calls.append(argv)
+        timeout_calls.append((argv, kwargs.get("timeout")))
         if argv[:2] == ["podman", "restart"] and restart_failure:
+            if restart_failure == "timeout":
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output=b"private runtime detail")
             return subprocess.CompletedProcess(argv, 1, b"", b"private runtime detail")
+        if argv[:2] == ["podman", "start"]:
+            return subprocess.CompletedProcess(argv, 1, b"", b"private recovery detail")
         if argv[:2] == ["podman", "restart"]:
             return subprocess.CompletedProcess(argv, 0, b"o11y-pyroscope", b"")
         if "http://pyroscope:4040/ready" in argv:
@@ -283,7 +289,19 @@ def _runner(*, restart_failure=False, query_failure=False):
             return subprocess.CompletedProcess(argv, 0, body, b"")
         raise AssertionError(argv)
 
+    run.timeout_calls = timeout_calls
     return run, calls
+
+
+def test_shared_pilot_command_timeout_default_is_preserved():
+    observed = {}
+
+    def run(argv, **kwargs):
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, b"ok", b"")
+
+    assert pilot._run(["podman", "ps"], run) == b"ok"
+    assert observed["timeout"] == pilot.COMMAND_TIMEOUT
 
 
 def test_invalid_disabled_config_refuses_before_pyroscope_restart(monkeypatch, tmp_path):
@@ -295,7 +313,7 @@ def test_invalid_disabled_config_refuses_before_pyroscope_restart(monkeypatch, t
     result = operation.evaluate(payload, runner=runner, sleep_fn=lambda _seconds: None)
 
     assert result["reason"] == "config_not_disabled"
-    assert not any(call[:2] == ["podman", "restart"] for call in calls)
+    assert not any(call[:2] in (["podman", "restart"], ["podman", "start"]) for call in calls)
 
 
 def test_missing_historical_sample_refuses_without_restart(monkeypatch, tmp_path):
@@ -321,15 +339,22 @@ def test_unverified_acceptance_task_refuses_before_any_receiver_command(monkeypa
     assert calls == []
 
 
-def test_restart_failure_is_sanitized_and_stops_before_post_restart_query(monkeypatch, tmp_path):
+@pytest.mark.parametrize("restart_failure", ["exit", "timeout"])
+def test_restart_failure_is_sanitized_and_stops_before_post_restart_query(monkeypatch, tmp_path, restart_failure):
     payload = _operation_fixture(tmp_path)
     _mock_snapshots(monkeypatch, Path(payload["config_path"]))
-    runner, calls = _runner(restart_failure=True)
+    runner, calls = _runner(restart_failure=restart_failure)
 
     result = operation.evaluate(payload, runner=runner, sleep_fn=lambda _seconds: None)
 
     assert result["reason"] == "restart_failed"
+    assert result["restarted"] == "unverified"
     assert "private runtime detail" not in json.dumps(result)
+    assert "private recovery detail" not in json.dumps(result)
+    assert [call for call in calls if call[:2] == ["podman", "start"]] == [
+        ["podman", "start", "o11y-pyroscope"],
+    ]
+    assert (calls[-1], 15) in runner.timeout_calls
     assert sum(any("/pyroscope/render?" in arg for arg in call) for call in calls) == 1
 
 
@@ -364,7 +389,7 @@ def test_receiver_play_vars_render_the_real_disabled_alloy_template():
 
 
 @needs_ansible
-def test_receiver_play_assertion_resolves_acceptance_id_from_localhost_hostvars():
+def test_receiver_play_assertion_resolves_acceptance_id_from_localhost_hostvars(tmp_path):
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
     receiver_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
     assertion = next(
@@ -395,7 +420,7 @@ print(json.dumps(results))
         [ansible_python(), "-c", harness],
         input=json.dumps({"expression": expression, "ids": [5854, 5855]}),
         text=True, capture_output=True, check=False,
-        env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(Path("/private/tmp"))},
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
     )
 
     assert result.returncode == 0, result.stderr
@@ -414,7 +439,9 @@ def test_success_restarts_only_pyroscope_and_preserves_exact_sample(monkeypatch,
     assert result["query_before"] == result["query_after"] == "observed"
     assert result["container_identity"] == result["volume_metadata"] == "preserved"
     assert result["sample_fingerprint_sha256"]
-    assert [call for call in calls if call[:2] == ["podman", "restart"]] == [["podman", "restart", "o11y-pyroscope"]]
+    restart_command = ["podman", "restart", "--time", "10", "o11y-pyroscope"]
+    assert [call for call in calls if call[:2] == ["podman", "restart"]] == [restart_command]
+    assert (restart_command, 45) in runner.timeout_calls
 
 
 def test_restart_playbook_is_dev_bound_and_reports_only_a_fixed_receipt():
@@ -454,3 +481,27 @@ def test_restart_playbook_is_dev_bound_and_reports_only_a_fixed_receipt():
     assert "o11y_profile_acceptance_task_id" not in str(
         plays[2]["vars"]["_durability_internal_names"]
     )
+    receiver_play = plays[-1]
+    workspace = next(task for task in receiver_play["tasks"]
+                     if task.get("name") == "Allocate a private tmpfs workspace")
+    assert "no_log" not in workspace
+    operation_block = next(task["block"] for task in receiver_play["tasks"] if "block" in task)
+    for name in [
+        "Copy the fixed restart verifier into tmpfs",
+        "Copy the reviewed pilot operation helper beside the verifier",
+    ]:
+        task = next(task for task in operation_block if task.get("name") == name)
+        assert "no_log" not in task
+    for name in [
+        "Render the disabled profile candidate",
+        "Read the rendered disabled config into memory",
+        "Compare the same historical CPU sample before and after restarting Pyroscope",
+        "Parse the fixed sanitized durability receipt",
+        "Require the closed durability receipt schema",
+    ]:
+        task = next(task for task in operation_block if task.get("name") == name)
+        assert task.get("no_log") is True
+    debug_task = next(task for task in operation_block
+                      if task.get("name") == "Report the bounded Pyroscope restart durability receipt")
+    assert debug_task["changed_when"] is False
+    assert "changed_when" not in debug_task["ansible.builtin.debug"]

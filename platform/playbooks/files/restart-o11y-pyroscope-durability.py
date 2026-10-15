@@ -36,6 +36,9 @@ QUERY_PREFIX = (
     "/pyroscope/render?query=process_cpu%3Acpu%3Ananoseconds%3Acpu%3Ananoseconds"
     "%7Bservice_name%3D%22o11y%2Falloy%22%7D&from="
 )
+RESTART_TIMEOUT = 45
+RESTART_STOP_GRACE_SECONDS = 10
+RECOVERY_TIMEOUT = 15
 
 
 class Refusal(Exception):
@@ -56,13 +59,21 @@ def _pilot_module():
     return module
 
 
-def _run(module, argv: list[str], runner: Callable | None) -> bytes:
+def _run(module, argv: list[str], runner: Callable | None, *, timeout: int | None = None) -> bytes:
     try:
-        return module._run(argv, runner)
-    except module.Refusal as exc:
+        if timeout is None:
+            return module._run(argv, runner)
+        return module._run(argv, runner, timeout=timeout)
+    except Exception as exc:
         if argv[:2] == ["podman", "restart"]:
+            try:
+                module._run(["podman", "start", "o11y-pyroscope"], runner, timeout=RECOVERY_TIMEOUT)
+            except Exception:
+                pass
             raise Refusal("restart_failed") from exc
-        raise Refusal("receiver_unavailable") from exc
+        if isinstance(exc, module.Refusal):
+            raise Refusal("receiver_unavailable") from exc
+        raise
 
 
 def _ready(module, runner: Callable | None) -> None:
@@ -165,7 +176,9 @@ def evaluate(
             raise Refusal("profile_not_queryable_before_restart")
         result.update(query_before="observed", ready="observed")
 
-        _run(module, ["podman", "restart", "o11y-pyroscope"], runner)
+        _run(module, [
+            "podman", "restart", "--time", str(RESTART_STOP_GRACE_SECONDS), "o11y-pyroscope",
+        ], runner, timeout=RESTART_TIMEOUT)
         result["restarted"] = "completed"
         _wait_ready(module, runner, sleep_fn)
         after_digest, after_state = module._container_snapshot(path, runner)

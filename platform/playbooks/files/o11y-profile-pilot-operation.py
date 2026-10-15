@@ -101,12 +101,12 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
         raise Refusal("receiver_unavailable") from exc
 
 
-def _run(argv: list[str], runner: Callable | None = None) -> bytes:
+def _run(argv: list[str], runner: Callable | None = None, *, timeout: int = COMMAND_TIMEOUT) -> bytes:
     if runner is not None and runner is not subprocess.run:
         try:
             result = runner(
                 argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                timeout=COMMAND_TIMEOUT, check=False,
+                timeout=timeout, check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Refusal("receiver_unavailable") from exc
@@ -127,7 +127,7 @@ def _run(argv: list[str], runner: Callable | None = None) -> bytes:
             raise Refusal("receiver_unavailable")
         os.set_blocking(process.stdout.fileno(), False)
         selector.register(process.stdout, selectors.EVENT_READ)
-        deadline = time.monotonic() + COMMAND_TIMEOUT
+        deadline = time.monotonic() + timeout
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:

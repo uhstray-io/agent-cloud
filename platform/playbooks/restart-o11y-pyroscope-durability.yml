@@ -321,7 +321,6 @@
         path: /dev/shm/ansible-tmp
         prefix: o11y-profile-restart-
       register: _durability_workspace
-      no_log: true
 
     - name: Render the disabled Alloy config and stage the restart verifier
       block:
@@ -345,14 +344,12 @@
             src: "{{ playbook_dir }}/files/restart-o11y-pyroscope-durability.py"
             dest: "{{ _durability_workspace.path }}/restart.py"
             mode: "0700"
-          no_log: true
 
         - name: Copy the reviewed pilot operation helper beside the verifier
           ansible.builtin.copy:
             src: "{{ playbook_dir }}/files/o11y-profile-pilot-operation.py"
             dest: "{{ _durability_workspace.path }}/o11y-profile-pilot-operation.py"
             mode: "0700"
-          no_log: true
 
         - name: Compare the same historical CPU sample before and after restarting Pyroscope
           ansible.builtin.command:
@@ -429,7 +426,7 @@
         - name: Report the bounded Pyroscope restart durability receipt
           ansible.builtin.debug:
             msg: "{{ _durability_receipt | to_json }}"
-            changed_when: false
+          changed_when: false
 
         - name: Require prior sample persistence across the Pyroscope restart
           ansible.builtin.assert:
