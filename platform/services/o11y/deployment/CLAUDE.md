@@ -113,20 +113,15 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   check mode. Apply accepts `bootstrap_allowed` only at the pre-apply and
   immediately-before-start gates. For a missing volume, bounded volume inventory
   must prove the exact expected project name is unused and an all-container query
-  must prove the named collector is absent, including stopped containers. An
-  existing empty volume qualifies only with unique exact identity, zero consumers
-  and mounts, actual boolean `NeedsChown` and `NeedsCopyUp` values, and a read-only
-  metadata result proving root `0:0`, owner RWX, no group/other write or special
-  bits, no ACL or nested mount, and no contents. `podman-compose up` is the only
-  create/initialization action. The immediate pre-start check is outside the
+  must prove the named collector is absent, including stopped containers. Only
+  a proven-missing v2 volume can bootstrap. `podman-compose up` is the only
+  create/initialization action. Any existing v2 volume requires strict identity,
+  access, layout, and a valid parsed cursor before it can start; empty or
+  initialization-pending state, absent cursor, and invalid, unreadable, or unknown
+  cursor evidence refuse. There
+  is no cursorless pre-start retry. The immediate pre-start check is outside the
   rollback block, so a refusal before startup cannot remove an already-running
-  collector. The pre-start `verify` gates also permit a bounded cursorless retry
-  only when an observed volume has both initialization flags false, the collector
-  absent from all containers, zero consumers and mounts, safe `0:0` root and
-  allowlisted layout, proven absent `positions.yml`, successful access/ACL/mount
-  checks, and sufficient GraphRoot and volume capacity. This `ready` result
-  authorizes a start attempt only. Present invalid/unreadable or unknown cursor
-  evidence refuses. After startup, the playbook calls separate `verify-live`, which
+  collector. After startup, the playbook calls separate `verify-live`, which
   must return strict `ready`, including the parsed expected journal cursor in
   `positions.yml`; the cursor is mandatory for post-start success. Runtime checks also prove the actual RW volume source/destination,
   UID mapping, effective write/rename access, health, unchanged receiver containers,

@@ -1242,7 +1242,7 @@ says create options do not apply to an existing
 volume. The versioned key therefore isolates the fresh start from the legacy
 state. A fresh collector start can replay only Alloy's supported
 [`max_age` window](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/)
-(documented as 7 hours), not older journal entries. This replay boundary is a
+(configured as 15 minutes), not older journal entries. This replay boundary is a
 data limitation, not evidence of full history.
 
 Podman may omit false-valued initialization flags from JSON. The helper therefore
@@ -1304,9 +1304,10 @@ valid journal cursor. Also require healthy status, unchanged seven receiver
 containers, and a fresh exact-target Loki receipt. An empty image destination
 may leave copy-up pending. After start, an absent cursor, a present invalid or
 unreadable cursor file, a pending temporary positions file, or any layout outside
-the allowlist refuses as incomplete state; the cursorless pre-start retry is not
-post-start acceptance. Failed-start rollback removes only the pilot container
-without `-v`. The positions helper reports `check_mode_unverified` without its
+the allowlist refuses as incomplete state. An existing v2 volume without a valid
+parsed cursor refuses before start; only a proven-missing v2 volume can bootstrap.
+Failed-start rollback removes only the pilot container without `-v`. The
+positions helper reports `check_mode_unverified` without its
 own Podman or filesystem operations; the surrounding playbook may still run
 other checks. Survey exceptions produce a bounded unavailable receipt
 with fixed reason `survey_failed`.
