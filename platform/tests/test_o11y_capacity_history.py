@@ -256,7 +256,10 @@ def test_daily_units_are_bounded_and_the_history_survey_has_a_registered_templat
              _capacity_textfile_dir="/var/lib/node_exporter/textfile")
     assert "User=deploy" in unit
     assert "Environment=XDG_RUNTIME_DIR=/run/user/%U" in unit
-    assert "NoNewPrivileges=yes" in unit and "ReadWritePaths=/var/lib/node_exporter/textfile" in unit
+    assert "NoNewPrivileges=no" in unit
+    assert "PrivateTmp=yes" in unit
+    assert "ProtectSystem=full" in unit
+    assert "ReadWritePaths=/var/lib/node_exporter/textfile" in unit
     timer = (DEPLOY / "capacity/o11y-capacity-sample.timer").read_text()
     assert "OnCalendar=*-*-* 02:15:00" in timer and "Persistent=true" in timer
 

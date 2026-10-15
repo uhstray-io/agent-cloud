@@ -1,4 +1,4 @@
-# Managed by deploy-o11y.yml. Read-only measurement; only the textfile output is writable.
+# Managed by deploy-o11y.yml. Publishes sanitized volume-size metrics for node-exporter.
 [Unit]
 Description=Collect a complete o11y named-volume capacity sample
 
@@ -8,7 +8,8 @@ User={{ _capacity_user }}
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 ExecStart=/usr/bin/python3 {{ _capacity_sampler }}
 TimeoutStartSec=600
-NoNewPrivileges=yes
+# Rootless Podman needs setuid newuidmap for inspection; keep this exception read-only.
+NoNewPrivileges=no
 PrivateTmp=yes
 ProtectSystem=full
 ReadWritePaths={{ _capacity_textfile_dir }}
