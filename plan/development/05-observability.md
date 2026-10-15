@@ -87,18 +87,46 @@ named production inventory to the uniquely named survey template and the
 parses both YAML documents with duplicate-key rejection, and emits only fixed
 status/reason plus the reviewed public/private SHAs. API reads use OpenBao-sourced
 credentials; the private deploy key and clone are removed in an unconditional
-cleanup block. This is only a source implementation; the survey has not run
-against Semaphore, so no live private-inventory provenance is claimed.
+cleanup block. Dev-bound inventory provenance task 5818 later matched these
+exact private inventory bytes at site-config `main` SHA
+`e3e04294442e7e88baa3ca6ff233572f31eacdd4`.
 
-A future dedicated Dev-bound operation must validate successful
-config/privacy/resource gates and apply or reload only Alloy while proving
-unrelated o11y containers and telemetry volumes are untouched. The exact
-Alloy-only apply/reload mechanism is not established in this source slice, so no
-activation template is added. Keep the pilot disabled until that design and its
-tests exist. The only proposed initial target remains Alloy's own `alloy:12345`
-pprof endpoint, labeled `service_name=o11y/alloy`, sampled every 60 seconds.
-Compare CPU, memory, profile ingestion, and retained disk before adding another
-producer. No live sampling, delivery, or storage-persistence evidence is claimed.
+The dedicated Dev-bound **Accept o11y Profile Pilot (Dev)** operation reruns the
+bounded candidate verifier and current budget verifier, checks the current
+private inventory against its reviewed site-config branch/SHA in the same run,
+and requires the deployed receiver checkout to match an explicit revision. It
+refuses an enabled inventory switch, a non-baseline rendered config, a mismatched
+or writable Alloy config bind mount, an unhealthy receiver set, or less than
+30% guest-root free space / 25% memory headroom. It snapshots every `o11y-*`
+container identity and mount plus all rootless Podman named-volume metadata.
+The helper writes the temporary enabled config through the existing
+`config.alloy` inode, POSTs Alloy's `/-/reload` endpoint from inside the Alloy
+container, checks the profile component, and queries Pyroscope for
+`service_name="o11y/alloy"`. Its unconditional `finally` restores the disabled
+config through that same inode, reloads Alloy, verifies the profile component is
+absent, queries Pyroscope again with the same activation boundary, and requires
+a positive timeline sample at or after that boundary. The receipt reports
+`post_disable_query=observed`; this proves a post-disable query result, not disk
+durability across a Pyroscope restart. It compares the container and volume
+snapshots, emits only fixed status/reason, bounded service identity, and
+revision/config hashes, and does not change retention or restart/recreate a
+receiver container.
+
+**Prior receipts (2026-10-15):** Dev-bound inventory provenance task 5818
+matched the exact private inventory bytes at site-config `main` SHA
+`e3e04294442e7e88baa3ca6ff233572f31eacdd4`. Candidate task 5819 validated the
+disabled and enabled Alloy configs and bounded component loading. Current
+budget task 5821, at deployed receiver SHA
+`23cc35595ca1aa0358f409920f40a48a80a6a100`, observed 80.85% guest-root free
+space and 83.31% memory headroom. These are prior observations; the acceptance
+operation rechecks its gates, and these receipts do not authorize retention
+expansion. The source operation has not run, so no live sampling, delivery, or
+post-disable-query evidence is claimed. Durable storage persistence across a
+Pyroscope restart remains a separate open gate. Keep the pilot disabled until
+Sol records the source acceptance results from the reviewed Dev-bound Semaphore
+run and the durable-storage gate is separately proven. The only
+profile target remains Alloy's own `alloy:12345` pprof endpoint, with the
+bounded `service_name="o11y/alloy"` identity and 60-second interval.
 
 Use the existing Discord contact point. Group notifications by the bounded
 service and environment context, wait 30 seconds before the first grouped
