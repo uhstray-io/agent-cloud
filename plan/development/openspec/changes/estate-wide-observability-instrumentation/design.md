@@ -505,6 +505,109 @@ retention, or other job option, reads the job back, and converges to a no-op
 on a second run. Check mode issues no write. Backup artifact and isolated
 restore validation remain independent follow-on gates.
 
+### Read-only Proxmox scheduler snapshot
+
+The inspect-only backup-job workflow also reads the declared node's
+`pvescheduler` service state after verifying node-scoped `Sys.Audit`, using the
+existing OpenBao-sourced Proxmox token. This is one read-only snapshot, not
+evidence that a scheduled run occurred or produced an artifact. Validate the
+exact service identity and field types, then emit only `running`,
+`not_running`, or `unknown` with a fixed reason; permission gaps, request
+errors, malformed data, and unrecognized state remain unknown. Raw responses
+stay under `no_log`. Add no survey variables or credentials. This diagnostic
+does not close the backup-job, artifact, immutability, isolated-restore, or
+retention gates.
+
+### Archived task history recency summary
+
+The inspect-only archived `vzdump` summary adds exactly one sanitized field,
+`latest_success_within_26h`. It reuses the latest task's validated `starttime`
+and the existing archive query's `until` cutoff; it adds no API request and
+does not expose either timestamp or a computed age. The cutoff must be a
+positive integer (with booleans, strings, and other coercible values rejected).
+The fixed window is 93,600 seconds, inclusive at both ends: the field is
+`true` only for a classified success whose age is from zero through 93,600
+seconds, and `false` for a known failure or warning, an older success, or a
+verified empty archive. It is `null` whenever the existing outcome is unknown,
+including permission, request, pagination, identity, schema, cutoff, or
+conflicting-latest-status ambiguity. Existing outcome, reason, task count,
+`job_attribution: unavailable`, the 30-day query, and inspect-only guards stay
+unchanged. Task rows remain VMID-filtered and cannot establish which scheduled
+job produced an archive; this field is not job attribution, artifact presence,
+immutability, or restore readiness. An empty result or stale latest task means
+only that no recent VMID-identified task was returned by this query.
+
+### Bounded node-wide archived vzdump history diagnostic
+
+Inspect mode MAY issue an additional read-only `GET /nodes/{node}/tasks` using
+the existing OpenBao Proxmox token only after the existing exact-node
+`/access/permissions?path=/nodes/{node}` check reports integer `Sys.Audit: 1`.
+Zero, booleans, strings, missing rights, a different path, or a failed
+permission response return `permission_unverified` without issuing the task
+GET. The query
+fixes `source=archive`, `typefilter=vzdump`, a 72-hour `since`/`until` window,
+and omits `vmid`. Reuse the existing 50-row page size and 250-row total cap;
+failed, malformed, truncated, or over-cap responses return a fixed `unknown`
+reason with all counts and recency unknown. Validate every row's `vzdump`
+type, unique task identifier, start time within the fixed window, task-ID
+shape, and nonempty status before summarizing. Keep raw API data, task
+identifiers, node, VMID, status text, and credentials under `no_log`.
+
+The sanitized receipt may report only total recent node-level `vzdump` tasks,
+the count whose task ID equals the declared VMID, and
+`potential_multi_vm_or_unattributed_task_count`, which counts rows with a
+missing or empty task ID. A missing task ID is not proof of a multi-VM run.
+Every receipt fixes `job_attribution` to `unavailable`; it cannot prove the
+selected job ran or included o11y. If the latest task outcome is unknown, return
+the fixed `task_status_unavailable` unknown receipt with counts and recency
+unknown. Task success is not backup success without a matching fresh artifact.
+This is a source-only diagnostic, not live proof, and does not close parent
+4.6e, immutable-artifact, isolated-restore, capacity, or retention gates.
+
+### Failed-task identity and selected destination capacity snapshot
+
+The inspect-only workflow may compare the unique recent failed task's already
+protected one-line metadata response with the private selected job and o11y
+VM. Parse only a line beginning with the exact Proxmox
+`INFO: starting new backup job: vzdump ` prefix, using `shlex.split` as a
+parser only; never execute its contents. Accept options only as `--name value`
+or `--name=value`; every standalone option consumes the next token literally,
+including values beginning with `-`. Reject malformed option names, empty or
+missing values, short options, and positional VMIDs after the first option.
+Interpret `--job-id` and `--storage` only when they are option names, never
+when those strings occur inside another option's value. Compare the exact
+declared VMID against unique positional VMIDs, and compare only one
+`--job-id` value and one `--storage` value with the private
+declared VMID, selected job ID, and the exact selected job detail's storage.
+Duplicate or malformed compared options, malformed/oversized/synthetic lines,
+invalid private inputs, unavailable metadata, or an unreadable job detail
+produce unknown/null fields. Before any comparison, require every backup-list
+row to have a unique well-formed ID and require the one exact selected list row
+to match the selected detail under the existing `_stable_config` convention;
+malformed or duplicate identities anywhere in the list, missing/duplicate
+selection, or stable-configuration drift make every comparison unknown/null.
+An absent `--job-id` is unavailable. Matching
+VMID or storage does not establish selected-job attribution. Emit only
+fixed-schema comparison outcomes; never expose the command, identifiers,
+UPID, raw line, or API response. Keep the existing final-100-line `no_space`
+classifier unchanged.
+
+In inspect mode, read `/nodes/{declared node}/storage` through the existing
+protected Proxmox token. Compare the storage value from the exact selected job
+detail only after its stable configuration matches the unique exact-ID row in
+the protected backup-job list, and only with one exact storage ID in a
+complete, well-formed response;
+require that row to be active and declare `backup` content. Missing/ambiguous
+job identity or storage, failed response, absent selected row, malformed or
+duplicate rows, missing capacity fields, or permission-limited visibility
+produce `unknown`; capacity is never inferred from another visible row. Report
+only the destination state and a coarse free-space band
+(`zero`, `below_10_percent`, `10_to_30_percent`, `at_least_30_percent`, or
+`unknown`); never emit storage IDs, sizes, node, URL, or raw data. This is a
+point-in-time observation and is not proof that a full backup will fit or that
+the prior `no_space` failure came from this destination. It does not authorize
+backup execution, immutability, restore, VM growth, or retention changes.
+
 ## 2026-09-29 production disk-alert receipt
 
 Non-destructive production deploy task 1830 and read-only budget task 1831
@@ -806,3 +909,153 @@ gate remain open/off.
 Alert probes and active-drill recovery also protect raw Prometheus/Grafana
 responses and every identity-bearing assertion. Their visible success receipts
 use fixed wording and contain no target labels or endpoints.
+
+## 2026-10-14 bounded Proxmox backup-task failure diagnostic
+
+Extend inspect-only backup reconciliation only after its exact-node
+`Sys.Audit=1` permission check and complete bounded 72-hour node-task listing
+pass. A unique latest failed `vzdump` task within 26 hours permits a read-only
+task-log GET: read one line to obtain `total`, then fetch at most the last 100
+lines. Proxmox `start` is a zero-based offset while returned `n` values are
+one-based (`n = start + 1` for the first returned row); require contiguous
+one-based numbering on metadata and final pages. Reject malformed UPIDs,
+unknown statuses, ties, synthetic `no content` or `unable to open file` rows,
+invalid numbering or schema, oversized output, and changed totals. Match the
+upstream UPID shape exactly: validated node, eight-hex PID, eight- or nine-hex
+process start, eight-hex start time, `vzdump`, an empty or decimal VMID, a
+supported `user@realm` or `user@realm!tokenid`, and a final colon. Classify
+status using Proxmox's normalization: `OK` is success, `WARNINGS: N` is
+incomplete, exact `unexpected status` is unknown, and other nonempty status
+text is failure ([`PVE::UPID`](https://raw.githubusercontent.com/proxmox/pve-common/master/src/PVE/UPID.pm#L15-L97)).
+Keep task identity, status, raw log, URL, URI result, parser input/output, and errors
+under scoped `no_log`; keep only sanitized history and diagnostic `set_fact`
+results visible. Publish only fixed status/reason and `no_space`,
+`storage_unavailable`, `permission_denied`, `guest_lock`, `transport`, or
+`unknown` hints. Without an eligible unique recent failure, do not request the
+task log.
+
+At exact Dev merge `5b628700fccb2abdae1961428783a9e1c9f9a39e`, inspect-only task
+5571 succeeded: scheduler running; one enabled explicit-VMID job included
+o11y; VMID-filtered history count was one with no success in 26 hours; and the
+72-hour node archive contained three tasks, zero task IDs matching the declared
+VMID, three missing/empty IDs, and a latest failure within 26 hours. Job
+attribution remained unavailable. Read-only artifact-details task 5572
+succeeded with six dated candidates, the newest about 225.3 hours old, and all
+protected flags unknown. No evidence ties that failure to the selected job or
+o11y VM. Backup readiness, immutability, isolated restore, capacity, and
+retention gates remain open.
+
+## 2026-10-14 thick-LVM candidate identification source slice
+
+Add a dedicated Dev-bound Semaphore template and importing playbook for private
+review of the single eligible thick-LVM image-store candidate. The wrapper imports
+the existing GET-only physical-storage survey, then invokes its inspector against
+the already registered, protected response payload; it makes no duplicate API
+reads. Refactor `_thick_lvm_facts` to return the same validated candidate rows
+alongside its sanitized aggregate facts. Normal `inspect` continues to emit no
+candidate IDs. The selector requires complete visible config/VG mappings, complete
+PV-child inventory and exact disk-path lineage with reported `used=LVM` for each
+candidate, plus exactly one candidate meeting the existing 1024-GiB reported VG
+headroom rule. Its only successful identifier is the storage ID; ambiguity,
+malformed input, incomplete lineage, or insufficient headroom yields one fixed
+refusal.
+
+This is candidate identification for a later reviewed private `site-config`
+declaration only. It does not establish local physical media, device safety,
+allocation, PBS suitability/readiness, guest filesystem readiness, backup
+immutability, restore success, VM growth, or retention eligibility. It performs no
+Proxmox mutation. The reviewed Dev-bound selector acceptance is recorded below;
+parent tasks 4.6c, 4.6d, and 4.6e remain unchecked.
+
+PR #628 merged to `dev` as `36c89cbc6d0bc9bbe3a16f62c7002e93706ff347` after
+independent approval and green CI. Semaphore publisher check 5614 and apply 5615
+passed, and unique-candidate selector task 5616 succeeded at that revision.
+Private site-config PR #84 selected the candidate, and official inventory-sync
+readback matched the merged source. This proves 4.6d1's unique-selector
+acceptance only; it does not establish physical backing, allocation authority,
+PBS readiness, restore, disk growth, or retention eligibility.
+
+### Declaring thick-LVM exact-match diagnostics
+
+The regular survey exposes four identifier-free booleans alongside the existing
+exact-match and headroom results: whether the declared storage ID is in the
+visible eligible candidate set; whether the required detail fields (`type`,
+`content`, `vgname`) match visible cluster config; whether optional `nodes` and
+`disable` fields match in both presence and value; and whether target-node status
+content matches visible config content. If there is no visible eligible
+candidate, all four diagnostics remain false. The exact-match result still
+requires candidate presence and every comparison, and declared headroom remains
+false unless exact match passes. These facts reuse existing protected responses;
+they add no reads, selection, authorization, or private values to output.
+
+Dev-bound GET-only survey task 5621 succeeded after private inventory
+synchronization. Its sanitized outcome was one visible eligible thick-LVM image
+candidate meeting the fixed 1024-GiB headroom threshold, while declared
+exact-match and all declared headroom booleans remained false. This source
+diagnostic separates the candidate-presence and config/status comparison
+outcomes. Task 4.6d1 is complete based on selector task 5616; tasks 4.6c, 4.6d,
+and 4.6e remain unchecked pending their separate proof gates. Backing media,
+allocation, PBS readiness, and restore remain unverified.
+
+**Order-insensitive list comparison follow-up (2026-10-14):** Dev-bound
+GET-only survey task 5631 succeeded at merged `dev` SHA
+`17390a4735b7525fec8499d5efea45bd82a92f45`. The receipt found one visible
+eligible candidate, confirmed the declared candidate was in that set, and
+reported matching status/config content, while required and optional detail
+config comparisons remained false. Proxmox source shows `/storage` index and
+`/storage/{id}` read both call `api_storage_config`
+([Config.pm lines 24-37, 140-158, 161-180](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm));
+the shared encoder joins `nodes` from hash keys and `content_hash_to_string`
+also iterates unsorted hash keys
+([Plugin.pm lines 249-257, 526-539](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm)).
+This is a source-supported explanation for order-only false mismatches, not
+proof that either live mismatch was only ordering. Compare validated `content`
+and optional `nodes` sets across the protected responses; malformed or changed
+sets remain mismatches. Keep scalar comparisons, exact-match/headroom gates, and
+all allocation, backing, readiness, and write-authority fields fail-closed. The
+survey and source review add no Proxmox reads or writes and do not complete
+parent tasks 4.6c, 4.6d, or 4.6e.
+
+**Live comparison readback (2026-10-14):** PR #630 merged to `dev` as
+`93520fc6246afcc6d9550dff777d49cf1eaac214` after independent approval and
+green final-head CI. Dev-bound GET-only survey task 5644 succeeded at that exact
+revision. The declared thick-LVM candidate was visible and matched the required
+and optional config fields, status content, and exact candidate check. Its fixed
+256/512/1024-GiB reported-VG-headroom checks were true. The result is consistent
+with a list-order mismatch in the previous run, but a changed live response
+cannot be excluded by these point-in-time receipts. It does not establish
+physical backing, device safety,
+allocation authority, PBS readiness, filesystem readiness, write authority, or
+restore. Those fields stayed false, and parent tasks 4.6c, 4.6d, and 4.6e
+remain open.
+
+### Declared backing-disk identity capture source slice
+
+The separate private identity-capture workflow consumes the already protected
+GET payload. The existing `Identify o11y PBS Storage Candidate (Dev)` selector
+and its storage-ID-only output contract remain unchanged. Identity capture
+accepts only one eligible
+visible candidate whose storage ID matches the private declaration exactly,
+whose declared config/status content and optional fields match, whose visible
+VG mappings are complete and unique, and whose reported VG retains the fixed
+1024-GiB headroom. It then requires exactly one PV, an exact direct PV-to-disk
+path join, and the literal reported disk use `LVM`. A nonblank, well-formed
+serial must be unique across visible disk rows. A reported WWN is optional, but
+when present it must be well-formed and unique; absence is reported explicitly.
+Refuse a direct PV path beginning `/dev/vd` and any selected-disk `model` or
+`vendor` value containing a QEMU, Virtio, VMware, or virtual-device marker,
+case-insensitively. Present `model`/`vendor` fields must be strings. These
+positive virtual-device signals fail closed while ordinary paths such as
+`/dev/sda` remain eligible; missing model/vendor data remains unknown.
+
+Only the separate private identity task may print the storage ID and reported
+serial/optional WWN. The existing candidate selector continues to print only
+the storage ID. The general physical-storage receipt remains aggregate and
+contains no disk identity fields. All selector failures use fixed sanitized
+text. These Proxmox-reported identifiers and joins do not establish physical
+locality or device safety; `thick_lvm_backing_media_verified`,
+`thick_lvm_allocation_authorized`, `device_safety_verified`, and
+`write_authorized` remain false. No Proxmox API request or write was added, and
+parent tasks 4.6c, 4.6d, and 4.6e remain open. Operator attestation remains
+mandatory because the identity still does not prove physical locality. This
+records a source slice only; no live candidate-identity receipt is claimed.

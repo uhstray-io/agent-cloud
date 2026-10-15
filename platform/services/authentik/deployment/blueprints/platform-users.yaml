@@ -1,11 +1,12 @@
 # Authentik blueprint — named platform users (config-as-code, idempotent).
 #
 # Each entry is an authentik_core.user reconciled by the worker on every deploy
-# (re-applying converges — never duplicates), mirroring stray-admin.yaml. The
-# IDENTITY of each user — username, display name, email — is parameterized via
-# !Env so no real person's name or address lives in this PUBLIC repo (extends
-# the email-privacy pattern stray-admin.yaml already uses). The real values come
-# from the worker env, templated by deploy-authentik env.j2 from the private
+# (re-applying converges — never duplicates). Members of platform-admins are NOT
+# declared here: they come from the declared administrator list and are rendered into
+# platform-admins.yaml (templates/platform-admins.yaml.j2).
+# The IDENTITY of each user — username, display name, email — is parameterized via
+# !Env so no real person's name or address lives in this PUBLIC repo. The real values
+# come from the worker env, templated by deploy-authentik env.j2 from the private
 # site-config; the defaults here are non-PII placeholders for local-dev.
 #
 # Group membership is the RBAC contract (platform-groups.yaml): the access gate
@@ -17,28 +18,15 @@
 # recovery links once prod SMTP is configured (D2) — then drop the *_password.
 # Plan: plan/development/12-rbac-user-provisioning.md.
 #
-# To add a user: append an entry here, add <name>_password to deploy-authentik's
-# _secret_definitions, and expose <NAME>_USERNAME/_NAME/_EMAIL/_PASSWORD in
-# env.j2 (real values set in site-config).
+# To add a user: append an entry here, add <name>_password to the secret
+# declaration (platform/playbooks/vars/secret-declarations/authentik.yml), and expose
+# <NAME>_USERNAME/_NAME/_EMAIL/_PASSWORD in env.j2 (real values set in site-config).
+# To add an ADMINISTRATOR, add an entry to the administrator list instead.
 version: 1
 metadata:
   name: agent-cloud - platform users
 entries:
-  # User 1 — full admin, member of platform-admins (top role in every app,
-  # identical tier to the operator admin). Real identity via site-config (WISWARD_*).
-  - model: authentik_core.user
-    identifiers:
-      username: !Env [WISWARD_USERNAME, "wisward"]
-    attrs:
-      name: !Env [WISWARD_NAME, "Platform Admin"]
-      email: !Env [WISWARD_EMAIL, "wisward@agent-cloud.test"]
-      is_active: true
-      path: users
-      password: !Env WISWARD_PASSWORD
-      groups:
-        - !Find [authentik_core.group, [name, platform-admins]]
-
-  # User 2 — BUSINESS tier only (platform-business): rw ERPNext, and admitted to
+  # BUSINESS tier only (platform-business): rw ERPNext, and admitted to
   # every tier-`member` app by the platform-member access gate, which is what
   # grants tududi. Real identity via site-config (ANDREW_*).
   #
@@ -57,21 +45,6 @@ entries:
       password: !Env ANDREW_PASSWORD
       groups:
         - !Find [authentik_core.group, [name, platform-business]]
-
-  # User 3 — full admin, member of platform-admins (Authentik superuser group;
-  # top role in every SSO'd app, same tier as agent-cloud-admin and the operator
-  # admin). Real identity via site-config (JACOB_*).
-  - model: authentik_core.user
-    identifiers:
-      username: !Env [JACOB_USERNAME, "jacob"]
-    attrs:
-      name: !Env [JACOB_NAME, "Platform Admin 2"]
-      email: !Env [JACOB_EMAIL, "jacob@agent-cloud.test"]
-      is_active: true
-      path: users
-      password: !Env JACOB_PASSWORD
-      groups:
-        - !Find [authentik_core.group, [name, platform-admins]]
 
   # ── RETIRED ACCOUNTS ────────────────────────────────────────────────────────
   # `state: absent` DELETES the account Authentik matches on `identifiers`. This is

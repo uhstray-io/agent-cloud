@@ -230,10 +230,9 @@
       no_log: true
       check_mode: false
 
-    - name: Build fixed aggregate physical and virtual-disk capacity receipt
-      ansible.builtin.command:
-        argv: [python3, "{{ _inspector }}", inspect]
-        stdin: >-
+    - name: Assemble protected physical-storage inspection payload
+      ansible.builtin.set_fact:
+        _physical_storage_payload: >-
           {{ {'target_node': _validated_target_node,
               'declared_storage_id': _target_storage_id,
               'disks': {'status': _physical_disks.status, 'json': {'data': _physical_disks.json.data}},
@@ -246,6 +245,12 @@
               'storage_permissions': {'status': _declared_storage_permissions.status, 'json': {'data': _declared_storage_permissions.json.data}},
               'visible_volumes': {'status': _declared_visible_volumes.status, 'json': {'data': _declared_visible_volumes.json.data}}}
              | to_json }}
+      no_log: true
+
+    - name: Build fixed aggregate physical and virtual-disk capacity receipt
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", inspect]
+        stdin: "{{ _physical_storage_payload }}"
       register: _physical_storage_inspection
       failed_when: false
       changed_when: false

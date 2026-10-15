@@ -45,7 +45,8 @@
 #   agw_verify_base_url, agw_verify_client, agw_upstream_requires_key, agw_internal_dns_authoritative
 # Optional:
 #   agw_conformance_client      identity to send as (default: agw_verify_client, then the first
-#                               agw_clients entry, as the deploy's verify does)
+#                               agw_clients entry, as the deploy's verify does; any agw_identities
+#                               name may be named)
 #   agw_conformance_model       served name to request (default: the identity's first model)
 #   agw_conformance_timeout     per-request ceiling in seconds (default 600)
 #   agw_conformance_stream_max_tokens  max_tokens for the streamed case (default 2048)
@@ -80,6 +81,9 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  # agw_identities: agw_clients plus the personal identities derived from the declared admin list.
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
@@ -97,11 +101,16 @@
     _client: "{{ agw_conformance_client | default(agw_verify_client | default((agw_clients | default([]) | first) | default(''))) }}"
     # Order-preserving filter, not `intersect`: intersect is a set operation whose order follows
     # per-process string hashing, so `first` picked a different model run to run (prod tasks 2614,
-    # 2681, 2698). This keeps allowed_models order, else agw_models order.
+    # 2681, 2698). This keeps allowed_models order, else agw_models order. OpenRouter models
+    # (agentgateway-openrouter) are never picked: the run compares the gateway with direct vLLM and
+    # OpenRouter is billed per token (agw_conformance_model still names one explicitly).
     _client_models: >-
       {{ ((agw_client_policies | default({}))[_client] | default({})).allowed_models
          | default(agw_models | default([]) | map(attribute='name') | list)
-         | select('in', agw_models | default([]) | map(attribute='name') | list) | list }}
+         | select('in', agw_models | default([]) | map(attribute='name') | list)
+         | reject('in', agw_models | default([]) | selectattr('provider', 'defined')
+                  | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list)
+         | list }}
     _model: "{{ agw_conformance_model | default(_client_models | first | default('')) }}"
     _direct_model: >-
       {{ (agw_models | default([]) | selectattr('name', 'equalto', _model) | first | default({})).upstream_model | default(_model) }}
@@ -158,18 +167,22 @@
         msg: "check mode: the conformance run sends real requests to the gateway and to vLLM; nothing was sent."
       when: ansible_check_mode
 
+    # After the run's refusal of internal extra vars (its first task), before the identity check.
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
     - name: "Require one gateway host, an upstream, and an identity allowed the model"
       ansible.builtin.assert:
         that:
           - groups['agentgateway_svc'] | length == 1
           - agw_upstream_base_url | default('') | length > 0
           - _client | length > 0
-          - _client in (agw_clients | default([]))
+          - _client in agw_identities
           - _model | length > 0
           - _model in _client_models
         fail_msg: >-
           agentgateway_svc must hold one host with agw_upstream_base_url, and the conformance identity
-          '{{ _client }}' must be in agw_clients and allowed '{{ _model }}' (it may use:
+          '{{ _client }}' must be in agw_identities and allowed '{{ _model }}' (it may use:
           {{ _client_models | join(', ') | default('nothing', true) }}).
         quiet: true
 

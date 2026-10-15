@@ -375,7 +375,9 @@ setup() {
 
 @test "postiz: the OIDC client secret chain has no copy anywhere" {
   local ak="$REPO_ROOT/platform/services/authentik/deployment/templates/env.j2"
-  local akpb="$REPO_ROOT/platform/playbooks/deploy-authentik.yml"
+  # The deploy's secret definitions live in its declaration file (vars_files), which
+  # check-secrets reads too.
+  local akpb="$REPO_ROOT/platform/playbooks/vars/secret-declarations/authentik.yml"
   # authentik generates it, exposes it to the worker, the blueprint reads it via
   # !Env, and postiz shared-reads the same key. Five links, one value.
   grep -qE 'name: postiz_oidc_client_secret, type: random' "$akpb"
