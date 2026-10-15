@@ -224,26 +224,71 @@ def test_complete_acceptance_restores_and_emits_only_a_bounded_receipt(monkeypat
     assert "enabled profile config" not in encoded
 
 
-def test_profile_query_rejects_stale_timeline_and_accepts_positive_post_activation_sample(monkeypatch):
+def test_profile_query_rejects_stale_timeline_and_accepts_positive_post_activation_sample():
     activation_start = 1_760_000_000
-    scripts = []
     responses = iter((
         {"timeline": {"startTime": activation_start - 20, "samples": [4, 7], "durationDelta": 10}},
         {"timeline": {"startTime": activation_start - 10, "samples": [0, 7], "durationDelta": 10}},
     ))
 
-    def api_body(script, _runner):
-        scripts.append(script)
-        body = json.dumps(next(responses)).encode()
-        return b"HTTP/1.1 200 OK", body
+    def runner(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 0, json.dumps(next(responses)).encode(), b"")
 
-    monkeypatch.setattr(operation, "_api_body", api_body)
+    assert not operation._query_profile(activation_start, runner=runner)
+    assert operation._query_profile(activation_start, runner=runner)
 
-    assert not operation._query_profile(activation_start, runner=lambda *_args: None)
-    assert operation._query_profile(activation_start, runner=lambda *_args: None)
-    assert len(scripts) == 2
-    assert all(f"&from={activation_start}&until=now" in script for script in scripts)
-    assert all("service_name%3D%22o11y%2Falloy%22" in script for script in scripts)
+
+def test_profile_query_uses_bounded_grafana_wget_to_fixed_pyroscope_url():
+    activation_start = 1_760_000_000
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((argv, kwargs))
+        body = {"timeline": {"startTime": activation_start, "samples": [1], "durationDelta": 10}}
+        return subprocess.CompletedProcess(argv, 0, json.dumps(body).encode(), b"")
+
+    assert operation._query_profile(activation_start, runner=runner)
+    argv, kwargs = calls[0]
+    assert argv == [
+        "podman", "exec", "o11y-grafana", "wget", "-q", "-O", "-",
+        "http://pyroscope:4040/pyroscope/render?query=process_cpu%3Acpu%3Ananoseconds%3Acpu%3Ananoseconds"
+        "%7Bservice_name%3D%22o11y%2Falloy%22%7D&from=1760000000&until=now",
+    ]
+    assert kwargs["timeout"] == operation.COMMAND_TIMEOUT == 15
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert "process_cpu%3Acpu%3Ananoseconds" in argv[-1]
+    assert "service_name%3D%22o11y%2Falloy%22" in argv[-1]
+
+
+def test_failed_initial_sample_keeps_profile_not_observed_after_restore(monkeypatch, tmp_path):
+    payload, config, _inode, reloads = _mocked_operation(monkeypatch, tmp_path)
+    calls = []
+
+    def no_profile(*_args, **_kwargs):
+        calls.append(None)
+        return False
+
+    monkeypatch.setattr(operation, "_wait_for_profile", no_profile)
+
+    result = operation.evaluate(payload, runner=lambda *_args, **_kwargs: None, sleep_fn=lambda _seconds: None)
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "profile_not_observed"
+    assert result["restored"] == "disabled"
+    assert result["post_disable_query"] == "unverified"
+    assert len(calls) == 1
+    assert config.read_text() == "disabled profile config"
+    assert reloads == ["enabled profile config", "disabled profile config"]
+
+
+def test_successful_post_disable_query_is_reported_as_observed(monkeypatch, tmp_path):
+    payload, config, _inode, _reloads = _mocked_operation(monkeypatch, tmp_path)
+
+    result = operation.evaluate(payload, runner=lambda *_args, **_kwargs: None, sleep_fn=lambda _seconds: None)
+
+    assert result["status"] == "verified"
+    assert result["post_disable_query"] == "observed"
+    assert config.read_text() == "disabled profile config"
 
 
 def test_changed_receiver_identity_or_mounts_fail_the_preservation_gate(monkeypatch, tmp_path):

@@ -59,9 +59,6 @@ COMPONENTS_SCRIPT = (
     "printf 'GET /api/v0/web/components HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3; "
     "while IFS= read -r line || [[ -n $line ]]; do printf '%s\\n' \"$line\"; done <&3"
 )
-PROFILE_QUERY_SCRIPT = (
-    "exec 3<>/dev/tcp/pyroscope/4040 || exit 10; "
-)
 
 
 class Refusal(Exception):
@@ -373,16 +370,11 @@ def _component_state(candidate_module, expected: str, runner: Callable) -> None:
 def _query_profile(activation_start: int, runner: Callable) -> bool:
     try:
         query = f"{PROFILE_QUERY_PREFIX}{activation_start}&until=now"
-        script = (
-            f"{PROFILE_QUERY_SCRIPT}"
-            f"printf 'GET {query} HTTP/1.0\\r\\nHost: pyroscope\\r\\n\\r\\n' >&3; "
-            "while IFS= read -r line || [[ -n $line ]]; do printf '%s\\n' \"$line\"; done <&3"
-        )
-        headers, body = _api_body(script, runner)
-        status = _http_status(headers)
-        if status != 200:
-            return False
-        document = _decode_json(body)
+        output = _run([
+            "podman", "exec", "o11y-grafana", "wget", "-q", "-O", "-",
+            f"http://pyroscope:4040{query}",
+        ], runner)
+        document = _decode_json(output)
         timeline = document.get("timeline") if isinstance(document, dict) else None
         if not isinstance(timeline, dict):
             return False
@@ -500,7 +492,7 @@ def evaluate(
                     raise Refusal("rollback_failed")
                 _component_state(candidate_module, "disabled", runner)
                 restored = True
-                if temporary_enable_attempted:
+                if temporary_enable_attempted and delivery:
                     post_disable_query = _wait_for_profile(
                         activation_start, runner, sleep_fn, attempts=7, interrupted=interrupted
                     )
