@@ -478,6 +478,13 @@
       keys were minted by Deploy agentgateway (Dev) task 5671; the operator's key and
       `client_jacob` are handed out (Back Up Credentials to site-config (Dev) tasks 5638 and
       5673). Not ticked: the rest of the first key set is not handed out.
+      2026-10-14/15 (task output read from production Semaphore by the lead): the admin identity
+      `wisward` is retired. Authentik retired it through `platform_retired_accounts` (PR #640
+      and site-config #90, merged 86ea5da6): Deploy Authentik (Dev) dry run 5711, real run 5713
+      ('OK absent wisward', 'VERIFY OK: 13 blueprints, 5 accounts present, 2 retired'), rerun
+      5714 changed=0. The gateway deploy 5718 dropped the identity, and Manage agentgateway
+      Client Key (Dev) revoke dry run 5721, real run 5722 recorded "revoke of identity 'wisward'
+      recorded in OpenBao". Not ticked: the rest of the first key set is not handed out.
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
       per hour, figures derived from the measured ceiling and written as comments.
       2026-09-17: v1.5.0 has no per-identity REQUEST bucket under `llm.policies` (`key`
