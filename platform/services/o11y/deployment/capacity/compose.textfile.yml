@@ -1,0 +1,17 @@
+# Applied in production for capacity, or locally when the optional inference
+# probe is enabled. The host directory is already visible through /:/host:ro.
+services:
+  node-exporter:
+    restart: always
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.filesystem
+      - --collector.filesystem.mount-points-include=^/$
+      - --collector.loadavg
+      - --collector.textfile
+      - --collector.textfile.directory=/host/var/lib/node_exporter/textfile

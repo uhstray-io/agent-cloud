@@ -401,7 +401,7 @@ scrape to be healthy. Keep the separate Loki log receipt for log shippers.
 
 `deploy.sh` starts the stack through `compose_up_if_changed` (`platform/lib/common.sh`). It
 hashes every input that must restart a container — the compose files in effect (including
-`compose.prod.yml` and the probe overlay when set), `.env`, `env/*.env` and everything under
+`compose.prod.yml` and the capacity textfile overlay when enabled), `.env`, `env/*.env` and everything under
 `config/` — and stores the digest as a label on each container. A deploy whose digest and
 image IDs match the running containers leaves them alone; a changed input, a re-pulled tag,
 a stopped or missing container, or a leftover container whose service is no longer
@@ -583,8 +583,10 @@ What an enabled deploy installs:
   `/var/lib/node_exporter/textfile`. `inference-probe.timer` runs it at `OnCalendar=*:0/5`.
   The key reaches curl as a config line on stdin, so it never appears in an argument list
   or the journal.
-- **node_exporter overlay.** `probe/compose.textfile.yml` adds `--collector.textfile` to
-  the existing receiver-host node_exporter. The host directory is already visible through
+- **node_exporter overlay.** Production deploys always apply
+  `capacity/compose.textfile.yml`, whether or not the inference probe is enabled.
+  Local mode skips the capacity sampler and applies this overlay only when the
+  optional inference probe is enabled. The host directory is already visible through
   the read-only `/:/host` mount. The existing `receiver-host` scrape job collects the
   metrics, so no new scrape job or published port is needed.
 - **Metrics.** Three gauges, each labelled `model_name`:
@@ -684,8 +686,9 @@ Caveats:
   not use the route: that mode moves only Caddy and leaves the gateway running, so the
   probe keeps its `client_<name>` key (and a `direct_` field is refused there).
 - **Local canary.** The local-only `Drill o11y Alert Canary` restarts the stack through
-  `deploy.sh` without this overlay. On that host the textfile collector stays off until
-  the next deploy.
+  `deploy.sh` without the textfile overlay. In local mode the capacity timer is not
+  installed; the overlay is applied by `deploy-o11y.yml` only when the optional
+  inference probe is enabled.
 - **Runtime evidence and gaps.** The first enabled production deploy (2026-10-05, Deploy
   o11y (Dev) task 2967) ran the gateway client-identity path: its forced sample read back
   success 1 for the configured model, so the served model accepts `reasoning_effort: none`
@@ -932,13 +935,36 @@ per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
 memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable
 with backup before resize. The 30% current backing-filesystem preflight is
 limited to production retention expansion; it does not block ordinary deploy
-or recovery. Code now includes a private-network receiver-host
-node_exporter with no published port, read-only root mount, and bounded CPU,
-memory, root-filesystem, and load collectors. Its exact container isolation,
-metrics availability, and host-versus-guest root filesystem parity require a
-passing Semaphore runtime readback. No seven-day history or backend growth
-receipt exists, so the target remains undeployable. The numeric ID is only a
-reference; it is not itself a capacity forecast or proof.
+or recovery. Code now includes a private-network receiver-host node_exporter
+with no published port, read-only root mount, and bounded CPU, memory,
+root-filesystem, and load collectors. Its exact container isolation, metrics
+availability, and host-versus-guest root filesystem parity require a passing
+Semaphore runtime readback.
+
+In production, `deploy-o11y.yml` installs an idempotent daily rootless-Podman sampler. Local mode
+skips the systemd sampler and applies the textfile collector overlay only when the optional
+inference probe is enabled. The production sampler
+reuses `inspect-o11y-volume-capacity.py`, which refuses incomplete or ambiguous
+volume state, and atomically publishes only the five fixed backend names and
+stored-byte values to the node-exporter textfile directory. The file includes
+`o11y_capacity_sample_timestamp_seconds`; a failed inspection leaves the last
+complete file and timestamp unchanged, so old data ages out instead of becoming
+fresh evidence. The production textfile collector overlay remains active even
+when `o11y_inference_probe_enabled` is false. Probe cleanup still removes only
+the probe's unit, timer, environment file, and metric file.
+
+Run `Survey o11y Seven-Day Capacity History (Dev)` with exact reviewed
+controller and deployed receiver SHAs. The read-only survey checks distinct
+source timestamps spanning at least seven days, a latest sample no older than
+26 hours, bounded source gaps, exactly one receiver-host CPU/memory/rootfs
+series, and all five backend byte series at each source timestamp. CPU, memory,
+rootfs, and source/backend queries use five-minute evaluations over eight days;
+each response is capped at 2 MB and each query at 20 seconds. CPU p95 is the p95
+of the evaluated five-minute CPU means. A ready
+receipt reports observed values for a separate forecast review; it does not
+forecast, approve a retention change, or authorize VM/filesystem growth. No
+live Semaphore receipt or seven-day history exists yet, so task 5.3 remains
+open. The numeric ID remains only a reference, not a forecast or proof.
 
 Read-only Semaphore receipts on 2026-09-28: task 1793 resolved all five
 observability volumes to the guest root filesystem and measured 777 MB free

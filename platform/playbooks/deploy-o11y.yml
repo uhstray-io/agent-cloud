@@ -87,6 +87,10 @@
     _probe_textfile_dir: /var/lib/node_exporter/textfile
     _probe_user: "{{ ansible_user | default('deploy') }}"
     _probe_unit_dir: /etc/systemd/system
+    _capacity_textfile_dir: /var/lib/node_exporter/textfile
+    _capacity_user: "{{ ansible_user | default('deploy') }}"
+    _capacity_libexec_dir: /usr/local/libexec/o11y
+    _capacity_sampler: /usr/local/libexec/o11y/collect-o11y-capacity.py
     # Gateway client identity (optional): the probe presents this internal-CA client leaf
     # straight to the gateway's mutual-TLS listener instead of using the public hostname.
     # Empty (the default) leaves the probe on its plain public path.
@@ -592,6 +596,69 @@
       register: _agentgateway_scrape_absent
       when: agentgateway_metrics_address is not defined
 
+    # Production installs the capacity source; local mode needs these units only
+    # for the optional probe, whose cleanup owns only its own files.
+    - name: "Install the read-only o11y capacity sampler"
+      when: not (local_mode | default(false) | bool)
+      become: true
+      block:
+        - name: Create the shared node-exporter textfile directory
+          ansible.builtin.file:
+            path: "{{ _capacity_textfile_dir }}"
+            state: directory
+            owner: "{{ _capacity_user }}"
+            mode: "0755"
+
+        - name: Create the o11y capacity helper directory
+          ansible.builtin.file:
+            path: "{{ _capacity_libexec_dir }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Install the exact named-volume inspector used by the budget receipt
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/inspect-o11y-volume-capacity.py"
+            dest: "{{ _capacity_libexec_dir }}/inspect-o11y-volume-capacity.py"
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Install the atomic capacity sampler
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/capacity/collect-o11y-capacity.py"
+            dest: "{{ _capacity_sampler }}"
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Render the daily capacity sampling service
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/capacity/o11y-capacity-sample.service.j2"
+            dest: "{{ _probe_unit_dir }}/o11y-capacity-sample.service"
+            owner: root
+            group: root
+            mode: "0644"
+          register: _capacity_service_unit
+
+        - name: Install the daily capacity sampling timer
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/capacity/o11y-capacity-sample.timer"
+            dest: "{{ _probe_unit_dir }}/o11y-capacity-sample.timer"
+            owner: root
+            group: root
+            mode: "0644"
+          register: _capacity_timer_unit
+
+        - name: Enable and start the daily capacity sampling timer
+          ansible.builtin.systemd_service:
+            name: o11y-capacity-sample.timer
+            enabled: true
+            state: started
+            daemon_reload: "{{ _capacity_service_unit.changed or _capacity_timer_unit.changed }}"
+          when: not ansible_check_mode
+
     # The gateway client-identity path's two host inputs, shared with the leaf's renewal
     # proof: the internal CA bundle beside the leaf directory (where renew-internal-certs.yml
     # reads it), and the mapping of the gateway server leaf's name to its published address
@@ -716,9 +783,8 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        # The inference probe's overlay adds node_exporter's textfile collector.
-        # Empty when the probe is off, which is the pre-probe command line.
-        COMPOSE_OVERLAYS: "{{ 'probe/compose.textfile.yml' if (o11y_inference_probe_enabled | default(false) | bool) else '' }}"
+        # Production always scrapes capacity; local mode enables textfiles for the probe only.
+        COMPOSE_OVERLAYS: "{{ 'capacity/compose.textfile.yml' if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else '' }}"
         # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
         # and image matches — clears a stale bind mount a running container still holds.
         FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
@@ -731,6 +797,16 @@
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
         var: _deploy.stdout_lines
+
+    - name: Take a complete capacity sample after the stack is available
+      ansible.builtin.systemd_service:
+        name: o11y-capacity-sample.service
+        state: started
+      become: true
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
 # ── Phase 3: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 3: Verify o11y"
