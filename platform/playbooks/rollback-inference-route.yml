@@ -385,7 +385,9 @@
     # Guarded on the key itself: the shared task refuses if vllm_api_key no longer holds the
     # value read above, and writes at the KV version it fetched (check-and-set), so a rotation
     # landing between the read and the write fails the run instead of publishing a stale key
-    # to every client. The guard covers set-only merges, so withdrawal is a second write.
+    # to every client. The withdrawal below is a separate, unguarded write. The shared task can
+    # now guard a set and a removal in one write (its 2026-10-14 compare-and-set change); this
+    # play still keeps them apart.
     - name: "Direct: publish the copies (shared merge task, guarded on the vLLM key and its KV version)"
       ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
       vars:
