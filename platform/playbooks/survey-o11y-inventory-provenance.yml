@@ -295,7 +295,6 @@
             path: "{{ _sc_wd }}"
             state: absent
           when: _sc_wd is defined
-          check_mode: false
           changed_when: false
 
     - name: Report only the fixed provenance receipt
