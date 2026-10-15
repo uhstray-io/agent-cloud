@@ -2214,6 +2214,33 @@ templates:
     # Revalidates provenance, candidates, and live resource headroom before touching
     # only the existing Alloy config inode; the operation restores the disabled config.
 
+  - name: Prove o11y Pyroscope Restart Durability (Dev)
+    playbook: platform/playbooks/restart-o11y-pyroscope-durability.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact Dev checkout revision required for this proof"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Reviewed deployed receiver commit SHA"
+        description: "Exact receiver revision bound by the accepted sample"
+        type: string
+        required: true
+      - name: expected_acceptance_sha
+        title: "Reviewed acceptance commit SHA"
+        description: "Exact agent-cloud revision recorded by the successful acceptance task"
+        type: string
+        required: true
+      - name: o11y_profile_acceptance_task_id
+        title: "Successful profile acceptance task ID"
+        description: "Semaphore task whose exact successful receipt defines the historical query window"
+        type: string
+        required: true
+    # Reads a prior exact acceptance receipt, then re-queries its historical sample
+    # around a restart of only Pyroscope; it changes no config or volume.
+
   - name: Survey o11y Profile Pilot Inventory Provenance (Dev)
     playbook: platform/playbooks/survey-o11y-inventory-provenance.yml
     repository: agent-cloud dev

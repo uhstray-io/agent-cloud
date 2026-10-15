@@ -242,6 +242,7 @@ def _container_snapshot(config_path: str, runner: Callable) -> tuple[str, dict]:
         "containers": containers,
         "config_source": config_source,
         "pyroscope_volume": pyroscope_mounts[0]["name"],
+        "pyroscope_id": pyroscope["id"],
     }
 
 
