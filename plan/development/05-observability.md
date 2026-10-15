@@ -135,11 +135,20 @@ budget task 5821, at deployed receiver SHA
 `23cc35595ca1aa0358f409920f40a48a80a6a100`, observed 80.85% guest-root free
 space and 83.31% memory headroom. These are prior observations; the acceptance
 operation rechecks its gates, and these receipts do not authorize retention
-expansion. The source operation has not run, so no live sampling, delivery, or
-post-disable-query evidence is claimed. Durable storage persistence across a
-Pyroscope restart remains a separate open gate. Keep the pilot disabled until
-Sol records the source acceptance results from the reviewed Dev-bound Semaphore
-run and the durable-storage gate is separately proven. The only
+expansion. Dev-bound Semaphore task 5842 ran against public merge
+`c70735cc03e92842f4ed4ac13011d7f22119d5a4` and private main merge
+`b14f6cb1`; its receipt was unavailable with sampling and delivery unverified,
+restored disabled, post-disable query unverified, and reason
+`post_disable_query_not_observed`. That final reason overwrote the initial
+`profile_not_observed` failure. A separate bounded, read-only Grafana
+Pyroscope datasource-proxy query for the same profile and pilot window returned
+HTTP 200 with seven positive CPU timeline samples; this does not establish that
+the acceptance operation's initial query succeeded. The helper now reads the
+fixed internal render URL with `podman exec o11y-grafana wget -q -O -`, and
+preserves `profile_not_observed` unless initial sampling and delivery succeeded.
+Keep the pilot disabled: reviewed Dev-bound acceptance must still prove live
+sampling, delivery, and a successful post-disable query. Durable storage
+persistence across a Pyroscope restart remains a separate open gate. The only
 profile target remains Alloy's own `alloy:12345` pprof endpoint, with the
 bounded `service_name="o11y/alloy"` identity and 60-second interval.
 
