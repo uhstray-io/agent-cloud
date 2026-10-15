@@ -26,7 +26,7 @@ interface ModelProfile {
 
 /**
  * What `/v1/models` does not tell us, per model id. Unknown ids get the conservative defaults.
- * Output caps are the OpenRouter catalog's maxTokens, capped at 131072.
+ * Where the OpenRouter catalog lists a model, its output cap is that maxTokens, capped at 131072.
  */
 // A Map, not an object literal: ids come from the network, and `constructor` or `__proto__` must
 // not resolve to something off Object.prototype.
