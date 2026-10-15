@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -362,3 +363,58 @@ def test_alloy_local_scrape_uses_same_finite_bounds_and_existing_sample_ceiling(
     assert values["O11Y_SCRAPE_SAMPLE_LIMIT"] == "2000"
     assert values["O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"] == str(LIMITS["body_size_limit_bytes"])
     assert values["O11Y_SCRAPE_LABEL_LIMIT"] == str(LIMITS["label_limit"])
+
+
+def test_receiver_target_identity_is_scoped_and_survives_journal_otlp_loki():
+    jobs = _render_yaml(
+        "prometheus.yml.j2",
+        o11y_scrape_limits=LIMITS,
+        o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000,
+        o11y_cluster="test-cluster",
+        o11y_environment="prod",
+        local_mode=False,
+        _o11y_forbidden_metric_label_names_regex=POLICY,
+    )["scrape_configs"]
+    expected_services = {
+        "prometheus": "o11y/prometheus",
+        "receiver-host": "o11y/receiver-host",
+        "grafana": "o11y/grafana",
+        "loki": "o11y/loki",
+        "alloy": "o11y/alloy",
+        "tempo": "o11y/tempo",
+        "pyroscope": "o11y/pyroscope",
+    }
+    assert {job["job_name"] for job in jobs} == set(expected_services)
+    for job in jobs:
+        labels = job["static_configs"][0]["labels"]
+        assert labels["target_id"] == "service:o11y"
+        assert labels["service"] == expected_services[job["job_name"]]
+
+    alloy = (DEPLOY / "templates/config.alloy.j2").read_text(encoding="utf-8")
+    project_rules = re.findall(
+        r'source_labels = \["__meta_docker_container_label_com_docker_compose_project"\]'
+        r'\s+regex\s*=\s*"([^"]+)"\s+replacement\s*=\s*"service:o11y"'
+        r'\s+target_label\s*=\s*"target_id"',
+        alloy,
+    )
+    assert project_rules == ["^o11y$", "^o11y$"]  # logs and discovered metrics only
+    for project in ("o11y", "agentgateway", ""):
+        assert bool(re.fullmatch(project_rules[0], project)) is (project == "o11y")
+
+    journal = (DEPLOY / "templates/journal.alloy.j2").read_text(encoding="utf-8")
+    assert 'matches    = "CONTAINER_NAME=o11y-alloy"' in journal
+    assert 'labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }' in journal
+    assert 'logs = [otelcol.processor.attributes.journal_labels.input]' in journal
+    assert 'key    = "loki.attribute.labels"' in journal
+    assert 'action = "upsert"' in journal
+    assert 'value  = "service,signal,target_id"' in journal
+    assert journal.index('otelcol.receiver.loki "journal"') < journal.index(
+        'otelcol.processor.attributes "journal_labels"'
+    ) < journal.index('otelcol.exporter.otlp "journal"')
+    gateway_logs = alloy.split('otelcol.processor.attributes "gateway_logs" {', 1)[1].split("\n}", 1)[0]
+    assert 'key    = "loki.attribute.labels"' in gateway_logs
+    assert 'action = "insert"' in gateway_logs
+    assert 'value  = "service,signal"' in gateway_logs
+    assert 'key    = "target_id"' not in gateway_logs
+    assert 'value  = "service:o11y"' not in gateway_logs

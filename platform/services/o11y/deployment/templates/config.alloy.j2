@@ -40,6 +40,14 @@ discovery.relabel "containers" {
     regex         = "(.+/.+)"
     target_label  = "service"
   }
+
+  // Scope the receiver identity to its Compose project; external containers keep their own labels.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "^o11y$"
+    replacement   = "service:o11y"
+    target_label  = "target_id"
+  }
 }
 
 loki.source.docker "default" {
@@ -109,6 +117,13 @@ discovery.relabel "metrics" {
   rule {
     source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
     target_label  = "component"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "^o11y$"
+    replacement   = "service:o11y"
+    target_label  = "target_id"
   }
 }
 

@@ -42,9 +42,10 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   `o11y_svc` inventory must then declare the reviewed `o11y_journal_directory` as that
   actual directory.
   The playbook checks that directory and a recent exact `CONTAINER_NAME=o11y-alloy` entry,
-  then mounts only that directory read-only. It sends only `service=o11y/alloy` and
-  `signal=container` through the existing private OTLP receiver. It does not read the
-  engine socket or alter receiver volumes. The Compose service has no dependencies;
+  then mounts only that directory read-only. It sends `service=o11y/alloy`,
+  `signal=container`, and `target_id=service:o11y` through the existing private OTLP
+  receiver. It does not read the engine socket or alter receiver volumes. The
+  Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
   Compose named `journal-collector-state` volume mounted at `/alloy-state`; Alloy's

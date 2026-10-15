@@ -48,6 +48,17 @@ The source configs are `templates/config.alloy.j2` and
 `templates/prometheus.yml.j2`; `Deploy o11y` renders their runtime files under
 `config/` before starting the containers.
 
+Receiver-owned signals carry the bounded `target_id="service:o11y"` alongside
+their existing `service` labels. Prometheus applies it to the seven static
+receiver scrape targets; Alloy applies it only to local container logs and
+opt-in metrics whose Compose project is exactly `o11y`. The journal pilot adds
+the same identity to its fixed `o11y-alloy` source, then a source-local
+attributes processor upserts the Loki label hint to
+`service,signal,target_id` before OTLP export. The shared receiver retains its
+`service,signal` insert default, preserving the journal-provided hint without
+adding `target_id` to other OTLP logs. This source slice does not establish a
+receiver trace producer or a live receipt.
+
 The agentgateway operations dashboard currently displays raw 4xx access records
 from Loki. Its `http.status` filter does not parse or group a rejection reason.
 Gateway tasks 4.2/4.3 must capture a real OTLP record and verify the exported

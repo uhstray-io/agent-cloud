@@ -3675,7 +3675,14 @@ def test_alloy_config_uses_only_the_fixed_bounded_selector_and_otlp():
 
     assert 'matches    = "CONTAINER_NAME=o11y-alloy"' in config
     assert 'max_age    = "15m"' in config
-    assert 'labels     = { service = "o11y/alloy", signal = "container" }' in config
+    assert 'labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }' in config
+    assert 'logs = [otelcol.processor.attributes.journal_labels.input]' in config
+    assert 'otelcol.processor.attributes "journal_labels"' in config
+    assert 'action = "upsert"' in config
+    assert 'value  = "service,signal,target_id"' in config
+    assert config.index('otelcol.receiver.loki "journal"') < config.index(
+        'otelcol.processor.attributes "journal_labels"'
+    ) < config.index('otelcol.exporter.otlp "journal"')
     assert "otelcol.exporter.otlp" in config
     assert "o11y_otlp_bind" in config
     assert "loki.write" not in config

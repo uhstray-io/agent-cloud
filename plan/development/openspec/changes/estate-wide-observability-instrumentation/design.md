@@ -9,6 +9,17 @@ add bounded `owner` and `severity` values. Request/user identifiers, trace IDs,
 timestamps, raw paths, addresses, prompts, and secrets are not indexed metric
 or Loki stream labels. Container and instance details remain for drill-down.
 
+The receiver identity pilot adds `target_id="service:o11y"` to the receiver's
+seven static Prometheus targets, Alloy-discovered local container logs and
+opt-in metrics from the exact `o11y` Compose project, and the fixed journal
+source. Existing `service` values remain unchanged. The journal collector
+upserts its source-local OTLP-to-Loki label hint to `service,signal,target_id`
+before export. The shared receiver retains its `service,signal` insert default,
+which preserves the journal-provided hint without adding `target_id` to other
+OTLP inputs. The already declared Alloy profile target keeps its existing
+identity. This source change does not claim a trace producer or a live receipt;
+private inventory and live acceptance remain open under task 2.2.
+
 Service Overview lists metric-enabled services from Prometheus and queries Loki
 by `service`; log-only coverage remains visible in the estate inventory and
 Logs Drilldown. Missing telemetry remains a gap rather than a healthy default.
