@@ -211,6 +211,16 @@ setup() {
     "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
 }
 
+@test "inventory example: caddy_routes MCP entry opts into mcp_api on the default listener, same list as the bootstrap INI" {
+  # mcp_api renders the exact-/mcp allowlist; a plain proxy here would expose every path the
+  # gateway's default listener serves (/sse, /v1) on the MCP hostname.
+  grep -qE 'host: "mcp\.agent-cloud\.test".*upstream: "agentgateway:4000".*mcp_api: true' "$INVENTORY"
+  # bootstrap-local-dev.yml emits its OWN copy of the route table into the local Semaphore
+  # inventory; the two lists drift silently when only one is edited.
+  grep -qE "'host': 'mcp\.\{\{ _dev_zone \}\}', 'upstream': 'agentgateway:4000', 'mcp_api': true" \
+    "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+}
+
 @test "bootstrap: the INI route table is emitted as a Python literal, not JSON" {
   # ansible's ini plugin reads a value with ast.literal_eval; JSON parses only
   # while it contains no boolean/null. The first `true` left caddy_routes a

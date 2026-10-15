@@ -122,6 +122,55 @@ previous config without the block, validates and is put back, which drops `/mcp`
 on the pinned image. Crossing back needs a redeploy of the older flag state (`agw_mcp_enabled`), not a
 `rollback-inference-route.yml` gateway-config rollback.
 
+### MCP clients (change `agentgateway-mcp`, task 7)
+
+Claude Code and pi reach `/mcp` through one user-level entry named `agentgateway`, installed by `make`:
+
+```bash
+make agw-mcp-client HOST=<mcp hostname> IDENTITY=<your gateway identity> KEY_FILE=<site-config clone>/secrets/agentgateway/client_<identity>.txt
+make agw-mcp-client DRY_RUN=1 HOST=... IDENTITY=...   # which entries would change, nothing written
+make agw-mcp-client-remove                            # deletes exactly the agentgateway entry
+```
+
+`scripts/agw-mcp-client.py` renders the templates in `context/clients/` (placeholder host, no key) for the
+hostname given and merges the one entry: Claude Code through its own CLI (`claude mcp add-json -s user`), pi by
+a merge-only edit of `~/.pi/agent/mcp.json` (atomic, mode kept, an unparseable file refused and untouched).
+Re-running is a no-op; every other server entry is left as parsed. `KEY_FILE` is optional; without it the helper
+reads the Keychain only.
+Install from a permanent checkout: each entry stores the helper's absolute path, so after moving or deleting
+the checkout re-run the installer. `make` hands the values to the installer as environment variables
+(`AGW_MCP_HOST`, `AGW_MCP_IDENTITY`, `AGW_MCP_KEY_FILE`, `AGW_MCP_HARNESS`), never as text in a shell line.
+Keep a handout file mode 0600; the helper still reads a group- or other-readable one but warns by name on stderr.
+If replacing an entry fails after the old one was removed, the installer says so and exits non-zero; re-run it.
+
+The key never sits in either file. Each entry runs `scripts/agw-mcp-key` at connect time (Claude Code
+`headersHelper`, pi `!command`), which reads the macOS Keychain item first, then the handout file. Store the
+key once, prompted (the value never appears on a command line):
+
+```bash
+security add-generic-password -s agentgateway-mcp -a <identity> -U -w
+```
+
+Verify with `claude mcp list` and `pi mcp list`. The fallback `${AGW_MCP_KEY}` in a client's `headers` is weaker
+(an exported variable is visible to every process the user starts) and is for a harness without a
+command-based header only. Never commit a repo-root `.mcp.json`: Claude Code loads a project one without
+asking in `claude -p`, Agent SDK and cloud sessions, so a live one would connect every automated session here
+to the gateway (it is gitignored, and a test asserts it does not exist).
+
+Client facts re-verified for task 7.1:
+
+| Fact | Source | Date | Matches design.md |
+|---|---|---|---|
+| `claude mcp add-json [options] <name> <json>`, `-s/--scope local\|user\|project`; `add-json` refuses an existing name (exit 1); `remove -s user` refuses an absent one (exit 1) | `claude mcp add-json --help`, `remove --help`, and a run in a temporary HOME + `CLAUDE_CONFIG_DIR`, Claude Code 2.1.299 | 2026-10-14 | Differs: `claude mcp add` has no `headersHelper` option, so the installer uses `add-json` |
+| `headersHelper`: runs in a shell, prints a JSON object of string pairs, gives up after 10 s, runs fresh on each connect, working directory is the configuration directory at user scope (absolute path needed), credential-named variables stripped for project and plugin servers only | https://code.claude.com/docs/en/mcp | 2026-10-14 | Yes |
+| `${VAR}` and `${VAR:-default}` expand in `url` and `headers`; a credential-named variable reads as empty in a remote server's `url`/`headers`, `:-default` ignored | same | 2026-10-14 | Yes (this is why no template uses an expanded variable) |
+| A project `.mcp.json` loads without a prompt in `claude -p`, Agent SDK and cloud sessions | same | 2026-10-14 | Yes |
+| User-scope Claude config lives at `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` | run with a temporary HOME, with and without `CLAUDE_CONFIG_DIR` | 2026-10-14 | n/a (installer reads it to detect a no-op) |
+| pi 1.1.0 reads `~/.pi/agent/mcp.json` (`mcpServers`); `pi mcp add`, `remove`, `list` | `pi mcp --help`; pi-mcp-adapter 5.1.0 `docs/configuration.md` | 2026-10-14 | Yes |
+| pi `headers` value starting `!` runs a command at connect (shell), stdout trimmed is the value, non-empty within 10 s, `!!` escapes; `${VAR}` interpolates | adapter `docs/servers.md`, `docs/auth.md`, `bearer-command-resolver.ts` (`shell: true`) | 2026-10-14 | Yes |
+| pi `url` is "StreamableHTTP with SSE fallback" | adapter `docs/servers.md` | 2026-10-14 | Differs from "SSE rejected": the adapter falls back to SSE; the gateway serves streamable HTTP, so nothing depends on it |
+| Keychain read `security find-generic-password -s <service> -a <account> -w`; add with `-w` last to be prompted, `-U` to update | `security find-generic-password -h`, `security add-generic-password -h` | 2026-10-14 | Yes |
+
 ## Virtual-key lifecycle (aligned with vLLM's single key)
 
 vLLM accepts one static `--api-key` and knows nothing about clients; the gateway owns the
