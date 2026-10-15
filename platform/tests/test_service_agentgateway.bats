@@ -305,9 +305,9 @@ PY
 
 @test "agentgateway: playbook verifies through the one probe path, asserts the 401, puts no key on an argv" {
   # Every gateway probe outside Caddy is tasks/agw-probe.yml (task 6.1a). The client key reaches
-  # exactly six tasks (the keyed /v1 listing and completion, and the four keyed MCP probes), all
-  # includes of that file, and inside it only a no_log `uri` header: no command or shell task ever
-  # sees it (a shell probe put it on wget's argv, PR 221 Codex review).
+  # exactly seven tasks (the keyed /v1 listing and completion, the opt-in OpenRouter completion, and the
+  # four keyed MCP probes), all includes of that file, and inside it only a no_log `uri` header: no
+  # command or shell task ever sees it (a shell probe put it on wget's argv, PR 221 Codex review).
   PROBE="$REPO_ROOT/platform/playbooks/tasks/agw-probe.yml"
   python3 - "$PLAYBOOK" "$PROBE" <<'PY'
 import sys, yaml
@@ -325,6 +325,7 @@ for play in yaml.safe_load(open(sys.argv[1])):
 assert [t.get("name") for t in keyed] == [
     "An enrolled identity lists the served models",
     "An enrolled identity completes one chat request through the upstream",
+    "An enrolled identity completes one OpenRouter request (opt-in)",
     "MCP: an enrolled identity initialises a session",
     "MCP: an enrolled identity lists the tools",
     "MCP: an enrolled identity makes one model call through the chat tool",
@@ -436,7 +437,8 @@ PY
 
 @test "agentgateway: per-identity policy overrides render from inventory (allowedModels, budget)" {
   assert_grep -qF 'agw_client_policies' "$CONFIG"
-  assert_grep -qF 'allowedModels: {{ _pol.allowed_models | to_json }}' "$CONFIG"
+  assert_grep -qF 'allowedModels: {{ _am | to_json }}' "$CONFIG"
+  assert_grep -qF '_pol.allowed_models | default([])' "$CONFIG"
   assert_grep -qF '_pol.tokens_per_hour | default(agw_rate_tokens_per_hour' "$CONFIG"
 }
 

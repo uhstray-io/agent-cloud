@@ -25,7 +25,18 @@
 # Inventory (agentgateway_svc host):
 #   agw_upstream_base_url  e.g. http://<head>:8000/v1 (prod) or
 #                          http://host.containers.internal:1234/v1 (local LM Studio)
-#   agw_models             [{name, upstream_model?}] one entry per served name
+#   agw_models             [{name, upstream_model?, provider?}] one entry per served name
+#                          `provider: openrouter` (agentgateway-openrouter) serves the entry from OpenRouter
+#                          instead of the vLLM upstream: `upstream_model` (vendor/model) is then required,
+#                          a wildcard name is refused, and someone must be allowed to call it (below)
+#   agw_openrouter_identities / agw_openrouter_admins  who may call OpenRouter models, as a union: the
+#                          explicit identity list, plus (agw_openrouter_admins: true, default false) every
+#                          admin-derived identity. The union must not be empty while any entry has
+#                          provider: openrouter, else the deploy refuses. Every other identity is denied
+#                          them in config.yaml (allowedModels), because OpenRouter is billed per token. The key is
+#                          secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key; never generated)
+#   agw_verify_openrouter  (default false) send ONE completion (max_tokens 8) to the first OpenRouter model
+#                          the verifying identity may use; off, the verify only checks the keyed listing
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
 #   agw_admin_identities_enabled (default false) gate for the personal identities below: off,
 #                          agw_identities == agw_clients and the admin list is not read
@@ -173,6 +184,17 @@
           agw_identities (agw_clients plus the names derived from platform_admins) and agw_ui_admin_group
           must match ^[a-z0-9][a-z0-9-]*$
           (offending identities: {{ agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+
+    # OpenRouter is billed per token on the operator's account: a model must be listed by name with
+    # its OpenRouter id, and the identities allowed to call it must be declared before any render.
+    # A missing openrouter_api_key is refused by manage-secrets (it is a required `existing`
+    # secret exactly when an OpenRouter model is declared) before any value is written.
+    - name: "Refuse a malformed OpenRouter declaration"
+      ansible.builtin.assert:
+        that: _agw_openrouter_problems | length == 0
+        fail_msg: >-
+          The OpenRouter models cannot be rendered: {{ _agw_openrouter_problems | join('; ') }}.
+        quiet: true
 
     # The MCP declaration (agentgateway-mcp tasks 3.2, 3.7, 3.8): an allowlist, refused before anything is
     # rendered or restarted, naming the entry. A target is only {name, schema}; its kind, host and the
@@ -977,15 +999,26 @@
     # Semaphore container, declares agw_verify_base_url. `select('in', ...)` keeps allowed_models
     # order so `_verify_models[0]` is the same model every run; `intersect` is a set operation
     # whose order follows per-process hashing (test_no_first_of_set_operation.py).
+    #
+    # OpenRouter models (agentgateway-openrouter) are in the list only for an identity allowed them
+    # (agw_openrouter_identities, or an admin identity with agw_openrouter_admins; the others are
+    # denied them by config.yaml), and come LAST, so `_verify_models[0]`, the model the default
+    # completion asks for, is never a paid OpenRouter one.
     - name: "Keyed probes: pick the verifying identity, its models and the gateway URL"
       ansible.builtin.set_fact:
-        _verify_client: "{{ agw_verify_client | default(_verify_default) }}"
-        _verify_models: >-
-          {{ ((agw_client_policies | default({}))[agw_verify_client | default(_verify_default)]
-              | default({})).allowed_models
-             | default(agw_models | map(attribute='name') | list)
-             | select('in', agw_models | map(attribute='name') | list) | list }}
+        _verify_client: "{{ _vc }}"
+        _verify_models: "{{ _vm | reject('in', _orn) | list + _vm | select('in', _orn) | list }}"
         _verify_url: "{{ _agwp_base }}"
+      vars:
+        _vc: "{{ agw_verify_client | default(_verify_default) }}"
+        _orn: >-
+          {{ agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+             | map(attribute='name') | list }}
+        _vm: >-
+          {{ ((agw_client_policies | default({}))[_vc] | default({})).allowed_models
+             | default(agw_models | map(attribute='name') | list)
+             | select('in', agw_models | map(attribute='name') | list)
+             | reject('in', [] if _vc in (_agw_openrouter_identities | default([])) else _orn) | list }}
 
     - name: "Keyed probes: the identity may use at least one declared model"
       ansible.builtin.assert:
@@ -994,6 +1027,22 @@
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
+
+    - name: "Keyed probes: the identity may use a model that is not an OpenRouter one"
+      ansible.builtin.assert:
+        that: _verify_models[0] not in _orn
+        fail_msg: >-
+          {{ _verify_client }} is allowed only OpenRouter models, and the verify does not spend OpenRouter
+          tokens on its default completion; set agw_verify_client to an identity that may use a vLLM model.
+        quiet: true
+      vars:
+        _orn: >-
+          {{ agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+             | map(attribute='name') | list }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - _verify_models | length > 0
 
     - name: "An enrolled identity lists the served models"
       ansible.builtin.include_tasks: tasks/agw-probe.yml
@@ -1192,6 +1241,77 @@
         - _verify_client | length > 0
         - not (_verify_refused | bool)
 
+    # Opt-in (agw_verify_openrouter): ONE completion with max_tokens 8 to the first OpenRouter model
+    # the verifying identity may use, so a deploy proves the OpenRouter path only when the operator
+    # asks and pays for it. The keyed listing above already requires every allowed OpenRouter name.
+    # Names and status only: the key is a `uri` header, the response body is never printed.
+    - name: "Keyed probes: pick the OpenRouter model for the opt-in completion"
+      ansible.builtin.set_fact:
+        _verify_or_model: "{{ _vo | first | default('') }}"
+      vars:
+        _vo: >-
+          {{ _verify_models | select('in', agw_models | selectattr('provider', 'defined')
+             | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list) | list }}
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+
+    - name: "Require an OpenRouter model for the verifying identity when the opt-in is set"
+      ansible.builtin.assert:
+        that: _verify_or_model | length > 0
+        fail_msg: >-
+          agw_verify_openrouter is set, but {{ _verify_client }} may use no OpenRouter model: add it to
+          agw_openrouter_identities (or enable agw_openrouter_admins) or set agw_verify_client to an identity that is in it.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+
+    - name: "An enrolled identity completes one OpenRouter request (opt-in)"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [200]
+        _agwp_timeout: 120
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
+          model: "{{ _verify_or_model }}"
+          max_tokens: 8
+          messages: [{role: user, content: "Reply with one word: pong"}]
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+        - not (_verify_refused | bool)
+
+    - name: "Keyed probes: keep the OpenRouter completion's response"
+      ansible.builtin.set_fact:
+        _keyed_or_chat: "{{ _agwp_out }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+        - not (_verify_refused | bool)
+
+    - name: "Require a completion OpenRouter produced"
+      ansible.builtin.assert:
+        that:
+          - (_keyed_or_chat.status | int) == 200
+          - _keyed_or_chat.json.object == 'chat.completion'
+          - _keyed_or_chat.json.choices | length > 0
+        fail_msg: >-
+          Keyed chat completion as {{ _verify_client }} for the OpenRouter model {{ _verify_or_model }}
+          failed: HTTP {{ _keyed_or_chat.status }} {{ _keyed_or_chat.msg | default('') }}
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - agw_verify_openrouter | default(false) | bool
+        - not (_verify_refused | bool)
+
     # ── MCP (agentgateway-mcp task 3.4) ─────────────────────────────────────────────────────────
     # agw_mcp_enabled true: a request with no key is 401 (answered before any target is contacted), an
     # authenticated `initialize` returns an MCP session, and `tools/list` shows at least one tool. The last
@@ -1347,7 +1467,10 @@
         _mcp_chat_tool: >-
           {{ _mcp_tools.rpc.get('result', {}).get('tools', []) | map(attribute='name')
              | select('search', '(^|_)chat_completions$') | first | default('') }}
-        _mcp_model: "{{ agw_models | map(attribute='name') | first }}"
+        _mcp_model: >-
+          {{ agw_models | map(attribute='name')
+             | reject('in', agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+                      | map(attribute='name') | list) | first }}
       when:
         - not ansible_check_mode
         - agw_mcp_enabled | default(false) | bool
@@ -1611,6 +1734,8 @@
           {{ _verify_models[0] }} came back from upstream model
           {{ _keyed_chat.json.model }} at {{ agw_upstream_base_url }}
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
+          {% if _keyed_or_chat is defined %}One OpenRouter completion for {{ _verify_or_model }}
+          answered HTTP {{ _keyed_or_chat.status }}.{% endif %}
           {% else %}No enrolled identity (agw_identities is empty): the keyed round-trip was not
           run.{% endif %}
 
