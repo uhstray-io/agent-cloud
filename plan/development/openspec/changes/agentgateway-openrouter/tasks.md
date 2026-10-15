@@ -55,6 +55,9 @@ templates, never one-off writes.
       (`(Dev)` first); optionally `-e agw_verify_openrouter=true` once
 - [ ] 3.5 Measure whether OpenRouter tolerates `continuous_usage_stats`; if so, use the vLLM
       transformation for OpenRouter models too (design D5)
-- [ ] 3.6 After `agentgateway-mcp` lands: drop the OpenRouter names from the `mcp-self` key entry
-- [ ] 3.7 Set `agw_conformance_model` to a vLLM model for the conformance playbook while an
-      OpenRouter model can be first in an identity's list
+- [x] 3.6 `mcp-self` excludes the OpenRouter names through the shared macro; it and `legacy-shared`
+      cannot be listed (`test_mcp_self_keeps_an_explicit_allow_list_without_the_openrouter_names`,
+      `test_an_internal_identity_listed_for_openrouter_is_refused_by_name`)
+- [x] 3.7 Conformance run, isolation probe and the MCP verify never pick an OpenRouter model
+      (`test_the_conformance_run_never_picks_an_openrouter_model` and its two siblings); glob
+      characters in model names are refused (`test_a_glob_character_in_any_model_name_is_refused`)

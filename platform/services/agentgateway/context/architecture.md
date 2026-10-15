@@ -256,9 +256,10 @@ agw_openrouter_admins: false          # true: also every admin-derived identity 
   system roots, so a local gateway cannot verify `openrouter.ai`'s certificate. The commented
   example in `platform/inventory/local-dev.yml.example` is off for that reason. Production sets no
   `SSL_CERT_FILE`, and the image ships public roots (`/etc/ssl/certs/ca-certificates.crt`).
-- **Not covered.** `run-agw-conformance.yml` compares gateway and direct vLLM for the first model
-  an identity may use; with an OpenRouter model first in that list it would try to reach it directly
-  at vLLM. Set `agw_conformance_model` to a vLLM model.
+- **Probes.** The conformance run, the isolation probe and the MCP verify's chat call never pick an
+  OpenRouter model (`agw_conformance_model` still names one explicitly). `mcp-self` and
+  `legacy-shared` can never be granted OpenRouter models, and a glob character in any model name is
+  refused.
 
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 

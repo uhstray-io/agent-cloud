@@ -84,20 +84,25 @@ it on every redeploy. The report names models and statuses only.
 **D7. Local-dev.** The inventory example carries a commented OpenRouter block, off. Why off: the
 local overlay's `SSL_CERT_FILE` makes the TLS connection to `openrouter.ai` fail.
 
-## Interaction with concurrent branches
+## Interaction with `agentgateway-mcp` (landed as PR 634, merged here 2026-10-14)
 
-`feat/agw-mcp-gateway` edits the same key-rendering loop in `config.yaml.j2`, the deploy verify
-and the secret declarations (`_agw_mcp_problems`). The hunks here are kept tight: the
-`allowedModels` blocks of the two key loops, one `set` block above the macro, an `if/else` around
-the model loop body, one new problems list beside the identity problems, and new verify tasks
-placed before the Report. The MCP self-call identity (`mcp-self`) is not in
-the union above, so once both land its key entry must also drop the OpenRouter names;
-whoever merges second applies the same `allowedModels` expression there.
+The MCP change turned the key loop into one macro that renders both the `llm` and the `mcp` key
+lists; the OpenRouter exclusion lives in that macro's `llm` branch, so the internal `mcp-self`
+identity (a service identity the MCP target calls /v1 with) gets an explicit `allowedModels` that
+omits the OpenRouter names whenever one is declared. The `mcp` key entries carry no `allowedModels`
+by design. `mcp-self` and `legacy-shared` can never be granted OpenRouter models: the deploy
+refuses an `agw_openrouter_identities` entry naming either, and the template drops both from the
+union regardless. The MCP verify's chat call asks the first non-OpenRouter model.
+
+## Probes never spend OpenRouter tokens
+
+Every model pick in the repository that sends real traffic filters the OpenRouter names out: the
+deploy verify (`_verify_models[0]`, the MCP `_mcp_model`), the conformance run
+(`run-agw-conformance.yml`, `_client_models`; `agw_conformance_model` still names one explicitly)
+and the isolation probe (`probe-agentgateway-isolation.yml`, burst and control models). A literal
+glob character in any model name is refused before render.
 
 ## Not done here
 
-- `run-agw-conformance.yml` picks the first model an identity may use and compares it with direct
-  vLLM; it is outside this change's files. With an OpenRouter model first in that list it would
-  ask vLLM for it. `agw_conformance_model` overrides it.
 - A spend ceiling in money terms. The per-identity token budget is the only per-identity control
   v1.5.0 offers; OpenRouter's own per-key credit limit is the hard cap and is set at the provider.

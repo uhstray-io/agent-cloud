@@ -182,6 +182,11 @@ _agw_openrouter_identities: >-
     {%- endfor -%}
   {%- endif -%}
   {{ out }}
+# Identities the gateway renders for itself, never as a person or a client: `legacy-shared` (the shared
+# vLLM key, config.yaml.j2) and `mcp-self` (the MCP target's own call). OpenRouter spend can never be
+# granted to them; config.yaml.j2 keeps its own copy of `mcp-self` in `_internal_ids`, and a test
+# pins that this list covers it.
+_agw_internal_identities: ['legacy-shared', 'mcp-self']
 # What is wrong with the OpenRouter declaration, one sentence per problem, empty when nothing is.
 # deploy-agentgateway.yml refuses a non-empty list before any restart or store write. Names only.
 _agw_openrouter_problems: >-
@@ -191,6 +196,10 @@ _agw_openrouter_problems: >-
     {%- set n = (m['name'] | default('', true)) | string -%}
     {%- set u = (m['upstream_model'] | default('', true)) | string -%}
     {%- set who = 'agw_models entry "' ~ n ~ '"' -%}
+    {#- A glob character in ANY served name is refused: a model name is a literal, and a pattern in it would
+        be read as one by whatever matches names against allow-lists. -#}
+    {%- if p != 'openrouter' and (n is search('[*?\\[\\]]'))
+           and out.append(who ~ ': a model name must not contain a glob character (* ? [ ])') -%}{%- endif -%}
     {%- if p not in ['', 'openrouter']
            and out.append(who ~ ': provider "' ~ p ~ '" is not supported; the only value is openrouter, omit it for the vLLM upstream') -%}{%- endif -%}
     {%- if p == 'openrouter' -%}
@@ -212,7 +221,9 @@ _agw_openrouter_problems: >-
            and out.append('agw_openrouter_identities must be a list of identity names') -%}{%- endif -%}
     {%- if agw_openrouter_identities is defined and agw_openrouter_identities is sequence and agw_openrouter_identities is not string and agw_openrouter_identities is not mapping -%}
       {%- for i in agw_openrouter_identities -%}
-        {%- if i not in agw_identities
+        {%- if i in _agw_internal_identities
+               and out.append('agw_openrouter_identities names "' ~ i ~ '", an internal identity that is never granted OpenRouter models') -%}{%- endif -%}
+        {%- if i not in agw_identities and i not in _agw_internal_identities
                and out.append('agw_openrouter_identities names "' ~ i ~ '", which is not a declared gateway identity') -%}{%- endif -%}
       {%- endfor -%}
     {%- endif -%}

@@ -58,12 +58,14 @@
    OpenRouter model declared, `_or_names` is empty and this changes nothing. Computed here from
    agw_models, not read from the vars file, so a caller that renders without that file is denied too
    instead of silently allowed. The deploy refuses an empty union; an undeclared one renders as
-   "nobody". #}
+   "nobody". The two identities this file renders for itself, `mcp-self` and `legacy-shared`, are
+   never in the union whatever the inventory says (the deploy refuses naming them too). #}
 {% set _or_names = agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
      | map(attribute='name') | list %}
-{% set _or_ids = (agw_openrouter_identities | default([]))
+{% set _or_ids = ((agw_openrouter_identities | default([]))
      + ((_agw_admin_identities | default([]) | map(attribute='name') | list)
-        if (agw_openrouter_admins | default(false) | bool) else []) %}
+        if (agw_openrouter_admins | default(false) | bool) else []))
+     | reject('in', ['mcp-self', 'legacy-shared']) | list %}
 {% set _all_names = agw_models | map(attribute='name') | list %}
 {% macro listener_tls() %}
     tls:

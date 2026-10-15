@@ -1467,7 +1467,10 @@
         _mcp_chat_tool: >-
           {{ _mcp_tools.rpc.get('result', {}).get('tools', []) | map(attribute='name')
              | select('search', '(^|_)chat_completions$') | first | default('') }}
-        _mcp_model: "{{ agw_models | map(attribute='name') | first }}"
+        _mcp_model: >-
+          {{ agw_models | map(attribute='name')
+             | reject('in', agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+                      | map(attribute='name') | list) | first }}
       when:
         - not ansible_check_mode
         - agw_mcp_enabled | default(false) | bool

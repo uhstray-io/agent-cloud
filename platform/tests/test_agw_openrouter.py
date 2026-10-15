@@ -28,10 +28,14 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ansible_python import ansible_python
 from test_agw_admin_identities import CONFIG, DEPLOY, PHASE1, PHASE3, SECRETS, _ansible, _task, admin
+from test_agw_mcp_render import SCHEMA_FILE, SCHEMA_TEXT, TARGETS
 from test_agw_stream_usage import IMAGE, _free_port, _image_present
 
 ENV_TEMPLATE = CONFIG.with_name("env.j2")
+CONFORMANCE = DEPLOY.with_name("run-agw-conformance.yml")
+ISOLATION = DEPLOY.with_name("probe-agentgateway-isolation.yml")
 OR_KEY = "or-synthetic-key-91c4"
 OR_EXPR = (
     "has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true "
@@ -206,8 +210,9 @@ def test_the_shared_key_identity_is_denied_openrouter_models_too(tmp_path):
     assert got["legacy-shared"]["allowedModels"] == ["gpt-oss-120b"]
     d = tmp_path / "named"
     d.mkdir()
+    # Even when an inventory names it, the template denies it (the deploy refuses naming it, below).
     named = keys(render(d, **{**hv, "agw_openrouter_identities": ["skynet", "legacy-shared"]}))
-    assert "allowedModels" not in named["legacy-shared"]
+    assert named["legacy-shared"]["allowedModels"] == ["gpt-oss-120b"]
 
 
 # -- Admin-derived identities (agw_openrouter_admins) ---------------------------------------------
@@ -360,6 +365,139 @@ def test_the_deploy_refuses_a_malformed_declaration_before_any_render(tmp_path):
     assert ok.returncode == 0, ok.stdout + ok.stderr
 
 
+# -- Review findings: internal identities, glob names, never-billed probes -------------------------
+
+
+@pytest.mark.parametrize("internal", ["mcp-self", "legacy-shared"])
+def test_an_internal_identity_listed_for_openrouter_is_refused_by_name(tmp_path, internal):
+    for i, clients in enumerate((["skynet", "ws"], ["skynet", "ws", internal])):
+        d = tmp_path / str(i)
+        d.mkdir()
+        got = problems(d, agw_clients=clients, agw_openrouter_identities=["skynet", internal])
+        assert got == [
+            f'agw_openrouter_identities names "{internal}", '
+            "an internal identity that is never granted OpenRouter models"
+        ]
+
+
+def test_the_internal_list_covers_the_identities_the_template_renders_for_itself(tmp_path):
+    text = CONFIG.read_text()
+    rendered_for_itself = {"legacy-shared"} | set(
+        __import__("re").search(r"_internal_ids = \[(.*?)\]", text).group(1).replace("'", "").split(", ")
+    )
+    internal = evaluate(tmp_path, GOOD)
+    assert internal  # the vars file evaluated
+    out = tmp_path / "internal.json"
+    r = _ansible(
+        tmp_path,
+        GOOD,
+        [{"ansible.builtin.copy": {"content": "{{ _agw_internal_identities | to_json }}", "dest": str(out)}}],
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert rendered_for_itself <= set(json.loads(out.read_text()))
+
+
+def test_mcp_self_keeps_an_explicit_allow_list_without_the_openrouter_names(tmp_path):
+    hv = {
+        **GOOD,
+        "agw_clients": ["skynet", "ws", "mcp-self"],
+        "agw_mcp_enabled": True,
+        "agw_mcp_openapi_targets": TARGETS,
+        "_agw_mcp_schemas": {SCHEMA_FILE: SCHEMA_TEXT},
+        "secrets": {**STORE, "client_mcp-self": "stored-key-for-mcp-self"},
+    }
+    cfg = render(tmp_path, **hv)
+    assert keys(cfg)["mcp-self"]["allowedModels"] == ["gpt-oss-120b"]
+    # Even named in the list, as an inventory that skipped the deploy's refusal would.
+    d = tmp_path / "named"
+    d.mkdir()
+    named = render(d, **{**hv, "agw_openrouter_identities": ["skynet", "mcp-self"]})
+    assert keys(named)["mcp-self"]["allowedModels"] == ["gpt-oss-120b"]
+    # The /mcp key lists (every other apiKey block) never carried allowedModels.
+    other = [b for b in _api_key_blocks(cfg) if b is not cfg["llm"]["policies"]["apiKey"]]
+    assert other and not any("allowedModels" in k for b in other for k in (b["keys"] or []))
+
+
+def _api_key_blocks(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "apiKey" and isinstance(v, dict) and "keys" in v:
+                yield v
+            yield from _api_key_blocks(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _api_key_blocks(v)
+
+
+@pytest.mark.parametrize("name", ["a*", "*", "a?b", "a[b]", "x]"])
+def test_a_glob_character_in_any_model_name_is_refused(tmp_path, name):
+    got = problems(tmp_path, agw_models=[VLLM, {"name": name}, OR_MINI])
+    assert got == [f'agw_models entry "{name}": a model name must not contain a glob character (* ? [ ])']
+
+
+def test_a_glob_openrouter_name_still_gets_the_one_wildcard_message(tmp_path):
+    got = problems(tmp_path, agw_models=[VLLM, {**OR_MINI, "name": "or-*"}])
+    assert len(got) == 1 and "never a wildcard" in got[0]
+
+
+def test_a_glob_in_a_plain_vllm_inventory_is_refused_too(tmp_path):
+    got = evaluate(tmp_path, {"agw_models": [{"name": "m*"}], "agw_clients": ["ws"]})["problems"]
+    assert len(got) == 1 and "glob character" in got[0]
+
+
+def _templar(play: dict, names: list, inputs: dict) -> dict:
+    """The play's own var expressions, rendered by ansible's templar in a fresh interpreter."""
+    script = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+exprs = json.loads(sys.argv[1]); v = json.loads(sys.argv[2])
+for k, e in exprs.items():
+    v[k] = Templar(loader=DataLoader(), variables=v).template(trust_as_template(e))
+print(json.dumps({k: v[k] for k in exprs}))
+"""
+    exprs = {k: play["vars"][k] for k in names}
+    r = subprocess.run(
+        [ansible_python(), "-I", "-c", script, json.dumps(exprs), json.dumps(inputs)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+MODELS_OR_FIRST = [OR_MINI, VLLM, {"name": "m2"}, OR_SONNET]
+
+
+def test_the_conformance_run_never_picks_an_openrouter_model():
+    play = next(p for p in yaml.safe_load(CONFORMANCE.read_text()) if "_client_models" in p.get("vars", {}))
+    base = {"agw_models": MODELS_OR_FIRST, "_client": "ws"}
+    got = _templar(play, ["_client_models", "_model"], {**base, "agw_clients": ["ws"]})
+    assert got["_client_models"] == ["gpt-oss-120b", "m2"] and got["_model"] == "gpt-oss-120b"
+    policy = {"agw_client_policies": {"ws": {"allowed_models": ["or-sonnet", "m2", "or-mini"]}}}
+    got = _templar(play, ["_client_models", "_model"], {**base, **policy})
+    assert got["_client_models"] == ["m2"]
+
+
+def test_the_isolation_probe_never_bursts_or_controls_with_an_openrouter_model():
+    play = next(p for p in yaml.safe_load(ISOLATION.read_text()) if "_burst_models" in p.get("vars", {}))
+    inputs = {"agw_models": MODELS_OR_FIRST, "_burst": "b", "_control": "c"}
+    got = _templar(play, ["_openrouter_names", "_burst_models", "_control_models"], inputs)
+    assert got["_burst_models"] == ["gpt-oss-120b", "m2"] == got["_control_models"]
+    policy = {"agw_client_policies": {"b": {"allowed_models": ["or-mini", "m2"]}}}
+    got = _templar(play, ["_openrouter_names", "_burst_models", "_control_models"], {**inputs, **policy})
+    assert got["_burst_models"] == ["m2"]
+
+
+def test_the_mcp_verify_asks_the_first_vllm_model_not_an_openrouter_one_declared_first():
+    task = _task(PHASE3, "MCP: pick the chat tool and the model")
+    expr = task["ansible.builtin.set_fact"]["_mcp_model"]
+    play = {"vars": {"_mcp_model": expr}}
+    assert _templar(play, ["_mcp_model"], {"agw_models": MODELS_OR_FIRST})["_mcp_model"] == "gpt-oss-120b"
+    assert _templar(play, ["_mcp_model"], {"agw_models": [VLLM, OR_MINI]})["_mcp_model"] == "gpt-oss-120b"
+
+
 # -- The credential: declared and required only when a model needs it -----------------------------
 
 
@@ -486,7 +624,7 @@ live = pytest.mark.skipif(not _image_present(), reason=f"podman or {IMAGE} not a
 def test_the_render_passes_the_pinned_images_validator(tmp_path):
     render(tmp_path, **GOOD)
     env = tmp_path / "gateway.env"
-    env.write_text(f"VLLM_API_KEY=v\nOPENROUTER_API_KEY={OR_KEY}\nAGW_DATABASE_URL=postgresql://u:p@db/x\n")
+    env.write_text(f"VLLM_API_KEY=v\nOPENROUTER_API_KEY={OR_KEY}\nAGW_DATABASE_URL=postgresql://db/x\n")
     r = subprocess.run(
         [
             "podman",
