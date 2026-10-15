@@ -51,8 +51,19 @@ templates, never one-off writes.
 - [x] 3.3 Operator decision 2026-10-14: the seven models in `design.md` D4 (client name = OpenRouter
       id); the operator's own identity in `agw_openrouter_identities`, with `agw_openrouter_admins: true`. The key is
       already seeded in production (Seed OpenBao Key, Semaphore task 5659)
-- [ ] 3.4 Declare them in site-config's gateway inventory; deploy through the Semaphore template
+- [x] 3.4 Declare them in site-config's gateway inventory; deploy through the Semaphore template
       (`(Dev)` first); optionally `-e agw_verify_openrouter=true` once
+      2026-10-14/15 (site-config pull request and task output read from production Semaphore by
+      the lead): site-config #88 (merged 97f2b056) declares the seven models
+      (`xiaomi/mimo-v2.6-flash`, `deepseek/deepseek-v4.1-flash`, `z-ai/glm-5.3-flash`,
+      `xiaomi/mimo-v2.6-pro`, `openai/gpt-6-luna`, `mistralai/mistral-large-4-0`,
+      `z-ai/glm-5.3`), the operator's identity and `agw_openrouter_admins: true`; operator
+      decision 2026-10-14: `svc-automation` keeps OpenRouter access. Inventory synced; Deploy
+      agentgateway (Dev) dry run 5739, real run 5740: the verifying identity lists
+      `qwen3.8-flash-next` and all seven OpenRouter models; the DGX completion returned 31
+      tokens. Ticked: the optional `-e agw_verify_openrouter=true` run was not made (it is not a
+      Semaphore survey field). NOT proven: a real completion from OpenRouter through the
+      gateway; the operator's test is pending.
 - [ ] 3.5 Measure whether OpenRouter tolerates `continuous_usage_stats`; if so, use the vLLM
       transformation for OpenRouter models too (design D5)
 - [x] 3.6 `mcp-self` excludes the OpenRouter names through the shared macro; it and `legacy-shared`

@@ -110,6 +110,15 @@ finding that contradicts a decision stops the work and reopens that decision.
       set; `platform/tests/test_authentik_platform_admins.py` holds the golden). The twice-run
       local deploy is PENDING: the local Semaphore mounts another checkout, so it runs only
       after this merges
+      2026-10-14/15: render equivalence stands as written; the 'no user change' half has live
+      evidence: production Deploy Authentik (Dev) real run 5667 (changed 7) then rerun 5669
+      changed=0 with the read-back verify passing, and after the retirement change real run 5713
+      then rerun 5714 changed=0 (task output read from production Semaphore by the lead; see 6.2
+      and the gw 4.1 note). Not ticked: this task names the LOCAL deploy run twice, and the
+      local Semaphore output is not on dev. The lead cites local Semaphore tasks 6530 and 6532
+      as the local proofs of #624 and #626; their output was not re-read here, so nothing is
+      ticked on them. Remaining: the twice-run local Authentik deploy, read from the local
+      Semaphore.
 - [ ] 2.7 Local migration: declare each person identity in the list under its existing
       name, first with the name still in `agw_clients` (overlap reported) and then with it
       removed. Prove no key is re-minted and the rendered key-hash count does not drop by
@@ -118,13 +127,17 @@ finding that contradicts a decision stops the work and reopens that decision.
       Render level done (`platform/tests/test_agw_admin_identities.py`: the identical `keyHash`
       line per identity through overlap and removal, count never drops); the run against a
       local gateway is not
+      2026-10-14/15: no new evidence for the local run. Production overlap was reported by name
+      (see 6.3, runs 5670/5671) but the per-identity `keyHash` comparison was not read there
+      either. Not ticked; remaining: the local gateway run, overlap then removal, with the hash
+      lines compared.
 - [x] 2.8 BATS: derivation, override name, in-list duplicate refusal, overlap merged once
       and reported, charset refusal, `legacy-shared` and `mcp-self` refusals, revoke needing
       removal from the merged list.
       Mutation-check each refusal: break it, watch its test fail, restore it byte-exact
       Done as pytest in `platform/tests/test_agw_admin_identities.py` (the repo's harness
       runs the real guard tasks)
-- [ ] 2.9 The drift guard (D3), which is the Authentik verify alone: extend the read-back
+- [x] 2.9 The drift guard (D3), which is the Authentik verify alone: extend the read-back
       verify (`verify-users.py.j2`, run inside the server container) to assert the members
       of `platform-admins` equal the declared admin list plus the declared exceptions list,
       failing with the account name only. The gateway deploy gets a consistency check of its
@@ -135,6 +148,14 @@ finding that contradicts a decision stops the work and reopens that decision.
       watching each fail. The Authentik half (verify + BATS + mutations) is done. The gateway
       half is done too (the render check in `deploy-agentgateway.yml`, pytest in
       `platform/tests/test_agw_admin_identities.py`, mutation-checked)
+      2026-10-14/15: ticked. The task text records both halves as done with their mutations
+      (Authentik verify + BATS + mutations; gateway render check + pytest, mutation-checked);
+      the unticked box was an oversight. Live evidence that the guards pass on the real systems
+      (task output read from production Semaphore by the lead): the Authentik drift guard passed
+      with `platform-admins` members exactly the declared five (run 5667) and again after the
+      retirement change (runs 5713/5714: 'VERIFY OK: 13 blueprints, 5 accounts present, 2
+      retired'); the gateway render check passed in the production deploys 5671, 5699, 5718 and
+      5740.
 - [ ] 2.10 Validation gate, local: the rendered admin entries equal the fixed blocks and the
       verify passes, proving scenario "The rendered admin accounts match the fixed blocks";
       a new list entry mints a `client_<name>` and its hash is enrolled on the next
@@ -146,6 +167,13 @@ finding that contradicts a decision stops the work and reopens that decision.
       membership and the declared list agree"; a removed entry's key is 401, proving scenario
       "Removing an admin
       ends their access"
+      2026-10-14/15: partial live evidence only, no new tick. Production shows the rendered
+      entries and the verify passing (5667), a declared admin getting an identity (the personal
+      keys minted by 5671) and a retired name's identity dropped (gateway 5718, revoke 5722).
+      Not proven here: the hand-added member failing the verify, the duplicate or reserved name
+      refusal as a live run (pytest only), the migrated name keeping its hash through overlap
+      and removal (see 2.7), and a removed entry's key answering 401. The gate is local; the
+      local Semaphore output is not on dev. Remaining: those local runs.
 
 ## 3. Gateway MCP configuration and verify
 - [x] 3.1 One shared key macro in `config.yaml.j2` taking the identity list and whether to
@@ -422,9 +450,13 @@ finding that contradicts a decision stops the work and reopens that decision.
       single-label host needs no new certificate SAN
       Done 2026-10-14: `mcp.agent-cloud.test` -> `agentgateway:4000` (the `default` listener,
       `config.yaml.j2`), `mcp_api: true`, beside the `admin.inference` route
-- [ ] 5.3 Production site: the matching block in site-config's `caddy_managed_sites` for
+- [x] 5.3 Production site: the matching block in site-config's `caddy_managed_sites` for
       `agw_mcp_hostname`, on the site-config branch for this change (its own PR; the
       Caddy deploy that places it is task 6.5)
+      2026-10-14/15 (site-config pull request, read by the lead with `gh`): site-config #87
+      (merged cb38d044) carries the `mcp.uhstray.io` block in `caddy_managed_sites`:
+      gateway-mode transport, `/mcp` only, 404 for every other path; `encode` was added on
+      review (0df9ea08). Ticked. The Caddy deploy that places it is 6.5.
 - [x] 5.4 `platform/infra/cloudflare`: the `mcp` record in `dns.tf` (proxied, like the
       other platform names), the `mcp-api-bypass-challenge` skip rule in `waf.tf` limited to
       the MCP host and `/mcp`, and exactly one rate-limit rule in `ratelimit.tf` with its
@@ -445,14 +477,28 @@ finding that contradicts a decision stops the work and reopens that decision.
       Done 2026-10-14: `test_service_caddy.bats` (MCP handle structure, 401 shape, streaming and
       TLS, inference golden) and `test_cloudflare_mcp_edge.bats` (expressions, last-position
       skip, two-rule cap, record). 19 mutations, each red, each restored byte-exact
-- [ ] 5.6 Local proof through the local Caddy deploy (`deploy-caddy.yml` through the local
+- [x] 5.6 Local proof through the local Caddy deploy (`deploy-caddy.yml` through the local
       Semaphore): the MCP hostname, then the inference hostname's `/mcp`
-- [ ] 5.7 Validation gate, local: no key and a malformed key are each 401 with no
+      2026-10-14/15 (local Semaphore): Deploy Caddy task 6700 placed the route list from
+      `local-dev.yml.example`, including `mcp.agent-cloud.test`, passed as the `caddy_routes`
+      extra var because the local working inventory predates the route. The dry run, task 6698,
+      failed on a check-mode defect (the route assert ran against the running config); fixed by
+      PR #644. Probes by the lead are under 5.7. Ticked.
+- [x] 5.7 Validation gate, local: no key and a malformed key are each 401 with no
       challenge header, proving scenario "The MCP hostname is not reachable without a
       key"; `/v1/models`, `/sse` and `/metrics` with a valid key are 404, proving scenario
       "Only the MCP path reaches the gateway on the MCP hostname"; `/mcp` on the inference
       hostname is 404 and `/v1/*` and `/health` are as before, proving scenario "The
       inference allowlist is unchanged"
+      2026-10-14/15 (local, probes run by the lead against the local Caddy after task 6700): MCP
+      hostname `/mcp`: no key 401, Basic 401, empty Bearer 401; `/v1/models`, `/sse`,
+      `/metrics`, `/health` with a Bearer-shaped dummy key 404 (decided at Caddy, before the
+      gateway sees the key); `/mcp` with a Bearer-shaped dummy reaches the gateway, which
+      answers 401. Inference hostname: `/mcp` 404, `/v1/models` without a key 401, `/health` 502
+      because the local fake inference upstream (`scripts/fake-inference-upstream.py`, host port
+      8001) was not running; not a regression (the inference block renders byte-identical,
+      golden BATS). Probes used a dummy key, not a valid one; the 404s do not depend on the key.
+      Ticked.
 
 ## 6. Production rollout
 Operator-run, one `(Dev)` template at a time, dry run first (`--check` shows a diff and
@@ -520,17 +566,38 @@ operator's go for it. site-config changes land through its own pull requests.
       `keyHash` count before and after, and the unchanged-hash proof, were not read (the render
       check asserts one entry per declared identity but prints no count and compares no
       earlier state). Remaining: read the count from the host, read-only, names and counts only.
-- [ ] 6.4 `Apply Cloudflare Tofu (Dev)`, `tofu_action` plan: expected diff exactly the
+      2026-10-14/15 (task output read from production Semaphore by the lead): later deploys 5718
+      and 5740 keep passing the render checks. Still NOT ticked: the `keyHash` count before and
+      after was not read.
+- [x] 6.4 `Apply Cloudflare Tofu (Dev)`, `tofu_action` plan: expected diff exactly the
       record and two rules, zero other change; then apply, then a zero-diff plan
       2026-10-14: not started; waits on PR #636.
-- [ ] 6.5 `Manage Caddy Sites (Dev)`: dry run, apply; the inference block unchanged in the
+      2026-10-14/15 (task output read from production Semaphore by the lead): Apply Cloudflare
+      Tofu (Dev) plan task 5692 showed exactly three changes: `dns_record` mcp create,
+      `custom_firewall` update, `ratelimit` update. Apply 5693 (verify_changes 0), zero-diff
+      plan 5694. The MCP rate-limit rule ships with action `log`; it flips to `block` after the
+      6.6 measurement (see 5.4). Ticked.
+- [x] 6.5 `Manage Caddy Sites (Dev)`: dry run, apply; the inference block unchanged in the
       dry-run diff
       2026-10-14: not started; waits on PR #636.
+      2026-10-14/15 (task output read from production Semaphore by the lead): Manage Caddy Sites
+      (Dev) dry run task 5695 (the diff shows only additions: the `mcp.uhstray.io` site; the
+      inference block untouched), real run 5696 (restarted). Public check: POST to
+      `https://mcp.uhstray.io/mcp` without a key is 401 with no `cf-mitigated`; every other path
+      is 403 (the Cloudflare challenge: the skip rule covers `/mcp` only). Ticked.
 - [ ] 6.6 Flip `agw_mcp_enabled`, `Deploy agentgateway (Dev)`; verify; then through the
       MCP hostname hold an `initialize` and an idle stream past 125 s, recording the
       observed status; `statefulMode: stateless` was chosen from the spike (3.2), so confirm it
       holds and set the rate-limit bucket from the measurement (a bucket change is a
       follow-up tofu plan and apply)
+      2026-10-14/15 (task output read from production Semaphore by the lead): the flag is
+      flipped by site-config #89 (merged 4ea5c5eb); inventory synced; Deploy agentgateway (Dev)
+      dry run 5697, real run 5699. The verify: 'MCP: /mcp without a key is 401; as stray
+      initialize returned a session, tools/list listed list_models, chat_completions, and one
+      chat call returned a completion logged as mcp-self on the loopback listener.' Not ticked.
+      Remaining: an `initialize` and an idle stream past 125 s THROUGH `mcp.uhstray.io` (needs
+      the operator's client, 7.7), confirming `statefulMode: stateless` holds, and the
+      rate-bucket measurement that flips the rate-limit rule from `log` to `block`.
 - [ ] 6.7 Hand out each declared admin's key with `Back Up Credentials to site-config (Dev)`,
       `credential_service=agentgateway`, `credential_fields=client_<name>` listed
       explicitly (never empty, Open Question 6); output carries names only
@@ -540,6 +607,9 @@ operator's go for it. site-config changes land through its own pull requests.
       `backup/agentgateway-20261014T222727Z-f28619`), the fields named explicitly. The other
       admins (`agent-cloud-admin`, `wisward`, `svc-automation`) are not handed out yet.
       Not ticked.
+      2026-10-14/15: the `wisward` identity is retired (see the gw 4.1 note), so it is no longer
+      owed a key. The operator's key and `client_jacob` were handed out earlier (see above).
+      Remaining: `agent-cloud-admin` and `svc-automation`. Not ticked.
 - [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
       exist and removal would drop the key). The render changes only on deploy, so after the
@@ -553,6 +623,11 @@ operator's go for it. site-config changes land through its own pull requests.
       authenticates, proving scenario "A declared admin gets an identity on the next
       deploy"; the deploy's own verify passes, proving scenario "Deploy proves an
       authenticated initialize"
+      2026-10-14/15 (task output read from production Semaphore by the lead): an unauthenticated
+      `initialize` to `mcp.uhstray.io` is 401 with no challenge header (proven, see 6.5); the
+      admin key authenticates through the public hostname only once the operator's client runs,
+      which is the 7.7 proof and is pending; the deploy's own verify passes (task 5699). Not
+      ticked.
 
 ## 7. Client templates and installer
 - [x] 7.1 Re-verify the client facts against the live documentation and the installed
