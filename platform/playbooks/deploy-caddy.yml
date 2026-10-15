@@ -192,7 +192,24 @@
       loop: "{{ caddy_routes | default([]) }}"
       loop_control:
         label: "{{ item.host }}"
-      when: caddy_routes | default([]) | length > 0
+      # A dry run deployed nothing, so a route this change adds is legitimately absent
+      # from the running config; the check-mode report below names those instead.
+      when:
+        - caddy_routes | default([]) | length > 0
+        - not ansible_check_mode
+
+    - name: "Dry run: report which declared routes a real run would add"
+      ansible.builtin.debug:
+        msg:
+          - "already loaded: {{ _loaded | join(', ') | default('(none)', true) }}"
+          - "would be added on a real run: {{ _pending | join(', ') | default('(none)', true) }}"
+      vars:
+        _hosts: "{{ caddy_routes | default([]) | map(attribute='host') | list }}"
+        _pending: "{{ _hosts | reject('in', _cfg.stdout) | list }}"
+        _loaded: "{{ _hosts | difference(_pending) }}"
+      when:
+        - caddy_routes | default([]) | length > 0
+        - ansible_check_mode
 
     - name: "Require the private local metrics listener"
       ansible.builtin.command:
@@ -203,6 +220,9 @@
       retries: 5
       delay: 3
       until: _metrics.rc == 0
+      # A listener this change adds is not loaded during a dry run, so the probe's
+      # failure is a finding there, not a red run (the real run keeps it fatal).
+      ignore_errors: "{{ ansible_check_mode }}"
       when: local_mode | default(false) | bool
 
     - name: "Report"
