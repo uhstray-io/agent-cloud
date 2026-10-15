@@ -603,6 +603,10 @@ operator's go for it. site-config changes land through its own pull requests.
       Remaining: an `initialize` and an idle stream past 125 s THROUGH `mcp.uhstray.io` (needs
       the operator's client, 7.7), confirming `statefulMode: stateless` holds, and the
       rate-bucket measurement that flips the rate-limit rule from `log` to `block`.
+      2026-10-14/15 (lead probe through `mcp.uhstray.io`, not a Semaphore task): `initialize` answered
+      200, stateless (no session header); after a 130 s idle, `tools/list` answered 200 with both
+      tools. The idle-past-125-seconds half is PROVEN, and `statefulMode: stateless` holds. Remaining:
+      the rate-bucket measurement and the `log` to `block` flip. Not ticked.
 - [ ] 6.7 Hand out each declared admin's key with `Back Up Credentials to site-config (Dev)`,
       `credential_service=agentgateway`, `credential_fields=client_<name>` listed
       explicitly (never empty, Open Question 6); output carries names only
@@ -615,6 +619,8 @@ operator's go for it. site-config changes land through its own pull requests.
       2026-10-14/15: the `wisward` identity is retired (see the gw 4.1 note), so it is no longer
       owed a key. The operator's key and `client_jacob` were handed out earlier (see above).
       Remaining: `agent-cloud-admin` and `svc-automation`. Not ticked.
+      2026-10-14 (reported by the operator): `client_jacob` was handed to its person by the operator.
+      The handout task above is the only record of the file; delivery is the operator's report.
 - [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
       exist and removal would drop the key). The render changes only on deploy, so after the
@@ -671,6 +677,11 @@ operator's go for it. site-config changes land through its own pull requests.
       fails with a 401 reported by name only; record each harness's handshake request count
       against the bucket (spike 1.7 measured only a scripted client's three) and, if it
       differs, correct task 5.4's figure in a follow-up plan
+      2026-10-14/15 (reported by the operator, from the operator's workstation; no task output):
+      Claude Code `claude mcp list` shows `agentgateway` Connected; `pi mcp list` shows it
+      connected with 2 tools (`list_models`, `chat_completions`); an `initialize` with a wrong key
+      through `mcp.uhstray.io` is 401. NOT measured: each harness's handshake request count against
+      the rate bucket. Not ticked.
 - [ ] 7.8 Validation gate: the scan finds no secret and no `.mcp.json`, proving scenario
       "Client templates contain no secret"; the temporary-home run proves scenario
       "Installing client configuration preserves existing servers"; the repeat run proves
@@ -757,8 +768,8 @@ operator's go for it. site-config changes land through its own pull requests.
         `platform_admins_exceptions` same file `:32`; `agw_admin_identities_enabled`
         `platform/playbooks/deploy-agentgateway.yml:41`; `platform_retired_accounts`
         `platform/playbooks/deploy-authentik.yml:113`.
-      - MCP: `agw_mcp_enabled` `deploy-agentgateway.yml:18` (read at `:456`);
-        `agw_mcp_openapi_targets` `:69`; `agw_loopback_port` `:72`; `mcp-self` with
+      - MCP: `agw_mcp_enabled` `deploy-agentgateway.yml:18` (read at `:457`);
+        `agw_mcp_openapi_targets` `:70`; `agw_loopback_port` `:73`; `mcp-self` with
         `agw_client_policies` `platform/inventory/local-dev.yml.example:305,311`; `agw_mcp_hostname`
         `platform/inventory/local-dev.yml.example:323` ONLY: declared in inventory and read by no
         playbook, which the rows say.
