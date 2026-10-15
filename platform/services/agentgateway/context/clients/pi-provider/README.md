@@ -43,7 +43,8 @@ the variable. Prefer `/login`: an exported variable is visible to every process 
 
 To use another gateway, for example the local-dev one, set `UHSTRAY_INFERENCE_BASE_URL`
 (`https://inference.agent-cloud.test:8443/v1`). It must be https; plain http is accepted only for
-`localhost`, `127.0.0.1` and `[::1]`, because the key travels on it.
+`localhost`, `127.0.0.1` and `[::1]`, because the key travels on it. A URL carrying credentials, a query or a fragment is refused. Whatever that variable points
+at receives the stored key as well, so only processes you trust should be able to set it.
 
 ## Verify
 

@@ -83,6 +83,63 @@ test("a payload without a data array is refused, naming no content", () => {
   }
 });
 
+test("ids that name Object.prototype members get the default window, not a function", () => {
+  const ids = ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"];
+  const models = parseModelList(modelsBody(...ids), BASE);
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ids,
+  );
+  for (const model of models) assert.equal(model.contextWindow, 131072, model.id);
+});
+
+test("ids outside the safe alphabet or length are dropped; the list is capped", () => {
+  const bad = ["x".repeat(100_000), "x".repeat(129), "ok\u001b[31mred", "has space", "new\nline", "ünï", "a;b"];
+  const good = ["x".repeat(128), "a/b:c@d+e-f_g.h"];
+  assert.deepEqual(
+    parseModelList(modelsBody(...bad, ...good), BASE).map((model) => model.id),
+    good,
+  );
+  const many = Array.from({ length: 800 }, (_, i) => `m${i}`);
+  assert.equal(parseModelList(modelsBody(...many), BASE).length, 500);
+});
+
+test("loopback http is exact: lookalike hosts, userinfo tricks and a trailing dot are refused", () => {
+  for (const bad of [
+    "http://127.0.0.1.evil.com/v1",
+    "http://localhost.evil/v1",
+    "http://localhost@evil.com/v1",
+    "http://127.0.0.1@evil.com/v1",
+    "http://localhost./v1",
+    "http://[::2]:4000/v1",
+  ]) {
+    assert.throws(() => normalizeBaseUrl(bad), GatewayError, bad);
+  }
+  assert.equal(normalizeBaseUrl("http://[::1]:4000/v1"), "http://[::1]:4000/v1");
+});
+
+test("a base URL with credentials, a query or a fragment is refused", () => {
+  for (const bad of [
+    "https://user:pw@gateway.example.invalid/v1",
+    "https://user@gateway.example.invalid/v1",
+    "https://gateway.example.invalid/v1?x=1",
+    "https://gateway.example.invalid/v1#frag",
+    "http://localhost:4000/v1?x=1",
+  ]) {
+    assert.throws(
+      () => normalizeBaseUrl(bad),
+      (error: Error) => error instanceof GatewayError && !error.message.includes("pw"),
+      bad,
+    );
+  }
+});
+
+test("the base URL comes back normalized: no trailing slashes, default port elided", () => {
+  assert.equal(normalizeBaseUrl("https://gateway.example.invalid/v1//"), "https://gateway.example.invalid/v1");
+  assert.equal(normalizeBaseUrl("https://gateway.example.invalid:443/v1/"), "https://gateway.example.invalid/v1");
+  assert.equal(normalizeBaseUrl("https://gateway.example.invalid/"), "https://gateway.example.invalid");
+});
+
 test("normalizeBaseUrl: default, trimming, https, loopback http only", () => {
   assert.equal(normalizeBaseUrl(undefined), DEFAULT_BASE_URL);
   assert.equal(normalizeBaseUrl("  "), DEFAULT_BASE_URL);

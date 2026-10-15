@@ -18,18 +18,23 @@ export const BASE_URL_ENV = "UHSTRAY_INFERENCE_BASE_URL";
 export type GatewayModel = Model<"openai-completions">;
 
 /** What `/v1/models` does not tell us, per model id. Unknown ids get the conservative defaults. */
-const CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
-  "qwen3.8-flash-next": 262144,
-  "xiaomi/mimo-v2.6-flash": 1050000,
-  "deepseek/deepseek-v4.1-flash": 1048576,
-  "z-ai/glm-5.3-flash": 1048576,
-  "xiaomi/mimo-v2.6-pro": 1050000,
-  "openai/gpt-6-luna": 1050000,
-  "mistralai/mistral-large-4-0": 1048576,
-  "z-ai/glm-5.3": 1048576,
-};
+// A Map, not an object literal: ids come from the network, and `constructor` or `__proto__` must
+// not resolve to something off Object.prototype.
+const CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
+  ["qwen3.8-flash-next", 262144],
+  ["xiaomi/mimo-v2.6-flash", 1050000],
+  ["deepseek/deepseek-v4.1-flash", 1048576],
+  ["z-ai/glm-5.3-flash", 1048576],
+  ["xiaomi/mimo-v2.6-pro", 1050000],
+  ["openai/gpt-6-luna", 1050000],
+  ["mistralai/mistral-large-4-0", 1048576],
+  ["z-ai/glm-5.3", 1048576],
+]);
 const DEFAULT_CONTEXT_WINDOW = 131072;
 const MAX_TOKENS = 16384;
+/** Ids reach a terminal and a request body: keep a conservative alphabet and bound the list. */
+const MODEL_ID_PATTERN = /^[A-Za-z0-9._:/@+_-]{1,128}$/;
+const MAX_MODELS = 500;
 
 /** A failure whose message is safe to show: it never contains the key or any response content. */
 export class GatewayError extends Error {
@@ -47,7 +52,11 @@ type FetchLike = typeof fetch;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-/** Trailing-slash-free `/v1` base. Cleartext http is allowed only on loopback: the key rides on it. */
+/**
+ * Normalized, trailing-slash-free `/v1` base. Cleartext http is allowed only on loopback: the key
+ * rides on it. Credentials, query and fragment in the URL are refused: they would be sent or
+ * dropped silently.
+ */
 export function normalizeBaseUrl(raw?: string): string {
   const value = raw?.trim();
   if (!value) return DEFAULT_BASE_URL;
@@ -60,7 +69,10 @@ export function normalizeBaseUrl(raw?: string): string {
   if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname))) {
     throw new GatewayError(`${BASE_URL_ENV} must be https (http only for localhost)`);
   }
-  return value.replace(/\/+$/, "");
+  if (url.username || url.password || url.search || url.hash) {
+    throw new GatewayError(`${BASE_URL_ENV} must not contain credentials, a query or a fragment`);
+  }
+  return url.origin + url.pathname.replace(/\/+$/, "");
 }
 
 /** A key the gateway could have issued: printable ASCII, no whitespace. Stops header injection. */
@@ -80,7 +92,7 @@ function modelFor(id: string, baseUrl: string): GatewayModel {
     reasoning: true,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: CONTEXT_WINDOWS[id] ?? DEFAULT_CONTEXT_WINDOW,
+    contextWindow: CONTEXT_WINDOWS.get(id) ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: MAX_TOKENS,
   };
 }
@@ -93,9 +105,10 @@ export function parseModelList(payload: unknown, baseUrl: string): GatewayModel[
   const models: GatewayModel[] = [];
   for (const entry of data) {
     const id = (entry as { id?: unknown } | null)?.id;
-    if (typeof id !== "string" || id === "" || seen.has(id)) continue;
+    if (typeof id !== "string" || !MODEL_ID_PATTERN.test(id) || seen.has(id)) continue;
     seen.add(id);
     models.push(modelFor(id, baseUrl));
+    if (models.length === MAX_MODELS) break;
   }
   return models;
 }
