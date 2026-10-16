@@ -346,7 +346,7 @@ llm:
       apiKey: $OPENROUTER_API_KEY
     # Streamed chat is sent with include_usage so the per-key token budget charges it. Unlike the
     # vLLM models above there is no continuous_usage_stats: that field is a vLLM extension.
-    # Measured 2026-10-15 through the gateway: OpenRouter accepts continuous_usage_stats (HTTP 200) but
+    # Measured 2026-10-15 through the gateway (agentgateway-openrouter task 3.5): OpenRouter accepts continuous_usage_stats (HTTP 200) but
     # still sends usage only on the final chunk, so adding it would change nothing; it is left out, so
     # usage arrives only on the final chunk and a client that disconnects before it is not charged. The
     # same CEL shape otherwise (chat only, a client's other stream_options keys kept).
