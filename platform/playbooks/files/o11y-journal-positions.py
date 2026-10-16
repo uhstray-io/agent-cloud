@@ -225,11 +225,14 @@ for observation_attempt in range(2):
     children=[]
     top_level={"seed_file":0,"journal_component":0,"other_files":0,
                "other_directories":0,"other_symlinks":0,"other_kinds":0,
-               "receiver_component":0,"exporter_component":0}
+               "receiver_component":0,"exporter_component":0,
+               "attributes_processor_component":0}
     role_metadata={"receiver":{"owner":"unverified","access":"unverified","acl":"unverified",
                                  "mount":"unverified","children":"unverified"},
                    "exporter":{"owner":"unverified","access":"unverified","acl":"unverified",
-                                 "mount":"unverified","children":"unverified"}}
+                                 "mount":"unverified","children":"unverified"},
+                   "attributes_processor":{"owner":"unverified","access":"unverified","acl":"unverified",
+                                           "mount":"unverified","children":"unverified"}}
     unmatched_directories=empty_unmatched()
     acl_found=acl(root)
     child_mount=False
@@ -327,8 +330,11 @@ for observation_attempt in range(2):
                     top_level["exporter_component"]+=1
                     role_metadata["exporter"]=role_observation(root,st,root_mount,name,item_mount)
                 else:
-                    record_unmatched(unmatched_directories,
-                        role_observation(root,st,root_mount,name,item_mount))
+                    observation=role_observation(root,st,root_mount,name,item_mount)
+                    if name=="otelcol.processor.attributes.journal_labels":
+                        top_level["attributes_processor_component"]+=1
+                        role_metadata["attributes_processor"]=observation
+                    record_unmatched(unmatched_directories,observation)
             elif stat.S_ISLNK(item.st_mode): top_level["other_symlinks"]+=1
             else: top_level["other_kinds"]+=1
         children.append(sig(name,item))
@@ -1043,12 +1049,13 @@ def _live_diagnostic(found):
             "seed_file":"unverified","journal_component":"unverified","other_files":"unverified",
             "other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified",
             "receiver_component":"unverified","exporter_component":"unverified",
+            "attributes_processor_component":"unverified",
         }
     role_metadata=metadata.get("role_metadata") if isinstance(metadata,dict) else None
     if not isinstance(role_metadata,dict):
         role_metadata={}
     role_values={}
-    for role in ("receiver","exporter"):
+    for role in ("receiver","exporter","attributes_processor"):
         observation=role_metadata.get(role)
         if not isinstance(observation,dict):
             observation={}
@@ -1105,6 +1112,7 @@ def _live_diagnostic(found):
             for key in (
                 "seed_file", "journal_component", "other_files", "other_directories",
                 "other_symlinks", "other_kinds", "receiver_component", "exporter_component",
+                "attributes_processor_component",
             )
         },
         "role_metadata":role_values,

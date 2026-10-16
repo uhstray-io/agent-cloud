@@ -76,7 +76,13 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     ):
         assert set(field) == {"presence", "type", "value"}
     live = report["live_diagnostic"]
-    assert set(live["role_metadata"]) == {"receiver", "exporter"}
+    assert set(live["top_level"]) == {
+        "seed_file", "journal_component", "other_files", "other_directories", "other_symlinks",
+        "other_kinds", "receiver_component", "exporter_component", "attributes_processor_component",
+    }
+    for count in live["top_level"].values():
+        assert count == "unverified" or type(count) is int and 0 <= count <= POSITIONS.MAX_CHILDREN
+    assert set(live["role_metadata"]) == {"receiver", "exporter", "attributes_processor"}
     for role in live["role_metadata"].values():
         assert set(role) == {"owner", "access", "acl", "mount", "children"}
     unmatched = live["unmatched_directories"]
@@ -560,6 +566,7 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
             "other_kinds": 5,
             "receiver_component": 1,
             "exporter_component": 0,
+        "attributes_processor_component": 0,
         },
         "role_metadata": {
             "receiver": {
@@ -567,6 +574,10 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
                 "acl": "absent", "mount": "clear", "children": "empty",
             },
             "exporter": {
+                "owner": "unverified", "access": "unverified", "acl": "unverified",
+                "mount": "unverified", "children": "unverified",
+            },
+            "attributes_processor": {
                 "owner": "unverified", "access": "unverified", "acl": "unverified",
                 "mount": "unverified", "children": "unverified",
             },
@@ -943,6 +954,63 @@ def test_survey_early_refusal_keeps_exact_unverified_diagnostic_schema(monkeypat
     assert report["status"] == "not_rootless"
     assert not any(argv[:3] == ["podman", "volume", "inspect"] for argv in calls)
     assert not any(argv[:2] == ["podman", "version"] for argv in calls)
+
+
+_EVALUATE_SURVEY = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for report in job["reports"]:
+    variables = {"_journal_positions_survey": {"rc": 0, "stdout": json.dumps(report)}}
+    templar = Templar(loader=DataLoader(), variables=variables)
+    results.append([
+        templar.evaluate_conditional(trust_as_template(condition))
+        for condition in job["conditions"]
+    ])
+print(json.dumps(results))
+"""
+
+
+@needs_ansible
+def test_survey_assertion_accepts_helper_and_check_mode_schemas(monkeypatch):
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    assertion = next(
+        task["ansible.builtin.assert"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Require bounded positions-volume survey fields"
+    )
+    check_mode = next(
+        task["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Record positions-volume survey as unverified in check mode"
+    )
+
+    observed = _positions_found(_positions_state())
+    observed["survey_diagnostics"] = POSITIONS._unverified_diagnostics()
+    observed_report = POSITIONS.survey(lambda: observed)
+
+    monkeypatch.setattr(
+        POSITIONS, "_call",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="false"),
+    )
+    early_report = POSITIONS.survey()
+    check_mode_report = json.loads(check_mode)
+    reports = [observed_report, early_report, check_mode_report]
+
+    result = subprocess.run(
+        [ansible_python(), "-c", _EVALUATE_SURVEY],
+        input=json.dumps({"conditions": assertion["that"], "reports": reports}),
+        text=True, capture_output=True, check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+    )
+    assert result.returncode == 0, result.stderr
+    outcomes = json.loads(result.stdout)
+    assert len(outcomes) == len(reports)
+    assert all(all(report_conditions) for report_conditions in outcomes), outcomes
 
 
 def test_survey_flag_assertions_require_literal_booleans():
@@ -2800,6 +2868,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         "seed_file": 0, "journal_component": 0, "other_files": 0,
         "other_directories": 0, "other_symlinks": 0, "other_kinds": 0,
         "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0,
     }
 
     component = root / "loki.source.journal.o11y_alloy"
@@ -2866,6 +2935,7 @@ def test_embedded_positions_metadata_aggregates_roles_without_emitting_names_or_
         "seed_file": 1, "journal_component": 1, "other_files": 1,
         "other_directories": 1, "other_symlinks": 1, "other_kinds": 0,
         "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0,
     }
     assert all(value <= POSITIONS.MAX_CHILDREN for value in metadata["top_level"].values())
     assert "private-name-marker" not in result.stdout
@@ -2875,6 +2945,7 @@ def test_embedded_positions_metadata_aggregates_roles_without_emitting_names_or_
 def test_embedded_metadata_classifies_only_exact_component_directories_without_disclosing_names(tmp_path):
     receiver_name = "otelcol.receiver.loki.journal"
     exporter_name = "otelcol.exporter.otlp.journal"
+    attributes_processor_name = "otelcol.processor.attributes.journal_labels"
     unknown_name = "private-directory-marker"
 
     def inspect(name, kind="directory", *, acl=False, mounted=False, race=False, child_count=0):
@@ -2933,7 +3004,11 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout), result.stdout
 
-    for name, role in ((receiver_name, "receiver"), (exporter_name, "exporter")):
+    for name, role in (
+        (receiver_name, "receiver"),
+        (exporter_name, "exporter"),
+        (attributes_processor_name, "attributes_processor"),
+    ):
         metadata, _ = inspect(name)
         assert metadata["top_level"][f"{role}_component"] == 1
         assert metadata["top_level"]["other_directories"] == 1
@@ -2946,7 +3021,9 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     assert metadata["top_level"]["other_directories"] == 1
     assert metadata["top_level"]["receiver_component"] == 0
     assert metadata["top_level"]["exporter_component"] == 0
+    assert metadata["top_level"]["attributes_processor_component"] == 0
     assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
+    assert set(metadata["role_metadata"]["attributes_processor"].values()) == {"unverified"}
 
     for kind, count_key in (("file", "other_files"), ("symlink", "other_symlinks")):
         metadata, _ = inspect(receiver_name, kind)
@@ -2971,7 +3048,9 @@ exec({POSITIONS._METADATA_SCRIPT!r})
             assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
 
     visible = json.dumps(POSITIONS._live_diagnostic({"status": "observed", "metadata": metadata}))
-    assert receiver_name not in visible and exporter_name not in visible and unknown_name not in visible
+    assert all(name not in visible for name in (
+        receiver_name, exporter_name, attributes_processor_name, unknown_name,
+    ))
     assert "PRIVATE_CONTENT_MARKER" not in visible
     assert re.search(r"[0-9a-f]{64}", visible) is None
 
@@ -3005,6 +3084,7 @@ def test_embedded_metadata_reports_three_entry_layout_with_anonymous_unknown_dir
         "seed_file": 1, "journal_component": 1, "other_files": 0,
         "other_directories": 1, "other_symlinks": 0, "other_kinds": 0,
         "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0,
     }
     assert metadata["component_layout"] is False
     assert metadata["unmatched_directories"]["count"] == 1
