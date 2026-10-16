@@ -943,6 +943,9 @@ def test_role_observation_bounds_each_directory_enumeration(overflow_pass, tmp_p
         ("oversized", "present", False, False),
         ("read_error", "present", False, False),
         ("mounted", "present", False, False),
+        ("root_unsafe", "present", False, False),
+        ("component_unsafe", "present", False, False),
+        ("inode_swapped", "present", False, False),
         ("valid", "present", True, True),
     ],
 )
@@ -963,29 +966,43 @@ def test_positions_cursor_checked_tracks_stable_content_examination(
     if cursor_state != "absent":
         positions.write_text("x" * 65537 if cursor_state == "oversized" else content)
         os.chmod(positions, 0o644 if cursor_state == "unsafe" else 0o600)
+    if cursor_state == "root_unsafe":
+        os.chmod(root, 0o777)
+    if cursor_state == "component_unsafe":
+        os.chmod(component, 0o777)
     mountinfo = "1 0 0:1 / / rw - testfs /dev/test rw\n"
     if cursor_state == "mounted":
         mountinfo += f"2 1 0:2 / {positions} rw - testfs /dev/test rw\n"
 
-    prelude = f'''import builtins,io,os,sys,types
+    prelude = f'''import builtins,io,os,stat,sys,types
 root={str(root)!r}
 real_lstat=os.lstat
 real_stat=os.stat
 real_fstat=os.fstat
 real_open=os.open
 def root_owned(st):
-    return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,st_nlink=st.st_nlink,
+    return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,
+        st_nlink=2 if stat.S_ISDIR(st.st_mode) else st.st_nlink,
         st_dev=st.st_dev,st_ino=st.st_ino,st_size=st.st_size,st_mtime_ns=st.st_mtime_ns)
 os.lstat=lambda path,*args,**kwargs: root_owned(real_lstat(path,*args,**kwargs))
 os.stat=lambda path,*args,**kwargs: root_owned(real_stat(path,*args,**kwargs))
 os.fstat=lambda fd: root_owned(real_fstat(fd))
+positions_opens=[0]
 def fake_open(path,flags,*args,**kwargs):
     if path=="positions.yml" and {cursor_state!r}=="read_error": raise PermissionError("private")
+    if path=="positions.yml" and {cursor_state!r}=="inode_swapped":
+        positions_opens[0]+=1
+        if positions_opens[0]==2:
+            target=os.path.join(root,"loki.source.journal.o11y_alloy","positions.yml")
+            os.unlink(target)
+            with open(target,"w") as stream: stream.write({content!r})
+            os.chmod(target,0o600)
     return real_open(path,flags,*args,**kwargs)
 os.open=fake_open
 real_read=os.read
 def fake_read(fd,*args,**kwargs):
-    if {cursor_state!r}=="mounted": raise AssertionError("mounted file content read")
+    if {cursor_state!r} in ("mounted","root_unsafe","component_unsafe","inode_swapped"):
+        raise AssertionError("unsafe file content read")
     return real_read(fd,*args,**kwargs)
 os.read=fake_read
 original_open=builtins.open
@@ -4706,9 +4723,10 @@ def test_stage_places_exact_sha_without_starting_collector_or_touching_positions
     assert apply_placement["vars"]["_branch"] == "{{ expected_repository_sha }}"
 
 
-def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "survey"])
-    monkeypatch.setattr(POSITIONS, "survey", lambda: (_ for _ in ()).throw(RuntimeError("private detail")))
+@pytest.mark.parametrize("action", ["survey", "survey-cursor"])
+def test_positions_survey_exception_keeps_bounded_receipt_schema(action, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), action])
+    monkeypatch.setattr(POSITIONS, "survey", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("private detail")))
 
     POSITIONS.main()
 
@@ -4845,6 +4863,16 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "python3", "-", "{{ journal_collector_action }}"
     ]
     assert "/alloy-state/.positions-live-gate." not in str(positions_survey)
+    journal_probe_names = {
+        "Survey rootless journal path and exact-name file readability",
+        "Record check-mode survey as unverified without probing the container runtime",
+        "Require a valid sanitized standard-path survey result",
+        "Report only the fixed journal source status",
+        "Report only the bounded collector journal diagnostic",
+    }
+    for task in survey_play["tasks"]:
+        if task.get("name") in journal_probe_names:
+            assert "journal_collector_action | default('apply') == 'survey'" in str(task["when"])
     assert not any("volume create" in str(task) for task in survey_play["tasks"])
     assert not any(
         "chown" in " ".join(task.get("ansible.builtin.command", {}).get("argv", []))
@@ -5284,7 +5312,9 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         if task.get("name") == "Record check-mode survey as unverified without probing the container runtime"
     )
 
-    assert survey_command["when"] == "not ansible_check_mode"
+    assert survey_command["when"] == [
+        "not ansible_check_mode", "journal_collector_action | default('apply') == 'survey'"
+    ]
     assert "check_mode" not in survey_command
     assert positions_command["when"] == "not ansible_check_mode"
     assert "check_mode" not in positions_command
@@ -5306,7 +5336,9 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         "client": "unavailable", "server": "unavailable"
     }
     assert survey_play["become"] is False
-    assert check_mode_result["when"] == "ansible_check_mode"
+    assert check_mode_result["when"] == [
+        "ansible_check_mode", "journal_collector_action | default('apply') == 'survey'"
+    ]
     assert check_mode_result["ansible.builtin.set_fact"]["_journal_directory_survey"] == {
         "rc": 0,
         "stdout": '{"result":"check_mode_unverified","entry_count":0,"permission_denied_target":"unavailable"}',

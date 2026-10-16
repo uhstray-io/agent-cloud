@@ -1652,14 +1652,18 @@
       changed_when: false
       failed_when: false
       no_log: true
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - journal_collector_action | default('apply') == 'survey'
 
     - name: Record check-mode survey as unverified without probing the container runtime
       ansible.builtin.set_fact:
         _journal_directory_survey:
           rc: 0
           stdout: '{"result":"check_mode_unverified","entry_count":0,"permission_denied_target":"unavailable"}'
-      when: ansible_check_mode
+      when:
+        - ansible_check_mode
+        - journal_collector_action | default('apply') == 'survey'
 
     - name: Require a valid sanitized standard-path survey result
       ansible.builtin.assert:
@@ -1671,14 +1675,17 @@
           - (_journal_directory_survey.stdout | from_json).permission_denied_target in ['journal', 'positions', 'config', 'other', 'none', 'unavailable']
         fail_msg: "The standard journal directory survey failed without exposing journal data."
         quiet: true
+      when: journal_collector_action | default('apply') == 'survey'
 
     - name: Report only the fixed journal source status
       ansible.builtin.debug:
         msg: "Journal directory survey status: {{ 'available' if (_journal_directory_survey.stdout | from_json).result in ['/var/log/journal', '/run/log/journal'] else (_journal_directory_survey.stdout | from_json).result }}"
+      when: journal_collector_action | default('apply') == 'survey'
 
     - name: Report only the bounded collector journal diagnostic
       ansible.builtin.debug:
         msg: "Collector journal diagnostic: entry_count={{ (_journal_directory_survey.stdout | from_json).entry_count }}, permission_denied_target={{ (_journal_directory_survey.stdout | from_json).permission_denied_target }}"
+      when: journal_collector_action | default('apply') == 'survey'
 
 - name: Repair only the journal positions volume root ownership
   hosts: o11y_svc
