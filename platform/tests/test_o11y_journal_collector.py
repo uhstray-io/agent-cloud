@@ -95,6 +95,24 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     assert set(unmatched["mount"]) == {"clear", "ambiguous", "unverified"}
     assert set(unmatched["children"]) == {"empty", "nonempty", "unverified"}
     assert live["remotecfg_state"] in {"absent", "safe", "unsafe", "unverified"}
+    journal = live["journal_metadata"]
+    assert set(journal) == {"component", "positions", "temporary_files", "unknown_children"}
+    assert set(journal["component"]) == {
+        "presence", "type", "owner", "owner_rwx", "unsafe_mode_bits", "link_count",
+        "acl", "mount", "children",
+    }
+    assert set(journal["positions"]) == {
+        "presence", "type", "owner", "owner_rw", "unsafe_mode_bits", "link_count", "acl", "mount",
+    }
+    assert (
+        journal["temporary_files"] == "unverified"
+        or type(journal["temporary_files"]) is int and 0 <= journal["temporary_files"] <= 32
+    )
+    assert set(journal["unknown_children"]) == {"files", "directories", "symlinks", "other"}
+    assert all(
+        value == "unverified" or type(value) is int and 0 <= value <= 32
+        for value in journal["unknown_children"].values()
+    )
 
 
 def _positions_state(
@@ -116,6 +134,20 @@ def _positions_state(
         "cursor_checked": False,
         "journal_cursor_valid": journal_cursor_valid,
         "remotecfg_state": "absent",
+        "journal_metadata": {
+            "component": {
+                "presence": "present", "type": "directory", "owner": "matches_collector",
+                "owner_rwx": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear", "children": "nonempty",
+            },
+            "positions": {
+                "presence": "present", "type": "regular_file", "owner": "matches_collector",
+                "owner_rw": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear",
+            },
+            "temporary_files": 0,
+            "unknown_children": {"files": 0, "directories": 0, "symlinks": 0, "other": 0},
+        },
         "free_bytes": free_bytes,
         "free_inodes": free_inodes,
         "unmatched_directories": {
@@ -291,6 +323,218 @@ def test_positions_metadata_parser_requires_expected_journal_cursor():
         good + b"extra: true\n",
     ):
         assert namespace["journal_cursor"](bad) is False
+
+
+def test_journal_metadata_observation_is_bounded_and_never_reads_positions_content(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_journal_metadata", "journal_observation"}
+    ]
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr in {"read", "write", "chmod", "chown", "unlink", "rename", "mkdir"}
+        for function in functions for node in ast.walk(function)
+    )
+    component_name = "loki.source.journal.o11y_alloy"
+    root = tmp_path / "positions"
+    component = root / component_name
+    component.mkdir(mode=0o700, parents=True)
+    os.chmod(root, 0o700)
+    os.chmod(component, 0o700)
+    positions = component / "positions.yml"
+    positions.write_text("PRIVATE_CURSOR_CONTENT")
+    positions.chmod(0o600)
+    (component / ".positions.yml123").write_text("temporary")
+    (component / ".private-name").write_text("hidden")
+    (component / ".hidden-directory").mkdir()
+    (component / "link").symlink_to("positions.yml")
+
+    fixture_os = SimpleNamespace(**os.__dict__)
+    fixture_os.listxattr = lambda *_args, **_kwargs: []
+    namespace = {
+        "os": fixture_os,
+        "stat": stat,
+        "re": re,
+        "mount_id": lambda path: (7, str(path).split(component_name, 1)[0].rstrip("/") or "/"),
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata", "exec"), namespace)
+    result = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+
+    assert result["component"]["presence"] == "present"
+    assert result["component"]["type"] == "directory"
+    assert result["component"]["owner_rwx"] == "complete"
+    assert result["component"]["link_count"] in {"match", "mismatch"}
+    assert result["positions"]["type"] == "regular_file"
+    assert result["positions"]["owner_rw"] == "complete"
+    assert result["positions"]["link_count"] == "match"
+    assert result["temporary_files"] == 1
+    assert result["unknown_children"] == {"files": 1, "directories": 1, "symlinks": 1, "other": 0}
+    rendered = json.dumps(result)
+    assert "PRIVATE_CURSOR_CONTENT" not in rendered
+    assert ".private-name" not in rendered
+    assert "positions.yml123" not in rendered
+
+    os.chmod(component, 0o7720)
+    os.chmod(positions, 0o644)
+    os.link(positions, component / "positions.extra")
+    unsafe = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert unsafe["component"]["unsafe_mode_bits"] == "present"
+    assert unsafe["component"]["owner_rwx"] == "complete"
+    assert unsafe["positions"]["unsafe_mode_bits"] == "present"
+    assert unsafe["positions"]["link_count"] == "mismatch"
+
+
+def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_journal_metadata", "journal_observation"}
+    ]
+    root = tmp_path / "positions"
+    root.mkdir(mode=0o700)
+    os.chmod(root, 0o700)
+    component_name = "loki.source.journal.o11y_alloy"
+    fixture_os = SimpleNamespace(**os.__dict__)
+    fixture_os.listxattr = lambda *_args, **_kwargs: []
+    namespace = {"os": fixture_os, "stat": stat, "re": re, "mount_id": lambda path: (7, str(root))}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata", "exec"), namespace)
+    observe = namespace["journal_observation"]
+    assert observe(str(root), os.lstat(root), (7, str(root)))["component"]["presence"] == "absent"
+
+    component = root / component_name
+    component.mkdir(mode=0o700)
+    (component / "positions.yml").symlink_to("missing-target")
+    unsafe = observe(str(root), os.lstat(root), (7, str(root)))
+    assert unsafe["positions"]["type"] == "symlink"
+    assert unsafe["positions"]["owner"] == "unverified"
+
+    real_listdir = os.listdir
+    component_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY)
+    component_inode = os.fstat(component_fd).st_ino
+    os.close(component_fd)
+    seen = 0
+
+    def changed_enumeration(path):
+        nonlocal seen
+        values = real_listdir(path)
+        if isinstance(path, int) and os.fstat(path).st_ino == component_inode:
+            seen += 1
+            if seen == 2:
+                return values + ["new-entry"]
+        return values
+
+    proxy_os = SimpleNamespace(**os.__dict__)
+    proxy_os.listxattr = lambda *_args, **_kwargs: []
+    proxy_os.listdir = changed_enumeration
+    race_namespace = {"os": proxy_os, "stat": stat, "re": re, "mount_id": lambda path: (7, str(root))}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata-race", "exec"), race_namespace)
+    raced = race_namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert seen == 2
+    assert set(raced["component"].values()) == {"unverified"}
+
+    (component / "positions.yml").unlink()
+    (component / "positions.yml").write_text("PRIVATE")
+    real_stat = os.stat
+    position_stat_calls = 0
+
+    def drifted_stat(path, *args, **kwargs):
+        nonlocal position_stat_calls
+        observed = real_stat(path, *args, **kwargs)
+        if path == "positions.yml":
+            position_stat_calls += 1
+            if position_stat_calls == 2:
+                return SimpleNamespace(
+                    st_dev=observed.st_dev, st_ino=observed.st_ino + 1,
+                    st_uid=observed.st_uid, st_gid=observed.st_gid,
+                    st_mode=observed.st_mode, st_nlink=observed.st_nlink,
+                    st_mtime_ns=observed.st_mtime_ns,
+                )
+        return observed
+
+    identity_os = SimpleNamespace(**os.__dict__)
+    identity_os.listxattr = lambda *_args, **_kwargs: []
+    identity_os.stat = drifted_stat
+    identity_namespace = {
+        "os": identity_os, "stat": stat, "re": re,
+        "mount_id": lambda path: (7, str(root)),
+    }
+    identity_code = compile(
+        ast.Module(body=functions, type_ignores=[]), "journal-metadata-identity-race", "exec",
+    )
+    exec(identity_code, identity_namespace)
+    identity_race = identity_namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert position_stat_calls == 2
+    assert set(identity_race["component"].values()) == {"unverified"}
+
+
+def test_journal_metadata_diagnostic_rejects_malformed_schema_and_overflow():
+    base = {
+        "component": {
+            "presence": "present", "type": "directory", "owner": "mismatch",
+            "owner_rwx": "incomplete", "unsafe_mode_bits": "present", "link_count": "mismatch",
+            "acl": "present", "mount": "ambiguous", "children": "nonempty",
+        },
+        "positions": {
+            "presence": "present", "type": "regular_file", "owner": "mismatch",
+            "owner_rw": "incomplete", "unsafe_mode_bits": "present", "link_count": "mismatch",
+            "acl": "present", "mount": "ambiguous",
+        },
+        "temporary_files": 32,
+        "unknown_children": {"files": 20, "directories": 10, "symlinks": 1, "other": 0},
+    }
+    safe = POSITIONS._journal_metadata_diagnostic({"journal_metadata": base})
+    assert safe == base
+    overflow = POSITIONS._journal_metadata_diagnostic({
+        "journal_metadata": {**base, "temporary_files": 33},
+    })
+    assert overflow["temporary_files"] == "unverified"
+    assert set(POSITIONS._journal_metadata_diagnostic({
+        "journal_metadata": {**base, "unknown_children": {"files": 33, "directories": 0, "symlinks": 0, "other": 0}},
+    })["unknown_children"].values()) == {"unverified"}
+    malformed = POSITIONS._journal_metadata_diagnostic({
+        "journal_metadata": {**base, "component": {**base["component"], "raw_name": "PRIVATE_MARKER"}},
+    })
+    assert set(malformed["component"].values()) == {"unverified"}
+    assert "PRIVATE_MARKER" not in json.dumps(malformed)
+
+
+def test_journal_metadata_reports_acl_mount_and_overflow_as_bounded_categories(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_journal_metadata", "journal_observation"}
+    ]
+    root = tmp_path / "positions"
+    component = root / "loki.source.journal.o11y_alloy"
+    component.mkdir(mode=0o700, parents=True)
+    (component / "positions.yml").write_text("PRIVATE")
+    fixture_os = SimpleNamespace(**os.__dict__)
+    fixture_os.listxattr = lambda *_args, **_kwargs: ["system.posix_acl_access"]
+    namespace = {
+        "os": fixture_os, "stat": stat, "re": re,
+        "mount_id": lambda path: (9, str(path)) if str(path) != str(root) else (7, str(root)),
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata-boundaries", "exec"), namespace)
+    bounded = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert bounded["component"]["acl"] == "present"
+    assert bounded["component"]["mount"] == "ambiguous"
+    assert bounded["positions"]["acl"] == "present"
+    assert bounded["positions"]["mount"] == "ambiguous"
+
+    for index in range(33):
+        (component / f"entry-{index}").touch()
+    overflow = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert set(overflow["component"].values()) == {"unverified"}
+    assert set(overflow["positions"].values()) == {"unverified"}
+    assert overflow["temporary_files"] == "unverified"
+    assert set(overflow["unknown_children"].values()) == {"unverified"}
 
 
 @pytest.mark.parametrize("overflow_pass", [1, 2])
@@ -616,6 +860,20 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
             },
         },
         "remotecfg_state": "absent",
+        "journal_metadata": {
+            "component": {
+                "presence": "present", "type": "directory", "owner": "matches_collector",
+                "owner_rwx": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear", "children": "nonempty",
+            },
+            "positions": {
+                "presence": "present", "type": "regular_file", "owner": "matches_collector",
+                "owner_rw": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear",
+            },
+            "temporary_files": 0,
+            "unknown_children": {"files": 0, "directories": 0, "symlinks": 0, "other": 0},
+        },
         "unmatched_directories": {
             "count": 2,
             "owner": {"matches_collector": 0, "mismatch": 2, "unverified": 0},
@@ -679,6 +937,21 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
                 "children": {**base["unmatched_directories"]["children"], "empty": 33},
             },
         }),
+        ("journal_extra_key", {
+            **base,
+            "journal_metadata": {**base["journal_metadata"], "private": "PRIVATE_MARKER"},
+        }),
+        ("journal_count_overflow", {
+            **base,
+            "journal_metadata": {**base["journal_metadata"], "temporary_files": 33},
+        }),
+        ("journal_boolean_count", {
+            **base,
+            "journal_metadata": {
+                **base["journal_metadata"],
+                "unknown_children": {**base["journal_metadata"]["unknown_children"], "files": True},
+            },
+        }),
     ]
     def evaluate_all(diagnostics):
         job = {
@@ -710,6 +983,7 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         "receiver_role=",
         "exporter_role=",
         "unmatched_directories=",
+        "journal_metadata=",
     ):
         assert expected in valid_rendered
 
@@ -4328,6 +4602,17 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert rollback_logs["failed_when"] is False
     assert rollback_logs["check_mode"] is False
     failure_message = rollback_failure["ansible.builtin.fail"]["msg"]
+    assert "failed its startup, positions, or exact-target delivery verification gate" in failure_message
+    assert "failed its exact-target delivery gate" not in failure_message
+    positions_verify = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Verify the live collector positions mount and access"
+    )
+    loki_query = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    assert apply_block["block"].index(positions_verify) < apply_block["block"].index(loki_query)
     classifications = rollback_classifier["ansible.builtin.set_fact"]
     assert "container_missing" in classifications["_journal_rollback_state_class"]
     assert "permission_denied" in classifications["_journal_rollback_state_class"]
@@ -5261,13 +5546,30 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
                     "mount": {"clear": "unverified", "ambiguous": "unverified", "unverified": "unverified"},
                     "children": {"empty": "unverified", "nonempty": "unverified", "unverified": "unverified"},
                 },
+                "journal_metadata": {
+                    "component": {
+                        "presence": "unverified", "type": "unverified", "owner": "unverified",
+                        "owner_rwx": "unverified", "unsafe_mode_bits": "unverified", "link_count": "unverified",
+                        "acl": "unverified", "mount": "unverified", "children": "unverified",
+                    },
+                    "positions": {
+                        "presence": "unverified", "type": "unverified", "owner": "unverified",
+                        "owner_rw": "unverified", "unsafe_mode_bits": "unverified", "link_count": "unverified",
+                        "acl": "unverified", "mount": "unverified",
+                    },
+                    "temporary_files": "unverified",
+                    "unknown_children": {
+                        "files": "unverified", "directories": "unverified",
+                        "symlinks": "unverified", "other": "unverified",
+                    },
+                },
             },
         },
     }
     assert live_boundary["rescue"][0]["no_log"] is True
     assert "_journal_positions_live_mount.stdout" not in live_debug["ansible.builtin.debug"]["msg"]
     assert "from_json" not in live_debug["ansible.builtin.debug"]["msg"]
-    for diagnostic in ("remotecfg_state", "remotecfg_component", "remotecfg_role"):
+    for diagnostic in ("remotecfg_state", "remotecfg_component", "remotecfg_role", "journal_metadata"):
         assert diagnostic in live_debug["ansible.builtin.debug"]["msg"]
     assert live_gate["ansible.builtin.assert"]["that"][1] == (
         "_journal_positions_live_summary.status == 'ready'"

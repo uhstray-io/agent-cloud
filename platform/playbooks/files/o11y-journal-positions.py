@@ -184,6 +184,138 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount, exp
     finally:
         if role_fd is not None: os.close(role_fd)
         if root_fd is not None: os.close(root_fd)
+def unverified_journal_metadata():
+    component={"presence":"unverified","type":"unverified","owner":"unverified",
+        "owner_rwx":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified",
+        "acl":"unverified","mount":"unverified","children":"unverified"}
+    positions={"presence":"unverified","type":"unverified","owner":"unverified",
+        "owner_rw":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified",
+        "acl":"unverified","mount":"unverified"}
+    return {"component":component,"positions":positions,
+        "temporary_files":"unverified",
+        "unknown_children":{"files":"unverified","directories":"unverified",
+            "symlinks":"unverified","other":"unverified"}}
+def journal_observation(root_path, root_stat, root_mount):
+    result=unverified_journal_metadata()
+    root_fd=None
+    component_fd=None
+    positions_fd=None
+    try:
+        identity=lambda value:(value.st_dev,value.st_ino,value.st_uid,value.st_gid,
+            stat.S_IMODE(value.st_mode),value.st_nlink,value.st_mtime_ns)
+        root_fd=os.open(root_path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        if identity(os.fstat(root_fd))!=identity(root_stat): return result
+        name="loki.source.journal.o11y_alloy"
+        try: before=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+        except FileNotFoundError:
+            result["component"].update(presence="absent",type="absent")
+            result["positions"].update(presence="absent",type="absent")
+            result["temporary_files"]=0
+            result["unknown_children"]={"files":0,"directories":0,"symlinks":0,"other":0}
+            return result if identity(os.fstat(root_fd))==identity(root_stat) else unverified_journal_metadata()
+        result["component"]["presence"]="present"
+        if not stat.S_ISDIR(before.st_mode):
+            result["component"]["type"]=("symlink" if stat.S_ISLNK(before.st_mode) else
+                "file" if stat.S_ISREG(before.st_mode) else "other")
+            after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+            if identity(after)!=identity(before) or identity(os.fstat(root_fd))!=identity(root_stat):
+                return unverified_journal_metadata()
+            return result
+        result["component"]["type"]="directory"
+        component_path=os.path.join(root_path,name)
+        component_mount=mount_id(component_path)
+        component_fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
+        opened=os.fstat(component_fd)
+        if identity(before)!=identity(opened): return unverified_journal_metadata()
+        result["component"]["owner"]="matches_collector" if (opened.st_uid,opened.st_gid)==(0,0) else "mismatch"
+        result["component"]["owner_rwx"]="complete" if opened.st_mode & 0o700 == 0o700 else "incomplete"
+        result["component"]["unsafe_mode_bits"]="present" if opened.st_mode & (0o022|0o7000) else "absent"
+        result["component"]["link_count"]="match" if opened.st_nlink==2 else "mismatch"
+        component_acl=any("acl" in value.lower() for value in os.listxattr(component_fd))
+        result["component"]["acl"]="present" if component_acl else "absent"
+        result["component"]["mount"]="ambiguous" if component_mount[0]!=root_mount[0] else "clear"
+        names=os.listdir(component_fd)
+        if len(names)>32: return unverified_journal_metadata()
+        result["component"]["children"]="nonempty" if names else "empty"
+        temporary=0
+        unknown={"files":0,"directories":0,"symlinks":0,"other":0}
+        positions_stat=None
+        positions_mount=None
+        positions_acl=None
+        child_snapshot=[]
+        for child_name in names:
+            try: child_stat=os.stat(child_name,dir_fd=component_fd,follow_symlinks=False)
+            except OSError: return unverified_journal_metadata()
+            child_path=os.path.join(component_path,child_name)
+            child_mount=mount_id(child_path)
+            child_snapshot.append((child_name,identity(child_stat),child_mount))
+            if child_name=="positions.yml":
+                positions_stat=child_stat
+                positions_mount=child_mount
+                if stat.S_ISREG(child_stat.st_mode):
+                    positions_fd=os.open(
+                        child_name,
+                        os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CLOEXEC,
+                        dir_fd=component_fd,
+                    )
+                    if identity(os.fstat(positions_fd))!=identity(child_stat): return unverified_journal_metadata()
+                    positions_acl=any("acl" in value.lower() for value in os.listxattr(positions_fd))
+                else:
+                    positions_acl=None
+            elif (re.fullmatch(r"\.positions\.yml[0-9]{1,19}",child_name)
+                    and stat.S_ISREG(child_stat.st_mode)):
+                temporary+=1
+            else:
+                kind=("files" if stat.S_ISREG(child_stat.st_mode) else
+                    "directories" if stat.S_ISDIR(child_stat.st_mode) else
+                    "symlinks" if stat.S_ISLNK(child_stat.st_mode) else "other")
+                unknown[kind]+=1
+        if positions_stat is None:
+            result["positions"].update(presence="absent",type="absent")
+        elif not stat.S_ISREG(positions_stat.st_mode):
+            positions_type="symlink" if stat.S_ISLNK(positions_stat.st_mode) else "other"
+            result["positions"].update(presence="present",type=positions_type)
+        else:
+            result["positions"].update(
+                presence="present",type="regular_file",
+                owner="matches_collector" if (positions_stat.st_uid,positions_stat.st_gid)==(0,0) else "mismatch",
+                owner_rw="complete" if positions_stat.st_mode & 0o600 == 0o600 else "incomplete",
+                unsafe_mode_bits="present" if positions_stat.st_mode & (0o077|0o7133) else "absent",
+                link_count="match" if positions_stat.st_nlink==1 else "mismatch",
+                acl="present" if positions_acl else "absent",
+                mount="ambiguous" if positions_mount[0]!=root_mount[0] else "clear")
+        result["temporary_files"]=temporary
+        result["unknown_children"]=unknown
+        names_after=os.listdir(component_fd)
+        component_after=os.fstat(component_fd)
+        root_after=os.fstat(root_fd)
+        path_after=os.lstat(component_path)
+        acl_after=any("acl" in value.lower() for value in os.listxattr(component_fd))
+        mount_after=mount_id(component_path)
+        if (sorted(names_after)!=sorted(names) or identity(component_after)!=identity(opened)
+                or identity(path_after)!=identity(before) or identity(root_after)!=identity(root_stat)
+                or acl_after!=component_acl or mount_after!=component_mount):
+            return unverified_journal_metadata()
+        if positions_stat is not None:
+            after=os.stat("positions.yml",dir_fd=component_fd,follow_symlinks=False)
+            if identity(after)!=identity(positions_stat): return unverified_journal_metadata()
+            if stat.S_ISREG(after.st_mode):
+                if positions_fd is None or identity(os.fstat(positions_fd))!=identity(positions_stat):
+                    return unverified_journal_metadata()
+                if any("acl" in value.lower() for value in os.listxattr(positions_fd))!=positions_acl:
+                    return unverified_journal_metadata()
+        for child_name, expected_identity, expected_mount in child_snapshot:
+            child_after=os.stat(child_name,dir_fd=component_fd,follow_symlinks=False)
+            child_mount_after=mount_id(os.path.join(component_path,child_name))
+            if identity(child_after)!=expected_identity or child_mount_after!=expected_mount:
+                return unverified_journal_metadata()
+        return result
+    except (OSError,ValueError,IndexError,AttributeError):
+        return unverified_journal_metadata()
+    finally:
+        if positions_fd is not None: os.close(positions_fd)
+        if component_fd is not None: os.close(component_fd)
+        if root_fd is not None: os.close(root_fd)
 def empty_unmatched():
     return {
         "count":0,
@@ -234,6 +366,7 @@ for observation_attempt in range(2):
                                            "mount":"unverified","children":"unverified"},
                    "remotecfg":{"owner":"unverified","access":"unverified","acl":"unverified",
                                 "mount":"unverified","children":"unverified"}}
+    journal_metadata=unverified_journal_metadata()
     remotecfg_state="absent"
     unmatched_directories=empty_unmatched()
     acl_found=acl(root)
@@ -277,6 +410,7 @@ for observation_attempt in range(2):
                 and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1
                 and item.st_mode & 0o077 == 0 and item.st_mode & 0o7133 == 0)
         elif stat.S_ISDIR(item.st_mode) and name=="loki.source.journal.o11y_alloy":
+            journal_metadata=journal_observation(root,st,root_mount)
             top_level["journal_component"]+=1
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
                 and item.st_nlink==2 and item.st_mode & 0o700 == 0o700
@@ -366,6 +500,7 @@ for observation_attempt in range(2):
         "children":children, "child_count":len(children), "acl":acl_found,
         "top_level":top_level,
         "role_metadata":role_metadata,
+        "journal_metadata":journal_metadata,
         "remotecfg_state":remotecfg_state,
         "unmatched_directories":unmatched_directories,
         "root_is_mount":mount_exact, "child_mount":child_mount,
@@ -1081,6 +1216,59 @@ def _unmatched_directory_diagnostic(metadata):
     return result
 
 
+def _journal_metadata_diagnostic(metadata):
+    values = {
+        "component": {
+            "presence": ("absent", "present", "unverified"),
+            "type": ("absent", "directory", "file", "symlink", "other", "unverified"),
+            "owner": ("matches_collector", "mismatch", "unverified"),
+            "owner_rwx": ("complete", "incomplete", "unverified"),
+            "unsafe_mode_bits": ("absent", "present", "unverified"),
+            "link_count": ("match", "mismatch", "unverified"),
+            "acl": ("absent", "present", "unverified"),
+            "mount": ("clear", "ambiguous", "unverified"),
+            "children": ("empty", "nonempty", "unverified"),
+        },
+        "positions": {
+            "presence": ("absent", "present", "unverified"),
+            "type": ("absent", "regular_file", "symlink", "other", "unverified"),
+            "owner": ("matches_collector", "mismatch", "unverified"),
+            "owner_rw": ("complete", "incomplete", "unverified"),
+            "unsafe_mode_bits": ("absent", "present", "unverified"),
+            "link_count": ("match", "mismatch", "unverified"),
+            "acl": ("absent", "present", "unverified"),
+            "mount": ("clear", "ambiguous", "unverified"),
+        },
+    }
+    source = metadata.get("journal_metadata") if isinstance(metadata, dict) else None
+    if not isinstance(source, dict) or set(source) != {"component", "positions", "temporary_files", "unknown_children"}:
+        source = {}
+    result = {}
+    for role, fields in values.items():
+        observed = source.get(role)
+        if not isinstance(observed, dict) or set(observed) != set(fields):
+            observed = {}
+        result[role] = {
+            key: observed.get(key) if observed.get(key) in allowed else "unverified"
+            for key, allowed in fields.items()
+        }
+    count = source.get("temporary_files")
+    result["temporary_files"] = count if type(count) is int and 0 <= count <= MAX_CHILDREN else "unverified"
+    unknown = source.get("unknown_children")
+    kinds = ("files", "directories", "symlinks", "other")
+    valid_unknown = (
+        isinstance(unknown, dict) and set(unknown) == set(kinds)
+        and all(type(unknown[key]) is int and 0 <= unknown[key] <= MAX_CHILDREN for key in kinds)
+        and sum(unknown.values()) <= MAX_CHILDREN
+    )
+    result["unknown_children"] = (
+        {key: unknown[key] for key in kinds}
+        if valid_unknown
+        else dict.fromkeys(kinds, "unverified")
+    )
+    return result
+
+
 def _live_diagnostic(found):
     metadata=found.get("metadata")
     top_level=metadata.get("top_level") if isinstance(metadata,dict) else None
@@ -1161,6 +1349,7 @@ def _live_diagnostic(found):
             )
         },
         "role_metadata":role_values,
+        "journal_metadata":_journal_metadata_diagnostic(metadata),
         "remotecfg_state":remotecfg_state,
         "unmatched_directories":_unmatched_directory_diagnostic(metadata),
     }

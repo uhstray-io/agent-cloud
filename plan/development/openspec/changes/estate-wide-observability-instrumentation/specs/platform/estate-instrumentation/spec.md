@@ -170,6 +170,26 @@ The read-only survey MAY compare extra top-level directories against the exact `
 - **AND** missing observed metadata, an unavailable root mode, or missing/invalid volume or GraphRoot capacity is reported as unverified or failed and cannot pass the initial checklist; a passing checklist does not replace later identity rechecks or authorize repair
 - **AND** check mode and exception fallback retain the schema with unverified categories, without filesystem or Podman operations
 
+### Requirement: Journal component diagnostics remain metadata-only and cannot admit state
+The existing descriptor-safe read-only positions survey SHALL expose fixed bounded categories for the exact journal component's presence/type, owner match, owner RWX, forbidden write/special bits, link-count predicate, ACL, mount safety and direct-child layout. It SHALL separately classify the exact positions-file role's presence/type, owner match, required owner RW and forbidden mode bits, single-link predicate, ACL and mount safety, with bounded temporary-file counts and aggregated unknown direct-child kinds. Counts SHALL be integers in 0 through 32 or `unverified`; missing or unstable evidence SHALL remain unverified, never a passing observation. Descriptor-relative no-follow observation and parent/child identity rechecks SHALL reject symlinks, races, ACL/mount ambiguity and overflow. It SHALL NOT read file contents, enumerate deeper descendants, emit raw names/paths/modes/IDs/hashes/sizes/cursors/secrets/stderr/exceptions, create a probe, mount, mutate state or add a survey action. Public names used in this specification identify fixed roles, not permission to emit observed names.
+
+The helper and playbook SHALL validate and expose only the bounded diagnostic schema through the protected parsing and summary boundary, retaining unverified check-mode and error fallbacks. The diagnostic SHALL NOT change any acceptance predicate, repair eligibility, bootstrap refusal, parsed-cursor requirement or live gate. An absent or unparsed survey cursor SHALL NOT be described as proven corruption. Failed startup, positions or delivery verification SHALL retain collector-only rollback and preserve all volumes. The rescue wording SHALL cover all three stages without claiming that a Loki query ran after an earlier positions failure. No automatic retry, repair, deletion or v4 bootstrap is permitted by this diagnostic follow-up.
+
+#### Scenario: Journal metadata explains categories without reading positions content
+- **WHEN** the explicit read-only survey observes the exact journal component in an unused v3 volume
+- **THEN** it reports only bounded component/file metadata and structural categories, distinguishes absent from unverified, and aggregates unknown children without names or content reads
+- **AND** existing cursorless-v3 pre-start and verify-live refusals remain unchanged even when every diagnostic metadata category passes
+
+#### Scenario: Journal diagnostic ambiguity remains unverified
+- **WHEN** metadata is missing, malformed, inaccessible, linked, ACL/mount-ambiguous, racing or over the observation bound, or execution is in check mode or exception fallback
+- **THEN** the diagnostic retains its fixed schema with affected fields unverified or refusal, with no probe, mount, content read or mutation
+- **AND** malformed helper output cannot leak through the visible playbook summary or become a passing gate
+
+#### Scenario: Positions failure precedes delivery verification
+- **WHEN** a healthy collector first fails the live positions readiness assertion before the Loki query
+- **THEN** rescue describes a startup, positions, or exact-target delivery verification failure, removes only the pilot and preserves its volume
+- **AND** neither the message nor the receipt claims a failed Loki query, successful delivery, root cause or permission for automatic retry
+
 ### Requirement: Only a safe empty remotecfg service directory may extend the positions layout
 The layout observer SHALL conditionally accept at most one optional exact direct child `remotecfg` only when descriptor-relative no-follow observation and parent/child identity rechecks prove a real empty directory, namespace owner/group `0:0`, owner RWX, no group/other write or special bits, no access/default ACL, and no mount boundary or exact bind mount. Emptiness SHALL include hidden entries and SHALL be rechecked against the same identity. Unknown, malformed, inaccessible or racing evidence SHALL refuse. Absence SHALL remain allowed. Every other extra directory SHALL remain refused, including the diagnostic-only receiver, exporter and attributes processor. Fixed bounded role/count/state fields SHALL distinguish safe, unsafe and unverified exact `remotecfg` from aggregated unknown names in survey, check-mode and failure output without printing raw names or private paths. Survey SHALL remain read-only and SHALL NOT read cursor content, probe-mount, repair, create or delete state. Layout acceptance SHALL NOT relax cursor, identity, capacity, access, bootstrap or live gates; existing cursorless v3 SHALL refuse start, and v1/v2 SHALL remain preserved and excluded.
 
