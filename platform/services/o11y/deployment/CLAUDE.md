@@ -93,7 +93,15 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   layout but unknown cursor validity, use `survey-cursor`. That action reads only a safe exact
   positions file through the bounded parser and reports fixed valid/unavailable
   categories; it does not mount, mutate or start the collector. A valid cursor
-  alone does not clear a pending initialization flag or authorize apply. Review
+  alone does not clear a pending initialization flag or authorize apply. A
+  separately reviewed pre-start exception may admit a populated v3 volume when
+  the cursor is parsed, metadata and capacity are safe, Podman reports
+  `NeedsChown=false` and `NeedsCopyUp=true`, no collector/users/mounts exist,
+  and the local Podman client is the reviewed 4.9.3 release. Podman 4.9.3
+  skips copy-up into a nonempty volume even if podman-compose omits `nocopy`;
+  the resolved Compose setting alone does not prove runtime preservation.
+  Every condition is rechecked immediately before Compose mounts the volume.
+  Review
   the metadata survey before choosing `repair-positions`, which is a separate
   action. Both repair paths require an
   unused unique local volume, no ACL or mount ambiguity, only direct regular
@@ -123,9 +131,10 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   must prove the named collector is absent, including stopped containers. Only
   a proven-missing v3 volume can bootstrap. `podman-compose up` is the only
   create/initialization action. Any existing v3 volume requires strict identity,
-  access, layout, and a valid parsed cursor before it can start; empty or
-  initialization-pending state, absent cursor, and invalid, unreadable, or unknown
-  cursor evidence refuse. There
+  access, layout, and a valid parsed cursor before it can start. Empty or
+  cursorless pending state, absent cursor, and invalid, unreadable, or unknown
+  cursor evidence refuse. A populated pending volume is admitted only by the
+  narrow reviewed 4.9.3 pre-start exception above. There
   is no cursorless pre-start retry. The immediate pre-start check is outside the
   rollback block, so a refusal before startup cannot remove an already-running
   collector. After startup, the playbook calls separate `verify-live`, which
