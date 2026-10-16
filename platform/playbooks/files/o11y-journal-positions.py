@@ -162,13 +162,13 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount, exp
         if names is None:
             return {"owner":"unverified","access":"unverified","acl":"unverified",
                     "mount":"unverified","children":"unverified"}
+        names_after=bounded_names(role_fd)
         after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
         pinned_after=os.fstat(role_fd)
         path_root=os.lstat(root_path)
         pinned_root_after=os.fstat(root_fd)
         acl_after=any("acl" in value.lower() for value in os.listxattr(role_fd))
         mount_after=mount_id(role_path)
-        names_after=bounded_names(role_fd)
         if (names_after is None or identity(before)!=identity(after) or identity(opened)!=identity(pinned_after)
                 or identity(path_root)!=identity(root_stat)
                 or identity(pinned_root_after)!=identity(root_stat)

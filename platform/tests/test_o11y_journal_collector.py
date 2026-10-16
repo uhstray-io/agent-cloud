@@ -3061,7 +3061,7 @@ def fake_scandir(fd):
     entries=list(real_scandir(fd))
     if {empty_race!r}:
         scan_count["value"]+=1
-        if scan_count["value"]==1:
+        if scan_count["value"]==2:
             with open(os.path.join(role_path,".appeared-during-scan"),"w"): pass
     return Scan(entries)
 os.scandir=fake_scandir
@@ -5182,6 +5182,10 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
         task for task in apply_block["block"]
         if task.get("name") == "Report sanitized live positions diagnostic"
     )
+    live_normalize = next(
+        task for task in live_boundary["block"]
+        if task.get("name") == "Normalize live positions status and diagnostic"
+    )
     live_gate = next(
         task for task in apply_block["block"]
         if task.get("name") == "Require the actual positions volume mount and namespace access"
@@ -5218,16 +5222,27 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert live_boundary["block"][0]["no_log"] is True
     assert live_boundary["block"][1]["no_log"] is True
     assert live_boundary["block"][2]["no_log"] is True
+    normalized_live = live_normalize["ansible.builtin.set_fact"]["_journal_positions_live_summary"]["live_diagnostic"]
+    assert normalized_live["remotecfg_state"] == "{{ _journal_positions_live_parsed.live_diagnostic.remotecfg_state }}"
+    assert normalized_live["top_level"]["remotecfg_component"] == (
+        "{{ _journal_positions_live_parsed.live_diagnostic.top_level.remotecfg_component }}"
+    )
     assert live_boundary["rescue"][0]["ansible.builtin.set_fact"] == {
         "_journal_positions_live_summary": {
             "status": "unavailable",
             "live_diagnostic": {
+                "remotecfg_state": "unverified",
+                "top_level": {"remotecfg_component": "unverified"},
                 "role_metadata": {
                     "receiver": {
                         "owner": "unverified", "access": "unverified", "acl": "unverified",
                         "mount": "unverified", "children": "unverified",
                     },
                     "exporter": {
+                        "owner": "unverified", "access": "unverified", "acl": "unverified",
+                        "mount": "unverified", "children": "unverified",
+                    },
+                    "remotecfg": {
                         "owner": "unverified", "access": "unverified", "acl": "unverified",
                         "mount": "unverified", "children": "unverified",
                     },
@@ -5246,6 +5261,8 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert live_boundary["rescue"][0]["no_log"] is True
     assert "_journal_positions_live_mount.stdout" not in live_debug["ansible.builtin.debug"]["msg"]
     assert "from_json" not in live_debug["ansible.builtin.debug"]["msg"]
+    for diagnostic in ("remotecfg_state", "remotecfg_component", "remotecfg_role"):
+        assert diagnostic in live_debug["ansible.builtin.debug"]["msg"]
     assert live_gate["ansible.builtin.assert"]["that"][1] == (
         "_journal_positions_live_summary.status == 'ready'"
     )

@@ -773,6 +773,7 @@
                     top_level:
                       seed_file: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.seed_file }}"
                       journal_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.journal_component }}"
+                      remotecfg_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.remotecfg_component }}"
                       other_files: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_files }}"
                       other_directories: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_directories }}"
                       other_symlinks: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks }}"
@@ -781,6 +782,7 @@
                       exporter_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.exporter_component }}"
                     role_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.role_metadata }}"
                     unmatched_directories: "{{ _journal_positions_live_parsed.live_diagnostic.unmatched_directories }}"
+                    remotecfg_state: "{{ _journal_positions_live_parsed.live_diagnostic.remotecfg_state }}"
               no_log: true
           rescue:
             - name: Record unavailable live positions result
@@ -801,6 +803,15 @@
                         acl: unverified
                         mount: unverified
                         children: unverified
+                      remotecfg:
+                        owner: unverified
+                        access: unverified
+                        acl: unverified
+                        mount: unverified
+                        children: unverified
+                    top_level:
+                      remotecfg_component: unverified
+                    remotecfg_state: unverified
                     unmatched_directories:
                       count: unverified
                       owner: {matches_collector: unverified, mismatch: unverified, unverified: unverified}
@@ -872,9 +883,12 @@
               mount={{ _journal_positions_live_summary.live_diagnostic.get('mount', {}) }};
               seed_file={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('seed_file', 'unverified') }};
               journal_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('journal_component', 'unverified') }};
+              remotecfg_state={{ _journal_positions_live_summary.live_diagnostic.get('remotecfg_state', 'unverified') }};
+              remotecfg_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('remotecfg_component', 'unverified') }};
               other_entries={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_files', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_directories', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_symlinks', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_kinds', 'unverified') }};
               receiver_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('receiver', {}) }};
               exporter_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('exporter', {}) }};
+              remotecfg_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('remotecfg', {}) }};
               unmatched_directories={{ _journal_positions_live_summary.live_diagnostic.get('unmatched_directories', {}) }};
               host_uid_map={{ 'available' if _journal_host_uid_map.rc | default(1) == 0 else 'unavailable' }};
               collector_uid_map={{ 'available' if _journal_collector_uid_map_observed.rc | default(1) == 0 else 'unavailable' }};
