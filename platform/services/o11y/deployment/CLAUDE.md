@@ -48,7 +48,7 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
-  fresh Compose named `journal-collector-state-v2` volume mounted at `/alloy-state`
+  fresh Compose named `journal-collector-state-v3` volume mounted at `/alloy-state`
   with long-syntax `volume.nocopy: true`; Alloy's
   `--storage.path` and exact live-mount/rollback checks use that same root-level path.
   This avoids traversing the image's `/var/lib/alloy` directory, which the pinned
@@ -66,13 +66,15 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
   The explicit `survey` action resolves the positions volume from the receiver
-  Compose project and `journal-collector-state-v2` identity, including when the pilot
+  Compose project and `journal-collector-state-v3` identity, including when the pilot
   container is absent. New volumes carry the explicit `com.docker.compose.volume`
   label; an existing volume remains compatible when that label is absent only if
   its exact expected name and project label match. Conflicting labels or names refuse.
-  The legacy `journal-collector-state` volume remains untouched for later independent
-  forensic/disposition review; all journal helper actions resolve only v2. First
-  bootstrap requires v2 to be absent. Unexpected existing v2 state without a valid
+  The legacy `journal-collector-state` (v1) and `journal-collector-state-v2` volumes
+  remain untouched for later independent forensic/disposition review; the new pilot
+  never inspects, mounts, repairs or deletes either. All journal helper actions resolve
+  only v3. First
+  bootstrap requires v3 to be absent. Unexpected existing v3 state without a valid
   cursor refuses the start gate. A fresh start can replay only Alloy's supported
   `max_age` window, not older journal entries. Use the explicit Dev-bound `stage`
   action to place the exact `expected_repository_sha` through the shared
@@ -81,7 +83,7 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   order is `stage` -> read-only `survey` -> separate `apply`. Survey never places
   the checkout. Stage, survey, and apply first require installed target `HEAD` to
   equal `expected_repository_sha`, then run the installed `podman-compose config`
-  parser under `no_log` and require the resolved v2 source,
+  parser under `no_log` and require the resolved v3 source,
   `/alloy-state` destination, and `nocopy: true`; this does not prove the runtime
   applied the option. Check mode skips provider runtime reads and reports
   `check_mode_unverified`; stage refuses check mode. Survey reads bounded owner/mode
@@ -114,8 +116,8 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   immediately-before-start gates. For a missing volume, bounded volume inventory
   must prove the exact expected project name is unused and an all-container query
   must prove the named collector is absent, including stopped containers. Only
-  a proven-missing v2 volume can bootstrap. `podman-compose up` is the only
-  create/initialization action. Any existing v2 volume requires strict identity,
+  a proven-missing v3 volume can bootstrap. `podman-compose up` is the only
+  create/initialization action. Any existing v3 volume requires strict identity,
   access, layout, and a valid parsed cursor before it can start; empty or
   initialization-pending state, absent cursor, and invalid, unreadable, or unknown
   cursor evidence refuse. There
@@ -125,8 +127,11 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   must return strict `ready`, including the parsed expected journal cursor in
   `positions.yml`; the cursor is mandatory for post-start success. Runtime checks also prove the actual RW volume source/destination,
   UID mapping, effective write/rename access, health, unchanged receiver containers,
-  and exact Loki delivery. The bounded live layout permits optional `alloy_seed.json`
-  and the source's `loki.source.journal.o11y_alloy/` directory; post-start acceptance
+  and exact Loki delivery. The bounded live layout permits optional `alloy_seed.json`,
+  the source's `loki.source.journal.o11y_alloy/` directory, and at most one exact
+  `remotecfg` directory only when descriptor-pinned checks prove it empty, owner `0:0`,
+  owner-RWX, free of group/other write and special bits, ACL-free, mount-clear, and
+  stable. All other extra directories remain refused. Post-start acceptance
   still requires its valid cursor evidence. The separate repair action still refuses
   directory children.
   Health, seven-container preservation, Loki receipt, and rollback gates still apply.
