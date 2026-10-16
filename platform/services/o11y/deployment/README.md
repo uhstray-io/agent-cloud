@@ -1340,7 +1340,8 @@ acceptance predicates.
 
 The read-only positions survey may report top-level entry roles and aggregate
 entry kinds, but it does not inspect cursor contents or run a namespace probe.
-It compares extra directories only against the two exact public journal receiver
+It compares extra directories only against the exact public journal receiver,
+configured `otelcol.processor.attributes.journal_labels` attributes processor,
 and OTLP exporter component roles. Matching directories get bounded owner,
 access, ACL, mount, and direct-child categories. Unmatched direct child
 directories also receive aggregate owner/access/ACL/mount/empty-or-nonempty
@@ -1417,3 +1418,24 @@ bounded Podman versions. Raw Podman output is never reported.
 OpenSpec task 1.2 remains unchecked until the reviewed Semaphore run records the
 production runtime and Loki evidence. Unit tests and metadata-only survey results
 do not close that task.
+
+**Dev journal pilot follow-up (2026-10-15):** Dev-bound Semaphore tasks 6049
+(publisher), 6052 (stage), 6053 (read-only survey), 6054 (apply), and 6056
+(post-rollback read-only survey) record the latest attempt. Survey 6053 reported
+the v2 volume missing. Apply 6054 failed closed at the live positions
+`component_layout` check with `seed_file=1`, `journal_component=1`, and one
+unknown safely owned, empty top-level directory. Mount, UID-map, and namespace
+access checks matched, and the pilot was healthy. Rollback removed only the
+pilot and preserved v2. Survey 6056 reported the collector absent, v2
+`volume_initialization_pending`, three entries, and the journal source available.
+The receipts do not identify the unknown directory or establish a root cause.
+
+The read-only positions survey now classifies the exact configured
+`otelcol.processor.attributes.journal_labels` directory with bounded owner,
+access, ACL, mount, and empty/nonempty categories. That directory remains in the
+unmatched-directory aggregate and outside the accepted component layout; all
+unknown-directory refusals remain active. After this change reaches Dev, the
+next step is a fresh read-only survey to determine whether that exact configured
+directory accounts for the previously unknown entry. Review any disposition as
+a separate decision. Classification does not authorize repair, apply, or a
+volume change; task 1.2 remains open.
