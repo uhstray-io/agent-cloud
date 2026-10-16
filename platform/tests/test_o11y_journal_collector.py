@@ -530,6 +530,34 @@ def test_seed_metadata_is_descriptor_safe_bounded_and_never_reads_contents(tmp_p
     os.close(pinned_seed_fd)
 
 
+def test_seed_layout_accepts_upstream_read_only_mode_and_refuses_unsafe_bits():
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    seed_predicate = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "component_layout" for target in node.targets)
+        and "alloy_seed.json" in ast.unparse(node)
+    )
+    predicate = compile(ast.Module(body=[seed_predicate], type_ignores=[]), "seed-layout", "exec")
+
+    def accepted(mode, *, name="alloy_seed.json", uid=0, gid=0, links=1):
+        scope = {
+            "component_layout": True, "name": name,
+            "item": SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=uid, st_gid=gid, st_nlink=links),
+        }
+        exec(predicate, scope)
+        return scope["component_layout"]
+
+    for mode in (0o600, 0o640, 0o604, 0o644):
+        assert accepted(mode), oct(mode)
+    for mode in (0o700, 0o654, 0o646, 0o645, 0o1644, 0o2644, 0o4644):
+        assert not accepted(mode), oct(mode)
+    assert not accepted(0o644, name="unexpected")
+    assert not accepted(0o644, uid=1)
+    assert not accepted(0o644, gid=1)
+    assert not accepted(0o644, links=2)
+
+
 def test_seed_metadata_acl_mount_errors_and_identity_races_are_unverified(tmp_path):
     tree = ast.parse(POSITIONS._METADATA_SCRIPT)
     functions = [
