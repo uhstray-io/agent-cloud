@@ -4983,7 +4983,17 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert apply_block["when"] == "not ansible_check_mode"
     apply_task_names = [task.get("name") for task in apply_block["block"]]
-    assert apply_play["tasks"].index(pre_mount) + 3 == apply_play["tasks"].index(apply_block)
+    preflight_block = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Verify the Loki query client before starting the collector"
+    )
+    preflight_assertion = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Require Loki query client and successful JSON response before startup"
+    )
+    assert apply_play["tasks"].index(pre_mount) < apply_play["tasks"].index(preflight_block)
+    assert apply_play["tasks"].index(preflight_block) < apply_play["tasks"].index(preflight_assertion)
+    assert apply_play["tasks"].index(preflight_assertion) < apply_play["tasks"].index(apply_block)
     assert apply_play["tasks"][apply_play["tasks"].index(pre_mount) + 1]["name"] == (
         "Parse immediate pre-mount positions output through a protected boundary"
     )
@@ -5479,8 +5489,9 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
         if task.get("name") == "Verify the exact bounded journal stream reached Loki"
     )
     argv = receipt["ansible.builtin.command"]["argv"]
-    assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q", "-T", "5"]
-    assert "--timeout=5" not in argv and "--tries=1" not in argv
+    assert argv[:3] == ["/usr/bin/timeout", "--signal=KILL", "8s"]
+    assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q"]
+    assert "-T" not in argv and "--timeout=5" not in argv and "--tries=1" not in argv
     assert receipt["retries"] == 36 and receipt["delay"] == 5
     assert argv[-1] == "{{ _journal_loki_query_url }}"
     assert any(
@@ -5520,7 +5531,9 @@ def test_loki_assert_conditions_accept_fresh_values_key_and_reject_stale_sample(
         task for task in apply_task["block"]
         if task.get("name") == "Require an exact service and signal stream in Loki"
     )
+
     def evaluate(samples):
+        # Evaluate the playbook's actual `that` expressions with Ansible's templar and filters.
         evaluator = """
 import json, sys
 from ansible.parsing.dataloader import DataLoader
@@ -6198,3 +6211,81 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert "stdout" not in pre_mount_gate["ansible.builtin.assert"]["fail_msg"]
     assert "stdout" not in debug["ansible.builtin.debug"]["msg"]
     assert "from_json" not in debug["ansible.builtin.debug"]["msg"]
+
+
+@needs_ansible
+def test_loki_preflight_refuses_before_start_and_uses_successful_json_status():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    def nested(nodes):
+        for node in nodes:
+            yield node
+            for section in ("block", "rescue", "always"):
+                yield from nested(node.get(section, []))
+
+    all_tasks = list(nested(apply["tasks"]))
+    preflight = next(
+        task for task in all_tasks
+        if task.get("name") == "Query Loki with the receiver's Grafana wget client"
+    )
+    preflight_assertion = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Require Loki query client and successful JSON response before startup"
+    )
+    start = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assert apply["tasks"].index(preflight_assertion) < apply["tasks"].index(start)
+    argv = preflight["ansible.builtin.command"]["argv"]
+    assert argv == [
+        "/usr/bin/timeout", "--signal=KILL", "8s", "podman", "exec", "o11y-grafana",
+        "wget", "-q", "-O", "-", "{{ _journal_loki_query_url }}",
+    ]
+    assert "-T" not in argv and "--timeout" not in argv and "--tries" not in argv
+    assert preflight["no_log"] is True
+    assert preflight["failed_when"] is False
+    condition = preflight_assertion["ansible.builtin.assert"]["that"][0]
+    classifier = next(
+        task for task in all_tasks
+        if task.get("name") == "Classify the Loki client and response shape"
+    )
+    expression = classifier["ansible.builtin.set_fact"]["_journal_loki_preflight_status"]
+    evaluator = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for request in job["requests"]:
+    templar = Templar(loader=DataLoader(), variables={"_journal_loki_preflight_request": request})
+    status = templar.template(trust_as_template(job["expression"]))
+    condition_templar = Templar(loader=DataLoader(), variables={"_journal_loki_preflight_status": status})
+    results.append((status, condition_templar.evaluate_conditional(trust_as_template(job["condition"]))))
+print(json.dumps(results))
+"""
+    evaluated = subprocess.run(
+        [ansible_python(), "-c", evaluator],
+        input=json.dumps({
+            "condition": condition,
+            "expression": expression,
+            "requests": [
+                {"rc": 0, "stdout": json.dumps({"status": "success", "data": {"result": []}})},
+                {"rc": 0, "stdout": json.dumps({"status": "error"})},
+                {"rc": 1, "stdout": "private response body"},
+            ],
+        }),
+        text=True, capture_output=True, timeout=30,
+    )
+    assert evaluated.returncode == 0, evaluated.stderr
+    assert json.loads(evaluated.stdout) == [
+        ["available", True], ["response_unverified", False], ["request_failed", False],
+    ]
+
+    receipt = next(
+        task for task in start["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    assert receipt["ansible.builtin.command"]["argv"] == argv
+    assert receipt["retries"] == 36  # Ansible makes 37 total attempts.
+    assert receipt["delay"] == 5

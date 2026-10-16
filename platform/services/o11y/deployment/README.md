@@ -1448,15 +1448,32 @@ volume change; task 1.2 remains open.
 health, exact positions mount and namespace access, and unchanged receiver
 containers. Its final Loki receipt command failed; rollback removed only the
 collector and preserved the positions volume. Independent production Grafana
-MCP readback for the task window found six entries with the exact
-`service="o11y/alloy"`, `signal="container"` labels, and receiver accepted-log
-counters increased. This establishes stream presence during the run, not a
-successful playbook receipt, a sample satisfying the post-start timestamp, or
-safe volume retry state. The source follow-up uses BusyBox's documented
-`wget -T 5` network-read timeout ([BusyBox wget](https://busybox.net/BusyBox.html)),
-removes its retry flag, and retains the bounded Ansible poll and exact receipt
-assertions. Task 6156 did not retain protected command error text, so the precise
-command failure cause remains unproven. After the source fix is reviewed and
-merged, require exact-SHA stage, a fresh separate read-only cursor survey, then
-a separately launched apply and successful post-start Loki receipt. No retry or
-volume recovery is authorized by task 6156; OpenSpec task 1.2 remains open.
+MCP readback found six entries with the exact `service="o11y/alloy"`,
+`signal="container"` labels and an increase in the receiver's accepted-log
+counter during that task window. Dev-bound task 6169 at exact SHA
+`21450230d7265d4c2649b7a191c79712b8300678` again passed collector health,
+exact positions mount/namespace and unchanged-receiver checks, but its Loki
+receipt classified as `request_failed`; rollback again removed only the
+collector and preserved the positions volume. Independent production Grafana
+MCP readback found ten exact-label samples during task 6169's window. These
+queries establish stream presence, not a successful playbook receipt or a
+sample meeting its post-start timestamp assertion. Follow-up read-only survey
+task 6172 reported the collector absent and positions state safe; it did not
+start the collector or authorize another apply.
+
+Read-only Dev-bound task 6170 succeeded for `expected_service=o11y/alloy` and
+`expected_log_signal=container`, with metrics and traces disabled. That workflow
+queries Loki with the Grafana-container `wget -q -O -` argument form and a
+15-minute window. The protected stderr from task 6169 was not retained, so the
+exact reason its receipt request failed is unknown; attributing it to wget's
+`-T` option is an inference. The source fix uses the proven wget form with a
+host-side 8-second timeout for a pre-start Loki JSON-status check and the
+post-start receipt. Preflight requires a successful JSON `status` but allows an
+empty result, protects response bodies, and reports only fixed categories.
+Post-start delivery still requires the exact labels and a sample at or after
+the run's captured nanosecond timestamp. Its bounded polling uses 36 retries
+(37 total attempts) with five-second delays and individually bounded requests.
+After review and merge, require exact-SHA stage, a separate read-only cursor
+survey, a separately launched apply, and a successful exact post-start Loki
+receipt. No retry or volume recovery is authorized by these source changes;
+OpenSpec task 1.2 remains open.
