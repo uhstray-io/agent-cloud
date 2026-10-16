@@ -574,6 +574,11 @@ operator's go for it. site-config changes land through its own pull requests.
       2026-10-14/15 (task output read from production Semaphore by the lead): later deploys 5718
       and 5740 keep passing the render checks. Still NOT ticked: the `keyHash` count before and
       after was not read.
+      2026-10-15 (task output read from production Semaphore by the lead): since #673 (4cae6baa) the
+      deploy prints the count. Deploy agentgateway (Dev) 6106: "The rendered config enrols 10 identities
+      with 10 key entries (10 declared)." That is the current count only. The count before this
+      task's deploy and the unchanged-hash proof are past state that cannot be read now. Still not
+      ticked; closing it on the evidence above is the operator's call.
 - [x] 6.4 `Apply Cloudflare Tofu (Dev)`, `tofu_action` plan: expected diff exactly the
       record and two rules, zero other change; then apply, then a zero-diff plan
       2026-10-14: not started; waits on PR #636.
