@@ -1466,13 +1466,20 @@ Read-only Dev-bound task 6170 succeeded for `expected_service=o11y/alloy` and
 queries Loki with the Grafana-container `wget -q -O -` argument form and a
 15-minute window. The protected stderr from task 6169 was not retained, so the
 exact reason its receipt request failed is unknown; attributing it to wget's
-`-T` option is an inference. The source fix uses the proven wget form with a
-host-side 8-second timeout for a pre-start Loki JSON-status check and the
-post-start receipt. Preflight requires a successful JSON `status` but allows an
-empty result, protects response bodies, and reports only fixed categories.
-Post-start delivery still requires the exact labels and a sample at or after
-the run's captured nanosecond timestamp. Its bounded polling uses 36 retries
-(37 total attempts) with five-second delays and individually bounded requests.
+`-T` option is an inference. The source fix uses Grafana's in-container BusyBox
+`timeout -s KILL 8` around the proven wget form, with an outer 12-second host
+timeout. Before promoting collector config, preflight requires a successful
+JSON `status` but allows an empty result, protects response bodies, and reports
+only fixed categories. The in-container deadline kills stalled wget before a
+later retry; preflight refusal leaves the live config untouched. After config
+promotion and the other gates, the playbook captures a fresh nanosecond
+timestamp immediately before collector start. Post-start delivery still
+requires the exact labels and a sample at or after that timestamp. Polling uses
+36 retries (37 total attempts) with five-second delays and individually bounded
+requests. The tagged Grafana 11.4.0 Dockerfile uses Alpine 3.19.1; BusyBox's
+`timeout -s KILL SECS PROG ARGS` syntax is present in its [1.36 source](https://github.com/mirror/busybox/blob/1_36_stable/coreutils/timeout.c).
+A future apply executes the full timeout/wget/JSON capability check before
+promotion, so missing capability refuses safely.
 After review and merge, require exact-SHA stage, a separate read-only cursor
 survey, a separately launched apply, and a successful exact post-start Loki
 receipt. No retry or volume recovery is authorized by these source changes;
