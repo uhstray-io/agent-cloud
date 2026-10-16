@@ -306,11 +306,21 @@ class MergeGuardTests(unittest.TestCase):
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
-    def test_agentgateway_partition_unchanged_is_still_allowed(self):
+    def test_agentgateway_partition_unchanged_passes_the_workflow_check(self):
+        # The workflow-change check alone accepts an unchanged Agentgateway partition. This fake still
+        # supplies a Node pi provider job, which a real run of that workflow never has; see the next test.
         api = FakeGitHub()
         api.workflow_source = AGW_WORKFLOW
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
+
+    def test_agentgateway_partition_pr_without_the_node_job_is_refused(self):
+        # What happens live to a pull request opened before the transition: its workflow runs no
+        # Node pi provider job, so the required-job gate refuses it until it merges dev.
+        api = FakeGitHub()
+        api.workflow_source = AGW_WORKFLOW
+        api.jobs.pop("Node pi provider")
+        run_refusal(self, api, "Missing expected Actions jobs")
 
     def test_agentgateway_to_node_transition_is_allowed(self):
         api = FakeGitHub()
