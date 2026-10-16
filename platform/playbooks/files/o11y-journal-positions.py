@@ -192,9 +192,80 @@ def unverified_journal_metadata():
         "owner_rw":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified",
         "acl":"unverified","mount":"unverified"}
     return {"component":component,"positions":positions,
+        "child_count":"unverified","temporary_file_metadata":"unverified",
         "temporary_files":"unverified",
         "unknown_children":{"files":"unverified","directories":"unverified",
             "symlinks":"unverified","other":"unverified"}}
+def unverified_seed_metadata():
+    return {"presence":"unverified","type":"unverified","owner":"unverified",
+        "link_count":"unverified","owner_execute":"unverified",
+        "group_other_permissions":"unverified","special_bits":"unverified",
+        "acl":"unverified","mount":"unverified"}
+def seed_observation(root_path, root_stat, root_mount):
+    result=unverified_seed_metadata()
+    root_fd=None
+    seed_fd=None
+    name="alloy_seed.json"
+    try:
+        identity=lambda value:(value.st_dev,value.st_ino,value.st_uid,value.st_gid,
+            stat.S_IMODE(value.st_mode),value.st_nlink,value.st_mtime_ns)
+        root_fd=os.open(root_path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        if identity(os.fstat(root_fd))!=identity(root_stat): return result
+        try: before=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+        except FileNotFoundError:
+            result.update(presence="absent",type="absent")
+            return result if identity(os.fstat(root_fd))==identity(root_stat) else unverified_seed_metadata()
+        result["presence"]="present"
+        result["type"]=("regular_file" if stat.S_ISREG(before.st_mode) else
+            "directory" if stat.S_ISDIR(before.st_mode) else
+            "symlink" if stat.S_ISLNK(before.st_mode) else "other")
+        if not stat.S_ISREG(before.st_mode):
+            after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+            stable = identity(after) == identity(before) and identity(os.fstat(root_fd)) == identity(root_stat)
+            return result if stable else unverified_seed_metadata()
+        seed_fd=os.open(name,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
+        opened=os.fstat(seed_fd)
+        if identity(opened)!=identity(before): return unverified_seed_metadata()
+        result.update(
+            owner="matches_collector" if (opened.st_uid,opened.st_gid)==(0,0) else "mismatch",
+            link_count="match" if opened.st_nlink==1 else "mismatch",
+            owner_execute="present" if opened.st_mode & 0o100 else "absent",
+            group_other_permissions="present" if opened.st_mode & 0o077 else "absent",
+            special_bits="present" if opened.st_mode & 0o7000 else "absent",
+        )
+        seed_path=os.path.join(root_path,name)
+        acl_found=any("acl" in value.lower() for value in os.listxattr(seed_fd))
+        def checked_mount():
+            root_before=os.lstat(root_path)
+            seed_before=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+            path_before=os.stat(seed_path,follow_symlinks=False)
+            if (identity(root_before)!=identity(root_stat) or identity(seed_before)!=identity(opened)
+                    or identity(path_before)!=identity(opened)):
+                return None
+            observed=mount_id(seed_path)
+            root_after=os.lstat(root_path)
+            seed_after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+            path_after=os.stat(seed_path,follow_symlinks=False)
+            if (identity(root_after)!=identity(root_stat) or identity(seed_after)!=identity(opened)
+                    or identity(path_after)!=identity(opened)):
+                return None
+            return observed
+        observed_mount=checked_mount()
+        if observed_mount is None: return unverified_seed_metadata()
+        mount_after=checked_mount()
+        acl_after=any("acl" in value.lower() for value in os.listxattr(seed_fd))
+        if (observed_mount is None or mount_after is None or identity(opened)!=identity(before)
+                or identity(os.fstat(root_fd))!=identity(root_stat) or acl_after!=acl_found
+                or mount_after!=observed_mount):
+            return unverified_seed_metadata()
+        result["acl"]="present" if acl_found else "absent"
+        result["mount"]="ambiguous" if observed_mount[0]!=root_mount[0] else "clear"
+        return result
+    except (OSError,ValueError,IndexError,AttributeError):
+        return unverified_seed_metadata()
+    finally:
+        if seed_fd is not None: os.close(seed_fd)
+        if root_fd is not None: os.close(root_fd)
 def bounded_names(directory_fd):
     names=[]
     with os.scandir(directory_fd) as entries:
@@ -217,6 +288,8 @@ def journal_observation(root_path, root_stat, root_mount):
         except FileNotFoundError:
             result["component"].update(presence="absent",type="absent")
             result["positions"].update(presence="absent",type="absent")
+            result["child_count"]=0
+            result["temporary_file_metadata"]="not_applicable"
             result["temporary_files"]=0
             result["unknown_children"]={"files":0,"directories":0,"symlinks":0,"other":0}
             return result if identity(os.fstat(root_fd))==identity(root_stat) else unverified_journal_metadata()
@@ -243,8 +316,10 @@ def journal_observation(root_path, root_stat, root_mount):
         result["component"]["mount"]="ambiguous" if component_mount[0]!=root_mount[0] else "clear"
         names=bounded_names(component_fd)
         if names is None: return unverified_journal_metadata()
+        result["child_count"]=len(names)
         result["component"]["children"]="nonempty" if names else "empty"
         temporary=0
+        temporary_safety=[]
         unknown={"files":0,"directories":0,"symlinks":0,"other":0}
         positions_stat=None
         positions_mount=None
@@ -255,7 +330,8 @@ def journal_observation(root_path, root_stat, root_mount):
             except OSError: return unverified_journal_metadata()
             child_path=os.path.join(component_path,child_name)
             child_mount=mount_id(child_path)
-            child_snapshot.append((child_name,identity(child_stat),child_mount))
+            nested_acl=acl(child_path)
+            child_snapshot.append((child_name,identity(child_stat),child_mount,nested_acl))
             if child_name=="positions.yml":
                 positions_stat=child_stat
                 positions_mount=child_mount
@@ -272,6 +348,12 @@ def journal_observation(root_path, root_stat, root_mount):
             elif (re.fullmatch(r"\.positions\.yml[0-9]{1,19}",child_name)
                     and stat.S_ISREG(child_stat.st_mode)):
                 temporary+=1
+                temporary_safety.append(
+                    child_stat.st_uid==0 and child_stat.st_gid==0 and child_stat.st_nlink==1
+                    and not nested_acl and child_stat.st_mode & 0o600 == 0o600
+                    and child_stat.st_mode & 0o077 == 0 and child_stat.st_mode & 0o7133 == 0
+                    and child_mount[0]==root_mount[0]
+                )
             else:
                 kind=("files" if stat.S_ISREG(child_stat.st_mode) else
                     "directories" if stat.S_ISDIR(child_stat.st_mode) else
@@ -292,6 +374,9 @@ def journal_observation(root_path, root_stat, root_mount):
                 acl="present" if positions_acl else "absent",
                 mount="ambiguous" if positions_mount[0]!=root_mount[0] else "clear")
         result["temporary_files"]=temporary
+        result["temporary_file_metadata"]=(
+            "not_applicable" if not temporary else "safe" if all(temporary_safety) else "unsafe"
+        )
         result["unknown_children"]=unknown
         names_after=bounded_names(component_fd)
         component_after=os.fstat(component_fd)
@@ -311,10 +396,12 @@ def journal_observation(root_path, root_stat, root_mount):
                     return unverified_journal_metadata()
                 if any("acl" in value.lower() for value in os.listxattr(positions_fd))!=positions_acl:
                     return unverified_journal_metadata()
-        for child_name, expected_identity, expected_mount in child_snapshot:
+        for child_name, expected_identity, expected_mount, expected_acl in child_snapshot:
             child_after=os.stat(child_name,dir_fd=component_fd,follow_symlinks=False)
             child_mount_after=mount_id(os.path.join(component_path,child_name))
-            if identity(child_after)!=expected_identity or child_mount_after!=expected_mount:
+            child_acl_after=acl(os.path.join(component_path,child_name))
+            if (identity(child_after)!=expected_identity or child_mount_after!=expected_mount
+                    or child_acl_after!=expected_acl):
                 return unverified_journal_metadata()
         return result
     except (OSError,ValueError,IndexError,AttributeError):
@@ -358,8 +445,19 @@ for observation_attempt in range(2):
             left=line.split(" - ",1)[0].split()
             mount=re.sub(r"\\([0-7]{3})",lambda m:chr(int(m.group(1),8)),left[4])
             mount_exact=mount_exact or mount==root
-    names=os.listdir(root)
-    if len(names)>32: raise OverflowError("children unbounded")
+    root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        pinned=os.fstat(root_fd)
+        if (pinned.st_dev,pinned.st_ino)!=(st.st_dev,st.st_ino): raise ValueError("root changed")
+        names=bounded_names(root_fd)
+        path_after=os.lstat(root)
+        pinned_after=os.fstat(root_fd)
+        if ((path_after.st_dev,path_after.st_ino)!=(st.st_dev,st.st_ino)
+                or (pinned_after.st_dev,pinned_after.st_ino)!=(st.st_dev,st.st_ino)):
+            raise ValueError("root changed")
+    finally:
+        os.close(root_fd)
+    if names is None: raise OverflowError("children unbounded")
     children=[]
     top_level={"seed_file":0,"journal_component":0,"remotecfg_component":0,"other_files":0,
                "other_directories":0,"other_symlinks":0,"other_kinds":0,
@@ -374,9 +472,11 @@ for observation_attempt in range(2):
                    "remotecfg":{"owner":"unverified","access":"unverified","acl":"unverified",
                                 "mount":"unverified","children":"unverified"}}
     journal_metadata=unverified_journal_metadata()
+    seed_metadata=unverified_seed_metadata()
     remotecfg_state="absent"
     unmatched_directories=empty_unmatched()
     journal_metadata=journal_observation(root,st,root_mount)
+    seed_metadata=seed_observation(root,st,root_mount)
     acl_found=acl(root)
     child_mount=False
     component_layout=st.st_mode & (0o022|0o7000) == 0
@@ -422,15 +522,16 @@ for observation_attempt in range(2):
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
                 and item.st_nlink==2 and item.st_mode & 0o700 == 0o700
                 and item.st_mode & (0o022|0o7000) == 0)
-            nested=os.listdir(path)
-            if len(nested)>2:
-                component_layout=False
             temp_names=[]
             directory_fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            nested=bounded_names(directory_fd)
+            if nested is None: raise OverflowError("nested entries unbounded")
+            if len(nested)>2:
+                component_layout=False
             for nested_name in nested:
                 nested_path=os.path.join(path,nested_name)
                 try:
-                    nested_stat=os.lstat(nested_path)
+                    nested_stat=os.stat(nested_name,dir_fd=directory_fd,follow_symlinks=False)
                 except FileNotFoundError:
                     if re.fullmatch(r"\.positions\.yml[0-9]{1,19}",nested_name):
                         raise RetryObservation
@@ -475,7 +576,8 @@ for observation_attempt in range(2):
                 component_layout=False
             if temp_names:
                 time.sleep(0.1)
-                after=os.listdir(path)
+                after=bounded_names(directory_fd)
+                if after is None: raise OverflowError("nested entries unbounded")
                 if len(after)==1 and after[0]=="positions.yml":
                     os.close(directory_fd)
                     raise RetryObservation
@@ -508,6 +610,8 @@ for observation_attempt in range(2):
         "top_level":top_level,
         "role_metadata":role_metadata,
         "journal_metadata":journal_metadata,
+        "seed_metadata":seed_metadata,
+        "layout_diagnostic":{"root_mode":"safe" if st.st_mode & (0o022|0o7000)==0 else "unsafe"},
         "remotecfg_state":remotecfg_state,
         "unmatched_directories":unmatched_directories,
         "root_is_mount":mount_exact, "child_mount":child_mount,
@@ -1248,7 +1352,9 @@ def _journal_metadata_diagnostic(metadata):
         },
     }
     source = metadata.get("journal_metadata") if isinstance(metadata, dict) else None
-    if not isinstance(source, dict) or set(source) != {"component", "positions", "temporary_files", "unknown_children"}:
+    if not isinstance(source, dict) or set(source) != {
+        "component", "positions", "child_count", "temporary_file_metadata", "temporary_files", "unknown_children"
+    }:
         source = {}
     result = {}
     for role, fields in values.items():
@@ -1259,6 +1365,15 @@ def _journal_metadata_diagnostic(metadata):
             key: observed.get(key) if observed.get(key) in allowed else "unverified"
             for key, allowed in fields.items()
         }
+    child_count = source.get("child_count")
+    result["child_count"] = (
+        child_count if type(child_count) is int and 0 <= child_count <= MAX_CHILDREN else "unverified"
+    )
+    temporary_metadata = source.get("temporary_file_metadata")
+    result["temporary_file_metadata"] = (
+        temporary_metadata if temporary_metadata in ("not_applicable", "safe", "unsafe", "unverified")
+        else "unverified"
+    )
     count = source.get("temporary_files")
     result["temporary_files"] = count if type(count) is int and 0 <= count <= MAX_CHILDREN else "unverified"
     unknown = source.get("unknown_children")
@@ -1274,6 +1389,27 @@ def _journal_metadata_diagnostic(metadata):
         else dict.fromkeys(kinds, "unverified")
     )
     return result
+
+
+def _seed_metadata_diagnostic(metadata):
+    fields = {
+        "presence": ("absent", "present", "unverified"),
+        "type": ("absent", "regular_file", "directory", "symlink", "other", "unverified"),
+        "owner": ("matches_collector", "mismatch", "unverified"),
+        "link_count": ("match", "mismatch", "unverified"),
+        "owner_execute": ("absent", "present", "unverified"),
+        "group_other_permissions": ("absent", "present", "unverified"),
+        "special_bits": ("absent", "present", "unverified"),
+        "acl": ("absent", "present", "unverified"),
+        "mount": ("clear", "ambiguous", "unverified"),
+    }
+    observed = metadata.get("seed_metadata") if isinstance(metadata, dict) else None
+    if not isinstance(observed, dict) or set(observed) != set(fields):
+        observed = {}
+    return {
+        key: observed.get(key) if observed.get(key) in allowed else "unverified"
+        for key, allowed in fields.items()
+    }
 
 
 def _live_diagnostic(found):
@@ -1333,6 +1469,25 @@ def _live_diagnostic(found):
         remotecfg_state = "unverified"
     if remotecfg_state == "unverified":
         unverified_checks.append("remotecfg_layout")
+    root = metadata.get("root") if isinstance(metadata, dict) else None
+    root_mode = root.get("mode") if isinstance(root, dict) else None
+    layout_diagnostic = {
+        "root_mode": (
+            "safe" if type(root_mode) is int and 0 <= root_mode <= 0o7777 and root_mode & (0o022 | 0o7000) == 0
+            else "unsafe" if type(root_mode) is int and 0 <= root_mode <= 0o7777
+            else "unverified"
+        ),
+        "journal_child_count": _journal_metadata_diagnostic(metadata)["child_count"],
+    }
+    seed_diagnostic = _seed_metadata_diagnostic(metadata)
+    seed_count = top_level.get("seed_file") if isinstance(top_level, dict) else None
+    expected_seed_count = 1 if (
+        seed_diagnostic["presence"] == "present" and seed_diagnostic["type"] == "regular_file"
+    ) else 0 if seed_diagnostic["presence"] == "absent" or (
+        seed_diagnostic["presence"] == "present" and seed_diagnostic["type"] != "regular_file"
+    ) else None
+    if type(seed_count) is not int or expected_seed_count is None or seed_count != expected_seed_count:
+        seed_diagnostic = dict.fromkeys(seed_diagnostic, "unverified")
     return {
         "helper_status":found.get("status") if found.get("status") in {
             "observed","volume_initialization_pending","volume_missing","volume_shared",
@@ -1357,6 +1512,8 @@ def _live_diagnostic(found):
         },
         "role_metadata":role_values,
         "journal_metadata":_journal_metadata_diagnostic(metadata),
+        "seed_metadata":seed_diagnostic,
+        "layout_diagnostic":layout_diagnostic,
         "remotecfg_state":remotecfg_state,
         "unmatched_directories":_unmatched_directory_diagnostic(metadata),
     }
