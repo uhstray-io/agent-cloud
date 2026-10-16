@@ -22,6 +22,12 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** a service is declared to require logs, metrics, and traces and emits a controlled request
 - **THEN** verification finds a fresh matching log, a healthy named metric target, and a retrievable trace with the declared service identity
 
+#### Scenario: Gateway access-log receipt proves the controlled request cohort
+- **WHEN** the gateway's controlled anonymous request cohort is used for three-signal verification
+- **THEN** Loki verification requires the exact `service="agentgateway"` and `signal="access-log"` labels, and the named metrics target and trace must match the declared gateway identity
+- **AND** an unlabelled access record or a standalone `signal="span"` record does not satisfy the access-log receipt
+- **AND** a trace search that was not run, or a set of traces without request-level correlation evidence, does not establish that every controlled request correlated to a trace
+
 #### Scenario: Instrumentation is unsupported
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
