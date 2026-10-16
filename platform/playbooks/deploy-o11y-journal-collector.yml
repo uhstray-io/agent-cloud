@@ -751,7 +751,7 @@
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | list | max <= 32
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | sum <= 32
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata is mapping
-                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.keys() | list | sort == ['component', 'positions', 'temporary_files', 'unknown_children'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.keys() | list | sort == ['component', 'positions', 'child_count', 'temporary_file_metadata', 'temporary_files', 'unknown_children'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component is mapping
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.keys() | list | sort == ['presence', 'type', 'owner', 'owner_rwx', 'unsafe_mode_bits', 'link_count', 'acl', 'mount', 'children'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.presence in ['absent', 'present', 'unverified']
@@ -773,6 +773,8 @@
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.link_count in ['match', 'mismatch', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.acl in ['absent', 'present', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.mount in ['clear', 'ambiguous', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.child_count == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.child_count | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.child_count <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_file_metadata in ['not_applicable', 'safe', 'unsafe', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_files == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_files | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_files <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children is mapping
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.keys() | list | sort == ['files', 'directories', 'symlinks', 'other'] | sort
@@ -783,6 +785,21 @@
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | list | min >= 0
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | list | max <= 32
                   - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | sum <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.keys() | list | sort == ['presence', 'type', 'owner', 'link_count', 'owner_execute', 'group_other_permissions', 'special_bits', 'acl', 'mount'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.presence in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.type in ['absent', 'regular_file', 'directory', 'symlink', 'other', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.owner in ['matches_collector', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.link_count in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.owner_execute in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.group_other_permissions in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.special_bits in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.acl in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.mount in ['clear', 'ambiguous', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.keys() | list | sort == ['root_mode', 'journal_child_count'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.root_mode in ['safe', 'unsafe', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.journal_child_count == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.layout_diagnostic.journal_child_count | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.journal_child_count <= 32)
                 fail_msg: "unavailable"
                 quiet: true
               no_log: true
@@ -813,9 +830,12 @@
                       other_kinds: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_kinds }}"
                       receiver_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.receiver_component }}"
                       exporter_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.exporter_component }}"
+                      attributes_processor_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.attributes_processor_component }}"
                     role_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.role_metadata }}"
                     unmatched_directories: "{{ _journal_positions_live_parsed.live_diagnostic.unmatched_directories }}"
                     journal_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.journal_metadata }}"
+                    seed_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.seed_metadata }}"
+                    layout_diagnostic: "{{ _journal_positions_live_parsed.live_diagnostic.layout_diagnostic }}"
                     remotecfg_state: "{{ _journal_positions_live_parsed.live_diagnostic.remotecfg_state }}"
               no_log: true
           rescue:
@@ -837,6 +857,12 @@
                         acl: unverified
                         mount: unverified
                         children: unverified
+                      attributes_processor:
+                        owner: unverified
+                        access: unverified
+                        acl: unverified
+                        mount: unverified
+                        children: unverified
                       remotecfg:
                         owner: unverified
                         access: unverified
@@ -844,6 +870,15 @@
                         mount: unverified
                         children: unverified
                     top_level:
+                      seed_file: unverified
+                      journal_component: unverified
+                      other_files: unverified
+                      other_directories: unverified
+                      other_symlinks: unverified
+                      other_kinds: unverified
+                      receiver_component: unverified
+                      exporter_component: unverified
+                      attributes_processor_component: unverified
                       remotecfg_component: unverified
                     remotecfg_state: unverified
                     unmatched_directories:
@@ -873,8 +908,23 @@
                         link_count: unverified
                         acl: unverified
                         mount: unverified
+                      child_count: unverified
+                      temporary_file_metadata: unverified
                       temporary_files: unverified
                       unknown_children: {files: unverified, directories: unverified, symlinks: unverified, other: unverified}
+                    seed_metadata:
+                      presence: unverified
+                      type: unverified
+                      owner: unverified
+                      link_count: unverified
+                      owner_execute: unverified
+                      group_other_permissions: unverified
+                      special_bits: unverified
+                      acl: unverified
+                      mount: unverified
+                    layout_diagnostic:
+                      root_mode: unverified
+                      journal_child_count: unverified
               no_log: true
 
         - name: Read the Podman rootless UID mapping
@@ -941,12 +991,15 @@
               journal_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('journal_component', 'unverified') }};
               remotecfg_state={{ _journal_positions_live_summary.live_diagnostic.get('remotecfg_state', 'unverified') }};
               remotecfg_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('remotecfg_component', 'unverified') }};
+              attributes_processor_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('attributes_processor_component', 'unverified') }};
               other_entries={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_files', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_directories', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_symlinks', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_kinds', 'unverified') }};
               receiver_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('receiver', {}) }};
               exporter_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('exporter', {}) }};
               remotecfg_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('remotecfg', {}) }};
               unmatched_directories={{ _journal_positions_live_summary.live_diagnostic.get('unmatched_directories', {}) }};
               journal_metadata={{ _journal_positions_live_summary.live_diagnostic.get('journal_metadata', {}) }};
+              seed_metadata={{ _journal_positions_live_summary.live_diagnostic.get('seed_metadata', {}) }};
+              layout_diagnostic={{ _journal_positions_live_summary.live_diagnostic.get('layout_diagnostic', {}) }};
               host_uid_map={{ 'available' if _journal_host_uid_map.rc | default(1) == 0 else 'unavailable' }};
               collector_uid_map={{ 'available' if _journal_collector_uid_map_observed.rc | default(1) == 0 else 'unavailable' }};
               uid_maps={{ 'unverified' if _journal_host_uid_map.rc | default(1) != 0 or _journal_collector_uid_map_observed.rc | default(1) != 0 or _journal_collector_uid_map_observed.stdout | trim | length == 0 else ('equal' if _journal_host_uid_map.stdout | trim == _journal_collector_uid_map_observed.stdout | trim else 'different') }};
@@ -1410,7 +1463,7 @@
       ansible.builtin.set_fact:
         _journal_positions_survey:
           rc: 0
-          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","journal_cursor":"unavailable","free_space":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_identity":"unverified"},"podman_version":{"client":"unavailable","server":"unavailable"}},"pending_repair_diagnostic":{"owner_rwx":"unverified","group_other_write_or_special_bits":"unverified","group_write":"unverified","other_write":"unverified","setuid":"unverified","setgid":"unverified","sticky":"unverified","volume_free_bytes":"unverified","volume_free_inodes":"unverified","graphroot_free_bytes":"unverified","graphroot_free_inodes":"unverified","failed_checks":["status_pending","volume_inventory_complete","name_collision_clear","project_valid","volume_object","volume_name_matches","mountpoint_absolute","labels_object","project_label_matches","volume_label_matches","needs_chown_false","needs_copy_up_true","volume_unused","mount_count_zero","collector_absent","metadata_object","metadata_observed","children_empty","child_count_zero","acl_absent","root_not_mount","child_not_mount","root_object","owner_rwx","group_other_write_or_special_absent","owner_mismatch","collector_access_blocked","volume_free_bytes","volume_free_inodes","graphroot_free_bytes","graphroot_free_inodes"]},"live_diagnostic":{"top_level":{"seed_file":"unverified","journal_component":"unverified","other_files":"unverified","other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified","receiver_component":"unverified","exporter_component":"unverified","attributes_processor_component":"unverified","remotecfg_component":"unverified"},"role_metadata":{"receiver":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"exporter":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"attributes_processor":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"remotecfg":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"}},"unmatched_directories":{"count":"unverified","owner":{"matches_collector":"unverified","mismatch":"unverified","unverified":"unverified"},"access":{"read_write_execute":"unverified","blocked":"unverified","unverified":"unverified"},"acl":{"absent":"unverified","present":"unverified","unverified":"unverified"},"mount":{"clear":"unverified","ambiguous":"unverified","unverified":"unverified"},"children":{"empty":"unverified","nonempty":"unverified","unverified":"unverified"}},"journal_metadata":{"component":{"presence":"unverified","type":"unverified","owner":"unverified","owner_rwx":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"positions":{"presence":"unverified","type":"unverified","owner":"unverified","owner_rw":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified","acl":"unverified","mount":"unverified"},"temporary_files":"unverified","unknown_children":{"files":"unverified","directories":"unverified","symlinks":"unverified","other":"unverified"}},"remotecfg_state":"unverified"},"remotecfg":"unverified"}'
+          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","journal_cursor":"unavailable","free_space":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_identity":"unverified"},"podman_version":{"client":"unavailable","server":"unavailable"}},"pending_repair_diagnostic":{"owner_rwx":"unverified","group_other_write_or_special_bits":"unverified","group_write":"unverified","other_write":"unverified","setuid":"unverified","setgid":"unverified","sticky":"unverified","volume_free_bytes":"unverified","volume_free_inodes":"unverified","graphroot_free_bytes":"unverified","graphroot_free_inodes":"unverified","failed_checks":["status_pending","volume_inventory_complete","name_collision_clear","project_valid","volume_object","volume_name_matches","mountpoint_absolute","labels_object","project_label_matches","volume_label_matches","needs_chown_false","needs_copy_up_true","volume_unused","mount_count_zero","collector_absent","metadata_object","metadata_observed","children_empty","child_count_zero","acl_absent","root_not_mount","child_not_mount","root_object","owner_rwx","group_other_write_or_special_absent","owner_mismatch","collector_access_blocked","volume_free_bytes","volume_free_inodes","graphroot_free_bytes","graphroot_free_inodes"]},"live_diagnostic":{"top_level":{"seed_file":"unverified","journal_component":"unverified","other_files":"unverified","other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified","receiver_component":"unverified","exporter_component":"unverified","attributes_processor_component":"unverified","remotecfg_component":"unverified"},"role_metadata":{"receiver":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"exporter":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"attributes_processor":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"remotecfg":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"}},"unmatched_directories":{"count":"unverified","owner":{"matches_collector":"unverified","mismatch":"unverified","unverified":"unverified"},"access":{"read_write_execute":"unverified","blocked":"unverified","unverified":"unverified"},"acl":{"absent":"unverified","present":"unverified","unverified":"unverified"},"mount":{"clear":"unverified","ambiguous":"unverified","unverified":"unverified"},"children":{"empty":"unverified","nonempty":"unverified","unverified":"unverified"}},"journal_metadata":{"component":{"presence":"unverified","type":"unverified","owner":"unverified","owner_rwx":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"positions":{"presence":"unverified","type":"unverified","owner":"unverified","owner_rw":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified","acl":"unverified","mount":"unverified"},"temporary_files":"unverified","unknown_children":{"files":"unverified","directories":"unverified","symlinks":"unverified","other":"unverified"},"child_count":"unverified","temporary_file_metadata":"unverified"},"remotecfg_state":"unverified","seed_metadata":{"presence":"unverified","type":"unverified","owner":"unverified","link_count":"unverified","owner_execute":"unverified","group_other_permissions":"unverified","special_bits":"unverified","acl":"unverified","mount":"unverified"},"layout_diagnostic":{"root_mode":"unverified","journal_child_count":"unverified"}},"remotecfg":"unverified"}'
       when: ansible_check_mode
 
     - name: Require bounded positions-volume survey fields
@@ -1476,7 +1529,7 @@
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata is mapping
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.remotecfg_state in ['absent', 'safe', 'unsafe', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata is mapping
-          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.keys() | list | sort == ['component', 'positions', 'temporary_files', 'unknown_children'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.keys() | list | sort == ['component', 'positions', 'child_count', 'temporary_file_metadata', 'temporary_files', 'unknown_children'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component is mapping
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.keys() | list | sort == ['presence', 'type', 'owner', 'owner_rwx', 'unsafe_mode_bits', 'link_count', 'acl', 'mount', 'children'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.presence in ['absent', 'present', 'unverified']
@@ -1498,6 +1551,8 @@
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.link_count in ['match', 'mismatch', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.acl in ['absent', 'present', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.mount in ['clear', 'ambiguous', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.child_count == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.child_count | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.child_count <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_file_metadata in ['not_applicable', 'safe', 'unsafe', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_files == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_files | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_files <= 32)
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children is mapping
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.keys() | list | sort == ['files', 'directories', 'symlinks', 'other'] | sort
@@ -1506,6 +1561,21 @@
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.symlinks == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.symlinks | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.symlinks <= 32)
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.other == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.other | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.other <= 32)
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | sum <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.keys() | list | sort == ['presence', 'type', 'owner', 'link_count', 'owner_execute', 'group_other_permissions', 'special_bits', 'acl', 'mount'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.presence in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.type in ['absent', 'regular_file', 'directory', 'symlink', 'other', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.owner in ['matches_collector', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.link_count in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.owner_execute in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.group_other_permissions in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.special_bits in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.acl in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.mount in ['clear', 'ambiguous', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.keys() | list | sort == ['root_mode', 'journal_child_count'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.root_mode in ['safe', 'unsafe', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.journal_child_count == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.journal_child_count | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.journal_child_count <= 32)
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.keys() | list | sort == ['receiver', 'exporter', 'attributes_processor', 'remotecfg'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.receiver.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
