@@ -1329,10 +1329,14 @@
 
     # Every deploy (agentgateway-openrouter task 3.8): an identity NOT allowed OpenRouter models must be
     # refused one. The gateway denies it at the request, before any upstream is contacted, so the probe
-    # costs nothing upstream. A 200 means the identity reached OpenRouter, which fails the deploy. A 429 is
-    # the gateway's own request bucket refusing before the model check: nothing is proven, so it fails
-    # unless agw_verify_allow_unproven accepts an unproven run, as the keyed round-trip does. Only the
-    # status is kept; the response body is never printed.
+    # costs nothing upstream. The refusal is HTTP 403 with error code `model_not_allowed` (measured with
+    # the pinned image by test_the_gateway_sends_the_openrouter_id_and_key_and_gates_the_model_by_identity).
+    # A 200 means the identity reached OpenRouter, which fails the deploy. A 429 counts only when its body
+    # is the gateway's own request bucket (`rate limit exceeded`): nothing is proven, so it fails unless
+    # agw_verify_allow_unproven accepts an unproven run, as the keyed round-trip does. Any other status or
+    # code fails. With agw_verify_openrouter the verifier is OpenRouter-allowed, so this check skips that
+    # run: the positive and negative OpenRouter proofs come from different identities or runs. Only the
+    # status, the error code and the bucket flag are kept; the response body is never printed.
     - name: "Keyed probes: pick an OpenRouter model the verifying identity may not use"
       ansible.builtin.set_fact:
         _verify_or_denied_model: "{{ _or_all | first }}"
@@ -1348,7 +1352,7 @@
       vars:
         _agwp_path: /v1/chat/completions
         _agwp_method: POST
-        _agwp_status: [400, 403, 404, 429]
+        _agwp_status: [403, 429]
         _agwp_timeout: 30
         _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
         _agwp_body:
@@ -1362,9 +1366,11 @@
         - _verify_client not in (_agw_openrouter_identities | default([]))
         - _or_all | length > 0
 
-    - name: "Keyed probes: keep the refusal's status"
+    - name: "Keyed probes: keep the refusal's status, error code and bucket flag"
       ansible.builtin.set_fact:
         _keyed_or_refused: "{{ _agwp_out.status | int }}"
+        _keyed_or_refused_code: "{{ ((_agwp_out.json | default({}, true)).error | default({}, true)).code | default('', true) }}"
+        _keyed_or_refused_bucket: "{{ (_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded' }}"
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -1375,14 +1381,14 @@
     - name: "Require the gateway to refuse an OpenRouter model the identity may not use"
       ansible.builtin.assert:
         that: >-
-          (_keyed_or_refused | int) in [400, 403, 404]
-          or ((_keyed_or_refused | int) == 429 and (agw_verify_allow_unproven | default(false) | bool))
+          ((_keyed_or_refused | int) == 403 and _keyed_or_refused_code == 'model_not_allowed')
+          or ((_keyed_or_refused_bucket | bool) and (agw_verify_allow_unproven | default(false) | bool))
         fail_msg: >-
-          {% if (_keyed_or_refused | int) == 429 %}{{ _verify_client }}'s OpenRouter refusal probe was refused by
+          {% if _keyed_or_refused_bucket | bool %}{{ _verify_client }}'s OpenRouter refusal probe was refused by
           the gateway's own request bucket (HTTP 429), so the allow-list was not proven; rerun after the window,
           or accept with agw_verify_allow_unproven=true.{% else %}{{ _verify_client }} is not allowed OpenRouter
-          models, but a request for {{ _verify_or_denied_model }} answered HTTP {{ _keyed_or_refused }}: the
-          allow-list did not hold.{% endif %}
+          models, but a request for {{ _verify_or_denied_model }} answered HTTP {{ _keyed_or_refused }}{{ (' (' ~ _keyed_or_refused_code ~ ')') if _keyed_or_refused_code else '' }},
+          not the gateway's refusal (403 model_not_allowed): the allow-list did not hold or the gateway changed its refusal.{% endif %}
         quiet: true
       when:
         - not ansible_check_mode
@@ -1835,10 +1841,10 @@
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
           {% if _keyed_or_chat is defined %}One OpenRouter completion for {{ _verify_or_model }}
           answered HTTP {{ _keyed_or_chat.status }}.{% endif %}
-          {% if _keyed_or_refused is defined and (_keyed_or_refused | int) == 429 %}The OpenRouter refusal for
+          {% if _keyed_or_refused_bucket | default(false) | bool %}The OpenRouter refusal for
           {{ _verify_client }} was not proven (HTTP 429, request bucket).{% elif _keyed_or_refused is defined %}The
           OpenRouter model {{ _verify_or_denied_model }} is refused for {{ _verify_client }} (HTTP
-          {{ _keyed_or_refused }}).{% endif %}
+          403, model_not_allowed).{% endif %}
           {% else %}No enrolled identity (agw_identities is empty): the keyed round-trip was not
           run.{% endif %}
 
@@ -1851,7 +1857,7 @@
         _service_deploy_result:
           skipped: "{{ _deploy is not defined or _deploy is skipped }}"
           changed: "{{ (_deploy | default({})).changed | default(false) }}"
-          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) and (_keyed_or_refused | default(-1) | int) != 429 }}"
+          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) and not (_keyed_or_refused_bucket | default(false) | bool) }}"
 
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml

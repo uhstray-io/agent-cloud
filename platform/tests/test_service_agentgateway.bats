@@ -375,9 +375,10 @@ PY
   assert_grep -qF '.allowed_models' "$PLAYBOOK"
   assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
   assert_grep -qF '(_keyed_models.status | default(-1) | int) == 429' "$PLAYBOOK"
-  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails. Two checks on
-  # the keyed /v1 round-trip, and the same on the MCP initialize, tool listing and model call.
-  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 5 ]
+  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails. Three checks on
+  # the keyed /v1 requests (listing, completion, OpenRouter refusal probe), and the same on the MCP
+  # initialize, tool listing and model call.
+  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 6 ]
   assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
   # An unproven round-trip fails the deploy unless the operator accepts it, and that refusal
   # runs before the completion assert it would otherwise skip.
