@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -4983,7 +4984,21 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert apply_block["when"] == "not ansible_check_mode"
     apply_task_names = [task.get("name") for task in apply_block["block"]]
-    assert apply_play["tasks"].index(pre_mount) + 3 == apply_play["tasks"].index(apply_block)
+    preflight_block = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Verify the Loki query client before promoting collector config"
+    )
+    preflight_assertion = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Require Loki query client and successful JSON response before config promotion"
+    )
+    config_promotion = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Promote the validated candidate config for the collector"
+    )
+    assert apply_play["tasks"].index(preflight_block) < apply_play["tasks"].index(preflight_assertion)
+    assert apply_play["tasks"].index(preflight_assertion) < apply_play["tasks"].index(config_promotion)
+    assert apply_play["tasks"].index(pre_mount) < apply_play["tasks"].index(apply_block)
     assert apply_play["tasks"][apply_play["tasks"].index(pre_mount) + 1]["name"] == (
         "Parse immediate pre-mount positions output through a protected boundary"
     )
@@ -5479,8 +5494,10 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
         if task.get("name") == "Verify the exact bounded journal stream reached Loki"
     )
     argv = receipt["ansible.builtin.command"]["argv"]
-    assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q", "-T", "5"]
-    assert "--timeout=5" not in argv and "--tries=1" not in argv
+    assert argv[:3] == ["/usr/bin/timeout", "--signal=KILL", "12s"]
+    assert argv[argv.index("o11y-grafana") + 1:argv.index("wget")] == ["timeout", "-s", "KILL", "8"]
+    assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q"]
+    assert "-T" not in argv and "--timeout=5" not in argv and "--tries=1" not in argv
     assert receipt["retries"] == 36 and receipt["delay"] == 5
     assert argv[-1] == "{{ _journal_loki_query_url }}"
     assert any(
@@ -5520,7 +5537,9 @@ def test_loki_assert_conditions_accept_fresh_values_key_and_reject_stale_sample(
         task for task in apply_task["block"]
         if task.get("name") == "Require an exact service and signal stream in Loki"
     )
+
     def evaluate(samples):
+        # Evaluate the playbook's actual `that` expressions with Ansible's templar and filters.
         evaluator = """
 import json, sys
 from ansible.parsing.dataloader import DataLoader
@@ -6198,3 +6217,152 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert "stdout" not in pre_mount_gate["ansible.builtin.assert"]["fail_msg"]
     assert "stdout" not in debug["ansible.builtin.debug"]["msg"]
     assert "from_json" not in debug["ansible.builtin.debug"]["msg"]
+
+
+@needs_ansible
+def test_loki_preflight_refuses_before_promotion_and_uses_successful_json_status():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    def nested(nodes):
+        for node in nodes:
+            yield node
+            for section in ("block", "rescue", "always"):
+                yield from nested(node.get(section, []))
+
+    all_tasks = list(nested(apply["tasks"]))
+    preflight = next(
+        task for task in all_tasks
+        if task.get("name") == "Query Loki with Grafana's bounded wget client"
+    )
+    preflight_assertion = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Require Loki query client and successful JSON response before config promotion"
+    )
+    promotion = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Promote the validated candidate config for the collector"
+    )
+    start = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assert apply["tasks"].index(preflight_assertion) < apply["tasks"].index(promotion)
+    assert apply["tasks"].index(promotion) < apply["tasks"].index(start)
+    argv = preflight["ansible.builtin.command"]["argv"]
+    assert argv == [
+        "/usr/bin/timeout", "--signal=KILL", "12s", "podman", "exec", "o11y-grafana",
+        "timeout", "-s", "KILL", "8", "wget", "-q", "-O", "-", "{{ _journal_loki_query_url }}",
+    ]
+    assert "-T" not in argv and "--timeout" not in argv and "--tries" not in argv
+    assert preflight["no_log"] is True
+    assert preflight["failed_when"] is False
+    condition = preflight_assertion["ansible.builtin.assert"]["that"][0]
+    classifier = next(
+        task for task in all_tasks
+        if task.get("name") == "Classify the Loki client and response shape"
+    )
+    expression = classifier["ansible.builtin.set_fact"]["_journal_loki_preflight_status"]
+    evaluator = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for request in job["requests"]:
+    templar = Templar(loader=DataLoader(), variables={"_journal_loki_preflight_request": request})
+    status = templar.template(trust_as_template(job["expression"]))
+    condition_templar = Templar(loader=DataLoader(), variables={"_journal_loki_preflight_status": status})
+    results.append((status, condition_templar.evaluate_conditional(trust_as_template(job["condition"]))))
+print(json.dumps(results))
+"""
+    evaluated = subprocess.run(
+        [ansible_python(), "-c", evaluator],
+        input=json.dumps({
+            "condition": condition,
+            "expression": expression,
+            "requests": [
+                {"rc": 0, "stdout": json.dumps({"status": "success", "data": {"result": []}})},
+                {"rc": 0, "stdout": json.dumps({"status": "error"})},
+                {"rc": 1, "stdout": "private response body"},
+            ],
+        }),
+        text=True, capture_output=True, timeout=30,
+    )
+    assert evaluated.returncode == 0, evaluated.stderr
+    assert json.loads(evaluated.stdout) == [
+        ["available", True], ["response_unverified", False], ["request_failed", False],
+    ]
+
+    receipt = next(
+        task for task in start["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    assert receipt["ansible.builtin.command"]["argv"] == argv
+    assert receipt["retries"] == 36  # Ansible makes 37 total attempts.
+    assert receipt["delay"] == 5
+
+    fresh_timestamp = start["block"][0]
+    assert fresh_timestamp["name"] == "Capture the fresh post-preflight lower bound immediately before collector start"
+    assert fresh_timestamp["register"] == "_journal_verification_start"
+    assert start["block"][1]["name"] == "Start only the journal collector service"
+
+
+def test_stalled_loki_wget_is_killed_inside_the_grafana_exec_session():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    preflight_block = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Verify the Loki query client before promoting collector config"
+    )
+    preflight = next(
+        task for task in preflight_block["block"]
+        if task.get("name") == "Query Loki with Grafana's bounded wget client"
+    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        fake_bin = Path(temp_dir) / "bin"
+        fake_bin.mkdir()
+        timeout = fake_bin / "timeout"
+        timeout.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, signal, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "if args[0] == '--signal=KILL':\n"
+            "    seconds, command = float(args[1][:-1]), args[2:]\n"
+            "else:\n"
+            "    assert args[:2] == ['-s', 'KILL']\n"
+            "    seconds, command = float(args[2]), args[3:]\n"
+            "child = subprocess.Popen(command)\n"
+            "try:\n"
+            "    raise SystemExit(child.wait(timeout=seconds))\n"
+            "except subprocess.TimeoutExpired:\n"
+            "    child.send_signal(signal.SIGKILL)\n"
+            "    child.wait()\n"
+            "    raise SystemExit(137)\n"
+        )
+        timeout.chmod(0o755)
+        podman = fake_bin / "podman"
+        podman.write_text("#!/bin/sh\nshift 2\nexec \"$@\"\n")
+        podman.chmod(0o755)
+        wget = fake_bin / "wget"
+        wget.write_text("#!/bin/sh\nexec /bin/sleep 30\n")
+        wget.chmod(0o755)
+
+        command = list(preflight["ansible.builtin.command"]["argv"])
+        command[0] = str(timeout)
+        command[2] = "3s"
+        command[command.index("8")] = "0.2"
+        command[command.index("podman")] = str(podman)
+        started = time.monotonic()
+        result = subprocess.run(
+            command,
+            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        elapsed = time.monotonic() - started
+
+    assert result.returncode != 0
+    assert elapsed < 2
+    assert result.stdout == ""
+    assert result.stderr == ""

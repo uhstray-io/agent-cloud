@@ -531,6 +531,81 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Capture a timestamp for the read-only Loki client preflight
+      ansible.builtin.command:
+        argv: [date, +%s%N]
+      register: _journal_verification_start
+      changed_when: false
+      check_mode: false
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
+
+    - name: Verify the Loki query client before promoting collector config
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
+      block:
+        - name: Query Loki with Grafana's bounded wget client
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/timeout
+              - --signal=KILL
+              - 12s
+              - podman
+              - exec
+              - o11y-grafana
+              - timeout
+              - -s
+              - KILL
+              - "8"
+              - wget
+              - -q
+              - -O
+              - "-"
+              - "{{ _journal_loki_query_url }}"
+          register: _journal_loki_preflight_request
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Classify the protected Loki preflight response
+          block:
+            - name: Classify the Loki client and response shape
+              ansible.builtin.set_fact:
+                _journal_loki_preflight_status: >-
+                  {{ 'request_failed' if _journal_loki_preflight_request.rc | default(1) | int != 0 else
+                     ('available' if (_journal_loki_preflight_request.stdout | default('{}') | from_json).status | default('') == 'success' else 'response_unverified') }}
+              no_log: true
+          rescue:
+            - name: Mark malformed Loki preflight output unverified
+              ansible.builtin.set_fact:
+                _journal_loki_preflight_status: response_unverified
+
+      rescue:
+        - name: Mark an unexpected Loki preflight error as unverified
+          ansible.builtin.set_fact:
+            _journal_loki_preflight_status: response_unverified
+
+    - name: Report only the fixed Loki preflight category
+      ansible.builtin.debug:
+        msg: "Loki preflight={{ _journal_loki_preflight_status | default('response_unverified') }}; no collector config promotion or start was requested."
+      changed_when: false
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
+
+    - name: Require Loki query client and successful JSON response before config promotion
+      ansible.builtin.assert:
+        that:
+          - _journal_loki_preflight_status | default('response_unverified') == 'available'
+        fail_msg: "Loki query preflight failed or returned an unverified response; no collector config promotion or start was requested."
+        quiet: true
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
+
     - name: Promote the validated candidate config for the collector
       ansible.builtin.copy:
         src: "{{ _journal_candidate_path }}"
@@ -594,7 +669,7 @@
     - name: Apply the collector and require exact-target Loki delivery
       when: not ansible_check_mode
       block:
-        - name: Capture the pre-start lower bound for this run's Loki receipt
+        - name: Capture the fresh post-preflight lower bound immediately before collector start
           ansible.builtin.command:
             argv: [date, +%s%N]
           register: _journal_verification_start
@@ -1045,15 +1120,20 @@
         - name: Verify the exact bounded journal stream reached Loki
           ansible.builtin.command:
             argv:
+              - /usr/bin/timeout
+              - --signal=KILL
+              - 12s
               - podman
               - exec
               - o11y-grafana
+              - timeout
+              - -s
+              - KILL
+              - "8"
               - wget
               - -q
-              - -T
-              - "5"
               - -O
-              - -
+              - "-"
               - "{{ _journal_loki_query_url }}"
           register: _journal_loki_result
           changed_when: false
