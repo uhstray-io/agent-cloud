@@ -1075,8 +1075,8 @@
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result | length > 0
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.service == 'o11y/alloy'
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.signal == 'container'
-              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values | length > 0
-              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values[0][0] | int >= _journal_verification_start.stdout | trim | int
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'] | length > 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'][0][0] | int >= _journal_verification_start.stdout | trim | int
             fail_msg: >-
               Loki has no exact o11y/alloy container stream in the last 15 minutes;
               no post-start sample arrived within three minutes. The collector will be
