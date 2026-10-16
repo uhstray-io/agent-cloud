@@ -621,7 +621,7 @@ operator's go for it. site-config changes land through its own pull requests.
       Remaining: `agent-cloud-admin` and `svc-automation`. Not ticked.
       2026-10-14 (reported by the operator): `client_jacob` was handed to its person by the operator.
       The handout task above is the only record of the file; delivery is the operator's report.
-- [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
+- [x] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
       exist and removal would drop the key). The render changes only on deploy, so after the
       site-config merge: sync the inventory into Semaphore (`sync-inventory.yml`, check
@@ -643,6 +643,16 @@ operator's go for it. site-config changes land through its own pull requests.
       Not ticked. This task asks for the rendered `keyHash` count read before and after, as in 6.3,
       and no literal count was read. The deploy's assertions and the key probe stand in for it here;
       6.3 stays open for the same gap.
+      2026-10-15, later: ticked. The count before and after is equal by derivation, without printing it:
+      - The render check asserts that key entries equal the declared identities
+        (`deploy-agentgateway.yml`, task "Require the rendered config to hold one key entry per
+        declared identity"), and it passed in both 5771 (before) and 5900 (after).
+      - #91's review found the declared identity set equal before and after: nine names, only the
+        order changed.
+      - So entries-before = |set| = entries-after. No key dropped. The live probes show that
+        the operator's and `opencode`'s keys still work.
+      From the next deploy on, the deploy prints the count itself (follow-up pull request
+      `feat/agw-verify-count-or-refusal`).
 - [ ] 6.9 Validation gate, production: an unauthenticated `initialize` to the MCP hostname
       is 401 with no challenge header, proving scenario "The MCP hostname is not reachable
       without a key"; the newly declared admin's `client_<name>` exists and its key
@@ -814,6 +824,18 @@ operator's go for it. site-config changes land through its own pull requests.
       collection from `pyproject.toml`, `ruff`, `shellcheck`, `ansible-lint`, `yamllint`,
       `tofu fmt -check`; then the pre-push audit on the staged diff (the greps and the
       scanner) and `/simplify` and `/security-review`
+      2026-10-15 (run by the lead on a clean detached worktree of `dev` at 38548ab5):
+      - `bats platform/tests/`: 938 ok, 0 not ok.
+      - pytest from the root: 6855 passed, 9 skipped. The two NetBox helper files fail to import
+        without CI's `PYTHONPATH`; with the NetBox shard's path set, 123 passed.
+      - `ruff check .`, `shellcheck -S warning` over every `*.sh` outside `netbox-docker`,
+        `yamllint -c .yamllint.yml .` and `ansible-lint platform/playbooks/ platform/semaphore/`
+        each exit 0, with warnings only.
+      - `terraform fmt -check` was not run locally (no binary). CI's Static Analysis, which runs
+        it, passed on #668's head d41560d1, and nothing under `platform/services/openbao` differs
+        between that head and 38548ab5.
+      Not ticked: the pre-push audit, `/simplify` and `/security-review` need a staged diff. They
+      ran per pull request as the change landed in pieces (9.3), not on this whole-tree run.
 - [x] 9.3 Push and open the pull request into `dev` only when the operator asks; one review
       round, every finding fixed or answered, checks green on the final head
       2026-10-15: the change landed as several pull requests rather than one. agent-cloud #626, #634,
@@ -829,7 +851,7 @@ operator's go for it. site-config changes land through its own pull requests.
 - [ ] 9.4 After the production rollout, `openspec archive agentgateway-mcp`, and retain one
       memory in the repo's Hindsight bank: whether it worked, the root cause of anything
       that failed, and the constraint found (worked / dead end / corrected)
-- [ ] 9.5 Validation gate: a request for `/mcp` on the inference hostname is still 404
+- [x] 9.5 Validation gate: a request for `/mcp` on the inference hostname is still 404
       after everything above, proving scenario "The inference allowlist is unchanged"; an
       unauthenticated `initialize` is still 401 on the MCP hostname in production, proving
       scenario "Unauthenticated MCP request is refused"
@@ -842,3 +864,7 @@ operator's go for it. site-config changes land through its own pull requests.
       hostname: an unauthenticated POST to `/mcp` is 401 with no challenge (6.5), which is the second
       half of this gate. The first half's literal outcome (404) was not observed in production; the
       observed 403 challenge is a stricter refusal of the same request, not a regression.
+      2026-10-15: ticked on the operator's decision of the same day: the production 403 (the
+      Cloudflare challenge, before Caddy) closes the first half. The Caddy-level 404 is proven
+      locally, and the inference allowlist is unchanged. The edge skip rule is not widened just to
+      make the probe see a 404.

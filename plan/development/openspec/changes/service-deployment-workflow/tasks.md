@@ -744,6 +744,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - 2026-10-14: the step count is twenty-three. `platform/workflows/service-onboarding/registry.yml`
         carries 23 `- id:` entries (counted 2026-10-14); the 2026-10-04 note under 7.1 records
         the step that raised it from twenty-two. Not ticked
+      - 2026-10-15: the operator picked **hickory-dns** as the pilot service. It runs locally and is
+        planned for production, and its production rollout also unblocks section 7 of
+        inference-gateway-agentgateway ("needs hickory-dns in production"). The run itself waits
+        on 7.6 (the skynet-built onboarding graph). Not ticked
 - [ ] 10.2 Update the diagram to the twenty-three steps, plan 15 status, root `AGENTS.md`
       workflow rows
       - 2026-10-14: same count as 10.1 (23 registry entries; the diagram must show twenty-three).

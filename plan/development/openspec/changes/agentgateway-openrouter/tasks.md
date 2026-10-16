@@ -81,8 +81,18 @@ templates, never one-off writes.
       lists `qwen3.8-flash-next` and all eight OpenRouter models. Lead probe 2026-10-15 with the
       operator's key: `anthropic/claude-opus-5.5` answered 200 through
       https://inference.uhstray.io/v1 (22 tokens).
-- [ ] 3.5 Measure whether OpenRouter tolerates `continuous_usage_stats`; if so, use the vLLM
+- [x] 3.5 Measure whether OpenRouter tolerates `continuous_usage_stats`; if so, use the vLLM
       transformation for OpenRouter models too (design D5)
+      2026-10-15 (lead probe through https://inference.uhstray.io/v1 with the operator's key, not a
+      Semaphore task): two streamed requests to `deepseek/deepseek-v4.1-flash`, `max_tokens` 24.
+      - Without `stream_options`: HTTP 200, 10 chunks, usage on 1 chunk, the final one.
+      - With `{"include_usage": true, "continuous_usage_stats": true}`: HTTP 200, 10 chunks,
+        usage on 1 chunk, the final one.
+      The template keeps the client's other `stream_options` keys (`config.yaml.j2`, the OpenRouter
+      transformation), so the field reached OpenRouter. OpenRouter tolerates it and ignores it.
+      The vLLM transformation's point, a charge on every chunk, cannot be had from OpenRouter, so
+      the switch is not made. Ticked on the measurement; design D5's consequence stands: a client
+      that disconnects before the final chunk is not charged.
 - [x] 3.6 `mcp-self` excludes the OpenRouter names through the shared macro; it and `legacy-shared`
       cannot be listed (`test_mcp_self_keeps_an_explicit_allow_list_without_the_openrouter_names`,
       `test_an_internal_identity_listed_for_openrouter_is_refused_by_name`)
