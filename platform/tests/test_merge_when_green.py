@@ -26,6 +26,10 @@ INTERMEDIATE_PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpat
 PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-playbook-safety-partition.txt").read_bytes()
 
+# The workflow as it stood before the Node pi provider job was added.
+AGW_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-agw-partition.txt").read_bytes()
+
 
 def _blob_sha(source):
     return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
@@ -34,7 +38,8 @@ def _blob_sha(source):
 assert _blob_sha(PRE_PARTITION_WORKFLOW) == guard.PRE_PARTITION_WORKFLOW_BLOB_SHA
 assert _blob_sha(INTERMEDIATE_PARTITIONED_WORKFLOW) == "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
 assert _blob_sha(PARTITIONED_WORKFLOW) == guard.PARTITIONED_WORKFLOW_BLOB_SHA
-assert _blob_sha(CURRENT_WORKFLOW) == guard.AGW_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(AGW_WORKFLOW) == guard.AGW_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.NODE_PARTITIONED_WORKFLOW_BLOB_SHA
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -156,6 +161,14 @@ class FakeGitHub:
 
     def set_partition_transition(self):
         self.workflow_sources[BASE] = PARTITIONED_WORKFLOW
+        self.workflow_sources[HEAD] = AGW_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_node_transition(self):
+        self.workflow_sources[BASE] = AGW_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
@@ -229,6 +242,9 @@ class MergeGuardTests(unittest.TestCase):
         changes = [
             (lambda api: api.jobs.pop("Python core"), "Missing expected Actions jobs"),
             (lambda api: api.jobs.pop("Python Playbook Safety"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs.pop("Node pi provider"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs["Node pi provider"].update(conclusion="failure"), "Node pi provider is failure"),
+            (lambda api: api.jobs["Node pi provider"].update(conclusion="skipped"), "was skipped"),
             (lambda api: api.jobs["Python Playbook Safety"].update(
                 status="in_progress", conclusion=None), "incomplete"),
             (lambda api: api.jobs["Python Playbook Safety"].update(
@@ -290,28 +306,81 @@ class MergeGuardTests(unittest.TestCase):
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
+    def test_agentgateway_partition_unchanged_is_still_allowed(self):
+        api = FakeGitHub()
+        api.workflow_source = AGW_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_agentgateway_to_node_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_node_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_agentgateway_to_node_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_node_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_node_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_node_transition_or_node_baseline_is_accepted(self):
+        cases = [
+            ("agentgateway to node with extra byte", lambda api: (
+                api.set_node_transition(),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+            ("partitioned base to node head", lambda api: api.workflow_sources.__setitem__(
+                BASE, PARTITIONED_WORKFLOW)),
+            ("pre-partition base to node head", lambda api: api.workflow_sources.__setitem__(
+                BASE, PRE_PARTITION_WORKFLOW)),
+            ("node base to agentgateway head", lambda api: api.workflow_sources.__setitem__(
+                HEAD, AGW_WORKFLOW)),
+            ("node base to partitioned head", lambda api: api.workflow_sources.__setitem__(
+                HEAD, PARTITIONED_WORKFLOW)),
+            ("node base with extra byte", lambda api: api.workflow_sources.__setitem__(
+                BASE, CURRENT_WORKFLOW + b"# extra\n")),
+            ("node base to edited head", lambda api: api.workflow_sources.__setitem__(
+                HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+            ("agentgateway base to node head with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api)
+
     def test_only_exact_transition_or_partitioned_baseline_is_accepted(self):
         cases = [
             ("unsupported base", lambda api: api.workflow_sources.__setitem__(BASE, b"other")),
             ("extra candidate byte", lambda api: api.workflow_sources.__setitem__(
-                HEAD, CURRENT_WORKFLOW + b"# extra\n")),
-            ("reverse transition", lambda api: (api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                HEAD, AGW_WORKFLOW + b"# extra\n")),
+            ("reverse transition", lambda api: (api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
                                                   api.workflow_sources.__setitem__(HEAD, PARTITIONED_WORKFLOW))),
             ("reverse to pre-partition", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, PRE_PARTITION_WORKFLOW))),
             ("skip the playbook safety state", lambda api: (
                 api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW))),
             ("agentgateway base with extra byte", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n"),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW))),
             ("agentgateway base to different head", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+                api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW + b"# extra\n"))),
             ("playbook safety base to edited head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, PARTITIONED_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+                api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW + b"# extra\n"))),
             ("old baseline unchanged", lambda api: (api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
                                                       api.workflow_sources.__setitem__(HEAD, PRE_PARTITION_WORKFLOW))),
         ]
@@ -325,7 +394,7 @@ class MergeGuardTests(unittest.TestCase):
     def test_intermediate_partition_is_rejected_as_base_or_head(self):
         cases = (
             ("intermediate head", PRE_PARTITION_WORKFLOW, INTERMEDIATE_PARTITIONED_WORKFLOW),
-            ("intermediate base", INTERMEDIATE_PARTITIONED_WORKFLOW, CURRENT_WORKFLOW),
+            ("intermediate base", INTERMEDIATE_PARTITIONED_WORKFLOW, AGW_WORKFLOW),
             ("intermediate head after playbook safety", PARTITIONED_WORKFLOW, INTERMEDIATE_PARTITIONED_WORKFLOW),
         )
         for label, base, head in cases:
@@ -357,6 +426,7 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_agentgateway_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = AGW_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
         run_refusal(self, api, "Agentgateway partition may only remain byte-identical")
 
@@ -602,15 +672,22 @@ class MergeGuardTests(unittest.TestCase):
             guard.check_workflow_policy(changed, partitioned=True)
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
             guard.check_workflow_policy(changed, agw=True)
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, node=True)
 
     def test_each_policy_state_requires_exactly_its_own_job_set(self):
         guard.check_workflow_policy(PARTITIONED_WORKFLOW, partitioned=True)
-        guard.check_workflow_policy(CURRENT_WORKFLOW, agw=True)
+        guard.check_workflow_policy(AGW_WORKFLOW, agw=True)
+        guard.check_workflow_policy(CURRENT_WORKFLOW, node=True)
         for label, source, kwargs in (
-            ("agentgateway workflow read as playbook safety", CURRENT_WORKFLOW, {"partitioned": True}),
+            ("agentgateway workflow read as playbook safety", AGW_WORKFLOW, {"partitioned": True}),
             ("playbook safety workflow read as agentgateway", PARTITIONED_WORKFLOW, {"agw": True}),
-            ("agentgateway job renamed", CURRENT_WORKFLOW.replace(
+            ("agentgateway workflow read as node", AGW_WORKFLOW, {"node": True}),
+            ("node workflow read as agentgateway", CURRENT_WORKFLOW, {"agw": True}),
+            ("agentgateway job renamed", AGW_WORKFLOW.replace(
                 b"name: Python Agentgateway", b"name: Python Agw", 1), {"agw": True}),
+            ("node job renamed", CURRENT_WORKFLOW.replace(
+                b"name: Node pi provider", b"name: Node pi", 1), {"node": True}),
         ):
             with self.subTest(label=label), self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
                 guard.check_workflow_policy(source, **kwargs)
@@ -622,7 +699,7 @@ class MergeGuardTests(unittest.TestCase):
             1,
         )
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
-            guard.check_workflow_policy(changed, agw=True)
+            guard.check_workflow_policy(changed, node=True)
 
     def test_ambiguous_merge_response_is_read_back_and_never_retried(self):
         api = FakeGitHub()

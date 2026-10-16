@@ -135,15 +135,26 @@ def test_python_shards_collect_exactly_the_root_node_ids():
     )
 
 
+def test_node_pi_provider_job_runs_the_pi_provider_suite():
+    job = _jobs()["node-pi-provider"]
+    assert job["name"] == "Node pi provider"
+    checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout.get("with", {}).get("persist-credentials") is False
+    run = next(step for step in job["steps"] if step.get("name") == "Run pi provider tests")
+    assert run["run"] == "node --test gateway.test.ts"
+    assert (REPO / run["working-directory"] / "gateway.test.ts").is_file()
+
+
 def test_unit_tests_aggregate_requires_playbook_safety_success_for_every_result():
     aggregate = _jobs()["test"]
     assert aggregate["if"] == "always()"
     assert "python-playbook-safety" in aggregate["needs"]
     assert "python-agentgateway" in aggregate["needs"]
+    assert "node-pi-provider" in aggregate["needs"]
     gate = aggregate["steps"][0]
     required = {
         "PYTHON_CORE_RESULT", "PYTHON_PLAYBOOK_SAFETY_RESULT", "PYTHON_AGENTGATEWAY_RESULT",
-        "PYTHON_NETBOX_RESULT", "PYTHON_SEMAPHORE_RESULT", "BATS_RESULT", "REGO_RESULT",
+        "NODE_PI_PROVIDER_RESULT", "PYTHON_NETBOX_RESULT", "PYTHON_SEMAPHORE_RESULT", "BATS_RESULT", "REGO_RESULT",
     }
     assert set(gate["env"]) == required
     for name in required:
