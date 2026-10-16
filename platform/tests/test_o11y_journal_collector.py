@@ -451,9 +451,14 @@ def test_seed_metadata_is_descriptor_safe_bounded_and_never_reads_contents(tmp_p
     os.chmod(root, 0o700)
     seed = root / "alloy_seed.json"
     seed.write_text("PRIVATE_SEED_CONTENT")
+    pinned_seed_fd = os.open(seed, os.O_RDONLY)
 
     fixture_os = SimpleNamespace(**os.__dict__)
     fixture_os.listxattr = lambda *_args, **_kwargs: []
+    real_open = os.open
+    fixture_os.open = lambda path, *args, **kwargs: (
+        os.dup(pinned_seed_fd) if path == "alloy_seed.json" else real_open(path, *args, **kwargs)
+    )
     namespace = {
         "os": fixture_os, "stat": stat,
         "mount_id": lambda path: (7, str(path).rsplit("/", 1)[0]),
@@ -481,19 +486,31 @@ def test_seed_metadata_is_descriptor_safe_bounded_and_never_reads_contents(tmp_p
     assert observe(str(root), os.lstat(root), (7, str(root)))["owner_execute"] == "present"
     seed.chmod(0o640)
     assert observe(str(root), os.lstat(root), (7, str(root)))["group_other_permissions"] == "present"
-    original_stat = os.stat
+    real_stat = os.stat
+    real_fstat = os.fstat
+
+    def with_special_bits(current):
+        return SimpleNamespace(
+            st_dev=current.st_dev, st_ino=current.st_ino, st_uid=current.st_uid,
+            st_gid=current.st_gid, st_mode=stat.S_IFREG | 0o4600,
+            st_nlink=current.st_nlink, st_mtime_ns=current.st_mtime_ns,
+        )
+
     def special_stat(path, *args, **kwargs):
-        current = original_stat(path, *args, **kwargs)
-        if path == "alloy_seed.json":
-            return SimpleNamespace(
-                st_dev=current.st_dev, st_ino=current.st_ino, st_uid=current.st_uid,
-                st_gid=current.st_gid, st_mode=stat.S_IFREG | 0o4600, st_nlink=current.st_nlink,
-                st_mtime_ns=current.st_mtime_ns,
-            )
-        return current
+        current = real_stat(path, *args, **kwargs)
+        return with_special_bits(current) if path == "alloy_seed.json" or path == str(seed) else current
+
+    def special_fstat(fd):
+        current = real_fstat(fd)
+        seed_stat = real_stat(seed)
+        return with_special_bits(current) if (current.st_dev, current.st_ino) == (
+            seed_stat.st_dev, seed_stat.st_ino,
+        ) else current
+
     special_os = SimpleNamespace(**os.__dict__)
-    special_os.stat = special_stat
     special_os.listxattr = lambda *_args, **_kwargs: []
+    special_os.stat = special_stat
+    special_os.fstat = special_fstat
     special_namespace = {
         "os": special_os, "stat": stat, "mount_id": namespace["mount_id"],
     }
@@ -510,6 +527,7 @@ def test_seed_metadata_is_descriptor_safe_bounded_and_never_reads_contents(tmp_p
     symlink = observe(str(root), os.lstat(root), (7, str(root)))
     assert symlink["presence"] == "present" and symlink["type"] == "symlink"
     assert symlink["owner"] == symlink["mount"] == "unverified"
+    os.close(pinned_seed_fd)
 
 
 def test_seed_metadata_acl_mount_errors_and_identity_races_are_unverified(tmp_path):
@@ -566,9 +584,53 @@ def test_seed_metadata_acl_mount_errors_and_identity_races_are_unverified(tmp_pa
     raced = race_namespace["seed_observation"](str(root), os.lstat(root), (7, str(root)))
     assert calls == 2 and set(raced.values()) == {"unverified"}
 
+    replace_root = tmp_path / "replace-parent"
+    replace_root.mkdir(mode=0o700)
+    os.chmod(replace_root, 0o700)
+    (replace_root / "alloy_seed.json").write_text("PRIVATE_SEED_CONTENT")
+    original_root_stat = os.lstat(replace_root)
+    moved_root = tmp_path / "original-parent"
+    replaced = False
+
+    def replace_parent_during_mount(path):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            replace_root.rename(moved_root)
+            replace_root.mkdir(mode=0o700)
+            (replace_root / "alloy_seed.json").write_text("REPLACEMENT_CONTENT")
+        return (7, str(path).rsplit("/", 1)[0])
+
+    parent_os = SimpleNamespace(**os.__dict__)
+    parent_os.listxattr = lambda *_args, **_kwargs: []
+    parent_namespace = {
+        "os": parent_os, "stat": stat, "mount_id": replace_parent_during_mount,
+    }
+    exec(
+        compile(ast.Module(body=functions, type_ignores=[]), "seed-parent-replacement", "exec"),
+        parent_namespace,
+    )
+    parent_race = parent_namespace["seed_observation"](
+        str(replace_root), original_root_stat, (7, str(replace_root)),
+    )
+    assert replaced and set(parent_race.values()) == {"unverified"}
+    assert "REPLACEMENT_CONTENT" not in json.dumps(parent_race)
+
 
 def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
     tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    assert not any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
+        and node.func.attr == "listdir"
+        for node in ast.walk(tree)
+    )
+    bounded_scans = {
+        ast.unparse(node.args[0]) for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "bounded_names" and node.args
+    }
+    assert {"root_fd", "directory_fd"} <= bounded_scans
     functions = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef)
@@ -597,6 +659,7 @@ def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
     component_inode = os.fstat(component_fd).st_ino
     os.close(component_fd)
     seen = 0
+    growth_entries = 0
 
     def changed_enumeration(path):
         nonlocal seen
@@ -616,8 +679,11 @@ def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
                         self.entries.close()
 
                     def __iter__(self):
+                        nonlocal growth_entries
                         yield from self.entries
-                        yield ExtraEntry()
+                        for _ in range(1000):
+                            growth_entries += 1
+                            yield ExtraEntry()
 
                 return ExtraScandir()
         return values
@@ -629,6 +695,7 @@ def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
     exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata-race", "exec"), race_namespace)
     raced = race_namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
     assert seen == 2
+    assert growth_entries == 32
     assert set(raced["component"].values()) == {"unverified"}
 
     (component / "positions.yml").unlink()

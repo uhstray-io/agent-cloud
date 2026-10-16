@@ -204,6 +204,7 @@ def unverified_seed_metadata():
 def seed_observation(root_path, root_stat, root_mount):
     result=unverified_seed_metadata()
     root_fd=None
+    seed_fd=None
     name="alloy_seed.json"
     try:
         identity=lambda value:(value.st_dev,value.st_ino,value.st_uid,value.st_gid,
@@ -222,7 +223,9 @@ def seed_observation(root_path, root_stat, root_mount):
             after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
             stable = identity(after) == identity(before) and identity(os.fstat(root_fd)) == identity(root_stat)
             return result if stable else unverified_seed_metadata()
-        opened=before
+        seed_fd=os.open(name,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
+        opened=os.fstat(seed_fd)
+        if identity(opened)!=identity(before): return unverified_seed_metadata()
         result.update(
             owner="matches_collector" if (opened.st_uid,opened.st_gid)==(0,0) else "mismatch",
             link_count="match" if opened.st_nlink==1 else "mismatch",
@@ -231,12 +234,27 @@ def seed_observation(root_path, root_stat, root_mount):
             special_bits="present" if opened.st_mode & 0o7000 else "absent",
         )
         seed_path=os.path.join(root_path,name)
-        acl_found=any("acl" in value.lower() for value in os.listxattr(seed_path,follow_symlinks=False))
-        observed_mount=mount_id(seed_path)
-        after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
-        acl_after=any("acl" in value.lower() for value in os.listxattr(seed_path,follow_symlinks=False))
-        mount_after=mount_id(seed_path)
-        if (identity(after)!=identity(before) or identity(opened)!=identity(before)
+        acl_found=any("acl" in value.lower() for value in os.listxattr(seed_fd))
+        def checked_mount():
+            root_before=os.lstat(root_path)
+            seed_before=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+            path_before=os.stat(seed_path,follow_symlinks=False)
+            if (identity(root_before)!=identity(root_stat) or identity(seed_before)!=identity(opened)
+                    or identity(path_before)!=identity(opened)):
+                return None
+            observed=mount_id(seed_path)
+            root_after=os.lstat(root_path)
+            seed_after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+            path_after=os.stat(seed_path,follow_symlinks=False)
+            if (identity(root_after)!=identity(root_stat) or identity(seed_after)!=identity(opened)
+                    or identity(path_after)!=identity(opened)):
+                return None
+            return observed
+        observed_mount=checked_mount()
+        if observed_mount is None: return unverified_seed_metadata()
+        mount_after=checked_mount()
+        acl_after=any("acl" in value.lower() for value in os.listxattr(seed_fd))
+        if (observed_mount is None or mount_after is None or identity(opened)!=identity(before)
                 or identity(os.fstat(root_fd))!=identity(root_stat) or acl_after!=acl_found
                 or mount_after!=observed_mount):
             return unverified_seed_metadata()
@@ -246,6 +264,7 @@ def seed_observation(root_path, root_stat, root_mount):
     except (OSError,ValueError,IndexError,AttributeError):
         return unverified_seed_metadata()
     finally:
+        if seed_fd is not None: os.close(seed_fd)
         if root_fd is not None: os.close(root_fd)
 def bounded_names(directory_fd):
     names=[]
@@ -426,8 +445,19 @@ for observation_attempt in range(2):
             left=line.split(" - ",1)[0].split()
             mount=re.sub(r"\\([0-7]{3})",lambda m:chr(int(m.group(1),8)),left[4])
             mount_exact=mount_exact or mount==root
-    names=os.listdir(root)
-    if len(names)>32: raise OverflowError("children unbounded")
+    root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        pinned=os.fstat(root_fd)
+        if (pinned.st_dev,pinned.st_ino)!=(st.st_dev,st.st_ino): raise ValueError("root changed")
+        names=bounded_names(root_fd)
+        path_after=os.lstat(root)
+        pinned_after=os.fstat(root_fd)
+        if ((path_after.st_dev,path_after.st_ino)!=(st.st_dev,st.st_ino)
+                or (pinned_after.st_dev,pinned_after.st_ino)!=(st.st_dev,st.st_ino)):
+            raise ValueError("root changed")
+    finally:
+        os.close(root_fd)
+    if names is None: raise OverflowError("children unbounded")
     children=[]
     top_level={"seed_file":0,"journal_component":0,"remotecfg_component":0,"other_files":0,
                "other_directories":0,"other_symlinks":0,"other_kinds":0,
@@ -546,7 +576,8 @@ for observation_attempt in range(2):
                 component_layout=False
             if temp_names:
                 time.sleep(0.1)
-                after=os.listdir(path)
+                after=bounded_names(directory_fd)
+                if after is None: raise OverflowError("nested entries unbounded")
                 if len(after)==1 and after[0]=="positions.yml":
                     os.close(directory_fd)
                     raise RetryObservation
