@@ -1443,3 +1443,20 @@ next step is a fresh read-only survey to determine whether that exact configured
 directory accounts for the previously unknown entry. Review any disposition as
 a separate decision. Classification does not authorize repair, apply, or a
 volume change; task 1.2 remains open.
+
+**Dev journal pilot receipt (2026-10-16):** Dev-bound task 6156 passed collector
+health, exact positions mount and namespace access, and unchanged receiver
+containers. Its final Loki receipt command failed; rollback removed only the
+collector and preserved the positions volume. Independent production Grafana
+MCP readback for the task window found six entries with the exact
+`service="o11y/alloy"`, `signal="container"` labels, and receiver accepted-log
+counters increased. This establishes stream presence during the run, not a
+successful playbook receipt, a sample satisfying the post-start timestamp, or
+safe volume retry state. The source follow-up uses BusyBox's documented
+`wget -T 5` network-read timeout ([BusyBox wget](https://busybox.net/BusyBox.html)),
+removes its retry flag, and retains the bounded Ansible poll and exact receipt
+assertions. Task 6156 did not retain protected command error text, so the precise
+command failure cause remains unproven. After the source fix is reviewed and
+merged, require exact-SHA stage, a fresh separate read-only cursor survey, then
+a separately launched apply and successful post-start Loki receipt. No retry or
+volume recovery is authorized by task 6156; OpenSpec task 1.2 remains open.

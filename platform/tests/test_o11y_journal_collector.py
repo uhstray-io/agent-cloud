@@ -5474,6 +5474,30 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
         "values[0][0] | int >= _journal_verification_start.stdout" in item
         for item in delivery["ansible.builtin.assert"]["that"]
     )
+    receipt = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    argv = receipt["ansible.builtin.command"]["argv"]
+    assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q", "-T", "5"]
+    assert "--timeout=5" not in argv and "--tries=1" not in argv
+    assert receipt["retries"] == 36 and receipt["delay"] == 5
+    assert argv[-1] == "{{ _journal_loki_query_url }}"
+    assert any(
+        "stream.service == 'o11y/alloy'" in item
+        for item in delivery["ansible.builtin.assert"]["that"]
+    )
+    assert any(
+        "stream.signal == 'container'" in item
+        for item in delivery["ansible.builtin.assert"]["that"]
+    )
+    failure = next(
+        task for task in apply_task["rescue"]
+        if task.get("name") == "Fail closed after stopping the journal collector"
+    )
+    message = failure["ansible.builtin.fail"]["msg"]
+    assert "request_failed" in message and "response_unverified" in message
+    assert "_journal_loki_result.stdout" not in message
     rollback = next(
         task for task in apply_task["rescue"]
         if task.get("name") == "Force-remove only the failed collector while retaining positions"

@@ -1050,8 +1050,8 @@
               - o11y-grafana
               - wget
               - -q
-              - --timeout=5
-              - --tries=1
+              - -T
+              - "5"
               - -O
               - -
               - "{{ _journal_loki_query_url }}"
@@ -1345,7 +1345,8 @@
               collector logs classification/count={{ _journal_rollback_log_class | default('unavailable') }}/{{ _journal_rollback_log_count | default(0) }};
               permission-denied mount targets={{ _journal_rollback_permission_targets | default([]) }};
               one-shot fixed readiness probe diagnostic={{ _journal_readiness_probe_class | default('unavailable') }};
-              post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
+              post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }};
+              Loki receipt result={{ 'not_run' if _journal_loki_result is not defined else ('request_failed' if _journal_loki_result.rc | default(1) | int != 0 else 'response_unverified') }}.
               The fixed probe only opens Alloy's local TCP listener and is diagnostic; it does not run the configured health command, mutate Podman health, or satisfy automatic health or Loki delivery.
               All receiver data remains; positions-volume preservation was asserted
               when a collector with that mount existed.

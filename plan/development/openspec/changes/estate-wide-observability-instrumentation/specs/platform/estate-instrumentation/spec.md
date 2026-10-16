@@ -294,6 +294,11 @@ The helper SHALL expose separate pre-start `verify` and post-start `verify-live`
 - **WHEN** the exact `o11y/alloy` container stream's newest receipt predates the current apply start time
 - **THEN** the delivery gate refuses success and performs only pilot-container rollback while preserving the positions volume
 
+#### Scenario: Loki receipt request fails without exposing response content
+- **WHEN** the bounded post-start Loki query command fails or returns an unverified response
+- **THEN** the workflow reports only a fixed failure category, refuses success, and removes only the pilot container while preserving the positions volume
+- **AND** a successful receipt still requires the exact `service="o11y/alloy"` and `signal="container"` labels and a sample timestamp at or after the apply start time
+
 ### Requirement: Telemetry is private and bounded
 Collection SHALL use declared private network paths and source-scoped firewall rules, protect credentials and sensitive content, and enforce per-signal retention and ingestion/cardinality budgets before broadening the rollout. Remote logs and traces SHALL enter through receiver Alloy; remote metrics SHALL use declared private scrapes unless another reviewed path is established. The receiver SHALL surface dropped or refused telemetry and low disk headroom as observable failures.
 
