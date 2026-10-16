@@ -588,6 +588,18 @@
         _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
       when: not ansible_check_mode
 
+    # The count the render wrote, printed on every run (agentgateway-mcp 6.3, 6.8). Counts only: the reader
+    # above prints no key or hash, so this task needs no no_log either.
+    - name: "Report the rendered identities and key entries"
+      ansible.builtin.debug:
+        msg: >-
+          The rendered config enrols {{ (_agw_render_read.stdout | from_json).names | length }} identities
+          with {{ (_agw_render_read.stdout | from_json).entries }} key entries
+          ({{ _expected | length }} declared).
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+      when: not ansible_check_mode
+
     # The MCP surface in the render (agentgateway-mcp tasks 3.2, 3.7). One assert per property again. Names and
     # counts only. The first two are the fail-closed ones: an mcp block with no key policy answers every
     # request (spike 1.1), so it must never reach a restart; and with the flag false nothing MCP may render.
@@ -845,6 +857,8 @@
     _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
     _legacy_shared_active: "{{ (_legacy_expires | length > 0) and (_agw_today < _legacy_expires) }}"
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
+    # The OpenRouter model names the refusal probe below may ask for (agentgateway-openrouter).
+    _or_all: "{{ agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list }}"
 
   tasks:
     # The admin list the identities above derive from (a no-op with the gate off).
@@ -1313,6 +1327,70 @@
         - agw_verify_openrouter | default(false) | bool
         - not (_verify_refused | bool)
 
+    # Every deploy (agentgateway-openrouter task 3.8): an identity NOT allowed OpenRouter models must be
+    # refused one. The gateway denies it at the request, before any upstream is contacted, so the probe
+    # costs nothing upstream. A 200 means the identity reached OpenRouter, which fails the deploy. A 429 is
+    # the gateway's own request bucket refusing before the model check: nothing is proven, so it fails
+    # unless agw_verify_allow_unproven accepts an unproven run, as the keyed round-trip does. Only the
+    # status is kept; the response body is never printed.
+    - name: "Keyed probes: pick an OpenRouter model the verifying identity may not use"
+      ansible.builtin.set_fact:
+        _verify_or_denied_model: "{{ _or_all | first }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
+
+    - name: "A service identity is refused an OpenRouter model"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [400, 403, 404, 429]
+        _agwp_timeout: 30
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
+          model: "{{ _verify_or_denied_model }}"
+          max_tokens: 8
+          messages: [{role: user, content: "Reply with one word: pong"}]
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
+
+    - name: "Keyed probes: keep the refusal's status"
+      ansible.builtin.set_fact:
+        _keyed_or_refused: "{{ _agwp_out.status | int }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
+
+    - name: "Require the gateway to refuse an OpenRouter model the identity may not use"
+      ansible.builtin.assert:
+        that: >-
+          (_keyed_or_refused | int) in [400, 403, 404]
+          or ((_keyed_or_refused | int) == 429 and (agw_verify_allow_unproven | default(false) | bool))
+        fail_msg: >-
+          {% if (_keyed_or_refused | int) == 429 %}{{ _verify_client }}'s OpenRouter refusal probe was refused by
+          the gateway's own request bucket (HTTP 429), so the allow-list was not proven; rerun after the window,
+          or accept with agw_verify_allow_unproven=true.{% else %}{{ _verify_client }} is not allowed OpenRouter
+          models, but a request for {{ _verify_or_denied_model }} answered HTTP {{ _keyed_or_refused }}: the
+          allow-list did not hold.{% endif %}
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
+
     # ── MCP (agentgateway-mcp task 3.4) ─────────────────────────────────────────────────────────
     # agw_mcp_enabled true: a request with no key is 401 (answered before any target is contacted), an
     # authenticated `initialize` returns an MCP session, and `tools/list` shows at least one tool. The last
@@ -1757,6 +1835,10 @@
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
           {% if _keyed_or_chat is defined %}One OpenRouter completion for {{ _verify_or_model }}
           answered HTTP {{ _keyed_or_chat.status }}.{% endif %}
+          {% if _keyed_or_refused is defined and (_keyed_or_refused | int) == 429 %}The OpenRouter refusal for
+          {{ _verify_client }} was not proven (HTTP 429, request bucket).{% elif _keyed_or_refused is defined %}The
+          OpenRouter model {{ _verify_or_denied_model }} is refused for {{ _verify_client }} (HTTP
+          {{ _keyed_or_refused }}).{% endif %}
           {% else %}No enrolled identity (agw_identities is empty): the keyed round-trip was not
           run.{% endif %}
 
@@ -1769,7 +1851,7 @@
         _service_deploy_result:
           skipped: "{{ _deploy is not defined or _deploy is skipped }}"
           changed: "{{ (_deploy | default({})).changed | default(false) }}"
-          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) }}"
+          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) and (_keyed_or_refused | default(-1) | int) != 429 }}"
 
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml

@@ -641,6 +641,64 @@ def test_the_playbook_documents_the_new_inventory_names():
         assert name in text.split("- name:", 1)[0], name
 
 
+# -- Every deploy: the render is counted, and a service identity is refused OpenRouter -----------
+
+COUNT_TASK = "Report the rendered identities and key entries"
+REFUSAL_PROBE = "A service identity is refused an OpenRouter model"
+REFUSAL_ASSERT = "Require the gateway to refuse an OpenRouter model the identity may not use"
+
+
+def test_the_rendered_count_is_printed_on_every_run_and_holds_no_secret():
+    task = _task(PHASE1, COUNT_TASK)
+    assert "ansible.builtin.debug" in task
+    assert "no_log" not in task
+    assert task.get("when") == "not ansible_check_mode"
+
+
+def test_the_refusal_probe_expects_a_refusal_for_a_non_openrouter_identity_only():
+    probe = _task(PHASE3, REFUSAL_PROBE)
+    assert probe["vars"]["_agwp_status"] == [400, 403, 404, 429]  # 200 would mean OpenRouter answered it
+    assert 200 not in probe["vars"]["_agwp_status"]
+    assert probe["vars"]["_agwp_method"] == "POST"
+    assert "_verify_client not in (_agw_openrouter_identities | default([]))" in probe["when"]
+    assert "_or_all | length > 0" in probe["when"]
+    assert "not (_verify_refused | bool)" in probe["when"]
+
+
+def _refusal_check(tmp: Path, status: int, unproven: bool) -> subprocess.CompletedProcess:
+    # The real assert task's own expression, run against a given probe status and operator flag.
+    that = _task(PHASE3, REFUSAL_ASSERT)["ansible.builtin.assert"]["that"]
+    check = {"ansible.builtin.assert": {"that": that}}
+    return _ansible(tmp, {"agw_verify_allow_unproven": unproven}, [check], {"_keyed_or_refused": status})
+
+
+@pytest.mark.parametrize(
+    "status, unproven, passes",
+    [
+        (400, False, True),
+        (403, False, True),
+        (404, False, True),
+        (429, True, True),  # the gateway's own bucket, accepted as unproven
+        (429, False, False),  # the same 429 without the operator's acceptance fails the deploy
+        (200, False, False),  # the identity reached OpenRouter
+        (200, True, False),
+        (401, True, False),
+    ],
+)
+def test_the_refusal_assert_passes_a_refusal_and_a_429_only_when_unproven_is_accepted(
+    tmp_path, status, unproven, passes
+):
+    r = _refusal_check(tmp_path, status, unproven)
+    assert (r.returncode == 0) == passes, r.stdout + r.stderr
+
+
+def test_the_report_names_the_refusal_only_when_the_probe_ran_and_says_when_it_was_not_proven():
+    msg = _task(PHASE3, "Report")["ansible.builtin.debug"]["msg"]
+    assert "{% if _keyed_or_refused is defined and (_keyed_or_refused | int) == 429 %}" in msg
+    assert "was not proven (HTTP 429, request bucket)" in msg
+    assert "{% elif _keyed_or_refused is defined %}" in msg
+
+
 # -- On the pinned image ---------------------------------------------------------------------------
 
 live = pytest.mark.skipif(not _image_present(), reason=f"podman or {IMAGE} not available")

@@ -345,10 +345,11 @@ llm:
       model: {{ m.upstream_model }}
       apiKey: $OPENROUTER_API_KEY
     # Streamed chat is sent with include_usage so the per-key token budget charges it. Unlike the
-    # vLLM models above there is no continuous_usage_stats: that field is a vLLM extension and
-    # OpenRouter's tolerance of it is unverified, so usage arrives only on the final chunk and a
-    # client that disconnects before it is not charged. The same CEL shape otherwise (chat only,
-    # a client's other stream_options keys kept).
+    # vLLM models above there is no continuous_usage_stats: that field is a vLLM extension.
+    # Measured 2026-10-15 through the gateway: OpenRouter accepts continuous_usage_stats (HTTP 200) but
+    # still sends usage only on the final chunk, so adding it would change nothing; it is left out, so
+    # usage arrives only on the final chunk and a client that disconnects before it is not charged. The
+    # same CEL shape otherwise (chat only, a client's other stream_options keys kept).
     transformation:
       stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true}) : llmRequest.stream_options'
 {% else %}
