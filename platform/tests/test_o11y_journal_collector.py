@@ -76,6 +76,12 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     ):
         assert set(field) == {"presence", "type", "value"}
     live = report["live_diagnostic"]
+    assert set(live["top_level"]) == {
+        "seed_file", "journal_component", "other_files", "other_directories", "other_symlinks",
+        "other_kinds", "receiver_component", "exporter_component", "attributes_processor_component",
+    }
+    for count in live["top_level"].values():
+        assert count == "unverified" or type(count) is int and 0 <= count <= POSITIONS.MAX_CHILDREN
     assert set(live["role_metadata"]) == {"receiver", "exporter", "attributes_processor"}
     for role in live["role_metadata"].values():
         assert set(role) == {"owner", "access", "acl", "mount", "children"}
@@ -948,6 +954,63 @@ def test_survey_early_refusal_keeps_exact_unverified_diagnostic_schema(monkeypat
     assert report["status"] == "not_rootless"
     assert not any(argv[:3] == ["podman", "volume", "inspect"] for argv in calls)
     assert not any(argv[:2] == ["podman", "version"] for argv in calls)
+
+
+_EVALUATE_SURVEY = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for report in job["reports"]:
+    variables = {"_journal_positions_survey": {"rc": 0, "stdout": json.dumps(report)}}
+    templar = Templar(loader=DataLoader(), variables=variables)
+    results.append([
+        templar.evaluate_conditional(trust_as_template(condition))
+        for condition in job["conditions"]
+    ])
+print(json.dumps(results))
+"""
+
+
+@needs_ansible
+def test_survey_assertion_accepts_helper_and_check_mode_schemas(monkeypatch):
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    assertion = next(
+        task["ansible.builtin.assert"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Require bounded positions-volume survey fields"
+    )
+    check_mode = next(
+        task["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Record positions-volume survey as unverified in check mode"
+    )
+
+    observed = _positions_found(_positions_state())
+    observed["survey_diagnostics"] = POSITIONS._unverified_diagnostics()
+    observed_report = POSITIONS.survey(lambda: observed)
+
+    monkeypatch.setattr(
+        POSITIONS, "_call",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="false"),
+    )
+    early_report = POSITIONS.survey()
+    check_mode_report = json.loads(check_mode)
+    reports = [observed_report, early_report, check_mode_report]
+
+    result = subprocess.run(
+        [ansible_python(), "-c", _EVALUATE_SURVEY],
+        input=json.dumps({"conditions": assertion["that"], "reports": reports}),
+        text=True, capture_output=True, check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+    )
+    assert result.returncode == 0, result.stderr
+    outcomes = json.loads(result.stdout)
+    assert len(outcomes) == len(reports)
+    assert all(all(report_conditions) for report_conditions in outcomes), outcomes
 
 
 def test_survey_flag_assertions_require_literal_booleans():
