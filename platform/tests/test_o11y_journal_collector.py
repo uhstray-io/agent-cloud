@@ -199,7 +199,7 @@ def _positions_found(metadata=None, users=0):
         "volume_name": "o11y_journal-collector-state-v3",
         "mountpoint": "/private/podman/volume/_data",
         "volume_use_count": users,
-        "mount_count": users,
+        "mount_count": 0,
         "collector_present": bool(users),
         "collector_mount_verified": bool(users),
         "project": "o11y",
@@ -3056,7 +3056,7 @@ def test_positions_post_start_empty_volume_with_initialized_flags_stays_strict_r
         needs_copy_up=True,
         collector_present=True,
         volume_use_count=1,
-        mount_count=1,
+        mount_count=0,
         collector_mount_verified=True,
         metadata=_positions_state(owner=(0, 0), children=[{
             "name": "positions-file", "kind": "file", "uid": 0, "gid": 0,
@@ -3071,7 +3071,7 @@ def test_positions_post_start_empty_volume_with_initialized_flags_stays_strict_r
     {"collector_present": False},
     {"volume_use_count": 0},
     {"volume_use_count": 2},
-    {"mount_count": 0},
+    {"mount_count": 1},
     {"mount_count": 2},
     {"collector_mount_verified": False},
 ])
@@ -3106,7 +3106,7 @@ def test_positions_post_start_refuses_partial_copy_hidden_entry_or_missing_curso
 def test_positions_discovery_verifies_live_collector_volume_source(source_matches, monkeypatch):
     volume = {
         "Name": "o11y_journal-collector-state-v3", "Driver": "local", "Scope": "local",
-        "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 1,
+        "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 0,
         "NeedsChown": False, "NeedsCopyUp": False,
         "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3"},
     }
@@ -3146,6 +3146,7 @@ def test_positions_discovery_verifies_live_collector_volume_source(source_matche
     )
     if source_matches:
         assert report["collector_mount_verified"] is True
+        assert POSITIONS.verify_live(lambda: report)["status"] == "ready"
     else:
         assert report["live_mount"]["source"] == "mismatch"
 
@@ -3380,6 +3381,19 @@ def test_positions_prestart_admits_only_populated_reviewed_pending_volume():
     found = _populated_pending_resume_found()
     assert POSITIONS.verify(lambda: found)["reason"] == "pending_nocopy_cursor_verified"
     assert POSITIONS.verify(lambda: found)["status"] == "ready"
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
+
+
+def test_positions_live_accepts_plain_local_volume_with_zero_host_mount_count():
+    found = _populated_pending_resume_found()
+    found.update({
+        "collector_present": True,
+        "volume_use_count": 1,
+        "mount_count": 0,
+        "collector_mount_verified": True,
+    })
+    assert POSITIONS.verify_live(lambda: found)["status"] == "ready"
+    found["mount_count"] = 1
     assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
 
 

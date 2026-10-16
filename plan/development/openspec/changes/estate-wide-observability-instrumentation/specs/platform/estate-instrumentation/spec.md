@@ -269,6 +269,11 @@ The helper SHALL expose separate pre-start `verify` and post-start `verify-live`
 - **THEN** pre-start `verify` MAY return `ready` with a fixed pending-resume reason, without changing the volume or its flags; the same conditions SHALL be rechecked immediately before Compose mount
 - **AND** any changed, unknown, cursorless, unsafe, differently versioned or incomplete observation SHALL refuse before start; post-start exact live mount, namespace access, valid cursor, health, unchanged receiver set and fresh exact-target Loki delivery remain mandatory
 
+#### Scenario: Plain local volume has zero Podman host mounts while one container uses it
+- **WHEN** the reviewed local v3 volume has empty options, the collector is its one verified consumer, and Podman reports `MountCount=0`
+- **THEN** post-start verification SHALL use the exact inspected container mount and namespace access as the live mount proof while retaining every cursor, health, receiver and Loki acceptance gate
+- **AND** any nonzero or unverified host-mount count, extra consumer, changed volume identity, or nonmatching container mount SHALL refuse; no failed collector may cause removal of the named volume
+
 #### Scenario: Invalid, unreadable, or unknown positions cursor refuses without retry
 - **WHEN** `positions.yml` is present but invalid or unreadable, or its presence cannot be determined
 - **THEN** pre-start and post-start verification refuse; no existing-volume state may use a cursorless retry
