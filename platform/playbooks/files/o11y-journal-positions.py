@@ -195,6 +195,13 @@ def unverified_journal_metadata():
         "temporary_files":"unverified",
         "unknown_children":{"files":"unverified","directories":"unverified",
             "symlinks":"unverified","other":"unverified"}}
+def bounded_names(directory_fd):
+    names=[]
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            names.append(entry.name)
+            if len(names)>32: return None
+    return names
 def journal_observation(root_path, root_stat, root_mount):
     result=unverified_journal_metadata()
     root_fd=None
@@ -234,8 +241,8 @@ def journal_observation(root_path, root_stat, root_mount):
         component_acl=any("acl" in value.lower() for value in os.listxattr(component_fd))
         result["component"]["acl"]="present" if component_acl else "absent"
         result["component"]["mount"]="ambiguous" if component_mount[0]!=root_mount[0] else "clear"
-        names=os.listdir(component_fd)
-        if len(names)>32: return unverified_journal_metadata()
+        names=bounded_names(component_fd)
+        if names is None: return unverified_journal_metadata()
         result["component"]["children"]="nonempty" if names else "empty"
         temporary=0
         unknown={"files":0,"directories":0,"symlinks":0,"other":0}
@@ -286,13 +293,13 @@ def journal_observation(root_path, root_stat, root_mount):
                 mount="ambiguous" if positions_mount[0]!=root_mount[0] else "clear")
         result["temporary_files"]=temporary
         result["unknown_children"]=unknown
-        names_after=os.listdir(component_fd)
+        names_after=bounded_names(component_fd)
         component_after=os.fstat(component_fd)
         root_after=os.fstat(root_fd)
         path_after=os.lstat(component_path)
         acl_after=any("acl" in value.lower() for value in os.listxattr(component_fd))
         mount_after=mount_id(component_path)
-        if (sorted(names_after)!=sorted(names) or identity(component_after)!=identity(opened)
+        if (names_after is None or sorted(names_after)!=sorted(names) or identity(component_after)!=identity(opened)
                 or identity(path_after)!=identity(before) or identity(root_after)!=identity(root_stat)
                 or acl_after!=component_acl or mount_after!=component_mount):
             return unverified_journal_metadata()
@@ -369,6 +376,7 @@ for observation_attempt in range(2):
     journal_metadata=unverified_journal_metadata()
     remotecfg_state="absent"
     unmatched_directories=empty_unmatched()
+    journal_metadata=journal_observation(root,st,root_mount)
     acl_found=acl(root)
     child_mount=False
     component_layout=st.st_mode & (0o022|0o7000) == 0
@@ -410,7 +418,6 @@ for observation_attempt in range(2):
                 and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1
                 and item.st_mode & 0o077 == 0 and item.st_mode & 0o7133 == 0)
         elif stat.S_ISDIR(item.st_mode) and name=="loki.source.journal.o11y_alloy":
-            journal_metadata=journal_observation(root,st,root_mount)
             top_level["journal_component"]+=1
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
                 and item.st_nlink==2 and item.st_mode & 0o700 == 0o700

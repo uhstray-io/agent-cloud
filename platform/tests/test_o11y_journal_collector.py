@@ -330,7 +330,7 @@ def test_journal_metadata_observation_is_bounded_and_never_reads_positions_conte
     functions = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and node.name in {"unverified_journal_metadata", "journal_observation"}
+        and node.name in {"unverified_journal_metadata", "bounded_names", "journal_observation"}
     ]
     assert not any(
         isinstance(node, ast.Call)
@@ -356,6 +356,9 @@ def test_journal_metadata_observation_is_bounded_and_never_reads_positions_conte
 
     fixture_os = SimpleNamespace(**os.__dict__)
     fixture_os.listxattr = lambda *_args, **_kwargs: []
+    real_scandir = os.scandir
+    scandir_paths = []
+    fixture_os.scandir = lambda path: (scandir_paths.append(path) or real_scandir(path))
     namespace = {
         "os": fixture_os,
         "stat": stat,
@@ -374,6 +377,7 @@ def test_journal_metadata_observation_is_bounded_and_never_reads_positions_conte
     assert result["positions"]["link_count"] == "match"
     assert result["temporary_files"] == 1
     assert result["unknown_children"] == {"files": 1, "directories": 1, "symlinks": 1, "other": 0}
+    assert len(scandir_paths) == 2 and all(type(path) is int for path in scandir_paths)
     rendered = json.dumps(result)
     assert "PRIVATE_CURSOR_CONTENT" not in rendered
     assert ".private-name" not in rendered
@@ -388,13 +392,19 @@ def test_journal_metadata_observation_is_bounded_and_never_reads_positions_conte
     assert unsafe["positions"]["unsafe_mode_bits"] == "present"
     assert unsafe["positions"]["link_count"] == "mismatch"
 
+    for index in range(33):
+        (component / f"entry-{index}").touch()
+    overflow = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert set(overflow["component"].values()) == {"unverified"}
+    assert overflow["temporary_files"] == "unverified"
+
 
 def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
     tree = ast.parse(POSITIONS._METADATA_SCRIPT)
     functions = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and node.name in {"unverified_journal_metadata", "journal_observation"}
+        and node.name in {"unverified_journal_metadata", "bounded_names", "journal_observation"}
     ]
     root = tmp_path / "positions"
     root.mkdir(mode=0o700)
@@ -414,7 +424,7 @@ def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
     assert unsafe["positions"]["type"] == "symlink"
     assert unsafe["positions"]["owner"] == "unverified"
 
-    real_listdir = os.listdir
+    real_scandir = os.scandir
     component_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY)
     component_inode = os.fstat(component_fd).st_ino
     os.close(component_fd)
@@ -422,16 +432,31 @@ def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
 
     def changed_enumeration(path):
         nonlocal seen
-        values = real_listdir(path)
+        values = real_scandir(path)
         if isinstance(path, int) and os.fstat(path).st_ino == component_inode:
             seen += 1
             if seen == 2:
-                return values + ["new-entry"]
+                class ExtraEntry:
+                    name = "new-entry"
+
+                class ExtraScandir:
+                    def __enter__(self):
+                        self.entries = values
+                        return self
+
+                    def __exit__(self, *_args):
+                        self.entries.close()
+
+                    def __iter__(self):
+                        yield from self.entries
+                        yield ExtraEntry()
+
+                return ExtraScandir()
         return values
 
     proxy_os = SimpleNamespace(**os.__dict__)
     proxy_os.listxattr = lambda *_args, **_kwargs: []
-    proxy_os.listdir = changed_enumeration
+    proxy_os.scandir = changed_enumeration
     race_namespace = {"os": proxy_os, "stat": stat, "re": re, "mount_id": lambda path: (7, str(root))}
     exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata-race", "exec"), race_namespace)
     raced = race_namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
@@ -504,12 +529,27 @@ def test_journal_metadata_diagnostic_rejects_malformed_schema_and_overflow():
     assert "PRIVATE_MARKER" not in json.dumps(malformed)
 
 
+def test_survey_reduces_malformed_journal_metadata_to_unverified():
+    metadata = _positions_state()
+    metadata["journal_metadata"] = {
+        **metadata["journal_metadata"],
+        "raw_name": "PRIVATE_MARKER",
+    }
+    report = POSITIONS.survey(lambda: _positions_found(metadata))
+    journal = report["live_diagnostic"]["journal_metadata"]
+    assert set(journal["component"].values()) == {"unverified"}
+    assert set(journal["positions"].values()) == {"unverified"}
+    assert journal["temporary_files"] == "unverified"
+    assert set(journal["unknown_children"].values()) == {"unverified"}
+    assert "PRIVATE_MARKER" not in json.dumps(report)
+
+
 def test_journal_metadata_reports_acl_mount_and_overflow_as_bounded_categories(tmp_path):
     tree = ast.parse(POSITIONS._METADATA_SCRIPT)
     functions = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and node.name in {"unverified_journal_metadata", "journal_observation"}
+        and node.name in {"unverified_journal_metadata", "bounded_names", "journal_observation"}
     ]
     root = tmp_path / "positions"
     component = root / "loki.source.journal.o11y_alloy"
@@ -1306,7 +1346,9 @@ def test_survey_assertion_accepts_helper_and_check_mode_schemas(monkeypatch):
     )
     early_report = POSITIONS.survey()
     check_mode_report = json.loads(check_mode)
-    reports = [observed_report, early_report, check_mode_report]
+    malformed_report = json.loads(json.dumps(observed_report))
+    malformed_report["live_diagnostic"]["journal_metadata"]["component"]["raw_name"] = "PRIVATE_MARKER"
+    reports = [observed_report, early_report, check_mode_report, malformed_report]
 
     result = subprocess.run(
         [ansible_python(), "-c", _EVALUATE_SURVEY],
@@ -1317,7 +1359,9 @@ def test_survey_assertion_accepts_helper_and_check_mode_schemas(monkeypatch):
     assert result.returncode == 0, result.stderr
     outcomes = json.loads(result.stdout)
     assert len(outcomes) == len(reports)
-    assert all(all(report_conditions) for report_conditions in outcomes), outcomes
+    assert all(all(report_conditions) for report_conditions in outcomes[:-1]), outcomes
+    assert any(not condition for condition in outcomes[-1]), outcomes
+    assert not all(outcomes[-1])
 
 
 def test_survey_flag_assertions_require_literal_booleans():
@@ -3195,6 +3239,8 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     assert metadata["status"] == "observed"
     assert metadata["journal_cursor_presence"] == "absent"
     assert metadata["journal_cursor_valid"] is False
+    assert metadata["journal_metadata"]["component"]["presence"] == "absent"
+    assert metadata["journal_metadata"]["component"]["type"] == "absent"
     assert metadata["top_level"] == {
         "seed_file": 0, "journal_component": 0, "other_files": 0,
         "other_directories": 0, "other_symlinks": 0, "other_kinds": 0,
@@ -3204,6 +3250,30 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     }
 
     component = root / "loki.source.journal.o11y_alloy"
+    component.write_text("private component contents")
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["journal_metadata"]["component"]["presence"] == "present"
+    assert metadata["journal_metadata"]["component"]["type"] == "file"
+    assert "private component contents" not in result.stdout
+
+    component.unlink()
+    component.symlink_to("missing-target")
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["journal_metadata"]["component"]["presence"] == "present"
+    assert metadata["journal_metadata"]["component"]["type"] == "symlink"
+    assert "missing-target" not in result.stdout
+
+    component.unlink()
     component.mkdir(mode=0o700)
     positions = component / "positions.yml"
     positions.write_text("invalid positions")
@@ -4321,6 +4391,11 @@ def test_positions_check_mode_receipt_keeps_new_mode_fields_unverified():
     report = json.loads(task["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"])
 
     assert report["status"] == "check_mode_unverified"
+    journal = report["live_diagnostic"]["journal_metadata"]
+    assert set(journal["component"].values()) == {"unverified"}
+    assert set(journal["positions"].values()) == {"unverified"}
+    assert journal["temporary_files"] == "unverified"
+    assert set(journal["unknown_children"].values()) == {"unverified"}
     assert all(report["pending_repair_diagnostic"][key] == "unverified" for key in (
         "group_write", "other_write", "setuid", "setgid", "sticky",
     ))
