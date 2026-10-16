@@ -4923,7 +4923,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "up, --no-deps, -d, journal-collector" in source
     assert "Require all existing receiver containers to remain unchanged" in source
     assert "_journal_verification_start" in source
-    assert "values[0][0]" in source
+    assert "['values'][0][0]" in source
     assert "State.Health.Status" in source
     assert "image: docker.io/grafana/alloy:v1.9.2" in (O11Y / "compose.journal.yml").read_text()
     assert "_journal_image: docker.io/grafana/alloy:v1.9.2" in source
@@ -5471,9 +5471,33 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
         if task.get("name") == "Require an exact service and signal stream in Loki"
     )
     assert any(
-        "values[0][0] | int >= _journal_verification_start.stdout" in item
+        "['values'][0][0] | int >= _journal_verification_start.stdout" in item
         for item in delivery["ansible.builtin.assert"]["that"]
     )
+    receipt = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    argv = receipt["ansible.builtin.command"]["argv"]
+    assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q", "-T", "5"]
+    assert "--timeout=5" not in argv and "--tries=1" not in argv
+    assert receipt["retries"] == 36 and receipt["delay"] == 5
+    assert argv[-1] == "{{ _journal_loki_query_url }}"
+    assert any(
+        "stream.service == 'o11y/alloy'" in item
+        for item in delivery["ansible.builtin.assert"]["that"]
+    )
+    assert any(
+        "stream.signal == 'container'" in item
+        for item in delivery["ansible.builtin.assert"]["that"]
+    )
+    failure = next(
+        task for task in apply_task["rescue"]
+        if task.get("name") == "Fail closed after stopping the journal collector"
+    )
+    message = failure["ansible.builtin.fail"]["msg"]
+    assert "request_failed" in message and "response_unverified" in message
+    assert "_journal_loki_result.stdout" not in message
     rollback = next(
         task for task in apply_task["rescue"]
         if task.get("name") == "Force-remove only the failed collector while retaining positions"
@@ -5482,6 +5506,62 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
         "podman", "rm", "--force", "--time", "10", "o11y-journal-collector",
     ]
     assert "-v" not in rollback["ansible.builtin.command"]["argv"]
+
+
+@needs_ansible
+def test_loki_assert_conditions_accept_fresh_values_key_and_reject_stale_sample():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    apply_task = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assertion = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Require an exact service and signal stream in Loki"
+    )
+    def evaluate(samples):
+        evaluator = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for response in job["responses"]:
+    variables = {
+        "_journal_loki_result": {"rc": 0, "stdout": json.dumps(response)},
+        "_journal_verification_start": {"stdout": "100"},
+    }
+    templar = Templar(loader=DataLoader(), variables=variables)
+    results.append(all(
+        templar.evaluate_conditional(trust_as_template(condition))
+        for condition in job["conditions"]
+    ))
+print(json.dumps(results))
+"""
+        responses = []
+        for sample_timestamp in samples:
+            responses.append({
+                "status": "success",
+                "data": {
+                    "result": [{
+                        "stream": {"service": "o11y/alloy", "signal": "container"},
+                        "values": [[str(sample_timestamp), "sanitized sample"]],
+                    }],
+                },
+            })
+        evaluated = subprocess.run(
+            [ansible_python(), "-c", evaluator],
+            input=json.dumps({
+                "conditions": assertion["ansible.builtin.assert"]["that"],
+                "responses": responses,
+            }),
+            text=True, capture_output=True, timeout=30,
+        )
+        assert evaluated.returncode == 0, evaluated.stderr
+        return json.loads(evaluated.stdout)
+
+    assert evaluate([123, 99]) == [True, False]
 
 
 def test_positions_repair_check_mode_preserves_unverified_result_after_skipped_command():
