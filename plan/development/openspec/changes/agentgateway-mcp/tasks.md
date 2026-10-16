@@ -649,6 +649,9 @@ operator's go for it. site-config changes land through its own pull requests.
         declared identity"), and it passed in both 5771 (before) and 5900 (after).
       - #91's review found the declared identity set equal before and after: nine names, only the
         order changed.
+      - The expected set also holds `legacy-shared` while its grace period runs. Both deploys ran
+        before `legacy_shared_expires` (2026-11-13; 5900 reported "admitted as legacy-shared until
+        2026-11-13"), so it was in both.
       - So entries-before = |set| = entries-after. No key dropped. The live probes show that
         the operator's and `opencode`'s keys still work.
       From the next deploy on, the deploy prints the count itself (follow-up pull request

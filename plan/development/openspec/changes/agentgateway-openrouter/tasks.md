@@ -89,7 +89,9 @@ templates, never one-off writes.
       - With `{"include_usage": true, "continuous_usage_stats": true}`: HTTP 200, 10 chunks,
         usage on 1 chunk, the final one.
       The template keeps the client's other `stream_options` keys (`config.yaml.j2`, the OpenRouter
-      transformation), so the field reached OpenRouter. OpenRouter tolerates it and ignores it.
+      transformation), so the gateway sent the field upstream. Whether the native provider forwards an
+      unknown key unchanged was not observed on the wire. Either way, no 400 came back and usage
+      stayed on the final chunk only.
       The vLLM transformation's point, a charge on every chunk, cannot be had from OpenRouter, so
       the switch is not made. Ticked on the measurement; design D5's consequence stands: a client
       that disconnects before the final chunk is not charged.
