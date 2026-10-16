@@ -7,7 +7,7 @@ import sys
 
 import yaml
 
-VOLUME_KEY = "journal-collector-state-v2"
+VOLUME_KEY = "journal-collector-state-v3"
 DATA_PATH = "/alloy-state"
 MAX_CONFIG_BYTES = 1_048_576
 

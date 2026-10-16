@@ -1195,12 +1195,12 @@ Local development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 
-The `Deploy o11y Journal Collector (Dev)` workflow uses the fresh Compose
-volume `journal-collector-state-v2`, mounted at `/alloy-state` with long-syntax
-`volume.nocopy: true`. The old `journal-collector-state` volume remains intact
-for later independent forensic/disposition review. Survey, repair, verify, apply,
-and stop resolve only the v2 logical volume; no action mounts, repairs, deletes,
-or admits the legacy volume.
+The `Deploy o11y Journal Collector (Dev)` workflow uses only the fresh Compose
+volume `journal-collector-state-v3`, mounted at `/alloy-state` with long-syntax
+`volume.nocopy: true`. The v1 `journal-collector-state` and v2
+`journal-collector-state-v2` volumes remain preserved for separate review. The
+new pilot never inspects, mounts, repairs, deletes, or falls back to either volume;
+survey, repair, verify, apply, and stop resolve only v3.
 
 After this playbook reaches Dev, select `stage` with the exact reviewed Dev SHA.
 The stage action uses the shared `place-monorepo.yml` task, reads back receiver
@@ -1216,11 +1216,11 @@ reviewed SHA before its existing positions and collector start gates.
 Check mode skips provider runtime reads and reports `check_mode_unverified`; the
 `stage` action refuses check mode.
 
-First bootstrap requires the v2 volume to be absent: bounded volume inventory
+First bootstrap requires the v3 volume to be absent: bounded volume inventory
 must prove no exact-name collision, and an all-container query, including stopped
 containers, must prove `o11y-journal-collector` absent. An unexpected existing
-v2 volume without a valid cursor refuses bootstrap; there is no automatic repair
-or cursorless retry. When v2 is absent, the pre-start gate checks at least 16 MiB
+v3 volume without a valid cursor refuses bootstrap; there is no automatic repair
+or cursorless retry. When v3 is absent, the pre-start gate checks at least 16 MiB
 free bytes and 128 free inodes on GraphRoot before Compose creates the volume.
 The volume filesystem's own counters can be checked only after a volume exists;
 pending-volume repair checks both GraphRoot and that existing volume filesystem.
@@ -1229,7 +1229,7 @@ This threshold is separate from the 30% retention headroom gate.
 The `stage`, read-only `survey`, and `apply` actions require the installed target
 checkout to equal `expected_repository_sha` before they run the installed
 `podman-compose config` parser under `no_log`, then require its resolved journal
-service to retain the v2 volume source, `/alloy-state` destination, and
+service to retain the v3 volume source, `/alloy-state` destination, and
 `nocopy: true`. This is a provider-rendered configuration check. It is not proof
 that Podman applied the mount behavior; the operator must verify the actual new
 volume identity and runtime mount in the fresh Dev survey before any production
@@ -1239,8 +1239,8 @@ collector start.
 volume option in its [Compose service reference](https://docs.docker.com/reference/compose-file/services/);
 Podman's [volume documentation](https://docs.podman.io/en/latest/markdown/podman-volume-create.1.html)
 says create options do not apply to an existing
-volume. The versioned key therefore isolates the fresh start from the legacy
-state. A fresh collector start can replay only Alloy's supported
+volume. The versioned key therefore isolates the fresh start from both preserved
+v1 and v2 state. A fresh collector start can replay only Alloy's supported
 [`max_age` window](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/)
 (configured as 15 minutes), not older journal entries. This replay boundary is a
 data limitation, not evidence of full history.
@@ -1261,7 +1261,7 @@ initialized repair requires it on the volume filesystem. Counter changes above
 threshold do not invalidate root, child, ACL, or mount evidence, while a below-
 threshold reading refuses the repair.
 
-The separate `repair-positions` action is scoped to v2 only and keeps its
+The separate `repair-positions` action is scoped to v3 only and keeps its
 initialized-volume behavior:
 fresh evidence must prove an unused root with only safe regular direct files has
 an owner mismatch that alone blocks collector access; repair changes only root
@@ -1281,10 +1281,10 @@ history cannot be proved from a later empty state. A converged rerun reports
 `already_correct` without another mutation.
 
 Compose `up` is the only volume creation/initialization action. The pre-apply and
-immediate pre-start `verify` gates accept `bootstrap_allowed` only when the v2
+immediate pre-start `verify` gates accept `bootstrap_allowed` only when the v3
 volume is absent and bounded inventory proves its expected name unused. They do
-not bootstrap an existing pending v2 volume and do not allow a cursorless retry.
-An existing v2 volume must pass strict identity, access, layout, and parsed-cursor
+not bootstrap an existing pending v3 volume and do not allow a cursorless retry.
+An existing v3 volume must pass strict identity, access, layout, and parsed-cursor
 checks before it can be started again. A present invalid or unreadable
 cursor, unknown cursor presence, or any incomplete evidence refuses. `cursor_checked`
 is true only when the safe, bounded file was read completely with stable identity
@@ -1304,8 +1304,8 @@ valid journal cursor. Also require healthy status, unchanged seven receiver
 containers, and a fresh exact-target Loki receipt. An empty image destination
 may leave copy-up pending. After start, an absent cursor, a present invalid or
 unreadable cursor file, a pending temporary positions file, or any layout outside
-the allowlist refuses as incomplete state. An existing v2 volume without a valid
-parsed cursor refuses before start; only a proven-missing v2 volume can bootstrap.
+the allowlist refuses as incomplete state. An existing v3 volume without a valid
+parsed cursor refuses before start; only a proven-missing v3 volume can bootstrap.
 Failed-start rollback removes only the pilot container without `-v`. The
 positions helper reports `check_mode_unverified` without its
 own Podman or filesystem operations; the surrounding playbook may still run
@@ -1340,16 +1340,20 @@ acceptance predicates.
 
 The read-only positions survey may report top-level entry roles and aggregate
 entry kinds, but it does not inspect cursor contents or run a namespace probe.
-It compares extra directories only against the exact public journal receiver,
+It compares extra directories against the exact public journal receiver,
 configured `otelcol.processor.attributes.journal_labels` attributes processor,
-and OTLP exporter component roles. Matching directories get bounded owner,
-access, ACL, mount, and direct-child categories. Unmatched direct child
-directories also receive aggregate owner/access/ACL/mount/empty-or-nonempty
-counts, without names, paths, hashes, contents, numeric identities, or exception
+OTLP exporter roles, and the optional exact `remotecfg` service directory.
+Only `remotecfg` can extend the accepted layout, and only when descriptor-relative
+no-follow checks prove it is the same empty directory (including hidden entries),
+owned by namespace `0:0`, owner-RWX, without group/other write or special bits,
+ACL-free, mount-clear, and stable across rechecks. Absence is allowed. Every
+other extra directory remains refused. Unsafe or unverified `remotecfg` is also
+refused. Fixed role/state categories distinguish it from aggregated unknown names,
+without exposing names, paths, hashes, contents, numeric identities, or exception
 details. A race, symlink substitution, ACL/mount ambiguity, malformed metadata,
-or incomplete observation makes that directory's categories `unverified`.
-Both recognized and unknown extra directories remain outside the accepted
-component layout. Its live receipt marks host/collector UID maps, equality, and
+or incomplete observation fails closed. This exception does not relax cursor
+validation; an existing cursorless v3 volume still refuses start. Its live receipt
+marks host/collector UID maps, equality, and
 the namespace probe `not_run`. If the collector is absent, mount comparisons are
 `unverified`; survey evidence cannot satisfy the live gate.
 

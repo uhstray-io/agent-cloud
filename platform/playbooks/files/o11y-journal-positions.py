@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 IMAGE = "docker.io/grafana/alloy:v1.9.2"
 RECEIVER = "o11y-alloy"
 COLLECTOR = "o11y-journal-collector"
-VOLUME_KEY = "journal-collector-state-v2"
+VOLUME_KEY = "journal-collector-state-v3"
 DATA_PATH = "/alloy-state"
 MAX_VOLUMES = 256
 MAX_CONTAINERS = 1024
@@ -120,7 +120,7 @@ def journal_cursor(data):
     cursor_format=r"s=[0-9a-f]+;i=[0-9a-f]+;b=[0-9a-f]+;m=[0-9a-f]+;t=[0-9a-f]+;x=[0-9a-f]+"
     return (path=="cursor-loki.source.journal.o11y_alloy" and labels==""
         and re.fullmatch(cursor_format, cursor) is not None)
-def role_observation(root_path, root_stat, root_mount, name, observed_mount):
+def role_observation(root_path, root_stat, root_mount, name, observed_mount, expected_stat):
     result={"owner":"unverified","access":"unverified","acl":"unverified",
             "mount":"unverified","children":"unverified"}
     root_fd=None
@@ -128,14 +128,13 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount):
     try:
         root_fd=os.open(root_path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
         pinned_root=os.fstat(root_fd)
-        if (pinned_root.st_dev,pinned_root.st_ino)!=(root_stat.st_dev,root_stat.st_ino):
-            return result
-        before=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
-        if not stat.S_ISDIR(before.st_mode): return result
-        role_fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
-        opened=os.fstat(role_fd)
         identity=lambda value:(value.st_dev,value.st_ino,value.st_uid,value.st_gid,
             stat.S_IMODE(value.st_mode),value.st_nlink,value.st_mtime_ns)
+        if identity(pinned_root)!=identity(root_stat): return result
+        before=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode) or identity(before)!=identity(expected_stat): return result
+        role_fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
+        opened=os.fstat(role_fd)
         if identity(before)!=identity(opened): return result
         result["owner"]="matches_collector" if (opened.st_uid,opened.st_gid)==(0,0) else "mismatch"
         if opened.st_uid==0: allowed=(opened.st_mode>>6)&7
@@ -171,8 +170,8 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount):
         mount_after=mount_id(role_path)
         names_after=bounded_names(role_fd)
         if (names_after is None or identity(before)!=identity(after) or identity(opened)!=identity(pinned_after)
-                or (path_root.st_dev,path_root.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
-                or (pinned_root_after.st_dev,pinned_root_after.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
+                or identity(path_root)!=identity(root_stat)
+                or identity(pinned_root_after)!=identity(root_stat)
                 or acl_after!=acl_present or mount_after!=observed_mount or names_after!=names):
             return {"owner":"unverified","access":"unverified","acl":"unverified",
                     "mount":"unverified","children":"unverified"}
@@ -223,7 +222,7 @@ for observation_attempt in range(2):
     names=os.listdir(root)
     if len(names)>32: raise OverflowError("children unbounded")
     children=[]
-    top_level={"seed_file":0,"journal_component":0,"other_files":0,
+    top_level={"seed_file":0,"journal_component":0,"remotecfg_component":0,"other_files":0,
                "other_directories":0,"other_symlinks":0,"other_kinds":0,
                "receiver_component":0,"exporter_component":0,
                "attributes_processor_component":0}
@@ -232,7 +231,10 @@ for observation_attempt in range(2):
                    "exporter":{"owner":"unverified","access":"unverified","acl":"unverified",
                                  "mount":"unverified","children":"unverified"},
                    "attributes_processor":{"owner":"unverified","access":"unverified","acl":"unverified",
-                                           "mount":"unverified","children":"unverified"}}
+                                           "mount":"unverified","children":"unverified"},
+                   "remotecfg":{"owner":"unverified","access":"unverified","acl":"unverified",
+                                "mount":"unverified","children":"unverified"}}
+    remotecfg_state="absent"
     unmatched_directories=empty_unmatched()
     acl_found=acl(root)
     child_mount=False
@@ -249,7 +251,26 @@ for observation_attempt in range(2):
         item_mount=mount_id(path)
         child_mount=child_mount or item_mount[0]!=root_mount[0]
         acl_found=acl_found or acl(path)
-        if stat.S_ISREG(item.st_mode):
+        if name=="remotecfg":
+            top_level["remotecfg_component"]+=1
+            if stat.S_ISDIR(item.st_mode):
+                observation=role_observation(root,st,root_mount,name,item_mount,item)
+                role_metadata["remotecfg"]=observation
+                values=tuple(observation.values())
+                mode_safe=item.st_mode & (0o022|0o7000) == 0
+                if "unverified" in values:
+                    remotecfg_state="unverified"
+                elif (observation["owner"]=="matches_collector"
+                      and observation["access"]=="read_write_execute"
+                      and observation["acl"]=="absent" and observation["mount"]=="clear"
+                      and observation["children"]=="empty" and mode_safe):
+                    remotecfg_state="safe"
+                else:
+                    remotecfg_state="unsafe"
+            else:
+                remotecfg_state="unsafe"
+            component_layout=component_layout and remotecfg_state=="safe"
+        elif stat.S_ISREG(item.st_mode):
             if name=="alloy_seed.json": top_level["seed_file"]+=1
             else: top_level["other_files"]+=1
             component_layout=(component_layout and name=="alloy_seed.json"
@@ -325,12 +346,12 @@ for observation_attempt in range(2):
                 top_level["other_directories"]+=1
                 if name=="otelcol.receiver.loki.journal":
                     top_level["receiver_component"]+=1
-                    role_metadata["receiver"]=role_observation(root,st,root_mount,name,item_mount)
+                    role_metadata["receiver"]=role_observation(root,st,root_mount,name,item_mount,item)
                 elif name=="otelcol.exporter.otlp.journal":
                     top_level["exporter_component"]+=1
-                    role_metadata["exporter"]=role_observation(root,st,root_mount,name,item_mount)
+                    role_metadata["exporter"]=role_observation(root,st,root_mount,name,item_mount,item)
                 else:
-                    observation=role_observation(root,st,root_mount,name,item_mount)
+                    observation=role_observation(root,st,root_mount,name,item_mount,item)
                     if name=="otelcol.processor.attributes.journal_labels":
                         top_level["attributes_processor_component"]+=1
                         role_metadata["attributes_processor"]=observation
@@ -345,6 +366,7 @@ for observation_attempt in range(2):
         "children":children, "child_count":len(children), "acl":acl_found,
         "top_level":top_level,
         "role_metadata":role_metadata,
+        "remotecfg_state":remotecfg_state,
         "unmatched_directories":unmatched_directories,
         "root_is_mount":mount_exact, "child_mount":child_mount,
         "component_layout":component_layout,
@@ -719,6 +741,17 @@ def _version_diagnostics(run):
     return {"client": version("Client"), "server": version("Server")}
 
 
+def _volume_names(result):
+    if result is None or result.returncode != 0 or not isinstance(result.stdout, str):
+        return None
+    names = result.stdout.splitlines()
+    if len(names) > MAX_VOLUMES or any(
+        not name or name.strip() != name for name in names
+    ) or len(set(names)) != len(names):
+        return None
+    return names
+
+
 def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
     rootless = _call(["podman", "info", "--format={{.Host.Security.Rootless}}"], run=run)
     if rootless is None or rootless.returncode != 0 or rootless.stdout.strip().lower() != "true":
@@ -734,30 +767,30 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
     if not isinstance(project, str) or not project or service != "alloy":
         return {"status": "receiver_identity_unverified"}
 
-    volume_rows = _rows(_json(_call(["podman", "volume", "inspect", "--all"], run=run)))
-    if volume_rows is None or len(volume_rows) > MAX_VOLUMES:
-        return {"status": "volume_inventory_unavailable"}
     all_containers = _rows(_json(_call(["podman", "ps", "--all", "--format", "json"], run=run)))
     container_names = _container_names(all_containers)
     if container_names is None or len(container_names) > MAX_CONTAINERS:
         return {"status": "container_inventory_unavailable"}
     collector_present = COLLECTOR in container_names
     expected_name = f"{project}_{VOLUME_KEY}"
-    named = []
-    labelled = []
-    for volume in volume_rows:
-        if volume.get("Name") == expected_name:
-            named.append(volume)
-        volume_labels = volume.get("Labels")
-        if (
-            isinstance(volume_labels, dict)
-            and volume_labels.get("com.docker.compose.project") == project
-            and volume_labels.get("com.docker.compose.volume") == VOLUME_KEY
-        ):
-            labelled.append(volume)
-    if len(named) > 1 or len(labelled) > 1:
+    named_names = _volume_names(_call([
+        "podman", "volume", "ls", "--quiet", "--filter",
+        f"name=^{re.escape(expected_name)}$",
+    ], run=run))
+    if named_names is None:
+        return {"status": "volume_inventory_unavailable"}
+    label_names = _volume_names(_call([
+        "podman", "volume", "ls", "--quiet",
+        "--filter", f"label=com.docker.compose.project={project}",
+        "--filter", f"label=com.docker.compose.volume={VOLUME_KEY}",
+    ], run=run))
+    if label_names is None:
+        return {"status": "volume_inventory_unavailable"}
+    if len(label_names) > 1:
         return {"status": "volume_ambiguous"}
-    if not named and not labelled:
+    if label_names and label_names[0] != expected_name:
+        return {"status": "volume_identity_unsupported"}
+    if not named_names and not label_names:
         return {
             "status": "volume_missing",
             "project": project,
@@ -767,19 +800,24 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
             "collector_present": collector_present,
             "storage_space": _store_space(run),
         }
-    volume_labels = named[0].get("Labels") if len(named) == 1 else None
+    if named_names != [expected_name] or (label_names and label_names != named_names):
+        return {"status": "volume_identity_unsupported"}
+    inspected = _rows(_json(_call(
+        ["podman", "volume", "inspect", expected_name], run=run
+    )))
+    if inspected is None or len(inspected) != 1:
+        return {"status": "volume_inventory_unavailable"}
+    volume = inspected[0]
+    volume_labels = volume.get("Labels")
     if (
-        len(named) != 1
-        or not isinstance(volume_labels, dict)
+        not isinstance(volume_labels, dict)
         or volume_labels.get("com.docker.compose.project") != project
         or (
             "com.docker.compose.volume" in volume_labels
             and volume_labels.get("com.docker.compose.volume") != VOLUME_KEY
         )
-        or (labelled and labelled[0] is not named[0])
     ):
         return {"status": "volume_identity_unsupported"}
-    volume = named[0]
     name = volume.get("Name")
     mountpoint = volume.get("Mountpoint")
     if (
@@ -980,6 +1018,8 @@ def _live_failed_checks(found):
         checks.append("owner")
     if metadata.get("component_layout") is not True:
         checks.append("component_layout")
+    if metadata.get("remotecfg_state") == "unsafe":
+        checks.append("remotecfg_layout")
     if metadata.get("acl") is not False:
         checks.append("acl")
     if metadata.get("root_is_mount") is not False or metadata.get("child_mount") is not False:
@@ -1049,13 +1089,13 @@ def _live_diagnostic(found):
             "seed_file":"unverified","journal_component":"unverified","other_files":"unverified",
             "other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified",
             "receiver_component":"unverified","exporter_component":"unverified",
-            "attributes_processor_component":"unverified",
+            "attributes_processor_component":"unverified","remotecfg_component":"unverified",
         }
     role_metadata=metadata.get("role_metadata") if isinstance(metadata,dict) else None
     if not isinstance(role_metadata,dict):
         role_metadata={}
     role_values={}
-    for role in ("receiver","exporter","attributes_processor"):
+    for role in ("receiver","exporter","attributes_processor","remotecfg"):
         observation=role_metadata.get(role)
         if not isinstance(observation,dict):
             observation={}
@@ -1093,6 +1133,11 @@ def _live_diagnostic(found):
             unverified_checks.append(check)
     if isinstance(metadata, dict) and metadata.get("cursor_checked") is not True:
         unverified_checks.append("cursor_validity")
+    remotecfg_state = metadata.get("remotecfg_state") if isinstance(metadata, dict) else None
+    if remotecfg_state not in ("absent", "safe", "unsafe", "unverified"):
+        remotecfg_state = "unverified"
+    if remotecfg_state == "unverified":
+        unverified_checks.append("remotecfg_layout")
     return {
         "helper_status":found.get("status") if found.get("status") in {
             "observed","volume_initialization_pending","volume_missing","volume_shared",
@@ -1112,10 +1157,11 @@ def _live_diagnostic(found):
             for key in (
                 "seed_file", "journal_component", "other_files", "other_directories",
                 "other_symlinks", "other_kinds", "receiver_component", "exporter_component",
-                "attributes_processor_component",
+                "attributes_processor_component", "remotecfg_component",
             )
         },
         "role_metadata":role_values,
+        "remotecfg_state":remotecfg_state,
         "unmatched_directories":_unmatched_directory_diagnostic(metadata),
     }
 
@@ -1134,6 +1180,7 @@ def _summary(found):
             "mount": "unavailable",
             "children": "unavailable",
             "journal_cursor": "unavailable",
+            "remotecfg": "unverified",
             "free_space": "unavailable",
         }
     owner_matches = metadata["root"]["uid"] == 0 and metadata["root"]["gid"] == 0
@@ -1148,6 +1195,9 @@ def _summary(found):
         "mount": "ambiguous" if metadata["root_is_mount"] or metadata["child_mount"] else "clear",
         "children": "safe_regular_files" if _safe_metadata(found) else "ambiguous",
         "journal_cursor": "valid" if metadata.get("journal_cursor_valid") is True else "unavailable",
+        "remotecfg": metadata.get("remotecfg_state") if metadata.get("remotecfg_state") in (
+            "absent", "safe", "unsafe", "unverified"
+        ) else "unverified",
         "free_space": "sufficient" if (
             type(metadata.get("free_bytes")) is int and metadata["free_bytes"] >= MIN_FREE_BYTES
             and type(metadata.get("free_inodes")) is int and metadata["free_inodes"] >= MIN_FREE_INODES
