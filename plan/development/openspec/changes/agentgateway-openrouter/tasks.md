@@ -64,7 +64,7 @@ templates, never one-off writes.
       tokens. Ticked: the optional `-e agw_verify_openrouter=true` run was not made (it is not a
       Semaphore survey field). NOT proven: a real completion from OpenRouter through the
       gateway; the operator's test is pending.
-- [ ] 3.8 First real completion from an OpenRouter model through the gateway, with an allowed
+- [x] 3.8 First real completion from an OpenRouter model through the gateway, with an allowed
       identity's key against https://inference.uhstray.io/v1 (one small request), and the same request
       refused for a service identity. Deploy 5740 proved only the listing; `agw_verify_openrouter` is
       not a survey field of the Deploy template. Added 2026-10-15 so this proof cannot be lost.
@@ -74,6 +74,14 @@ templates, never one-off writes.
       false; `qwen3.8-flash-next` answered 200. The refusal for a service identity is NOT proven
       live: no service key has been handed out, so that half rests on the render and test proof
       (3.6), not on a request. Not ticked: the task text asks for both.
+      2026-10-15 (task output read from production Semaphore by the lead): the refusal half is proven
+      live. agent-cloud #673 (merged as 4cae6baa, reviewed) makes every deploy send one request, as
+      its verifying service identity, for an OpenRouter model that identity may not use. It passes
+      only on the gateway's own refusal, HTTP 403 with error code `model_not_allowed`, measured
+      against the real gateway image. Deploy agentgateway (Dev) dry run 6105, then real run 6106,
+      `failed=0`: "The OpenRouter model xiaomi/mimo-v2.6-flash is refused for opencode (HTTP 403,
+      model_not_allowed)." The allowed half is the 03:19Z completion above, plus
+      `anthropic/claude-opus-5.5` answering 200 on 2026-10-15 (3.9). Both halves are proven, so ticked.
 - [x] 3.9 Add `anthropic/claude-opus-5.5` (operator request 2026-10-15, after adding it to the
       OpenRouter account allowlist). Evidence read by the lead from production Semaphore and the probe
       response, not re-read here: site-config #94 (merged 8ee123d1, reviewed) declares it;
