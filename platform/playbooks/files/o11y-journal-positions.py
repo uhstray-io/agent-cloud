@@ -2103,8 +2103,54 @@ def repair_positions(
     return {"status": "repaired", "reason": "verified"}
 
 
+def _pending_nocopy_resume_safe(found):
+    metadata = found.get("metadata")
+    top_level = metadata.get("top_level") if isinstance(metadata, dict) else None
+    volume = found.get("volume")
+    project = found.get("project")
+    version = found.get("survey_diagnostics")
+    version = version.get("podman_version") if isinstance(version, dict) else None
+    return (
+        found.get("status") == "volume_initialization_pending"
+        and found.get("needs_chown") is False
+        and found.get("needs_copy_up") is True
+        and found.get("volume_inventory_complete") is True
+        and found.get("name_collision") is False
+        and found.get("collector_present") is False
+        and found.get("volume_use_count") == 0
+        and found.get("mount_count") == 0
+        and isinstance(project, str) and bool(project)
+        and found.get("volume_name") == f"{project}_{VOLUME_KEY}"
+        and isinstance(volume, dict)
+        and _volume_identity(volume, found["volume_name"], project) == "match"
+        and volume.get("Driver") == "local"
+        and volume.get("Scope") == "local"
+        and volume.get("Options") in ({}, None)
+        and volume.get("Mountpoint") == found.get("mountpoint")
+        and _valid_created_at(volume.get("CreatedAt"))
+        and isinstance(version, dict)
+        and version.get("client") == "4.9.3"
+        and isinstance(top_level, dict)
+        and type(top_level.get("seed_file")) is int and top_level["seed_file"] == 1
+        and type(top_level.get("journal_component")) is int and top_level["journal_component"] == 1
+        and type(top_level.get("remotecfg_component")) is int
+        and top_level["remotecfg_component"] in (0, 1)
+        and all(type(top_level.get(name)) is int and top_level[name] == 0 for name in (
+            "other_files", "other_directories", "other_symlinks", "other_kinds",
+            "receiver_component", "exporter_component", "attributes_processor_component",
+        ))
+        and metadata.get("child_count") == sum((
+            top_level["seed_file"], top_level["journal_component"], top_level["remotecfg_component"],
+        ))
+        and metadata.get("cursor_checked") is True
+        and _live_safe_metadata(found)
+        and _access(metadata)
+        and _space_is_sufficient(found, require_storage=True)
+    )
+
+
 def verify(discover_fn=None):
-    found = discover(read_cursor=True) if discover_fn is None else discover_fn()
+    found = discover(diagnostics=True, read_cursor=True) if discover_fn is None else discover_fn()
     summary = _summary(found)
     if found.get("status") == "volume_missing":
         bootstrap_safe = (
@@ -2119,7 +2165,8 @@ def verify(discover_fn=None):
                 "status": "bootstrap_allowed",
                 "reason": "collector_absent_and_volume_safe_to_initialize",
             }
-    if (
+    pending_resume = _pending_nocopy_resume_safe(found)
+    if pending_resume or (
         found.get("status") == "volume_initialization_pending"
         and found.get("needs_chown", found.get("volume", {}).get("NeedsChown")) is False
         and found.get("needs_copy_up", found.get("volume", {}).get("NeedsCopyUp")) is True
@@ -2139,7 +2186,7 @@ def verify(discover_fn=None):
         **summary,
         "children": "alloy_component_layout",
         "status": "ready",
-        "reason": "positions_identity_verified",
+        "reason": "pending_nocopy_cursor_verified" if pending_resume else "positions_identity_verified",
     }
 
 

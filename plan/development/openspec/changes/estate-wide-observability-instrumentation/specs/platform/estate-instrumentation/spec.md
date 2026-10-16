@@ -263,6 +263,12 @@ The helper SHALL expose separate pre-start `verify` and post-start `verify-live`
 - **WHEN** initialization flags are false, the collector is absent from all containers, consumers and mounts are zero, capacity/access/identity/layout checks pass, and metadata explicitly proves `positions.yml` absent
 - **THEN** pre-start `verify` refuses, and `verify-live` also refuses until a valid parsed cursor exists
 
+#### Scenario: Populated pending v3 resumes only under reviewed Podman semantics
+- **WHEN** the exact v3 volume remains initialization-pending with literal `NeedsChown=false` and `NeedsCopyUp=true`, has a nonempty allowlisted layout and a stable valid parsed cursor, and the collector is absent with zero users and mounts
+- **AND** bounded identity, ownership, access, ACL, mount, volume and GraphRoot capacity checks pass under the reviewed local Podman 4.9.3 client
+- **THEN** pre-start `verify` MAY return `ready` with a fixed pending-resume reason, without changing the volume or its flags; the same conditions SHALL be rechecked immediately before Compose mount
+- **AND** any changed, unknown, cursorless, unsafe, differently versioned or incomplete observation SHALL refuse before start; post-start exact live mount, namespace access, valid cursor, health, unchanged receiver set and fresh exact-target Loki delivery remain mandatory
+
 #### Scenario: Invalid, unreadable, or unknown positions cursor refuses without retry
 - **WHEN** `positions.yml` is present but invalid or unreadable, or its presence cannot be determined
 - **THEN** pre-start and post-start verification refuse; no existing-volume state may use a cursorless retry

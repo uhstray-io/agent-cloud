@@ -1039,7 +1039,7 @@ def test_positions_verification_enables_cursor_reading(monkeypatch):
     observed = []
 
     def discover(**kwargs):
-        observed.append(kwargs.get("read_cursor"))
+        observed.append(kwargs)
         found = _positions_found(_positions_state(owner=(0, 0), journal_cursor_valid=bool(kwargs.get("read_cursor"))))
         found["metadata"]["cursor_checked"] = bool(kwargs.get("read_cursor"))
         return found
@@ -1048,7 +1048,11 @@ def test_positions_verification_enables_cursor_reading(monkeypatch):
     POSITIONS.verify()
     ordinary = POSITIONS.survey()
     explicit = POSITIONS.survey(read_cursor=True)
-    assert observed == [True, False, True]
+    assert observed == [
+        {"diagnostics": True, "read_cursor": True},
+        {"diagnostics": True, "read_cursor": False},
+        {"diagnostics": True, "read_cursor": True},
+    ]
     assert ordinary["journal_cursor"] == "unavailable"
     assert "cursor_validity" in ordinary["live_diagnostic"]["unverified_checks"]
     assert explicit["journal_cursor"] == "valid"
@@ -3348,6 +3352,65 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
     assert live_gate["ansible.builtin.command"]["argv"] == ["python3", "-", "verify-live"]
     assert '"journal_cursor_presence":cursor_presence' in POSITIONS_HELPER.read_text()
     assert '"children": "alloy_component_layout"' in POSITIONS_HELPER.read_text()
+
+
+def _populated_pending_resume_found():
+    metadata = _positions_state(owner=(0, 0), children=[
+        {"kind": "file"}, {"kind": "dir"}, {"kind": "dir"},
+    ])
+    metadata["cursor_checked"] = True
+    metadata["top_level"] = {
+        "seed_file": 1, "journal_component": 1, "remotecfg_component": 1,
+        "other_files": 0, "other_directories": 0, "other_symlinks": 0,
+        "other_kinds": 0, "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0,
+    }
+    found = _empty_pending_volume_found(needs_copy_up=True, metadata=metadata)
+    found["volume"].update({
+        "Driver": "local", "Scope": "local", "Options": {},
+        "Mountpoint": found["mountpoint"],
+    })
+    found["survey_diagnostics"] = {
+        "podman_version": {"client": "4.9.3", "server": "unavailable"}
+    }
+    return found
+
+
+def test_positions_prestart_admits_only_populated_reviewed_pending_volume():
+    found = _populated_pending_resume_found()
+    assert POSITIONS.verify(lambda: found)["reason"] == "pending_nocopy_cursor_verified"
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
+
+
+@pytest.mark.parametrize("path,value", [
+    ("needs_chown", True), ("needs_copy_up", False),
+    ("volume_inventory_complete", False), ("name_collision", True),
+    ("collector_present", True), ("volume_use_count", 1), ("mount_count", 1),
+    ("volume_name", "other"), ("volume.Name", "other"),
+    ("volume.Labels.com.docker.compose.project", "other"),
+    ("volume.Options", {"unexpected": "value"}), ("volume.Driver", "image"),
+    ("volume.CreatedAt", "unavailable"),
+    ("survey_diagnostics.podman_version.client", "4.9.4"),
+    ("metadata.child_count", 0), ("metadata.cursor_checked", False),
+    ("metadata.journal_cursor_valid", False), ("metadata.component_layout", False),
+    ("metadata.acl", True), ("metadata.root_is_mount", True),
+    ("metadata.root.uid", 88),
+    ("metadata.top_level.other_directories", 1),
+    ("metadata.free_bytes", POSITIONS.MIN_FREE_BYTES - 1),
+    ("storage_space.free_inodes", POSITIONS.MIN_FREE_INODES - 1),
+])
+def test_positions_prestart_pending_resume_refuses_changed_evidence(path, value):
+    found = _populated_pending_resume_found()
+    if path.startswith("volume.Labels."):
+        found["volume"]["Labels"][path.removeprefix("volume.Labels.")] = value
+        assert POSITIONS.verify(lambda: found)["status"] == "refused"
+        return
+    target = found
+    for key in path.split(".")[:-1]:
+        target = target[key]
+    target[path.split(".")[-1]] = value
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
 
 
 def _cursorless_prestart_found(**overrides):
