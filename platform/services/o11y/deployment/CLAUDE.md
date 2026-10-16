@@ -89,8 +89,13 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   `check_mode_unverified`; stage refuses check mode. Survey reads bounded owner/mode
   and direct-child metadata in the rootless Podman
   namespace; it does not mount or initialize the volume and never reads
-  positions-file content. Review this survey before choosing
-  `repair-positions`, which is a separate action. Both repair paths require an
+  positions-file content. For an existing v3 volume with safe
+  layout but unknown cursor validity, use `survey-cursor`. That action reads only a safe exact
+  positions file through the bounded parser and reports fixed valid/unavailable
+  categories; it does not mount, mutate or start the collector. A valid cursor
+  alone does not clear a pending initialization flag or authorize apply. Review
+  the metadata survey before choosing `repair-positions`, which is a separate
+  action. Both repair paths require an
   unused unique local volume, no ACL or mount ambiguity, only direct regular
   single-link files owned by collector identity `0:0`, a root owner mismatch,
   and owner mode bits sufficient for access after the root-only change. Free-byte

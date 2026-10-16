@@ -942,6 +942,7 @@ def test_role_observation_bounds_each_directory_enumeration(overflow_pass, tmp_p
         ("unsafe", "present", False, False),
         ("oversized", "present", False, False),
         ("read_error", "present", False, False),
+        ("mounted", "present", False, False),
         ("valid", "present", True, True),
     ],
 )
@@ -962,6 +963,9 @@ def test_positions_cursor_checked_tracks_stable_content_examination(
     if cursor_state != "absent":
         positions.write_text("x" * 65537 if cursor_state == "oversized" else content)
         os.chmod(positions, 0o644 if cursor_state == "unsafe" else 0o600)
+    mountinfo = "1 0 0:1 / / rw - testfs /dev/test rw\n"
+    if cursor_state == "mounted":
+        mountinfo += f"2 1 0:2 / {positions} rw - testfs /dev/test rw\n"
 
     prelude = f'''import builtins,io,os,sys,types
 root={str(root)!r}
@@ -979,9 +983,14 @@ def fake_open(path,flags,*args,**kwargs):
     if path=="positions.yml" and {cursor_state!r}=="read_error": raise PermissionError("private")
     return real_open(path,flags,*args,**kwargs)
 os.open=fake_open
+real_read=os.read
+def fake_read(fd,*args,**kwargs):
+    if {cursor_state!r}=="mounted": raise AssertionError("mounted file content read")
+    return real_read(fd,*args,**kwargs)
+os.read=fake_read
 original_open=builtins.open
 def fake_builtin_open(path,*args,**kwargs):
-    if path=="/proc/self/mountinfo": return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\\n")
+    if path=="/proc/self/mountinfo": return io.StringIO({mountinfo!r})
     return original_open(path,*args,**kwargs)
 builtins.open=fake_builtin_open
 os.listxattr=lambda *_args,**_kwargs: []
@@ -1010,11 +1019,33 @@ def test_positions_verification_enables_cursor_reading(monkeypatch):
 
     def discover(**kwargs):
         observed.append(kwargs.get("read_cursor"))
-        return {"status": "unavailable"}
+        found = _positions_found(_positions_state(owner=(0, 0), journal_cursor_valid=bool(kwargs.get("read_cursor"))))
+        found["metadata"]["cursor_checked"] = bool(kwargs.get("read_cursor"))
+        return found
 
     monkeypatch.setattr(POSITIONS, "discover", discover)
     POSITIONS.verify()
+    ordinary = POSITIONS.survey()
+    explicit = POSITIONS.survey(read_cursor=True)
+    assert observed == [True, False, True]
+    assert ordinary["journal_cursor"] == "unavailable"
+    assert "cursor_validity" in ordinary["live_diagnostic"]["unverified_checks"]
+    assert explicit["journal_cursor"] == "valid"
+    assert "cursor_validity" not in explicit["live_diagnostic"]["unverified_checks"]
+
+
+def test_positions_cli_dispatches_explicit_cursor_survey(monkeypatch, capsys):
+    observed = []
+
+    def survey(*, read_cursor=False):
+        observed.append(read_cursor)
+        return {"status": "check_mode_unverified"}
+
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "survey-cursor"])
+    monkeypatch.setattr(POSITIONS, "survey", survey)
+    POSITIONS.main()
     assert observed == [True]
+    assert json.loads(capsys.readouterr().out) == {"status": "check_mode_unverified"}
 
 
 @pytest.mark.parametrize(("action", "function"), [("verify", "verify"), ("verify-live", "verify_live")])
@@ -4599,7 +4630,7 @@ def test_survey_and_apply_use_redacted_resolved_compose_gate():
     )
     assert "no_log" not in gate["tasks"][revision]
     assert "no_log" not in gate["tasks"][sha_guard]
-    assert "not in ['stage', 'survey', 'apply']" in gate["tasks"][0]["when"]
+    assert "not in ['stage', 'survey', 'survey-cursor', 'apply']" in gate["tasks"][0]["when"]
     command = next(
         task for task in gate["tasks"]
         if task.get("name") == "Resolve Compose configuration and verify the exact v3 no-copy mount"
@@ -4771,7 +4802,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "groups.get('o11y_svc', []) | length == 1" in source
     assert (
         "journal_collector_action | default('apply') in "
-        "['stage', 'survey', 'repair-positions', 'apply', 'stop']"
+        "['stage', 'survey', 'survey-cursor', 'repair-positions', 'apply', 'stop']"
     ) in source
     assert "journal_collector_action | default('apply') != 'stage' or not ansible_check_mode" in source
     assert source.index("Verify positions volume identity and access before apply") < apply
@@ -4805,11 +4836,14 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     positions_survey = next(
         task for task in survey_play["tasks"]
-        if task.get("name") == "Survey existing positions volume metadata without mounting it"
+        if task.get("name") == "Survey positions metadata or explicit cursor validity without mounting"
     )
+    assert "not in ['survey', 'survey-cursor']" in survey_play["tasks"][0]["when"]
     assert positions_survey.get("no_log") is True
     assert positions_survey["when"] == "not ansible_check_mode"
-    assert positions_survey["ansible.builtin.command"]["argv"] == ["python3", "-", "survey"]
+    assert positions_survey["ansible.builtin.command"]["argv"] == [
+        "python3", "-", "{{ journal_collector_action }}"
+    ]
     assert "/alloy-state/.positions-live-gate." not in str(positions_survey)
     assert not any("volume create" in str(task) for task in survey_play["tasks"])
     assert not any(
@@ -5181,7 +5215,7 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
         "Verify positions volume identity and access before apply",
         "Recheck positions volume initialization immediately before mount",
         "Verify the live collector positions mount and access",
-        "Survey existing positions volume metadata without mounting it",
+        "Survey positions metadata or explicit cursor validity without mounting",
         "Read the Podman rootless UID mapping",
         "Verify effective write and rename access in the live collector namespace",
         "Require a recent exact-name entry in the selected journal",
@@ -5200,7 +5234,7 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
         "Verify positions volume identity and access before apply": "verify",
         "Recheck positions volume initialization immediately before mount": "verify",
         "Verify the live collector positions mount and access": "verify-live",
-        "Survey existing positions volume metadata without mounting it": "survey",
+        "Survey positions metadata or explicit cursor validity without mounting": "{{ journal_collector_action }}",
         "Run the separately selected guarded positions repair": "repair-positions",
     }
     for name, action in helper_actions.items():
@@ -5237,7 +5271,7 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
     positions_command = next(
         task
         for task in survey_play["tasks"]
-        if task.get("name") == "Survey existing positions volume metadata without mounting it"
+        if task.get("name") == "Survey positions metadata or explicit cursor validity without mounting"
     )
     positions_check_mode = next(
         task
@@ -5795,6 +5829,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert variables["journal_collector_action"]["values"] == [
         {"name": "Stage reviewed checkout", "value": "stage"},
         {"name": "Survey journal paths", "value": "survey"},
+        {"name": "Survey journal cursor read-only", "value": "survey-cursor"},
         {"name": "Repair positions root ownership", "value": "repair-positions"},
         {"name": "Apply pilot", "value": "apply"},
         {"name": "Stop pilot", "value": "stop"},

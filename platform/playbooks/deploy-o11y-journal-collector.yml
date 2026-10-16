@@ -23,11 +23,11 @@
         that:
           - groups.get('o11y_svc', []) | length == 1
           - service_branch | default('dev') == 'dev'
-          - journal_collector_action | default('apply') in ['stage', 'survey', 'repair-positions', 'apply', 'stop']
+          - journal_collector_action | default('apply') in ['stage', 'survey', 'survey-cursor', 'repair-positions', 'apply', 'stop']
           - journal_collector_action | default('apply') != 'stage' or not ansible_check_mode
         fail_msg: >-
           This workflow requires one o11y_svc host, service_branch=dev, and
-          journal_collector_action=stage|survey|repair-positions|apply|stop; stage cannot run in check mode.
+          journal_collector_action=stage|survey|survey-cursor|repair-positions|apply|stop; stage cannot run in check mode.
         quiet: true
       tags: [always]
 
@@ -83,7 +83,7 @@
   tasks:
     - name: Leave the provider gate for actions without a Compose start
       ansible.builtin.meta: end_host
-      when: journal_collector_action | default('apply') not in ['stage', 'survey', 'apply']
+      when: journal_collector_action | default('apply') not in ['stage', 'survey', 'survey-cursor', 'apply']
       tags: [always]
 
     - name: Report provider configuration as unverified in check mode
@@ -1445,12 +1445,12 @@
   tasks:
     - name: Leave the survey play when the reviewed action is apply or stop
       ansible.builtin.meta: end_host
-      when: journal_collector_action | default('apply') != 'survey'
+      when: journal_collector_action | default('apply') not in ['survey', 'survey-cursor']
       tags: [always]
 
-    - name: Survey existing positions volume metadata without mounting it
+    - name: Survey positions metadata or explicit cursor validity without mounting
       ansible.builtin.command:
-        argv: [python3, "-", survey]
+        argv: [python3, "-", "{{ journal_collector_action }}"]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
         stdin_add_newline: false
       register: _journal_positions_survey

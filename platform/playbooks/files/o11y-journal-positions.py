@@ -550,7 +550,9 @@ for observation_attempt in range(2):
                     cursor_presence="present"
                     component_layout=(component_layout and safe_file)
                     cursor_valid=False
-                    if read_cursor and safe_file and nested_stat.st_size<=65536:
+                    if (read_cursor and safe_file and not mount_exact and not acl_found
+                            and item_mount[0]==root_mount[0] and nested_mount[0]==root_mount[0]
+                            and nested_stat.st_size<=65536):
                         try:
                             fd=os.open(nested_name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory_fd)
                             try:
@@ -1559,9 +1561,9 @@ def _summary(found):
     }
 
 
-def survey(discover_fn=None):
+def survey(discover_fn=None, *, read_cursor=False):
     default_discovery = discover_fn is None
-    found = discover(diagnostics=True) if default_discovery else discover_fn()
+    found = discover(diagnostics=True, read_cursor=read_cursor) if default_discovery else discover_fn()
     summary = _summary(found)
     if isinstance(found.get("survey_diagnostics"), dict):
         summary["survey_diagnostics"] = found["survey_diagnostics"]
@@ -2156,6 +2158,7 @@ def verify_live(discover_fn=None):
 def main():
     actions = {
         "survey": survey,
+        "survey-cursor": lambda: survey(read_cursor=True),
         "repair-positions": repair_positions,
         "verify": verify,
         "verify-live": verify_live,
