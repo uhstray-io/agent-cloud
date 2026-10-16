@@ -101,6 +101,10 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   skips copy-up into a nonempty volume even if podman-compose omits `nocopy`;
   the resolved Compose setting alone does not prove runtime preservation.
   Every condition is rechecked immediately before Compose mounts the volume.
+  For this plain local volume, Podman 4.9.3's `MountCount` stays zero even while
+  the collector has its one exact named-volume bind mount; live verification
+  checks both facts separately. The first apply refused on the old count-one
+  expectation and removed only the collector, preserving the volume.
   Review
   the metadata survey before choosing `repair-positions`, which is a separate
   action. Both repair paths require an

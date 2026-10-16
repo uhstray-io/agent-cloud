@@ -2172,7 +2172,7 @@ def verify(discover_fn=None):
         and found.get("needs_copy_up", found.get("volume", {}).get("NeedsCopyUp")) is True
         and found.get("collector_present") is True
         and found.get("volume_use_count") == 1
-        and found.get("mount_count") == 1
+        and found.get("mount_count") == 0
     ):
         found = {**found, "status": "observed"}
         summary = _summary(found)
@@ -2192,13 +2192,14 @@ def verify(discover_fn=None):
 
 def verify_live(discover_fn=None):
     found = discover(read_cursor=True) if discover_fn is None else discover_fn()
+    # Podman 4.9.3 does not increment MountCount for this plain local volume.
     if (
         found.get("status") == "volume_initialization_pending"
         and found.get("needs_chown", found.get("volume", {}).get("NeedsChown")) is False
         and found.get("needs_copy_up", found.get("volume", {}).get("NeedsCopyUp")) is True
         and found.get("collector_present") is True
         and found.get("volume_use_count") == 1
-        and found.get("mount_count") == 1
+        and found.get("mount_count") == 0
     ):
         found = {**found, "status": "observed"}
     def refused(reason):
@@ -2219,7 +2220,7 @@ def verify_live(discover_fn=None):
         or type(found.get("volume_use_count")) is not int
         or found["volume_use_count"] != 1
         or type(found.get("mount_count")) is not int
-        or found["mount_count"] != 1
+        or found["mount_count"] != 0
         or found.get("collector_mount_verified") is not True
     ):
         return refused("collector_mount_unverified")
