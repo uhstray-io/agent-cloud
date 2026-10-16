@@ -221,6 +221,19 @@ The collector layout predicate SHALL accept only the exact owner-matching, singl
 - **AND** the bounded diagnostic SHALL continue to report group/other permission presence without treating read-only bits alone as unsafe
 - **AND** no seed chmod, content read, volume recreation, collector start or cursorless-v3 exception SHALL follow from this source correction
 
+### Requirement: Cursor validity can be proved by an explicit read-only survey
+The Dev-bound journal workflow SHALL expose a distinct `survey-cursor` action in its declared Semaphore survey, published through the scoped Dev-bound template workflow. It SHALL use the same exact reviewed revision, provider configuration, volume identity, protected output validation and fixed summary schema as ordinary `survey`. Only `survey-cursor` MAY invoke the helper's existing bounded positions-content parser; ordinary `survey` SHALL remain metadata-only. The explicit action SHALL report only fixed cursor validity/presence categories and no raw content, cursor value, error text or private path. It SHALL not mutate, mount, repair, start the collector or change the pending-state/pre-start/rollback gates. Check mode SHALL report unverified without a runtime read.
+
+#### Scenario: Explicit cursor survey proves only a valid parsed cursor
+- **WHEN** `survey-cursor` finds the exact safe positions file with stable descriptor identity and a valid expected journal cursor within the existing 64 KiB limit
+- **THEN** it reports the fixed valid category and no cursor value or file contents
+- **AND** the existing pending v3 volume remains blocked from collector apply until a separately reviewed safe-resume gate passes
+
+#### Scenario: Unsafe or unreadable cursor remains unverified or refused
+- **WHEN** the positions file is absent, oversized, malformed, unreadable, linked, wrongly owned, mode-unsafe, ACL/mount-ambiguous or changes during the bounded read
+- **THEN** the action emits only fixed unavailable/refusal categories and preserves the volume and collector state
+- **AND** ordinary `survey` and check mode never read positions contents
+
 ### Requirement: Only a safe empty remotecfg service directory may extend the positions layout
 The layout observer SHALL conditionally accept at most one optional exact direct child `remotecfg` only when descriptor-relative no-follow observation and parent/child identity rechecks prove a real empty directory, namespace owner/group `0:0`, owner RWX, no group/other write or special bits, no access/default ACL, and no mount boundary or exact bind mount. Emptiness SHALL include hidden entries and SHALL be rechecked against the same identity. Unknown, malformed, inaccessible or racing evidence SHALL refuse. Absence SHALL remain allowed. Every other extra directory SHALL remain refused, including the diagnostic-only receiver, exporter and attributes processor. Fixed bounded role/count/state fields SHALL distinguish safe, unsafe and unverified exact `remotecfg` from aggregated unknown names in survey, check-mode and failure output without printing raw names or private paths. Survey SHALL remain read-only and SHALL NOT read cursor content, probe-mount, repair, create or delete state. Layout acceptance SHALL NOT relax cursor, identity, capacity, access, bootstrap or live gates; existing cursorless v3 SHALL refuse start, and v1/v2 SHALL remain preserved and excluded.
 

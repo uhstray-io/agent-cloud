@@ -550,21 +550,57 @@ for observation_attempt in range(2):
                     cursor_presence="present"
                     component_layout=(component_layout and safe_file)
                     cursor_valid=False
-                    if read_cursor and safe_file and nested_stat.st_size<=65536:
+                    if (read_cursor and safe_file and not mount_exact and not acl_found
+                            and st.st_uid==0 and st.st_gid==0
+                            and st.st_mode & 0o700 == 0o700
+                            and st.st_mode & (0o022|0o7000) == 0
+                            and item.st_uid==0 and item.st_gid==0 and item.st_nlink==2
+                            and item.st_mode & 0o700 == 0o700
+                            and item.st_mode & (0o022|0o7000) == 0
+                            and item_mount[0]==root_mount[0] and nested_mount[0]==root_mount[0]
+                            and nested_stat.st_size<=65536):
                         try:
                             fd=os.open(nested_name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory_fd)
                             try:
                                 opened=os.fstat(fd)
-                                data=os.read(fd,65537)
-                                after=os.fstat(fd)
-                                stable_read=((opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)==
-                                    (nested_stat.st_dev,nested_stat.st_ino,nested_stat.st_size,nested_stat.st_mtime_ns)
-                                    and (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns)==
-                                    (opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)
-                                    and len(data)==opened.st_size)
-                                if stable_read:
-                                    cursor_valid=journal_cursor(data)
-                                    cursor_checked=True
+                                parent=os.fstat(directory_fd)
+                                opened_acl=any("acl" in value.lower() for value in os.listxattr(fd))
+                                parent_acl=any("acl" in value.lower() for value in os.listxattr(directory_fd))
+                                if ((opened.st_dev,opened.st_ino,opened.st_uid,opened.st_gid,
+                                        opened.st_mode,opened.st_nlink,opened.st_size,opened.st_mtime_ns)==
+                                        (nested_stat.st_dev,nested_stat.st_ino,nested_stat.st_uid,nested_stat.st_gid,
+                                        nested_stat.st_mode,nested_stat.st_nlink,nested_stat.st_size,nested_stat.st_mtime_ns)
+                                        and (parent.st_dev,parent.st_ino,parent.st_uid,parent.st_gid,
+                                            parent.st_mode,parent.st_nlink)==
+                                        (item.st_dev,item.st_ino,item.st_uid,item.st_gid,
+                                            item.st_mode,item.st_nlink)
+                                        and mount_id(path)==item_mount and mount_id(nested_path)==nested_mount
+                                        and not opened_acl and not parent_acl
+                                        and stat.S_ISREG(opened.st_mode)
+                                        and opened.st_uid==0 and opened.st_gid==0 and opened.st_nlink==1
+                                        and opened.st_mode & 0o600 == 0o600
+                                        and opened.st_mode & 0o077 == 0
+                                        and opened.st_mode & 0o7133 == 0):
+                                    data=os.read(fd,65537)
+                                    after=os.fstat(fd)
+                                    parent_after=os.fstat(directory_fd)
+                                    path_after=os.stat(nested_name,dir_fd=directory_fd,follow_symlinks=False)
+                                    stable_read=((after.st_dev,after.st_ino,after.st_uid,after.st_gid,
+                                            after.st_mode,after.st_nlink,after.st_size,after.st_mtime_ns)==
+                                        (opened.st_dev,opened.st_ino,opened.st_uid,opened.st_gid,
+                                            opened.st_mode,opened.st_nlink,opened.st_size,opened.st_mtime_ns)
+                                        and (path_after.st_dev,path_after.st_ino)==(opened.st_dev,opened.st_ino)
+                                        and (parent_after.st_dev,parent_after.st_ino,parent_after.st_uid,
+                                            parent_after.st_gid,parent_after.st_mode,parent_after.st_nlink)==
+                                            (parent.st_dev,parent.st_ino,parent.st_uid,parent.st_gid,
+                                            parent.st_mode,parent.st_nlink)
+                                        and not any("acl" in value.lower() for value in os.listxattr(fd))
+                                        and not any("acl" in value.lower() for value in os.listxattr(directory_fd))
+                                        and mount_id(path)==item_mount and mount_id(nested_path)==nested_mount
+                                        and len(data)==opened.st_size)
+                                    if stable_read:
+                                        cursor_valid=journal_cursor(data)
+                                        cursor_checked=True
                             finally: os.close(fd)
                         except OSError:
                             cursor_valid=False
@@ -1559,9 +1595,9 @@ def _summary(found):
     }
 
 
-def survey(discover_fn=None):
+def survey(discover_fn=None, *, read_cursor=False):
     default_discovery = discover_fn is None
-    found = discover(diagnostics=True) if default_discovery else discover_fn()
+    found = discover(diagnostics=True, read_cursor=read_cursor) if default_discovery else discover_fn()
     summary = _summary(found)
     if isinstance(found.get("survey_diagnostics"), dict):
         summary["survey_diagnostics"] = found["survey_diagnostics"]
@@ -2156,6 +2192,7 @@ def verify_live(discover_fn=None):
 def main():
     actions = {
         "survey": survey,
+        "survey-cursor": lambda: survey(read_cursor=True),
         "repair-positions": repair_positions,
         "verify": verify,
         "verify-live": verify_live,
@@ -2177,7 +2214,7 @@ def main():
                 "uid_maps": "not_run",
                 "namespace_probe": "not_run",
             },
-        } if action == "survey" else ({
+        } if action in ("survey", "survey-cursor") else ({
             "status": "unavailable",
             "reason": "survey_failed",
             "live_diagnostic": {
