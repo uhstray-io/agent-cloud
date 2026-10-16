@@ -946,6 +946,7 @@ def test_role_observation_bounds_each_directory_enumeration(overflow_pass, tmp_p
         ("root_unsafe", "present", False, False),
         ("component_unsafe", "present", False, False),
         ("inode_swapped", "present", False, False),
+        ("post_read_mode_change", "present", False, False),
         ("valid", "present", True, True),
     ],
 )
@@ -1003,7 +1004,10 @@ real_read=os.read
 def fake_read(fd,*args,**kwargs):
     if {cursor_state!r} in ("mounted","root_unsafe","component_unsafe","inode_swapped"):
         raise AssertionError("unsafe file content read")
-    return real_read(fd,*args,**kwargs)
+    content=real_read(fd,*args,**kwargs)
+    if {cursor_state!r}=="post_read_mode_change":
+        os.chmod(os.path.join(root,"loki.source.journal.o11y_alloy","positions.yml"),0o666)
+    return content
 os.read=fake_read
 original_open=builtins.open
 def fake_builtin_open(path,*args,**kwargs):
