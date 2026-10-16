@@ -516,7 +516,8 @@ for observation_attempt in range(2):
             else: top_level["other_files"]+=1
             component_layout=(component_layout and name=="alloy_seed.json"
                 and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1
-                and item.st_mode & 0o077 == 0 and item.st_mode & 0o7133 == 0)
+                # Alloy v1.9.2 writes its seed 0644; forbid write/execute, not read-only bits.
+                and item.st_mode & 0o7133 == 0)
         elif stat.S_ISDIR(item.st_mode) and name=="loki.source.journal.o11y_alloy":
             top_level["journal_component"]+=1
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
