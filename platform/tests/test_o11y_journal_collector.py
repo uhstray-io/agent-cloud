@@ -3008,11 +3008,11 @@ def test_embedded_metadata_classifies_only_exact_component_directories_without_d
 
     def inspect(
         name, kind="directory", *, acl=False, mounted=False, race=False, child_count=0,
-        mode=0o700, owner=True, inaccessible=False, empty_race=False,
+        mode=0o700, owner=True, inaccessible=False, inaccessible_open=False, empty_race=False,
     ):
         root = tmp_path / (
             f"{name.replace('.', '-')}-{kind}-{acl}-{mounted}-{race}-{child_count}-{mode}-"
-            f"{owner}-{inaccessible}-{empty_race}"
+            f"{owner}-{inaccessible}-{inaccessible_open}-{empty_race}"
         )
         root.mkdir(mode=0o700)
         os.chmod(root, 0o700)
@@ -3040,12 +3040,18 @@ real_lstat=os.lstat
 real_fstat=os.fstat
 real_scandir=os.scandir
 real_open=builtins.open
+real_os_open=os.open
 role_original=real_stat(role_path)
 real_listxattr=getattr(os,"listxattr",lambda *_args,**_kwargs: [])
 def fake_open(path,*args,**kwargs):
     if path=="/proc/self/mountinfo": return io.StringIO({''.join(mount_lines)!r})
     return real_open(path,*args,**kwargs)
 builtins.open=fake_open
+def fake_os_open(path,*args,**kwargs):
+    if {inaccessible_open!r} and role_name=="remotecfg" and path==role_name and kwargs.get("dir_fd") is not None:
+        raise PermissionError("private")
+    return real_os_open(path,*args,**kwargs)
+os.open=fake_os_open
 def fake_listxattr(path,*args,**kwargs):
     if {inaccessible!r} and isinstance(path,int): raise PermissionError("private")
     if {acl!r} and isinstance(path,int):
@@ -3160,7 +3166,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     for kwargs, expected in (
         ({"child_count": 1}, "unsafe"),
         ({"mode": 0o722}, "unsafe"),
-        ({"mode": 0o600}, "unverified"),
+        ({"mode": 0o600, "inaccessible_open": True}, "unverified"),
         ({"mode": 0o1700}, "unsafe"),
         ({"owner": False}, "unsafe"),
         ({"acl": True}, "unsafe"),
