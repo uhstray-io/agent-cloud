@@ -14,10 +14,7 @@
   become: false
   vars:
     _reconcile_forbidden_inputs:
-      - openbao_addr
       - semaphore_https_url
-      - bao_role_id
-      - bao_secret_id
       - OPENBAO_ADDR
       - BAO_ROLE_ID
       - BAO_SECRET_ID
