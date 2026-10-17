@@ -269,7 +269,10 @@ def test_service_overview_plans_saved_query_defaults_without_overrides():
     )
 
 
-@pytest.mark.parametrize("current", [None, "$__all", "All", 'agentgateway" or vector(1)', "a" * 129])
+@pytest.mark.parametrize(
+    "current",
+    [None, "$__all", "All", "foo.bar", 'agentgateway" or vector(1)', "a" * 129],
+)
 def test_an_unresolved_or_unsafe_query_default_is_refused(tmp_path, current):
     variable = {"name": "service", "type": "query", "current": {"value": current}}
     dashboard = _synthetic('up{service=~"$service"}', [variable], datasource={"type": "prometheus"})

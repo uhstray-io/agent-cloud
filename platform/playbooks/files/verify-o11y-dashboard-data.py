@@ -102,7 +102,7 @@ REFERENCE = re.compile(
 )
 # Types whose saved current value is the literal text Grafana interpolates.
 LITERAL_TYPES = {"custom", "constant", "interval", "textbox"}
-QUERY_DEFAULT = re.compile(r"[A-Za-z0-9_./-]{1,128}")
+QUERY_DEFAULT = re.compile(r"[A-Za-z0-9_/-]{1,128}")
 POINTS_PER_PANEL = 1000
 QUERY_TIMEOUT = 30
 LOKI_RESULT_LIMIT = 100
