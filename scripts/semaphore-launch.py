@@ -28,6 +28,7 @@ The operator token arrives on stdin (platform/semaphore/README.md, API path).
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -61,13 +62,33 @@ def with_survey_defaults(template, settings):
         name, default = var.get("name"), var.get("default_value")
         if name in settings or default in (None, ""):
             continue
-        # v2.17 declares default_value as a string (db/Template.go SurveyVar). Any other
-        # shape is a server whose form semantics were not read: refuse rather than guess.
-        if not isinstance(default, str):
+        # The web form supplies string defaults; integer defaults are also safe to encode.
+        integer = var.get("type") in {"integer", "int"}
+        if integer and not (isinstance(default, str) or type(default) is int):
+            raise Refusal(f"Survey field {name!r} must be a canonical integer")
+        if not integer and not isinstance(default, str):
             raise Refusal(f"Survey field {name!r} of {template['name']!r} has a non-string default; "
                           "pass it explicitly with --set")
         merged[name] = default
     return {**merged, **settings}
+
+
+def typed_survey_values(template, settings):
+    """Convert declared integer survey values to JSON numbers before submission."""
+    types = {var.get("name"): var.get("type") for var in template.get("survey_vars") or []}
+    converted = dict(settings)
+    for name, value in converted.items():
+        if types.get(name) not in {"integer", "int"}:
+            continue
+        if type(value) is int:
+            continue
+        if not isinstance(value, str) or re.fullmatch(r"(?:0|[1-9][0-9]*|-[1-9][0-9]*)", value) is None:
+            raise Refusal(f"Survey field {name!r} must be a canonical integer")
+        try:
+            converted[name] = int(value)
+        except ValueError:
+            raise Refusal(f"Survey field {name!r} must be a canonical integer") from None
+    return converted
 
 
 def build_task(template, project, settings, dry_run, message):
@@ -76,7 +97,7 @@ def build_task(template, project, settings, dry_run, message):
     unknown = sorted(set(settings) - declared)
     if unknown:
         raise Refusal(f"Not survey fields of {template['name']!r}: {', '.join(unknown)}")
-    settings = with_survey_defaults(template, settings)
+    settings = typed_survey_values(template, with_survey_defaults(template, settings))
     body = {"project_id": project, "template_id": template["id"], "message": message}
     if settings:
         body["environment"] = json.dumps(settings)

@@ -120,6 +120,11 @@ scripted path exist and are recorded here so it is built once, deliberately:
    shape is unverified, allows only the template's declared survey fields, fills a
    declared field left unset with its declared `default_value` as the web form does,
    and refuses while the template already has a running task, all before the POST.
+   Survey fields declared `integer` or `int` are sent as JSON integers, including
+   string defaults. Use canonical decimal `--set` values such as `limit=0`,
+   `limit=42`, or `offset=-7`; leading zeros, negative zero, a plus sign,
+   whitespace, decimals, and exponent notation are refused before submission
+   with the field name only. String and enum survey values remain strings.
    Its read-back-and-stop after the POST is only a tripwire for a changed server; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
