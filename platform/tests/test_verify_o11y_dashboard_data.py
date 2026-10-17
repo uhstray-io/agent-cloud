@@ -277,6 +277,19 @@ def test_an_unresolved_or_unsafe_query_default_is_refused(tmp_path, current):
         vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
 
 
+@pytest.mark.parametrize("selection_options", [{"multi": True}, {"includeAll": True}])
+def test_query_default_refuses_multi_select_or_all_selection(tmp_path, selection_options):
+    variable = {
+        "name": "service",
+        "type": "query",
+        "current": {"value": "agentgateway"},
+        **selection_options,
+    }
+    dashboard = _synthetic('up{service=~"$service"}', [variable], datasource={"type": "prometheus"})
+    with pytest.raises(vdd.Refused, match="'service' has no default"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
 def test_a_query_variable_with_no_saved_default_remains_refused(tmp_path):
     dashboard = _synthetic(
         'up{service=~"$service"}',

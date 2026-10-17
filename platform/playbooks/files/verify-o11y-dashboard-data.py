@@ -248,6 +248,11 @@ def template_values(dashboard: dict[str, Any], overrides: dict[str, Any]) -> tup
                 variable.get("type") in LITERAL_TYPES
                 or (
                     variable.get("type") == "query"
+                    # Grafana regex-escapes multi-select query values; this
+                    # evaluator substitutes literals directly, so only accept
+                    # the default single-select behavior.
+                    and variable.get("multi", False) is False
+                    and variable.get("includeAll", False) is False
                     and current.casefold() != "all"
                     and QUERY_DEFAULT.fullmatch(current)
                 )

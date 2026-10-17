@@ -1220,8 +1220,12 @@ service selection while retaining each source's independent selector.
 
 The read-only dashboard-data evaluator can reproduce a query variable's saved
 current value only when it is a literal service name matching
-`[A-Za-z0-9_./-]{1,128}` and is not the `All` selection. It does not try to
-evaluate Grafana's variable query or accept computed/unsafe values. A missing
-or rejected default still requires a caller-provided override. This keeps the
-no-override receipt bounded to the dashboard's stored selection and does not
-claim to resolve the live option list.
+`[A-Za-z0-9_./-]{1,128}`, is not the `All` selection, and the variable is
+single-select with `multi` and `includeAll` false or omitted (Grafana's
+single-select defaults). The evaluator substitutes literals directly, while
+Grafana regex-escapes multi-select values; accepting those would change query
+semantics. It does not evaluate Grafana's variable query or accept
+computed/unsafe values. A missing or rejected default still requires a
+caller-provided override. This keeps the no-override receipt bounded to the
+dashboard's stored selection and does not claim to resolve the live option
+list.
