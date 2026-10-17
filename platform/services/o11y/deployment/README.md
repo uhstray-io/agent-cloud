@@ -287,6 +287,19 @@ separate loaded-limit receipt, keep task 3.3 open, and treat check mode as
 `check_mode_unverified`. No live survey or deployment is claimed for this
 source slice.
 
+**Read-only scrape baseline task 6190 (2026-10-16):** The Dev-bound survey
+failed while consuming the protected helper response. The helper can return a
+top-level `{"status":"unavailable","reason":"<fixed category>"}` on a
+collection refusal, while the playbook expected the successful nested receipt
+and dereferenced `baseline` before validating the envelope. That wrapper error
+masked the helper's reason. The task output retained here does not identify the
+underlying helper refusal category; it remains unknown. No baseline receipt was
+produced, and task 6190 is not baseline or coverage evidence. The playbook now
+classifies the exact successful envelope or an allowlisted fixed refusal before
+reading nested fields; empty or malformed JSON maps to
+`status=unavailable, reason=malformed_helper_response`. This source change has
+not been exercised by a live survey, and task 1.3 remains open.
+
 The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
 diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact
 reviewed controller SHA, one production `o11y_svc` target, and the receiver's
@@ -1484,3 +1497,42 @@ After review and merge, require exact-SHA stage, a separate read-only cursor
 survey, a separately launched apply, and a successful exact post-start Loki
 receipt. No retry or volume recovery is authorized by these source changes;
 OpenSpec task 1.2 remains open.
+
+**Dev receiver-host journal acceptance (2026-10-16):** PR #682 head
+`8e32c3dbe0da05e58e303a2aab7c5647fa7780fa` passed independent review/fixes and
+green final-head CI, then merged to `dev` as
+`dbd06dd74b73f61e9cf464123729eb653fdb3af7`. At that exact merge SHA, stage
+task 6182 and separate read-only cursor survey 6183 succeeded. The survey found
+a valid cursor, absent collector, no volume users, sufficient space, no failed
+live checks, `NeedsChown=false`, and `NeedsCopyUp=true`. Non-destructive apply
+6184 succeeded 07:22:52–07:25:04 UTC: preflight passed; collector health,
+exact mount fields, UID-map equality, namespace write/rename probe, unchanged
+seven receiver containers, and all task results passed. A fresh exact
+`{service="o11y/alloy",signal="container"}` Loki receipt succeeded after one
+retry. Independent read-only Grafana MCP readback found six exact-label samples
+in 07:23:56–07:25:56 UTC. Post-apply read-only survey 6185 found the collector
+present, one volume user, valid cursor, no failed or unverified live checks,
+and `NeedsCopyUp=true`. These receipts complete OpenSpec 1.2f.2 only; parent
+1.2 remains open for private ingress and seven-day baseline acceptance. The
+baseline starts at 07:25:04 UTC; the earliest full seven-day window ends
+2026-10-23 07:25:04 UTC, subject to completeness and representativeness.
+
+**Gateway controlled verification limit (2026-10-16):** Dev-bound task 6186
+completed 100 anonymous `401` requests to `/v1/models`, then its exact
+`signal=access-log` Loki check failed; the trace check did not run. Independent
+read-only Loki inspection found approximately 100 unlabelled
+`service=agentgateway` INFO records in 07:20–07:40 UTC (99 matched 401
+`/v1/models`) and 14 `signal=span` records. Tempo search found 14 agentgateway
+traces started 07:28:31–07:30:28 UTC. The current gateway template's OTLP
+access fields include service and identity/path but no `signal`; Alloy's label
+hints are `service,signal`. This is a gateway-owned dependency. Do not treat
+these results as proof that each canary request correlated to a trace or as
+completion of OpenSpec task 1.4.
+
+**Expected-target survey (2026-10-16):** Read-only Dev-bound task 6189 at
+`dbd06dd74b73f61e9cf464123729eb653fdb3af7` returned
+`status=observed`, `reason=exact_match`, expected=11, active=11, matched=11,
+missing=0, unexpected=0, unhealthy=0. This is point-in-time target matching;
+it does not establish the seven-day baseline, loaded budget acceptance, alert
+delivery, or recovery. No retention change, VM growth, or PBS allocation is
+authorized by these receipts.
