@@ -167,6 +167,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       findings; normal runs are unchanged by construction (every guard is inert without
       --check), BATS 0 failures, pytest 339, ansible-lint and syntax-check clean. Check-mode
       RUNS of wave 2 are not done: each is proven when its service is next dry-run
+      - 2026-10-17: added the Dev-bound Semaphore API URL reconcile playbook. It validates
+        the private HTTPS root endpoint, proves the stored API token against the authenticated
+        current-user endpoint before writing, and uses the shared version-guarded merge to set
+        only `secret/services/semaphore:url`; local focused checks cover its check-mode and
+        fail-closed contract. No live Semaphore run was performed.
 - [x] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
 - [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
       skipped", "Legacy dry-run argument still works" and "Verify-only run" pass
