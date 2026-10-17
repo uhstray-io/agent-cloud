@@ -216,9 +216,14 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     volume_targets = {target["legendFormat"].split(" · ", 1)[0]: target["expr"]
                       for target in next(p for p in overview["panels"]
                                          if p["title"] == "Log volume by source")["targets"]}
-    assert set(volume_targets) == {"Legacy container", "Journal container", "Access", "Span", "Conformance"}
+    assert set(volume_targets) == {
+        "Legacy container", "Journal container", "Access", "Span", "Conformance", "Unclassified"
+    }
     assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Legacy container"]
     assert 'signal="container"' in volume_targets["Journal container"]
+    assert 'container!~".+"' in volume_targets["Unclassified"]
+    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Unclassified"]
+    assert 'job!="agent-cloud-conformance"' in volume_targets["Unclassified"]
     assert all('job!="agent-cloud-conformance"' in volume_targets[source]
                for source in ("Legacy container", "Journal container", "Access", "Span"))
     # Label combinations that carry more than one source hint still contribute once.
@@ -228,6 +233,7 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
         {"container": "gateway", "signal": "access-log"},
         {"container": "gateway", "signal": "span"},
         {"container": "alloy", "signal": "container", "job": "agent-cloud-conformance"},
+        {"job": "alloy"},
     ]
     selected = [
         [i for i, row in enumerate(records) if row.get("container") and
@@ -240,6 +246,9 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
         [i for i, row in enumerate(records) if row.get("signal") == "span" and
          row.get("job") != "agent-cloud-conformance"],
         [i for i, row in enumerate(records) if row.get("job") == "agent-cloud-conformance"],
+        [i for i, row in enumerate(records) if not row.get("container") and
+         row.get("signal", "") not in {"container", "access-log", "span"} and
+         row.get("job") != "agent-cloud-conformance"],
     ]
     assert sorted(i for source in selected for i in source) == list(range(len(records)))
     assert sum(map(len, selected)) == len({i for source in selected for i in source})

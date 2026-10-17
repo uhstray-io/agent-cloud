@@ -1421,13 +1421,22 @@
           - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Scrape target health') | list | length == 1
           - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Log volume by source') | list | length == 1
           - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'All Loki streams (mixed-source drill-down)') | list | length == 1
-          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | list | length == 5
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | list | length == 6
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten | list | length == 6
           - "'or on() vector(0)' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'container=~\".+\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'signal=\"container\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'signal=\"access-log\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'signal=\"span\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'job=\"agent-cloud-conformance\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - >-
+            'container!~".+"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)')
+            | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')
+          - >-
+            'Unclassified' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)')
+            | map(attribute='targets') | flatten | map(attribute='legendFormat') | join(' ')
         fail_msg: "Grafana's service overview dashboard is missing selected service identities or explicit source-presence indicators."
       when: not ansible_check_mode
 

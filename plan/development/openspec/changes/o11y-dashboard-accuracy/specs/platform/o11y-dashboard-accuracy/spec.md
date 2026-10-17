@@ -121,13 +121,20 @@ The dashboard verifier SHALL accept `timeFrom` only as one positive Prometheus d
 
 ### Requirement: Service Overview presents existing signals without double counting
 
-The Service Overview SHALL preserve its dashboard and datasource identities, display existing service metrics and available container, access-log, span and conformance streams, and keep missing-source evidence distinct from service health. Aggregate log-source counts MUST use disjoint selectors; an all-stream drill-down MUST NOT be included in those totals. New telemetry labels MUST remain bounded.
+The Service Overview SHALL preserve its dashboard and datasource identities, display existing service metrics and available container, access-log, span, conformance, and unclassified streams, and keep missing-source evidence distinct from service health. The unclassified source means the selected record has no nonempty `container` label and no recognized `signal`; it MUST NOT be described as access data, attributed to a producer, or treated as a health signal. Aggregate log-source counts MUST use disjoint selectors; an all-stream drill-down MUST NOT be included in those totals. New telemetry labels MUST remain bounded.
 
 #### Scenario: Journal container records are visible
 
 - **WHEN** the selected service has journal records labeled `signal="container"` but no `container` label
 - **THEN** the Overview’s container-log view can query those records
 - **AND** its aggregate log-source rate counts each record in one source only
+
+#### Scenario: Records without source classification are visible
+
+- **WHEN** the selected service has a record without a nonempty `container` label and without a recognized `signal`
+- **THEN** the Overview's unclassified source view can query that record
+- **AND** the source-rate and observed-record selectors exclude legacy containers, journal containers, access logs, spans, and conformance records
+- **AND** the dashboard identifies the record only as unclassified and makes no service-health or access-record claim
 
 #### Scenario: A selected signal has no live records
 
