@@ -35,6 +35,15 @@ def test_review_and_extra_var_guards_run_before_the_play():
     assert "extra_var_names" in str(document[-1]["vars"])
 
 
+def test_semaphore_credentials_are_allowed_but_private_target_override_is_refused():
+    vars_ = yaml.safe_load(PLAYBOOK.read_text())[-1]["vars"]
+    forbidden = set(vars_["_reconcile_forbidden_inputs"])
+    injected_credentials = {"openbao_addr", "bao_role_id", "bao_secret_id"}
+
+    assert injected_credentials.isdisjoint(forbidden)
+    assert {"semaphore_https_url", "OPENBAO_ADDR", "BAO_ROLE_ID", "BAO_SECRET_ID"} <= forbidden
+
+
 def test_desired_endpoint_is_root_https_and_preflight_is_read_only_and_private():
     tasks = _tasks()
     validation = next(t for t in tasks if "canonical HTTPS root URL" in t["name"])
