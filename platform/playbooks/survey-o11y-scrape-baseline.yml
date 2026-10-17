@@ -71,6 +71,28 @@
       - pyroscope
       - receiver-host
       - tempo
+    _survey_helper_fixed_reasons:
+      - ambiguous_metric
+      - ambiguous_series
+      - ambiguous_targets
+      - curl_unsupported
+      - malformed_samples
+      - malformed_series
+      - malformed_targets
+      - missing_probe_data
+      - missing_samples
+      - missing_series
+      - no_active_targets
+      - probe_compressed
+      - probe_http_status
+      - probe_too_large
+      - probe_unavailable
+      - query_unavailable
+      - series_unavailable
+      - survey_unavailable
+      - unhealthy_target
+      - unsafe_target_url
+      - unrecognized_job
   tasks:
     - name: Require the supported receiver runtime
       ansible.builtin.assert:
@@ -91,10 +113,55 @@
         O11Y_SCRAPE_CONFIG_DIR: "{{ _survey_scrape_config_dir }}"
       when: not ansible_check_mode
 
-    - name: Parse the helper's bounded public projection
-      ansible.builtin.set_fact:
-        _scrape_survey_result: "{{ _baseline_run.stdout | from_json }}"
+    - name: Parse and classify the helper response
       no_log: true
+      when: not ansible_check_mode
+      block:
+        - name: Parse the helper's bounded public projection
+          ansible.builtin.set_fact:
+            _scrape_survey_result: "{{ _baseline_run.stdout | from_json }}"
+          no_log: true
+
+        - name: Validate the helper success envelope
+          ansible.builtin.set_fact:
+            _scrape_helper_envelope_valid: >-
+              {{ _scrape_survey_result is mapping
+                 and (_scrape_survey_result.keys() | list | sort) == ['alert_input_availability', 'baseline', 'loaded_limit_readback', 'source_limit_readback']
+                 and _scrape_survey_result.get('baseline') is mapping
+                 and _scrape_survey_result.get('loaded_limit_readback') is mapping
+                 and _scrape_survey_result.get('source_limit_readback') is mapping
+                 and _scrape_survey_result.get('alert_input_availability') is mapping }}
+          no_log: true
+
+        - name: Classify the helper response envelope
+          ansible.builtin.set_fact:
+            _scrape_helper_receipt:
+              status: "{{ 'observed' if _scrape_helper_envelope_valid else 'unavailable' }}"
+              reason: >-
+                {{ 'complete_receipt' if _scrape_helper_envelope_valid else
+                   _scrape_survey_result.get('reason') if _scrape_survey_result is mapping
+                   and (_scrape_survey_result.keys() | list | sort) == ['reason', 'status']
+                   and _scrape_survey_result.get('status') == 'unavailable'
+                   and _scrape_survey_result.get('reason') in _survey_helper_fixed_reasons
+                   else 'malformed_helper_response' }}
+          no_log: true
+      rescue:
+        - name: Replace an unparsable helper response with a fixed refusal
+          ansible.builtin.set_fact:
+            _scrape_survey_result: {}
+            _scrape_helper_receipt:
+              status: unavailable
+              reason: malformed_helper_response
+          no_log: true
+
+    - name: Require a complete helper response envelope
+      ansible.builtin.assert:
+        that:
+          - _scrape_helper_receipt.status == 'observed'
+        fail_msg: >-
+          The scrape baseline helper returned status={{ _scrape_helper_receipt.status }}
+          reason={{ _scrape_helper_receipt.reason }}; no baseline receipt is available.
+        quiet: true
       when: not ansible_check_mode
 
     - name: Keep the active scrape baseline separate from loaded-limit evidence

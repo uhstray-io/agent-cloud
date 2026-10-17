@@ -287,6 +287,19 @@ separate loaded-limit receipt, keep task 3.3 open, and treat check mode as
 `check_mode_unverified`. No live survey or deployment is claimed for this
 source slice.
 
+**Read-only scrape baseline task 6190 (2026-10-16):** The Dev-bound survey
+failed while consuming the protected helper response. The helper can return a
+top-level `{"status":"unavailable","reason":"<fixed category>"}` on a
+collection refusal, while the playbook expected the successful nested receipt
+and dereferenced `baseline` before validating the envelope. That wrapper error
+masked the helper's reason. The task output retained here does not identify the
+underlying helper refusal category; it remains unknown. No baseline receipt was
+produced, and task 6190 is not baseline or coverage evidence. The playbook now
+classifies the exact successful envelope or an allowlisted fixed refusal before
+reading nested fields; empty or malformed JSON maps to
+`status=unavailable, reason=malformed_helper_response`. This source change has
+not been exercised by a live survey, and task 1.3 remains open.
+
 The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
 diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact
 reviewed controller SHA, one production `o11y_svc` target, and the receiver's
