@@ -22,7 +22,9 @@
     _reconcile_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _reconcile_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
     _reconcile_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
-    _reconcile_target_url: "{{ semaphore_https_url | default('', true) }}"
+    _reconcile_semaphore_hosts: "{{ groups.get('semaphore_svc', []) }}"
+    _reconcile_semaphore_host: "{{ _reconcile_semaphore_hosts | first | default('') }}"
+    _reconcile_target_url: "{{ hostvars.get(_reconcile_semaphore_host, {}).get('semaphore_https_url', '') }}"
   tasks:
     - name: Refuse extra vars that can redirect credentials or change the desired URL
       ansible.builtin.assert:
@@ -39,6 +41,7 @@
           - _reconcile_bao_url | length > 0
           - _reconcile_role_id | length > 0
           - _reconcile_secret_id | length > 0
+          - _reconcile_semaphore_hosts | length == 1
           - _reconcile_target_url is string
           - _reconcile_target_url | length > 0
         fail_msg: "OpenBao AppRole inputs and the private Semaphore HTTPS URL are required."

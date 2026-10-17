@@ -44,6 +44,83 @@ def test_semaphore_credentials_are_allowed_but_private_target_override_is_refuse
     assert {"semaphore_https_url", "OPENBAO_ADDR", "BAO_ROLE_ID", "BAO_SECRET_ID"} <= forbidden
 
 
+def test_target_url_comes_from_exactly_one_semaphore_inventory_host():
+    vars_ = yaml.safe_load(PLAYBOOK.read_text())[-1]["vars"]
+    assert vars_["_reconcile_semaphore_hosts"] == "{{ groups.get('semaphore_svc', []) }}"
+    assert vars_["_reconcile_semaphore_host"] == "{{ _reconcile_semaphore_hosts | first | default('') }}"
+    assert vars_["_reconcile_target_url"] == (
+        "{{ hostvars.get(_reconcile_semaphore_host, {}).get('semaphore_https_url', '') }}"
+    )
+    required = next(t for t in _tasks() if t["name"] == "Require the AppRole, OpenBao address, and private target URL")
+    assert "_reconcile_semaphore_hosts | length == 1" in required["ansible.builtin.assert"]["that"]
+    assert required["no_log"] is True
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
+@pytest.mark.parametrize(
+    ("semaphore_hosts", "include_target_url", "expected_success"),
+    [
+        (["semaphore"], True, True),
+        (["semaphore"], False, False),
+        ([], False, False),
+        (["semaphore", "semaphore_backup"], True, False),
+    ],
+)
+def test_implicit_localhost_reads_only_one_semaphore_host_url(
+    tmp_path, semaphore_hosts, include_target_url, expected_success
+):
+    source_vars = yaml.safe_load(PLAYBOOK.read_text())[-1]["vars"]
+    play = [{
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "vars": {
+            key: source_vars[key]
+            for key in (
+                "_reconcile_semaphore_hosts",
+                "_reconcile_semaphore_host",
+                "_reconcile_target_url",
+            )
+        },
+        "tasks": [{
+            "name": "Require the unique private target host",
+            "ansible.builtin.assert": {
+                "that": [
+                    "_reconcile_semaphore_hosts | length == 1",
+                    "semaphore_https_url is not defined",
+                    "_reconcile_target_url == 'https://semaphore.example/'",
+                ],
+                "fail_msg": "Semaphore inventory target is missing or ambiguous.",
+                "quiet": True,
+            },
+            "no_log": True,
+        }],
+    }]
+    inventory_lines = ["[semaphore_svc]"]
+    inventory_lines.extend(
+        f"{host} ansible_connection=local"
+        + (" semaphore_https_url=https://semaphore.example/" if include_target_url else "")
+        for host in semaphore_hosts
+    )
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text("\n".join(inventory_lines) + "\n")
+    playbook = tmp_path / "inventory-lookup.yml"
+    playbook.write_text(yaml.safe_dump(play))
+
+    result = harness_sandbox.run(
+        ["ansible-playbook", "-i", str(inventory), str(playbook)],
+        tmp_path,
+        cwd=REPO,
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    if "sandbox_apply: Operation not permitted" in result.stderr:
+        pytest.skip("host policy does not allow the sandbox-exec harness")
+    if "Local RPC server did not start" in result.stderr:
+        pytest.skip("installed Ansible local executor cannot start its RPC server in this environment")
+    assert (result.returncode == 0) is expected_success, (result.stdout + result.stderr)[-1200:]
+    assert "https://semaphore.example/" not in result.stdout + result.stderr
+
+
 def test_desired_endpoint_is_root_https_and_preflight_is_read_only_and_private():
     tasks = _tasks()
     validation = next(t for t in tasks if "canonical HTTPS root URL" in t["name"])
