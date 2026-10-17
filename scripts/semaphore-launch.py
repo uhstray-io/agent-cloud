@@ -101,8 +101,7 @@ def build_task(template, project, settings, dry_run, message):
     body = {"project_id": project, "template_id": template["id"], "message": message}
     if settings:
         body["environment"] = json.dumps(settings)
-    if dry_run:
-        body["params"] = {"dry_run": True, "diff": True}
+    body["params"] = {"dry_run": bool(dry_run), "diff": bool(dry_run)}
     return body
 
 
