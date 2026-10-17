@@ -121,6 +121,63 @@ def test_a_field_without_a_default_stays_absent():
     assert "environment" not in api.created
 
 
+def typed_template(api, default="3", survey_type="integer"):
+    api.template["survey_vars"] = [
+        {"name": "event_limit", "type": survey_type, "default_value": default},
+        {"name": "mode", "type": "enum", "default_value": "safe", "values": ["safe", "fast"]},
+    ]
+
+
+@pytest.mark.parametrize(("survey_type", "value", "expected"),
+                         [("integer", "42", 42), ("int", "-7", -7), ("int", 7, 7)])
+def test_integer_survey_values_are_json_integers(survey_type, value, expected):
+    api = FakeAPI()
+    typed_template(api, survey_type=survey_type)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {"event_limit": value}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": expected, "mode": "safe"}
+
+
+@pytest.mark.parametrize(("survey_type", "default"), [("integer", "42"), ("int", 42)])
+def test_integer_survey_defaults_are_json_integers(survey_type, default):
+    api = FakeAPI()
+    typed_template(api, default, survey_type)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": 42, "mode": "safe"}
+
+
+@pytest.mark.parametrize("value", ["+1", "01", "-0", " 1", "1 ", "1.0", "1e2", "", True, False])
+def test_malformed_or_boolean_integer_survey_values_are_refused_before_post(value):
+    api = FakeAPI()
+    typed_template(api)
+    with pytest.raises(launcher.Refusal, match="Survey field 'event_limit' must be a canonical integer") as error:
+        launcher.launch(api, "Deploy agentgateway (Dev)", {"event_limit": value}, dry_run=False)
+    assert str(error.value) == "Survey field 'event_limit' must be a canonical integer"
+    assert posts(api) == []
+
+
+@pytest.mark.parametrize("default", ["01", True, [3]])
+def test_malformed_integer_defaults_are_refused_with_field_name_only(default):
+    api = FakeAPI()
+    typed_template(api, default)
+    with pytest.raises(launcher.Refusal, match="Survey field 'event_limit' must be a canonical integer"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert posts(api) == []
+
+
+def test_integer_survey_values_keep_canonical_zero_and_nonnegative_forms():
+    api = FakeAPI()
+    typed_template(api)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {"event_limit": "0"}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": 0, "mode": "safe"}
+
+
+def test_enum_values_remain_strings():
+    api = FakeAPI()
+    typed_template(api)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {"mode": "fast"}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": 3, "mode": "fast"}
+
+
 @pytest.mark.parametrize("default", [["dev"], {"values": ["dev"]}, 3])
 def test_a_non_string_default_is_refused_before_any_task(default):
     api = FakeAPI()
