@@ -71,10 +71,11 @@ def test_check_mode_is_sent_inside_params_never_top_level():
     assert json.loads(api.created["environment"]) == {"service_branch": "dev"}
 
 
-def test_a_real_run_carries_no_check_mode_flags():
+def test_a_real_run_records_both_check_mode_flags_as_false():
     api = FakeAPI()
     launcher.launch(api, "Deploy agentgateway (Dev)", {"service_branch": "dev"}, dry_run=False)
-    assert "params" not in api.created and "dry_run" not in api.created
+    assert api.created["params"] == {"dry_run": False, "diff": False}
+    assert "dry_run" not in api.created and "diff" not in api.created
 
 
 @pytest.mark.parametrize("version", ["v2.17.30-abc", "v2.17.32", "v2.18.0", "v2.19.10", "v3.0.0", "unknown"])
