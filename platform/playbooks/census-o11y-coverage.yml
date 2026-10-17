@@ -16,6 +16,46 @@
     _coverage_receipt_bindings: "{{ _coverage_inventory.get('receipt_bindings', {}) | default({}) }}"
     _coverage_has_receipt_bindings: >-
       {{ _coverage_receipt_bindings is mapping and (_coverage_receipt_bindings | length > 0) }}
+    _coverage_safe_refusal_codes:
+      - binding_limit
+      - conflicting_stats
+      - deadline
+      - http_status
+      - invalid_binding
+      - invalid_controller_input
+      - invalid_credentials
+      - invalid_declaration
+      - invalid_endpoint
+      - invalid_template_repository
+      - invalid_utc_time
+      - launch_inputs
+      - malformed_json
+      - observation_binding
+      - observation_expired
+      - observation_shape
+      - observation_time_order
+      - output_rows
+      - output_shape
+      - output_time_order
+      - readback_shape
+      - repository_mismatch
+      - repository_revision_mismatch
+      - response_encoding
+      - response_framing
+      - response_size
+      - route_refused
+      - task_drift
+      - task_identity_mismatch
+      - task_inventory_override
+      - task_not_accepted
+      - task_override
+      - task_params
+      - task_time_order
+      - template_drift
+      - template_mismatch
+      - terminal_stats
+      - transport
+      - truncated_response
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -156,7 +196,10 @@
         that:
           - _coverage_controller_raw.rc == 0
           - _coverage_report.status != 'refused'
-        fail_msg: "receipt_verification_failed"
+        fail_msg: >-
+          {{ _coverage_report.reason if (_coverage_report.status == 'refused'
+             and _coverage_report.reason in _coverage_safe_refusal_codes)
+             else 'receipt_verification_failed' }}
 
     - name: Report the candidate census
       ansible.builtin.debug:
