@@ -1246,6 +1246,31 @@ def test_playbook_classifies_helper_envelope_before_baseline_dereference():
     valid_expression = validate["ansible.builtin.set_fact"]["_scrape_helper_envelope_valid"]
     renderer = Environment(undefined=StrictUndefined)
     reasons = receiver["vars"]["_survey_helper_fixed_reasons"]
+    expected_fixed_reasons = {
+        "ambiguous_metric",
+        "ambiguous_series",
+        "ambiguous_targets",
+        "curl_unsupported",
+        "malformed_samples",
+        "malformed_series",
+        "malformed_targets",
+        "missing_probe_data",
+        "missing_samples",
+        "missing_series",
+        "no_active_targets",
+        "probe_compressed",
+        "probe_http_status",
+        "probe_timeout",
+        "probe_too_large",
+        "probe_unavailable",
+        "query_unavailable",
+        "series_unavailable",
+        "survey_unavailable",
+        "unhealthy_target",
+        "unsafe_target_url",
+        "unrecognized_job",
+    }
+    assert set(reasons) == expected_fixed_reasons
 
     def render(result):
         context = {"_scrape_survey_result": result, "_survey_helper_fixed_reasons": reasons}
@@ -1264,9 +1289,10 @@ def test_playbook_classifies_helper_envelope_before_baseline_dereference():
         "alert_input_availability": {},
     }
     assert render(complete) == {"status": "observed", "reason": "complete_receipt"}
-    assert render({"status": "unavailable", "reason": "query_unavailable"}) == {
-        "status": "unavailable", "reason": "query_unavailable"
-    }
+    for reason in expected_fixed_reasons:
+        assert render({"status": "unavailable", "reason": reason}) == {
+            "status": "unavailable", "reason": reason
+        }
     assert render({"status": "unavailable", "reason": "secret-path-sentinel"}) == {
         "status": "unavailable", "reason": "malformed_helper_response"
     }

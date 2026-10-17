@@ -85,6 +85,7 @@
       - no_active_targets
       - probe_compressed
       - probe_http_status
+      - probe_timeout
       - probe_too_large
       - probe_unavailable
       - query_unavailable
