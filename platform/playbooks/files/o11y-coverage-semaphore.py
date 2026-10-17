@@ -233,20 +233,25 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
 def _terminal_observation(task_id, rows, created, started, ended, now):
     if not isinstance(rows, list) or len(rows) < 2:
         raise Refusal("output_rows")
-    previous_id = 0
+    row_ids = [row.get("id") if isinstance(row, dict) else None for row in rows]
+    if not all(_int(value) and value >= 0 for value in row_ids):
+        raise Refusal("output_rows")
+    zero_ids = all(value == 0 for value in row_ids)
+    if not zero_ids and (any(value == 0 for value in row_ids)
+                         or any(left >= right for left, right in zip(row_ids, row_ids[1:], strict=False))):
+        raise Refusal("output_rows")
     previous_time = None
     texts = []
     stamps = []
     for row in rows:
         if (not isinstance(row, dict) or set(row) != {"id", "task_id", "stage_id", "time", "output"}
-                or not _positive_id(row.get("id")) or row["id"] <= previous_id
                 or not _positive_id(row.get("task_id")) or row.get("task_id") != task_id
                 or row.get("stage_id") is not None or not isinstance(row.get("output"), str)):
             raise Refusal("output_rows")
         stamp = _utc(row.get("time"))
         if not created <= stamp <= ended <= now or (previous_time is not None and stamp < previous_time):
             raise Refusal("output_time_order")
-        previous_id, previous_time = row["id"], stamp
+        previous_time = stamp
         output = row["output"]
         if not output.strip():
             continue

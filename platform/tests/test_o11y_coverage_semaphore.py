@@ -527,6 +527,20 @@ class SemaphoreReceiptTests(unittest.TestCase):
             with self.assertRaises(SEMAPHORE.Refusal):
                 accept(data)
 
+    def test_output_rows_accept_all_zero_ids_but_reject_mixed_or_invalid_ids(self):
+        data = fixture()
+        for row in data["rows"]:
+            row["id"] = 0
+        self.assertEqual(accept(data)["status"], "verified")
+
+        for ids in ((0, 902), (901, 0), (-1, 902), (True, 902), ("901", 902),
+                    (901, 901), (902, 901)):
+            data = fixture()
+            for row, row_id in zip(data["rows"], ids, strict=True):
+                row["id"] = row_id
+            with self.subTest(ids=ids), self.assertRaisesRegex(SEMAPHORE.Refusal, "^output_rows$"):
+                accept(data)
+
     def test_preliminary_queue_output_may_precede_task_start(self):
         data = fixture()
         data["rows"].insert(0, {
