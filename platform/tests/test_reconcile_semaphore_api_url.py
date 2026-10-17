@@ -50,6 +50,7 @@ def test_desired_endpoint_is_root_https_and_preflight_is_read_only_and_private()
     preflight = next(t for t in tasks if "exact desired Semaphore endpoint" in t["name"])
     module = preflight["ansible.builtin.uri"]
     assert module["method"] == "GET"
+    assert module["url"] == "{{ _reconcile_target_url.rstrip('/') }}/api/user"
     assert module["status_code"] == [200]
     assert module["follow_redirects"] == "none"
     assert module["use_netrc"] is False

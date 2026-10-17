@@ -138,7 +138,7 @@
 
     - name: Prove the exact desired Semaphore endpoint and token identity over TLS
       ansible.builtin.uri:
-        url: "{{ _reconcile_target_url.rstrip('/') }}/api/user/"
+        url: "{{ _reconcile_target_url.rstrip('/') }}/api/user"
         method: GET
         headers:
           Authorization: "Bearer {{ _reconcile_original_data.api_token }}"
