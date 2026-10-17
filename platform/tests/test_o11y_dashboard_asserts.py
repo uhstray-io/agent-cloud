@@ -201,6 +201,32 @@ def test_service_dashboard_identities_and_selected_service_names_are_explicit():
     assert "$service" in content and "$log_service" in content
 
 
+def test_recent_unclassified_records_match_aggregate_selector_without_panel_overlap():
+    dashboard = _dashboard("service-overview.json")
+    aggregate = _panel(dashboard, "Selected source records observed (5m)")
+    aggregate_expr = next(
+        target["expr"] for target in aggregate["targets"]
+        if target.get("legendFormat") == "Unclassified"
+    )
+    recent = _panel(dashboard, "Recent unclassified records")
+    selector = _selector(recent["targets"][0]["expr"])
+    assert selector == _selector(aggregate_expr)
+    assert recent["datasource"]["uid"] == "loki"
+    assert "unknown source identity" in recent["description"]
+    assert "healthy or unhealthy" in recent["description"]
+
+    panels = dashboard["panels"]
+    for index, panel in enumerate(panels):
+        x, y = panel["gridPos"]["x"], panel["gridPos"]["y"]
+        right, bottom = x + panel["gridPos"]["w"], y + panel["gridPos"]["h"]
+        for other in panels[index + 1:]:
+            pos = other["gridPos"]
+            assert (
+                right <= pos["x"] or pos["x"] + pos["w"] <= x
+                or bottom <= pos["y"] or pos["y"] + pos["h"] <= y
+            ), (panel["title"], other["title"])
+
+
 def test_unknown_newest_step_completion_replaces_older_known_age_without_fallback():
     dashboard = _dashboard("service-conformance.json")
     marker_age = _panel(dashboard, "Latest inventory marker age")["targets"][0]["expr"]

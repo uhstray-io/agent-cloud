@@ -303,7 +303,7 @@
       ]
     },
     {
-      "title": "All Loki streams (mixed-source drill-down)",
+      "title": "Recent unclassified records",
       "type": "logs",
       "datasource": {
         "type": "loki",
@@ -314,6 +314,33 @@
         "w": 24,
         "x": 0,
         "y": 48
+      },
+      "description": "Loki records for the selected Logs service with no nonempty container label and no recognized signal. This is an unknown source identity, not a healthy or unhealthy service status.",
+      "options": {
+        "showLabels": true,
+        "showTime": true,
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"$log_service\", container!~\".+\", signal!~\"^(container|access-log|span)$\", job!=\"agent-cloud-conformance\"}",
+          "maxLines": 100
+        }
+      ]
+    },
+    {
+      "title": "All Loki streams (mixed-source drill-down)",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 58
       },
       "description": "Bounded mixed-source drill-down for every Loki stream carrying the selected Logs service, including streams not yet classified in a source-specific panel. Prefer the source-specific panels above for routine review; mixed logs do not indicate service health.",
       "options": {
