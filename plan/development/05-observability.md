@@ -1737,3 +1737,18 @@ gate.
 The Dev-bound read-only survey task 6631 at merged SHA `4e7159157471d5ecd07a91dca4ef46013e47fcb5` returned `status=insufficient`. The exact source query returned two series: one historical series with 16 points carrying the sample timestamp 2026-10-15 20:52:54Z and last evaluated at 2026-10-15 22:09:54Z, and the current series with 521 points starting at 2026-10-15 22:10:25Z and continuing through 2026-10-17 16:52:06Z. The survey may have refused at its single-series guard before assessing duration; the single-series requirement remains unchanged. The current series cannot span seven days before about 2026-10-22 22:10:25Z, and the historical series may remain in the eight-day query window until about 2026-10-23 22:09Z. The source change defines fixed refusal categories and keeps labels, values, stderr, URLs, and addresses out of receipts; reviewed Dev deployment/readback remains pending. Budget task 6630 succeeded, but it is a point-in-time observation rather than a forecast. The seven-day forecast, backup/restore, and retention gates remain closed.
 
 Backup readiness tasks 6599, 6600, and 6603 are also point-in-time reads: zero PBS stores, six non-PBS candidates, one of three jobs includes o11y, latest successful backup within 26 hours was false, and the selected destination was below 10% free. Immutability and isolated restore remain unverified. API SMART health passed, but physical disk identity remains unverified. This evidence authorizes no capacity expansion or retention change and does not close the backup/restore gate.
+
+### 2026-10-17 Caddy admin API read diagnosis
+
+Dev-bound read-only Caddy audit task 6679 at exact SHA
+`a665c8b0252ab3c79de4ee7b2d0c88feed59a467` failed closed at the runtime
+config-read gate. The protected `podman exec caddy wget -q -O -` command
+returned rc 0 with an empty body, so the receipt did not establish the HTTP
+status or explain the response. The audit now captures wget response metadata
+and body under `no_log`, requiring one parseable HTTP 200 with a non-empty
+body and reporting only fixed refusal categories for empty responses, malformed
+or ambiguous metadata, and other statuses. This is source-level evidence only;
+it has not run on Dev. No Caddy configuration or runtime state was changed.
+Task 5.8 remains open pending a reviewed Dev deployment, a sanitized
+admin-API read receipt, and the remaining route, logger, marker, and retention
+evidence.
