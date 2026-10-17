@@ -141,7 +141,7 @@ def test_helper_refuses_api_token_rotation_after_endpoint_preflight(tmp_path):
     matching_guard = {**guard, "register": "_matching_guard"}
     rotated_guard = {
         **guard,
-        "name": "Refuse the API token rotated after preflight",
+        "name": "Refuse an API token changed after preflight",
         "register": "_rotated_guard",
         "ignore_errors": True,
     }
@@ -164,7 +164,7 @@ def test_helper_refuses_api_token_rotation_after_endpoint_preflight(tmp_path):
             },
             rotated_guard,
             {
-                "name": "Require the matching control and rotated-token refusal",
+                "name": "Require the matching control and changed-token refusal",
                 "ansible.builtin.assert": {
                     "that": ["not _matching_guard.failed", "_rotated_guard.failed"],
                     "fail_msg": "The multi-key guard did not distinguish matching from rotated values.",
