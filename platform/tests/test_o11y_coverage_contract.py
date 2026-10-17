@@ -750,7 +750,13 @@ class CoverageContractTests(unittest.TestCase):
         ):
             self.assertIn(f"'{field}'", validator["ansible.builtin.command"]["stdin"])
         parse = next(task for task in tasks if task["name"] == "Parse the protected signal validation response")
-        self.assertIs(parse["no_log"], True)
+        self.assertEqual(len(parse["block"]), 1)
+        self.assertIs(parse["block"][0]["no_log"], True)
+        self.assertEqual(len(parse["rescue"]), 1)
+        self.assertIs(parse["rescue"][0]["no_log"], True)
+        self.assertEqual(parse["rescue"][0]["ansible.builtin.set_fact"]["_coverage_validation"], {
+            "status": "refused", "reason": "invalid_response", "evidence_count": 0,
+        })
         schema = next(task for task in tasks if task["name"] == "Validate the fixed signal validation response schema")
         self.assertIs(schema["no_log"], True)
         schema_checks = schema["ansible.builtin.assert"]["that"]
@@ -762,8 +768,6 @@ class CoverageContractTests(unittest.TestCase):
         self.assertIn("0 <= _coverage_validation.evidence_count <= 1000", schema_checks)
         promote = next(task for task in tasks if task["name"] == "Promote only fixed validation fields")
         self.assertIs(promote["no_log"], True)
-        task_source = (ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text()
-        self.assertIn("# A malformed parse can echo the protected validator stdout.", task_source)
         assertion = next(task for task in tasks if task["name"] == "Require the strict signal observation")
         self.assertEqual(
             assertion["ansible.builtin.assert"]["that"], "_coverage_observation_status == 'verified'"
@@ -805,7 +809,7 @@ class CoverageContractTests(unittest.TestCase):
         validation_tasks = [task for task in source_tasks if task.get("name") in selected_names]
         self.assertEqual({task["name"] for task in validation_tasks}, selected_names)
 
-        def run(validation_response):
+        def run(stdout):
             with tempfile.TemporaryDirectory(prefix="o11y-signal-reason-") as directory:
                 temp = Path(directory)
                 inventory = temp / "inventory.yml"
@@ -822,7 +826,7 @@ class CoverageContractTests(unittest.TestCase):
                         "tasks": [{
                             "ansible.builtin.set_fact": {
                                 "_validated_observation": {
-                                    "stdout": json.dumps(validation_response),
+                                    "stdout": stdout,
                                 },
                             },
                         }, *validation_tasks],
@@ -845,15 +849,23 @@ class CoverageContractTests(unittest.TestCase):
                     timeout=45,
                 )
 
-        no_evidence = run({"status": "refused", "reason": "no_evidence", "evidence_count": 0})
+        no_evidence = run(json.dumps({"status": "refused", "reason": "no_evidence", "evidence_count": 0}))
         self.assertNotEqual(no_evidence.returncode, 0)
         self.assertIn("Strict signal observation refused: no_evidence.", no_evidence.stdout + no_evidence.stderr)
 
         canary = "private-selector-and-backend-body"
-        injected = run({"status": "refused", "reason": canary, "evidence_count": 0})
+        injected = run(json.dumps({"status": "refused", "reason": canary, "evidence_count": 0}))
         self.assertNotEqual(injected.returncode, 0)
         self.assertNotIn(canary, injected.stdout + injected.stderr)
         self.assertIn("invalid fixed response schema", injected.stdout + injected.stderr)
+
+        for stdout in ("", f"{{{canary}"):
+            with self.subTest(stdout=stdout):
+                malformed = run(stdout)
+                self.assertNotEqual(malformed.returncode, 0)
+                self.assertIn("Strict signal observation refused: invalid_response.",
+                              malformed.stdout + malformed.stderr)
+                self.assertNotIn(canary, malformed.stdout + malformed.stderr)
 
     def test_profile_query_uses_the_common_protected_signal_validator(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())

@@ -136,10 +136,19 @@
   no_log: true
 
 - name: Parse the protected signal validation response
-  ansible.builtin.set_fact:
-    _coverage_validation: "{{ _validated_observation.stdout | from_json }}"
-  # A malformed parse can echo the protected validator stdout.
-  no_log: true
+  block:
+    - name: Parse validator output without exposing malformed content
+      ansible.builtin.set_fact:
+        _coverage_validation: "{{ _validated_observation.stdout | default('') | from_json }}"
+      no_log: true
+  rescue:
+    - name: Replace an empty or malformed validator response with a fixed refusal
+      ansible.builtin.set_fact:
+        _coverage_validation:
+          status: refused
+          reason: invalid_response
+          evidence_count: 0
+      no_log: true
 
 - name: Validate the fixed signal validation response schema
   ansible.builtin.assert:
