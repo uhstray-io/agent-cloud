@@ -135,16 +135,42 @@
   failed_when: false
   no_log: true
 
-- name: Promote only the fixed validation status
+- name: Parse the protected signal validation response
   ansible.builtin.set_fact:
-    _coverage_observation_status: "{{ (_validated_observation.stdout | from_json).status }}"
+    _coverage_validation: "{{ _validated_observation.stdout | from_json }}"
   # A malformed parse can echo the protected validator stdout.
+  no_log: true
+
+- name: Validate the fixed signal validation response schema
+  ansible.builtin.assert:
+    that:
+      - _coverage_validation is mapping
+      - _coverage_validation.keys() | list | sort == ['evidence_count', 'reason', 'status']
+      - _coverage_validation.status in ['verified', 'refused']
+      - _coverage_validation.reason in [
+          'verified', 'invalid_input', 'transport_error', 'invalid_interval',
+          'oversized_response', 'malformed_json', 'backend_status', 'invalid_response',
+          'identity_mismatch', 'timestamp_out_of_bounds', 'no_evidence',
+          'unhealthy_latest_sample'
+        ]
+      - _coverage_validation.evidence_count is integer
+      - _coverage_validation.evidence_count is not boolean
+      - 0 <= _coverage_validation.evidence_count <= 1000
+      - (_coverage_validation.status == 'verified') == (_coverage_validation.reason == 'verified')
+      - _coverage_validation.status != 'verified' or _coverage_validation.evidence_count > 0
+    fail_msg: "Signal validation response refused: invalid fixed response schema."
+  no_log: true
+
+- name: Promote only fixed validation fields
+  ansible.builtin.set_fact:
+    _coverage_observation_status: "{{ _coverage_validation.status }}"
+    _coverage_observation_reason: "{{ _coverage_validation.reason }}"
   no_log: true
 
 - name: Require the strict signal observation
   ansible.builtin.assert:
     that: _coverage_observation_status == 'verified'
-    fail_msg: "Strict signal observation refused."
+    fail_msg: "Strict signal observation refused: {{ _coverage_observation_reason }}."
 
 - name: Emit sanitized unattributed observation metadata
   ansible.builtin.set_stats:

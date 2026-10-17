@@ -749,7 +749,15 @@ class CoverageContractTests(unittest.TestCase):
             "window_seconds", "requested_freshness_seconds", "declared_freshness_seconds",
         ):
             self.assertIn(f"'{field}'", validator["ansible.builtin.command"]["stdin"])
-        promote = next(task for task in tasks if task["name"] == "Promote only the fixed validation status")
+        parse = next(task for task in tasks if task["name"] == "Parse the protected signal validation response")
+        self.assertIs(parse["no_log"], True)
+        schema = next(task for task in tasks if task["name"] == "Validate the fixed signal validation response schema")
+        self.assertIs(schema["no_log"], True)
+        schema_checks = schema["ansible.builtin.assert"]["that"]
+        self.assertIn("_coverage_validation.keys() | list | sort == ['evidence_count', 'reason', 'status']", schema_checks)
+        self.assertTrue(any("_coverage_validation.reason in" in check for check in schema_checks))
+        self.assertIn("0 <= _coverage_validation.evidence_count <= 1000", schema_checks)
+        promote = next(task for task in tasks if task["name"] == "Promote only fixed validation fields")
         self.assertIs(promote["no_log"], True)
         task_source = (ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text()
         self.assertIn("# A malformed parse can echo the protected validator stdout.", task_source)
@@ -757,7 +765,10 @@ class CoverageContractTests(unittest.TestCase):
         self.assertEqual(
             assertion["ansible.builtin.assert"]["that"], "_coverage_observation_status == 'verified'"
         )
-        self.assertEqual(assertion["ansible.builtin.assert"]["fail_msg"], "Strict signal observation refused.")
+        self.assertEqual(
+            assertion["ansible.builtin.assert"]["fail_msg"],
+            "Strict signal observation refused: {{ _coverage_observation_reason }}.",
+        )
 
         output = next(task for task in tasks if task.get("name") == "Emit sanitized unattributed observation metadata")
         observation = output["ansible.builtin.set_stats"]["data"]["o11y_coverage_observation"]
@@ -775,6 +786,71 @@ class CoverageContractTests(unittest.TestCase):
             observation["observed_at"],
         )
         self.assertGreater(tasks.index(output), tasks.index(assertion))
+
+    def test_strict_signal_refusal_reports_only_a_valid_fixed_reason(self):
+        ansible_playbook = shutil.which("ansible-playbook")
+        self.assertIsNotNone(ansible_playbook)
+        source_tasks = yaml.safe_load(
+            (ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text()
+        )
+        selected_names = {
+            "Parse the protected signal validation response",
+            "Validate the fixed signal validation response schema",
+            "Promote only fixed validation fields",
+            "Require the strict signal observation",
+        }
+        validation_tasks = [task for task in source_tasks if task.get("name") in selected_names]
+        self.assertEqual({task["name"] for task in validation_tasks}, selected_names)
+
+        def run(validation_response):
+            with tempfile.TemporaryDirectory(prefix="o11y-signal-reason-") as directory:
+                temp = Path(directory)
+                inventory = temp / "inventory.yml"
+                playbook = temp / "validate.yml"
+                local_tmp = temp / "local"
+                remote_tmp = temp / "remote"
+                local_tmp.mkdir()
+                remote_tmp.mkdir()
+                inventory.write_text("localhost ansible_connection=local\n", encoding="utf-8")
+                playbook.write_text(
+                    yaml.safe_dump([{
+                        "hosts": "localhost",
+                        "gather_facts": False,
+                        "tasks": [{
+                            "ansible.builtin.set_fact": {
+                                "_validated_observation": {
+                                    "stdout": json.dumps(validation_response),
+                                },
+                            },
+                        }, *validation_tasks],
+                    }], sort_keys=False),
+                    encoding="utf-8",
+                )
+                environment = os.environ.copy()
+                environment.update(
+                    ANSIBLE_LOCAL_TEMP=str(local_tmp),
+                    ANSIBLE_REMOTE_TEMP=str(remote_tmp),
+                    ANSIBLE_STDOUT_CALLBACK="default",
+                    ANSIBLE_NOCOLOR="1",
+                )
+                return subprocess.run(
+                    [ansible_playbook, "-i", str(inventory), str(playbook)],
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+
+        no_evidence = run({"status": "refused", "reason": "no_evidence", "evidence_count": 0})
+        self.assertNotEqual(no_evidence.returncode, 0)
+        self.assertIn("Strict signal observation refused: no_evidence.", no_evidence.stdout + no_evidence.stderr)
+
+        canary = "private-selector-and-backend-body"
+        injected = run({"status": "refused", "reason": canary, "evidence_count": 0})
+        self.assertNotEqual(injected.returncode, 0)
+        self.assertNotIn(canary, injected.stdout + injected.stderr)
+        self.assertIn("invalid fixed response schema", injected.stdout + injected.stderr)
 
     def test_profile_query_uses_the_common_protected_signal_validator(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
