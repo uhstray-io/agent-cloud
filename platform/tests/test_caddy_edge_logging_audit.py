@@ -442,6 +442,7 @@ def test_runtime_read_refusals_distinguish_only_fixed_safe_categories():
         (125, "private-output-fixture", [], [], "exec-unavailable"),
         (126, "", [], [], "exec-unavailable"),
         (127, "", [], [], "exec-unavailable"),
+        (1, "private-output-fixture", [], [], "admin-api-unavailable"),
         (1, "private-output-fixture", ["HTTP/1.1 200 OK"], ["200"], "admin-api-unavailable"),
         (0, "", ["HTTP/1.1 200 OK"], ["200"], "empty-config-http-200"),
     ):
