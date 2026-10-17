@@ -1717,3 +1717,9 @@ destination below 10% free. Immutability and isolated restore remain
 unverified. These read-only, point-in-time receipts authorize no PBS
 allocation, VM growth, or retention change, and do not close the backup/restore
 gate.
+
+### 2026-10-17 seven-day capacity survey
+
+The Dev-bound read-only survey task 6631 at merged SHA `4e7159157471d5ecd07a91dca4ef46013e47fcb5` returned `status=insufficient`. The exact source query returned two series: one historical series with 16 points ending at 2026-10-15 20:52:54Z, and the current series with 521 points from 2026-10-15 22:10Z through 2026-10-17 16:52:06Z. The survey may have refused at its single-series guard before assessing duration; the single-series requirement remains unchanged. The current series cannot span seven days before about 2026-10-22 22:10Z, and the historical series may remain in the eight-day query window until about 2026-10-23 22:09Z. Failed surveys emit only a fixed category and do not expose labels, values, stderr, URLs, or addresses. Budget task 6630 succeeded, but it is a point-in-time observation rather than a forecast. The seven-day forecast, backup/restore, and retention gates remain closed.
+
+Backup readiness tasks 6599, 6600, and 6603 are also point-in-time reads: zero PBS stores, six non-PBS candidates, one of three jobs includes o11y, latest successful backup within 26 hours was false, and the selected destination was below 10% free. Immutability and isolated restore remain unverified. API SMART health passed, but physical disk identity remains unverified. This evidence authorizes no capacity expansion or retention change and does not close the backup/restore gate.

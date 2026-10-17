@@ -153,6 +153,74 @@ def test_history_rejects_a_stale_latest_capacity_sample():
         survey.assess(_history(now, samples), now)
 
 
+def test_history_failure_categories_are_bounded_by_prerequisite():
+    now = 1_800_000_000
+    short_samples = [now - 6 * 86400 + day * 86400 for day in range(7)]
+    with pytest.raises(survey.InsufficientHistory) as source_error:
+        survey.assess(_history(now, short_samples), now)
+    assert source_error.value.reason == "source_history_too_short"
+
+    responses = _history(now)
+    responses["source"]["data"]["result"].append(responses["source"]["data"]["result"][0])
+    with pytest.raises(survey.InsufficientHistory) as ambiguous_error:
+        survey.assess(responses, now)
+    assert ambiguous_error.value.reason == "source_series_ambiguous"
+
+    responses = _history(now)
+    responses["backends"]["data"]["result"].pop()
+    with pytest.raises(survey.InsufficientHistory) as backend_error:
+        survey.assess(responses, now)
+    assert backend_error.value.reason == "backend_metrics_unavailable"
+
+    responses = _history(now)
+    responses["cpu"] = _matrix("cpu", [])
+    with pytest.raises(survey.InsufficientHistory) as host_error:
+        survey.assess(responses, now)
+    assert host_error.value.reason == "host_metric_history_unavailable"
+
+    with pytest.raises(survey.InsufficientHistory) as malformed_error:
+        survey.parse_matrix({"status": "error", "error": "private label and URL"})
+    assert malformed_error.value.reason == "malformed_or_incomplete_history"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "source_series_ambiguous",
+        "source_history_too_short",
+        "malformed_or_incomplete_history",
+        "backend_metrics_unavailable",
+        "host_metric_history_unavailable",
+        "transport_unavailable",
+    ],
+)
+def test_failure_receipt_contains_only_fixed_category(reason, monkeypatch, capsys):
+    def fail_query(*_args, **_kwargs):
+        raise survey.InsufficientHistory(reason)
+
+    monkeypatch.setattr(survey, "query", fail_query)
+
+    assert survey.main() == 1
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"status": "insufficient", "reason": reason}
+    assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
+
+
+def test_failure_receipt_rejects_unrecognized_reason_text(monkeypatch, capsys):
+    def fail_query(*_args, **_kwargs):
+        raise survey.InsufficientHistory("private label, value, stderr, URL, 192.0.2.1")
+
+    monkeypatch.setattr(survey, "query", fail_query)
+
+    assert survey.main() == 1
+    output = capsys.readouterr().out
+    assert json.loads(output) == {
+        "status": "insufficient",
+        "reason": "malformed_or_incomplete_history",
+    }
+    assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
+
+
 def test_history_rejects_a_repeated_single_point_snapshot():
     now = 1_800_000_000
     responses = _history(now)
@@ -194,8 +262,17 @@ def test_history_query_resolution_and_response_time_are_bounded(monkeypatch):
             returncode=0, stdout="x" * (survey.MAX_RESPONSE_BYTES + 1)
         ),
     )
-    with pytest.raises(survey.InsufficientHistory):
+    with pytest.raises(survey.InsufficientHistory) as oversized:
         survey.query("backends", 1, 2)
+    assert oversized.value.reason == "transport_unavailable"
+    monkeypatch.setattr(
+        survey.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=7, stdout="sensitive stderr"),
+    )
+    with pytest.raises(survey.InsufficientHistory) as transport_error:
+        survey.query("backends", 1, 2)
+    assert transport_error.value.reason == "transport_unavailable"
     assert survey.MAX_METRIC_GAP_SECONDS == 600
 
 
