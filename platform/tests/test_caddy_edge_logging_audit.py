@@ -56,6 +56,75 @@ def data(config=None, **overrides):
     return result
 
 
+def _runtime_read_tasks():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    tasks = [task for play in plays if isinstance(play, dict)
+             for task in play.get("tasks", [])]
+    command = next(task for task in tasks if task.get("name") == "Read Caddy's effective admin API configuration")
+    parse = next(task for task in tasks if task.get("name") == "Parse protected admin API status metadata")
+    require = next(task for task in tasks if task.get("name") == "Require the runtime config read to succeed")
+    return command, parse, require
+
+
+def _refusal_category(task, *, rc, stdout, status_lines, statuses):
+    template = Environment().from_string(task["fail_msg"])
+    rendered = template.render(
+        _edge_audit_runtime_config={"rc": rc, "stdout": stdout},
+        _edge_audit_http_status_lines=status_lines,
+        _edge_audit_http_statuses=statuses,
+    )
+    return rendered.removeprefix("Caddy edge audit refused; category=").removesuffix(".")
+
+
+def test_runtime_admin_api_read_requires_protected_http_metadata_and_populated_success():
+    command, parse, require = _runtime_read_tasks()
+    assert command["no_log"] is True
+    assert command["ansible.builtin.command"]["argv"][-4:-1] == ["-S", "-O", "-"]
+    assert parse["no_log"] is True
+    assert "_edge_audit_http_statuses | length == 1" in require["ansible.builtin.assert"]["that"]
+    assert "_edge_audit_http_statuses[0] == '200'" in require["ansible.builtin.assert"]["that"]
+    assert "_edge_audit_runtime_config.stdout | length > 0" in require["ansible.builtin.assert"]["that"]
+    values = {
+        "_edge_audit_runtime_config": {"rc": 0, "stdout": '{"apps":{"http":{}}}'},
+        "_edge_audit_http_status_lines": ["HTTP/1.1 200 OK"],
+        "_edge_audit_http_statuses": ["200"],
+    }
+    assert all(Environment().from_string("{{ " + condition + " }}").render(**values) == "True"
+               for condition in require["ansible.builtin.assert"]["that"])
+
+
+def test_empty_admin_api_response_has_fixed_status_categories_without_raw_metadata():
+    _, _, require = _runtime_read_tasks()
+    categories = (
+        ("200", "empty-config-http-200"),
+        ("204", "empty-config-http-204"),
+        ("503", "empty-config-http-other"),
+    )
+    for status, expected in categories:
+        category = _refusal_category(
+            require["ansible.builtin.assert"], rc=0, stdout="",
+            status_lines=[f"HTTP/1.1 {status} private-header-secret"], statuses=[status],
+        )
+        assert category == expected
+        assert "private-header-secret" not in category
+
+
+def test_malformed_and_ambiguous_admin_api_metadata_fail_closed_without_disclosure():
+    _, _, require = _runtime_read_tasks()
+    malformed = _refusal_category(
+        require["ansible.builtin.assert"], rc=0, stdout="private-body-secret",
+        status_lines=["HTTP/1.1 secret-header"], statuses=[],
+    )
+    ambiguous = _refusal_category(
+        require["ansible.builtin.assert"], rc=0, stdout="private-body-secret",
+        status_lines=["HTTP/1.1 200 OK", "HTTP/1.1 200 OK"], statuses=["200", "200"],
+    )
+    assert malformed == "response-metadata-unparseable"
+    assert ambiguous == "response-metadata-ambiguous"
+    assert "private-header" not in malformed + ambiguous
+    assert "private-body" not in malformed + ambiguous
+
+
 def test_unique_live_route_without_server_logging_is_classified_disabled():
     report = audit.audit(data())
     assert report["status"] == "classified"
@@ -354,10 +423,11 @@ def test_runtime_read_refusals_distinguish_only_fixed_safe_categories():
     assert runtime_config["failed_when"] is False and runtime_config["check_mode"] is False
     assert "admin-api-unavailable" in require_config["ansible.builtin.assert"]["fail_msg"]
     assert "exec-unavailable" in require_config["ansible.builtin.assert"]["fail_msg"]
-    assert "empty-config" in require_config["ansible.builtin.assert"]["fail_msg"]
+    assert "empty-config-http-200" in require_config["ansible.builtin.assert"]["fail_msg"]
     fail_msg = require_config["ansible.builtin.assert"]["fail_msg"]
     assert "_edge_audit_runtime_config.rc in [125, 126, 127]" in fail_msg
-    assert not any(key in fail_msg for key in (".stdout", ".stderr", "stdout_lines", "hostvars"))
+    assert not any(key in fail_msg for key in (".stderr", "stdout_lines", "hostvars"))
+    assert "_edge_audit_runtime_config.stdout }}" not in fail_msg
 
     render = Environment().from_string
     inspect_message = inspect_running["ansible.builtin.assert"]["fail_msg"]
@@ -368,13 +438,17 @@ def test_runtime_read_refusals_distinguish_only_fixed_safe_categories():
         assert render(inspect_message).render(
             _edge_audit_container_state=SimpleNamespace(rc=rc, stdout=stdout)
         ) == f"Caddy edge audit refused; category={expected}."
-    for rc, stdout, expected in ((125, "private-output-fixture", "exec-unavailable"),
-                                 (126, "", "exec-unavailable"),
-                                 (127, "", "exec-unavailable"),
-                                 (1, "private-output-fixture", "admin-api-unavailable"),
-                                 (0, "", "empty-config")):
+    for rc, stdout, status_lines, statuses, expected in (
+        (125, "private-output-fixture", [], [], "exec-unavailable"),
+        (126, "", [], [], "exec-unavailable"),
+        (127, "", [], [], "exec-unavailable"),
+        (1, "private-output-fixture", ["HTTP/1.1 200 OK"], ["200"], "admin-api-unavailable"),
+        (0, "", ["HTTP/1.1 200 OK"], ["200"], "empty-config-http-200"),
+    ):
         assert render(config_message).render(
-            _edge_audit_runtime_config=SimpleNamespace(rc=rc, stdout=stdout)
+            _edge_audit_runtime_config=SimpleNamespace(rc=rc, stdout=stdout),
+            _edge_audit_http_status_lines=status_lines,
+            _edge_audit_http_statuses=statuses,
         ) == f"Caddy edge audit refused; category={expected}."
     names = [task["name"] for task in caddy["tasks"]]
     assert names.index("Read whether the Caddy container is running") < names.index(

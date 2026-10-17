@@ -116,8 +116,9 @@
           - caddy
           - wget
           - -q
+          - -S
           - -O
-          - -
+          - "-"
           - http://127.0.0.1:2019/config/
       register: _edge_audit_runtime_config
       changed_when: false
@@ -125,18 +126,40 @@
       check_mode: false
       no_log: true
 
+    - name: Parse protected admin API status metadata
+      ansible.builtin.set_fact:
+        _edge_audit_http_status_lines: "{{ _edge_audit_runtime_config.stderr | default('') | regex_findall('(?im)^\\s*HTTP/[^\\r\\n]*$') }}"
+        _edge_audit_http_statuses: "{{ _edge_audit_runtime_config.stderr | default('') | regex_findall('(?im)^\\s*HTTP/[0-9.]+\\s+([0-9]{3})(?:\\s|$)') }}"
+      no_log: true
+
     - name: Require the runtime config read to succeed
       ansible.builtin.assert:
         that:
           - _edge_audit_runtime_config.rc == 0
+          - _edge_audit_http_status_lines | length == 1
+          - _edge_audit_http_statuses | length == 1
+          - _edge_audit_http_statuses[0] == '200'
           - _edge_audit_runtime_config.stdout | length > 0
         fail_msg: >-
           Caddy edge audit refused; category={{
             'exec-unavailable'
             if _edge_audit_runtime_config.rc in [125, 126, 127]
+            else 'response-metadata-ambiguous'
+            if _edge_audit_http_status_lines | length > 1
+            else 'response-metadata-unparseable'
+            if _edge_audit_http_status_lines | length != 1
+            or _edge_audit_http_statuses | length != 1
+            else 'empty-config-http-200'
+            if _edge_audit_runtime_config.stdout | length == 0
+            and _edge_audit_http_statuses[0] == '200'
+            else 'empty-config-http-204'
+            if _edge_audit_runtime_config.stdout | length == 0
+            and _edge_audit_http_statuses[0] == '204'
+            else 'empty-config-http-other'
+            if _edge_audit_runtime_config.stdout | length == 0
+            else 'unexpected-http-status'
+            if _edge_audit_http_statuses[0] != '200'
             else 'admin-api-unavailable'
-            if _edge_audit_runtime_config.rc != 0
-            else 'empty-config'
           }}.
         quiet: true
 
