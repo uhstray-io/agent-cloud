@@ -471,6 +471,10 @@
         "name": "service",
         "label": "Metrics service",
         "type": "query",
+        "current": {
+          "text": "agentgateway",
+          "value": "agentgateway"
+        },
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
@@ -486,6 +490,10 @@
         "name": "log_service",
         "label": "Logs service",
         "type": "query",
+        "current": {
+          "text": "agentgateway",
+          "value": "agentgateway"
+        },
         "datasource": {
           "type": "loki",
           "uid": "loki"

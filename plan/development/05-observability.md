@@ -1693,3 +1693,27 @@ Read-only Dev-bound verifier task 5286 on 2026-10-13 found data for four
 conformance panels over 24 hours, including 33 latest service/step status
 series. It did not inspect table rendering or report the count of failed
 steps; the earlier browser counts must not be treated as current values.
+
+## 2026-10-17 production dashboard defaults and backup readiness
+
+Read-only Grafana inspection showed 19 tracked services, five current failing
+workflow-step states, an inventory marker about 15 minutes old, 10 Prometheus
+service labels, and 20 Loki service labels. These are point-in-time values and
+can change. Agentgateway appeared in both metric and log selectors, so the
+provisioned Service Overview saves it as each independent selector's current
+value. The evaluator regression plans representative metrics and log panels
+without variable overrides; this checks query interpolation only, not backend
+availability or Grafana rendering.
+
+Read-only production Semaphore tasks 6594, 6599, 6600, and 6603 reported:
+SMART category `passed` for the selected disk, with no serial-to-chassis
+comparison; six non-PBS artifact candidates across three active
+backup-capable non-PBS stores; no selected artifact and backup inclusion false;
+three off-source storage candidates with reported capacity and an unused VMID
+candidate, neither reserved; one of three jobs including o11y and a running
+scheduler; no successful target-VMID backup within 26 hours; a bounded
+`no_space` hint without job attribution; and an active backup-capable selected
+destination below 10% free. Immutability and isolated restore remain
+unverified. These read-only, point-in-time receipts authorize no PBS
+allocation, VM growth, or retention change, and do not close the backup/restore
+gate.

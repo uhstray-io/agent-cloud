@@ -21,9 +21,10 @@
 # versus range, the default datasource, NaN and bounded Loki stream results — is documented,
 # with sources, in files/verify-o11y-dashboard-data.py. Loki panels are evaluated only when
 # their exact titles are in panel_titles; whole-dashboard runs skip Loki. Tempo and other
-# datasources are skipped, not verified. A variable whose saved default the script cannot reproduce (a query
-# variable with a concrete selection, or All with no Custom all value) is refused unless
-# dashboard_variables supplies it.
+# datasources are skipped, not verified. A query variable's saved current selection is
+# accepted only when it is a bounded literal service name; the variable query itself is not
+# evaluated. Missing, computed, All, and unsafe defaults are refused unless an override is
+# supplied.
 #
 # Read-only and identical under --check: the dashboard is read and Prometheus or Loki is queried in
 # both. Output is names and counts only: no label value or sample value is printed, so a
