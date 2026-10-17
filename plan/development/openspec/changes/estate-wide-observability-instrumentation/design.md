@@ -1195,3 +1195,41 @@ captures SMART status strings and uses `UNKNOWN` when SMART status is absent.
 Smartmontools emits `PASSED` for successful ATA self-assessment and `OK` for a
 successful SCSI health-status response ([ATA output](https://www.smartmontools.org/static/doxygen/ataprint_8cpp_source.html),
 [SCSI output](https://www.smartmontools.org/static/doxygen/scsiprint_8cpp_source.html)).
+
+## 2026-10-17 read-only production receipts
+
+Inspect-only Semaphore task 6594 reported the selected-disk SMART category as
+`passed`; no physical serial-to-chassis comparison was made. Readiness task
+6599 found six non-PBS candidates across three active backup-capable non-PBS
+stores, with immutability and restore still false. Artifact-detail task 6600
+found six candidates, no selected artifact, and backup inclusion false; it
+reported three off-source storage candidates with capacity and one unused VMID
+candidate, none reserved. Inspect-only task 6603 reported one of three jobs
+includes o11y and the scheduler is running, while the latest target-VMID success
+within 26 hours is false. Its bounded `no_space` failure hint had no job
+attribution. The selected destination was active and backup-capable but below
+10% free. These snapshots authorize no PBS allocation, VM growth, or retention
+change; backup immutability and isolated restore remain unverified.
+
+The same date's read-only Grafana inspection showed 19 tracked services, five
+current failing workflow-step states, an inventory marker about 15 minutes old,
+10 Prometheus service labels, and 20 Loki service labels. Those counts and age
+are point-in-time observations. Agentgateway appeared in both signal sources,
+so Service Overview now stores it as the initial Metrics service and Logs
+service selection while retaining each source's independent selector.
+
+The read-only dashboard-data evaluator can reproduce a query variable's saved
+current value only when it is a literal service name matching
+`[A-Za-z0-9_/-]{1,128}`, is not the `All` selection, and the variable is
+single-select with `multi` and `includeAll` false or omitted (Grafana's
+single-select defaults). The evaluator substitutes literals directly, while
+Grafana regex-escapes multi-select values; accepting those would change query
+semantics. The character class also excludes regex metacharacters such as the
+dot, which would act as a wildcard under raw substitution. It does not evaluate
+Grafana's variable query or accept computed/unsafe values. A missing or
+rejected default still requires a caller-provided override. The pre-existing
+`$__all` plus explicit `allValue` handling remains a separate supported path
+(used by the Agentgateway identity dashboard); this new literal-default path
+still refuses `All` and computed selections. The no-override receipt is
+bounded to the dashboard's stored selection and does not claim to resolve the
+live option list.

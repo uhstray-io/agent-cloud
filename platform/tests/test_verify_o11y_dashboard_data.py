@@ -248,11 +248,59 @@ def test_instant_targets_query_instant_only():
     assert [t["modes"] for p in planned["panels"] for t in p["targets"]] == [["instant"]]
 
 
-def test_a_query_variable_without_a_reproducible_default_is_refused_until_overridden():
+def test_service_overview_plans_saved_query_defaults_without_overrides():
+    planned = vdd.plan(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health", "Log volume by source"],
+        )
+    )
+    assert planned["variables"] == {"service": "saved_value", "log_service": "saved_value"}
+    expressions = {
+        panel["title"]: [target["expr"] for target in panel["targets"] if "expr" in target]
+        for panel in planned["panels"]
+    }
+    assert any('service=~"agentgateway"' in expr for expr in expressions["Scrape target health"])
+    assert all('service=~"agentgateway"' in expr for expr in expressions["Log volume by source"])
+    assert all(
+        "$service" not in expr and "$log_service" not in expr
+        for exprs in expressions.values()
+        for expr in exprs
+    )
+
+
+@pytest.mark.parametrize(
+    "current",
+    [None, "$__all", "All", "foo.bar", 'agentgateway" or vector(1)', "a" * 129],
+)
+def test_an_unresolved_or_unsafe_query_default_is_refused(tmp_path, current):
+    variable = {"name": "service", "type": "query", "current": {"value": current}}
+    dashboard = _synthetic('up{service=~"$service"}', [variable], datasource={"type": "prometheus"})
     with pytest.raises(vdd.Refused, match="'service' has no default"):
-        vdd.plan(_payload("service-overview"))
-    planned = vdd.plan(_payload("service-overview", variables={"service": "o11y"}))
-    assert planned["variables"] == {"service": "override sha256:" + hashlib.sha256(b"o11y").hexdigest()[:12]}
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+@pytest.mark.parametrize("selection_options", [{"multi": True}, {"includeAll": True}])
+def test_query_default_refuses_multi_select_or_all_selection(tmp_path, selection_options):
+    variable = {
+        "name": "service",
+        "type": "query",
+        "current": {"value": "agentgateway"},
+        **selection_options,
+    }
+    dashboard = _synthetic('up{service=~"$service"}', [variable], datasource={"type": "prometheus"})
+    with pytest.raises(vdd.Refused, match="'service' has no default"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+def test_a_query_variable_with_no_saved_default_remains_refused(tmp_path):
+    dashboard = _synthetic(
+        'up{service=~"$service"}',
+        [{"name": "service", "type": "query"}],
+        datasource={"type": "prometheus"},
+    )
+    with pytest.raises(vdd.Refused, match="'service' has no default"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
 
 
 def test_unknown_panel_title_override_or_uid_is_refused():
@@ -1090,11 +1138,11 @@ def test_playbook_maps_ipv6_wildcard_loki_bind_to_ipv6_loopback(receiver):
 
 
 @needs_ansible
-def test_playbook_reports_a_refusal(receiver):
+def test_playbook_uses_service_overview_defaults_without_overrides(receiver):
     proc = _run(receiver, "-e", "dashboard_uid=service-overview")
-    assert proc.returncode != 0
-    assert "Refused: variable 'service' has no default" in proc.stdout
-    assert receiver["prometheus"].requests == []
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert any('service=~"agentgateway"' in form["query"] for _, form in receiver["prometheus"].requests)
+    assert receiver["loki"].requests == []
 
 
 @needs_ansible

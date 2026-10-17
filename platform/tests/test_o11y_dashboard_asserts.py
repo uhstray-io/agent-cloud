@@ -165,6 +165,10 @@ def test_service_dashboard_identities_and_selected_service_names_are_explicit():
     assert _panel(overview, "Selected source records observed (5m)")["datasource"]["uid"] == "loki"
     variables = {item["name"]: item["label"] for item in overview["templating"]["list"]}
     assert variables == {"service": "Metrics service", "log_service": "Logs service"}
+    assert all(
+        variable["current"] == {"text": "agentgateway", "value": "agentgateway"}
+        for variable in overview["templating"]["list"]
+    )
     content = _panel(overview, "Selected service identities")["options"]["content"]
     assert "$service" in content and "$log_service" in content
 
