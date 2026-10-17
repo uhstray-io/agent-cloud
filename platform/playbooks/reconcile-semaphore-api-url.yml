@@ -34,6 +34,7 @@
           Refusing extra vars for protected inputs:
           {{ _reconcile_forged_inputs | join(', ') }}.
         quiet: true
+      tags: [verify]
 
     - name: Require the AppRole, OpenBao address, and private target URL
       ansible.builtin.assert:
@@ -46,6 +47,7 @@
         fail_msg: "OpenBao AppRole inputs and the private Semaphore HTTPS URL are required."
         quiet: true
       no_log: true
+      tags: [verify]
 
     - name: Require a canonical HTTPS root URL with a valid host and no URL extras
       ansible.builtin.assert:
@@ -63,17 +65,20 @@
         fail_msg: "semaphore_https_url must be an HTTPS root URL without credentials, path, query, or fragment."
         quiet: true
       no_log: true
+      tags: [verify]
 
     - name: Refuse a cleartext OpenBao address
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _reconcile_bao_url }}"
+      tags: [verify]
 
     - name: Refuse a non-TLS Semaphore target
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _reconcile_target_url }}"
         _assert_url_label: "Semaphore"
+      tags: [verify]
 
     - name: Authenticate to OpenBao with the injected AppRole
       ansible.builtin.uri:
@@ -91,6 +96,7 @@
       changed_when: false
       check_mode: false
       no_log: true
+      tags: [verify]
 
     - name: Read the existing Semaphore URL and API token from OpenBao
       ansible.builtin.uri:
@@ -107,12 +113,14 @@
       changed_when: false
       check_mode: false
       no_log: true
+      tags: [verify]
 
     - name: Hold the original secret and desired readback in memory
       ansible.builtin.set_fact:
         _reconcile_original_data: "{{ _reconcile_semaphore_secret.json.data.data }}"
         _reconcile_expected_data: "{{ _reconcile_semaphore_secret.json.data.data | combine({'url': _reconcile_target_url}) }}"
       no_log: true
+      tags: [verify]
 
     - name: Require the stored API token
       ansible.builtin.assert:
@@ -126,6 +134,7 @@
         fail_msg: "secret/services/semaphore must contain url and api_token."
         quiet: true
       no_log: true
+      tags: [verify]
 
     - name: Prove the exact desired Semaphore endpoint and token identity over TLS
       ansible.builtin.uri:
@@ -144,6 +153,7 @@
       changed_when: false
       check_mode: false
       no_log: true
+      tags: [verify]
 
     - name: Require the current-user identity response
       ansible.builtin.assert:
@@ -157,6 +167,7 @@
         fail_msg: "The desired Semaphore endpoint did not return an authenticated user identity."
         quiet: true
       no_log: true
+      tags: [verify]
 
     - name: Merge only the URL using OpenBao version compare-and-set
       ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
@@ -168,8 +179,10 @@
           url: "{{ _reconcile_target_url }}"
         _bm_on_missing: fail
         _bm_missing_msg: "secret/services/semaphore must already exist."
-        _bm_guard_key: url
-        _bm_guard_value: "{{ _reconcile_original_data.url }}"
+        _bm_guard_values:
+          url: "{{ _reconcile_original_data.url }}"
+          api_token: "{{ _reconcile_original_data.api_token }}"
+      no_log: true
 
     - name: Read back all Semaphore secret keys after a write
       ansible.builtin.uri:
@@ -199,8 +212,11 @@
     - name: Report the bounded reconciliation status
       ansible.builtin.debug:
         msg: >-
-          {% if ansible_check_mode %}
+          {% if 'verify' in ansible_run_tags %}
+          verify: Semaphore endpoint and stored API token are valid; OpenBao was not changed
+          {% elif ansible_check_mode %}
           {{ 'check mode: Semaphore API URL would be updated' if _reconcile_original_data.url != _reconcile_target_url else 'check mode: Semaphore API URL already matches' }}
           {% else %}
           {{ 'Semaphore API URL reconciled' if _bm_changed | bool else 'Semaphore API URL already matches' }}
           {% endif %}
+      tags: [verify]

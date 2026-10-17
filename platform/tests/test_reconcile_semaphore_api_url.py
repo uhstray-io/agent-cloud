@@ -1,14 +1,18 @@
 """Fail-closed contract for the Dev-bound Semaphore API URL reconciliation."""
 
 import re
+import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import harness_sandbox
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/reconcile-semaphore-api-url.yml"
 CATALOG = REPO / "platform/semaphore/templates.yml"
+MERGE_HELPER = REPO / "platform/playbooks/tasks/bao-merge-keys.yml"
 
 
 def _tasks():
@@ -81,15 +85,32 @@ def test_endpoint_pattern_accepts_https_roots_and_rejects_unsafe_shapes():
     assert any("<= 65535" in check for check in validation["ansible.builtin.assert"]["that"])
 
 
-def test_write_is_url_only_cas_guarded_and_readback_preserves_all_siblings():
+def test_write_guards_preflight_url_and_token_with_version_cas_and_preserves_siblings():
     tasks = _tasks()
     merge = next(t for t in tasks if "compare-and-set" in t["name"])
     assert merge["ansible.builtin.include_tasks"] == "tasks/bao-merge-keys.yml"
     vars_ = merge["vars"]
     assert vars_["_bm_path"] == "services/semaphore"
     assert vars_["_bm_data"].keys() == {"url"}
-    assert vars_["_bm_guard_key"] == "url"
+    assert vars_["_bm_guard_values"] == {
+        "url": "{{ _reconcile_original_data.url }}",
+        "api_token": "{{ _reconcile_original_data.api_token }}",
+    }
     assert vars_["_bm_on_missing"] == "fail"
+    assert merge["no_log"] is True
+
+    helper = yaml.safe_load((REPO / "platform/playbooks/tasks/bao-merge-keys.yml").read_text())
+    guard = next(t for t in helper if t["name"] == "Require the guarded key to be unchanged")
+    guard_expr = str(guard["ansible.builtin.assert"]["that"])
+    assert "_bm_guard_values" in guard_expr
+    assert "items2dict" in guard_expr
+    assert guard["no_log"] is True
+    cas_write = next(t for t in helper if t["name"] == "Write a guarded update at the version just read")
+    assert "_bm_guard_values is defined or _bm_guard_key is defined" in cas_write["when"]
+    assert cas_write["ansible.builtin.uri"]["body"]["options"]["cas"] == (
+        "{{ _bm_existing.json.data.metadata.version }}"
+    )
+    assert cas_write["no_log"] is True
 
     readback = next(t for t in tasks if "Read back all Semaphore secret keys" in t["name"])
     assert readback["when"] == "_bm_changed | bool"
@@ -97,6 +118,46 @@ def test_write_is_url_only_cas_guarded_and_readback_preserves_all_siblings():
     verify = next(t for t in tasks if "Require the exact URL" in t["name"])
     assert "_reconcile_expected_data" in verify["ansible.builtin.assert"]["that"]
     assert verify["no_log"] is True
+
+
+def test_verify_tag_runs_only_the_read_only_preflight_chain():
+    tasks = _tasks()
+    for task in tasks:
+        if task["name"] in {
+            "Merge only the URL using OpenBao version compare-and-set",
+            "Read back all Semaphore secret keys after a write",
+            "Require the exact URL and preserved sibling keys",
+        }:
+            assert "verify" not in task.get("tags", [])
+        else:
+            assert "verify" in task.get("tags", []), task["name"]
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
+def test_helper_refuses_api_token_rotation_after_endpoint_preflight(tmp_path):
+    guard = next(t for t in yaml.safe_load(MERGE_HELPER.read_text())
+                 if t["name"] == "Require the guarded key to be unchanged")
+    play = [{
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "vars": {
+            "_bm_current": {"url": "https://semaphore.example/", "api_token": "rotated-token"},
+            "_bm_guard_values": {"url": "https://semaphore.example/", "api_token": "preflight-token"},
+        },
+        "tasks": [guard],
+    }]
+    path = tmp_path / "rotation-race.yml"
+    path.write_text(yaml.safe_dump(play))
+    result = harness_sandbox.run(
+        ["ansible-playbook", "-i", "localhost,", str(path)],
+        tmp_path,
+        cwd=REPO,
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    assert result.returncode != 0
+    assert "preflight-token" not in result.stdout + result.stderr
+    assert "rotated-token" not in result.stdout + result.stderr
 
 
 def test_all_secret_or_endpoint_response_tasks_are_redacted():
