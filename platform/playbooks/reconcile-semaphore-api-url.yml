@@ -64,7 +64,6 @@
           - (_reconcile_target_url | urlsplit('port') is none) or (_reconcile_target_url | urlsplit('port') | int > 0 and _reconcile_target_url | urlsplit('port') | int <= 65535)
         fail_msg: "semaphore_https_url must be an HTTPS root URL without credentials, path, query, or fragment."
         quiet: true
-      no_log: true
       tags: [verify]
 
     - name: Refuse a cleartext OpenBao address
@@ -166,7 +165,6 @@
           - _reconcile_endpoint_response.json.username | length > 0
         fail_msg: "The desired Semaphore endpoint did not return an authenticated user identity."
         quiet: true
-      no_log: true
       tags: [verify]
 
     - name: Merge only the URL using OpenBao version compare-and-set

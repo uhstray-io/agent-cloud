@@ -138,17 +138,42 @@ def test_verify_tag_runs_only_the_read_only_preflight_chain():
 def test_helper_refuses_api_token_rotation_after_endpoint_preflight(tmp_path):
     guard = next(t for t in yaml.safe_load(MERGE_HELPER.read_text())
                  if t["name"] == "Require the guarded key to be unchanged")
+    matching_guard = {**guard, "register": "_matching_guard"}
+    rotated_guard = {
+        **guard,
+        "name": "Refuse the API token rotated after preflight",
+        "register": "_rotated_guard",
+        "ignore_errors": True,
+    }
     play = [{
         "hosts": "localhost",
         "connection": "local",
         "gather_facts": False,
         "vars": {
-            "_bm_current": {"url": "https://semaphore.example/", "api_token": "rotated-token"},
+            "_bm_current": {"url": "https://semaphore.example/", "api_token": "preflight-token"},
             "_bm_guard_values": {"url": "https://semaphore.example/", "api_token": "preflight-token"},
         },
-        "tasks": [guard],
+        "tasks": [
+            matching_guard,
+            {
+                "name": "Simulate token rotation after the successful endpoint preflight",
+                "ansible.builtin.set_fact": {
+                    "_bm_current": "{{ _bm_current | combine({'api_token': 'rotated-token'}) }}",
+                },
+                "no_log": True,
+            },
+            rotated_guard,
+            {
+                "name": "Require the matching control and rotated-token refusal",
+                "ansible.builtin.assert": {
+                    "that": ["not _matching_guard.failed", "_rotated_guard.failed"],
+                    "fail_msg": "The multi-key guard did not distinguish matching from rotated values.",
+                    "quiet": True,
+                },
+            },
+        ],
     }]
-    path = tmp_path / "rotation-race.yml"
+    path = tmp_path / "guard-race.yml"
     path.write_text(yaml.safe_dump(play))
     result = harness_sandbox.run(
         ["ansible-playbook", "-i", "localhost,", str(path)],
@@ -156,9 +181,14 @@ def test_helper_refuses_api_token_rotation_after_endpoint_preflight(tmp_path):
         cwd=REPO,
         env=harness_sandbox.env_for(tmp_path),
     )
-    assert result.returncode != 0
-    assert "preflight-token" not in result.stdout + result.stderr
-    assert "rotated-token" not in result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    if "sandbox_apply: Operation not permitted" in result.stderr:
+        pytest.skip("host policy does not allow the sandbox-exec harness")
+    if "Local RPC server did not start" in result.stderr:
+        pytest.skip("installed Ansible local executor cannot start its RPC server in this environment")
+    assert result.returncode == 0, output[-1200:]
+    assert "preflight-token" not in output
+    assert "rotated-token" not in output
 
 
 def test_all_secret_or_endpoint_response_tasks_are_redacted():
