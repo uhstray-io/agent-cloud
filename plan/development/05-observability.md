@@ -1711,7 +1711,7 @@ steps; the earlier browser counts must not be treated as current values.
 ## 2026-10-17 production dashboard defaults and backup readiness
 
 The Service conformance exact query showed 19 tracked services, 5 failed steps,
-5 not-yet-run steps, and 57 inventory markers in the last 45 minutes. Service
+5 services not yet run, and 57 inventory markers in the last 45 minutes. Service
 Overview UID `service-overview` was version 9; selected `agentgateway`
 Prometheus minimum `up` was 1. These are point-in-time observations only.
 Agentgateway appeared in both metric and log selectors, so the provisioned
