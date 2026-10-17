@@ -1710,14 +1710,15 @@ steps; the earlier browser counts must not be treated as current values.
 
 ## 2026-10-17 production dashboard defaults and backup readiness
 
-Read-only Grafana inspection showed 19 tracked services, five current failing
-workflow-step states, an inventory marker about 15 minutes old, 10 Prometheus
-service labels, and 20 Loki service labels. These are point-in-time values and
-can change. Agentgateway appeared in both metric and log selectors, so the
-provisioned Service Overview saves it as each independent selector's current
-value. The evaluator regression plans representative metrics and log panels
-without variable overrides; this checks query interpolation only, not backend
-availability or Grafana rendering.
+The Service conformance exact query showed 19 tracked services, 5 failed steps,
+5 services not yet run, and 57 inventory markers in the last 45 minutes. Service
+Overview UID `service-overview` was version 9; selected `agentgateway`
+Prometheus minimum `up` was 1. These are point-in-time observations only.
+Agentgateway appeared in both metric and log selectors, so the provisioned
+dashboard saves it as each independent selector's current value. The evaluator
+regression plans representative metrics and log panels without variable
+overrides; this checks query interpolation only, not backend availability or
+Grafana rendering.
 
 Read-only production Semaphore tasks 6594, 6599, 6600, and 6603 reported:
 SMART category `passed` for the selected disk, with no serial-to-chassis
@@ -1749,6 +1750,15 @@ and body under `no_log`, requiring one parseable HTTP 200 with a non-empty
 body and reporting only fixed refusal categories for empty responses, malformed
 or ambiguous metadata, and other statuses. This is source-level evidence only;
 it has not run on Dev. No Caddy configuration or runtime state was changed.
-Task 5.8 remains open pending a reviewed Dev deployment, a sanitized
-admin-API read receipt, and the remaining route, logger, marker, and retention
-evidence.
+At task 6679, task 5.8 remained open pending a reviewed Dev deployment, a
+sanitized admin-API read receipt, and the remaining route, logger, marker, and
+retention evidence.
+
+Dev-bound read-only Caddy audit task 6692 succeeded at merged SHA
+`786d69cbed585bdb1ece59c3862dd11999bde485`. It classified one declared site,
+zero declared log directives, and one runtime server/route/upstream; the HTTPS
+probe completed. The receipt reported `access_logging=disabled`, `sink=none`,
+`retention=not_applicable`, and marker status not applicable. This completes the
+bounded query-parameter audit with the explicit finding that access logging was
+disabled for this route. It does not prove that Caddy access logging works, or
+that all routes and privacy behavior are covered. No Caddy state changed.
