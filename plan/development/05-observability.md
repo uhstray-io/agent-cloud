@@ -1418,6 +1418,23 @@ point-in-time reported-capacity facts do not establish backing media, PBS
 readiness, reserve capacity, allocation authority, or write authority; those
 flags remain false. The GET request set is unchanged.
 
+The separate private identity result includes one fixed SMART health category
+for its exact selected disk from the already protected Proxmox `disks/list`
+payload. The optional `health` field is produced with SMART checks enabled by
+default. Exact `PASSED` or `OK` maps to `passed`, exact `FAILED` or `FAILED!`
+maps to `failed`, and absent, malformed, or any other value maps to `unknown`. Only
+the category is emitted; raw health text remains private. This observation is
+not a health gate and does not prove physical locality, device safety, storage
+allocation, PBS readiness, or restore success, and it authorizes no write. The
+operator has attested that the hardware is local, but no serial-to-chassis/BMC
+comparison was made or claimed. Proxmox source documents the optional `health`
+field and `skipsmart=0` default in [`PVE/API2/Disks.pm`](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm);
+[`PVE/Diskmanage.pm`](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
+captures SMART status strings and uses `UNKNOWN` when health is absent.
+Smartmontools emits `PASSED` for successful ATA self-assessment and `OK` for a
+successful SCSI health-status response ([ATA output](https://www.smartmontools.org/static/doxygen/ataprint_8cpp_source.html),
+[SCSI output](https://www.smartmontools.org/static/doxygen/scsiprint_8cpp_source.html)).
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan

@@ -1176,3 +1176,22 @@ locality or device safety; `thick_lvm_backing_media_verified`,
 parent tasks 4.6c, 4.6d, and 4.6e remain open. Operator attestation remains
 mandatory because the identity still does not prove physical locality. This
 records a source slice only; no live candidate-identity receipt is claimed.
+
+The private identity result now includes a fixed SMART health category for
+the exact selected disk, read from the existing protected Proxmox
+`disks/list` payload. Its optional `health` field is produced with SMART
+checks enabled by default. Exact `PASSED` or `OK` maps to `passed`; exact
+`FAILED` or `FAILED!` maps to `failed`; absent, malformed, or unrecognized values map to
+`unknown`. The category is informational and does not gate identity capture.
+Only the category is emitted, never raw health text. This does not prove
+physical locality, device safety, allocation, PBS readiness, or restore
+success, and does not authorize a write. The user attested the hardware is
+local, but no physical serial comparison with chassis/BMC evidence was made
+or claimed. No additional API request or write is introduced; this is source
+and regression-test evidence only. Proxmox documents the optional `health`
+field and `skipsmart=0` default in [`PVE/API2/Disks.pm`](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm);
+[`PVE/Diskmanage.pm`](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
+captures SMART status strings and uses `UNKNOWN` when SMART status is absent.
+Smartmontools emits `PASSED` for successful ATA self-assessment and `OK` for a
+successful SCSI health-status response ([ATA output](https://www.smartmontools.org/static/doxygen/ataprint_8cpp_source.html),
+[SCSI output](https://www.smartmontools.org/static/doxygen/scsiprint_8cpp_source.html)).

@@ -76,6 +76,16 @@ def _headroom_band_counts() -> dict[str, int]:
     return {"under-30-percent": 0, "30-to-under-70-percent": 0, "at-least-70-percent": 0, "unknown": 0}
 
 
+def _smart_health_class(value: object) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        return "unknown"
+    if value in {"PASSED", "OK"}:
+        return "passed"
+    if value in {"FAILED", "FAILED!"}:
+        return "failed"
+    return "unknown"
+
+
 def _api_data(value: object, *, section: str, expected: type = list) -> object:
     refusal = f"Proxmox returned an incomplete {section} inventory."
     _require(
@@ -1035,6 +1045,7 @@ def identify_thick_lvm_backing_identity(payload: object) -> dict[str, object]:
         "candidate_storage_id": declared_storage_id,
         "backing_disk_serial": serial,
         "backing_disk_wwn": wwn,
+        "backing_disk_health": _smart_health_class(disk.get("health")),
     }
 
 

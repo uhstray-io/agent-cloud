@@ -1530,7 +1530,7 @@ def test_candidate_selector_refuses_incomplete_pv_lineage():
 def test_declared_backing_identity_requires_one_direct_lvm_pv_and_reports_optional_wwn():
     data = selectable_thick_candidate()
     disk = data["disks"]["json"]["data"][0]
-    disk.update(serial="SERIAL-123", wwn="0x5000abcd")
+    disk.update(serial="SERIAL-123", wwn="0x5000abcd", health="PASSED")
 
     result = identify_thick_lvm_backing_identity(data)
 
@@ -1538,6 +1538,7 @@ def test_declared_backing_identity_requires_one_direct_lvm_pv_and_reports_option
         "candidate_storage_id": "private-lvm",
         "backing_disk_serial": "SERIAL-123",
         "backing_disk_wwn": "0x5000abcd",
+        "backing_disk_health": "passed",
     }
     disk.pop("wwn")
     assert identify_thick_lvm_backing_identity(data)["backing_disk_wwn"] is None
@@ -1548,15 +1549,52 @@ def test_declared_backing_identity_requires_one_direct_lvm_pv_and_reports_option
     assert sanitized["write_authorized"] is False
     assert "SERIAL-123" not in json.dumps(sanitized)
     assert "0x5000abcd" not in json.dumps(sanitized)
+    assert "backing_disk_health" not in json.dumps(sanitized)
 
 
 def test_declared_backing_identity_accepts_direct_physical_disk_path():
     data = selectable_thick_candidate()
     disk = data["disks"]["json"]["data"][0]
-    disk.update(devpath="/dev/sda", serial="SERIAL-123", model="ST8000NM", vendor="ATA")
+    disk.update(devpath="/dev/sda", serial="SERIAL-123", model="ST8000NM", vendor="ATA", health="PASSED")
     data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/sda"
 
-    assert identify_thick_lvm_backing_identity(data)["backing_disk_serial"] == "SERIAL-123"
+    identity = identify_thick_lvm_backing_identity(data)
+    assert identity["backing_disk_serial"] == "SERIAL-123"
+    assert identity["backing_disk_health"] == "passed"
+
+
+def test_declared_backing_identity_classifies_sas_health_status_ok_as_passed():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", health="OK")
+
+    assert identify_thick_lvm_backing_identity(data)["backing_disk_health"] == "passed"
+
+
+@pytest.mark.parametrize(("health", "expected"), (("FAILED", "failed"), ("FAILED!", "failed")))
+def test_declared_backing_identity_classifies_reported_smart_failure(health, expected):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", health=health)
+
+    assert identify_thick_lvm_backing_identity(data)["backing_disk_health"] == expected
+
+
+@pytest.mark.parametrize(
+    "health",
+    (
+        None, "UNKNOWN", "SMART Disabled", "unsupported status", "passed",
+        " PASSED", "PASSED ", 1, [], {"state": "PASSED"},
+    ),
+)
+def test_declared_backing_identity_keeps_absent_unrecognized_or_invalid_smart_health_unknown(health):
+    data = selectable_thick_candidate()
+    disk = data["disks"]["json"]["data"][0]
+    disk["serial"] = "SERIAL-123"
+    if health is None:
+        disk.pop("health", None)
+    else:
+        disk["health"] = health
+
+    assert identify_thick_lvm_backing_identity(data)["backing_disk_health"] == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -1651,7 +1689,7 @@ def test_declared_backing_identity_refuses_inexact_or_nonunique_proof(invalid_pr
 
 def test_declared_backing_identity_cli_reports_only_the_validated_private_shape(monkeypatch, capsys):
     data = selectable_thick_candidate()
-    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", wwn="0x5000abcd")
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", wwn="0x5000abcd", health="PASSED")
     monkeypatch.setattr(
         sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "identify-thick-lvm-backing-identity"]
     )
@@ -1661,7 +1699,7 @@ def test_declared_backing_identity_cli_reports_only_the_validated_private_shape(
     captured = capsys.readouterr()
     assert captured.out == (
         '{"candidate_storage_id":"private-lvm","backing_disk_serial":"SERIAL-123",'
-        '"backing_disk_wwn":"0x5000abcd"}\n'
+        '"backing_disk_wwn":"0x5000abcd","backing_disk_health":"passed"}\n'
     )
     assert "/dev/" not in captured.out
     assert "private-vg" not in captured.out
@@ -1686,6 +1724,23 @@ def test_declared_backing_identity_cli_refusal_is_fixed_and_sanitized(monkeypatc
     assert "private-serial" not in captured.out
     assert "private-wwn" not in captured.out
     assert "/dev/" not in captured.out
+    assert captured.err == ""
+
+
+def test_declared_backing_identity_cli_emits_only_fixed_health_category(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(
+        serial="private-serial", health="private-health-detail PASSED"
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "identify-thick-lvm-backing-identity"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert '"backing_disk_health":"unknown"' in captured.out
+    assert "private-health-detail" not in captured.out
     assert captured.err == ""
 
 
@@ -1896,6 +1951,7 @@ def test_backing_identity_workflow_reuses_get_only_survey_and_protects_output():
     shape = next(task for task in play["tasks"] if task.get("name") == "Validate the candidate identity output shape")
     assert shape.get("no_log") is True
     assert "backing_disk_wwn" in str(shape)
+    assert "backing_disk_health" in str(shape)
 
 
 def test_candidate_semaphore_template_is_dev_bound_and_accepts_only_reviewed_sha():
