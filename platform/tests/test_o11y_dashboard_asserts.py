@@ -100,6 +100,34 @@ def test_every_dashboard_assertion_matches_the_committed_dashboard():
     assert not found, "\n".join(found)
 
 
+def test_unclassified_readback_assertions_bind_each_selector_to_its_target():
+    doc = playbook_yaml.loads(PLAYBOOK.read_text())
+    task = next(
+        task for task in playbook_yaml.tasks(doc)
+        if task.get("name") == "Require selected identities and explicit per-source observations"
+    )
+    assertions = task["ansible.builtin.assert"]["that"]
+    required = (
+        'service=~"$log_service"',
+        'container!~".+"',
+        'signal!~"^(container|access-log|span)$"',
+        'job!="agent-cloud-conformance"',
+    )
+    for title, legend in (
+        ("Log volume by source", "^Unclassified"),
+        ("Selected source records observed (5m)", "Unclassified"),
+    ):
+        selected = [
+            assertion for assertion in assertions
+            if f"equalto', '{title}'" in assertion and f"'{legend}'" in assertion
+        ]
+        assert len(selected) == 5, (title, selected)
+        assert any("list | length == 1" in assertion for assertion in selected)
+        for fragment in required:
+            assert sum(fragment in assertion for assertion in selected) == 1, (title, fragment)
+        assert all("selectattr('legendFormat'" in assertion for assertion in selected)
+
+
 @pytest.fixture
 def copies(tmp_path):
     dash = tmp_path / "dash"
