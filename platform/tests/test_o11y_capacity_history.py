@@ -221,6 +221,31 @@ def test_failure_receipt_rejects_unrecognized_reason_text(monkeypatch, capsys):
     assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
 
 
+@pytest.mark.parametrize(
+    ("malformed_metric", "expected_reason"),
+    [
+        (False, "source_history_too_short"),
+        (True, "backend_metrics_unavailable"),
+    ],
+)
+def test_cli_classifies_empty_source_and_malformed_rows_without_leaking(
+    malformed_metric, expected_reason, monkeypatch, capsys
+):
+    now = 1_800_000_000
+    responses = _history(now)
+    if malformed_metric:
+        responses["backends"]["data"]["result"][0] = "private label, value, stderr, URL, 192.0.2.1"
+    else:
+        responses["source"]["data"]["result"].clear()
+    monkeypatch.setattr(survey.time, "time", lambda: now)
+    monkeypatch.setattr(survey, "query", lambda metric, *_args: responses[metric])
+
+    assert survey.main() == 1
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"status": "insufficient", "reason": expected_reason}
+    assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
+
+
 def test_history_rejects_a_repeated_single_point_snapshot():
     now = 1_800_000_000
     responses = _history(now)

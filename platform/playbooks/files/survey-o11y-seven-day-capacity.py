@@ -71,7 +71,7 @@ def parse_matrix(body: object, reason: str = "malformed_or_incomplete_history") 
     data = body.get("data")
     require(isinstance(data, dict) and data.get("resultType") == "matrix", reason)
     result = data.get("result")
-    require(isinstance(result, list), reason)
+    require(isinstance(result, list) and all(isinstance(row, dict) for row in result), reason)
     return result
 
 
@@ -96,7 +96,7 @@ def percentile95(values: list[float]) -> float:
 
 def assess(responses: dict[str, object], now: int) -> dict:
     source_rows = parse_matrix(responses.get("source"))
-    require(len(source_rows) > 0)
+    require(len(source_rows) > 0, "source_history_too_short")
     require(len(source_rows) == 1, "source_series_ambiguous")
     source_points = points(source_rows[0])
     require(len(source_points) >= MIN_METRIC_POINTS, "source_history_too_short")
