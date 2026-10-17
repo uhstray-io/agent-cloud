@@ -45,6 +45,17 @@ CONTROLLER_FIELDS = {
     "semaphore_url", "api_token", "project_id", "repository_id", "expected_repository_sha", "inventory",
 }
 CONTROLLER_REQUIRED_FIELDS = {"expected_repository_sha", "inventory"}
+SAFE_REFUSAL_CODES = frozenset({
+    "binding_limit", "conflicting_stats", "deadline", "http_status", "invalid_binding",
+    "invalid_controller_input", "invalid_credentials", "invalid_declaration", "invalid_endpoint",
+    "invalid_template_repository", "invalid_utc_time", "launch_inputs", "malformed_json",
+    "observation_binding", "observation_expired", "observation_shape", "observation_time_order",
+    "output_rows", "output_shape", "output_time_order", "readback_shape", "repository_mismatch",
+    "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
+    "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
+    "task_not_accepted", "task_override", "task_params", "task_time_order", "template_drift",
+    "template_mismatch", "terminal_stats", "transport", "truncated_response",
+})
 
 
 class Refusal(Exception):
@@ -510,7 +521,7 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
 
 
 def main():
-    refusal = {"status": "refused", "reason": "receipt_verification_failed"}
+    generic_refusal = {"status": "refused", "reason": "receipt_verification_failed"}
     try:
         if sys.argv[1:] != ["--controller"]:
             raise Refusal("invalid_controller_input")
@@ -518,8 +529,15 @@ def main():
         report = controller_report(payload)
         print(json.dumps(report, sort_keys=True))
         return 0
-    except (Exception, SystemExit):
+    except Refusal as exc:
+        # Only internal, reviewed literal categories may cross the controller boundary.
+        refusal = {"status": "refused", "reason": exc.code if isinstance(exc.code, str)
+                   and exc.code in SAFE_REFUSAL_CODES
+                   else generic_refusal["reason"]}
         print(json.dumps(refusal, sort_keys=True))
+        return 2
+    except (Exception, SystemExit):
+        print(json.dumps(generic_refusal, sort_keys=True))
         return 2
 
 

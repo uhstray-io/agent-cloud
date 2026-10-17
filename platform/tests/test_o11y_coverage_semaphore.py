@@ -1,12 +1,15 @@
 import email.message
 import importlib.util
+import io
 import json
 import ssl
 import subprocess
 import sys
 import unittest
 import urllib.error
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).parents[1] / "playbooks/files/o11y-coverage-semaphore.py"
 SPEC = importlib.util.spec_from_file_location("o11y_coverage_semaphore", SCRIPT)
@@ -410,10 +413,51 @@ class SemaphoreReceiptTests(unittest.TestCase):
             input=json.dumps(payload), text=True, capture_output=True, check=False,
         )
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(result.stdout, '{"reason": "receipt_verification_failed", "status": "refused"}\n')
+        self.assertEqual(result.stdout, '{"reason": "invalid_controller_input", "status": "refused"}\n')
         self.assertEqual(result.stderr, "")
         self.assertNotIn("private-token", result.stdout + result.stderr)
         self.assertNotIn("private.invalid", result.stdout + result.stderr)
+
+    def test_main_emits_each_fixed_refusal_code_and_hides_unknown_failures(self):
+        self.assertEqual(SEMAPHORE.SAFE_REFUSAL_CODES, {
+            "binding_limit", "conflicting_stats", "deadline", "http_status", "invalid_binding",
+            "invalid_controller_input", "invalid_credentials", "invalid_declaration", "invalid_endpoint",
+            "invalid_template_repository", "invalid_utc_time", "launch_inputs", "malformed_json",
+            "observation_binding", "observation_expired", "observation_shape", "observation_time_order",
+            "output_rows", "output_shape", "output_time_order", "readback_shape", "repository_mismatch",
+            "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
+            "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
+            "task_not_accepted", "task_override", "task_params", "task_time_order", "template_drift",
+            "template_mismatch", "terminal_stats", "transport", "truncated_response",
+        })
+
+        def run_with(error):
+            output = io.StringIO()
+            with patch.object(SEMAPHORE.sys, "argv", [str(SCRIPT), "--controller"]), \
+                    patch.object(SEMAPHORE.sys, "stdin", io.StringIO("{}")), \
+                    patch.object(SEMAPHORE, "controller_report", side_effect=error), \
+                    redirect_stdout(output):
+                result = SEMAPHORE.main()
+            return result, output.getvalue()
+
+        for code in sorted(SEMAPHORE.SAFE_REFUSAL_CODES):
+            with self.subTest(code=code):
+                result, output = run_with(SEMAPHORE.Refusal(code))
+                self.assertEqual(result, 2)
+                self.assertEqual(json.loads(output), {"status": "refused", "reason": code})
+
+        for error in (
+            SEMAPHORE.Refusal("private-token"), SEMAPHORE.Refusal(["private-token"]),
+            RuntimeError("private-url private-token"), SystemExit("private-url private-token"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                result, output = run_with(error)
+                self.assertEqual(result, 2)
+                self.assertEqual(json.loads(output), {
+                    "status": "refused", "reason": "receipt_verification_failed",
+                })
+                self.assertNotIn("private-token", output)
+                self.assertNotIn("private-url", output)
 
     def test_synthetic_receipt_is_accepted_with_bounded_attribution(self):
         result = accept(fixture())

@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -311,10 +312,30 @@ class CoverageContractTests(unittest.TestCase):
             ),
             2,
         )
-        self.assertEqual(
-            by_name["Fail closed on a controller refusal"]["ansible.builtin.assert"]["fail_msg"],
-            "receipt_verification_failed",
+        fail_msg = by_name["Fail closed on a controller refusal"]["ansible.builtin.assert"]["fail_msg"]
+        self.assertIn("_coverage_report.reason", fail_msg)
+        self.assertIn("_coverage_report.reason in _coverage_safe_refusal_codes", fail_msg)
+        self.assertIn("receipt_verification_failed", fail_msg)
+        semaphore_path = ROOT / "platform/playbooks/files/o11y-coverage-semaphore.py"
+        spec = importlib.util.spec_from_file_location("coverage_semaphore_contract", semaphore_path)
+        semaphore = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(semaphore)
+        self.assertEqual(set(_play_named(plays, "Check out and inventory declarations")["vars"][
+            "_coverage_safe_refusal_codes"
+        ]), semaphore.SAFE_REFUSAL_CODES)
+        render = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(fail_msg)
+        allowed = render.render(
+            _coverage_report={"status": "refused", "reason": "task_not_accepted"},
+            _coverage_safe_refusal_codes=semaphore.SAFE_REFUSAL_CODES,
         )
+        self.assertEqual(allowed, "task_not_accepted")
+        secret = "private-token"
+        unknown = render.render(
+            _coverage_report={"status": "refused", "reason": secret},
+            _coverage_safe_refusal_codes=semaphore.SAFE_REFUSAL_CODES,
+        )
+        self.assertEqual(unknown, "receipt_verification_failed")
+        self.assertNotIn(secret, unknown)
         report = by_name["Report the candidate census"]["ansible.builtin.debug"]["msg"]
         self.assertEqual(report, "{{ _coverage_report }}")
         self.assertNotIn("stdout", report)
