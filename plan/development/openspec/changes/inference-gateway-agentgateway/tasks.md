@@ -702,9 +702,12 @@
       key, read by dgx-spark's deploy job). It stays Proposed. So the retirement on or after 2026-11-13
       is the two-step rotation in dgx-spark#34's plan:
       - dgx-spark writes the new value to its local key file and does one planned restart of both ranks,
-        in a window the operator names;
+        in a window the operator names. The operator may choose a two-restart variant instead: both keys
+        in the first restart, the new key only in the second, which removes the 401 window
+        (dgx-spark design decision 6, task 5.1);
+      - dgx-spark hands the value to the operator out of band;
       - the operator seeds `secret/services/agentgateway:vllm_api_key` with `Seed OpenBao Key`;
-      - agent-cloud runs Deploy agentgateway (Dev), then Rollback Inference Route `restore`.
+      - the operator runs Deploy agentgateway (Dev), then Rollback Inference Route (Dev) in `restore` mode.
       Not ticked.
 - [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
@@ -886,11 +889,16 @@
         its own unprivileged account. Its name and public key come from dgx-spark.
       - vLLM serves `--ssl-certfile`/`--ssl-keyfile`/`--enable-ssl-refresh`: server-only first, mutual
         TLS once every caller presents a leaf.
-      - The certificate renews daily with no restart.
+      - The daily renewal job re-issues the leaf once less than a third of its 30-day lifetime is left.
+        vLLM serves the new leaf without a restart. Whether its refresher follows the symlink swap is
+        unproven until dgx-spark's drill (its decision 3, task 3.4); the fallback is a fixed-name copy.
       agent-cloud's pieces, in order:
       - `internal_leaves` for `vllm-server`, `vllm-lifecycle` and `agw-upstream`;
       - a spark-1 inventory host in its own group;
-      - a renewal proof path for a non-gateway server leaf;
+      - `distribute-ca-root.yml` placing `step-ca-bundle.crt` beside the spark-1 leaves (dgx-spark task
+        2.2 waits on it);
+      - renewal proof paths for a non-gateway server leaf (`vllm-server`) and for a client leaf with
+        reload `none` on a non-gateway host (`vllm-lifecycle`);
       - this task's `https://` upstream with `tls`;
       - Caddy `/health` and the o11y `dgx-spark-vllm` scrape over HTTPS;
       - Rollback Inference Route `direct` mode gaining an HTTPS transport (a point from dgx-spark's review).
