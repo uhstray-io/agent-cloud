@@ -1635,6 +1635,20 @@ selectors are not a synthetic union, and current data applicability still needs
 service-specific receipts. A capped all-streams drill-down remains available for
 unclassified Loki streams; source-specific panels lead the routine view.
 
+## 2026-10-17 unclassified Overview records
+
+Read-only Grafana inspection found that the `service-overview` all-stream
+drill-down contained records excluded by its five source-specific targets.
+For the selected `agentgateway` service, the exact selector for records without
+a nonempty `container` label and without a recognized `signal` matched 90 lines
+over six hours and 482 over 24 hours. The six-hour comparison returned 18 span
+lines, 144 conformance lines, and no access-log lines. These point-in-time line
+counts show that a selected unclassified category has records to expose; they
+are not health measures and do not identify the producer or explain missing
+classification. The Overview change adds this category with disjoint selectors.
+Its deployment and Grafana read-back remain pending, so live acceptance is not
+claimed.
+
 The conformance dashboard source configures the latest-state query and table
 transformations for an intended one-row-per-service-and-step view, with status
 color mapping scoped to the numeric state field. Its latest-state query remains

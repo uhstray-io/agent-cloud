@@ -2282,13 +2282,18 @@ assert all('{service=~"$service"}' in query or 'service=~"$service"' in query fo
 assert all('$log_service' in query for query in loki_queries)
 assert all('container=' not in query for query in metric_queries)
 log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Log volume by source')
-assert len(log_rate['targets']) == 5
+assert len(log_rate['targets']) == 6
 assert 'container=~".+"' in log_rate['targets'][0]['expr']
 assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][0]['expr']
 assert 'signal="container"' in log_rate['targets'][1]['expr']
 assert 'signal="access-log"' in log_rate['targets'][2]['expr']
 assert 'signal="span"' in log_rate['targets'][3]['expr']
 assert 'job="agent-cloud-conformance"' in log_rate['targets'][4]['expr']
+assert 'service=~"$log_service"' in log_rate['targets'][5]['expr']
+assert 'container!~".+"' in log_rate['targets'][5]['expr']
+assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][5]['expr']
+assert 'job!="agent-cloud-conformance"' in log_rate['targets'][5]['expr']
+assert 'Unclassified' in log_rate['targets'][5]['legendFormat']
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)

@@ -100,6 +100,34 @@ def test_every_dashboard_assertion_matches_the_committed_dashboard():
     assert not found, "\n".join(found)
 
 
+def test_unclassified_readback_assertions_bind_each_selector_to_its_target():
+    doc = playbook_yaml.loads(PLAYBOOK.read_text())
+    task = next(
+        task for task in playbook_yaml.tasks(doc)
+        if task.get("name") == "Require selected identities and explicit per-source observations"
+    )
+    assertions = task["ansible.builtin.assert"]["that"]
+    required = (
+        'service=~"$log_service"',
+        'container!~".+"',
+        'signal!~"^(container|access-log|span)$"',
+        'job!="agent-cloud-conformance"',
+    )
+    for title, legend in (
+        ("Log volume by source", "^Unclassified"),
+        ("Selected source records observed (5m)", "Unclassified"),
+    ):
+        selected = [
+            assertion for assertion in assertions
+            if f"equalto', '{title}'" in assertion and f"'{legend}'" in assertion
+        ]
+        assert len(selected) == 5, (title, selected)
+        assert any("list | length == 1" in assertion for assertion in selected)
+        for fragment in required:
+            assert sum(fragment in assertion for assertion in selected) == 1, (title, fragment)
+        assert all("selectattr('legendFormat'" in assertion for assertion in selected)
+
+
 @pytest.fixture
 def copies(tmp_path):
     dash = tmp_path / "dash"
@@ -221,7 +249,7 @@ def test_overview_source_status_queries_match_disjoint_aggregate_selectors_and_s
     }
     status_by_source = {target["legendFormat"]: _selector(target["expr"])
                         for target in status["targets"]}
-    assert len(aggregate_by_source) == len(status_by_source) == 5
+    assert len(aggregate_by_source) == len(status_by_source) == 6
     assert aggregate_by_source == status_by_source
     assert 'container=~".+"' in aggregate_by_source["Legacy container"]
     assert 'signal!~"^(container|access-log|span)$"' in aggregate_by_source["Legacy container"]
@@ -229,6 +257,13 @@ def test_overview_source_status_queries_match_disjoint_aggregate_selectors_and_s
     assert 'signal="access-log"' in aggregate_by_source["Access"]
     assert 'signal="span"' in aggregate_by_source["Span"]
     assert 'job="agent-cloud-conformance"' in aggregate_by_source["Conformance"]
+    unclassified = aggregate_by_source["Unclassified"]
+    assert 'service=~"$log_service"' in unclassified
+    assert 'container!~".+"' in unclassified
+    assert 'signal!~"^(container|access-log|span)$"' in unclassified
+    assert 'job!="agent-cloud-conformance"' in unclassified
+    assert "unclassified" in aggregate["description"].lower()
+    assert "does not identify a source" in status["description"]
     assert (
         _selector(_panel(dashboard, "All Loki streams (mixed-source drill-down)")["targets"][0]["expr"])
         not in aggregate_by_source.values()
@@ -241,28 +276,40 @@ def test_overview_source_status_queries_match_disjoint_aggregate_selectors_and_s
     assert "ingestion diagnosis" in status["description"]
 
     sources = {
-        "Legacy container": lambda labels: bool(labels.get("container"))
+        "Legacy container": lambda labels: labels.get("service") == "agentgateway"
+            and bool(labels.get("container"))
             and labels.get("signal", "") not in {"container", "access-log", "span"}
             and labels.get("job") != "agent-cloud-conformance",
-        "Journal container": lambda labels: labels.get("signal") == "container"
+        "Journal container": lambda labels: labels.get("service") == "agentgateway"
+            and labels.get("signal") == "container"
             and labels.get("job") != "agent-cloud-conformance",
-        "Access": lambda labels: labels.get("signal") == "access-log"
+        "Access": lambda labels: labels.get("service") == "agentgateway"
+            and labels.get("signal") == "access-log"
             and labels.get("job") != "agent-cloud-conformance",
-        "Span": lambda labels: labels.get("signal") == "span"
+        "Span": lambda labels: labels.get("service") == "agentgateway"
+            and labels.get("signal") == "span"
             and labels.get("job") != "agent-cloud-conformance",
-        "Conformance": lambda labels: labels.get("job") == "agent-cloud-conformance",
+        "Conformance": lambda labels: labels.get("service") == "agentgateway"
+            and labels.get("job") == "agent-cloud-conformance",
+        "Unclassified": lambda labels: labels.get("service") == "agentgateway"
+            and not labels.get("container")
+            and labels.get("signal", "") not in {"container", "access-log", "span"}
+            and labels.get("job") != "agent-cloud-conformance",
     }
     records = [
-        {"container": "app", "signal": "legacy", "job": "alloy"},
-        {"container": "app", "signal": "container", "job": "alloy"},
-        {"signal": "container", "job": "alloy"},
-        {"signal": "access-log", "job": "alloy"},
-        {"signal": "span", "job": "alloy"},
-        {"job": "agent-cloud-conformance"},
-        {"container": "app", "signal": "other", "job": "agent-cloud-conformance"},
-        {"job": "alloy"},
+        {"service": "agentgateway", "container": "app", "signal": "legacy", "job": "alloy"},
+        {"service": "agentgateway", "container": "app", "signal": "container", "job": "alloy"},
+        {"service": "agentgateway", "signal": "container", "job": "alloy"},
+        {"service": "agentgateway", "signal": "access-log", "job": "alloy"},
+        {"service": "agentgateway", "signal": "span", "job": "alloy"},
+        {"service": "agentgateway", "job": "agent-cloud-conformance"},
+        {"service": "agentgateway", "container": "app", "signal": "other", "job": "agent-cloud-conformance"},
+        {"service": "agentgateway", "job": "alloy"},
+        {"service": "other-service", "job": "alloy"},
     ]
-    assert [sum(match(record) for match in sources.values()) for record in records] == [1, 1, 1, 1, 1, 1, 1, 0]
+    selected = [record for record in records if record["service"] == "agentgateway"]
+    assert [sum(match(record) for match in sources.values()) for record in selected] == [1, 1, 1, 1, 1, 1, 1, 1]
+    assert sum(match(records[-1]) for match in sources.values()) == 0
 
 
 @pytest.mark.parametrize("title, status", [("4xx request ratio", "4.."), ("5xx request ratio", "5..")])
