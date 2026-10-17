@@ -754,7 +754,10 @@ class CoverageContractTests(unittest.TestCase):
         schema = next(task for task in tasks if task["name"] == "Validate the fixed signal validation response schema")
         self.assertIs(schema["no_log"], True)
         schema_checks = schema["ansible.builtin.assert"]["that"]
-        self.assertIn("_coverage_validation.keys() | list | sort == ['evidence_count', 'reason', 'status']", schema_checks)
+        self.assertIn(
+            "_coverage_validation.keys() | list | sort == ['evidence_count', 'reason', 'status']",
+            schema_checks,
+        )
         self.assertTrue(any("_coverage_validation.reason in" in check for check in schema_checks))
         self.assertIn("0 <= _coverage_validation.evidence_count <= 1000", schema_checks)
         promote = next(task for task in tasks if task["name"] == "Promote only fixed validation fields")
