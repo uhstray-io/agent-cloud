@@ -1,0 +1,37 @@
+{# honcho central-Caddy fragment — rendered by deploy-honcho.yml on the honcho
+   host, distributed to the central Caddy + reloaded by
+   tasks/distribute-caddy-site.yml (composable path, gated behind
+   caddy_composable like openhands). memory.uhstray.io, TLS via Caddy's
+   internal CA (`tls internal` — trust Caddy's root once per client).
+   PATH-SCOPED Authentik forward_auth: only the human docs surface
+   (/docs, /redoc, /openapi.json) is gated against the embedded outpost; the
+   /v3 API falls through and authenticates in-app (honcho's workspace/peer
+   JWT). This is the CANONICAL source for that security-sensitive block —
+   do NOT free-hand it. Mirrors the @gated path + identity-header strip in
+   services/caddy/deployment/templates/Caddyfile.local.j2. Do NOT edit by hand. #}
+{{ honcho_public_host }} {
+	tls internal
+
+	route {
+		# Only the outpost may set identity headers — strip any client-supplied
+		# ones so a caller can't spoof X-authentik-username and bypass auth.
+		request_header -X-authentik-username
+		request_header -X-authentik-groups
+		request_header -X-authentik-email
+		request_header -X-authentik-name
+		request_header -X-authentik-uid
+		# Authentik embedded-outpost endpoints (login flow + callbacks).
+		reverse_proxy /outpost.goauthentik.io/* {{ authentik_outpost_url }}
+		# Path-scoped gate: only the human docs surface requires an Authentik
+		# session; every other path (the /v3 API) falls through to honcho,
+		# which authenticates in-app with a workspace/peer-scoped JWT.
+		@gated path {{ honcho_forward_auth_paths | default('/docs* /redoc* /openapi.json') }}
+		forward_auth @gated {{ authentik_outpost_url }} {
+			uri /outpost.goauthentik.io/auth/caddy
+			copy_headers X-authentik-username X-authentik-groups X-authentik-email X-authentik-name X-authentik-uid
+			trusted_proxies private_ranges
+		}
+		# Ungated traffic (the JWT-authenticated /v3 API) straight to honcho.
+		reverse_proxy {{ honcho_caddy_upstream }}
+	}
+}
