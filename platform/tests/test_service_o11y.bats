@@ -2300,7 +2300,8 @@ env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
 alloy = env.from_string(alloy_template).render(
-    o11y_cluster='test-cluster', _o11y_forbidden_metric_label_names_regex=policy,
+    o11y_cluster='test-cluster', local_mode=True,
+    _o11y_forbidden_metric_label_names_regex=policy,
 )
 assert 'target_label  = "service"' in alloy
 assert '__meta_docker_container_label_com_docker_compose_service' in alloy
