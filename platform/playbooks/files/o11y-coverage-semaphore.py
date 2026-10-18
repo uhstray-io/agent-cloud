@@ -17,6 +17,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 
 MAX_BINDINGS = 64
+MAX_TRANSIENT_TASK_IDS = 64
 MAX_METADATA_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
 REQUEST_TIMEOUT = 10
@@ -43,6 +44,7 @@ OBSERVATION_FIELDS = {
 }
 CONTROLLER_FIELDS = {
     "semaphore_url", "api_token", "project_id", "repository_id", "expected_repository_sha", "inventory",
+    "receipt_task_ids",
 }
 CONTROLLER_REQUIRED_FIELDS = {"expected_repository_sha", "inventory"}
 SAFE_REFUSAL_CODES = frozenset({
@@ -54,7 +56,8 @@ SAFE_REFUSAL_CODES = frozenset({
     "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
     "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
     "task_not_accepted", "task_override", "task_params", "task_time_order", "template_drift",
-    "template_mismatch", "terminal_stats", "transport", "truncated_response",
+    "template_mismatch", "terminal_stats", "transient_receipt_key", "transient_receipt_limit",
+    "transient_receipt_shape", "transient_receipt_size", "transport", "truncated_response",
 })
 
 
@@ -119,9 +122,14 @@ def _int(value):
 def accept_receipt(*, binding, target, signal, project_id, repository_id,
                    repository_sha, inventory_revision, task, output_rows, template, repository, now):
     """Return bounded attribution only when one exact task/output pair proves the declaration."""
-    if (not isinstance(binding, dict) or set(binding) != {"task_id", "template_id", "observation_window_seconds"}
-            or not _positive_id(binding.get("task_id")) or not _positive_id(binding.get("template_id"))
+    if (not isinstance(binding, dict)
+            or set(binding) not in ({"template_id", "observation_window_seconds"},
+                                    {"task_id", "template_id", "observation_window_seconds"})
+            or ("task_id" in binding and not _positive_id(binding.get("task_id")))
+            or not _positive_id(binding.get("template_id"))
             or not _int(binding.get("observation_window_seconds"))):
+        raise Refusal("invalid_binding")
+    if "task_id" not in binding:
         raise Refusal("invalid_binding")
     task_id, template_id, window = (
         binding["task_id"], binding["template_id"], binding["observation_window_seconds"]
@@ -459,13 +467,53 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
         raise Refusal("invalid_controller_input")
     if inventory.get("repository_sha", repository_sha) != repository_sha:
         raise Refusal("invalid_controller_input")
-    with redirect_stdout(io.StringIO()):
-        census_module.validate(targets, inventory.get("receipt_bindings", {}))
-
     receipt_bindings = inventory.get("receipt_bindings", {})
+    with redirect_stdout(io.StringIO()):
+        census_module.validate(targets, receipt_bindings)
+    transient_task_ids = payload.get("receipt_task_ids", "")
+    if isinstance(transient_task_ids, str):
+        if len(transient_task_ids.encode("utf-8")) > MAX_METADATA_BYTES:
+            raise Refusal("transient_receipt_size")
+        try:
+            transient_task_ids = json.loads(
+                transient_task_ids, object_pairs_hook=_no_duplicate_keys, parse_constant=_reject_constant
+            ) if transient_task_ids else {}
+        except (json.JSONDecodeError, ValueError):
+            raise Refusal("transient_receipt_shape") from None
+    if not isinstance(transient_task_ids, dict):
+        raise Refusal("transient_receipt_shape")
+    targets_by_id = {target.get("target_id"): target for target in targets if isinstance(target, dict)}
+    task_ids = []
+    for target_id, signal_ids in transient_task_ids.items():
+        if (not isinstance(target_id, str) or target_id not in receipt_bindings
+                or not isinstance(signal_ids, dict) or not signal_ids):
+            raise Refusal("transient_receipt_key")
+        target = targets_by_id.get(target_id)
+        for signal, task_id in signal_ids.items():
+            binding = receipt_bindings[target_id].get(signal)
+            declarations_for_target = target.get("signals") if isinstance(target, dict) else None
+            declaration = declarations_for_target.get(signal) if isinstance(declarations_for_target, dict) else None
+            if (not isinstance(binding, dict) or not isinstance(declaration, dict)
+                    or declaration.get("applicable") is not True or not _positive_id(task_id)):
+                raise Refusal("transient_receipt_key")
+            task_ids.append(task_id)
+            if len(task_ids) > MAX_TRANSIENT_TASK_IDS or len(set(task_ids)) != len(task_ids):
+                raise Refusal("transient_receipt_limit")
+    receipt_bindings = {
+        target_id: {signal: dict(binding) for signal, binding in signals.items()}
+        for target_id, signals in receipt_bindings.items()
+    }
+    for target_id, signal_ids in transient_task_ids.items():
+        for signal, task_id in signal_ids.items():
+            receipt_bindings[target_id][signal]["task_id"] = task_id
+    with redirect_stdout(io.StringIO()):
+        census_module.validate(targets, receipt_bindings)
+
     declarations = []
     for target in targets:
         for signal, binding in receipt_bindings.get(target["target_id"], {}).items():
+            if "task_id" not in binding:
+                continue
             freshness = target["signals"][signal]["freshness_seconds"]
             window = binding["observation_window_seconds"]
             if not 60 <= window <= 3600 or not window < freshness <= 86400:
@@ -515,7 +563,8 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
         if isinstance(report_now, str):
             report_now = _utc(report_now)
         return census_module.build_report(
-            pathlib.Path(__file__).parents[3].resolve(), inventory, repository_sha,
+            pathlib.Path(__file__).parents[3].resolve(),
+            {**inventory, "receipt_bindings": receipt_bindings}, repository_sha,
             report_now, verified_receipts=verified_receipts,
         )
 

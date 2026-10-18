@@ -58,13 +58,19 @@ def validate_receipt_bindings(targets, receipt_bindings):
             declaration = target["signals"].get(signal)
             if declaration is None or not declaration["applicable"]:
                 fail("receipt_bindings contains an undeclared or inapplicable signal")
-            if not isinstance(binding, dict) or set(binding) != BINDING_FIELDS:
+            stable_fields = BINDING_FIELDS - {"task_id"}
+            if not isinstance(binding, dict) or set(binding) not in (stable_fields, BINDING_FIELDS):
                 fail("each receipt binding must contain only task_id, template_id, and observation_window_seconds")
             if any(
                 not isinstance(binding[field], int) or isinstance(binding[field], bool) or binding[field] <= 0
-                for field in BINDING_FIELDS
+                for field in stable_fields
             ):
                 fail("receipt binding values must be positive integers")
+            if "task_id" in binding and (
+                not isinstance(binding["task_id"], int) or isinstance(binding["task_id"], bool)
+                or binding["task_id"] <= 0
+            ):
+                fail("receipt task_id must be a positive integer when present")
 
     for target in targets:
         legacy_references = target.get("receipt_reference", {})
@@ -84,7 +90,7 @@ def validate_receipt_bindings(targets, receipt_bindings):
                 if match is None or target_reference != nested_reference:
                     fail(f"{signal} legacy receipt pointers must match a Semaphore task reference")
                 binding = receipt_bindings.get(target["target_id"], {}).get(signal)
-                if binding is not None and binding["task_id"] != int(match.group(1)):
+                if binding is not None and "task_id" in binding and binding["task_id"] != int(match.group(1)):
                     fail(f"{signal} receipt binding conflicts with the legacy task reference")
 
 
@@ -192,6 +198,7 @@ def receipt_status(target, signal, inventory_revision, repository_sha, now,
         or isinstance(receipt["task_id"], bool)
         or not isinstance(receipt["template_id"], int)
         or isinstance(receipt["template_id"], bool)
+        or binding.get("task_id") is None
         or receipt["task_id"] != binding["task_id"]
         or receipt["template_id"] != binding["template_id"]
         or receipt["repository_sha"] != repository_sha
