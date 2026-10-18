@@ -1101,10 +1101,11 @@ values to both candidates. Podman logging is disabled for both temporary
 containers. The enabled candidate must expose a healthy
 `pyroscope.scrape.alloy_self_profile` component through Alloy's local component
 API; a listening HTTP port alone is not accepted. The disabled candidate must
-show the rendered config's existing `prometheus.scrape.local_containers`
-component and no profile component through that same API. The receipt also
-records that the enabled candidate contains only the fixed CPU self-profile
-target and profile type set.
+show the shared production `loki.write.default` component and no profile
+component through that same API. Socket-dependent container discovery and
+scraping are rendered only in local mode. The receipt also records that the
+enabled candidate contains only the fixed CPU self-profile target and profile
+type set.
 Both temporary containers must be absent after checked cleanup; otherwise the
 preflight reports `cleanup_failed`. This proves public-revision-bound rendering,
 candidate config digests, image parity, and isolated config/component loading. It

@@ -22,7 +22,7 @@ SCRAPE_ENV_LIMITS = {
     "O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT": 1_280,
     "O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT": 20_480,
 }
-BASELINE_COMPONENT = "prometheus.scrape.local_containers"
+BASELINE_COMPONENT = "loki.write.default"
 PROFILE_COMPONENT = "pyroscope.scrape.alloy_self_profile"
 API_READ_LOOP = 'while IFS= read -r line || [[ -n $line ]]; do printf \'%s\\n\' "$line"; done'
 IMAGE_TIMEOUT = 8
@@ -122,7 +122,7 @@ def validate_candidates(disabled: str, enabled: str) -> dict[str, object]:
         raise Refusal("candidate_invalid")
     if max(len(disabled.encode("utf-8")), len(enabled.encode("utf-8"))) > MAX_CONFIG_BYTES:
         raise Refusal("candidate_invalid")
-    if not re.search(r'(?m)^\s*prometheus\.scrape\s+"local_containers"\s*\{', disabled):
+    if not re.search(r'(?m)^\s*loki\.write\s+"default"\s*\{', disabled):
         raise Refusal("candidate_invalid")
     if _profile_blocks(disabled):
         raise Refusal("candidate_invalid")

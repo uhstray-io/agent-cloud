@@ -83,6 +83,33 @@ python3 scripts/o11y-coverage-refresh.py \
   < "$SEMAPHORE_OPERATOR_TOKEN_FILE"
 ```
 
+> **Production coverage and collector update (2026-10-18):** Dev-bound journal
+> collector stage task 6795, survey 6796, survey-cursor 6800, and non-destructive
+> apply 6804 succeeded. The v3 positions volume was in safe pending state before
+> apply; all seven existing receiver containers remained unchanged, and the exact
+> bounded journal stream reached Loki. The direct Grafana aggregate
+> `sum(count_over_time({target_id="service:o11y"}[1h]))` returned 19 records;
+> the aggregate does not preserve stream labels. A separate label-preserving
+> Loki range query with exact selector
+> `{target_id="service:o11y",service="o11y/alloy",signal="container",cluster="agent-cloud-prod",environment="prod"}`
+> returned one stream and two bounded recent lines with matching labels. Private
+> site-config PR #104 merged as `6f32209`; the inventory sync read back production
+> record 2 as the exact merged bytes.
+>
+> Strict receipt task 6813 verified `service:o11y` logs and census task 6814
+> succeeded with 31 candidates, 9 declared targets, 0 duplicates, and 31
+> unverified targets. Only logs were refreshed; `service:o11y` metrics remain
+> incomplete, health and traces are undeclared, and overall coverage is
+> incomplete. A later combined cohort safely stopped after logs task 6816
+> succeeded: the next launch refused because Semaphore changed template runtime
+> fields `tasks` and `last_task` during preflight, so no second task was
+> launched. Public launcher fix `1a3a02d` ignores only those fields and still
+> requires PR/merge and a rerun. Alloy also continues to log Docker discovery
+> socket errors because production Compose has no socket mount; public local-only
+> gating fix `a96cced` is not deployed. Keep OpenSpec tasks 6.2 and 7.4 open;
+> this evidence does not establish full-estate coverage, gateway access-record
+> coverage, or a retention gate.
+
 Tempo-derived service graphs and span metrics are disabled by default. The
 production opt-in requires numeric Semaphore receipts for capacity,
 backup/isolated restore, metrics, alert delivery, retention, and cardinality.
