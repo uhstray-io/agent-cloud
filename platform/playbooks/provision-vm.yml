@@ -1009,7 +1009,7 @@
                  | combine({'skip': false, 'errors': (_pv_step.errors | default([])) + [_pv_failure]}) }}
           vars:
             _pv_failure: >-
-              {{ 'PBS provisioning failed during a lifecycle task; private details are omitted.' if _pbs_mode else
+              {{ 'PBS provisioning failed during a lifecycle task; private details are omitted.' if (_pbs_mode | default(false) | bool) else
                  (ansible_failed_task.name | default('a task')) ~ ': '
                  ~ ('(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
                     else (ansible_failed_result.msg | default('failed'))) }}
