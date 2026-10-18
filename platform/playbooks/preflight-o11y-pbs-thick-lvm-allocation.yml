@@ -15,8 +15,8 @@
     _inspector: "{{ playbook_dir }}/files/inspect_o11y_pbs_physical_storage.py"
     _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
     _o11y_host: "{{ _o11y_hosts | first | default('') }}"
-    _pinned_serial: "{{ hostvars[_o11y_host].proxmox_pbs_backing_disk_serial | default(none, true) if _o11y_host else none }}"
-    _pinned_wwn: "{{ hostvars[_o11y_host].proxmox_pbs_backing_disk_wwn | default(none, true) if _o11y_host else none }}"
+    _pinned_serial: "{{ hostvars[_o11y_host].proxmox_pbs_backing_disk_serial | default(none) if _o11y_host else none }}"
+    _pinned_wwn: "{{ hostvars[_o11y_host].proxmox_pbs_backing_disk_wwn | default(none) if _o11y_host else none }}"
   tasks:
     - name: Require one private backing identity pin
       ansible.builtin.assert:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
@@ -123,6 +124,7 @@ def selectable_thick_candidate():
     total = 5 * 1024 * GIB
     set_thick_capacity(data, total, total // 2)
     data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a"
+    data["disks"]["json"]["data"][0]["size"] = total
     return data
 
 
@@ -2004,11 +2006,30 @@ def test_allocation_preflight_requires_exact_pin_lineage_health_and_512_gib_head
 
 
 def test_allocation_preflight_accepts_a_well_formed_wwn_pin_when_serial_is_unavailable():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(
+        serial="unknown", wwn="0x5000abcd12345678", health="PASSED"
+    )
     result = preflight_thick_lvm_allocation(
-        preflight_input(serial=None, wwn="0x5000abcd12345678")
+        preflight_input(data, serial=None, wwn="0x5000abcd12345678")
     )
 
     assert result["backing_identity_matches"] is True
+
+
+@pytest.mark.parametrize("malformed_pin", ("", False, 0, []))
+def test_allocation_preflight_refuses_false_like_defined_serial_pin(malformed_pin):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(
+        serial="SERIAL-123", wwn="0x5000abcd12345678", health="PASSED"
+    )
+
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation({
+            "survey": data,
+            "backing_disk_serial": malformed_pin,
+            "backing_disk_wwn": "0x5000abcd12345678",
+        })
 
 
 def test_allocation_preflight_accepts_exactly_30_percent_residual_vg_headroom():
@@ -2016,6 +2037,51 @@ def test_allocation_preflight_accepts_exactly_30_percent_residual_vg_headroom():
     set_thick_capacity(data, 5 * 1024 * GIB, 2048 * GIB)
 
     assert preflight_thick_lvm_allocation(preflight_input(data))["reported_vg_headroom_passes_512_gib"] is True
+
+
+def test_allocation_preflight_reconciles_disk_pv_vg_capacity_and_residual_free_space():
+    invalid = selectable_thick_candidate()
+    invalid["disks"]["json"]["data"][0]["size"] = 256 * GIB
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation(preflight_input(invalid))
+
+    invalid = selectable_thick_candidate()
+    invalid["lvm"]["json"]["data"]["children"][0]["children"][0].update(
+        size=256 * GIB, free=0
+    )
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation(preflight_input(invalid))
+
+    invalid = selectable_thick_candidate()
+    invalid["lvm"]["json"]["data"]["children"][0]["children"][0]["free"] = GIB
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation(preflight_input(invalid))
+
+    invalid = selectable_thick_candidate()
+    set_thick_capacity(invalid, 6 * 1024 * GIB, 3 * 1024 * GIB)
+    invalid["lvm"]["json"]["data"]["children"][0]["children"][0].update(
+        size=5 * 1024 * GIB, free=5 * 1024 * GIB // 2
+    )
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation(preflight_input(invalid))
+
+
+def test_allocation_preflight_allows_only_small_lvm_capacity_rounding():
+    data = selectable_thick_candidate()
+    group = data["lvm"]["json"]["data"]["children"][0]
+    pv = group["children"][0]
+    disk_size = 5 * 1024 * GIB
+    group.update(size=disk_size - 4 * 1024**2, free=disk_size // 2 - 2 * 1024**2)
+    pv.update(size=disk_size - 2 * 1024**2, free=disk_size // 2)
+    data["disks"]["json"]["data"][0]["size"] = disk_size - 1 * 1024**2
+    status = data["storage"]["json"]["data"][0]
+    status.update(
+        total=group["size"],
+        used=group["size"] - group["free"],
+        avail=group["free"],
+    )
+
+    assert preflight_thick_lvm_allocation(preflight_input(data))["status"] == "preflight_passed"
 
 
 @pytest.mark.parametrize(
@@ -2074,6 +2140,79 @@ def test_allocation_preflight_refuses_duplicate_api_identity_even_when_both_pins
         })
 
 
+def test_allocation_preflight_refuses_unknown_serial_as_the_only_pin():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="unknown", health="PASSED")
+
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation({"survey": data, "backing_disk_serial": "unknown"})
+
+
+def test_allocation_preflight_treats_unknown_wwn_as_absent_for_serial_pin():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", wwn="unknown", health="PASSED")
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-other", "size": GIB, "serial": "OTHER", "wwn": "unknown",
+    })
+
+    result = preflight_thick_lvm_allocation({"survey": data, "backing_disk_serial": "SERIAL-123"})
+
+    assert result["backing_identity_matches"] is True
+
+
+def test_allocation_preflight_canonicalizes_wwns_before_duplicate_check():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(
+        serial="SERIAL-123", wwn="0x5000abcd12345678", health="PASSED"
+    )
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-other", "size": GIB,
+        "wwn": "5000abcd12345678",
+    })
+
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation({
+            "survey": data, "backing_disk_wwn": "0X5000ABCD12345678",
+        })
+
+
+@pytest.mark.parametrize("bad_wwn", ("bad\nwwn", " unknown ", 7))
+def test_allocation_preflight_refuses_malformed_non_sentinel_wwn(bad_wwn):
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", health="PASSED")
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-other", "size": GIB, "wwn": bad_wwn,
+    })
+
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation({"survey": data, "backing_disk_serial": "SERIAL-123"})
+
+
+def test_allocation_preflight_serial_only_pin_ignores_unrelated_eui_wwn():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(serial="SERIAL-123", health="PASSED")
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-other", "size": GIB,
+        "wwn": "eui.0011223344556677",
+    })
+
+    assert preflight_thick_lvm_allocation({
+        "survey": data, "backing_disk_serial": "SERIAL-123",
+    })["backing_identity_matches"] is True
+
+
+def test_allocation_preflight_wwn_pin_requires_supported_selected_wwn_form():
+    data = selectable_thick_candidate()
+    data["disks"]["json"]["data"][0].update(
+        serial="SERIAL-123", wwn="not-a-wwn", health="PASSED"
+    )
+
+    with pytest.raises(ValueError, match="512-GiB PBS allocation preflight"):
+        preflight_thick_lvm_allocation({
+            "survey": data, "backing_disk_wwn": "0x5000abcd12345678",
+        })
+
+
 def test_allocation_preflight_cli_emits_no_private_identity_or_capacity(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "preflight-thick-lvm-allocation"])
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(preflight_input())))
@@ -2124,6 +2263,8 @@ def test_allocation_preflight_playbook_reuses_protected_get_only_survey_and_priv
     assert "_pinned_wwn" in str(protected)
     assert "proxmox_pbs_backing_disk_serial" in str(play["vars"])
     assert "proxmox_pbs_backing_disk_wwn" in str(play["vars"])
+    assert "default(none)" in str(play["vars"])
+    assert "default(none, true)" not in str(play["vars"])
     report = next(
         task for task in play["tasks"]
         if task.get("name") == "Report the read-only allocation preflight result"
@@ -2132,6 +2273,18 @@ def test_allocation_preflight_playbook_reuses_protected_get_only_survey_and_priv
     assert "wwn" not in report["ansible.builtin.debug"]["msg"].lower()
     assert "storage_id" not in report["ansible.builtin.debug"]["msg"].lower()
     assert "write authorization: no" in report["ansible.builtin.debug"]["msg"]
+
+
+@pytest.mark.parametrize("pin_value", ("", False, 0, []))
+def test_allocation_preflight_jinja_preserves_malformed_defined_pin_values(pin_value):
+    plays = yaml.safe_load((ROOT / "platform/playbooks/preflight-o11y-pbs-thick-lvm-allocation.yml").read_text())
+    expression = plays[2]["vars"]["_pinned_serial"].removeprefix("{{ ").removesuffix(" }}")
+    evaluate = Environment().compile_expression(expression)
+
+    assert evaluate({
+        "_o11y_host": "pbs",
+        "hostvars": {"pbs": {"proxmox_pbs_backing_disk_serial": pin_value}},
+    }) == pin_value
 
 
 def test_allocation_preflight_semaphore_template_requires_exact_dev_revision():

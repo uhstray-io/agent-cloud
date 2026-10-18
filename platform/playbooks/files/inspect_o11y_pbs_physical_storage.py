@@ -15,6 +15,9 @@ CONTENT_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}")
 PATH = re.compile(r"/[A-Za-z0-9._/+:-]{1,255}")
 DEVICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}")
 WWN = re.compile(r"(?:0[xX])?(?:[0-9A-Fa-f]{16}|[0-9A-Fa-f]{32})")
+LVM_CAPACITY_ROUNDING_BYTES = 16 * 1024**2
+PBS_PROPOSED_DISK_BYTES = 512 * 1024**3
+MINIMUM_RESIDUAL_HEADROOM_PERCENT = 30
 SIZE_BANDS = ((100 * 1024**3, "under-100-GiB"), (1024**4, "100-GiB-to-under-1-TiB"))
 PROPOSED_DISK_SIZES = (256, 512, 1024)
 SAFE_REFUSALS = {
@@ -1073,6 +1076,7 @@ def preflight_thick_lvm_allocation(payload: object) -> dict[str, object]:
             isinstance(serial_pin, str)
             and serial_pin == serial_pin.strip()
             and DEVICE_ID.fullmatch(serial_pin) is not None
+            and serial_pin.casefold() != "unknown"
         ),
         ALLOCATION_PREFLIGHT_REFUSAL,
     )
@@ -1083,6 +1087,7 @@ def preflight_thick_lvm_allocation(payload: object) -> dict[str, object]:
         ),
         ALLOCATION_PREFLIGHT_REFUSAL,
     )
+    canonical_wwn_pin = _canonical_wwn(wwn_pin) if wwn_pin is not None else None
 
     _, group = candidates[0]
     children = group.get("children")
@@ -1104,6 +1109,25 @@ def preflight_thick_lvm_allocation(payload: object) -> dict[str, object]:
         and not pv_path.startswith("/dev/vd"),
         ALLOCATION_PREFLIGHT_REFUSAL,
     )
+    pv = children[0]
+    vg_size, vg_free = group.get("size"), group.get("free")
+    pv_size, pv_free, disk_size = pv.get("size"), pv.get("free"), disk.get("size")
+    _require(
+        all(_integer(value, positive=True) for value in (vg_size, pv_size, disk_size))
+        and all(_integer(value) for value in (vg_free, pv_free))
+        and vg_free <= vg_size
+        and pv_free <= pv_size
+        and disk_size + LVM_CAPACITY_ROUNDING_BYTES >= pv_size
+        and pv_size + LVM_CAPACITY_ROUNDING_BYTES >= vg_size
+        and vg_size + LVM_CAPACITY_ROUNDING_BYTES >= pv_size
+        and pv_free + LVM_CAPACITY_ROUNDING_BYTES >= vg_free
+        and vg_free + LVM_CAPACITY_ROUNDING_BYTES >= pv_free
+        and pv_free - PBS_PROPOSED_DISK_BYTES
+        >= (vg_size * MINIMUM_RESIDUAL_HEADROOM_PERCENT + 99) // 100
+        and vg_free - PBS_PROPOSED_DISK_BYTES
+        >= (vg_size * MINIMUM_RESIDUAL_HEADROOM_PERCENT + 99) // 100,
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
     for attribute in ("model", "vendor"):
         value = disk.get(attribute)
         _require(value is None or isinstance(value, str), ALLOCATION_PREFLIGHT_REFUSAL)
@@ -1115,12 +1139,14 @@ def preflight_thick_lvm_allocation(payload: object) -> dict[str, object]:
 
     _require(_smart_health_class(disk.get("health")) == "passed", ALLOCATION_PREFLIGHT_REFUSAL)
     if serial_pin is not None:
-        _require(disk.get("serial") == serial_pin, ALLOCATION_PREFLIGHT_REFUSAL)
+        _require(
+            _usable_device_identity(disk.get("serial"))
+            and disk.get("serial") == serial_pin,
+            ALLOCATION_PREFLIGHT_REFUSAL,
+        )
     if wwn_pin is not None:
         _require(
-            isinstance(disk.get("wwn"), str)
-            and disk["wwn"] == disk["wwn"].strip()
-            and disk["wwn"].casefold() == wwn_pin.casefold(),
+            _canonical_wwn(disk.get("wwn")) == canonical_wwn_pin,
             ALLOCATION_PREFLIGHT_REFUSAL,
         )
 
@@ -1129,32 +1155,33 @@ def preflight_thick_lvm_allocation(payload: object) -> dict[str, object]:
         if not isinstance(row, Mapping):
             continue
         row_serial, row_wwn = row.get("serial"), row.get("wwn")
-        if row_serial not in (None, ""):
+        if _usable_device_identity(row_serial):
             _require(
                 isinstance(row_serial, str)
                 and row_serial == row_serial.strip()
                 and DEVICE_ID.fullmatch(row_serial) is not None,
                 ALLOCATION_PREFLIGHT_REFUSAL,
             )
-        if row_wwn is not None:
+        canonical_row_wwn = None
+        if _usable_device_identity(row_wwn):
             _require(
                 isinstance(row_wwn, str)
-                and (row_wwn == "" or (
-                    WWN.fullmatch(row_wwn) is not None
-                )),
+                and row_wwn == row_wwn.strip()
+                and DEVICE_ID.fullmatch(row_wwn) is not None,
                 ALLOCATION_PREFLIGHT_REFUSAL,
             )
+            if WWN.fullmatch(row_wwn) is not None:
+                canonical_row_wwn = _canonical_wwn(row_wwn)
         if (
             serial_pin is not None
+            and _usable_device_identity(row_serial)
             and isinstance(row_serial, str)
             and row_serial.casefold() == serial_pin.casefold()
         ):
             serial_matches.append(row)
         if (
-            wwn_pin is not None
-            and isinstance(row_wwn, str)
-            and row_wwn
-            and row_wwn.casefold() == wwn_pin.casefold()
+            canonical_wwn_pin is not None
+            and canonical_row_wwn == canonical_wwn_pin
         ):
             wwn_matches.append(row)
     _require(
@@ -1175,6 +1202,28 @@ def preflight_thick_lvm_allocation(payload: object) -> dict[str, object]:
         "pbs_readiness_verified": False,
         "write_authorized": False,
     }
+
+
+def _usable_device_identity(value: object) -> bool:
+    """Return whether a reported device identity is present and available."""
+    return value not in (None, "") and not (
+        isinstance(value, str) and value.casefold() == "unknown"
+    )
+
+
+def _canonical_wwn(value: object) -> str | None:
+    """Validate and normalize a supported WWN, mapping unavailable values to None."""
+    if value is None or value == "" or (
+        isinstance(value, str) and value.casefold() == "unknown"
+    ):
+        return None
+    _require(
+        isinstance(value, str)
+        and value == value.strip()
+        and WWN.fullmatch(value) is not None,
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+    return value.removeprefix("0x").removeprefix("0X").casefold()
 
 
 def main() -> int:
