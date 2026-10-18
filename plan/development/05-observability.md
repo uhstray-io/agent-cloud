@@ -2029,5 +2029,5 @@ private inventory and environment bindings, and survey playbook. GET-only task
 rejected the standard OpenBao connection fields supplied by the Semaphore
 environment. The follow-up binds the OpenBao URL to the single private
 inventory declaration and accepts those standard credential fields while
-retaining placement-override refusal. No template VM, PBS VM, or data disk has
-been created; retention remains unchanged.
+refusing launch-supplied `service_url` and placement overrides. No template
+VM, PBS VM, or data disk has been created; retention remains unchanged.
