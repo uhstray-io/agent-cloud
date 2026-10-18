@@ -50,6 +50,39 @@ Pyroscope profile data and a language bridge that adds
 pyroscope.profile.id to the span; a datasource mapping alone is not a profile
 receipt.
 
+> **Coverage receipt update (2026-10-17):** Dev-bound census task 6755 found 31
+> source candidates, 9 declared targets, and 0 verified targets; `service:o11y`
+> metrics remain incomplete. This records a declaration and receipt visibility
+> gap, not proof that services emit no telemetry. The repeatable refresh CLI
+> launches strict receipts for an explicitly selected bounded cohort, keeps the
+> returned task IDs in memory, then submits them as transient census input. The
+> code does not persist fresh IDs in private inventory. This source change does
+> not itself provide fresh task receipts or close OpenSpec task 6.2.
+
+> **Dev survey publication and refresh path:** After this source change is merged
+> to the reviewed `dev` SHA, publish only the existing `Verify o11y Coverage
+> Census` survey through `Publish Semaphore Template Surveys (Dev)` by setting
+> `semaphore_template_names_json` to `["Verify o11y Coverage Census"]`. The
+> publisher reads the declared template catalog and updates its survey in place;
+> do not enable scoped creation or supply create bindings. From a clean `dev`
+> checkout at that same SHA, run `scripts/o11y-coverage-refresh.py` with that
+> SHA, the exact target/signal pairs, the Semaphore HTTPS origin, and the
+> operator token redirected through stdin. For example, use
+> `--target-signal service:o11y:metrics` for the incomplete o11y metrics binding.
+> The CLI refuses a different local branch or SHA, a dirty checkout, any changed
+> template/repository/inventory binding, or an invalid target digest. Fresh
+> task IDs are returned in memory and submitted only to the census survey. This
+> source record does not claim that the Dev survey has been published or that a
+> fresh cohort has run.
+
+```sh
+python3 scripts/o11y-coverage-refresh.py \
+  --url https://semaphore.uhstray.io \
+  --reviewed-dev-sha "$REVIEWED_DEV_SHA" \
+  --target-signal service:o11y:metrics \
+  < "$SEMAPHORE_OPERATOR_TOKEN_FILE"
+```
+
 Tempo-derived service graphs and span metrics are disabled by default. The
 production opt-in requires numeric Semaphore receipts for capacity,
 backup/isolated restore, metrics, alert delivery, retention, and cardinality.

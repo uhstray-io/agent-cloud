@@ -21,6 +21,11 @@
       - conflicting_stats
       - deadline
       - http_status
+      - transient_receipt_key
+      - transient_receipt_legacy_pointer
+      - transient_receipt_limit
+      - transient_receipt_shape
+      - transient_receipt_size
       - invalid_binding
       - invalid_controller_input
       - invalid_credentials
@@ -169,6 +174,9 @@
           } %}
           {% if 'revision' in _coverage_inventory %}
           {% set _ = payload['inventory'].update({'inventory_revision': _coverage_inventory.revision}) %}
+          {% endif %}
+          {% if receipt_task_ids | default('') | length > 0 %}
+          {% set _ = payload.update({'receipt_task_ids': receipt_task_ids}) %}
           {% endif %}
           {% if _coverage_has_receipt_bindings %}
           {% set _ = payload.update({

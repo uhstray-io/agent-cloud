@@ -93,6 +93,21 @@ def test_undeclared_survey_values_are_refused_before_any_task():
     assert posts(api) == []
 
 
+@pytest.mark.parametrize("field,value", [
+    ("playbook", "platform/playbooks/deploy-o11y.yml"),
+    ("repository_id", 99),
+    ("inventory_id", 99),
+])
+def test_an_expected_template_binding_change_refuses_before_post(field, value):
+    api = FakeAPI()
+    expected = copy.deepcopy(api.template)
+    api.template[field] = value
+    with pytest.raises(launcher.Refusal, match="changed during preflight"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False,
+                        expected_template=expected)
+    assert posts(api) == []
+
+
 def dev_template(api, default="dev"):
     api.template["survey_vars"] = [
         {"name": "service_branch", "type": "string", "default_value": default},

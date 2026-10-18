@@ -130,8 +130,24 @@ class CoverageContractTests(unittest.TestCase):
         self.assertIn("'revision' in _coverage_inventory", command["stdin"])
         self.assertIn("'targets': _coverage_inventory.get('targets', [])", command["stdin"])
         self.assertIn("'receipt_bindings': _coverage_receipt_bindings", command["stdin"])
+        self.assertIn("'receipt_task_ids': receipt_task_ids", command["stdin"])
         self.assertIn("'template_names':", command["stdin"])
         self.assertIn("'expected_repository_sha': expected_repository_sha", command["stdin"])
+
+    def test_transient_receipt_survey_uses_the_existing_scoped_dev_publisher(self):
+        catalog = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+        census = next(item for item in catalog if item.get("name") == "Verify o11y Coverage Census")
+        survey = next(item for item in census["survey_vars"] if item.get("name") == "receipt_task_ids")
+        publisher = next(item for item in catalog
+                         if item.get("name") == "Publish Semaphore Template Surveys")
+        self.assertEqual(census["repository"], "agent-cloud dev")
+        self.assertEqual(census["playbook"], "platform/playbooks/census-o11y-coverage.yml")
+        self.assertEqual((survey["type"], survey["required"], survey["default_value"]),
+                         ("string", False, ""))
+        self.assertTrue(publisher["dev_variant"])
+        self.assertEqual(publisher["playbook"], "platform/playbooks/publish-semaphore-templates.yml")
+        self.assertTrue(any(item.get("name") == "semaphore_template_names_json"
+                            for item in publisher["survey_vars"]))
 
     def test_coverage_playbooks_guard_before_credentials_and_strict_helpers(self):
         census = yaml.safe_load((ROOT / "platform/playbooks/census-o11y-coverage.yml").read_text())

@@ -162,6 +162,12 @@ templates:
         description: "Exact Dev commit required on the Semaphore controller"
         type: string
         required: true
+      - name: receipt_task_ids
+        title: "Transient receipt task IDs (JSON)"
+        description: "Optional one-run target-to-signal task ID map; IDs are not written to inventory"
+        type: string
+        required: false
+        default_value: ""
 
   - name: Verify o11y Target Receipt
     playbook: platform/playbooks/verify-o11y-service.yml
