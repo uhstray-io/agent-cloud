@@ -236,8 +236,8 @@
               workstation you may instead pass -e project_root=<site-config path>.{% endif %}
             success_msg: "VM declaration for '{{ target_service }}' is complete."
 
-        # `module_defaults` attaches this PVE token to every uri call in the play,
-        # including the NetBox address read below, so validate it before any request.
+        # Keep this token-ID guard before the play's first URI call; later PVE
+        # requests receive the credential from module_defaults.
         - name: "Require the stored Proxmox token id"
           ansible.builtin.assert:
             that: _pve_token_id | length > 0
