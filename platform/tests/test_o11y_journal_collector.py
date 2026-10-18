@@ -22,10 +22,6 @@ from jinja2 import Environment
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
 PLAYBOOK = ROOT / "platform/playbooks/deploy-o11y-journal-collector.yml"
-HELPER = ROOT / "platform/playbooks/files/probe-o11y-journal-directory.py"
-SPEC = importlib.util.spec_from_file_location("o11y_journal_probe", HELPER)
-PROBE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(PROBE)
 SURVEY_HELPER = ROOT / "platform/playbooks/files/survey-o11y-journal-directory.py"
 SURVEY_SPEC = importlib.util.spec_from_file_location("o11y_journal_survey", SURVEY_HELPER)
 SURVEY = importlib.util.module_from_spec(SURVEY_SPEC)
@@ -4387,45 +4383,6 @@ os.open=race_open
     assert (root / "positions.db").exists() is False
 
 
-def test_journal_probe_reports_only_a_sanitized_exact_target_count():
-    runner = Mock(
-        return_value=SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "CONTAINER_NAME": ["o11y-alloy"],
-                    "_SYSTEMD_UNIT": "private-unit.service",
-                    "MESSAGE": "private log message",
-                    "CONTAINER_ID_FULL": "private-id",
-                }
-            ),
-        )
-    )
-
-    report = PROBE.probe("/var/log/journal", run=runner)
-
-    assert report == {"status": "observed", "matching_entries": 1}
-    assert "private" not in json.dumps(report)
-    argv = runner.call_args.args[0]
-    assert "--output-fields=CONTAINER_NAME" in argv
-    assert argv[-1] == "CONTAINER_NAME=o11y-alloy"
-
-
-def test_journal_probe_fails_closed_for_unmatched_or_malformed_entries():
-    unmatched = Mock(
-        return_value=SimpleNamespace(returncode=0, stdout='{"CONTAINER_NAME":"other"}\n')
-    )
-    malformed = Mock(return_value=SimpleNamespace(returncode=0, stdout='not-json\n'))
-    failed = Mock(return_value=SimpleNamespace(returncode=1, stdout=""))
-
-    assert PROBE.probe("/var/log/journal", run=unmatched) == {
-        "status": "unavailable",
-        "matching_entries": 0,
-    }
-    assert PROBE.probe("/var/log/journal", run=malformed)["status"] == "unavailable"
-    assert PROBE.probe("/var/log/journal", run=failed)["status"] == "unavailable"
-
-
 def _journal_survey_runner(viable_paths, rootless="true"):
     def run(argv, **_kwargs):
         if argv[:2] == ["podman", "info"]:
@@ -5106,6 +5063,9 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "up, --no-deps, -d, journal-collector" in source
     assert "Require all existing receiver containers to remain unchanged" in source
     assert "_journal_verification_start" in source
+    assert "_journal_proof_marker" in source
+    assert "podman exec" in source and "/proc/1/fd/1" in source
+    assert "recent exact-name entry" not in source
     assert "['values'][0][0]" in source
     assert "State.Health.Status" in source
     assert "image: docker.io/grafana/alloy:v1.9.2" in (O11Y / "compose.journal.yml").read_text()
@@ -5525,7 +5485,6 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
         "Survey positions metadata or explicit cursor validity without mounting",
         "Read the Podman rootless UID mapping",
         "Verify effective write and rename access in the live collector namespace",
-        "Require a recent exact-name entry in the selected journal",
         "Require the pinned rootless Alloy process to read the journal bind",
         "Survey rootless journal path and exact-name file readability",
         "Render a candidate journal config with the private receiver endpoint",
@@ -5537,6 +5496,9 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     assert visible | protected <= by_name.keys()
     assert all(by_name[name].get("no_log") is not True for name in visible)
     assert all(by_name[name].get("no_log") is True for name in protected)
+    assert by_name[
+        "Emit the fixed diagnostic line through the existing Alloy container stdout"
+    ].get("no_log") is not True
     helper_actions = {
         "Verify positions volume identity and access before apply": "verify",
         "Recheck positions volume initialization immediately before mount": "verify",
@@ -5696,7 +5658,7 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
     assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q"]
     assert "-T" not in argv and "--timeout=5" not in argv and "--tries=1" not in argv
     assert receipt["retries"] == 36 and receipt["delay"] == 5
-    assert argv[-1] == "{{ _journal_loki_query_url }}"
+    assert argv[-1] == "{{ _journal_loki_proof_query_url }}"
     assert any(
         "stream.service == 'o11y/alloy'" in item
         for item in delivery["ansible.builtin.assert"]["that"]
@@ -5704,6 +5666,36 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
     assert any(
         "stream.signal == 'container'" in item
         for item in delivery["ansible.builtin.assert"]["that"]
+    )
+    assert any("_journal_proof_marker in" in item for item in delivery["ansible.builtin.assert"]["that"])
+    assert "%7C%3D%20%22" in PLAYBOOK.read_text()
+    emitter_index = next(
+        index for index, task in enumerate(apply_task["block"])
+        if task.get("name") == "Emit the fixed diagnostic line through the existing Alloy container stdout"
+    )
+    lower_bound_index = next(
+        index for index, task in enumerate(apply_task["block"])
+        if task.get("name") == "Capture a fresh Loki lower bound immediately before the synthetic proof line"
+    )
+    assert lower_bound_index < emitter_index < apply_task["block"].index(receipt)
+    assert apply_task["block"][lower_bound_index]["ansible.builtin.command"]["argv"] == ["date", "+%s%N"]
+    emitter = apply_task["block"][emitter_index]
+    assert emitter["failed_when"] is False
+    assert emitter["ansible.builtin.command"]["argv"] == [
+        "/usr/bin/timeout", "--signal=KILL", "12s",
+        "podman", "exec", "--user", "0:0", "o11y-alloy", "/bin/bash", "-c",
+        'printf "%s\\\\n" "{{ _journal_proof_marker }}" > /proc/1/fd/1',
+    ]
+    assert "check_mode" not in emitter
+    assert apply_task["when"] == "not ansible_check_mode"
+    emit_gate = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Require the synthetic proof line to be written"
+    )
+    assert emit_gate["ansible.builtin.assert"]["that"] == "_journal_proof_emit.rc | default(1) == 0"
+    assert any(
+        task.get("name") == "Force-remove only the failed collector while retaining positions"
+        for task in apply_task["rescue"]
     )
     failure = next(
         task for task in apply_task["rescue"]
@@ -5747,6 +5739,7 @@ for response in job["responses"]:
     variables = {
         "_journal_loki_result": {"rc": 0, "stdout": json.dumps(response)},
         "_journal_verification_start": {"stdout": "100"},
+            "_journal_proof_marker": "agent-cloud-o11y-journal-proof-v1",
     }
     templar = Templar(loader=DataLoader(), variables=variables)
     results.append(all(
@@ -5756,13 +5749,13 @@ for response in job["responses"]:
 print(json.dumps(results))
 """
         responses = []
-        for sample_timestamp in samples:
+        for sample_timestamp, line, service, signal in samples:
             responses.append({
                 "status": "success",
                 "data": {
                     "result": [{
-                        "stream": {"service": "o11y/alloy", "signal": "container"},
-                        "values": [[str(sample_timestamp), "sanitized sample"]],
+                        "stream": {"service": service, "signal": signal},
+                        "values": [[str(sample_timestamp), line]],
                     }],
                 },
             })
@@ -5777,7 +5770,40 @@ print(json.dumps(results))
         assert evaluated.returncode == 0, evaluated.stderr
         return json.loads(evaluated.stdout)
 
-    assert evaluate([123, 99]) == [True, False]
+    marker = "agent-cloud-o11y-journal-proof-v1"
+    assert evaluate([
+        (123, marker, "o11y/alloy", "container"),
+        (99, marker, "o11y/alloy", "container"),
+        (123, "unrelated current line", "o11y/alloy", "container"),
+        (123, marker, "another-service", "container"),
+    ]) == [True, False, False, False]
+
+
+def test_journal_marker_writer_is_absent_from_check_mode_and_recent_logs_are_not_a_preflight():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    emitter = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assert emitter["when"] == "not ansible_check_mode"
+    assert all("recent exact-name entry" not in task.get("name", "") for task in apply["tasks"])
+    assert all("journal_probe_result" not in json.dumps(task) for task in apply["tasks"])
+    journal_stat = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Read the selected host journal directory"
+    )
+    assert journal_stat["ansible.builtin.stat"]["path"] == "{{ _journal_directory }}"
+    assert "Require the rootless Compose UID to read a journal file" in json.dumps(apply["tasks"])
+    url = Environment().from_string(apply["vars"]["_journal_loki_proof_query_url"]).render(
+        _journal_verification_start={"stdout": "123"},
+        _journal_proof_marker="agent-cloud-o11y-journal-proof-v1",
+    )
+    assert url == (
+        "http://loki:3100/loki/api/v1/query_range?query="
+        "%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D%20%7C%3D%20%22"
+        "agent-cloud-o11y-journal-proof-v1%22&start=123&limit=1&direction=backward"
+    )
 
 
 def test_positions_repair_check_mode_preserves_unverified_result_after_skipped_command():
@@ -6494,7 +6520,8 @@ print(json.dumps(results))
         task for task in start["block"]
         if task.get("name") == "Verify the exact bounded journal stream reached Loki"
     )
-    assert receipt["ansible.builtin.command"]["argv"] == argv
+    assert receipt["ansible.builtin.command"]["argv"][:-1] == argv[:-1]
+    assert receipt["ansible.builtin.command"]["argv"][-1] == "{{ _journal_loki_proof_query_url }}"
     assert receipt["retries"] == 36  # Ansible makes 37 total attempts.
     assert receipt["delay"] == 5
 

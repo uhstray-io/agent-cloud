@@ -181,15 +181,22 @@
     _journal_directory: "{{ o11y_journal_directory | default('') | string }}"
     _journal_mount: /var/log/journal
     _journal_image: docker.io/grafana/alloy:v1.9.2
+    _journal_proof_marker: agent-cloud-o11y-journal-proof-v1
     _journal_loki_query_url: >-
       {{ [
         'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D',
         '&start=', _journal_verification_start.stdout | default('') | trim,
         '&limit=1&direction=backward'
       ] | join('') }}
+    _journal_loki_proof_query_url: >-
+      {{ [
+        'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D%20%7C%3D%20%22',
+        _journal_proof_marker,
+        '%22&start=', _journal_verification_start.stdout | default('') | trim,
+        '&limit=1&direction=backward'
+      ] | join('') }}
     _journal_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _journal_deploy_dir: "{{ _journal_monorepo_dir }}/platform/services/o11y/deployment"
-    _journal_probe: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/probe-o11y-journal-directory.py') }}"
     _journal_positions_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
     _journal_candidate_path: "{{ _journal_deploy_dir }}/config/.journal.alloy.candidate"
     _journal_image_probe_argv:
@@ -274,30 +281,6 @@
         fail_msg: >-
           The declared host journal directory is absent or unreadable. No bind mount
           was created and the collector was not started.
-        quiet: true
-      tags: [always]
-
-    - name: Require a recent exact-name entry in the selected journal
-      ansible.builtin.command:
-        argv: [python3, "-", "{{ _journal_directory }}"]
-        stdin: "{{ _journal_probe }}"
-        stdin_add_newline: false
-      register: _journal_probe_result
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      no_log: true
-      tags: [always]
-
-    - name: Require the sanitized journal probe to pass
-      ansible.builtin.assert:
-        that:
-          - _journal_probe_result.rc | default(1) == 0
-          - (_journal_probe_result.stdout | default('{}') | from_json).status == 'observed'
-          - (_journal_probe_result.stdout | default('{}') | from_json).matching_entries | int > 0
-        fail_msg: >-
-          The selected journal has no readable recent CONTAINER_NAME=o11y-alloy entry;
-          collector preflight failed without reporting journal content.
         quiet: true
       tags: [always]
 
@@ -1173,6 +1156,40 @@
               the collector will be stopped and its positions volume preserved.
             quiet: true
 
+        - name: Capture a fresh Loki lower bound immediately before the synthetic proof line
+          ansible.builtin.command:
+            argv: [date, +%s%N]
+          register: _journal_verification_start
+          changed_when: false
+          check_mode: false
+
+        - name: Emit the fixed diagnostic line through the existing Alloy container stdout
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/timeout
+              - --signal=KILL
+              - 12s
+              - podman
+              - exec
+              - --user
+              - "0:0"
+              - o11y-alloy
+              - /bin/bash
+              - -c
+              - 'printf "%s\\n" "{{ _journal_proof_marker }}" > /proc/1/fd/1'
+          register: _journal_proof_emit
+          changed_when: _journal_proof_emit.rc == 0
+          failed_when: false
+
+        - name: Require the synthetic proof line to be written
+          ansible.builtin.assert:
+            that: _journal_proof_emit.rc | default(1) == 0
+            fail_msg: >-
+              The fixed diagnostic line could not be emitted by the existing
+              o11y-alloy container; no receiver was restarted and the collector
+              will be stopped with its positions volume preserved.
+            quiet: true
+
         - name: Verify the exact bounded journal stream reached Loki
           ansible.builtin.command:
             argv:
@@ -1190,7 +1207,7 @@
               - -q
               - -O
               - "-"
-              - "{{ _journal_loki_query_url }}"
+              - "{{ _journal_loki_proof_query_url }}"
           register: _journal_loki_result
           changed_when: false
           failed_when: false
@@ -1213,9 +1230,10 @@
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.signal == 'container'
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'] | length > 0
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'][0][0] | int >= _journal_verification_start.stdout | trim | int
+              - _journal_proof_marker in (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'][0][1]
             fail_msg: >-
-              Loki has no exact o11y/alloy container stream in the last 15 minutes;
-              no post-start sample arrived within three minutes. The collector will be
+              Loki has no exact o11y/alloy container stream carrying the fresh
+              diagnostic marker; no post-proof sample arrived within three minutes. The collector will be
               stopped and its positions volume preserved.
             quiet: true
 

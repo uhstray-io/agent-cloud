@@ -1244,6 +1244,24 @@ reviewed SHA before its existing positions and collector start gates.
 Check mode skips provider runtime reads and reports `check_mode_unverified`; the
 `stage` action refuses check mode.
 
+Apply does not require a recent incidental Alloy log before starting. It first
+checks the selected standard journal directory and verifies that the pinned
+rootless Alloy image can read a journal file. After the isolated collector is
+healthy, it writes the fixed, non-sensitive
+`agent-cloud-o11y-journal-proof-v1` line to PID 1's stdout in the existing
+`o11y-alloy` container. The receiver is not restarted or reloaded. The playbook
+captures a fresh Loki lower bound immediately before that write, then requires
+the exact `service=o11y/alloy`, `signal=container` stream to return the marker
+after that bound. A failed write or receipt enters the existing collector-only
+rollback, which preserves the positions volume and all seven receiver
+containers. Check mode skips the entire apply block and cannot emit the marker.
+
+Production collector apply task 6873 (2026-10-18) refused during preflight
+because the healthy Alloy process had no recent journal entry; no collector
+start or receiver mutation occurred. The deterministic marker proof is a source
+follow-up to that refusal. It has not been run in production and does not provide
+a live journal or dashboard coverage receipt.
+
 First bootstrap requires the v3 volume to be absent: bounded volume inventory
 must prove no exact-name collision, and an all-container query, including stopped
 containers, must prove `o11y-journal-collector` absent. An unexpected existing

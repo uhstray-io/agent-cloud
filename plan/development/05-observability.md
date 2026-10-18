@@ -137,6 +137,21 @@ python3 scripts/o11y-coverage-refresh.py \
 > complete verified state and confirms it does not mutate the v3 volume. Receipt
 > 6852 alone does not report every verifier input and is not a live apply result;
 > deployment and fresh log evidence remain outstanding.
+>
+> **Deterministic journal proof follow-up (2026-10-18):** Production collector
+> apply task 6873 refused before starting the collector because preflight required
+> a recent `CONTAINER_NAME=o11y-alloy` entry, while the healthy Alloy process was
+> quiet. No collector start or receiver mutation occurred. The source follow-up
+> removes this incidental-log prerequisite while retaining the standard-path,
+> directory-permission, and rootless file-read checks. After the isolated
+> collector becomes healthy, apply writes one fixed safe marker line through the
+> existing `o11y-alloy` container's PID 1 stdout, captures the fresh Loki lower
+> bound immediately beforehand, and requires that marker in the exact
+> `service=o11y/alloy`, `signal=container` stream at or after the bound. Write or
+> receipt failure uses the existing collector-only rollback; no volume is
+> deleted, no receiver is restarted, and check mode skips the writer. This is
+> source-level work only: no production apply, new journal receipt, or dashboard
+> coverage is claimed. Keep OpenSpec tasks 6.2 and 7.4 open.
 
 Tempo-derived service graphs and span metrics are disabled by default. The
 production opt-in requires numeric Semaphore receipts for capacity,
