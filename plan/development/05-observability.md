@@ -126,6 +126,27 @@ python3 scripts/o11y-coverage-refresh.py \
 > these receipts. Keep tasks 6.2 and 7.4 open; overall estate coverage remains
 > incomplete.
 
+> **Agentgateway trace-silence alert implementation evidence (2026-10-18):** Public
+> PR #706 merged to Dev at `6ed7987`. Deploy o11y check task 6914 and normal task
+> 6916 succeeded; cursor survey 6919 succeeded. Private site-config PR #105 merged
+> as `b4da321` and PR #106 as `23137a1`; the Semaphore production inventory passed
+> exact-byte sync check and apply. Initial strict receipt 6928 succeeded, while
+> census 6929 refused its `launch_inputs` because the persistent task 6565 carried
+> a stale inventory revision. After correction, receipts 6935 and 6936 succeeded,
+> collector apply 6945 succeeded, and final receipts 6946-6948 plus census 6949
+> succeeded with 31 candidates, 9 declared targets, and 0 duplicates. Gateway
+> metrics and o11y logs/metrics were verified. Disk serial-to-chassis comparison
+> remains unverified; backup/restore and retention remain gated.
+>
+> The trace-silence alert source now uses the existing gateway request counter and
+> global Tempo received-span counter, and remains paused unless production alerts,
+> the exact declared gateway trace switch, no-canary state, and a separate reviewed
+> exclusive-sender declaration all pass. That exclusive-sender review has not been
+> established by the receipts above. The inspected live 30-minute window had about
+> six gateway requests and a zero Tempo span rate, below the alert's 100-request
+> threshold. The source has not yet been deployed and the
+> live Grafana rule-expression readback is pending; OpenSpec task 8.2 remains open.
+
 > **Journal collector project-isolation follow-up (2026-10-18):** The normal
 > Dev-bound o11y deployment task 6836 completed healthy and removed the journal
 > collector as an orphan because both Compose files shared project `o11y`.

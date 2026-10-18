@@ -353,9 +353,17 @@ is a separate dashboard, with operations as a second dashboard.
       `rate(tempo_distributor_spans_received_total{job="tempo"}[30m]) == 0` while
       `increase(agentgateway_requests_total{job="agentgateway"}[30m]) >= 100`, and only
       while the gateway's `agw_otlp_traces` is true. The counter is already scraped
-      (`config/prometheus.yml:31-33`), so no new scrape is needed. unverified: whether
-      another service sends spans to this Tempo. If one does, the o11y session picks a
-      gateway-specific series
+      (`config/prometheus.yml:31-33`), so no new scrape is needed. Source implementation
+      adds `agentgateway_trace_silent` using an aggregate request increase and aggregate
+      Tempo span rate joined with `and on()`, so missing request or span series do not
+      become a zero-valued firing signal. It stays paused unless global alerts are enabled,
+      the receiver environment is exactly `prod`, no canary is active, exactly one
+      `agentgateway_svc` host declares `agw_otlp_traces: true`, and the separate
+      `o11y_tempo_gateway_exclusive_sender_reviewed` inventory flag is true. That flag
+      requires a review that agentgateway is the exclusive sender to this global Tempo
+      counter; it defaults false. Focused render coverage checks the 100-request/zero-span
+      conjunction and each activation guard. Source only as of 2026-10-18; live deployment
+      and exact Grafana rule-expression readback remain required, so this task stays open.
 - [ ] 8.3 Client-started traces: in local-dev, send 20 requests, each carrying a distinct
       `traceparent` with the sampled flag set, and search Tempo for each of those trace
       ids. Fewer than 20 are found, where `clientSampling: true` would find all 20. This
