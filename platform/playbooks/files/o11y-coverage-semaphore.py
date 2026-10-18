@@ -49,7 +49,7 @@ SAFE_REFUSAL_CODES = frozenset({
     "binding_limit", "conflicting_stats", "deadline", "http_status", "invalid_binding",
     "invalid_controller_input", "invalid_credentials", "invalid_declaration", "invalid_endpoint",
     "invalid_template_repository", "invalid_utc_time", "launch_inputs", "malformed_json",
-    "observation_binding", "observation_expired", "observation_shape", "observation_time_order",
+    "observation_binding", "observation_shape", "observation_time_order",
     "output_rows", "output_shape", "output_time_order", "readback_shape", "repository_mismatch",
     "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
     "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
@@ -154,7 +154,8 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
     if (not _positive_id(task.get("template_id")) or task.get("template_id") != template_id
             or task.get("status") != "success"):
         raise Refusal("task_not_accepted")
-    if task.get("commit_hash") != repository_sha:
+    task_repository_sha = task.get("commit_hash")
+    if not isinstance(task_repository_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", task_repository_sha):
         raise Refusal("repository_revision_mismatch")
     if (task.get("playbook") != "" or task.get("arguments") not in (None, "")
             or task.get("git_branch") not in (None, "") or task.get("limit", "") != ""
@@ -178,7 +179,7 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
         raise Refusal("launch_inputs") from None
     expected_launch = {
         "o11y_verification_mode": "strict",
-        "expected_repository_sha": repository_sha,
+        "expected_repository_sha": task_repository_sha,
         "expected_inventory_revision": inventory_revision,
         "expected_target_id": target.get("target_id"),
         "expected_signal": signal,
@@ -216,7 +217,7 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
             or set(observation) != OBSERVATION_FIELDS):
         raise Refusal("observation_shape")
     if (observation.get("target_id") != target.get("target_id") or observation.get("signal") != signal
-            or observation.get("repository_sha") != repository_sha
+            or observation.get("repository_sha") != task_repository_sha
             or observation.get("inventory_revision") != inventory_revision
             or observation.get("observation_window_seconds") != window
             or observation.get("freshness_seconds") != freshness):
@@ -226,15 +227,13 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
     if not started <= query_end <= observed <= ended <= now:
         raise Refusal("observation_time_order")
     expires = query_end + timedelta(seconds=freshness - window)
-    if now >= expires:
-        raise Refusal("observation_expired")
     return {
-        "status": "verified",
+        "status": "incomplete" if task_repository_sha != repository_sha or now >= expires else "verified",
         "target_id": target["target_id"],
         "signal": signal,
         "task_id": task_id,
         "template_id": template_id,
-        "repository_sha": repository_sha,
+        "repository_sha": task_repository_sha,
         "inventory_revision": inventory_revision,
         "observed_at": observation["observed_at"],
         "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -508,7 +507,8 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
             task=result["task"], output_rows=result["output"], template=result["template"],
             repository=result["repository"], now=clock(),
         )
-        verified_receipts.setdefault(target["target_id"], {})[signal] = accepted
+        if accepted["status"] == "verified":
+            verified_receipts.setdefault(target["target_id"], {})[signal] = accepted
 
     with redirect_stdout(io.StringIO()):
         report_now = clock()
