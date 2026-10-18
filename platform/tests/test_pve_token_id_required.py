@@ -34,6 +34,7 @@ TOKEN_ID_VAR = {
     "snapshot-vm.yml": "_pve_tid",
     "survey-o11y-backup-artifact.yml": "_pve_token_id",
     "survey-o11y-backup-readiness.yml": "_pve_token_id",
+    "survey-pbs-vm-census.yml": "_pve_token_id",
     "survey-o11y-pbs-physical-storage.yml": "_pve_token_id",
     "validate-address-free.yml": "_pve.token_id",
 }

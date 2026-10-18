@@ -1,0 +1,186 @@
+# Read-only Proxmox census for choosing the later private PBS VM declaration.
+
+# Internal names feed credential handling, endpoint paths and the fixed receipt.
+- name: Refuse internal extra vars
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Census Proxmox nodes, VM identities, templates and storage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+    _inspector: "{{ playbook_dir }}/files/inspect_pbs_vm_census.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+  tasks:
+    - name: Require a production run and exact reviewed revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+        fail_msg: "This read-only census requires a production run at an exact reviewed revision."
+
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _project_root }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision."
+
+    - name: Read controller changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _project_root }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "The reviewed controller checkout contains uncommitted files."
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive protected Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token | default('') }}"
+      no_log: true
+
+    - name: Require HTTPS and the stored Proxmox token identity
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+          - _pve_token_id | length > 0
+          - _pve_secret | length > 0
+        fail_msg: "OpenBao must provide the HTTPS Proxmox endpoint and a complete API credential."
+
+    - name: Read Proxmox node inventory
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nodes
+      no_log: true
+      check_mode: false
+
+    - name: Read cluster VM and template inventory
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_vms
+      no_log: true
+      check_mode: false
+
+    - name: Read the next available VM identity
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/nextid"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nextid
+      no_log: true
+      check_mode: false
+
+    - name: Read cluster storage configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_storages
+      no_log: true
+      check_mode: false
+
+    - name: Validate inventory and prepare protected template configuration reads
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", template-requests]
+        stdin: "{{ {'nodes': {'status': _pve_nodes.status | default(0), 'json': {'data': _pve_nodes.json.data | default(none)}}, 'vms': {'status': _pve_vms.status | default(0), 'json': {'data': _pve_vms.json.data | default(none)}}} | to_json }}"
+      register: _template_requests
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require an unambiguous node and VM census
+      ansible.builtin.assert:
+        that: _template_requests.rc == 0
+        fail_msg: "The Proxmox node or VM inventory was incomplete, malformed, or ambiguous."
+
+    - name: Read each template's configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item.node | urlencode }}/qemu/{{ item.vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _template_requests.stdout | from_json }}"
+      loop_control:
+        label: "template configuration"
+      register: _template_configs
+      no_log: true
+      check_mode: false
+      failed_when: false
+
+    - name: Assemble protected census input
+      ansible.builtin.set_fact:
+        _census_input: >-
+          {{ {'nodes': {'status': _pve_nodes.status | default(0), 'json': {'data': _pve_nodes.json.data | default(none)}},
+              'vms': {'status': _pve_vms.status | default(0), 'json': {'data': _pve_vms.json.data | default(none)}},
+              'storages': {'status': _pve_storages.status | default(0), 'json': {'data': _pve_storages.json.data | default(none)}},
+              'nextid': _pve_nextid.json.data | default(none),
+              'template_configs': {'status': 200, 'json': {'data': _template_configs.results | default([])}}} | to_json }}
+      no_log: true
+
+    - name: Build fixed sanitized census receipt
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", inspect]
+        stdin: "{{ _census_input }}"
+      register: _census_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require complete census evidence
+      ansible.builtin.assert:
+        that: _census_result.rc == 0
+        fail_msg: "Proxmox census evidence was incomplete, malformed, or ambiguous."
+
+    - name: Publish the fixed sanitized census receipt
+      ansible.builtin.set_stats:
+        data:
+          pbs_vm_census: "{{ _census_result.stdout | from_json }}"
+        per_host: false

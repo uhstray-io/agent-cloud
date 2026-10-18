@@ -2146,6 +2146,18 @@ templates:
         type: string
         required: true
 
+  - name: Survey PBS VM Census (Dev)
+    playbook: platform/playbooks/survey-pbs-vm-census.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Proxmox VM and storage census"
+        type: string
+        required: true
+    # Emits counts and fixed status only. Debian names and guest type are hints;
+    # image provenance requires a trusted build receipt and is not inferred here.
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev
