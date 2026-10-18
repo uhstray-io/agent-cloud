@@ -2158,6 +2158,18 @@ templates:
     # Emits counts and fixed status only. Debian names and guest type are hints;
     # image provenance requires a trusted build receipt and is not inferred here.
 
+  - name: Provision PBS Debian Cloud Template (Dev)
+    playbook: platform/playbooks/provision-pbs-debian-template.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for pinned Debian cloud template publication"
+        type: string
+        required: true
+    # VM identity, node, stage storage and destination storage are private inventory
+    # declarations. The publication play refuses check mode and never starts a VM.
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev
