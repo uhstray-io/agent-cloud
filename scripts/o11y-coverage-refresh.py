@@ -2,9 +2,7 @@
 """Launch exact Dev-bound observability receipts and census them without storing task IDs."""
 
 import argparse
-import contextlib
 import importlib.util
-import io
 import json
 import re
 import subprocess
@@ -162,31 +160,29 @@ def launch_cohort(api, selected, expected_dev_sha):
         target = targets[target_id]
         declaration = target["signals"][signal]
         binding = bindings[target_id][signal]
-        with contextlib.redirect_stdout(io.StringIO()):
-            _task_id, status = _launcher.launch(api, RECEIPT_TEMPLATE, {
-                "o11y_verification_mode": "strict",
-                "expected_repository_sha": expected_dev_sha,
-                "expected_inventory_revision": revision,
-                "expected_target_id": target_id,
-                "expected_signal": signal,
-                "signal_selector": declaration["selector"],
-                "freshness_seconds": declaration["freshness_seconds"],
-                "observation_window_seconds": binding["observation_window_seconds"],
-            }, dry_run=False, block=True)
+        _task_id, status = _launcher.launch(api, RECEIPT_TEMPLATE, {
+            "o11y_verification_mode": "strict",
+            "expected_repository_sha": expected_dev_sha,
+            "expected_inventory_revision": revision,
+            "expected_target_id": target_id,
+            "expected_signal": signal,
+            "signal_selector": declaration["selector"],
+            "freshness_seconds": declaration["freshness_seconds"],
+            "observation_window_seconds": binding["observation_window_seconds"],
+        }, dry_run=False, block=True)
         if not _positive_id(_task_id):
             raise Refusal("receipt_task_id_invalid_after_launch; inspect Semaphore before retrying")
         if status != "success":
-            raise Refusal("receipt_task_failed")
+            raise Refusal(f"receipt_task_failed; inspect task {_task_id} before retrying")
         fresh_ids.setdefault(target_id, {})[signal] = _task_id
-    with contextlib.redirect_stdout(io.StringIO()):
-        _task_id, status = _launcher.launch(api, CENSUS_TEMPLATE, {
-            "expected_repository_sha": expected_dev_sha,
-            "receipt_task_ids": json.dumps(fresh_ids, sort_keys=True, separators=(",", ":")),
-        }, dry_run=False, block=True)
+    _task_id, status = _launcher.launch(api, CENSUS_TEMPLATE, {
+        "expected_repository_sha": expected_dev_sha,
+        "receipt_task_ids": json.dumps(fresh_ids, sort_keys=True, separators=(",", ":")),
+    }, dry_run=False, block=True)
     if not _positive_id(_task_id):
         raise Refusal("census_task_id_invalid_after_launch; inspect Semaphore before retrying")
     if status != "success":
-        raise Refusal("coverage_census_failed")
+        raise Refusal(f"coverage_census_failed; inspect task {_task_id} before retrying")
     return len(selected), _task_id
 
 

@@ -192,16 +192,53 @@ class CoverageRefreshTests(unittest.TestCase):
         }
         launched = []
 
+        output = io.StringIO()
+
         def launch(*args, **kwargs):
             launched.append(args[1])
+            print("Task 701 launched (real run)")
             return 701, "error"
 
         with patch.object(REFRESH, "reviewed_declarations", return_value=(
             {"id": 315}, {"id": 316}, declarations, "a" * 64,
         )), patch.object(REFRESH._launcher, "launch", side_effect=launch), \
-                self.assertRaisesRegex(REFRESH.Refusal, "receipt_task_failed"):
+                redirect_stdout(output), self.assertRaisesRegex(
+                    REFRESH.Refusal, r"receipt_task_failed; inspect task 701 before retrying",
+                ):
             REFRESH.launch_cohort(object(), [("service:alpha", "logs")], "b" * 40)
         self.assertEqual(launched, [REFRESH.RECEIPT_TEMPLATE])
+        self.assertIn("Task 701 launched", output.getvalue())
+
+    def test_failed_census_task_includes_returned_id(self):
+        declarations = {
+            "targets": [{
+                "target_id": "service:alpha",
+                "signals": {"logs": {"applicable": True, "selector": '{target_id="service:alpha"}',
+                                     "freshness_seconds": 600}},
+            }],
+            "receipt_bindings": {"service:alpha": {
+                "logs": {"template_id": 315, "observation_window_seconds": 300},
+            }},
+        }
+        calls = []
+
+        def launch(_api, name, settings, **kwargs):
+            calls.append(name)
+            task_id = 701 if name == REFRESH.RECEIPT_TEMPLATE else 702
+            print(f"Task {task_id} launched (real run)")
+            return task_id, "success" if name == REFRESH.RECEIPT_TEMPLATE else "error"
+
+        output = io.StringIO()
+        with patch.object(REFRESH, "reviewed_declarations", return_value=(
+            {"id": 315}, {"id": 316}, declarations, "a" * 64,
+        )), patch.object(REFRESH._launcher, "launch", side_effect=launch), \
+                redirect_stdout(output), self.assertRaisesRegex(
+                    REFRESH.Refusal, r"coverage_census_failed; inspect task 702 before retrying",
+                ):
+            REFRESH.launch_cohort(object(), [("service:alpha", "logs")], "b" * 40)
+        self.assertEqual(calls, [REFRESH.RECEIPT_TEMPLATE, REFRESH.CENSUS_TEMPLATE])
+        self.assertIn("Task 701 launched", output.getvalue())
+        self.assertIn("Task 702 launched", output.getvalue())
 
     def test_cli_reads_token_from_stdin_and_never_prints_it(self):
         token = "PRIVATE_OPERATOR_TOKEN"
