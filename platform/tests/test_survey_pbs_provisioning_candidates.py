@@ -271,6 +271,117 @@ def test_semaphore_openbao_injection_is_allowed_but_url_must_be_inventory_bound(
     assert guard_index < bao_guard_index < auth_index < first_uri_index
 
 
+@needs_ansible
+def test_actual_ansible_extra_vars_cannot_redirect_the_inventory_openbao_url(tmp_path: Path) -> None:
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(yaml.safe_dump({
+        "all": {
+            "hosts": {"localhost": {"ansible_connection": "local"}},
+            "children": {
+                "openbao_svc": {"hosts": {"bao": {"service_url": "https://inventory.example.invalid:8200"}}},
+                "o11y_svc": {"hosts": {"o11y": {
+                    "proxmox_pbs_storage_node": "pbs-node",
+                    "proxmox_pbs_vm_storage_id": "vm-images",
+                }}},
+            },
+        },
+    }))
+    playbook = PLAYBOOK_DIR / "survey-pbs-provisioning-candidates.yml"
+    harness = r'''
+import importlib.util, json, sys, yaml
+from ansible.inventory.manager import InventoryManager
+from ansible.parsing.dataloader import DataLoader
+from ansible.playbook.play import Play
+from ansible.template import Templar, trust_as_template
+from ansible.vars.hostvars import HostVars
+from ansible.vars.manager import VariableManager
+from ansible.utils import vars as ansible_vars
+
+payload = json.load(sys.stdin)
+loader = DataLoader()
+inventory = InventoryManager(loader=loader, sources=sys.argv[2])
+manager = VariableManager(loader=loader, inventory=inventory)
+manager._extra_vars = payload["extra_vars"]
+hostvars = HostVars(inventory, manager, loader)
+plays = yaml.safe_load(open(sys.argv[1]))
+play_doc = next(p for p in plays if p.get("name") == "Survey private PBS provisioning candidates")
+play = Play.load({
+    "name": play_doc["name"],
+    "hosts": play_doc["hosts"],
+    "connection": play_doc["connection"],
+    "gather_facts": play_doc["gather_facts"],
+    "vars": play_doc["vars"],
+}, variable_manager=manager, loader=loader)
+variables = manager.get_vars(play=play, host=inventory.get_host("localhost"))
+play_vars = play.get_vars()
+for name in ("_openbao_hosts", "_openbao_host", "_openbao_inventory_url", "_bao_url"):
+    variables[name] = Templar(loader=loader, variables=variables).template(
+        trust_as_template(play_vars[name])
+    )
+
+# Use the real source-name filter against the extra-var mapping VariableManager applies.
+ansible_vars.load_extra_vars = lambda loader: manager.extra_vars
+spec = importlib.util.spec_from_file_location("extra_var_names", payload["filter_path"])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+extra_names = module.FilterModule().filters()["extra_var_names"]("")
+templar = Templar(loader=loader, variables=variables)
+override_names = templar.template(play_vars["_survey_override_names"])
+variables["_survey_forged_names"] = sorted(set(extra_names) & set(override_names))
+templar = Templar(loader=loader, variables=variables)
+guard = next(t for t in play_doc["tasks"]
+             if t.get("name") == "Require the exact Dev run and one private declaration")
+conditions = guard["ansible.builtin.assert"]["that"]
+probes = [
+    expression for expression in conditions
+    if any(token in expression for token in (
+        "_survey_forged_names | length == 0",
+        "_openbao_hosts | length == 1",
+        "_openbao_inventory_url | string | length > 0",
+        "openbao_addr | default('') == _openbao_inventory_url",
+    ))
+]
+assert len(probes) == 4, probes
+checks = [templar.evaluate_conditional(trust_as_template(expr)) for expr in probes]
+print(json.dumps({
+    "groups": variables["groups"]["openbao_svc"],
+    "hostvars_type": type(variables["hostvars"]).__name__,
+    "url": variables["_bao_url"],
+    "environment_url": variables["openbao_addr"],
+    "extra_names": extra_names,
+    "forged_names": variables["_survey_forged_names"],
+    "checks": checks,
+}))
+'''
+    extra_vars = {
+        "service_url": "https://attacker.example.invalid:8200",
+        "openbao_addr": "https://attacker.example.invalid:8200",
+        "groups": {"openbao_svc": ["attacker"]},
+        "hostvars": {"bao": {"service_url": "https://attacker.example.invalid:8200"}},
+    }
+    result = subprocess.run(
+        [ansible_python(), "-c", harness, str(playbook), str(inventory)],
+        input=json.dumps({
+            "extra_vars": extra_vars,
+            "filter_path": str(PLAYBOOK_DIR / "filter_plugins" / "extra_var_names.py"),
+        }),
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=ROOT,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    resolved = json.loads(result.stdout)
+    assert resolved["groups"] == ["bao"]
+    assert resolved["hostvars_type"] == "HostVars"
+    assert resolved["url"] == "https://attacker.example.invalid:8200"
+    assert resolved["environment_url"] == resolved["url"]
+    assert set(resolved["extra_names"]) == {"service_url", "openbao_addr", "groups", "hostvars"}
+    assert resolved["forged_names"] == ["service_url"]
+    assert resolved["checks"] == [False, True, True, True]
+
+
 def test_cli_never_echoes_private_candidate_data_on_refusal(monkeypatch, capsys) -> None:
     data = sample()
     data["nextid_checks"] = []

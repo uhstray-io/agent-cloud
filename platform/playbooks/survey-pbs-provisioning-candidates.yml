@@ -41,6 +41,9 @@
       - proxmox_pbs_storage_node
       - proxmox_pbs_vm_storage_id
       - proxmox_validate_certs
+      # HostVars member fields remain extra-var-overridable even though `groups` and
+      # `hostvars` themselves are Ansible magic variables.
+      - service_url
     _survey_forged_names: "{{ _survey_override_names | intersect('' | extra_var_names) }}"
   tasks:
     - name: Require the exact Dev run and one private declaration
