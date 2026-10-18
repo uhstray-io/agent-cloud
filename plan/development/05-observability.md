@@ -1970,3 +1970,30 @@ headroom. Allocation, device safety, filesystem and PBS readiness, and write
 authorization remain **false**. The identity pin detects API-observed drift;
 it does not independently establish the disk's physical chassis origin. No
 VM, disk, filesystem, or PBS instance was created and no retention changed.
+
+### 2026-10-18 PBS VM census and static IP reservation
+
+PR #710 merged to Dev at `ae35a0ec626725a2c56ae4352c3606a850c219de`
+after one independent review, removal of private placement from every
+introduced commit, and green final-head CI. Semaphore publisher check task
+7020 and apply task 7022 succeeded; readback confirmed the new
+`Survey PBS VM Census (Dev)` template binds to the reviewed Dev repository,
+declared playbook, inventory, environment, and exact-SHA survey. GET-only
+task 7023 succeeded at that merge revision. Its fixed sanitized receipt
+reported 11 visible nodes (7 online), 31 visible QEMU VMs, 2 visible
+templates, 1 visible cloud-init template, 6 visible stores (4 image-capable,
+3 backup-capable), and **zero templates with proven Debian image provenance**.
+Inventory visibility remains explicitly unverified because Proxmox can filter
+list results by the token's permissions; the next-ID observation is only
+absence from those visible rows. The exact candidate VMID must be checked
+again before any write.
+
+The existing NetBox allocation workflow first refused task 7007 when its
+optional assignment list was omitted; PR #710 made an omitted list default to
+empty. Report task 7008 then found 10 free static-IP candidates. A live
+pfSense DHCP check in check-mode task 7010 accepted candidate index 0 without
+reserving it. Normal Dev-bound task 7025 reserved that candidate in NetBox;
+its post-write authority readback showed exactly one record with the intended
+PBS description. The address value stays in private automation output and
+has not yet been declared in private site-config. No PBS template, VM, or
+data disk was created, and retention is unchanged.
