@@ -47,6 +47,10 @@
     _pbs_mode: "{{ target_service | default('') == 'pbs' }}"
     _pbs_decl_hosts: "{{ groups['pbs_svc'] | default([]) }}"
     _pbs_decl_host: "{{ _pbs_decl_hosts[0] if (_pbs_decl_hosts | length == 1) else '' }}"
+    _pbs_o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _pbs_o11y_host: "{{ _pbs_o11y_hosts[0] if (_pbs_o11y_hosts | length == 1) else '' }}"
+    _pbs_data_node: "{{ hostvars[_pbs_o11y_host].proxmox_pbs_storage_node | default('') if _pbs_o11y_host else '' }}"
+    _pbs_data_storage: "{{ hostvars[_pbs_o11y_host].proxmox_pbs_vm_storage_id | default('') if _pbs_o11y_host else '' }}"
     _tmpl_vmid: "{{ hostvars[_pbs_decl_host].pbs_debian_template_vmid | default('') if _pbs_mode else template_vmid | default(9000) }}"
     _tmpl_node: "{{ hostvars[_pbs_decl_host].pbs_debian_template_node | default('') if _pbs_mode else template_node | default('alphacentauri') }}"
     _pbs_template_name: "{{ hostvars[_pbs_decl_host].pbs_debian_template_name | default('') }}"
@@ -162,6 +166,11 @@
             quiet: true
           vars:
             _pbs_forbidden_extra_vars:
+              - openbao_addr
+              - bao_role_id
+              - bao_secret_id
+              - netbox_url
+              - proxmox_validate_certs
               - target_service
               - target_host
               - target_vmid
@@ -189,6 +198,8 @@
               - pbs_debian_template_name
               - pbs_debian_template_node
               - pbs_debian_template_import_storage
+              - proxmox_pbs_storage_node
+              - proxmox_pbs_vm_storage_id
             _pbs_allocation_overrides: "{{ _pbs_forbidden_extra_vars | intersect('' | extra_var_names) | sort }}"
           when: _pbs_mode | bool
 
@@ -234,6 +245,9 @@
               - _tmpl_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
               - _pbs_template_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
               - _node == _tmpl_node
+              - _pbs_o11y_hosts | length == 1
+              - _node == _pbs_data_node
+              - _pbs_data_storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
               - _name | length > 0
               - _disk is match('^[1-9][0-9]*G$')
               - _storage == _decl.vm_disk_storage
@@ -269,13 +283,22 @@
           check_mode: false
           when: _pbs_mode | bool
 
-        - name: "Require one reserved or active NetBox address record"
+        - name: "Require one reserved PBS record or its exact assigned VM record"
           ansible.builtin.assert:
             that:
               - _pbs_netbox_ip.status | default(-1) == 200
               - _pbs_netbox_ip.json.results | default([]) | length == 1
               - (_pbs_netbox_ip.json.results | default([]) | first | default({})).address | default('') == (_ip ~ '/' ~ (_netmask | string))
               - (((_pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) in ['reserved', 'active']
+              - (_pbs_netbox_ip.json.results | default([]) | first | default({})).description | default('') == 'Reserved for o11y PBS VM'
+              - >-
+                (((( _pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) == 'reserved'
+                 and (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_type | default(none) == none
+                 and (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_id | default(none) == none)
+                or
+                (((( _pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) == 'active'
+                 and (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_type | default('') == 'virtualization.vminterface'
+                 and (((_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object | default({})).virtual_machine | default({})).name | default('') == _name)
             fail_msg: "NetBox does not prove exactly one reserved or active record for the declared PBS address."
             quiet: true
           when: _pbs_mode | bool
@@ -381,6 +404,15 @@
             _pbs_existing_disk_size: >-
               {{ (_pbs_target_config.json.data.scsi0 | default('')).split('size=')[-1].split(',')[0]
                  if 'size=' in (_pbs_target_config.json.data.scsi0 | default('')) else '' }}
+            _pbs_extra_disk_keys: >-
+              {{ _pbs_target_config.json.data | default({}) | dict2items
+                 | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+                 | rejectattr('key', 'equalto', 'scsi0')
+                 | rejectattr('key', 'equalto', 'scsi1') | map(attribute='key') | list }}
+            _pbs_scsi1: "{{ _pbs_target_config.json.data.scsi1 | default('') }}"
+            _pbs_data_disk_valid: >-
+              {{ _pbs_scsi1 | length == 0 or
+                 (_pbs_scsi1 is search('^' ~ _pbs_data_storage ~ ':vm-' ~ (_vmid | string) ~ '-disk-[0-9]+,size=512G(,|$)')) }}
           when: _pbs_mode | bool
 
         - name: "Classify a completed PBS VM or a safe interrupted clone"
@@ -395,7 +427,9 @@
                  and (_pbs_target_config.json.data.scsi0 | default('')) is search('^' ~ _storage ~ ':')
                  and (_pbs_target_config.json.data.scsi0 | default('')) is search('(^|,)size=' ~ (_disk | string) ~ '(,|$)')
                  and (_pbs_target_config.json.data.net0 | default('')) is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
-                 and (_pbs_target_config.json.data.ipconfig0 | default('')) == ('ip=' ~ _ip ~ '/' ~ (_netmask | string) ~ ',gw=' ~ _gw) }}
+                 and (_pbs_target_config.json.data.ipconfig0 | default('')) == ('ip=' ~ _ip ~ '/' ~ (_netmask | string) ~ ',gw=' ~ _gw)
+                 and (_pbs_data_disk_valid | bool)
+                 and (_pbs_extra_disk_keys | length) == 0 }}
             _pbs_partial_clone: >-
               {{ _pbs_target_config.status == 200
                  and (_pbs_target_config.json.data.name | default('')) == _name
@@ -408,7 +442,24 @@
                  and (_pbs_existing_disk_size == _pbs_template_disk_size)
                  and (_pbs_target_config.json.data.net0 | default('')) is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
                  and (_pbs_target_config.json.data.ipconfig0 | default('ip=dhcp')) in ['', 'ip=dhcp']
+                 and (_pbs_scsi1 | length) == 0
+                 and (_pbs_extra_disk_keys | length) == 0
                  and (_pbs_target_status.json.data.status | default('')) == 'stopped' }}
+            _pbs_resumable_managed: >-
+              {{ _pbs_target_config.status == 200
+                 and (_pbs_target_config.json.data.name | default('')) == _name
+                 and (_pbs_target_config.json.data.description | default('')) == _pbs_vm_description
+                 and (_pbs_target_config.json.data.template | default(0) | int) == 0
+                 and (_pbs_target_config.json.data.ostype | default('')) == 'l26'
+                 and (_pbs_target_config.json.data.ide2 | default('')) is search('cloudinit')
+                 and (_pbs_target_config.json.data.scsi0 | default('')) is search('^' ~ _storage ~ ':')
+                 and (_pbs_existing_disk_size | regex_replace('G$', '') | int) >= (_pbs_template_disk_size | regex_replace('G$', '') | int)
+                 and (_pbs_existing_disk_size | regex_replace('G$', '') | int) <= (_disk | regex_replace('G$', '') | int)
+                 and (_pbs_target_config.json.data.net0 | default('')) is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
+                 and (_pbs_target_config.json.data.ipconfig0 | default('')) == ('ip=' ~ _ip ~ '/' ~ (_netmask | string) ~ ',gw=' ~ _gw)
+                 and (_pbs_scsi1 | length) == 0
+                 and (_pbs_target_status.json.data.status | default('')) in ['stopped', 'running']
+                 and (_pbs_extra_disk_keys | length) == 0 }}
           when: _pbs_mode | bool
 
         - name: "Refuse any PBS target VMID, node, disk, or address mismatch before writes"
@@ -418,7 +469,7 @@
                 (_pbs_target_config.status == 200 and _pbs_target_nextid.status == 400) or
                 (_pbs_target_config.status in [404, 500] and _pbs_target_nextid.status == 200 and
                  _pbs_target_nextid.json.data | int == _vmid | int)
-              - _pbs_target_config.status != 200 or (_pbs_target_managed | bool) or (_pbs_partial_clone | bool)
+              - _pbs_target_config.status != 200 or (_pbs_target_managed | bool) or (_pbs_partial_clone | bool) or (_pbs_resumable_managed | bool)
             fail_msg: "The PBS VMID is occupied or its existing Debian disk, cloud-init network, node, identity, or address differs from the private declaration."
             quiet: true
           when: _pbs_mode | bool
@@ -764,7 +815,9 @@
             status_code: [200]
           register: _resize_result
           ignore_errors: true
-          when: not ansible_check_mode
+          when:
+            - not ansible_check_mode
+            - not (_pbs_mode | bool) or not (_pbs_target_managed | default(false) | bool)
 
         - name: "Warn if disk resize failed"
           ansible.builtin.debug:

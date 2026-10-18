@@ -1,0 +1,257 @@
+---
+# GET-only identity and storage survey needed to complete the private PBS declaration.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/survey-pbs-provisioning-candidates.yml
+      - platform/playbooks/files/select_pbs_provisioning_candidates.py
+      - platform/semaphore/templates.yml
+
+- name: Survey private PBS provisioning candidates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_pbs_physical_storage.py"
+    _selector: "{{ playbook_dir }}/files/select_pbs_provisioning_candidates.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ _o11y_hosts | first | default('') }}"
+    _target_node: "{{ hostvars[_o11y_host].proxmox_pbs_storage_node | default('') if _o11y_host else '' }}"
+    _declared_vm_storage: "{{ hostvars[_o11y_host].proxmox_pbs_vm_storage_id | default('') if _o11y_host else '' }}"
+    _survey_override_names:
+      - local_mode
+      - target_service
+      - target_host
+      - target_node
+      - proxmox_pbs_storage_node
+      - proxmox_pbs_vm_storage_id
+      - proxmox_validate_certs
+      - openbao_addr
+      - bao_role_id
+      - bao_secret_id
+    _survey_forged_names: "{{ _survey_override_names | intersect('' | extra_var_names) }}"
+  tasks:
+    - name: Require the exact Dev run and one private declaration
+      ansible.builtin.assert:
+        that:
+          - _survey_forged_names | length == 0
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - _o11y_hosts | length == 1
+          - _target_node | string is match('^[A-Za-z0-9._-]{1,64}$')
+          - _target_node not in ['.', '..']
+          - _declared_vm_storage | string is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+        fail_msg: "This read-only survey requires one private PBS node and VM-image storage declaration plus an exact reviewed Dev revision."
+        quiet: true
+
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _project_root }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require exact reviewed revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision."
+        quiet: true
+
+    - name: Read controller changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _project_root }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "The reviewed controller checkout contains uncommitted files."
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require secure Proxmox API configuration
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+          - _pve_token_id | length > 0
+        fail_msg: "OpenBao must provide an HTTPS Proxmox URL and token ID."
+        quiet: true
+
+    - name: Read Proxmox nodes
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nodes
+      no_log: true
+      check_mode: false
+
+    - name: Validate the private node is online and unique
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", validate-node]
+        stdin: "{{ {'target_node': _target_node, 'nodes': _pve_nodes.json.data} | to_json }}"
+      register: _node_validation
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Refuse an absent, offline, or ambiguous private target node
+      ansible.builtin.assert:
+        that: _node_validation.rc == 0
+        fail_msg: "The private Proxmox node was not uniquely present and online."
+        quiet: true
+
+    - name: Keep validated private node identity
+      ansible.builtin.set_fact:
+        _validated_node: "{{ (_node_validation.stdout | from_json).node }}"
+      no_log: true
+
+    - name: Read the next VMID seed
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/nextid"
+        method: GET
+        status_code: [200]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _nextid_seed
+      no_log: true
+      check_mode: false
+
+    - name: Require a bounded VMID search window
+      ansible.builtin.assert:
+        that:
+          - _nextid_seed.json.data | string is match('^[1-9][0-9]{2,5}$')
+          - _nextid_seed.json.data | int + 64 <= 999999
+        fail_msg: "Proxmox did not return a usable VMID search seed."
+        quiet: true
+      no_log: true
+
+    - name: Read exact VMID availability for the bounded candidate window
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/nextid?vmid={{ item }}"
+        method: GET
+        status_code: [200, 400]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ range(_nextid_seed.json.data | int, (_nextid_seed.json.data | int) + 64) | list }}"
+      loop_control:
+        label: "private exact VMID check"
+      register: _exact_nextid_checks
+      no_log: true
+      check_mode: false
+
+    - name: Read storage status on the private node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_node | urlencode }}/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _node_storage
+      no_log: true
+      check_mode: false
+
+    - name: Read visible cluster storage configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _cluster_storage
+      no_log: true
+      check_mode: false
+
+    - name: Initialize protected exact VMID receipts
+      ansible.builtin.set_fact:
+        _selector_nextid_checks: []
+      no_log: true
+
+    - name: Keep only exact VMID request evidence
+      ansible.builtin.set_fact:
+        _selector_nextid_checks: >-
+          {{ _selector_nextid_checks +
+             [{'candidate': item.item,
+               'status': item.status | default(-1),
+               'data': item.json.data | default(none)}] }}
+      loop: "{{ _exact_nextid_checks.results }}"
+      loop_control:
+        label: "private exact VMID receipt"
+      no_log: true
+
+    - name: Assemble protected selector input
+      ansible.builtin.set_fact:
+        _selector_payload: >-
+          {{ {'target_node': _validated_node,
+              'declared_vm_image_storage': _declared_vm_storage,
+              'seed_status': _nextid_seed.status,
+              'seed_data': _nextid_seed.json.data,
+              'nextid_checks': _selector_nextid_checks,
+              'node_storage_status': _node_storage.status,
+              'node_storage': _node_storage.json.data,
+              'cluster_storage_status': _cluster_storage.status,
+              'cluster_storage': _cluster_storage.json.data} | to_json }}
+      no_log: true
+
+    - name: Strictly validate private candidate facts
+      ansible.builtin.command:
+        argv: [python3, "{{ _selector }}"]
+        stdin: "{{ _selector_payload }}"
+      register: _candidate_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require strict candidate validation to pass
+      ansible.builtin.assert:
+        that: _candidate_result.rc == 0
+        fail_msg: "Proxmox candidate responses were incomplete, inconsistent, or failed strict validation."
+        quiet: true
+
+    - name: Keep sanitized candidate receipt
+      ansible.builtin.set_fact:
+        _candidate_receipt: "{{ _candidate_result.stdout | from_json }}"
+      no_log: true
+
+    - name: Report exact private candidates and storage capabilities
+      ansible.builtin.debug:
+        msg: "{{ _candidate_receipt }}"

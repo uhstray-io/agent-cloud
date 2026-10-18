@@ -39,6 +39,17 @@ def test_dev_template_is_bound_to_exact_reviewed_revision():
         "platform/playbooks/provision-pbs-debian-template.yml",
         "platform/semaphore/templates.yml",
     ]
+    play = next(
+        item for item in plays
+        if item.get("name") == "Publish the pinned Debian cloud-init template"
+    )
+    override_guard = next(
+        task for task in play["tasks"]
+        if task.get("name") == "Refuse runtime overrides of private PBS template allocation"
+    )
+    assert {"openbao_addr", "bao_role_id", "bao_secret_id", "proxmox_validate_certs"} <= set(
+        override_guard["vars"]["_pbs_template_allocation_names"]
+    )
 
 
 def test_publisher_refuses_check_mode_and_requires_private_inventory_declaration():

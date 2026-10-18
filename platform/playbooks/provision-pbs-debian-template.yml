@@ -60,6 +60,11 @@
         quiet: true
       vars:
         _pbs_template_allocation_names:
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - proxmox_validate_certs
+          - local_mode
           - pbs_debian_template_vmid
           - pbs_debian_template_name
           - pbs_debian_template_node

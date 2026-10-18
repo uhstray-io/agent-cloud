@@ -52,7 +52,7 @@ def test_pbs_netbox_and_exact_pve_guards_precede_every_mutation() -> None:
         "Refuse launch-time PBS allocation overrides",
         "Require the PBS template and VM declaration to agree",
         "Read the PBS address from the NetBox authority",
-        "Require one reserved or active NetBox address record",
+        "Require one reserved PBS record or its exact assigned VM record",
         "Require the exact declared Debian template configuration",
         "Read the exact PBS target VM config and exact VMID availability",
         "Check exact PBS target VMID availability",
@@ -78,9 +78,45 @@ def test_pbs_netbox_and_exact_pve_guards_precede_every_mutation() -> None:
     )
 
     source = (PLAYBOOK_DIR / "provision-vm.yml").read_text()
+    assert "description | default('') == 'Reserved for o11y PBS VM'" in source
+    assert "assigned_object_type | default('') == 'virtualization.vminterface'" in source
+    assert "virtual_machine | default({})).name | default('') == _name" in source
     assert "_pbs_target_config.status in [404, 500]" in source
     assert "_pbs_target_nextid.status == 200" in source
     assert "_pbs_target_nextid.json.data | int == _vmid | int" in source
+    assert "_pbs_resumable_managed" in source
+    assert "_pbs_extra_disk_keys | length) == 0" in source
+    assert "_pbs_data_disk_valid" in source
+    assert "proxmox_pbs_vm_storage_id" in source
+    assert "vm-' ~ (_vmid | string) ~ '-disk-[0-9]+,size=512G" in source
+
+
+def test_template_and_shared_lifecycle_use_identical_pinned_provenance() -> None:
+    template = yaml.safe_load(
+        (PLAYBOOK_DIR / "provision-pbs-debian-template.yml").read_text()
+    )
+    lifecycle = yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())
+    expected = (
+        "Debian 13 generic cloud image; "
+        "SHA-512=97675b27e69153002c4e13644e36200c8f9067f661dca00918c54f1cacbdb88d4bff8c0fbf5cf5d63a0397bdf0cc472d7a6372bae5281bf7ced756249c10f8a2"
+        "; "
+        "source=https://cloud.debian.org/cdimage/cloud/trixie/20260601-2496/"
+        "debian-13-generic-amd64-20260601-2496.qcow2; detached signature unavailable"
+    )
+    source = template[2]["vars"]["_image_url"]
+    publisher = next(
+        play for play in template
+        if play.get("name") == "Publish the pinned Debian cloud-init template"
+    )
+    assert publisher["vars"]["_image_provenance"] == expected.replace(
+        "SHA-512=" + expected.split("SHA-512=")[1].split(";", 1)[0],
+        "SHA-512={{ _image_sha512 }}",
+    ).replace(
+        "source=" + source,
+        "source={{ _image_url }}",
+    )
+    provision = next(play for play in lifecycle if play.get("name") == "Provision VM from template")
+    assert provision["vars"]["_pbs_template_description"] == expected
 
 
 def test_pbs_adopts_only_complete_vm_or_stopped_template_clone() -> None:
@@ -103,3 +139,26 @@ def test_pbs_adopts_only_complete_vm_or_stopped_template_clone() -> None:
     probe = source.split('name: "Probe the declared address from the controller (ICMP)"', 1)[1]
     assert "- not (_pbs_mode | bool)" in probe.split("- name:", 1)[0]
     assert "private host and address details are omitted from this run output" in source
+
+
+def test_configured_under_sized_vm_can_resume_only_with_exact_network_and_no_extra_disks() -> None:
+    play = next(
+        item for item in yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())
+        if item.get("name") == "Provision VM from template"
+    )
+    tasks = _tasks(play)
+    classify = next(
+        task for task in tasks
+        if task.get("name") == "Classify a completed PBS VM or a safe interrupted clone"
+    )
+    managed = classify["ansible.builtin.set_fact"]["_pbs_target_managed"]
+    resumable = classify["ansible.builtin.set_fact"]["_pbs_resumable_managed"]
+    assert "_pbs_data_disk_valid" in managed and "_pbs_extra_disk_keys" in managed
+    assert "_pbs_vm_description" in resumable
+    assert "_pbs_template_disk_size" in resumable and "_disk | regex_replace('G$', '')" in resumable
+    assert "ipconfig0" in resumable and "_pbs_extra_disk_keys" in resumable
+    assert "['stopped', 'running']" in resumable
+    assert "_pbs_scsi1 | length) == 0" in resumable
+    resize = next(task for task in tasks if task.get("name", "").startswith("Resize disk to size"))
+    assert "not (_pbs_target_managed | default(false) | bool)" in str(resize["when"])
+    assert resize["ansible.builtin.uri"]["body"]["disk"] == "scsi0"
