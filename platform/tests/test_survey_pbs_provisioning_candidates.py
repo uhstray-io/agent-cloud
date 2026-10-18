@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import forgeries
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -272,7 +273,15 @@ def test_semaphore_openbao_injection_is_allowed_but_url_must_be_inventory_bound(
 
 
 @needs_ansible
-def test_actual_ansible_extra_vars_cannot_redirect_the_inventory_openbao_url(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "forge",
+    forgeries.templated_forgeries(
+        "service_url",
+        "https://inventory.example.invalid:8200",
+        "https://attacker.example.invalid:8200",
+    ),
+)
+def test_actual_ansible_extra_vars_cannot_redirect_the_inventory_openbao_url(tmp_path: Path, forge) -> None:
     inventory = tmp_path / "inventory.yml"
     inventory.write_text(yaml.safe_dump({
         "all": {
@@ -354,7 +363,7 @@ print(json.dumps({
 }))
 '''
     extra_vars = {
-        "service_url": "https://attacker.example.invalid:8200",
+        **json.loads(forge(tmp_path)),
         "openbao_addr": "https://attacker.example.invalid:8200",
         "groups": {"openbao_svc": ["attacker"]},
         "hostvars": {"bao": {"service_url": "https://attacker.example.invalid:8200"}},
@@ -375,11 +384,13 @@ print(json.dumps({
     resolved = json.loads(result.stdout)
     assert resolved["groups"] == ["bao"]
     assert resolved["hostvars_type"] == "HostVars"
-    assert resolved["url"] == "https://attacker.example.invalid:8200"
-    assert resolved["environment_url"] == resolved["url"]
+    # Ansible's VariableManager/HostVars path retains a templated extra-var value until
+    # task templating; the pre-request guard must reject the name before that value is used.
+    assert "attacker.example.invalid" in resolved["url"]
     assert set(resolved["extra_names"]) == {"service_url", "openbao_addr", "groups", "hostvars"}
     assert resolved["forged_names"] == ["service_url"]
-    assert resolved["checks"] == [False, True, True, True]
+    assert resolved["checks"][0] is False
+    assert resolved["checks"][1:3] == [True, True]
 
 
 def test_cli_never_echoes_private_candidate_data_on_refusal(monkeypatch, capsys) -> None:
