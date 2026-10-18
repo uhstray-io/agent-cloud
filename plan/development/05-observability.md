@@ -110,6 +110,22 @@ python3 scripts/o11y-coverage-refresh.py \
 > this evidence does not establish full-estate coverage, gateway access-record
 > coverage, or a retention gate.
 
+> **Dev agentgateway identity and dashboard receipt (2026-10-18):** At Dev SHA
+> `717dffff`, journal stage 6886, cursor survey 6887, non-destructive apply 6890,
+> strict logs receipt 6892, metrics receipt 6893, and census 6894 completed.
+> The census found 31 candidates, 9 declared targets, and 0 duplicate identities;
+> `service:o11y` logs and metrics were verified, while overall coverage remained
+> incomplete. Direct Grafana queries showed 19 tracked services, a freshest
+> inventory marker about 11 minutes old, and five current failed workflow-step
+> states. Existing agentgateway metrics and logs lacked `target_id`; the bounded
+> `service:o11y/alloy` container-log stream was present. The source now assigns
+> the gateway scrape the static bounded identity `service:agentgateway`, pending
+> deployment and a fresh exact-target receipt. Dashboard verifiers 6898 and 6899
+> supplied query evidence, but browser rendering remains unverified because the
+> browser surface was unavailable. No retention expansion is authorized by
+> these receipts. Keep tasks 6.2 and 7.4 open; overall estate coverage remains
+> incomplete.
+
 > **Journal collector project-isolation follow-up (2026-10-18):** The normal
 > Dev-bound o11y deployment task 6836 completed healthy and removed the journal
 > collector as an orphan because both Compose files shared project `o11y`.
