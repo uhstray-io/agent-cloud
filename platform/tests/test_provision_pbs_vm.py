@@ -52,7 +52,8 @@ def test_pbs_netbox_and_exact_pve_guards_precede_every_mutation() -> None:
         "Refuse launch-time PBS allocation overrides",
         "Require the PBS template and VM declaration to agree",
         "Read the PBS address from the NetBox authority",
-        "Require one reserved PBS record or its exact assigned VM record",
+        "Require one unassigned reserved PBS address record",
+        "Identify unexpected disks on the declared PBS template",
         "Require the exact declared Debian template configuration",
         "Read the exact PBS target VM config and exact VMID availability",
         "Check exact PBS target VMID availability",
@@ -79,8 +80,10 @@ def test_pbs_netbox_and_exact_pve_guards_precede_every_mutation() -> None:
 
     source = (PLAYBOOK_DIR / "provision-vm.yml").read_text()
     assert "description | default('') == 'Reserved for o11y PBS VM'" in source
-    assert "assigned_object_type | default('') == 'virtualization.vminterface'" in source
-    assert "virtual_machine | default({})).name | default('') == _name" in source
+    assert ")).value | default('')) == 'reserved'" in source
+    assert "assigned_object_type | default(none) == none" in source
+    assert "assigned_object_id | default(none) == none" in source
+    assert "active assignments require an authoritative VMID mapping" in source
     assert "_pbs_target_config.status in [404, 500]" in source
     assert "_pbs_target_nextid.status == 200" in source
     assert "_pbs_target_nextid.json.data | int == _vmid | int" in source
@@ -89,6 +92,94 @@ def test_pbs_netbox_and_exact_pve_guards_precede_every_mutation() -> None:
     assert "_pbs_data_disk_valid" in source
     assert "proxmox_pbs_vm_storage_id" in source
     assert "vm-' ~ (_vmid | string) ~ '-disk-[0-9]+,size=512G" in source
+
+
+def test_pbs_data_disk_validation_uses_a_prior_set_fact_result() -> None:
+    play = next(
+        item for item in yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())
+        if item.get("name") == "Provision VM from template"
+    )
+    tasks = _tasks(play)
+    extract = next(
+        task for task in tasks
+        if task.get("name") == "Extract the pinned template and current VM OS disk sizes"
+    )
+    validate = next(
+        task for task in tasks
+        if task.get("name") == "Validate the pinned PBS data disk after extracting its current config"
+    )
+    extract_facts = extract["ansible.builtin.set_fact"]
+    validation_facts = validate["ansible.builtin.set_fact"]
+    assert "_pbs_scsi1" in extract_facts
+    assert "_pbs_data_disk_valid" not in extract_facts
+    assert "_pbs_scsi1" in validation_facts["_pbs_data_disk_valid"]
+    assert tasks.index(extract) < tasks.index(validate)
+
+
+def test_pbs_active_netbox_assignment_fails_closed_without_vmid_mapping() -> None:
+    play = next(
+        item for item in yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())
+        if item.get("name") == "Provision VM from template"
+    )
+    task = next(
+        task for task in _tasks(play)
+        if task.get("name") == "Require one unassigned reserved PBS address record"
+    )
+    conditions = task["ansible.builtin.assert"]["that"]
+    assert any("== 'reserved'" in condition for condition in conditions)
+    assert any("assigned_object_type" in condition and "== none" in condition for condition in conditions)
+    assert any("assigned_object_id" in condition and "== none" in condition for condition in conditions)
+    assert not any("== 'active'" in condition for condition in conditions)
+
+
+def test_missing_target_config_is_safe_for_extra_disk_extraction() -> None:
+    source = (PLAYBOOK_DIR / "provision-vm.yml").read_text()
+    extract = next(
+        task for task in _tasks(next(
+            item for item in yaml.safe_load(source)
+            if item.get("name") == "Provision VM from template"
+        ))
+        if task.get("name") == "Extract the pinned template and current VM OS disk sizes"
+    )
+    expression = extract["ansible.builtin.set_fact"]["_pbs_extra_disk_keys"]
+    assert "_pbs_target_config.json.data | default({}, true) | dict2items" in expression
+
+
+def test_pbs_skips_shared_semaphore_runner_credential_tasks() -> None:
+    play = next(
+        item for item in yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())
+        if item.get("name") == "Post-boot: log in to the new VM over the orchestrator's connection"
+    )
+    tasks = _tasks(play)
+    protected = {
+        "Resolve the sudo password before writing the runner environment",
+        "Write the Semaphore runner environment",
+        "Enable and start the Semaphore runner",
+    }
+    by_name = {task["name"]: task for task in tasks if task.get("name") in protected}
+    assert set(by_name) == protected
+    for task in by_name.values():
+        conditions = task.get("when", [])
+        assert "_pv_service | default('') != 'pbs'" in conditions
+    assert by_name["Write the Semaphore runner environment"]["no_log"] is True
+    assert "_pv_service | default('')) == 'pbs'" in play["vars"]["_runner_token"]
+
+
+def test_pbs_clone_refuses_a_template_with_any_unexpected_attached_disk() -> None:
+    play = next(
+        item for item in yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())
+        if item.get("name") == "Provision VM from template"
+    )
+    tasks = _tasks(play)
+    names = [task.get("name", "") for task in tasks]
+    extract = names.index("Identify unexpected disks on the declared PBS template")
+    gate = names.index("Require the exact declared Debian template configuration")
+    first_write = next(
+        index for index, task in enumerate(tasks)
+        if task.get("ansible.builtin.uri", {}).get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+    )
+    assert extract < gate < first_write
+    assert "_pbs_template_extra_disk_keys | length == 0" in str(tasks[gate]["ansible.builtin.assert"])
 
 
 def test_template_and_shared_lifecycle_use_identical_pinned_provenance() -> None:

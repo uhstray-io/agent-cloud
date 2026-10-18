@@ -126,6 +126,7 @@ def test_config_http_500_is_absence_only_when_exact_vmid_check_proves_free():
         for item in gate
     )
     assert any("_existing_config.status == 200 or _vmid_rows | length == 0" in item for item in gate)
+    assert any("_existing_extra_disk_keys | length == 0" in item for item in gate)
     create = tasks[names.index("Create the VM from the verified image when its VMID is free")]
     assert create["when"] == "_existing_config.status in [404, 500]"
 
@@ -153,3 +154,27 @@ def test_every_pve_write_follows_review_mode_inventory_and_collision_gates():
 
     assert "Read back the staged import volume" in names
     assert "Read back the final template configuration" in names
+
+
+def test_publisher_rejects_unexpected_attached_disks_on_existing_and_new_template():
+    plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
+    tasks = plays[2]["tasks"]
+    names = [task["name"] for task in tasks]
+
+    assert names.index("Identify unexpected disks on an existing PBS template candidate") < names.index(
+        "Refuse VMID collisions and mismatched partial templates"
+    )
+    collision = tasks[names.index("Refuse VMID collisions and mismatched partial templates")]
+    assert any(
+        "_existing_extra_disk_keys | length == 0" in item
+        for item in collision["ansible.builtin.assert"]["that"]
+    )
+
+    for config_var, task_name in (
+        ("_vm_config", "Require VM configuration readback before template conversion"),
+        ("_final_config", "Require a matching cloud-init template"),
+    ):
+        gate = tasks[names.index(task_name)]
+        assert config_var in str(gate["ansible.builtin.assert"])
+        assert "selectattr('key', 'match'" in str(gate["ansible.builtin.assert"])
+        assert "rejectattr('key', 'equalto', 'scsi0')" in str(gate["ansible.builtin.assert"])

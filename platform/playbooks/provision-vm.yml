@@ -283,23 +283,17 @@
           check_mode: false
           when: _pbs_mode | bool
 
-        - name: "Require one reserved PBS record or its exact assigned VM record"
+        - name: "Require one unassigned reserved PBS address record"
           ansible.builtin.assert:
             that:
               - _pbs_netbox_ip.status | default(-1) == 200
               - _pbs_netbox_ip.json.results | default([]) | length == 1
               - (_pbs_netbox_ip.json.results | default([]) | first | default({})).address | default('') == (_ip ~ '/' ~ (_netmask | string))
-              - (((_pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) in ['reserved', 'active']
+              - (((_pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) == 'reserved'
               - (_pbs_netbox_ip.json.results | default([]) | first | default({})).description | default('') == 'Reserved for o11y PBS VM'
-              - >-
-                (((( _pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) == 'reserved'
-                 and (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_type | default(none) == none
-                 and (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_id | default(none) == none)
-                or
-                (((( _pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) == 'active'
-                 and (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_type | default('') == 'virtualization.vminterface'
-                 and (((_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object | default({})).virtual_machine | default({})).name | default('') == _name)
-            fail_msg: "NetBox does not prove exactly one reserved or active record for the declared PBS address."
+              - (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_type | default(none) == none
+              - (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_id | default(none) == none
+            fail_msg: "NetBox does not prove one unassigned reservation for the PBS address; active assignments require an authoritative VMID mapping."
             quiet: true
           when: _pbs_mode | bool
 
@@ -348,6 +342,14 @@
           check_mode: false
           when: _pbs_mode | bool
 
+        - name: "Identify unexpected disks on the declared PBS template"
+          ansible.builtin.set_fact:
+            _pbs_template_extra_disk_keys: >-
+              {{ _tmpl_check.json.data | default({}) | dict2items
+                 | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+                 | rejectattr('key', 'equalto', 'scsi0') | map(attribute='key') | list }}
+          when: _pbs_mode | bool
+
         - name: "Require the exact declared Debian template configuration"
           ansible.builtin.assert:
             that:
@@ -359,6 +361,7 @@
               - _tmpl_check.json.data.scsi0 | default('') is search('^' ~ _storage ~ ':')
               - _tmpl_check.json.data.net0 | default('') is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
               - _tmpl_check.json.data.ipconfig0 | default('ip=dhcp') in ['', 'ip=dhcp']
+              - _pbs_template_extra_disk_keys | length == 0
               - _pbs_template_nextid.status | default(-1) == 400
             fail_msg: "Proxmox does not prove the exact pinned Debian cloud-init template on the declared PBS node."
             quiet: true
@@ -405,11 +408,15 @@
               {{ (_pbs_target_config.json.data.scsi0 | default('')).split('size=')[-1].split(',')[0]
                  if 'size=' in (_pbs_target_config.json.data.scsi0 | default('')) else '' }}
             _pbs_extra_disk_keys: >-
-              {{ _pbs_target_config.json.data | default({}) | dict2items
+              {{ _pbs_target_config.json.data | default({}, true) | dict2items
                  | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
                  | rejectattr('key', 'equalto', 'scsi0')
                  | rejectattr('key', 'equalto', 'scsi1') | map(attribute='key') | list }}
             _pbs_scsi1: "{{ _pbs_target_config.json.data.scsi1 | default('') }}"
+          when: _pbs_mode | bool
+
+        - name: "Validate the pinned PBS data disk after extracting its current config"
+          ansible.builtin.set_fact:
             _pbs_data_disk_valid: >-
               {{ _pbs_scsi1 | length == 0 or
                  (_pbs_scsi1 is search('^' ~ _pbs_data_storage ~ ':vm-' ~ (_vmid | string) ~ '-disk-[0-9]+,size=512G(,|$)')) }}
@@ -1061,7 +1068,7 @@
   become: false
   vars:
     _semaphore_url: "{{ semaphore_url | default('') }}"
-    _runner_token: "{{ runner_token | default(lookup('env', 'SEMAPHORE_RUNNER_TOKEN') | default('')) }}"
+    _runner_token: "{{ '' if (_pv_service | default('')) == 'pbs' else (runner_token | default(lookup('env', 'SEMAPHORE_RUNNER_TOKEN') | default(''))) }}"
 
   tasks:
     - name: "Log in over Ansible's connection"
@@ -1124,6 +1131,7 @@
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       when:
         - not ansible_check_mode
+        - _pv_service | default('') != 'pbs'
         - _runner_token | length > 0
         - _cloudinit is not skipped
         - _cloudinit is succeeded
@@ -1147,6 +1155,7 @@
       ignore_unreachable: true
       when:
         - not ansible_check_mode
+        - _pv_service | default('') != 'pbs'
         - _runner_token | length > 0
         - _cloudinit is not skipped
         - _cloudinit is succeeded
@@ -1164,6 +1173,7 @@
       ignore_errors: true
       ignore_unreachable: true
       when:
+        - _pv_service | default('') != 'pbs'
         - _runner_env is not skipped
         - _runner_env is succeeded
         - _runner_env is reachable
@@ -1185,12 +1195,13 @@
           {{ 'not checked' if (_pv_service | default('')) != 'pbs' or ansible_check_mode
              else ('ok' if (_pbs_os_check is defined and _pbs_os_check is succeeded) else 'FAILED') }}
         _pv_runner: >-
-          {{ 'not checked' if ansible_check_mode
+          {{ 'not applicable' if (_pv_service | default('')) == 'pbs'
+             else ('not checked' if ansible_check_mode
              else ('skipped (no runner token supplied)' if (_runner_token | length) == 0
              else ('not attempted (login or cloud-init did not pass)' if (_runner_env is not defined or _runner_env is skipped)
              else ('FAILED writing /etc/semaphore/runner.env' if (_runner_env is failed or _runner_env is unreachable)
              else ('FAILED starting semaphore-runner' if (_runner_svc is failed or _runner_svc is unreachable)
-             else 'configured')))) }}
+             else 'configured'))))) }}
         _pv_login_error: "{{ (_login.msg | default('')) | truncate(240) if (_login is defined and _login is failed) else '' }}"
 
     - name: "Provisioning complete"

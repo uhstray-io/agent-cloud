@@ -144,6 +144,9 @@ def test_survey_is_dev_bound_get_only_and_outputs_only_sanitized_receipt() -> No
     assert uri_tasks
     assert all(task["ansible.builtin.uri"]["method"] == "GET" for task in uri_tasks)
     assert all(task.get("no_log") is True and task.get("check_mode") is False for task in uri_tasks)
+    task_by_name = {task.get("name"): task for task in play["tasks"]}
+    assert task_by_name["Require a bounded VMID search window"].get("no_log") is not True
+    assert task_by_name["Initialize exact VMID receipts"].get("no_log") is not True
     assert any("cluster/nextid?vmid={{ item }}" in task["ansible.builtin.uri"]["url"] for task in uri_tasks)
     assert any(
         task["ansible.builtin.uri"]["url"].endswith(

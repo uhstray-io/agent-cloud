@@ -189,6 +189,14 @@
         _existing: "{{ _existing_config.json.data | default({}) }}"
       no_log: true
 
+    - name: Identify unexpected disks on an existing PBS template candidate
+      ansible.builtin.set_fact:
+        _existing_extra_disk_keys: >-
+          {{ _existing | dict2items
+             | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+             | rejectattr('key', 'equalto', 'scsi0') | map(attribute='key') | list }}
+      no_log: true
+
     - name: Ask Proxmox whether the exact VMID is free
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/cluster/nextid?vmid={{ _vmid }}"
@@ -217,6 +225,7 @@
           - _existing_config.status != 200 or (_existing.ostype | default('')) == 'l26'
           - _existing_config.status != 200 or (_existing.ide2 | default('')) is search('cloudinit')
           - _existing_config.status != 200 or (_existing.scsi0 | default('')) is search('^' ~ _disk_storage ~ ':')
+          - _existing_config.status != 200 or _existing_extra_disk_keys | length == 0
           - _existing_config.status != 200 or (_existing.template | default(0) | int) in [0, 1]
         fail_msg: "The exact VMID is occupied by another guest or a mismatched Debian template declaration."
         quiet: true
@@ -351,6 +360,10 @@
           - _vm_config.json.data.ostype | default('') == 'l26'
           - _vm_config.json.data.ide2 | default('') is search('cloudinit')
           - _vm_config.json.data.scsi0 | default('') is search('^' ~ _disk_storage ~ ':')
+          - >-
+            (_vm_config.json.data | dict2items
+             | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+             | rejectattr('key', 'equalto', 'scsi0') | list | length) == 0
         fail_msg: "Proxmox VM configuration readback does not match the declared Debian template."
         quiet: true
       no_log: true
@@ -408,6 +421,10 @@
           - _final_config.json.data.ostype | default('') == 'l26'
           - _final_config.json.data.ide2 | default('') is search('cloudinit')
           - _final_config.json.data.scsi0 | default('') is search('^' ~ _disk_storage ~ ':')
+          - >-
+            (_final_config.json.data | dict2items
+             | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+             | rejectattr('key', 'equalto', 'scsi0') | list | length) == 0
         fail_msg: "Final Proxmox readback did not prove the intended cloud-init template."
         quiet: true
       no_log: true

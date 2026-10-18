@@ -162,7 +162,6 @@
           - _nextid_seed.json.data | int + 64 <= 999999
         fail_msg: "Proxmox did not return a usable VMID search seed."
         quiet: true
-      no_log: true
 
     - name: Read exact VMID availability for the bounded candidate window
       ansible.builtin.uri:
@@ -200,10 +199,9 @@
       no_log: true
       check_mode: false
 
-    - name: Initialize protected exact VMID receipts
+    - name: Initialize exact VMID receipts
       ansible.builtin.set_fact:
         _selector_nextid_checks: []
-      no_log: true
 
     - name: Keep only exact VMID request evidence
       ansible.builtin.set_fact:
