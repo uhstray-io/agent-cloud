@@ -31,7 +31,6 @@
       - launch_inputs
       - malformed_json
       - observation_binding
-      - observation_expired
       - observation_shape
       - observation_time_order
       - output_rows
