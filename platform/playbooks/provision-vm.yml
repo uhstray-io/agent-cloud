@@ -345,7 +345,7 @@
         - name: "Identify unexpected disks on the declared PBS template"
           ansible.builtin.set_fact:
             _pbs_template_extra_disk_keys: >-
-              {{ _tmpl_check.json.data | default({}) | dict2items
+              {{ _tmpl_check.json.data | default({}, true) | dict2items
                  | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
                  | rejectattr('key', 'equalto', 'scsi0') | map(attribute='key') | list }}
           when: _pbs_mode | bool

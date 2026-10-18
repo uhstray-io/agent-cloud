@@ -145,6 +145,23 @@ def test_missing_target_config_is_safe_for_extra_disk_extraction() -> None:
     assert "_pbs_target_config.json.data | default({}, true) | dict2items" in expression
 
 
+def test_failed_template_get_is_stopped_before_template_disk_extraction() -> None:
+    play = next(
+        item for item in yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())
+        if item.get("name") == "Provision VM from template"
+    )
+    tasks = _tasks(play)
+    names = [task.get("name", "") for task in tasks]
+    failed_get_gate = tasks[names.index("Fail if template not found")]
+    extract = tasks[names.index("Identify unexpected disks on the declared PBS template")]
+
+    assert "_tmpl_check is failed" in failed_get_gate["when"]
+    assert names.index("Fail if template not found") < names.index(
+        "Identify unexpected disks on the declared PBS template"
+    )
+    assert "default({}, true) | dict2items" in extract["ansible.builtin.set_fact"]["_pbs_template_extra_disk_keys"]
+
+
 def test_pbs_skips_shared_semaphore_runner_credential_tasks() -> None:
     play = next(
         item for item in yaml.safe_load((PLAYBOOK_DIR / "provision-vm.yml").read_text())

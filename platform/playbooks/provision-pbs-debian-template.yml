@@ -186,7 +186,7 @@
     - name: Classify exact VMID occupancy across all cluster guest types
       ansible.builtin.set_fact:
         _vmid_rows: "{{ _pve_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list }}"
-        _existing: "{{ _existing_config.json.data | default({}) }}"
+        _existing: "{{ _existing_config.json.data | default({}, true) }}"
       no_log: true
 
     - name: Identify unexpected disks on an existing PBS template candidate

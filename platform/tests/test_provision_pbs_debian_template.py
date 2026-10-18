@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
+from jinja2.nativetypes import NativeEnvironment
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK_PATH = ROOT / "platform/playbooks/provision-pbs-debian-template.yml"
@@ -178,3 +180,30 @@ def test_publisher_rejects_unexpected_attached_disks_on_existing_and_new_templat
         assert config_var in str(gate["ansible.builtin.assert"])
         assert "selectattr('key', 'match'" in str(gate["ansible.builtin.assert"])
         assert "rejectattr('key', 'equalto', 'scsi0')" in str(gate["ansible.builtin.assert"])
+
+
+def test_absent_publisher_config_null_evaluates_to_no_extra_disks():
+    plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
+    tasks = plays[2]["tasks"]
+    classify = next(
+        task for task in tasks
+        if task["name"] == "Classify exact VMID occupancy across all cluster guest types"
+    )
+    disk_scan = next(
+        task for task in tasks
+        if task["name"] == "Identify unexpected disks on an existing PBS template candidate"
+    )
+
+    env = NativeEnvironment()
+    env.filters["dict2items"] = lambda mapping: [
+        {"key": key, "value": value} for key, value in mapping.items()
+    ]
+    env.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
+    context = {"_existing_config": {"json": {"data": None}}}
+
+    existing_expression = classify["ansible.builtin.set_fact"]["_existing"]
+    context["_existing"] = env.from_string(existing_expression).render(context)
+    actual_disk_scan = disk_scan["ansible.builtin.set_fact"]["_existing_extra_disk_keys"]
+
+    assert context["_existing"] == {}
+    assert env.from_string(actual_disk_scan).render(context) == []
