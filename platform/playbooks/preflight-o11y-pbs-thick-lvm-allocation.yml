@@ -1,0 +1,86 @@
+# Read-only preflight for the privately pinned PBS backing disk and one proposed data disk.
+- name: Refuse internal extra vars
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Survey PBS physical storage
+  ansible.builtin.import_playbook: survey-o11y-pbs-physical-storage.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Preflight reported thick-LVM allocation constraints
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_pbs_physical_storage.py"
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ _o11y_hosts | first | default('') }}"
+    _pinned_serial: "{{ hostvars[_o11y_host].proxmox_pbs_backing_disk_serial | default(none) if _o11y_host else none }}"
+    _pinned_wwn: "{{ hostvars[_o11y_host].proxmox_pbs_backing_disk_wwn | default(none) if _o11y_host else none }}"
+  tasks:
+    - name: Require one private backing identity pin
+      ansible.builtin.assert:
+        that:
+          - _o11y_hosts | length == 1
+          - >-
+            _pinned_serial is not none or _pinned_wwn is not none
+        fail_msg: "The private PBS backing identity pin is missing or ambiguous."
+
+    - name: Build the protected preflight input
+      ansible.builtin.set_fact:
+        _allocation_preflight_payload: >-
+          {{ {'survey': _physical_storage_payload | from_json,
+              'backing_disk_serial': _pinned_serial,
+              'backing_disk_wwn': _pinned_wwn} | to_json }}
+      no_log: true
+
+    - name: Evaluate the pinned identity and 512-GiB headroom privately
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", preflight-thick-lvm-allocation]
+        stdin: "{{ _allocation_preflight_payload }}"
+      register: _allocation_preflight
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require all read-only preflight conditions
+      ansible.builtin.assert:
+        that: _allocation_preflight.rc == 0
+        fail_msg: "The PBS allocation preflight did not confirm the private pin, disk lineage, SMART health, and reported headroom."
+
+    - name: Keep the validated result private until sanitized reporting
+      ansible.builtin.set_fact:
+        _allocation_preflight_result: "{{ _allocation_preflight.stdout | from_json }}"
+      no_log: true
+
+    - name: Validate the fixed sanitized result shape
+      ansible.builtin.assert:
+        that:
+          - >-
+            _allocation_preflight_result.keys() | list | sort ==
+            ['allocation_authorized', 'backing_identity_matches', 'device_safety_verified',
+            'direct_lvm_disk_lineage', 'filesystem_readiness_verified', 'pbs_readiness_verified',
+            'reported_vg_headroom_passes_512_gib', 'smart_health', 'status', 'write_authorized']
+          - _allocation_preflight_result.status == 'preflight_passed'
+          - _allocation_preflight_result.backing_identity_matches is sameas true
+          - _allocation_preflight_result.direct_lvm_disk_lineage is sameas true
+          - _allocation_preflight_result.smart_health == 'passed'
+          - _allocation_preflight_result.reported_vg_headroom_passes_512_gib is sameas true
+          - _allocation_preflight_result.allocation_authorized is sameas false
+          - _allocation_preflight_result.device_safety_verified is sameas false
+          - _allocation_preflight_result.filesystem_readiness_verified is sameas false
+          - _allocation_preflight_result.pbs_readiness_verified is sameas false
+          - _allocation_preflight_result.write_authorized is sameas false
+        fail_msg: "The allocation preflight result did not match its fixed sanitized shape."
+      no_log: true
+
+    - name: Report the read-only allocation preflight result
+      ansible.builtin.debug:
+        msg: >-
+          PBS backing allocation preflight: {{ _allocation_preflight_result.status }};
+          private identity matches the selected API disk: yes;
+          direct disk-path and LVM use match: yes;
+          SMART health: {{ _allocation_preflight_result.smart_health }};
+          512-GiB proposal leaves 30% reported VG headroom: yes;
+          allocation, device safety, PBS readiness, and write authorization: no.
