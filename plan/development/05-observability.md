@@ -2010,3 +2010,10 @@ provable partial clones, and preserves an exact later `scsi1` data disk on
 completed reruns. This is source and local-test evidence only until review,
 merge, private inventory reconciliation, and Dev-bound readback. No template
 or PBS VM exists by virtue of these source changes.
+
+The VM preflight accepts only the exact unassigned NetBox reservation. It
+refuses an active address assignment because the current NetBox response does
+not prove the assigned object's Proxmox VMID. If discovery activates the
+record, a later provisioning rerun stops before writes until a reviewed
+identity mapping is available; ordinary PBS operations do not depend on
+rerunning VM provisioning.

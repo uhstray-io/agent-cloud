@@ -40,6 +40,7 @@ Ambiguous partial clones or mismatched disks refuse before mutation.
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.
 - **Physical origin not independently proved** → preserve the user's local-hardware attestation separately from the API identity pin. Every write rechecks the pin and only allocates a virtual disk; no host disk operation is authorized.
 - **Concurrent storage growth** → re-evaluate VG/PV/disk capacity immediately before allocation and refuse on mismatch or less than 30% residual headroom. A preflight receipt is not a reservation.
+- **NetBox assignment identity** → provisioning accepts only the exact unassigned address reservation. An active assignment has no proven Proxmox VMID mapping in the current API response, so reruns refuse before writes if discovery activates it. Add a reviewed identity mapping before relying on provisioning to reconcile an active record.
 - **Template or guest disk ambiguity** → refuse provisioning or formatting until the Debian template and exact blank guest disk are verified. Existing mismatched VMs/disks are preserved.
 - **Incomplete backup protection** → PBS backup-only ACLs stop the routine client from deleting backups but do not stop PBS administrators or a host compromise. An independent protected-copy mechanism and isolated restore remain separate retention gates.
 
