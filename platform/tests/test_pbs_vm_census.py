@@ -52,14 +52,14 @@ def test_report_is_fixed_and_does_not_claim_debian_provenance_from_name_or_ostyp
     assert result == {
         "survey": "pbs-vm-census",
         "read_only": True,
-        "inventory_complete": True,
+        "inventory_visibility": "unverified",
         "node_count": 1,
         "online_node_count": 1,
         "offline_node_count": 0,
         "vm_count": 2,
         "qemu_vm_count": 1,
         "lxc_container_count": 1,
-        "unused_vm_identity_available": True,
+        "next_vm_identity_absent_from_visible_rows": True,
         "template_count": 1,
         "cloud_init_template_count": 1,
         "debian_name_hint_count": 1,
@@ -105,6 +105,34 @@ def test_missing_or_offline_template_configuration_target_is_refused():
     data["template_configs"]["json"]["data"].clear()
     with pytest.raises(ValueError):
         inspect(data)
+
+
+def test_lxc_template_is_counted_but_only_qemu_templates_request_config_reads():
+    data = census()
+    data["vms"]["json"]["data"].append(
+        {"type": "lxc", "node": "private-node", "vmid": 103, "template": 1}
+    )
+
+    result = inspect(data)
+    assert result["vm_count"] == 3
+    assert result["lxc_container_count"] == 2
+    assert result["template_count"] == 1
+    assert template_requests({"nodes": data["nodes"], "vms": data["vms"]}) == [
+        {"node": "private-node", "vmid": "9000"},
+    ]
+
+
+def test_empty_permission_filtered_lists_are_reported_as_visibility_unverified():
+    data = census()
+    data["vms"] = api([])
+    data["storages"] = api([])
+    data["template_configs"] = api([])
+
+    result = inspect(data)
+    assert result["inventory_visibility"] == "unverified"
+    assert result["vm_count"] == 0
+    assert result["storage_count"] == 0
+    assert "inventory_complete" not in result
 
 
 def test_cli_refusal_does_not_echo_credentials_or_response_values(monkeypatch, capsys):

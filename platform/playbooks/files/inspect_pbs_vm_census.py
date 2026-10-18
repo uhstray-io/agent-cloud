@@ -57,7 +57,7 @@ def _identity_rows(nodes: object, vms: object) -> tuple[dict[str, str], list[dic
             _fail("VM response was ambiguous")
         seen_vmids.add(vmid)
         template = row.get("template", 0)
-        if type(template) is not int or template not in {0, 1} or (kind == "lxc" and template == 1):
+        if type(template) is not int or template not in {0, 1}:
             _fail("VM response was malformed")
         records.append({"type": kind, "node": node, "vmid": vmid, "template": template})
     return node_status, records
@@ -96,7 +96,7 @@ def inspect(payload: object) -> dict[str, object]:
         _fail("next VM identity response was malformed")
     if not VMID.fullmatch(next_vmid):
         _fail("next VM identity response was malformed")
-    next_vm_identity_available = next_vmid not in {str(row["vmid"]) for row in vm_records}
+    next_vm_identity_absent_from_visible_rows = next_vmid not in {str(row["vmid"]) for row in vm_records}
 
     storage_ids: set[str] = set()
     backend_counts = dict.fromkeys(sorted(BACKENDS), 0)
@@ -167,14 +167,17 @@ def inspect(payload: object) -> dict[str, object]:
     return {
         "survey": "pbs-vm-census",
         "read_only": True,
-        "inventory_complete": True,
+        # Proxmox may ACL-filter the global VM and storage collections without
+        # distinguishing an empty visible result from a complete inventory. These
+        # counts describe visible rows only; write workflows must probe exact targets.
+        "inventory_visibility": "unverified",
         "node_count": len(node_status),
         "online_node_count": sum(status == "online" for status in node_status.values()),
         "offline_node_count": sum(status == "offline" for status in node_status.values()),
         "vm_count": len(vm_records),
         "qemu_vm_count": sum(row["type"] == "qemu" for row in vm_records),
         "lxc_container_count": sum(row["type"] == "lxc" for row in vm_records),
-        "unused_vm_identity_available": next_vm_identity_available,
+        "next_vm_identity_absent_from_visible_rows": next_vm_identity_absent_from_visible_rows,
         "template_count": len(template_rows),
         "cloud_init_template_count": cloud_init_templates,
         "debian_name_hint_count": debian_name_hints,

@@ -134,10 +134,10 @@
       check_mode: false
       no_log: true
 
-    - name: Require an unambiguous node and VM census
+    - name: Require valid node and VM responses
       ansible.builtin.assert:
         that: _template_requests.rc == 0
-        fail_msg: "The Proxmox node or VM inventory was incomplete, malformed, or ambiguous."
+        fail_msg: "The Proxmox node or VM response was unavailable, malformed, or ambiguous."
 
     - name: Read each template's configuration
       ansible.builtin.uri:
@@ -174,10 +174,10 @@
       check_mode: false
       no_log: true
 
-    - name: Require complete census evidence
+    - name: Require valid census evidence
       ansible.builtin.assert:
         that: _census_result.rc == 0
-        fail_msg: "Proxmox census evidence was incomplete, malformed, or ambiguous."
+        fail_msg: "Proxmox census evidence was unavailable, malformed, or ambiguous."
 
     - name: Publish the fixed sanitized census receipt
       ansible.builtin.set_stats:
