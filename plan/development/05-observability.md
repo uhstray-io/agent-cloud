@@ -126,6 +126,17 @@ python3 scripts/o11y-coverage-refresh.py \
 > change has not yet been staged or applied on Dev, so collector survival and a
 > fresh strict log receipt remain unverified. Keep OpenSpec tasks 6.2 and 7.4
 > open.
+>
+> **Pending-volume transition check (2026-10-18):** Read-only `survey-cursor`
+> task 6852 later reported `collector_present=false`, `volume_use_count=0`,
+> `journal_cursor=valid`, `root_owner=matches_collector`,
+> `status=volume_initialization_pending`, and `entry_count=3`. The apply helper's
+> existing pre-start verifier can map this class of no-copy-up pending state to
+> `ready` only when its full volume, cursor, layout, access, and capacity checks
+> pass. A regression test now exercises the absent-collector transition with that
+> complete verified state and confirms it does not mutate the v3 volume. Receipt
+> 6852 alone does not report every verifier input and is not a live apply result;
+> deployment and fresh log evidence remain outstanding.
 
 Tempo-derived service graphs and span metrics are disabled by default. The
 production opt-in requires numeric Semaphore receipts for capacity,

@@ -4806,6 +4806,27 @@ def test_legacy_collector_retirement_uses_its_verified_id_and_preserves_volume(m
     assert not any("volume" in argv and "rm" in argv for argv in calls)
 
 
+def test_apply_transition_accepts_verified_cursor_pending_volume_without_collector(monkeypatch):
+    # Matches the survey-cursor receipt shape: the old container is absent, but
+    # v3 remains in the reviewed no-copy-up pending state with a valid cursor.
+    found = _populated_pending_resume_found()
+    monkeypatch.setattr(POSITIONS, "discover", lambda **_kwargs: found)
+    calls = []
+
+    result = POSITIONS.retire_legacy_collector(
+        lambda argv, **_kwargs: calls.append(argv) or SimpleNamespace(returncode=1, stdout="")
+    )
+
+    assert result == {
+        "status": "already_absent",
+        "reason": "collector_absent_positions_verified",
+    }
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
+    assert found["metadata"]["journal_cursor_valid"] is True
+    assert found["metadata"]["cursor_checked"] is True
+    assert calls == []
+
+
 def test_legacy_collector_retirement_never_removes_the_isolated_project(monkeypatch):
     found = {
         "status": "observed", "collector_present": True,
