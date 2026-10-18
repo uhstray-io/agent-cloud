@@ -317,6 +317,51 @@ class SemaphoreReceiptTests(unittest.TestCase):
         self.assertNotIn("semaphore.invalid", rendered)
         self.assertNotIn("o11y_coverage_observation", rendered)
 
+    def test_controller_reports_authenticated_stale_head_as_incomplete(self):
+        payload, data = controller_payload()
+        old_sha = "c" * 40
+        data["task"]["commit_hash"] = old_sha
+        launch = json.loads(data["task"]["environment"])
+        launch["expected_repository_sha"] = old_sha
+        data["task"]["environment"] = json.dumps(launch)
+        data["observation"]["repository_sha"] = old_sha
+        data["rows"][-1]["output"] = "RUN: " + json.dumps({
+            "o11y_coverage_observation": data["observation"],
+        })
+
+        def reader_factory(url, token, project_id):
+            return FakeControllerReader(
+                url, token, project_id,
+                {"task": data["task"], "output": data["rows"],
+                 "template": data["template"], "repository": data["repository"]},
+            )
+
+        report = SEMAPHORE.controller_report(
+            payload, reader_factory=reader_factory, clock=lambda: NOW, census_module=CENSUS,
+        )
+        row = next(item for item in report["targets"] if item["target_id"] == "service:census_test")
+        self.assertEqual(row["signals"]["logs"], "incomplete")
+        self.assertEqual(row["coverage"], "incomplete")
+
+    def test_stale_receipt_still_refuses_current_inventory_or_selector_mismatch(self):
+        old_sha = "c" * 40
+        for field, value in (
+            ("expected_inventory_revision", "d" * 64),
+            ("signal_selector", '{target_id="service:other"}'),
+        ):
+            data = fixture()
+            data["task"]["commit_hash"] = old_sha
+            launch = json.loads(data["task"]["environment"])
+            launch["expected_repository_sha"] = old_sha
+            launch[field] = value
+            data["task"]["environment"] = json.dumps(launch)
+            data["observation"]["repository_sha"] = old_sha
+            data["rows"][-1]["output"] = "RUN: " + json.dumps({
+                "o11y_coverage_observation": data["observation"],
+            })
+            with self.subTest(field=field), self.assertRaisesRegex(SEMAPHORE.Refusal, "launch_inputs"):
+                accept(data)
+
     def test_controller_refuses_wrong_binding_after_readback(self):
         payload, data = controller_payload()
         payload["inventory"]["receipt_bindings"]["service:census_test"]["logs"]["task_id"] += 1
@@ -345,11 +390,13 @@ class SemaphoreReceiptTests(unittest.TestCase):
                  "template": data["template"], "repository": data["repository"]},
             )
 
-        with self.assertRaisesRegex(SEMAPHORE.Refusal, "observation_expired"):
-            SEMAPHORE.controller_report(
-                payload, reader_factory=reader_factory, clock=lambda: "2026-10-11T12:55:05Z",
-                census_module=CENSUS,
-            )
+        report = SEMAPHORE.controller_report(
+            payload, reader_factory=reader_factory, clock=lambda: "2026-10-11T12:55:05Z",
+            census_module=CENSUS,
+        )
+        row = next(item for item in report["targets"] if item["target_id"] == "service:census_test")
+        self.assertEqual(row["signals"]["logs"], "incomplete")
+        self.assertEqual(row["coverage"], "incomplete")
 
     def test_controller_rejects_supplied_inventory_evidence_before_reader_creation(self):
         payload, _data = controller_payload()
@@ -423,7 +470,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
             "binding_limit", "conflicting_stats", "deadline", "http_status", "invalid_binding",
             "invalid_controller_input", "invalid_credentials", "invalid_declaration", "invalid_endpoint",
             "invalid_template_repository", "invalid_utc_time", "launch_inputs", "malformed_json",
-            "observation_binding", "observation_expired", "observation_shape", "observation_time_order",
+            "observation_binding", "observation_shape", "observation_time_order",
             "output_rows", "output_shape", "output_time_order", "readback_shape", "repository_mismatch",
             "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
             "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
@@ -490,8 +537,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
 
     def test_expiry_is_conservative_and_expires_at_equality(self):
         self.assertEqual(accept(fixture(), "2026-10-11T12:55:04Z")["status"], "verified")
-        with self.assertRaisesRegex(SEMAPHORE.Refusal, "observation_expired"):
-            accept(fixture(), "2026-10-11T12:55:05Z")
+        self.assertEqual(accept(fixture(), "2026-10-11T12:55:05Z")["status"], "incomplete")
 
     def test_task_identity_status_and_revision_are_exact(self):
         for key, value, code in (
@@ -499,7 +545,8 @@ class SemaphoreReceiptTests(unittest.TestCase):
             ("project_id", PROJECT_ID + 1, "task_identity_mismatch"),
             ("template_id", TEMPLATE_ID + 1, "task_not_accepted"),
             ("status", "running", "task_not_accepted"),
-            ("commit_hash", "c" * 40, "repository_revision_mismatch"),
+            ("commit_hash", "c" * 40, "launch_inputs"),
+            ("commit_hash", "invalid", "repository_revision_mismatch"),
             ("playbook", "other.yml", "task_override"),
             ("arguments", "--limit all", "task_override"),
             ("git_branch", "main", "task_override"),
