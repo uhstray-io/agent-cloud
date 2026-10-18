@@ -1997,3 +1997,16 @@ its post-write authority readback showed exactly one record with the intended
 PBS description. The address value stays in private automation output and
 has not yet been declared in private site-config. No PBS template, VM, or
 data disk was created, and retention is unchanged.
+
+The follow-on public implementation adds three Dev-bound workflows: a GET-only
+candidate survey, a pinned Debian cloud-template publisher, and a PBS-specific
+entry point to the shared VM provisioner. The candidate survey selects two
+distinct VMIDs only after Proxmox's exact-ID checks and reports storage
+capabilities only in private Semaphore output. The publisher pins an official
+dated Debian 13 QCOW2 image by SHA-512 and requires an active file-based
+`import` store; the artifact has no detached signature. The VM path checks
+the NetBox reservation and actual Proxmox config before mutation, resumes
+provable partial clones, and preserves an exact later `scsi1` data disk on
+completed reruns. This is source and local-test evidence only until review,
+merge, private inventory reconciliation, and Dev-bound readback. No template
+or PBS VM exists by virtue of these source changes.

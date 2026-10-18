@@ -16,6 +16,25 @@ See [proposal.md](proposal.md) for motivation and [the capability spec](specs/pb
 4. **Source secrets and restrict deletion.** Ansible obtains PBS service credentials and the PVE backup token through OpenBao. PBS uses a datastore-scoped backup role without prune/delete; pruning and verification run on PBS under separate server authority. Read back effective permissions and an actual backup before changing the existing PVE backup job. [PBS roles](https://pbs.proxmox.com/docs/config/acl/man5.html) distinguish `DatastoreBackup` from prune-capable roles. A protected snapshot or client role is deletion resistance, not immutable-copy proof; that separate gate remains open.
 5. **Restore without touching the source.** Select a fresh artifact by exact VMID/time/storage identity, reserve a separate target through the existing restore preflight, restore without overwrite, inspect guest filesystem and telemetry volumes, and emit a sanitized receipt. Remove only a target that this run created and still matches its ownership marker, after the receipt is durable. Alternative: restore over o11y or rely on snapshot presence; rejected because neither proves recoverability without risking the live service.
 
+### Implementation refinements from the read-only census
+
+The census found no template with proven Debian provenance. A second GET-only
+Dev-bound candidate survey therefore checks two distinct VMIDs through
+Proxmox's exact-ID endpoint and reports eligible store identities only in
+private Semaphore output. The template publisher pins one dated official
+Debian 13 generic QCOW2 cloud image by SHA-512 and requires an active
+file-based store with `import` content enabled. Proxmox verifies TLS, digest,
+and image format before template creation. This artifact has no detached
+signature; the fixed digest and official HTTPS source are the stated
+provenance assurance.
+
+The PBS-specific wrapper uses the shared VM lifecycle with private template
+selection, an authoritative NetBox address record, exact Proxmox ID/config
+checks, the Debian cloud-init login, and a guest Debian 13 check. Completed
+PBS VM reruns may retain the exact later 512-GiB `scsi1` data disk on the
+pinned thick-LVM store; the shared lifecycle never writes or resizes it.
+Ambiguous partial clones or mismatched disks refuse before mutation.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.

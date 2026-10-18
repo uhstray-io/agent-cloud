@@ -7,7 +7,7 @@
 ## 2. Provision a supported PBS VM
 
 - [ ] 2.1 If discovery finds no supported Debian cloud-init template, add a pinned-image, idempotent Semaphore template-publication workflow and verify its Proxmox readback before VM creation.
-- [ ] 2.2 Extend the shared VM provisioning declaration only as needed for the Debian template; refuse conflicting VMID, node, address, template, or existing disk before any write. Add focused failure and rerun tests.
+- [x] 2.2 Extend the shared VM provisioning declaration only as needed for the Debian template; refuse conflicting VMID, node, address, template, or existing disk before any write. Add focused failure and rerun tests.
 - [ ] 2.3 Run the reviewed Dev-bound VM provisioner for only the declared PBS host; verify the Proxmox task, VM config, static address, guest OS, and unchanged o11y VM.
 
 ## 3. Attach and mount the data disk
