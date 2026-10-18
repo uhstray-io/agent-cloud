@@ -202,7 +202,8 @@ per-service hand-grant.
 it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identity (vs one opaque
 "user type") lets access be derived from real org structure instead of bespoke per-person grants.
 **[TARGET]** the provisioning automation + the group schema are not built yet - the operator's Semaphore user
-was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, with a proposed rename to
+was hand-set to admin (a stopgap, superseded by the Semaphore admin flag now derived from the declared
+administrator list, issue #604), and `platform-admins` is today's sole admin group, with a proposed rename to
 `uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
 mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based
 provisioning already holds.*
