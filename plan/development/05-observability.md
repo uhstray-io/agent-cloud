@@ -1920,3 +1920,30 @@ probe completed. The receipt reported `access_logging=disabled`, `sink=none`,
 bounded query-parameter audit with the explicit finding that access logging was
 disabled for this route. It does not prove that Caddy access logging works, or
 that all routes and privacy behavior are covered. No Caddy state changed.
+
+## 2026-10-18 production trace-rule readback and PBS allocation preflight
+
+PR #707 merged to Dev at `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`.
+Dev-bound Deploy o11y check task 6963 and normal non-destructive deploy task
+6965 succeeded at that merged revision. Grafana readback found rule
+`agentgateway_trace_silent` with the exact expression
+`sum(increase(agentgateway_requests_total{job="agentgateway"}[30m])) >= 100 and on() sum(rate(tempo_distributor_spans_received_total{job="tempo"}[30m])) == 0`
+and `is_paused=true`. This confirms the deployed expression and paused state;
+it does not establish that agentgateway is the exclusive sender to Tempo.
+Keep Agentgateway observability OpenSpec task 8.2 open until the exclusive
+sender and trace-path review is complete.
+
+The separate `Preflight o11y PBS Thick-LVM Allocation (Dev)` workflow reuses
+the existing GET-only physical-storage payload. It requires an exact private
+`proxmox_pbs_backing_disk_serial` or supported
+`proxmox_pbs_backing_disk_wwn` inventory pin (both must match when both are
+declared), exact declared storage/config/status/VG/PV linkage, one direct
+top-level disk-path join with `used=LVM`, SMART category `passed`, and at least
+30% reported VG capacity remaining after the proposed 512-GiB disk. It reports
+only fixed status and booleans and leaves allocation, device safety, PBS and
+filesystem readiness, and write authorization false. A match against the
+private pin is API drift detection only: the operator's local hardware
+attestation is not independently compared with a chassis or BMC identity.
+This preflight does not create a VM, disk, filesystem, or PBS instance and does
+not change retention. It cannot pass until the private site-config inventory
+contains a reviewed pin; this repository contains no such private value.
