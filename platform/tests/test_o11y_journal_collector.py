@@ -2090,7 +2090,13 @@ def _empty_pending_volume_found(needs_chown=False, needs_copy_up=False, **overri
         "mountpoint": "/private/podman/volume/_data",
         "volume_inventory_complete": True,
         "name_collision": False,
-        "collector_present": False,
+        "collector_present": overrides.get("collector_present", False),
+        "collector_project": (
+            POSITIONS.COLLECTOR_PROJECT if overrides.get("collector_present", False) else None
+        ),
+        "collector_networks": (
+            [POSITIONS.NETWORK_NAME] if overrides.get("collector_present", False) else []
+        ),
         "storage_space": {"free_bytes": 64 * 1024 * 1024, "free_inodes": 256},
         "volume_use_count": 0,
         "mount_count": 0,
@@ -3129,11 +3135,16 @@ def test_positions_discovery_verifies_live_collector_volume_source(source_matche
         if argv[:3] == ["podman", "inspect", "--type"] and argv[-1] == POSITIONS.COLLECTOR:
             mount_source = volume["Mountpoint"] if source_matches else "/private/other-volume/_data"
             return SimpleNamespace(returncode=0, stdout=json.dumps([{
+                    "Id": "a" * 64,
+                    "NetworkSettings": {"Networks": {POSITIONS.NETWORK_NAME: {}}},
                 "Mounts": [{
                     "Destination": POSITIONS.DATA_PATH, "Name": volume["Name"], "Type": "volume",
                     "Source": mount_source, "RW": True,
                 }],
-                "Config": {"User": "0:0"},
+                    "Config": {"User": "0:0", "Labels": {
+                        "com.docker.compose.project": POSITIONS.COLLECTOR_PROJECT,
+                        "com.docker.compose.service": "journal-collector",
+                    }},
             }]))
         raise AssertionError("unexpected live positions discovery command")
 
@@ -3147,6 +3158,8 @@ def test_positions_discovery_verifies_live_collector_volume_source(source_matche
     )
     if source_matches:
         assert report["collector_mount_verified"] is True
+        assert report["collector_project"] == POSITIONS.COLLECTOR_PROJECT
+        assert report["collector_networks"] == [POSITIONS.NETWORK_NAME]
         assert POSITIONS.verify_live(lambda: report)["status"] == "ready"
     else:
         assert report["live_mount"]["source"] == "mismatch"
@@ -3389,12 +3402,33 @@ def test_positions_live_accepts_plain_local_volume_with_zero_host_mount_count():
     found = _populated_pending_resume_found()
     found.update({
         "collector_present": True,
+        "collector_project": POSITIONS.COLLECTOR_PROJECT,
+        "collector_networks": [POSITIONS.NETWORK_NAME],
         "volume_use_count": 1,
         "mount_count": 0,
         "collector_mount_verified": True,
     })
     assert POSITIONS.verify_live(lambda: found)["status"] == "ready"
     found["mount_count"] = 1
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("collector_project", "o11y"), ("collector_networks", [])],
+)
+def test_positions_live_requires_isolated_project_and_receiver_network(field, value):
+    found = _populated_pending_resume_found()
+    found.update({
+        "collector_present": True,
+        "collector_project": POSITIONS.COLLECTOR_PROJECT,
+        "collector_networks": [POSITIONS.NETWORK_NAME],
+        "volume_use_count": 1,
+        "mount_count": 0,
+        "collector_mount_verified": True,
+    })
+    assert POSITIONS.verify_live(lambda: found)["status"] == "ready"
+    found[field] = value
     assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
 
 
@@ -4626,6 +4660,7 @@ def test_compose_mount_is_read_only_and_state_is_separate():
     service = compose["services"]["journal-collector"]
 
     assert service["image"] == "docker.io/grafana/alloy:v1.9.2"
+    assert compose["name"] == "o11y-journal"
     assert service["restart"] == "always"
     assert service["read_only"] is True
     assert service["user"] == "0:0"
@@ -4646,10 +4681,10 @@ def test_compose_mount_is_read_only_and_state_is_separate():
         "type": "volume", "source": "journal-collector-state-v3", "target": "/alloy-state",
         "volume": {"nocopy": True},
     }
-    assert "journal-collector-state-v3" in compose["volumes"]
-    assert compose["volumes"]["journal-collector-state-v3"]["labels"] == {
-        "com.docker.compose.volume": "journal-collector-state-v3"
+    assert compose["volumes"]["journal-collector-state-v3"] == {
+        "name": "o11y_journal-collector-state-v3", "external": True,
     }
+    assert compose["networks"]["o11y"] == {"name": "o11y_o11y", "external": True}
     assert POSITIONS.DATA_PATH == "/alloy-state"
     assert POSITIONS.VOLUME_KEY == "journal-collector-state-v3"
     playbook_source = PLAYBOOK.read_text()
@@ -4660,13 +4695,17 @@ def test_compose_mount_is_read_only_and_state_is_separate():
 
 def test_resolved_compose_gate_requires_the_v3_volume_and_nocopy():
     resolved = {
-        "services": {"journal-collector": {"volumes": [{
+        "name": "o11y-journal",
+        "services": {"journal-collector": {"networks": ["o11y"], "volumes": [{
             "type": "volume",
             "source": "journal-collector-state-v3",
             "target": "/alloy-state",
             "volume": {"nocopy": True},
         }]}},
-        "volumes": {"journal-collector-state-v3": {"labels": {}}},
+        "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+        "volumes": {"journal-collector-state-v3": {
+            "name": "o11y_journal-collector-state-v3", "external": True,
+        }},
     }
     assert COMPOSE.verify_config(resolved)
     for mismatch in (
@@ -4685,27 +4724,167 @@ def test_resolved_compose_gate_requires_the_v3_volume_and_nocopy():
         assert not COMPOSE.verify_config(mismatch)
 
 
+def test_collector_project_config_keeps_volume_and_network_external():
+    compose = yaml.safe_load((O11Y / "compose.journal.yml").read_text())
+    assert compose["name"] == "o11y-journal"
+    assert compose["networks"]["o11y"] == {"name": "o11y_o11y", "external": True}
+    assert compose["volumes"]["journal-collector-state-v3"] == {
+        "name": "o11y_journal-collector-state-v3", "external": True,
+    }
+    resolved = {
+        "name": "o11y-journal",
+        "services": {"journal-collector": {"networks": {"o11y": {}}, "volumes": [{
+            "type": "volume", "source": "journal-collector-state-v3",
+            "target": "/alloy-state", "volume": {"nocopy": True},
+        }]}},
+        "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+        "volumes": {"journal-collector-state-v3": {
+            "name": "o11y_journal-collector-state-v3", "external": True,
+        }},
+    }
+    assert COMPOSE.verify_config(resolved)
+    assert not COMPOSE.verify_config({**resolved, "name": "o11y"})
+    assert not COMPOSE.verify_config({
+        **resolved,
+        "volumes": {"journal-collector-state-v3": {"name": "other", "external": True}},
+    })
+    assert not COMPOSE.verify_config({
+        **resolved,
+        "networks": {"o11y": {"name": "other", "external": True}},
+    })
+
+
+def test_positions_network_identity_requires_exact_existing_receiver_network():
+    valid = {"name": "o11y_o11y", "labels": {
+        "com.docker.compose.project": "o11y",
+    }}
+
+    def run(argv, **_kwargs):
+        assert argv == ["podman", "network", "inspect", "--format", "json", "o11y_o11y"]
+        return SimpleNamespace(returncode=0, stdout=json.dumps([valid]))
+
+    assert POSITIONS.verify_network(run) == {
+        "status": "verified", "reason": "network_identity_verified",
+    }
+    assert POSITIONS.verify_network(lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps([{**valid, "name": "other"}]),
+    ))["status"] == "refused"
+
+
+def test_legacy_collector_retirement_uses_its_verified_id_and_preserves_volume(monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state-v3", "Driver": "local", "Scope": "local",
+        "Options": {}, "Mountpoint": "/run/user/1000/containers/storage/volumes/state/_data",
+        "CreatedAt": "2026-10-18T00:00:00Z", "Labels": {
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3",
+        },
+    }
+    found = {
+        "status": "observed", "project": "o11y", "volume_name": volume["Name"],
+        "volume": volume, "collector_present": True, "collector_project": "o11y",
+        "collector_networks": [POSITIONS.NETWORK_NAME],
+        "collector_id": "a" * 64, "collector_mount_verified": True,
+    }
+    monkeypatch.setattr(POSITIONS, "discover", lambda **_kwargs: found)
+    monkeypatch.setattr(POSITIONS, "verify", lambda _discover: {"status": "ready"})
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:3] == ["podman", "rm", "--force"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        if argv == ["podman", "ps", "--all", "--format", "json"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        if argv == ["podman", "volume", "inspect", volume["Name"]]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        raise AssertionError(argv)
+
+    assert POSITIONS.retire_legacy_collector(run) == {
+        "status": "retired", "reason": "legacy_collector_removed_volume_preserved",
+    }
+    assert ["podman", "rm", "--force", "--time", "10", "a" * 64] in calls
+    assert not any("volume" in argv and "rm" in argv for argv in calls)
+
+
+def test_apply_transition_accepts_verified_cursor_pending_volume_without_collector(monkeypatch):
+    # Matches the survey-cursor receipt shape: the old container is absent, but
+    # v3 remains in the reviewed no-copy-up pending state with a valid cursor.
+    found = _populated_pending_resume_found()
+    calls_to_discover = []
+
+    def discover_stub(**kwargs):
+        calls_to_discover.append(kwargs)
+        return found
+
+    monkeypatch.setattr(POSITIONS, "discover", discover_stub)
+    calls = []
+
+    result = POSITIONS.retire_legacy_collector(
+        lambda argv, **_kwargs: calls.append(argv) or SimpleNamespace(returncode=1, stdout="")
+    )
+
+    assert result == {
+        "status": "already_absent",
+        "reason": "collector_absent_positions_verified",
+    }
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
+    assert found["metadata"]["journal_cursor_valid"] is True
+    assert found["metadata"]["cursor_checked"] is True
+    assert len(calls_to_discover) == 1
+    assert calls_to_discover[0]["diagnostics"] is True
+    assert calls_to_discover[0]["read_cursor"] is True
+    assert calls == []
+
+
+def test_legacy_collector_retirement_never_removes_the_isolated_project(monkeypatch):
+    found = {
+        "status": "observed", "collector_present": True,
+        "collector_project": POSITIONS.COLLECTOR_PROJECT,
+        "collector_networks": [POSITIONS.NETWORK_NAME],
+        "collector_mount_verified": True,
+    }
+    monkeypatch.setattr(POSITIONS, "discover", lambda **_kwargs: found)
+    monkeypatch.setattr(POSITIONS, "verify", lambda _discover: {"status": "ready"})
+    calls = []
+    result = POSITIONS.retire_legacy_collector(
+        lambda argv, **_kwargs: calls.append(argv) or SimpleNamespace(returncode=0, stdout="")
+    )
+    assert result == {"status": "already_isolated", "reason": "collector_project_verified"}
+    assert calls == []
+
+
 def test_provider_config_command_output_is_redacted(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", [str(COMPOSE_HELPER), "/tmp/deployment"])
-    monkeypatch.setattr(
-        COMPOSE.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    calls = []
+
+    def run(*args, **_kwargs):
+        calls.append(args[0])
+        return SimpleNamespace(
             returncode=0,
             stdout=yaml.safe_dump({
-                "services": {"journal-collector": {"volumes": [{
+                "name": "o11y-journal",
+                "services": {"journal-collector": {"networks": ["o11y"], "volumes": [{
                     "type": "volume", "source": "journal-collector-state-v3",
                     "target": "/alloy-state", "volume": {"nocopy": True},
                 }]}},
-                "volumes": {"journal-collector-state-v3": {"labels": {}}},
+                "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+                "volumes": {"journal-collector-state-v3": {
+                    "name": "o11y_journal-collector-state-v3", "external": True,
+                }},
                 "x-private": "PRIVATE_CONFIG_MARKER",
             }),
-        ),
+        )
+
+    monkeypatch.setattr(
+        COMPOSE.subprocess,
+        "run",
+        run,
     )
     COMPOSE.main()
     report = capsys.readouterr().out
     assert json.loads(report) == {"status": "verified", "reason": "provider_config_exact"}
     assert "PRIVATE_CONFIG_MARKER" not in report
+    assert calls == [["podman-compose", "-p", "o11y-journal", "-f", "compose.journal.yml", "config"]]
 
 
 def test_survey_and_apply_use_redacted_resolved_compose_gate():
@@ -4908,6 +5087,9 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
+    assert "podman-compose, -p, o11y-journal, -f, compose.journal.yml, up" in source
+    assert "Retire only a verified legacy-project collector registration" in source
+    assert "positions volume was preserved and no Compose start was requested" in source
     apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     pre_apply_gate = next(
         task for task in apply_play["tasks"]
@@ -5334,6 +5516,7 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     by_name = {task.get("name"): task for task in tasks}
     visible = {
         "Run the separately selected guarded positions repair",
+        "Retire only a verified legacy-project collector registration",
     }
     protected = {
         "Verify positions volume identity and access before apply",
@@ -5360,9 +5543,23 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
         "Verify the live collector positions mount and access": "verify-live",
         "Survey positions metadata or explicit cursor validity without mounting": "{{ journal_collector_action }}",
         "Run the separately selected guarded positions repair": "repair-positions",
+        "Retire only a verified legacy-project collector registration": "retire-legacy",
     }
     for name, action in helper_actions.items():
         assert by_name[name]["ansible.builtin.command"]["argv"] == ["python3", "-", action]
+
+    retire = by_name["Retire only a verified legacy-project collector registration"]
+    assert "rc | default(1) == 0" in retire["changed_when"]
+    assert "stdout | default('') is regex" in retire["changed_when"]
+    assert "no_log" not in retire
+    assert retire.get("check_mode") is not False
+    assert retire["when"] == "not ansible_check_mode"
+    transition_assert = by_name["Require the old container to be absent with v3 state preserved"]
+    transition_fail_msg = transition_assert["ansible.builtin.assert"]["fail_msg"]
+    assert "regex_findall" in transition_fail_msg
+    assert "legacy_collector_removed_volume_preserved" in transition_fail_msg
+    assert "_journal_retire_legacy.stdout }}" not in transition_fail_msg
+    assert "stdout | from_json" not in str(retire | transition_assert)
 
     found = _positions_found(_positions_state(owner=(0, 0)))
     survey = POSITIONS.survey(lambda: found)

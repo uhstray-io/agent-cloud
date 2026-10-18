@@ -141,6 +141,31 @@
         quiet: true
       when: not ansible_check_mode
 
+    - name: Verify the exact receiver network before survey or apply
+      ansible.builtin.command:
+        argv: [python3, -, verify-network]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
+        stdin_add_newline: false
+      register: _journal_network_identity
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - journal_collector_action | default('apply') != 'stage'
+
+    - name: Require the existing receiver network identity
+      ansible.builtin.assert:
+        that:
+          - _journal_network_identity.rc | default(1) == 0
+          - (_journal_network_identity.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_network_identity.stdout | from_json).reason == 'network_identity_verified'
+        fail_msg: "The existing private o11y network is missing or has a conflicting identity."
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - journal_collector_action | default('apply') != 'stage'
+
     - name: Report the fixed provider configuration result
       ansible.builtin.debug:
         msg: "Resolved journal Compose configuration: verified (v3 volume, /alloy-state, nocopy=true)."
@@ -666,6 +691,37 @@
         quiet: true
       when: not ansible_check_mode
 
+    - name: Retire only a verified legacy-project collector registration
+      ansible.builtin.command:
+        argv: [python3, -, retire-legacy]
+        stdin: "{{ _journal_positions_helper }}"
+        stdin_add_newline: false
+      register: _journal_retire_legacy
+      changed_when: >-
+        _journal_retire_legacy.rc | default(1) == 0
+        and (_journal_retire_legacy.stdout | default('') is regex('^\\{"reason": "legacy_collector_removed_volume_preserved", "status": "retired"\\}$'))
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Require the old container to be absent with v3 state preserved
+      ansible.builtin.assert:
+        that:
+          - _journal_retire_legacy.rc | default(1) == 0
+          - >-
+            _journal_retire_legacy.stdout | default('') in [
+            '{"reason": "legacy_collector_removed_volume_preserved", "status": "retired"}',
+            '{"reason": "collector_project_verified", "status": "already_isolated"}',
+            '{"reason": "collector_absent_volume_safe_to_initialize", "status": "already_absent"}',
+            '{"reason": "collector_absent_positions_verified", "status": "already_absent"}'
+            ]
+        fail_msg: >-
+          The collector project transition was not proven safe
+          (status={{ _journal_retire_legacy.stdout | default('') | regex_findall('"status": "(retired|already_isolated|already_absent|refused|uncertain|unavailable)"') | first | default('unavailable') }},
+          reason={{ _journal_retire_legacy.stdout | default('') | regex_findall('"reason": "(collector_absent_volume_safe_to_initialize|collector_absent_positions_verified|collector_project_verified|collector_state_unverified|isolated_collector_state_unverified|collector_project_mismatch|legacy_collector_state_unverified|legacy_collector_identity_unverified|legacy_collector_remove_failed|collector_absence_unverified|positions_volume_preservation_unverified|legacy_collector_removed_volume_preserved|survey_failed)"') | first | default('unavailable') }}).
+          The existing v3 positions volume was preserved and no Compose start was requested.
+        quiet: true
+      when: not ansible_check_mode
+
     - name: Apply the collector and require exact-target Loki delivery
       when: not ansible_check_mode
       block:
@@ -678,7 +734,7 @@
 
         - name: Start only the journal collector service
           ansible.builtin.command:
-            argv: [podman-compose, -f, compose.yml, -f, compose.journal.yml, up, --no-deps, -d, journal-collector]
+            argv: [podman-compose, -p, o11y-journal, -f, compose.journal.yml, up, --no-deps, -d, journal-collector]
             chdir: "{{ _journal_deploy_dir }}"
           environment:
             O11Y_JOURNAL_DIRECTORY: "{{ _journal_directory }}"

@@ -110,6 +110,34 @@ python3 scripts/o11y-coverage-refresh.py \
 > this evidence does not establish full-estate coverage, gateway access-record
 > coverage, or a retention gate.
 
+> **Journal collector project-isolation follow-up (2026-10-18):** The normal
+> Dev-bound o11y deployment task 6836 completed healthy and removed the journal
+> collector as an orphan because both Compose files shared project `o11y`.
+> Read-only collector survey 6845 confirmed `collector_present=false` while the
+> existing v3 volume remained present in `volume_initialization_pending`; strict
+> logs receipt 6839 returned `no_evidence`. The survey also reported
+> `root_owner=matches_collector`, `entry_count=3`, and `journal_cursor=unavailable`;
+> it did not prove a cursor was absent. Independent metrics receipt 6840 and census
+> 6841 passed. This does not supersede the earlier Loki receipt: it proves
+> that the collector registration did not survive the subsequent normal deploy.
+> The source change isolates the collector in project `o11y-journal`, keeps the
+> exact v3 volume external under its existing `o11y` identity, and checks the
+> existing `o11y_o11y` network and the one-time old-container transition. The
+> change has not yet been staged or applied on Dev, so collector survival and a
+> fresh strict log receipt remain unverified. Keep OpenSpec tasks 6.2 and 7.4
+> open.
+>
+> **Pending-volume transition check (2026-10-18):** Read-only `survey-cursor`
+> task 6852 later reported `collector_present=false`, `volume_use_count=0`,
+> `journal_cursor=valid`, `root_owner=matches_collector`,
+> `status=volume_initialization_pending`, and `entry_count=3`. The apply helper's
+> existing pre-start verifier can map this class of no-copy-up pending state to
+> `ready` only when its full volume, cursor, layout, access, and capacity checks
+> pass. A regression test now exercises the absent-collector transition with that
+> complete verified state and confirms it does not mutate the v3 volume. Receipt
+> 6852 alone does not report every verifier input and is not a live apply result;
+> deployment and fresh log evidence remain outstanding.
+
 Tempo-derived service graphs and span metrics are disabled by default. The
 production opt-in requires numeric Semaphore receipts for capacity,
 backup/isolated restore, metrics, alert delivery, retention, and cardinality.

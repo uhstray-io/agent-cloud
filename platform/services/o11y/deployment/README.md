@@ -1209,12 +1209,26 @@ Local development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 
-The `Deploy o11y Journal Collector (Dev)` workflow uses only the fresh Compose
-volume `journal-collector-state-v3`, mounted at `/alloy-state` with long-syntax
-`volume.nocopy: true`. The v1 `journal-collector-state` and v2
+The `Deploy o11y Journal Collector (Dev)` workflow runs the collector in its own
+Compose project, `o11y-journal`, so the normal `o11y` deploy's
+`--remove-orphans` reconciliation cannot stop it. It joins the existing
+`o11y_o11y` network and mounts the exact external volume
+`o11y_journal-collector-state-v3` at `/alloy-state` with long-syntax
+`volume.nocopy: true`. Volume identity remains tied to the receiver project
+label `o11y`; the provider and runtime checks require the exact external network,
+volume name and labels, collector project/service labels, and live volume mount.
+The v1 `journal-collector-state` and v2
 `journal-collector-state-v2` volumes remain preserved for separate review. The
 new pilot never inspects, mounts, repairs, deletes, or falls back to either volume;
 survey, repair, verify, apply, and stop resolve only v3.
+
+During the one-time project transition, apply removes only the old
+`o11y-journal-collector` container by its inspected ID after its current project,
+network, v3 mount, readable cursor, and volume identity pass the existing gates.
+It then verifies the container is absent and the same v3 volume identity remains
+before starting the isolated Compose project. Removal never uses `-v`; a failed
+transition preserves the volume and refuses startup. Future main o11y deploys
+continue using `--remove-orphans` unchanged.
 
 After this playbook reaches Dev, select `stage` with the exact reviewed Dev SHA.
 The stage action uses the shared `place-monorepo.yml` task, reads back receiver
@@ -1243,8 +1257,10 @@ This threshold is separate from the 30% retention headroom gate.
 The `stage`, read-only `survey`, and `apply` actions require the installed target
 checkout to equal `expected_repository_sha` before they run the installed
 `podman-compose config` parser under `no_log`, then require its resolved journal
-service to retain the v3 volume source, `/alloy-state` destination, and
-`nocopy: true`. This is a provider-rendered configuration check. It is not proof
+service to retain the isolated project name, exact external network and volume
+names, `/alloy-state` destination, and `nocopy: true`. Survey and apply also
+read back the existing network's exact Compose identity. This is a provider-rendered
+configuration check. It is not proof
 that Podman applied the mount behavior; the operator must verify the actual new
 volume identity and runtime mount in the fresh Dev survey before any production
 collector start.
