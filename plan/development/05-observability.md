@@ -87,12 +87,14 @@ python3 scripts/o11y-coverage-refresh.py \
 > collector stage task 6795, survey 6796, survey-cursor 6800, and non-destructive
 > apply 6804 succeeded. The v3 positions volume was in safe pending state before
 > apply; all seven existing receiver containers remained unchanged, and the exact
-> bounded journal stream reached Loki. A direct Grafana query,
-> `sum(count_over_time({target_id="service:o11y"}[1h]))`, returned 19 with labels
-> `cluster=agent-cloud-prod`, `environment=prod`, `service=o11y/alloy`,
-> `signal=container`, and `target_id=service:o11y`. Private site-config PR #104
-> merged as `6f32209`; the inventory sync read back production record 2 as the
-> exact merged bytes.
+> bounded journal stream reached Loki. The direct Grafana aggregate
+> `sum(count_over_time({target_id="service:o11y"}[1h]))` returned 19 records;
+> the aggregate does not preserve stream labels. A separate label-preserving
+> Loki range query with exact selector
+> `{target_id="service:o11y",service="o11y/alloy",signal="container",cluster="agent-cloud-prod",environment="prod"}`
+> returned one stream and two bounded recent lines with matching labels. Private
+> site-config PR #104 merged as `6f32209`; the inventory sync read back production
+> record 2 as the exact merged bytes.
 >
 > Strict receipt task 6813 verified `service:o11y` logs and census task 6814
 > succeeded with 31 candidates, 9 declared targets, 0 duplicates, and 31
