@@ -54,7 +54,10 @@
     _prefix: "{{ prefix | default('') }}"
     _count: "{{ (count | default(2)) | int }}"
     _reserve: "{{ reserve | default(false) | bool }}"
-    _assignments: "{{ (assignments | from_json) if (assignments is string) else (assignments | default([])) }}"
+    # Report mode is often launched without this optional survey variable. Apply the
+    # default before testing its type so strict templating still resolves it to [];
+    # reservation validation below continues to require explicit named addresses.
+    _assignments: "{{ ((assignments | default([])) | from_json) if ((assignments | default([])) is string) else (assignments | default([])) }}"
   tasks:
     - name: "Require the inventory-owned NetBox endpoint"
       ansible.builtin.assert:
