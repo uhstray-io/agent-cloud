@@ -97,6 +97,7 @@ def test_undeclared_survey_values_are_refused_before_any_task():
     ("playbook", "platform/playbooks/deploy-o11y.yml"),
     ("repository_id", 99),
     ("inventory_id", 99),
+    ("survey_vars", [{"name": "unexpected", "type": "string"}]),
 ])
 def test_an_expected_template_binding_change_refuses_before_post(field, value):
     api = FakeAPI()
@@ -106,6 +107,19 @@ def test_an_expected_template_binding_change_refuses_before_post(field, value):
         launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False,
                         expected_template=expected)
     assert posts(api) == []
+
+
+def test_expected_template_ignores_only_runtime_task_history_fields():
+    api = FakeAPI()
+    api.template.update(tasks=[{"id": 1199}], last_task=1199)
+    expected = copy.deepcopy(api.template)
+    api.template.update(tasks=[{"id": 1200}], last_task=1200)
+
+    launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False,
+                    expected_template=expected)
+
+    assert api.created is not None
+    assert posts(api) == ["/tasks"]
 
 
 def dev_template(api, default="dev"):

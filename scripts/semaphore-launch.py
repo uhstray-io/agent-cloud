@@ -117,8 +117,14 @@ def launch(api, template_name, settings, dry_run, block=True, timeout=1800, expe
     if len(matches) != 1:
         raise Refusal(f"Expected one template named {template_name!r}")
     template = api(f"/templates/{matches[0]['id']}")
-    if expected_template is not None and template != expected_template:
-        raise Refusal(f"{template_name!r} changed during preflight; no task was launched")
+    if expected_template is not None:
+        if not isinstance(template, dict) or not isinstance(expected_template, dict):
+            raise Refusal(f"{template_name!r} changed during preflight; no task was launched")
+        runtime_fields = {"tasks", "last_task"}
+        current_config = {key: value for key, value in template.items() if key not in runtime_fields}
+        expected_config = {key: value for key, value in expected_template.items() if key not in runtime_fields}
+        if current_config != expected_config:
+            raise Refusal(f"{template_name!r} changed during preflight; no task was launched")
     if dry_run:
         require_dry_run_support((api("/info", project_scoped=False) or {}).get("version", "unknown"))
     busy = [t["id"] for t in api("/tasks/last")
