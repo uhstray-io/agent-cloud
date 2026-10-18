@@ -5496,7 +5496,9 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     assert visible | protected <= by_name.keys()
     assert all(by_name[name].get("no_log") is not True for name in visible)
     assert all(by_name[name].get("no_log") is True for name in protected)
-    assert by_name["Emit the fixed diagnostic line through the existing Alloy container stdout"].get("no_log") is not True
+    assert by_name[
+        "Emit the fixed diagnostic line through the existing Alloy container stdout"
+    ].get("no_log") is not True
     helper_actions = {
         "Verify positions volume identity and access before apply": "verify",
         "Recheck positions volume initialization immediately before mount": "verify",
@@ -5685,7 +5687,10 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
     ]
     assert "check_mode" not in emitter
     assert apply_task["when"] == "not ansible_check_mode"
-    emit_gate = next(task for task in apply_task["block"] if task.get("name") == "Require the synthetic proof line to be written")
+    emit_gate = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Require the synthetic proof line to be written"
+    )
     assert emit_gate["ansible.builtin.assert"]["that"] == "_journal_proof_emit.rc | default(1) == 0"
     assert any(
         task.get("name") == "Force-remove only the failed collector while retaining positions"
@@ -5783,7 +5788,10 @@ def test_journal_marker_writer_is_absent_from_check_mode_and_recent_logs_are_not
     assert emitter["when"] == "not ansible_check_mode"
     assert all("recent exact-name entry" not in task.get("name", "") for task in apply["tasks"])
     assert all("journal_probe_result" not in json.dumps(task) for task in apply["tasks"])
-    journal_stat = next(task for task in apply["tasks"] if task.get("name") == "Read the selected host journal directory")
+    journal_stat = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Read the selected host journal directory"
+    )
     assert journal_stat["ansible.builtin.stat"]["path"] == "{{ _journal_directory }}"
     assert "Require the rootless Compose UID to read a journal file" in json.dumps(apply["tasks"])
     url = Environment().from_string(apply["vars"]["_journal_loki_proof_query_url"]).render(
