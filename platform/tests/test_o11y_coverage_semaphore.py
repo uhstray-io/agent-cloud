@@ -270,6 +270,49 @@ class SemaphoreReceiptTests(unittest.TestCase):
         self.assertEqual(row["signals"]["logs"], "verified")
         self.assertEqual(row["signals"]["metrics"], "verified")
 
+    def test_controller_rejects_transient_id_reused_from_unoverridden_stable_binding(self):
+        payload, _data = controller_payload()
+        target = payload["inventory"]["targets"][0]
+        target["signals"]["metrics"] = copy.deepcopy(target["signals"]["logs"])
+        payload["inventory"]["receipt_bindings"]["service:census_test"]["metrics"] = {
+            "task_id": TASK_ID + 1, "template_id": TEMPLATE_ID,
+            "observation_window_seconds": 300,
+        }
+        payload["inventory"]["inventory_revision"] = CENSUS.canonical_inventory_revision(
+            payload["inventory"]["targets"]
+        )
+        payload["receipt_task_ids"] = json.dumps({
+            "service:census_test": {"logs": TASK_ID + 1},
+        })
+        reader_created = []
+
+        def reader_factory(*_args):
+            reader_created.append(True)
+            raise AssertionError("reused transient ID must not reach receipt readback")
+
+        with self.assertRaisesRegex(SEMAPHORE.Refusal, "transient_receipt_limit"):
+            SEMAPHORE.controller_report(payload, reader_factory=reader_factory, census_module=CENSUS)
+        self.assertEqual(reader_created, [])
+
+    def test_controller_rejects_legacy_pointer_override_before_readback(self):
+        payload, _data = controller_payload()
+        target = payload["inventory"]["targets"][0]
+        target["signals"]["logs"]["receipt_reference"] = f"semaphore/task/{TASK_ID}"
+        target["receipt_reference"] = {"logs": f"semaphore/task/{TASK_ID}"}
+        payload["inventory"]["inventory_revision"] = CENSUS.canonical_inventory_revision(
+            payload["inventory"]["targets"]
+        )
+        payload["receipt_task_ids"] = json.dumps({"service:census_test": {"logs": TASK_ID + 1}})
+        reader_created = []
+
+        def reader_factory(*_args):
+            reader_created.append(True)
+            raise AssertionError("legacy pointer override must not reach receipt readback")
+
+        with self.assertRaisesRegex(SEMAPHORE.Refusal, "transient_receipt_legacy_pointer"):
+            SEMAPHORE.controller_report(payload, reader_factory=reader_factory, census_module=CENSUS)
+        self.assertEqual(reader_created, [])
+
     def test_controller_rejects_malformed_or_forged_transient_ids_before_readback(self):
         invalid_overrides = (
             ('{"service:census_test":{"logs":123},"service:census_test":{"logs":124}}',
@@ -613,8 +656,9 @@ class SemaphoreReceiptTests(unittest.TestCase):
             "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
             "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
             "task_not_accepted", "task_override", "task_params", "task_time_order", "template_drift",
-            "template_mismatch", "terminal_stats", "transient_receipt_key", "transient_receipt_limit",
-            "transient_receipt_shape", "transient_receipt_size", "transport", "truncated_response",
+            "template_mismatch", "terminal_stats", "transient_receipt_key", "transient_receipt_legacy_pointer",
+            "transient_receipt_limit", "transient_receipt_shape", "transient_receipt_size",
+            "transport", "truncated_response",
         })
 
         def run_with(error):

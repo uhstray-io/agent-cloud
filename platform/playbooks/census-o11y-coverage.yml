@@ -22,6 +22,7 @@
       - deadline
       - http_status
       - transient_receipt_key
+      - transient_receipt_legacy_pointer
       - transient_receipt_limit
       - transient_receipt_shape
       - transient_receipt_size

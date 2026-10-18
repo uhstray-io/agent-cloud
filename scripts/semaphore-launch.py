@@ -112,11 +112,13 @@ def require_dry_run_support(version):
                       "flag, then add the version to VERIFIED_DRY_RUN_VERSIONS")
 
 
-def launch(api, template_name, settings, dry_run, block=True, timeout=1800):
+def launch(api, template_name, settings, dry_run, block=True, timeout=1800, expected_template=None):
     matches = [t for t in api("/templates") if t.get("name") == template_name]
     if len(matches) != 1:
         raise Refusal(f"Expected one template named {template_name!r}")
     template = api(f"/templates/{matches[0]['id']}")
+    if expected_template is not None and template != expected_template:
+        raise Refusal(f"{template_name!r} changed during preflight; no task was launched")
     if dry_run:
         require_dry_run_support((api("/info", project_scoped=False) or {}).get("version", "unknown"))
     busy = [t["id"] for t in api("/tasks/last")

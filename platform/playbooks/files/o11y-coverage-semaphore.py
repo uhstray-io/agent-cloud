@@ -57,7 +57,8 @@ SAFE_REFUSAL_CODES = frozenset({
     "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
     "task_not_accepted", "task_override", "task_params", "task_time_order", "template_drift",
     "template_mismatch", "terminal_stats", "transient_receipt_key", "transient_receipt_limit",
-    "transient_receipt_shape", "transient_receipt_size", "transport", "truncated_response",
+    "transient_receipt_shape", "transient_receipt_size", "transient_receipt_legacy_pointer",
+    "transport", "truncated_response",
 })
 
 
@@ -483,6 +484,12 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
     if not isinstance(transient_task_ids, dict):
         raise Refusal("transient_receipt_shape")
     targets_by_id = {target.get("target_id"): target for target in targets if isinstance(target, dict)}
+    stable_task_ids = {
+        binding["task_id"]
+        for signals in receipt_bindings.values()
+        for binding in signals.values()
+        if isinstance(binding, dict) and "task_id" in binding
+    }
     task_ids = []
     for target_id, signal_ids in transient_task_ids.items():
         if (not isinstance(target_id, str) or target_id not in receipt_bindings
@@ -496,9 +503,13 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
             if (not isinstance(binding, dict) or not isinstance(declaration, dict)
                     or declaration.get("applicable") is not True or not _positive_id(task_id)):
                 raise Refusal("transient_receipt_key")
+            if (signal in target.get("receipt_reference", {})
+                    or "receipt_reference" in declaration):
+                raise Refusal("transient_receipt_legacy_pointer")
             task_ids.append(task_id)
-            if len(task_ids) > MAX_TRANSIENT_TASK_IDS or len(set(task_ids)) != len(task_ids):
-                raise Refusal("transient_receipt_limit")
+    if (len(task_ids) > MAX_TRANSIENT_TASK_IDS
+            or len(set(task_ids)) != len(task_ids) or stable_task_ids.intersection(task_ids)):
+        raise Refusal("transient_receipt_limit")
     receipt_bindings = {
         target_id: {signal: dict(binding) for signal, binding in signals.items()}
         for target_id, signals in receipt_bindings.items()

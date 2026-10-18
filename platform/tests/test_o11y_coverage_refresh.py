@@ -177,7 +177,37 @@ class CoverageRefreshTests(unittest.TestCase):
         self.assertEqual(calls[1][1]["observation_window_seconds"], 600)
         transient = json.loads(calls[2][1]["receipt_task_ids"])
         self.assertEqual(transient, {"service:alpha": {"logs": 701, "metrics": 702}})
-        self.assertTrue(all(call[2] == {"dry_run": False, "block": True} for call in calls))
+        self.assertEqual(calls[0][2], {
+            "dry_run": False, "block": True, "expected_template": {"id": 315},
+        })
+        self.assertEqual(calls[1][2], {
+            "dry_run": False, "block": True, "expected_template": {"id": 315},
+        })
+        self.assertEqual(calls[2][2], {
+            "dry_run": False, "block": True, "expected_template": {"id": 316},
+        })
+
+    def test_legacy_receipt_pointer_refuses_before_any_task_launch(self):
+        target = {
+            "target_id": "service:alpha",
+            "signals": {"logs": {
+                "applicable": True, "selector": '{target_id="service:alpha"}',
+                "freshness_seconds": 600, "receipt_reference": "semaphore/task/701",
+            }},
+            "receipt_reference": {"logs": "semaphore/task/701"},
+        }
+        declarations = {
+            "targets": [target],
+            "receipt_bindings": {"service:alpha": {
+                "logs": {"template_id": 315, "observation_window_seconds": 300},
+            }},
+        }
+        with patch.object(REFRESH, "reviewed_declarations", return_value=(
+            {"id": 315}, {"id": 316}, declarations, "a" * 64,
+        )), patch.object(REFRESH._launcher, "launch") as launch, \
+                self.assertRaisesRegex(REFRESH.Refusal, "transient_receipt_legacy_pointer"):
+            REFRESH.launch_cohort(object(), [("service:alpha", "logs")], "b" * 40)
+        launch.assert_not_called()
 
     def test_failed_receipt_task_stops_before_census_launch(self):
         declarations = {

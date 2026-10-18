@@ -115,6 +115,20 @@ def test_locate_resolves_names_and_preflight_requires_the_isolated_binding():
     assert not any(body for _, body in api.calls)
 
 
+@pytest.mark.parametrize("response", [None, [], {}, {"id": 0}, {"id": True}, {"id": "900"}])
+def test_malformed_task_submission_response_is_uncertain_and_not_retried(response):
+    calls = []
+
+    def api(path, body=None):
+        calls.append((path, body))
+        return response
+
+    with pytest.raises(core.Refusal, match="Seed fixture: submission outcome uncertain.*no valid task id") as error:
+        core.submit(api, {"project_id": 1}, "Seed fixture")
+    assert "check the template's tasks before launching again" in str(error.value)
+    assert calls == [("/tasks", {"project_id": 1})]
+
+
 def test_seed_stages_runs_once_with_settings_and_removes_only_its_input(capsys):
     api = FakeAPI()
     cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET},

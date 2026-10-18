@@ -156,6 +156,9 @@ def launch_cohort(api, selected, expected_dev_sha):
                 or binding.get("template_id") != receipt_template["id"]
                 or not _positive_id(binding.get("observation_window_seconds"))):
             raise Refusal("selected_target_signal_not_bound")
+        if (signal in target.get("receipt_reference", {})
+                or "receipt_reference" in declaration):
+            raise Refusal("transient_receipt_legacy_pointer")
     for target_id, signal in selected:
         target = targets[target_id]
         declaration = target["signals"][signal]
@@ -169,7 +172,7 @@ def launch_cohort(api, selected, expected_dev_sha):
             "signal_selector": declaration["selector"],
             "freshness_seconds": declaration["freshness_seconds"],
             "observation_window_seconds": binding["observation_window_seconds"],
-        }, dry_run=False, block=True)
+        }, dry_run=False, block=True, expected_template=receipt_template)
         if not _positive_id(_task_id):
             raise Refusal("receipt_task_id_invalid_after_launch; inspect Semaphore before retrying")
         if status != "success":
@@ -178,7 +181,7 @@ def launch_cohort(api, selected, expected_dev_sha):
     _task_id, status = _launcher.launch(api, CENSUS_TEMPLATE, {
         "expected_repository_sha": expected_dev_sha,
         "receipt_task_ids": json.dumps(fresh_ids, sort_keys=True, separators=(",", ":")),
-    }, dry_run=False, block=True)
+    }, dry_run=False, block=True, expected_template=census_template)
     if not _positive_id(_task_id):
         raise Refusal("census_task_id_invalid_after_launch; inspect Semaphore before retrying")
     if status != "success":
