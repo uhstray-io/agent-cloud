@@ -1615,6 +1615,17 @@
               - _active_rules.stdout | from_json | map(attribute='uid') | select('in', _o11y_withdrawn_uids) | list | length == 0
             fail_msg: "Live Grafana alert rules do not match the provisioned rules file (missing, extra or withdrawn)."
 
+        - name: Require the live agentgateway trace-silence query to equal its provisioned expression
+          ansible.builtin.assert:
+            that:
+              - _o11y_trace_silence_expected | length == 1
+              - _o11y_trace_silence_live | length == 1
+              - _o11y_trace_silence_live[0].data[0].model.expr == _o11y_trace_silence_expected[0].data[0].model.expr
+            fail_msg: "Live agentgateway trace-silence rule is missing or its Prometheus expression differs from the provisioned file."
+          vars:
+            _o11y_trace_silence_expected: "{{ _o11y_expected_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
+            _o11y_trace_silence_live: "{{ _o11y_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
+
         # Same uid order on both sides (asserted above), so each field compares rule by
         # rule; absent or null maps compare as empty maps. The durations are strings in
         # the 11.4 AlertRuleNotificationSettings schema.
