@@ -86,7 +86,7 @@ def test_fixed_debian_provenance_sha512_and_proxmox_readbacks_are_enforced():
         tasks[task_names.index("Require live import and VM image storage capabilities")]["ansible.builtin.assert"]
     )
     assert "Require a matching cloud-init template" in task_names
-    assert "status_code: [200, 404]" in text
+    assert "status_code: [200, 404, 500]" in text
     assert "cluster/resources?type=vm" in text
     assert "cluster/nextid?vmid={{ _vmid }}" in text
     assert "status_code: 200" in text
@@ -94,6 +94,29 @@ def test_fixed_debian_provenance_sha512_and_proxmox_readbacks_are_enforced():
     assert "curl" not in text
     assert "api_token" not in " ".join(str(task.get("ansible.builtin.debug", {})) for task in tasks)
     assert not any("status/start" in str(task) for task in tasks)
+
+
+def test_config_http_500_is_absence_only_when_exact_vmid_check_proves_free():
+    plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
+    tasks = plays[2]["tasks"]
+    names = [task["name"] for task in tasks]
+    config_index = names.index("Read the exact declared VM configuration if present")
+    nextid_index = names.index("Ask Proxmox whether the exact VMID is free")
+    collision_index = names.index("Refuse VMID collisions and mismatched partial templates")
+    config_statuses = tasks[config_index]["ansible.builtin.uri"]["status_code"]
+    gate = tasks[collision_index]["ansible.builtin.assert"]["that"]
+
+    assert config_statuses == [200, 404, 500]
+    assert config_index < nextid_index < collision_index
+    assert any("_existing_config.status in [404, 500]" in item for item in gate)
+    assert any("_exact_vmid_check.status == 200" in item for item in gate)
+    assert any(
+        "_existing_config.status == 200 and _exact_vmid_check.status == 400" in item
+        for item in gate
+    )
+    assert any("_existing_config.status == 200 or _vmid_rows | length == 0" in item for item in gate)
+    create = tasks[names.index("Create the VM from the verified image when its VMID is free")]
+    assert create["when"] == "_existing_config.status in [404, 500]"
 
 
 def test_every_pve_write_follows_review_mode_inventory_and_collision_gates():

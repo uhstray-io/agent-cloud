@@ -169,7 +169,9 @@
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
         method: GET
-        status_code: [200, 404]
+        # Some PVE versions return 500 for a missing per-node config. That is only
+        # classified as absence after exact /cluster/nextid proves this VMID free.
+        status_code: [200, 404, 500]
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _existing_config
@@ -196,16 +198,21 @@
     - name: Refuse VMID collisions and mismatched partial templates
       ansible.builtin.assert:
         that:
-          - _existing_config.status == 200 or (_exact_vmid_check.status == 200 and _exact_vmid_check.json.data | int == _vmid | int)
+          - >-
+            (_existing_config.status == 200 and _exact_vmid_check.status == 400)
+            or (_existing_config.status in [404, 500]
+            and _exact_vmid_check.status == 200
+            and _exact_vmid_check.json.data | int == _vmid | int)
           - _vmid_rows | length <= 1
           - _vmid_rows | length == 0 or (_vmid_rows[0].type | default('')) == 'qemu'
           - _vmid_rows | length == 0 or (_vmid_rows[0].node | default('')) == _node
-          - _existing_config.status == 404 or (_existing.name | default('')) == _name
-          - _existing_config.status == 404 or (_existing.description | default('')) == _template_description
-          - _existing_config.status == 404 or (_existing.ostype | default('')) == 'l26'
-          - _existing_config.status == 404 or (_existing.ide2 | default('')) is search('cloudinit')
-          - _existing_config.status == 404 or (_existing.scsi0 | default('')) is search('^' ~ _disk_storage ~ ':')
-          - _existing_config.status == 404 or (_existing.template | default(0) | int) in [0, 1]
+          - _existing_config.status == 200 or _vmid_rows | length == 0
+          - _existing_config.status != 200 or (_existing.name | default('')) == _name
+          - _existing_config.status != 200 or (_existing.description | default('')) == _template_description
+          - _existing_config.status != 200 or (_existing.ostype | default('')) == 'l26'
+          - _existing_config.status != 200 or (_existing.ide2 | default('')) is search('cloudinit')
+          - _existing_config.status != 200 or (_existing.scsi0 | default('')) is search('^' ~ _disk_storage ~ ':')
+          - _existing_config.status != 200 or (_existing.template | default(0) | int) in [0, 1]
         fail_msg: "The exact VMID is occupied by another guest or a mismatched Debian template declaration."
         quiet: true
       no_log: true
@@ -295,7 +302,7 @@
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _create_task
-      when: _existing_config.status == 404
+      when: _existing_config.status in [404, 500]
       no_log: true
 
     - name: Wait for VM disk import and creation
@@ -309,13 +316,13 @@
       until: _create_status.json.data.status | default('') == 'stopped'
       retries: 120
       delay: 5
-      when: _existing_config.status == 404
+      when: _existing_config.status in [404, 500]
       no_log: true
       check_mode: false
 
     - name: Require successful VM creation
       ansible.builtin.assert:
-        that: _existing_config.status != 404 or (_create_status.json.data.exitstatus | default('')) == 'OK'
+        that: _existing_config.status not in [404, 500] or (_create_status.json.data.exitstatus | default('')) == 'OK'
         fail_msg: "Proxmox did not complete the Debian template VM creation."
         quiet: true
       no_log: true
