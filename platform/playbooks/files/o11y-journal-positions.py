@@ -11,8 +11,11 @@ from datetime import UTC, datetime
 IMAGE = "docker.io/grafana/alloy:v1.9.2"
 RECEIVER = "o11y-alloy"
 COLLECTOR = "o11y-journal-collector"
+COLLECTOR_PROJECT = "o11y-journal"
 VOLUME_KEY = "journal-collector-state-v3"
 DATA_PATH = "/alloy-state"
+NETWORK_NAME = "o11y_o11y"
+NETWORK_PROJECT = "o11y"
 MAX_VOLUMES = 256
 MAX_CONTAINERS = 1024
 MAX_CHILDREN = 32
@@ -1035,6 +1038,22 @@ def _volume_names(result):
     return names
 
 
+def verify_network(run=subprocess.run):
+    result = _call(["podman", "network", "inspect", "--format", "json", NETWORK_NAME], run=run)
+    rows = _rows(_json(result))
+    if rows is None or len(rows) != 1:
+        return {"status": "unavailable", "reason": "network_unavailable"}
+    network = rows[0]
+    labels = network.get("Labels")
+    if (
+        network.get("Name") != NETWORK_NAME
+        or not isinstance(labels, dict)
+        or labels.get("com.docker.compose.project") != NETWORK_PROJECT
+    ):
+        return {"status": "refused", "reason": "network_identity_mismatch"}
+    return {"status": "verified", "reason": "network_identity_verified"}
+
+
 def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
     rootless = _call(["podman", "info", "--format={{.Host.Security.Rootless}}"], run=run)
     if rootless is None or rootless.returncode != 0 or rootless.stdout.strip().lower() != "true":
@@ -1055,6 +1074,33 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
     if container_names is None or len(container_names) > MAX_CONTAINERS:
         return {"status": "container_inventory_unavailable"}
     collector_present = COLLECTOR in container_names
+    collector_project = None
+    collector_id = None
+    collector_networks = []
+    if collector_present:
+        collector_rows = _rows(_json(_call([
+            "podman", "inspect", "--type", "container", "--format", "json", COLLECTOR,
+        ], run=run)))
+        if collector_rows is None or len(collector_rows) != 1:
+            return {"status": "collector_identity_unverified"}
+        collector = collector_rows[0]
+        collector_config = collector.get("Config")
+        collector_labels = collector_config.get("Labels") if isinstance(collector_config, dict) else None
+        if (
+            not isinstance(collector_labels, dict)
+            or collector_labels.get("com.docker.compose.service") != "journal-collector"
+            or collector_labels.get("com.docker.compose.project") not in (project, COLLECTOR_PROJECT)
+        ):
+            return {"status": "collector_identity_unverified"}
+        collector_project = collector_labels["com.docker.compose.project"]
+        network_settings = collector.get("NetworkSettings")
+        network_map = network_settings.get("Networks") if isinstance(network_settings, dict) else None
+        if not isinstance(network_map, dict) or not all(isinstance(name, str) for name in network_map):
+            return {"status": "collector_identity_unverified"}
+        collector_networks = sorted(network_map)
+        collector_id = collector.get("Id")
+        if not isinstance(collector_id, str) or not re.fullmatch(r"[0-9a-f]{64}", collector_id):
+            return {"status": "collector_identity_unverified"}
     expected_name = f"{project}_{VOLUME_KEY}"
     named_names = _volume_names(_call([
         "podman", "volume", "ls", "--quiet", "--filter",
@@ -1081,6 +1127,9 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
             "volume_inventory_complete": True,
             "name_collision": False,
             "collector_present": collector_present,
+            "collector_project": collector_project,
+            "collector_id": collector_id,
+            "collector_networks": collector_networks,
             "storage_space": _store_space(run),
         }
     if named_names != [expected_name] or (label_names and label_names != named_names):
@@ -1163,7 +1212,24 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
         collector = _rows(_json(_call(inspect_collector, run=run)))
         if collector is None or len(collector) != 1:
             return finish({"status": "collector_mount_unverified", "volume_use_count": 1, "collector_present": True})
-        mounts = collector[0].get("Mounts")
+        collector = collector[0]
+        second_config = collector.get("Config")
+        second_labels = second_config.get("Labels") if isinstance(second_config, dict) else None
+        second_network_settings = collector.get("NetworkSettings")
+        second_network_map = (
+            second_network_settings.get("Networks")
+            if isinstance(second_network_settings, dict) else None
+        )
+        if (
+            collector.get("Id") != collector_id
+            or not isinstance(second_labels, dict)
+            or second_labels.get("com.docker.compose.project") != collector_project
+            or second_labels.get("com.docker.compose.service") != "journal-collector"
+            or not isinstance(second_network_map, dict)
+            or sorted(second_network_map) != collector_networks
+        ):
+            return finish({"status": "collector_identity_unverified", "volume_use_count": 1, "collector_present": True})
+        mounts = collector.get("Mounts")
         if isinstance(mounts, list) and all(isinstance(item, dict) for item in mounts):
             exact = [item for item in mounts if isinstance(item, dict) and item.get("Destination") == DATA_PATH]
             live_mount["destination"] = "match" if len(exact) == 1 else "mismatch"
@@ -1179,7 +1245,7 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
                 rw = item.get("RW")
                 if type(rw) is bool:
                     live_mount["rw"] = "match" if rw is True else "mismatch"
-        config = collector[0].get("Config")
+        config = collector.get("Config")
         if isinstance(config, dict) and isinstance(config.get("User"), str):
             live_mount["user"] = "match" if config["User"] == "0:0" else "mismatch"
         exact = (
@@ -1216,6 +1282,9 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
         "volume_use_count": len(names),
         "mount_count": mount_count,
         "collector_present": collector_present,
+        "collector_project": collector_project,
+        "collector_id": collector_id,
+        "collector_networks": collector_networks,
         "collector_mount_verified": collector_mount_verified,
         "project": project,
         "volume": volume,
@@ -2217,6 +2286,8 @@ def verify_live(discover_fn=None):
         return refused(found.get("status", "unavailable"))
     if (
         found.get("collector_present") is not True
+        or found.get("collector_project") != COLLECTOR_PROJECT
+        or NETWORK_NAME not in found.get("collector_networks", [])
         or type(found.get("volume_use_count")) is not int
         or found["volume_use_count"] != 1
         or type(found.get("mount_count")) is not int
@@ -2237,6 +2308,55 @@ def verify_live(discover_fn=None):
     }
 
 
+def retire_legacy_collector(run=subprocess.run):
+    found = discover(run=run, read_cursor=True)
+    if found.get("collector_present") is not True:
+        gate = verify(lambda: found)
+        if gate.get("status") == "bootstrap_allowed":
+            return {"status": "already_absent", "reason": "collector_absent_volume_safe_to_initialize"}
+        if gate.get("status") == "ready":
+            return {"status": "already_absent", "reason": "collector_absent_positions_verified"}
+        return {"status": "refused", "reason": "collector_state_unverified"}
+    if found.get("collector_project") == COLLECTOR_PROJECT:
+        if (
+            NETWORK_NAME in found.get("collector_networks", [])
+            and found.get("collector_mount_verified") is True
+            and verify(lambda: found).get("status") == "ready"
+        ):
+            return {"status": "already_isolated", "reason": "collector_project_verified"}
+        return {"status": "refused", "reason": "isolated_collector_state_unverified"}
+    if found.get("collector_project") != found.get("project"):
+        return {"status": "refused", "reason": "collector_project_mismatch"}
+    if (
+        NETWORK_NAME not in found.get("collector_networks", [])
+        or found.get("collector_mount_verified") is not True
+        or verify(lambda: found).get("status") != "ready"
+    ):
+        return {"status": "refused", "reason": "legacy_collector_state_unverified"}
+
+    volume_name = found.get("volume_name")
+    before = found.get("volume")
+    container_id = found.get("collector_id")
+    if not isinstance(volume_name, str) or not isinstance(before, dict) or not isinstance(container_id, str):
+        return {"status": "refused", "reason": "legacy_collector_identity_unverified"}
+    removed = _call(["podman", "rm", "--force", "--time", "10", container_id], run=run)
+    if removed is None or removed.returncode != 0:
+        return {"status": "refused", "reason": "legacy_collector_remove_failed"}
+    containers = _rows(_json(_call(["podman", "ps", "--all", "--format", "json"], run=run)))
+    names = _container_names(containers)
+    after_rows = _rows(_json(_call(["podman", "volume", "inspect", volume_name], run=run)))
+    after = after_rows[0] if after_rows is not None and len(after_rows) == 1 else None
+    if names is None or COLLECTOR in names:
+        return {"status": "uncertain", "reason": "collector_absence_unverified"}
+    if (
+        after is None
+        or _volume_identity(after, volume_name, found.get("project")) != "match"
+        or _volume_identity_tuple(after) != _volume_identity_tuple(before)
+    ):
+        return {"status": "uncertain", "reason": "positions_volume_preservation_unverified"}
+    return {"status": "retired", "reason": "legacy_collector_removed_volume_preserved"}
+
+
 def main():
     actions = {
         "survey": survey,
@@ -2244,6 +2364,8 @@ def main():
         "repair-positions": repair_positions,
         "verify": verify,
         "verify-live": verify_live,
+        "verify-network": verify_network,
+        "retire-legacy": retire_legacy_collector,
     }
     action = sys.argv[1] if len(sys.argv) == 2 else ""
     try:

@@ -1,3 +1,7 @@
+# Keep the collector outside the receiver project so its `--remove-orphans`
+# deploy cannot stop it; external resources retain their original identities.
+name: o11y-journal
+
 services:
   journal-collector:
     # Keep this service dependency-free: applying it must never reconcile an
@@ -45,7 +49,12 @@ services:
       retries: 8
       start_period: 20s
 
+networks:
+  o11y:
+    name: o11y_o11y
+    external: true
+
 volumes:
   journal-collector-state-v3:
-    labels:
-      com.docker.compose.volume: journal-collector-state-v3
+    name: o11y_journal-collector-state-v3
+    external: true
