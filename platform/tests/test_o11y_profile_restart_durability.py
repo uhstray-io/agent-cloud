@@ -379,13 +379,29 @@ def test_receiver_play_vars_render_the_real_disabled_alloy_template():
     template.filters["bool"] = bool
     template.filters["to_json"] = json.dumps
 
-    rendered = template.from_string(template_path.read_text()).render(
+    render_values = {
         **play_vars, **receiver_play["vars"], **render_task["vars"],
-        local_mode=False, o11y_cluster="test-cluster", o11y_gateway_span_logs_enabled=False,
-    )
+        "o11y_cluster": "test-cluster", "o11y_gateway_span_logs_enabled": False,
+    }
+    source = template_path.read_text()
+    rendered = template.from_string(source).render(**render_values, local_mode=False)
 
-    assert f"regex  = {json.dumps(play_vars['_o11y_forbidden_metric_label_names_regex'])}" in rendered
+    assert 'loki.write "default"' in rendered
+    assert 'discovery.docker "containers"' not in rendered
+    assert 'loki.source.docker "default"' not in rendered
+    assert 'discovery.relabel "metrics"' not in rendered
+    assert 'prometheus.scrape "local_containers"' not in rendered
+    assert 'prometheus.relabel "bounded_labels"' not in rendered
+    assert 'prometheus.remote_write "local"' not in rendered
+    assert f"regex  = {json.dumps(play_vars['_o11y_forbidden_metric_label_names_regex'])}" not in rendered
     assert 'pyroscope.scrape "alloy_self_profile"' not in rendered
+
+    local_rendered = template.from_string(source).render(**render_values, local_mode=True)
+    assert 'discovery.docker "containers"' in local_rendered
+    assert 'loki.source.docker "default"' in local_rendered
+    assert 'prometheus.scrape "local_containers"' in local_rendered
+    assert 'prometheus.relabel "bounded_labels"' in local_rendered
+    assert f"regex  = {json.dumps(play_vars['_o11y_forbidden_metric_label_names_regex'])}" in local_rendered
 
 
 @needs_ansible

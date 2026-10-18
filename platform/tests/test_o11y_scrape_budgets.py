@@ -117,6 +117,9 @@ def test_alloy_socket_discovery_and_container_metrics_render_only_in_local_mode(
         assert component in local
         assert component not in production
 
+    assert f"regex  = {json.dumps(POLICY)}" in local
+    assert f"regex  = {json.dumps(POLICY)}" not in production
+
     for component in (
         'loki.write "default"',
         'otelcol.receiver.otlp "traces"',
