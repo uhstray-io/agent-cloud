@@ -59,6 +59,24 @@ without the span bridge and live profile data. Grafana 12 trace-correlations
 UI evaluation is separate and remains behind backup/restore and capacity
 gates.
 
+> **Trace-to-Loki correlation source update (2026-10-17):** Grafana's
+> provisioned Tempo datasource uses a custom LogQL query that filters the exact
+> trace ID in either the JSON `traceid` field or a `tid` token inside the parsed
+> JSON `body` field, with the existing -2s/+2s span window. This bypasses
+> Grafana's built-in substring trace-ID filter; built-in trace and span filters
+> remain off. The custom query accounts for the observed canonicalization where
+> a 31-character Tempo trace ID is stored in logs as 32 characters with a
+> leading zero. Read-only production evidence for one sampled agentgateway
+> trace found three matching Loki records in an exact five-second query
+> window: one `traceid` field and two `body` fields containing a `tid` token.
+> The Loki derived-field regex already links trace IDs back to Tempo. This
+> bounded evidence covers only these observed agentgateway formats; other
+> services remain unproven. It does not establish a Grafana browser click-
+> through or that the updated provisioning has been deployed. Tempo search
+> works; service-graph and span-metric series remain absent because their
+> processors are disabled pending backup/isolated-restore and capacity
+> evidence.
+
 > **Source configuration status, 2026-09-29:** The o11y service-graph and
 > span-metrics config, Grafana correlations, production receipt checks, and
 > coverage contract are implemented on the feature branch. The metrics

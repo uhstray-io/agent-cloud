@@ -45,8 +45,12 @@ datasources:
         tags:
           - key: service.name
             value: service
+        spanStartTimeShift: '-2s'
+        spanEndTimeShift: '2s'
         filterByTraceID: false
         filterBySpanID: false
+        customQuery: true
+        query: '{$${__tags}} | json | (traceid=~"0*$${__trace.traceId}" or body=~".*(^|[[:space:]])tid=0*$${__trace.traceId}([[:space:]]|$).*")'
       serviceMap:
         datasourceUid: prometheus
       tracesToProfiles:
