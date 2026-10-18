@@ -701,7 +701,6 @@
         _journal_retire_legacy.rc | default(1) == 0
         and (_journal_retire_legacy.stdout | default('') is regex('^\\{"reason": "legacy_collector_removed_volume_preserved", "status": "retired"\\}$'))
       failed_when: false
-      check_mode: false
       when: not ansible_check_mode
 
     - name: Require the old container to be absent with v3 state preserved

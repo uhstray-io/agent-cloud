@@ -5552,6 +5552,8 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     assert "rc | default(1) == 0" in retire["changed_when"]
     assert "stdout | default('') is regex" in retire["changed_when"]
     assert "no_log" not in retire
+    assert retire.get("check_mode") is not False
+    assert retire["when"] == "not ansible_check_mode"
     transition_assert = by_name["Require the old container to be absent with v3 state preserved"]
     transition_fail_msg = transition_assert["ansible.builtin.assert"]["fail_msg"]
     assert "regex_findall" in transition_fail_msg
