@@ -18,6 +18,8 @@
 - [ ] 3.1 Record the passed metrics, alert, retention, and cardinality gates; make trace enablement refuse an incomplete gate.
 - [x] 3.2 Add a real Alloy OTLP-to-Tempo path with a pinned image, inventory-controlled retention, self-hosted storage, and no receiver without a consumer. The production receiver health and trace receipts passed.
 - [ ] 3.3 Instrument one service with the stable service identity and verify trace-to-log and trace-to-metric pivots through the provisioned datasource.
+  - [x] 3.3a Provision trace-to-Loki correlation with exact trace-ID filtering and a bounded -2s/+2s span window; keep span-ID filtering disabled and assert the settings in deployment readback. Static config and focused assertions are implemented. A read-only production sample (2026-10-17) found three Loki records for the sampled agentgateway trace ID in an exact five-second query window; the then-current live datasource readback still had `filterByTraceID=false`. This is bounded query evidence, not a Grafana click-through or evidence that the new provisioning has been deployed.
+  - Trace-to-metric and service-graph/span-metric series remain absent because Tempo processors are disabled pending backup/isolated-restore and capacity evidence. Keep 3.3 open until the required pivots and browser click-through are verified on the provisioned datasource.
 - [ ] 3.4 Validation gate: a refused premature enablement and a successful pilot trace query prove spec scenario "Trace rollout gate" and re-prove "Operator pivots between signals".
 
 ## 4. Local review and production receipt

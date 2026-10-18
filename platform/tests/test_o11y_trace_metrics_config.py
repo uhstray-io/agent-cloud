@@ -115,10 +115,31 @@ def test_tempo_datasource_keeps_log_link_and_provisions_service_map_metric_and_p
         }
     ]
     assert tempo["tracesToLogsV2"]["datasourceUid"] == "loki"
+    assert tempo["tracesToLogsV2"]["tags"] == [
+        {"key": "service.name", "value": "service"}
+    ]
+    assert tempo["tracesToLogsV2"]["spanStartTimeShift"] == "-2s"
+    assert tempo["tracesToLogsV2"]["spanEndTimeShift"] == "2s"
+    assert tempo["tracesToLogsV2"]["filterByTraceID"] is True
+    assert tempo["tracesToLogsV2"]["filterBySpanID"] is False
     assert tempo["tracesToProfiles"]["datasourceUid"] == "pyroscope"
     assert tempo["tracesToProfiles"]["tags"] == [
         {"key": "service.name", "value": "service_name"}
     ]
+
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
+    tempo_check = next(
+        task
+        for play in playbook
+        for task in play.get("tasks", [])
+        if task.get("name") == "Require live Tempo trace-to-metric and trace-to-log mappings"
+    )
+    assert {
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanStartTimeShift == '-2s'",
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanEndTimeShift == '2s'",
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterByTraceID == true",
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterBySpanID == false",
+    } <= set(tempo_check["ansible.builtin.assert"]["that"])
 
 
 def test_production_retention_requires_numeric_backup_restore_reference_before_writes():

@@ -1151,6 +1151,10 @@
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.queries | selectattr('name', 'equalto', 'Span calls') | selectattr('query', 'equalto', 'sum(rate(traces_spanmetrics_calls_total{$__tags}[5m]))') | list | length == 1
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.datasourceUid == 'loki'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service') | list | length == 1
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanStartTimeShift == '-2s'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanEndTimeShift == '2s'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterByTraceID == true
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterBySpanID == false
           - (_tempo_datasource_config.stdout | from_json).jsonData.serviceMap.datasourceUid == 'prometheus'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.datasourceUid == 'pyroscope'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.profileTypeId == 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'

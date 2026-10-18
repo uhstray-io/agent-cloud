@@ -45,7 +45,9 @@ datasources:
         tags:
           - key: service.name
             value: service
-        filterByTraceID: false
+        spanStartTimeShift: '-2s'
+        spanEndTimeShift: '2s'
+        filterByTraceID: true
         filterBySpanID: false
       serviceMap:
         datasourceUid: prometheus

@@ -59,6 +59,20 @@ without the span bridge and live profile data. Grafana 12 trace-correlations
 UI evaluation is separate and remains behind backup/restore and capacity
 gates.
 
+> **Trace-to-Loki correlation source update (2026-10-17):** Grafana's
+> provisioned Tempo datasource now filters trace-to-log queries by the exact
+> trace ID and expands the span interval by two seconds on each side; span-ID
+> filtering remains off. The o11y deploy readback asserts those four settings.
+> Read-only production evidence for one sampled agentgateway trace found three
+> matching Loki records in an exact five-second query window, while the
+> then-current production datasource readback still reported
+> `filterByTraceID=false`. The Loki derived-field regex already links trace IDs
+> back to Tempo. This bounded query/readback evidence does not establish a
+> Grafana browser click-through or that the updated provisioning has been
+> deployed. Tempo search works; service-graph and span-metric series remain
+> absent because their processors are disabled pending backup/isolated-restore
+> and capacity evidence.
+
 > **Source configuration status, 2026-09-29:** The o11y service-graph and
 > span-metrics config, Grafana correlations, production receipt checks, and
 > coverage contract are implemented on the feature branch. The metrics
