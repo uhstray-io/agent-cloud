@@ -70,6 +70,38 @@ def test_no_import_capable_file_storage_is_a_fixed_absence() -> None:
     assert result["active_file_import_stores"] == []
 
 
+def test_selector_does_not_recommend_glusterfs_import_storage() -> None:
+    data = sample()
+    data["node_storage"].append(
+        {"storage": "unsupported-import", "type": "glusterfs", "content": "import", "active": 1}
+    )
+    data["cluster_storage"].append(
+        {
+            "storage": "unsupported-import",
+            "type": "glusterfs",
+            "content": "import",
+            "nodes": "node-a",
+            "disable": 0,
+        }
+    )
+
+    result = MODULE.inspect(data)
+
+    assert "unsupported-import" not in {
+        item["storage"] for item in result["active_file_import_stores"]
+    }
+
+
+def test_inactive_storage_is_returned_by_proxmox_but_not_recommended() -> None:
+    data = sample()
+
+    result = MODULE.inspect(data)
+
+    assert "inactive-dir" not in {
+        item["storage"] for item in result["active_file_import_stores"]
+    }
+
+
 def test_selector_refuses_mismatched_exact_nextid_echo() -> None:
     data = sample()
     data["nextid_checks"][1]["data"] = 402

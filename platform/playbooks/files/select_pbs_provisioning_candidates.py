@@ -8,7 +8,9 @@ import re
 import sys
 from typing import Any
 
-FILE_STORAGE_TYPES = {"dir", "nfs", "cifs", "cephfs", "glusterfs"}
+# Keep this aligned with provision-pbs-debian-template.yml's supported import
+# storage types. A survey must never recommend a store the publisher rejects.
+FILE_STORAGE_TYPES = {"dir", "nfs", "cifs", "cephfs"}
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
