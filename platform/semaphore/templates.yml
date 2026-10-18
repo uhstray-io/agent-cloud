@@ -2158,6 +2158,30 @@ templates:
     # Emits counts and fixed status only. Debian names and guest type are hints;
     # image provenance requires a trusted build receipt and is not inferred here.
 
+  - name: Provision PBS Debian Cloud Template (Dev)
+    playbook: platform/playbooks/provision-pbs-debian-template.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for pinned Debian cloud template publication"
+        type: string
+        required: true
+    # VM identity, node, stage storage and destination storage are private inventory
+    # declarations. The publication play refuses check mode and never starts a VM.
+
+  - name: Survey PBS Provisioning Candidates (Dev)
+    playbook: platform/playbooks/survey-pbs-provisioning-candidates.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only PBS identity and storage survey"
+        type: string
+        required: true
+    # The exact free VMIDs and active storage capabilities are shown only in this
+    # private Semaphore task output. No Proxmox or storage configuration is changed.
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev
@@ -2686,6 +2710,16 @@ templates:
         description: "Which declared host to provision — REQUIRED when the group declares more than one"
         type: string
         required: false
+
+  - name: Provision PBS VM (Dev)
+    playbook: platform/playbooks/provision-pbs-vm.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).

@@ -1,0 +1,439 @@
+---
+# Publish one pinned Debian 13 generic cloud image as an importable PVE template.
+# Debian's current cloud-image publication is pinned by the reviewed SHA-512 below
+# and fetched from its fixed official HTTPS host. Debian does not provide a detached
+# signature for this image; do not describe this checksum pin as a signature.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/provision-pbs-debian-template.yml
+      - platform/semaphore/templates.yml
+
+- name: Publish the pinned Debian cloud-init template
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _image_url: "https://cloud.debian.org/cdimage/cloud/trixie/20260601-2496/debian-13-generic-amd64-20260601-2496.qcow2"
+    _image_sha512: "97675b27e69153002c4e13644e36200c8f9067f661dca00918c54f1cacbdb88d4bff8c0fbf5cf5d63a0397bdf0cc472d7a6372bae5281bf7ced756249c10f8a2"
+    _image_filename: "debian-13-generic-amd64-20260601-2496.qcow2"
+    _image_volid: "{{ hostvars[_decl_host].pbs_debian_template_import_storage }}:import/{{ _image_filename }}"
+    _image_provenance: "Debian 13 generic cloud image; SHA-512={{ _image_sha512 }}; source={{ _image_url }}; detached signature unavailable"
+    _decl_hosts: "{{ groups['pbs_svc'] | default([]) }}"
+    _decl_host: "{{ _decl_hosts[0] if (_decl_hosts | length == 1) else '' }}"
+    _decl: "{{ hostvars[_decl_host] | default({}) }}"
+    _vmid: "{{ _decl.pbs_debian_template_vmid | default('') }}"
+    _name: "{{ _decl.pbs_debian_template_name | default('') }}"
+    _node: "{{ _decl.pbs_debian_template_node | default('') }}"
+    _import_storage: "{{ _decl.pbs_debian_template_import_storage | default('') }}"
+    _disk_storage: "{{ _decl.vm_disk_storage | default('') }}"
+    _bridge: "{{ _decl.vm_net_bridge | default('vmbr0') }}"
+    _template_description: "{{ _image_provenance }}"
+    _pve_data: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+
+  tasks:
+    - name: Require a reviewed production-mode write run
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+        fail_msg: "This publication requires an exact reviewed Dev revision and refuses check mode."
+        quiet: true
+
+    - name: Refuse runtime overrides of private PBS template allocation
+      ansible.builtin.assert:
+        that: _pbs_template_forgeries | length == 0
+        fail_msg: "PBS template identity and storage are inventory-only inputs; remove the launch-time override."
+        quiet: true
+      vars:
+        _pbs_template_allocation_names:
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - proxmox_validate_certs
+          - local_mode
+          - pbs_debian_template_vmid
+          - pbs_debian_template_name
+          - pbs_debian_template_node
+          - pbs_debian_template_import_storage
+          - vm_disk_storage
+          - vm_net_bridge
+        _pbs_template_forgeries: "{{ _pbs_template_allocation_names | intersect('' | extra_var_names) }}"
+
+    - name: Require one PBS inventory declaration and all required fields
+      ansible.builtin.assert:
+        that:
+          - _decl_hosts | length == 1
+          - _vmid | string is match('^[1-9][0-9]{2,5}$')
+          - _name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _import_storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _disk_storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _bridge is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+        fail_msg: "The sole pbs_svc host must declare the Debian template identity, node, import store, vm_disk_storage, and valid bridge."
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token | default('') }}"
+      no_log: true
+
+    - name: Require HTTPS and complete Proxmox credentials
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+          - _pve_token_id | length > 0
+          - _pve_secret | length > 0
+        fail_msg: "OpenBao must provide the HTTPS Proxmox endpoint and a complete API credential."
+        quiet: true
+
+    - name: Read Proxmox node inventory
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nodes
+      no_log: true
+      check_mode: false
+
+    - name: Require the declared Proxmox node to be uniquely online
+      ansible.builtin.assert:
+        that:
+          - _pve_nodes.json.data | selectattr('node', 'equalto', _node) | list | length == 1
+          - (_pve_nodes.json.data | selectattr('node', 'equalto', _node) | map(attribute='status') | first | default('')) == 'online'
+        fail_msg: "The declared Proxmox node is missing, duplicated, or offline."
+        quiet: true
+
+    - name: Read import staging storage status on the declared node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/storage/{{ _import_storage | urlencode }}/status"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _import_store_status
+      no_log: true
+      check_mode: false
+
+    - name: Read destination VM storage status on the declared node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/storage/{{ _disk_storage | urlencode }}/status"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _disk_store_status
+      no_log: true
+      check_mode: false
+
+    - name: Require live import and VM image storage capabilities
+      ansible.builtin.assert:
+        that:
+          - _import_store_status.json.data.active | default(0) | int == 1
+          - "'import' in (_import_store_status.json.data.content | default('')).split(',')"
+          - _import_store_status.json.data.type | default('') in ['dir', 'nfs', 'cifs', 'cephfs']
+          - _disk_store_status.json.data.active | default(0) | int == 1
+          - "'images' in (_disk_store_status.json.data.content | default('')).split(',')"
+        fail_msg: "Declared import storage must be active, file-based, and support import content; destination storage must be active with images content. Storage configuration is not changed here."
+        quiet: true
+
+    - name: Read cluster VM identities for exact collision detection
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_vms
+      no_log: true
+      check_mode: false
+
+    - name: Read the exact declared VM configuration if present
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+        method: GET
+        # Some PVE versions return 500 for a missing per-node config. That is only
+        # classified as absence after exact /cluster/nextid proves this VMID free.
+        status_code: [200, 404, 500]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _existing_config
+      no_log: true
+      check_mode: false
+
+    - name: Classify exact VMID occupancy across all cluster guest types
+      ansible.builtin.set_fact:
+        _vmid_rows: "{{ _pve_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list }}"
+        _existing: "{{ _existing_config.json.data | default({}, true) }}"
+      no_log: true
+
+    - name: Identify unexpected disks on an existing PBS template candidate
+      ansible.builtin.set_fact:
+        _existing_extra_disk_keys: >-
+          {{ _existing | dict2items
+             | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+             | rejectattr('key', 'equalto', 'scsi0') | map(attribute='key') | list }}
+      no_log: true
+
+    - name: Ask Proxmox whether the exact VMID is free
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/nextid?vmid={{ _vmid }}"
+        method: GET
+        status_code: [200, 400]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _exact_vmid_check
+      no_log: true
+      check_mode: false
+
+    - name: Refuse VMID collisions and mismatched partial templates
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_existing_config.status == 200 and _exact_vmid_check.status == 400)
+            or (_existing_config.status in [404, 500]
+            and _exact_vmid_check.status == 200
+            and _exact_vmid_check.json.data | int == _vmid | int)
+          - _vmid_rows | length <= 1
+          - _vmid_rows | length == 0 or (_vmid_rows[0].type | default('')) == 'qemu'
+          - _vmid_rows | length == 0 or (_vmid_rows[0].node | default('')) == _node
+          - _existing_config.status == 200 or _vmid_rows | length == 0
+          - _existing_config.status != 200 or (_existing.name | default('')) == _name
+          - _existing_config.status != 200 or (_existing.description | default('')) == _template_description
+          - _existing_config.status != 200 or (_existing.ostype | default('')) == 'l26'
+          - _existing_config.status != 200 or (_existing.ide2 | default('')) is search('cloudinit')
+          - _existing_config.status != 200 or (_existing.scsi0 | default('')) is search('^' ~ _disk_storage ~ ':')
+          - _existing_config.status != 200 or _existing_extra_disk_keys | length == 0
+          - _existing_config.status != 200 or (_existing.template | default(0) | int) in [0, 1]
+        fail_msg: "The exact VMID is occupied by another guest or a mismatched Debian template declaration."
+        quiet: true
+      no_log: true
+
+    # Always republish to the deterministic staging name. PVE verifies the fixed digest
+    # before committing the file, including on reruns; content-list readback below proves
+    # the expected import volume is present. PVE also validates the QCOW2 structure.
+    - name: Download the pinned image into private Proxmox import storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/storage/{{ _import_storage | urlencode }}/download-url"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          content: import
+          filename: "{{ _image_filename }}"
+          url: "{{ _image_url }}"
+          checksum: "{{ _image_sha512 }}"
+          checksum-algorithm: sha512
+          verify-certificates: "1"
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _download_task
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Wait for the checksum-verified image download task
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/tasks/{{ _download_task.json.data | urlencode }}/status"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _download_status
+      until: _download_status.json.data.status | default('') == 'stopped'
+      retries: 120
+      delay: 5
+      no_log: true
+      check_mode: false
+
+    - name: Require successful checksum verification and QCOW2 validation
+      ansible.builtin.assert:
+        that: _download_status.json.data.exitstatus | default('') == 'OK'
+        fail_msg: "Proxmox rejected the pinned Debian image download or validation."
+        quiet: true
+      no_log: true
+
+    - name: Read back the staged import volume
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/storage/{{ _import_storage | urlencode }}/content?content=import"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _staged_content
+      no_log: true
+      check_mode: false
+
+    - name: Require the exact staged file and import type
+      ansible.builtin.assert:
+        that:
+          - _staged_content.json.data | selectattr('volid', 'equalto', _image_volid) | list | length == 1
+          - (_staged_content.json.data | selectattr('volid', 'equalto', _image_volid) | map(attribute='content') | first | default('')) == 'import'
+          - (_staged_content.json.data | selectattr('volid', 'equalto', _image_volid) | map(attribute='format') | first | default('')) == 'qcow2'
+          - (_staged_content.json.data | selectattr('volid', 'equalto', _image_volid) | map(attribute='size') | first | default(0) | int) > 0
+        fail_msg: "Proxmox did not read back the exact pinned QCOW2 import volume."
+        quiet: true
+      no_log: true
+
+    - name: Create the VM from the verified image when its VMID is free
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          vmid: "{{ _vmid }}"
+          name: "{{ _name }}"
+          description: "{{ _template_description }}"
+          ostype: l26
+          scsihw: virtio-scsi-pci
+          scsi0: "{{ _disk_storage }}:0,import-from={{ _image_volid }}"
+          ide2: "{{ _disk_storage }}:cloudinit"
+          net0: "virtio,bridge={{ _bridge }}"
+          boot: order=scsi0
+          serial0: socket
+          vga: serial0
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _create_task
+      when:
+        - not ansible_check_mode
+        - _existing_config.status in [404, 500]
+      no_log: true
+
+    - name: Wait for VM disk import and creation
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/tasks/{{ _create_task.json.data | urlencode }}/status"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _create_status
+      until: _create_status.json.data.status | default('') == 'stopped'
+      retries: 120
+      delay: 5
+      when: _existing_config.status in [404, 500]
+      no_log: true
+      check_mode: false
+
+    - name: Require successful VM creation
+      ansible.builtin.assert:
+        that: _existing_config.status not in [404, 500] or (_create_status.json.data.exitstatus | default('')) == 'OK'
+        fail_msg: "Proxmox did not complete the Debian template VM creation."
+        quiet: true
+      no_log: true
+
+    - name: Read back the created VM configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _vm_config
+      no_log: true
+      check_mode: false
+
+    - name: Require VM configuration readback before template conversion
+      ansible.builtin.assert:
+        that:
+          - _vm_config.json.data.name | default('') == _name
+          - _vm_config.json.data.description | default('') == _template_description
+          - _vm_config.json.data.ostype | default('') == 'l26'
+          - _vm_config.json.data.ide2 | default('') is search('cloudinit')
+          - _vm_config.json.data.scsi0 | default('') is search('^' ~ _disk_storage ~ ':')
+          - >-
+            (_vm_config.json.data | dict2items
+             | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+             | rejectattr('key', 'equalto', 'scsi0') | list | length) == 0
+        fail_msg: "Proxmox VM configuration readback does not match the declared Debian template."
+        quiet: true
+      no_log: true
+
+    - name: Convert the verified VM to a template if needed
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/template"
+        method: POST
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _template_task
+      when:
+        - not ansible_check_mode
+        - _vm_config.json.data.template | default(0) | int != 1
+      no_log: true
+
+    - name: Wait for template conversion task
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/tasks/{{ _template_task.json.data | urlencode }}/status"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _template_status
+      until: _template_status.json.data.status | default('') == 'stopped'
+      retries: 60
+      delay: 5
+      when: _vm_config.json.data.template | default(0) | int != 1
+      no_log: true
+      check_mode: false
+
+    - name: Require successful template conversion
+      ansible.builtin.assert:
+        that: _vm_config.json.data.template | default(0) | int == 1 or (_template_status.json.data.exitstatus | default('')) == 'OK'
+        fail_msg: "Proxmox did not complete Debian template conversion."
+        quiet: true
+      no_log: true
+
+    - name: Read back the final template configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _final_config
+      no_log: true
+      check_mode: false
+
+    - name: Require a matching cloud-init template
+      ansible.builtin.assert:
+        that:
+          - _final_config.json.data.template | default(0) | int == 1
+          - _final_config.json.data.name | default('') == _name
+          - _final_config.json.data.description | default('') == _template_description
+          - _final_config.json.data.ostype | default('') == 'l26'
+          - _final_config.json.data.ide2 | default('') is search('cloudinit')
+          - _final_config.json.data.scsi0 | default('') is search('^' ~ _disk_storage ~ ':')
+          - >-
+            (_final_config.json.data | dict2items
+             | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+             | rejectattr('key', 'equalto', 'scsi0') | list | length) == 0
+        fail_msg: "Final Proxmox readback did not prove the intended cloud-init template."
+        quiet: true
+      no_log: true
+
+    - name: Report fixed publication result
+      ansible.builtin.debug:
+        msg: "Pinned Debian cloud image passed Proxmox SHA-512 and QCOW2 validation; staged content and template configuration were read back. Detached signature is unavailable for this image."
