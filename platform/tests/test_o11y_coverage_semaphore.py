@@ -313,7 +313,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
             SEMAPHORE.controller_report(payload, reader_factory=reader_factory, census_module=CENSUS)
         self.assertEqual(reader_created, [])
 
-    def test_controller_rejects_malformed_or_forged_transient_ids_before_readback(self):
+    def test_controller_rejects_malformed_or_undeclared_transient_ids_before_readback(self):
         invalid_overrides = (
             ('{"service:census_test":{"logs":123},"service:census_test":{"logs":124}}',
              "transient_receipt_shape"),
