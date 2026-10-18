@@ -10,6 +10,8 @@ from pathlib import Path
 import playbook_yaml
 import pytest
 import yaml
+from jinja2 import StrictUndefined
+from jinja2.nativetypes import NativeEnvironment
 
 PLAYBOOKS = Path(__file__).resolve().parents[1] / "playbooks"
 SERVER = {
@@ -104,6 +106,23 @@ def test_router_check_precedes_netbox_write():
     transport = tasks[names.index("Refuse a cleartext pfSense endpoint")]
     assert transport["vars"]["_assert_bao_url"] == f"{{{{ {site_url} }}}}"
     assert site_interface in tasks[check_task]["ansible.builtin.command"]["stdin"]
+
+
+def test_report_mode_defaults_omitted_assignments_to_empty_list():
+    """An absent optional survey value must remain safe under strict templating."""
+    parsed = playbook_yaml.plays(PLAYBOOKS / "netbox-allocate-ip.yml")[0]
+    expression = parsed["vars"]["_assignments"].removeprefix("{{ ").removesuffix(" }}")
+    env = NativeEnvironment(undefined=StrictUndefined)
+    env.filters["from_json"] = json.loads
+
+    template = env.from_string("{{ " + expression + " }}")
+    assert template.render() == []
+    assert template.render(assignments=[{"address": "203.0.113.8/24"}]) == [
+        {"address": "203.0.113.8/24"}
+    ]
+    assert template.render(assignments='[{"address":"203.0.113.8/24"}]') == [
+        {"address": "203.0.113.8/24"}
+    ]
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is unavailable")

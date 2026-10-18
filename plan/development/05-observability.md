@@ -1947,3 +1947,26 @@ attestation is not independently compared with a chassis or BMC identity.
 This preflight does not create a VM, disk, filesystem, or PBS instance and does
 not change retention. It cannot pass until the private site-config inventory
 contains a reviewed pin; this repository contains no such private value.
+
+### 2026-10-18 pinned PBS allocation preflight receipt
+
+PR #708 merged to Dev at `c746856af51d63dff645cf699d194f1069d6f1a7` after
+an independent final-head review and green CI. The scoped Semaphore publisher
+check task 6982 and apply task 6984 succeeded; readback confirmed the new
+`Preflight o11y PBS Thick-LVM Allocation (Dev)` template binds to the declared
+Dev repository, playbook, inventory, environment, and reviewed-SHA survey.
+Private site-config PR #107 merged at `44439b29f5bd7e10849bf1ebbb092d06c32223a1`.
+The operator-side inventory sync passed check mode, applied one update, and an
+API readback matched the exact merged inventory bytes without displaying the
+private disk identity.
+
+Semaphore check task 6988 refused as designed: the imported physical-storage
+survey requires a normal run even though its Proxmox requests are GET-only.
+Normal Dev-bound task 6992 succeeded at the exact public merge revision. Its
+fixed sanitized result confirmed that the private identity pin matched the
+selected API disk, the direct LVM disk-path lineage matched, SMART reported
+`passed`, and a proposed 512-GiB data disk left at least 30% reported VG
+headroom. Allocation, device safety, filesystem and PBS readiness, and write
+authorization remain **false**. The identity pin detects API-observed drift;
+it does not independently establish the disk's physical chassis origin. No
+VM, disk, filesystem, or PBS instance was created and no retention changed.
