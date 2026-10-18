@@ -1166,6 +1166,9 @@
         - name: Emit the fixed diagnostic line through the existing Alloy container stdout
           ansible.builtin.command:
             argv:
+              - /usr/bin/timeout
+              - --signal=KILL
+              - 12s
               - podman
               - exec
               - --user

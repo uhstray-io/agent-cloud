@@ -5682,6 +5682,7 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
     emitter = apply_task["block"][emitter_index]
     assert emitter["failed_when"] is False
     assert emitter["ansible.builtin.command"]["argv"] == [
+        "/usr/bin/timeout", "--signal=KILL", "12s",
         "podman", "exec", "--user", "0:0", "o11y-alloy", "/bin/bash", "-c",
         'printf "%s\\\\n" "{{ _journal_proof_marker }}" > /proc/1/fd/1',
     ]
