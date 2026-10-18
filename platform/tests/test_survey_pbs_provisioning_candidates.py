@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
+from ansible_python import ansible_python, needs_ansible
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK_DIR = ROOT / "platform" / "playbooks"
@@ -162,6 +166,109 @@ def test_survey_is_dev_bound_get_only_and_outputs_only_sanitized_receipt() -> No
     template = next(item for item in templates if item["name"] == "Survey PBS Provisioning Candidates (Dev)")
     assert template["repository"] == "agent-cloud dev"
     assert [var["name"] for var in template["survey_vars"]] == ["expected_repository_sha"]
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "bao_hosts,environment_url,expected_checks",
+    [
+        (["bao"], "https://bao.example.invalid:8200", [True, True, True]),
+        (["bao"], "https://other.example.invalid:8200", [True, True, False]),
+        ([], "https://bao.example.invalid:8200", [False, False, False]),
+        (["bao", "bao-duplicate"], "https://bao.example.invalid:8200", [False, True, True]),
+    ],
+    ids=["matching-semaphore-environment", "url-mismatch", "missing-inventory", "ambiguous-inventory"],
+)
+def test_openbao_environment_must_match_the_sole_inventory_host(
+    tmp_path: Path, bao_hosts: list[str], environment_url: str, expected_checks: list[bool]
+) -> None:
+    fixture_hosts = {
+        host: {"service_url": "https://bao.example.invalid:8200"}
+        for host in bao_hosts
+    }
+    harness = r'''
+import json, sys, yaml
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+
+play = next(item for item in yaml.safe_load(open(sys.argv[1]))
+            if item.get("name") == "Survey private PBS provisioning candidates")
+payload = json.load(sys.stdin)
+variables = {
+    "groups": {"openbao_svc": payload["bao_hosts"]},
+    "hostvars": payload["hostvars"],
+    "openbao_addr": payload["environment_url"],
+}
+for name in ("_openbao_hosts", "_openbao_host", "_openbao_inventory_url", "_bao_url"):
+    variables[name] = Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(play["vars"][name])
+    )
+guard = next(
+    task for task in play["tasks"]
+    if task.get("name") == "Require the exact Dev run and one private declaration"
+)
+conditions = guard["ansible.builtin.assert"]["that"]
+templar = Templar(loader=DataLoader(), variables=variables)
+checked = [
+    templar.evaluate_conditional(trust_as_template(condition))
+    for condition in conditions
+    if "_openbao_hosts | length == 1" in condition
+    or "_openbao_inventory_url | string | length > 0" in condition
+    or "openbao_addr | default('') == _openbao_inventory_url" in condition
+]
+print(json.dumps({"url": variables["_bao_url"], "checked": checked}))
+'''
+    payload = {
+        "bao_hosts": bao_hosts,
+        "environment_url": environment_url,
+        "hostvars": fixture_hosts,
+    }
+    result = subprocess.run(
+        [ansible_python(), "-c", harness, str(PLAYBOOK_DIR / "survey-pbs-provisioning-candidates.yml")],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    resolved = json.loads(result.stdout)
+    assert resolved["checked"] == expected_checks
+    if bao_hosts:
+        assert resolved["url"] == "https://bao.example.invalid:8200"
+    else:
+        assert resolved["url"] == ""
+
+
+def test_semaphore_openbao_injection_is_allowed_but_url_must_be_inventory_bound() -> None:
+    play = next(
+        item for item in yaml.safe_load((PLAYBOOK_DIR / "survey-pbs-provisioning-candidates.yml").read_text())
+        if item.get("name") == "Survey private PBS provisioning candidates"
+    )
+    override_names = set(play["vars"]["_survey_override_names"])
+    assert {"openbao_addr", "bao_role_id", "bao_secret_id"}.isdisjoint(override_names)
+    assert {"target_service", "target_host", "target_node", "proxmox_validate_certs"} <= override_names
+    assert "bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))" in play["vars"]["_bao_role_id"]
+    assert "bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))" in play["vars"]["_bao_secret_id"]
+    assert play["vars"]["_bao_url"] == "{{ _openbao_inventory_url }}"
+
+    tasks = play["tasks"]
+    guard_index = next(
+        i for i, task in enumerate(tasks)
+        if task.get("name") == "Require the exact Dev run and one private declaration"
+    )
+    bao_guard_index = next(
+        i for i, task in enumerate(tasks)
+        if task.get("name") == "Refuse cleartext OpenBao transport"
+    )
+    auth_index = next(
+        i for i, task in enumerate(tasks)
+        if task.get("name") == "Read Proxmox API credentials from OpenBao"
+    )
+    first_uri_index = next(
+        i for i, task in enumerate(tasks) if "ansible.builtin.uri" in task
+    )
+    assert guard_index < bao_guard_index < auth_index < first_uri_index
 
 
 def test_cli_never_echoes_private_candidate_data_on_refusal(monkeypatch, capsys) -> None:
