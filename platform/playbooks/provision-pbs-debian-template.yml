@@ -251,6 +251,7 @@
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _download_task
       no_log: true
+      when: not ansible_check_mode
 
     - name: Wait for the checksum-verified image download task
       ansible.builtin.uri:
@@ -316,7 +317,9 @@
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _create_task
-      when: _existing_config.status in [404, 500]
+      when:
+        - not ansible_check_mode
+        - _existing_config.status in [404, 500]
       no_log: true
 
     - name: Wait for VM disk import and creation
@@ -376,7 +379,9 @@
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _template_task
-      when: _vm_config.json.data.template | default(0) | int != 1
+      when:
+        - not ansible_check_mode
+        - _vm_config.json.data.template | default(0) | int != 1
       no_log: true
 
     - name: Wait for template conversion task

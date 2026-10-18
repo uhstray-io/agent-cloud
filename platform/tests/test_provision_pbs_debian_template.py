@@ -130,7 +130,8 @@ def test_config_http_500_is_absence_only_when_exact_vmid_check_proves_free():
     assert any("_existing_config.status == 200 or _vmid_rows | length == 0" in item for item in gate)
     assert any("_existing_extra_disk_keys | length == 0" in item for item in gate)
     create = tasks[names.index("Create the VM from the verified image when its VMID is free")]
-    assert create["when"] == "_existing_config.status in [404, 500]"
+    assert "not ansible_check_mode" in create["when"]
+    assert "_existing_config.status in [404, 500]" in create["when"]
 
 
 def test_every_pve_write_follows_review_mode_inventory_and_collision_gates():
@@ -156,6 +157,25 @@ def test_every_pve_write_follows_review_mode_inventory_and_collision_gates():
 
     assert "Read back the staged import volume" in names
     assert "Read back the final template configuration" in names
+
+
+def test_every_publisher_write_is_individually_guarded_in_check_mode():
+    plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
+    tasks = plays[2]["tasks"]
+    expected = {
+        "Download the pinned image into private Proxmox import storage",
+        "Create the VM from the verified image when its VMID is free",
+        "Convert the verified VM to a template if needed",
+    }
+    writes = {
+        task["name"]: task
+        for task in tasks
+        if task.get("name") in expected
+    }
+    assert set(writes) == expected
+    for task in writes.values():
+        conditions = task.get("when", [])
+        assert "not ansible_check_mode" in conditions
 
 
 def test_publisher_rejects_unexpected_attached_disks_on_existing_and_new_template():

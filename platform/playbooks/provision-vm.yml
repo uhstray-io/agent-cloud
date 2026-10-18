@@ -236,6 +236,15 @@
               workstation you may instead pass -e project_root=<site-config path>.{% endif %}
             success_msg: "VM declaration for '{{ target_service }}' is complete."
 
+        # `module_defaults` attaches this PVE token to every uri call in the play,
+        # including the NetBox address read below, so validate it before any request.
+        - name: "Require the stored Proxmox token id"
+          ansible.builtin.assert:
+            that: _pve_token_id | length > 0
+            fail_msg: >-
+              secret/services/proxmox has no token_id. Store the Proxmox API token id
+              (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
         - name: "Require the PBS template and VM declaration to agree"
           ansible.builtin.assert:
             that:
@@ -296,14 +305,6 @@
             fail_msg: "NetBox does not prove one unassigned reservation for the PBS address; active assignments require an authoritative VMID mapping."
             quiet: true
           when: _pbs_mode | bool
-
-        # The token id names a real Proxmox user, so it comes from the store, never a default.
-        - name: "Require the stored Proxmox token id"
-          ansible.builtin.assert:
-            that: _pve_token_id | length > 0
-            fail_msg: >-
-              secret/services/proxmox has no token_id. Store the Proxmox API token id
-              (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
 
         - name: "Show provisioning plan"
           ansible.builtin.debug:
