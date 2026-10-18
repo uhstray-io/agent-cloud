@@ -4755,7 +4755,7 @@ def test_collector_project_config_keeps_volume_and_network_external():
 
 
 def test_positions_network_identity_requires_exact_existing_receiver_network():
-    valid = {"Name": "o11y_o11y", "Labels": {
+    valid = {"name": "o11y_o11y", "labels": {
         "com.docker.compose.project": "o11y",
     }}
 
@@ -4767,7 +4767,7 @@ def test_positions_network_identity_requires_exact_existing_receiver_network():
         "status": "verified", "reason": "network_identity_verified",
     }
     assert POSITIONS.verify_network(lambda *_args, **_kwargs: SimpleNamespace(
-        returncode=0, stdout=json.dumps([{**valid, "Name": "other"}]),
+        returncode=0, stdout=json.dumps([{**valid, "name": "other"}]),
     ))["status"] == "refused"
 
 
@@ -4810,7 +4810,13 @@ def test_apply_transition_accepts_verified_cursor_pending_volume_without_collect
     # Matches the survey-cursor receipt shape: the old container is absent, but
     # v3 remains in the reviewed no-copy-up pending state with a valid cursor.
     found = _populated_pending_resume_found()
-    monkeypatch.setattr(POSITIONS, "discover", lambda **_kwargs: found)
+    calls_to_discover = []
+
+    def discover_stub(**kwargs):
+        calls_to_discover.append(kwargs)
+        return found
+
+    monkeypatch.setattr(POSITIONS, "discover", discover_stub)
     calls = []
 
     result = POSITIONS.retire_legacy_collector(
@@ -4824,6 +4830,9 @@ def test_apply_transition_accepts_verified_cursor_pending_volume_without_collect
     assert POSITIONS.verify(lambda: found)["status"] == "ready"
     assert found["metadata"]["journal_cursor_valid"] is True
     assert found["metadata"]["cursor_checked"] is True
+    assert len(calls_to_discover) == 1
+    assert calls_to_discover[0]["diagnostics"] is True
+    assert calls_to_discover[0]["read_cursor"] is True
     assert calls == []
 
 
@@ -5507,6 +5516,7 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     by_name = {task.get("name"): task for task in tasks}
     visible = {
         "Run the separately selected guarded positions repair",
+        "Retire only a verified legacy-project collector registration",
     }
     protected = {
         "Verify positions volume identity and access before apply",
@@ -5533,9 +5543,21 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
         "Verify the live collector positions mount and access": "verify-live",
         "Survey positions metadata or explicit cursor validity without mounting": "{{ journal_collector_action }}",
         "Run the separately selected guarded positions repair": "repair-positions",
+        "Retire only a verified legacy-project collector registration": "retire-legacy",
     }
     for name, action in helper_actions.items():
         assert by_name[name]["ansible.builtin.command"]["argv"] == ["python3", "-", action]
+
+    retire = by_name["Retire only a verified legacy-project collector registration"]
+    assert "rc | default(1) == 0" in retire["changed_when"]
+    assert "stdout | default('') is regex" in retire["changed_when"]
+    assert "no_log" not in retire
+    transition_assert = by_name["Require the old container to be absent with v3 state preserved"]
+    transition_fail_msg = transition_assert["ansible.builtin.assert"]["fail_msg"]
+    assert "regex_findall" in transition_fail_msg
+    assert "legacy_collector_removed_volume_preserved" in transition_fail_msg
+    assert "_journal_retire_legacy.stdout }}" not in transition_fail_msg
+    assert "stdout | from_json" not in str(retire | transition_assert)
 
     found = _positions_found(_positions_state(owner=(0, 0)))
     survey = POSITIONS.survey(lambda: found)

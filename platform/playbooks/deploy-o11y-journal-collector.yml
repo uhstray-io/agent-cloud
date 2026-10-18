@@ -697,20 +697,29 @@
         stdin: "{{ _journal_positions_helper }}"
         stdin_add_newline: false
       register: _journal_retire_legacy
-      changed_when: (_journal_retire_legacy.stdout | from_json).status == 'retired'
+      changed_when: >-
+        _journal_retire_legacy.rc | default(1) == 0
+        and (_journal_retire_legacy.stdout | default('') is regex('^\\{"reason": "legacy_collector_removed_volume_preserved", "status": "retired"\\}$'))
       failed_when: false
       check_mode: false
-      no_log: true
       when: not ansible_check_mode
 
     - name: Require the old container to be absent with v3 state preserved
       ansible.builtin.assert:
         that:
           - _journal_retire_legacy.rc | default(1) == 0
-          - (_journal_retire_legacy.stdout | default('{}') | from_json).status in ['retired', 'already_isolated', 'already_absent']
+          - >-
+            _journal_retire_legacy.stdout | default('') in [
+            '{"reason": "legacy_collector_removed_volume_preserved", "status": "retired"}',
+            '{"reason": "collector_project_verified", "status": "already_isolated"}',
+            '{"reason": "collector_absent_volume_safe_to_initialize", "status": "already_absent"}',
+            '{"reason": "collector_absent_positions_verified", "status": "already_absent"}'
+            ]
         fail_msg: >-
-          The collector project transition was not proven safe. The existing v3
-          positions volume was preserved and no Compose start was requested.
+          The collector project transition was not proven safe
+          (status={{ _journal_retire_legacy.stdout | default('') | regex_findall('"status": "(retired|already_isolated|already_absent|refused|uncertain|unavailable)"') | first | default('unavailable') }},
+          reason={{ _journal_retire_legacy.stdout | default('') | regex_findall('"reason": "(collector_absent_volume_safe_to_initialize|collector_absent_positions_verified|collector_project_verified|collector_state_unverified|isolated_collector_state_unverified|collector_project_mismatch|legacy_collector_state_unverified|legacy_collector_identity_unverified|legacy_collector_remove_failed|collector_absence_unverified|positions_volume_preservation_unverified|legacy_collector_removed_volume_preserved|survey_failed)"') | first | default('unavailable') }}).
+          The existing v3 positions volume was preserved and no Compose start was requested.
         quiet: true
       when: not ansible_check_mode
 

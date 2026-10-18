@@ -1044,9 +1044,9 @@ def verify_network(run=subprocess.run):
     if rows is None or len(rows) != 1:
         return {"status": "unavailable", "reason": "network_unavailable"}
     network = rows[0]
-    labels = network.get("Labels")
+    labels = network.get("labels")
     if (
-        network.get("Name") != NETWORK_NAME
+        network.get("name") != NETWORK_NAME
         or not isinstance(labels, dict)
         or labels.get("com.docker.compose.project") != NETWORK_PROJECT
     ):
@@ -2309,7 +2309,7 @@ def verify_live(discover_fn=None):
 
 
 def retire_legacy_collector(run=subprocess.run):
-    found = discover(run=run, read_cursor=True)
+    found = discover(run=run, diagnostics=True, read_cursor=True)
     if found.get("collector_present") is not True:
         gate = verify(lambda: found)
         if gate.get("status") == "bootstrap_allowed":
