@@ -341,6 +341,9 @@ shared `secret/services/github:pat` unchanged for GHCR.
 
 ## 12. Future work — per-job ephemeral runners
 
+Designed and implemented in `add-ephemeral-github-runners` (issue #545); 12.2 is its
+tasks phase 6.
+
 The accepted interim boundary is that the six permitted private repositories share the
 runner trust boundary, and jobs can leave processes behind.
 
