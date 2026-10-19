@@ -349,6 +349,8 @@ shared `secret/services/github:pat` unchanged for GHCR.
 
 The accepted interim boundary is that the six permitted private repositories share the
 runner trust boundary, and jobs can leave processes behind.
+2026-10-19: the declared list is now seven (`skynet` added, operator decision; see the 5.7 note), and
+all seven share this boundary. Per-job isolation is agent-cloud #716 (ephemeral runners, in review).
 
 - [ ] 12.1 Migrate to per-job ephemeral runners. `--ephemeral` registration alone is
       insufficient: isolate and destroy the runner process and filesystem after every
