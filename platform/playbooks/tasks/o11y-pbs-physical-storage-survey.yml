@@ -39,7 +39,7 @@
     fail_msg: "The reviewed controller checkout contains uncommitted files."
 
 - name: Refuse public cleartext OpenBao transport
-  ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/assert-bao-transport.yml"
   vars:
     _assert_bao_url: "{{ _bao_url }}"
   when: not (_pbs_reuse_pve_credentials | default(false) | bool)

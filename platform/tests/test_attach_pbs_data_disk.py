@@ -16,8 +16,12 @@ def _tasks(play: dict, base: Path = ROOT / "platform/playbooks") -> list[dict]:
         result.append(task)
         result.extend(_tasks({"tasks": task.get("block", [])}, base))
         imported = task.get("ansible.builtin.import_tasks") or task.get("ansible.builtin.include_tasks")
-        if imported:
-            result.extend(_tasks({"tasks": yaml.safe_load((base / imported).read_text())}, base))
+        if imported and "assert-bao-transport.yml" not in imported:
+            resolved = imported.replace("{{ playbook_dir }}", str(base))
+            resolved_path = Path(resolved)
+            if not resolved_path.is_absolute():
+                resolved_path = base / resolved_path
+            result.extend(_tasks({"tasks": yaml.safe_load(resolved_path.read_text())}, base))
     return result
 
 
@@ -128,7 +132,14 @@ def test_openbao_uses_matching_inventory_url_and_guards_transport_before_lookup(
     lookup_index = names.index("Read Proxmox API credentials from OpenBao")
     derive_index = names.index("Keep Proxmox API credentials private")
     assert guard_index < lookup_index < derive_index
-    assert tasks[guard_index]["ansible.builtin.include_tasks"] == "tasks/assert-bao-transport.yml"
+    include_path = next(
+        task["ansible.builtin.include_tasks"]
+        for task in tasks
+        if task.get("ansible.builtin.include_tasks", "").startswith("{{ playbook_dir }}")
+    )
+    assert include_path == "{{ playbook_dir }}/tasks/assert-bao-transport.yml"
+    resolved_guard = Path(include_path.replace("{{ playbook_dir }}", str(PLAYBOOK.parent)))
+    assert resolved_guard.is_file()
     assert tasks[lookup_index].get("no_log") is True
     assert tasks[derive_index].get("no_log") is True
 
