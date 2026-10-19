@@ -2182,6 +2182,19 @@ templates:
     # The exact free VMIDs and active storage capabilities are shown only in this
     # private Semaphore task output. No Proxmox or storage configuration is changed.
 
+  - name: Enable PBS Import Storage Content (Dev)
+    playbook: platform/playbooks/enable-o11y-pbs-import-content.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the inventory-pinned Proxmox import-content update"
+        type: string
+        required: true
+    # Storage content is cluster-wide. The playbook updates only the distinct private
+    # import-store declaration, preserves its current content list, and uses Proxmox's
+    # digest concurrency guard. Check mode is read-only.
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev

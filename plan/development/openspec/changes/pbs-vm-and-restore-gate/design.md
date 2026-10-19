@@ -35,6 +35,19 @@ PBS VM reruns may retain the exact later 512-GiB `scsi1` data disk on the
 pinned thick-LVM store; the shared lifecycle never writes or resizes it.
 Ambiguous partial clones or mismatched disks refuse before mutation.
 
+Before publishing the template, a separate Dev-bound workflow must enable
+Proxmox `import` content on the exact private `proxmox_pbs_import_storage_id`
+declared alongside `proxmox_pbs_storage_node`. The VM image store is a distinct
+inventory field and is not assumed to be file-based. Because storage content
+configuration is cluster-wide, the workflow checks the declared node is online,
+reads that exact store's node status and cluster configuration, and refuses
+inactive, non-file, or node-mismatched stores. It preserves the existing content
+list, sends the replacement list with the GET response digest as Proxmox's
+concurrency guard, and verifies readback. Check mode performs the same guarded
+reads but never writes. The 2026-10-18 candidate census in task 7081 found zero
+active import stores, so publication remains gated on private inventory
+reconciliation and a successful run; no live write is authorized by this design.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.
