@@ -173,6 +173,12 @@
 - [ ] 5.7 Declare the access list as configuration: exactly `zerds`, `atlas`,
       `zerds-website`, `weft`, `scientific-business`. `agent-cloud` is absent, with a
       comment stating why (public repo; fork PRs; see design D2).
+      **Note (2026-10-19, operator decision):** `skynet` (private) added to the declared
+      list because its GitHub-hosted jobs stopped starting. Convergence (`Manage GitHub
+      Runner Group` with `dry_run=false`) waits on the GitHub App repository-access
+      re-grant recorded in `service-deployment-workflow` task 2.5. Its workflows are to
+      switch `runs-on` to `[self-hosted, linux, x64, uhstray-lan]` in the skynet
+      repository. Nothing in this task is ticked.
 - [ ] 5.8 Inspect the organisation's current runner groups with the new credential
       before the first convergence, so a removal is not a surprise (design Open
       Question 2), then run the convergence.

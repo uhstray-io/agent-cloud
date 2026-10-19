@@ -19,10 +19,11 @@ service can change, which is why the label contract matters.
 
 ## Which repositories may use it
 
-Exactly six, all private: `zerds`, `atlas`, `zerds-website`, `weft`,
-`scientific-business`, and `site-config`. They are the declared access list of the
+Exactly seven, all private: `zerds`, `atlas`, `zerds-website`, `weft`,
+`scientific-business`, `site-config`, and `skynet`. They are the declared access list of the
 `uhstray-selfhosted` runner group (`visibility: selected`,
-`allows_public_repositories: false`).
+`allows_public_repositories: false`). `skynet` was added 2026-10-19 (operator decision)
+because its GitHub-hosted jobs stopped starting.
 
 **`agent-cloud` is deliberately excluded.** It is public, a fork can propose workflow code,
 and these hosts sit inside the perimeter. Upstream's own guidance is to pair self-hosted
