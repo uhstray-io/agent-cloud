@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py"
@@ -1164,7 +1165,8 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
     invocation = next(
         task for task in protected if task["name"] == "Collect and sanitize the active scrape baseline on the receiver"
     )
-    parse = next(task for task in protected if task["name"] == "Parse the helper's bounded public projection")
+    envelope = next(task for task in protected if task["name"] == "Parse and classify the helper response")
+    parse = next(task for task in envelope["block"] if task["name"] == "Parse the helper's bounded public projection")
     compare = next(task for task in protected if task["name"] == "Compute bounded loaded inline scrape-limit coverage")
     source_compare = next(
         task for task in protected if task["name"] == "Compute bounded on-disk split scrape-limit coverage"
@@ -1178,6 +1180,7 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
     assert "delegate_to" not in invocation
     assert "ansible.builtin.script" in invocation
     assert invocation["when"] == "not ansible_check_mode"
+    assert envelope["no_log"] is True
     assert parse["no_log"] is True
     assert compare["no_log"] is True
     assert source_compare["no_log"] is True
@@ -1204,6 +1207,103 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
     assert check_mode["ansible.builtin.debug"]["msg"]["source_limits"]["status"] == "check_mode_unverified"
     assert check_mode["ansible.builtin.debug"]["msg"]["alert_input_availability"]["status"] == "check_mode_unverified"
     assert "scrape_body_size_bytes" not in HELPER.read_text()
+
+
+def test_playbook_classifies_helper_envelope_before_baseline_dereference():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
+    receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
+    tasks = receiver["tasks"]
+    envelope = next(task for task in tasks if task.get("name") == "Parse and classify the helper response")
+    parse = next(
+        task for task in envelope["block"] if task.get("name") == "Parse the helper's bounded public projection"
+    )
+    classify = next(task for task in envelope["block"] if task.get("name") == "Classify the helper response envelope")
+    validate = next(task for task in envelope["block"] if task.get("name") == "Validate the helper success envelope")
+    failure = next(task for task in tasks if task.get("name") == "Require a complete helper response envelope")
+    baseline = next(
+        task for task in tasks
+        if task.get("name") == "Keep the active scrape baseline separate from loaded-limit evidence"
+    )
+
+    assert envelope["no_log"] is True
+    assert parse["no_log"] is True
+    assert "from_json" in parse["ansible.builtin.set_fact"]["_scrape_survey_result"]
+    assert envelope["rescue"][0]["ansible.builtin.set_fact"]["_scrape_helper_receipt"] == {
+        "status": "unavailable", "reason": "malformed_helper_response"
+    }
+    assert tasks.index(failure) < tasks.index(baseline)
+    assert failure["ansible.builtin.assert"]["that"] == [
+        "_scrape_helper_receipt.status == 'observed'"
+    ]
+    assert "_scrape_helper_receipt.status" in failure["ansible.builtin.assert"]["fail_msg"]
+    assert "_scrape_helper_receipt.reason" in failure["ansible.builtin.assert"]["fail_msg"]
+    assert "stdout" not in failure["ansible.builtin.assert"]["fail_msg"]
+    assert "stderr" not in failure["ansible.builtin.assert"]["fail_msg"]
+    assert "selector" not in failure["ansible.builtin.assert"]["fail_msg"]
+    assert "credential" not in failure["ansible.builtin.assert"]["fail_msg"]
+
+    expressions = classify["ansible.builtin.set_fact"]["_scrape_helper_receipt"]
+    valid_expression = validate["ansible.builtin.set_fact"]["_scrape_helper_envelope_valid"]
+    renderer = Environment(undefined=StrictUndefined)
+    reasons = receiver["vars"]["_survey_helper_fixed_reasons"]
+    expected_fixed_reasons = {
+        "ambiguous_metric",
+        "ambiguous_series",
+        "ambiguous_targets",
+        "curl_unsupported",
+        "malformed_samples",
+        "malformed_series",
+        "malformed_targets",
+        "missing_probe_data",
+        "missing_samples",
+        "missing_series",
+        "no_active_targets",
+        "probe_compressed",
+        "probe_http_status",
+        "probe_timeout",
+        "probe_too_large",
+        "probe_unavailable",
+        "query_unavailable",
+        "series_unavailable",
+        "survey_unavailable",
+        "unhealthy_target",
+        "unsafe_target_url",
+        "unrecognized_job",
+    }
+    assert set(reasons) == expected_fixed_reasons
+
+    def render(result):
+        context = {"_scrape_survey_result": result, "_survey_helper_fixed_reasons": reasons}
+        context["_scrape_helper_envelope_valid"] = (
+            renderer.from_string(valid_expression).render(context) == "True"
+        )
+        return {
+            key: renderer.from_string(value).render(context)
+            for key, value in expressions.items()
+        }
+
+    complete = {
+        "baseline": {},
+        "loaded_limit_readback": {},
+        "source_limit_readback": {},
+        "alert_input_availability": {},
+    }
+    assert render(complete) == {"status": "observed", "reason": "complete_receipt"}
+    for reason in expected_fixed_reasons:
+        assert render({"status": "unavailable", "reason": reason}) == {
+            "status": "unavailable", "reason": reason
+        }
+    assert render({"status": "unavailable", "reason": "secret-path-sentinel"}) == {
+        "status": "unavailable", "reason": "malformed_helper_response"
+    }
+    untrusted = render({
+        "status": "unavailable", "reason": "query_unavailable", "selector": "private-selector-sentinel"
+    })
+    assert untrusted == {"status": "unavailable", "reason": "malformed_helper_response"}
+    assert "private-selector-sentinel" not in json.dumps(untrusted)
+    assert render({"baseline": {}}) == {
+        "status": "unavailable", "reason": "malformed_helper_response"
+    }
 
 
 def _alert_metric(family, job, instance, timestamp, value, reason):

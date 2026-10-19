@@ -54,7 +54,7 @@ pyroscope.scrape "alloy_self_profile" {
   }
 }
 """
-    baseline = 'prometheus.scrape "local_containers" {}\n'
+    baseline = 'loki.write "default" {}\n'
     return baseline, baseline + profiles
 
 
@@ -108,7 +108,7 @@ def test_rendered_template_candidates_match_outside_profile_blocks():
 def test_candidate_structure_refuses_enabled_only_change_outside_profile_blocks():
     disabled = render_alloy_template(False)
     enabled = render_alloy_template(True).replace(
-        'scrape_interval = "15s"', 'scrape_interval = "30s"', 1
+        'environment = "dev"', 'environment = "prod"', 1
     )
 
     with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
@@ -377,7 +377,7 @@ def test_component_api_readiness_retries_until_valid_response(monkeypatch):
         (
             0,
             b"HTTP/1.1 200 OK\r\n\r\n"
-            b'[{"localID":"prometheus.scrape.local_containers"}]',
+            b'[{"localID":"loki.write.default"}]',
         ),
     ])
     calls = []
@@ -583,10 +583,10 @@ def test_cleanup_failure_blocks_each_candidate_success(monkeypatch, runner):
     if runner == "component":
         response = (
             b"HTTP/1.1 200 OK\r\n\r\n"
-            b'[{"localID":"prometheus.scrape.local_containers"},{"localID":"pyroscope.scrape.alloy_self_profile","health":"healthy"}]'
+            b'[{"localID":"loki.write.default"},{"localID":"pyroscope.scrape.alloy_self_profile","health":"healthy"}]'
         )
     else:
-        response = b'HTTP/1.1 200 OK\r\n\r\n[{"localID":"prometheus.scrape.local_containers"}]'
+        response = b'HTTP/1.1 200 OK\r\n\r\n[{"localID":"loki.write.default"}]'
     monkeypatch.setattr(CHECK, "_bounded_command", lambda *_args, **_kwargs: (0, response))
     if runner == "component":
         with pytest.raises(CHECK.Refusal, match="cleanup_failed"):

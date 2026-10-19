@@ -90,8 +90,10 @@ def submit(api, body, what):
     except Refusal as error:
         raise Refusal(f"{what}: submission outcome uncertain ({error}); a task may be running, "
                       "check the template's tasks before launching again") from None
-    if not isinstance((task or {}).get("id"), int):
-        raise Refusal(f"{what}: submission outcome uncertain (no task id returned); a task may be running")
+    if (not isinstance(task, dict) or not isinstance(task.get("id"), int)
+            or isinstance(task.get("id"), bool) or task["id"] <= 0):
+        raise Refusal(f"{what}: submission outcome uncertain (no valid task id returned); a task may be running, "
+                      "check the template's tasks before launching again")
     return task
 
 

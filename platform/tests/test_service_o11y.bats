@@ -949,7 +949,7 @@ assert job['job_name'] == 'agentgateway'
 assert job['metrics_path'] == '/metrics'
 assert job['static_configs'] == [{
     'targets': ['gateway.example.test:19002'],
-    'labels': {'service': 'agentgateway', 'component': 'gateway', 'cluster': 'test-cluster', 'environment': 'prod'},
+    'labels': {'target_id': 'service:agentgateway', 'service': 'agentgateway', 'component': 'gateway', 'cluster': 'test-cluster', 'environment': 'prod'},
 }]
 assert job['metric_relabel_configs'][0]['regex'] == policy
 PY
@@ -1079,6 +1079,78 @@ assert all(
     for rule in target_rules
 )
 assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule in target_rules)
+PY
+}
+
+@test "o11y: agentgateway trace silence rule requires traffic, zero spans, and every activation guard" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+def rule(**values):
+    document = yaml.safe_load(template.render(**values))
+    matches = [item for group in document['groups'] for item in group['rules']
+               if item['uid'] == 'agentgateway_trace_silent']
+    assert len(matches) == 1
+    return matches[0]
+
+expression = (
+    'sum(increase(agentgateway_requests_total{job="agentgateway"}[30m])) >= 100 and on() '
+    'sum(rate(tempo_distributor_spans_received_total{job="tempo"}[30m])) == 0'
+)
+base = {
+    'local_mode': False,
+    'o11y_environment': 'prod',
+    'o11y_alerts_enabled': True,
+    'o11y_tempo_gateway_exclusive_sender_reviewed': True,
+    'groups': {'agentgateway_svc': ['gateway-prod']},
+    'hostvars': {'gateway-prod': {'agw_otlp_traces': True}},
+}
+active = rule(**base)
+assert active['data'][0]['model']['expr'] == expression
+assert active['data'][0]['relativeTimeRange'] == {'from': 1800, 'to': 0}
+assert active['noDataState'] == 'OK'
+assert active['isPaused'] is False
+assert active['notification_settings']['receiver'] == 'agent-cloud-ops'
+assert active['notification_settings']['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+
+# The query's conjunction must require both sides: under-threshold traffic never
+# fires even with zero spans; positive span rate never fires at any traffic volume.
+for requests, spans_per_second, fires in (
+    (0, 0, False), (99, 0, False), (100, 0, True), (1000, 0, True),
+    (100, 0.01, False), (1000, 1, False),
+):
+    assert (requests >= 100 and spans_per_second == 0) is fires
+
+for denied in (
+    {'o11y_alerts_enabled': False},
+    {'local_mode': True},
+    {'o11y_environment': 'dev'},
+    {'o11y_alert_canary_service': 'o11y-fault-probe-aaaaaaaaaaaa'},
+    {'groups': {'agentgateway_svc': []}, 'hostvars': {}},
+    {'groups': {'agentgateway_svc': ['gateway-prod', 'gateway-staging']},
+     'hostvars': {'gateway-prod': {'agw_otlp_traces': True},
+                  'gateway-staging': {'agw_otlp_traces': True}}},
+    {'hostvars': {'gateway-prod': {'agw_otlp_traces': False}}},
+    {'hostvars': {'gateway-prod': {}}},
+    {'o11y_tempo_gateway_exclusive_sender_reviewed': False},
+    {'o11y_tempo_gateway_exclusive_sender_reviewed': None},
+):
+    rendered = rule(**(base | denied))
+    assert rendered['isPaused'] is True, denied
+    assert 'notification_settings' not in rendered, denied
+
+defaults = rule()
+assert defaults['isPaused'] is True
+assert 'notification_settings' not in defaults
 PY
 }
 
@@ -2282,20 +2354,26 @@ assert all('{service=~"$service"}' in query or 'service=~"$service"' in query fo
 assert all('$log_service' in query for query in loki_queries)
 assert all('container=' not in query for query in metric_queries)
 log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Log volume by source')
-assert len(log_rate['targets']) == 5
+assert len(log_rate['targets']) == 6
 assert 'container=~".+"' in log_rate['targets'][0]['expr']
 assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][0]['expr']
 assert 'signal="container"' in log_rate['targets'][1]['expr']
 assert 'signal="access-log"' in log_rate['targets'][2]['expr']
 assert 'signal="span"' in log_rate['targets'][3]['expr']
 assert 'job="agent-cloud-conformance"' in log_rate['targets'][4]['expr']
+assert 'service=~"$log_service"' in log_rate['targets'][5]['expr']
+assert 'container!~".+"' in log_rate['targets'][5]['expr']
+assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][5]['expr']
+assert 'job!="agent-cloud-conformance"' in log_rate['targets'][5]['expr']
+assert 'Unclassified' in log_rate['targets'][5]['legendFormat']
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
 alloy = env.from_string(alloy_template).render(
-    o11y_cluster='test-cluster', _o11y_forbidden_metric_label_names_regex=policy,
+    o11y_cluster='test-cluster', local_mode=True,
+    _o11y_forbidden_metric_label_names_regex=policy,
 )
 assert 'target_label  = "service"' in alloy
 assert '__meta_docker_container_label_com_docker_compose_service' in alloy
@@ -2783,8 +2861,9 @@ def seconds(value):
 
 
 def own(groups):
-    # The Loki-backed platform groups render regardless of the scrape; tested below.
-    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca')]
+    # The Loki-backed platform groups and the always-provisioned trace rule render
+    # regardless of the DGX scrape; tested separately.
+    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca', 'agentgateway-traces')]
 
 
 for scrape in (False, True):
@@ -2888,7 +2967,7 @@ assert 'deleteRules' not in enabled, enabled.get('deleteRules')
 for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(local_mode=True)):
     disabled = yaml.safe_load(template.render(**values))
     assert [group['name'] for group in disabled['groups']
-            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry'], values
+            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry', 'agentgateway-traces'], values
     assert all(not rule['uid'].startswith('inference_')
                for group in disabled['groups'] for rule in group['rules']), values
     assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(created), disabled['deleteRules']
@@ -2965,7 +3044,7 @@ def loki_rules(doc):
 
 
 default = render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[])
-assert [group['name'] for group in default['groups']] == ['service-telemetry', 'scheduled-jobs', 'internal-ca']
+assert [group['name'] for group in default['groups']] == ['service-telemetry', 'agentgateway-traces', 'scheduled-jobs', 'internal-ca']
 assert all(group['interval'] == '5m' for group in default['groups'] if group['name'] in LOKI_GROUPS)
 rules = loki_rules(default)
 assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expiring',

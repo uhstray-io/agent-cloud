@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -129,8 +130,24 @@ class CoverageContractTests(unittest.TestCase):
         self.assertIn("'revision' in _coverage_inventory", command["stdin"])
         self.assertIn("'targets': _coverage_inventory.get('targets', [])", command["stdin"])
         self.assertIn("'receipt_bindings': _coverage_receipt_bindings", command["stdin"])
+        self.assertIn("'receipt_task_ids': receipt_task_ids", command["stdin"])
         self.assertIn("'template_names':", command["stdin"])
         self.assertIn("'expected_repository_sha': expected_repository_sha", command["stdin"])
+
+    def test_transient_receipt_survey_uses_the_existing_scoped_dev_publisher(self):
+        catalog = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+        census = next(item for item in catalog if item.get("name") == "Verify o11y Coverage Census")
+        survey = next(item for item in census["survey_vars"] if item.get("name") == "receipt_task_ids")
+        publisher = next(item for item in catalog
+                         if item.get("name") == "Publish Semaphore Template Surveys")
+        self.assertEqual(census["repository"], "agent-cloud dev")
+        self.assertEqual(census["playbook"], "platform/playbooks/census-o11y-coverage.yml")
+        self.assertEqual((survey["type"], survey["required"], survey["default_value"]),
+                         ("string", False, ""))
+        self.assertTrue(publisher["dev_variant"])
+        self.assertEqual(publisher["playbook"], "platform/playbooks/publish-semaphore-templates.yml")
+        self.assertTrue(any(item.get("name") == "semaphore_template_names_json"
+                            for item in publisher["survey_vars"]))
 
     def test_coverage_playbooks_guard_before_credentials_and_strict_helpers(self):
         census = yaml.safe_load((ROOT / "platform/playbooks/census-o11y-coverage.yml").read_text())
@@ -311,10 +328,30 @@ class CoverageContractTests(unittest.TestCase):
             ),
             2,
         )
-        self.assertEqual(
-            by_name["Fail closed on a controller refusal"]["ansible.builtin.assert"]["fail_msg"],
-            "receipt_verification_failed",
+        fail_msg = by_name["Fail closed on a controller refusal"]["ansible.builtin.assert"]["fail_msg"]
+        self.assertIn("_coverage_report.reason", fail_msg)
+        self.assertIn("_coverage_report.reason in _coverage_safe_refusal_codes", fail_msg)
+        self.assertIn("receipt_verification_failed", fail_msg)
+        semaphore_path = ROOT / "platform/playbooks/files/o11y-coverage-semaphore.py"
+        spec = importlib.util.spec_from_file_location("coverage_semaphore_contract", semaphore_path)
+        semaphore = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(semaphore)
+        self.assertEqual(set(_play_named(plays, "Check out and inventory declarations")["vars"][
+            "_coverage_safe_refusal_codes"
+        ]), semaphore.SAFE_REFUSAL_CODES)
+        render = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(fail_msg)
+        allowed = render.render(
+            _coverage_report={"status": "refused", "reason": "task_not_accepted"},
+            _coverage_safe_refusal_codes=semaphore.SAFE_REFUSAL_CODES,
         )
+        self.assertEqual(allowed, "task_not_accepted")
+        secret = "private-token"
+        unknown = render.render(
+            _coverage_report={"status": "refused", "reason": secret},
+            _coverage_safe_refusal_codes=semaphore.SAFE_REFUSAL_CODES,
+        )
+        self.assertEqual(unknown, "receipt_verification_failed")
+        self.assertNotIn(secret, unknown)
         report = by_name["Report the candidate census"]["ansible.builtin.debug"]["msg"]
         self.assertEqual(report, "{{ _coverage_report }}")
         self.assertNotIn("stdout", report)
@@ -749,15 +786,33 @@ class CoverageContractTests(unittest.TestCase):
             "window_seconds", "requested_freshness_seconds", "declared_freshness_seconds",
         ):
             self.assertIn(f"'{field}'", validator["ansible.builtin.command"]["stdin"])
-        promote = next(task for task in tasks if task["name"] == "Promote only the fixed validation status")
+        parse = next(task for task in tasks if task["name"] == "Parse the protected signal validation response")
+        self.assertEqual(len(parse["block"]), 1)
+        self.assertIs(parse["block"][0]["no_log"], True)
+        self.assertEqual(len(parse["rescue"]), 1)
+        self.assertIs(parse["rescue"][0]["no_log"], True)
+        self.assertEqual(parse["rescue"][0]["ansible.builtin.set_fact"]["_coverage_validation"], {
+            "status": "refused", "reason": "invalid_response", "evidence_count": 0,
+        })
+        schema = next(task for task in tasks if task["name"] == "Validate the fixed signal validation response schema")
+        self.assertIs(schema["no_log"], True)
+        schema_checks = schema["ansible.builtin.assert"]["that"]
+        self.assertIn(
+            "_coverage_validation.keys() | list | sort == ['evidence_count', 'reason', 'status']",
+            schema_checks,
+        )
+        self.assertTrue(any("_coverage_validation.reason in" in check for check in schema_checks))
+        self.assertIn("0 <= _coverage_validation.evidence_count <= 1000", schema_checks)
+        promote = next(task for task in tasks if task["name"] == "Promote only fixed validation fields")
         self.assertIs(promote["no_log"], True)
-        task_source = (ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text()
-        self.assertIn("# A malformed parse can echo the protected validator stdout.", task_source)
         assertion = next(task for task in tasks if task["name"] == "Require the strict signal observation")
         self.assertEqual(
             assertion["ansible.builtin.assert"]["that"], "_coverage_observation_status == 'verified'"
         )
-        self.assertEqual(assertion["ansible.builtin.assert"]["fail_msg"], "Strict signal observation refused.")
+        self.assertEqual(
+            assertion["ansible.builtin.assert"]["fail_msg"],
+            "Strict signal observation refused: {{ _coverage_observation_reason }}.",
+        )
 
         output = next(task for task in tasks if task.get("name") == "Emit sanitized unattributed observation metadata")
         observation = output["ansible.builtin.set_stats"]["data"]["o11y_coverage_observation"]
@@ -775,6 +830,79 @@ class CoverageContractTests(unittest.TestCase):
             observation["observed_at"],
         )
         self.assertGreater(tasks.index(output), tasks.index(assertion))
+
+    def test_strict_signal_refusal_reports_only_a_valid_fixed_reason(self):
+        ansible_playbook = shutil.which("ansible-playbook")
+        self.assertIsNotNone(ansible_playbook)
+        source_tasks = yaml.safe_load(
+            (ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text()
+        )
+        selected_names = {
+            "Parse the protected signal validation response",
+            "Validate the fixed signal validation response schema",
+            "Promote only fixed validation fields",
+            "Require the strict signal observation",
+        }
+        validation_tasks = [task for task in source_tasks if task.get("name") in selected_names]
+        self.assertEqual({task["name"] for task in validation_tasks}, selected_names)
+
+        def run(stdout):
+            with tempfile.TemporaryDirectory(prefix="o11y-signal-reason-") as directory:
+                temp = Path(directory)
+                inventory = temp / "inventory.yml"
+                playbook = temp / "validate.yml"
+                local_tmp = temp / "local"
+                remote_tmp = temp / "remote"
+                local_tmp.mkdir()
+                remote_tmp.mkdir()
+                inventory.write_text("localhost ansible_connection=local\n", encoding="utf-8")
+                playbook.write_text(
+                    yaml.safe_dump([{
+                        "hosts": "localhost",
+                        "gather_facts": False,
+                        "tasks": [{
+                            "ansible.builtin.set_fact": {
+                                "_validated_observation": {
+                                    "stdout": stdout,
+                                },
+                            },
+                        }, *validation_tasks],
+                    }], sort_keys=False),
+                    encoding="utf-8",
+                )
+                environment = os.environ.copy()
+                environment.update(
+                    ANSIBLE_LOCAL_TEMP=str(local_tmp),
+                    ANSIBLE_REMOTE_TEMP=str(remote_tmp),
+                    ANSIBLE_STDOUT_CALLBACK="default",
+                    ANSIBLE_NOCOLOR="1",
+                )
+                return subprocess.run(
+                    [ansible_playbook, "-i", str(inventory), str(playbook)],
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+
+        no_evidence = run(json.dumps({"status": "refused", "reason": "no_evidence", "evidence_count": 0}))
+        self.assertNotEqual(no_evidence.returncode, 0)
+        self.assertIn("Strict signal observation refused: no_evidence.", no_evidence.stdout + no_evidence.stderr)
+
+        canary = "private-selector-and-backend-body"
+        injected = run(json.dumps({"status": "refused", "reason": canary, "evidence_count": 0}))
+        self.assertNotEqual(injected.returncode, 0)
+        self.assertNotIn(canary, injected.stdout + injected.stderr)
+        self.assertIn("invalid fixed response schema", injected.stdout + injected.stderr)
+
+        for stdout in ("", f"{{{canary}"):
+            with self.subTest(stdout=stdout):
+                malformed = run(stdout)
+                self.assertNotEqual(malformed.returncode, 0)
+                self.assertIn("Strict signal observation refused: invalid_response.",
+                              malformed.stdout + malformed.stderr)
+                self.assertNotIn(canary, malformed.stdout + malformed.stderr)
 
     def test_profile_query_uses_the_common_protected_signal_validator(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())

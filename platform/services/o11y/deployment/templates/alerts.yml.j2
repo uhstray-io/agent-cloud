@@ -429,6 +429,59 @@ groups:
    schema they match is in the o11y README ("Scheduled jobs and internal CA expiry").
    Each is ONE rule over every series, so a declaration change rewrites an expression
    and never strands a provisioned rule. #}
+{# Tempo's received-span counter is global to this receiver. Keep this rule paused
+   unless inventory explicitly reviews agentgateway as its exclusive span sender. #}
+{% set _trace_silence_gateway_hosts = groups.get('agentgateway_svc', []) if groups is defined else [] %}
+{% set _trace_silence_gateway = hostvars[_trace_silence_gateway_hosts[0]] if hostvars is defined and _trace_silence_gateway_hosts | length == 1 else {} %}
+{% set _trace_silence_active = o11y_alerts_enabled | default(false) | bool
+     and not (local_mode | default(false) | bool)
+     and o11y_environment | default('') == 'prod'
+     and o11y_alert_canary_service is not defined
+     and _trace_silence_gateway_hosts | length == 1
+     and _trace_silence_gateway.agw_otlp_traces | default(false) | bool
+     and o11y_tempo_gateway_exclusive_sender_reviewed | default(false) | bool %}
+  - orgId: 1
+    name: agentgateway-traces
+    folder: agent-cloud
+    interval: 60s
+    rules:
+      - uid: agentgateway_trace_silent
+        title: Agentgateway requests without received traces
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1800, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: 'sum(increase(agentgateway_requests_total{job="agentgateway"}[30m])) >= 100 and on() sum(rate(tempo_distributor_spans_received_total{job="tempo"}[30m])) == 0'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: Agentgateway has received at least 100 requests in 30 minutes without Tempo receiving spans.
+          description: Check the declared gateway trace switch and the Tempo receiver path. This rule is enabled only after inventory review confirms agentgateway is the exclusive Tempo span sender.
+          dashboard_url: /d/agentgateway-traffic
+        labels:
+          severity: critical
+          service: agentgateway
+          owner: platform-operations
+          environment: prod
+          cluster: {{ o11y_cluster | default('agent-cloud-prod') | to_json }}
+        isPaused: {{ 'false' if _trace_silence_active else 'true' }}
+{% if _trace_silence_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
 {% set _loki_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
 {% set _scheduled_jobs = o11y_scheduled_jobs | default([{'job': 'renew-internal-certs', 'max_silence_hours': 36}]) %}
 {% macro loki_rule(uid, title, expr, evaluator, threshold, from_, for_, severity, service, summary, description) %}

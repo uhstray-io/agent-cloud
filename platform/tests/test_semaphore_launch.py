@@ -71,10 +71,11 @@ def test_check_mode_is_sent_inside_params_never_top_level():
     assert json.loads(api.created["environment"]) == {"service_branch": "dev"}
 
 
-def test_a_real_run_carries_no_check_mode_flags():
+def test_a_real_run_records_both_check_mode_flags_as_false():
     api = FakeAPI()
     launcher.launch(api, "Deploy agentgateway (Dev)", {"service_branch": "dev"}, dry_run=False)
-    assert "params" not in api.created and "dry_run" not in api.created
+    assert api.created["params"] == {"dry_run": False, "diff": False}
+    assert "dry_run" not in api.created and "diff" not in api.created
 
 
 @pytest.mark.parametrize("version", ["v2.17.30-abc", "v2.17.32", "v2.18.0", "v2.19.10", "v3.0.0", "unknown"])
@@ -90,6 +91,35 @@ def test_undeclared_survey_values_are_refused_before_any_task():
     with pytest.raises(launcher.Refusal, match="Not survey fields"):
         launcher.launch(api, "Deploy agentgateway (Dev)", {"agw_ui_enabled": "true"}, dry_run=True)
     assert posts(api) == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("playbook", "platform/playbooks/deploy-o11y.yml"),
+    ("repository_id", 99),
+    ("inventory_id", 99),
+    ("survey_vars", [{"name": "unexpected", "type": "string"}]),
+])
+def test_an_expected_template_binding_change_refuses_before_post(field, value):
+    api = FakeAPI()
+    expected = copy.deepcopy(api.template)
+    api.template[field] = value
+    with pytest.raises(launcher.Refusal, match="changed during preflight"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False,
+                        expected_template=expected)
+    assert posts(api) == []
+
+
+def test_expected_template_ignores_only_runtime_task_history_fields():
+    api = FakeAPI()
+    api.template.update(tasks=[{"id": 1199}], last_task=1199)
+    expected = copy.deepcopy(api.template)
+    api.template.update(tasks=[{"id": 1200}], last_task=1200)
+
+    launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False,
+                    expected_template=expected)
+
+    assert api.created is not None
+    assert posts(api) == ["/tasks"]
 
 
 def dev_template(api, default="dev"):
@@ -119,6 +149,63 @@ def test_a_field_without_a_default_stays_absent():
     api = FakeAPI()
     launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
     assert "environment" not in api.created
+
+
+def typed_template(api, default="3", survey_type="integer"):
+    api.template["survey_vars"] = [
+        {"name": "event_limit", "type": survey_type, "default_value": default},
+        {"name": "mode", "type": "enum", "default_value": "safe", "values": ["safe", "fast"]},
+    ]
+
+
+@pytest.mark.parametrize(("survey_type", "value", "expected"),
+                         [("integer", "42", 42), ("int", "-7", -7), ("int", 7, 7)])
+def test_integer_survey_values_are_json_integers(survey_type, value, expected):
+    api = FakeAPI()
+    typed_template(api, survey_type=survey_type)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {"event_limit": value}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": expected, "mode": "safe"}
+
+
+@pytest.mark.parametrize(("survey_type", "default"), [("integer", "42"), ("int", 42)])
+def test_integer_survey_defaults_are_json_integers(survey_type, default):
+    api = FakeAPI()
+    typed_template(api, default, survey_type)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": 42, "mode": "safe"}
+
+
+@pytest.mark.parametrize("value", ["+1", "01", "-0", " 1", "1 ", "1.0", "1e2", "", True, False])
+def test_malformed_or_boolean_integer_survey_values_are_refused_before_post(value):
+    api = FakeAPI()
+    typed_template(api)
+    with pytest.raises(launcher.Refusal, match="Survey field 'event_limit' must be a canonical integer") as error:
+        launcher.launch(api, "Deploy agentgateway (Dev)", {"event_limit": value}, dry_run=False)
+    assert str(error.value) == "Survey field 'event_limit' must be a canonical integer"
+    assert posts(api) == []
+
+
+@pytest.mark.parametrize("default", ["01", True, [3]])
+def test_malformed_integer_defaults_are_refused_with_field_name_only(default):
+    api = FakeAPI()
+    typed_template(api, default)
+    with pytest.raises(launcher.Refusal, match="Survey field 'event_limit' must be a canonical integer"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert posts(api) == []
+
+
+def test_integer_survey_values_keep_canonical_zero_and_nonnegative_forms():
+    api = FakeAPI()
+    typed_template(api)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {"event_limit": "0"}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": 0, "mode": "safe"}
+
+
+def test_enum_values_remain_strings():
+    api = FakeAPI()
+    typed_template(api)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {"mode": "fast"}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"event_limit": 3, "mode": "fast"}
 
 
 @pytest.mark.parametrize("default", [["dev"], {"values": ["dev"]}, 3])

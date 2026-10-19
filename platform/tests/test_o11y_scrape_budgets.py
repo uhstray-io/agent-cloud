@@ -95,6 +95,42 @@ def test_alloy_compose_environment_forwards_bounded_scrape_budgets_without_secre
     assert "env_file" not in alloy
 
 
+def test_alloy_socket_discovery_and_container_metrics_render_only_in_local_mode():
+    template = _environment().from_string(
+        (DEPLOY / "templates/config.alloy.j2").read_text(encoding="utf-8")
+    )
+    values = {
+        "o11y_cluster": "test-cluster",
+        "_o11y_forbidden_metric_label_names_regex": POLICY,
+    }
+    local = template.render(**values, local_mode=True)
+    production = template.render(**values, local_mode=False)
+
+    for component in (
+        'discovery.docker "containers"',
+        'loki.source.docker "default"',
+        'discovery.relabel "metrics"',
+        'prometheus.scrape "local_containers"',
+        'prometheus.relabel "bounded_labels"',
+        'prometheus.remote_write "local"',
+    ):
+        assert component in local
+        assert component not in production
+
+    assert f"regex  = {json.dumps(POLICY)}" in local
+    assert f"regex  = {json.dumps(POLICY)}" not in production
+
+    for component in (
+        'loki.write "default"',
+        'otelcol.receiver.otlp "traces"',
+        'otelcol.receiver.otlp "conformance"',
+        'otelcol.exporter.otlp "tempo"',
+    ):
+        assert component in local
+        assert component in production
+    assert "unix:///var/run/docker.sock" not in production
+
+
 def test_all_prometheus_scrape_jobs_render_finite_limits_and_keep_identity_policy():
     base = _render_yaml(
         "prometheus.yml.j2",

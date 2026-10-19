@@ -1,12 +1,16 @@
+import copy
 import email.message
 import importlib.util
+import io
 import json
 import ssl
 import subprocess
 import sys
 import unittest
 import urllib.error
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).parents[1] / "playbooks/files/o11y-coverage-semaphore.py"
 SPEC = importlib.util.spec_from_file_location("o11y_coverage_semaphore", SCRIPT)
@@ -165,7 +169,7 @@ class FakeControllerReader:
         self.bindings = bindings
         if self.on_read:
             self.on_read()
-        return [self.result]
+        return self.result if isinstance(self.result, list) else [self.result]
 
 
 class FakeResponse:
@@ -205,6 +209,186 @@ class FakeOpener:
 
 
 class SemaphoreReceiptTests(unittest.TestCase):
+    def test_controller_accepts_transient_ids_for_multiple_stable_bindings(self):
+        payload, logs = controller_payload()
+        target = payload["inventory"]["targets"][0]
+        target["signals"]["metrics"] = copy.deepcopy(target["signals"]["logs"])
+        target["signals"]["metrics"]["selector"] = '{target_id="service:census_test"}'
+        revision = CENSUS.canonical_inventory_revision(payload["inventory"]["targets"])
+        payload["expected_repository_sha"] = REPOSITORY_SHA
+        payload["inventory"]["inventory_revision"] = revision
+        bindings = payload["inventory"]["receipt_bindings"]["service:census_test"]
+        bindings["logs"].pop("task_id")
+        bindings["metrics"] = {
+            "template_id": TEMPLATE_ID, "observation_window_seconds": 300,
+        }
+
+        def result_for(signal, task_id):
+            data = copy.deepcopy(logs)
+            data["binding"]["task_id"] = task_id
+            data["binding"]["template_id"] = TEMPLATE_ID
+            data["target"] = target
+            data["task"]["id"] = task_id
+            data["task"]["environment"] = json.dumps({
+                "o11y_verification_mode": "strict",
+                "expected_repository_sha": REPOSITORY_SHA,
+                "expected_inventory_revision": revision,
+                "expected_target_id": "service:census_test",
+                "expected_signal": signal,
+                "signal_selector": target["signals"][signal]["selector"],
+                "freshness_seconds": 3600,
+                "observation_window_seconds": 300,
+            })
+            data["observation"]["signal"] = signal
+            data["observation"]["inventory_revision"] = revision
+            for row in data["rows"]:
+                row["task_id"] = task_id
+            data["rows"][-1]["output"] = "RUN: " + json.dumps({
+                "o11y_coverage_observation": data["observation"],
+            })
+            return {"task": data["task"], "output": data["rows"],
+                    "template": data["template"], "repository": data["repository"]}
+
+        results = [result_for("logs", 123), result_for("metrics", 124)]
+        reader_holder = {}
+
+        def reader_factory(url, token, project_id):
+            reader_holder["reader"] = FakeControllerReader(url, token, project_id, results)
+            return reader_holder["reader"]
+
+        payload["receipt_task_ids"] = json.dumps({
+            "service:census_test": {"logs": 123, "metrics": 124},
+        })
+        report = SEMAPHORE.controller_report(
+            payload, reader_factory=reader_factory, clock=lambda: NOW, census_module=CENSUS,
+        )
+        row = next(item for item in report["targets"] if item["target_id"] == "service:census_test")
+        self.assertEqual(reader_holder["reader"].bindings, [
+            {"task_id": 123, "template_id": TEMPLATE_ID},
+            {"task_id": 124, "template_id": TEMPLATE_ID},
+        ])
+        self.assertEqual(row["signals"]["logs"], "verified")
+        self.assertEqual(row["signals"]["metrics"], "verified")
+
+    def test_controller_rejects_transient_id_reused_from_unoverridden_stable_binding(self):
+        payload, _data = controller_payload()
+        target = payload["inventory"]["targets"][0]
+        target["signals"]["metrics"] = copy.deepcopy(target["signals"]["logs"])
+        payload["inventory"]["receipt_bindings"]["service:census_test"]["metrics"] = {
+            "task_id": TASK_ID + 1, "template_id": TEMPLATE_ID,
+            "observation_window_seconds": 300,
+        }
+        payload["inventory"]["inventory_revision"] = CENSUS.canonical_inventory_revision(
+            payload["inventory"]["targets"]
+        )
+        payload["receipt_task_ids"] = json.dumps({
+            "service:census_test": {"logs": TASK_ID + 1},
+        })
+        reader_created = []
+
+        def reader_factory(*_args):
+            reader_created.append(True)
+            raise AssertionError("reused transient ID must not reach receipt readback")
+
+        with self.assertRaisesRegex(SEMAPHORE.Refusal, "transient_receipt_limit"):
+            SEMAPHORE.controller_report(payload, reader_factory=reader_factory, census_module=CENSUS)
+        self.assertEqual(reader_created, [])
+
+    def test_controller_rejects_legacy_pointer_override_before_readback(self):
+        payload, _data = controller_payload()
+        target = payload["inventory"]["targets"][0]
+        target["signals"]["logs"]["receipt_reference"] = f"semaphore/task/{TASK_ID}"
+        target["receipt_reference"] = {"logs": f"semaphore/task/{TASK_ID}"}
+        payload["inventory"]["inventory_revision"] = CENSUS.canonical_inventory_revision(
+            payload["inventory"]["targets"]
+        )
+        payload["receipt_task_ids"] = json.dumps({"service:census_test": {"logs": TASK_ID + 1}})
+        reader_created = []
+
+        def reader_factory(*_args):
+            reader_created.append(True)
+            raise AssertionError("legacy pointer override must not reach receipt readback")
+
+        with self.assertRaisesRegex(SEMAPHORE.Refusal, "transient_receipt_legacy_pointer"):
+            SEMAPHORE.controller_report(payload, reader_factory=reader_factory, census_module=CENSUS)
+        self.assertEqual(reader_created, [])
+
+    def test_controller_rejects_malformed_or_undeclared_transient_ids_before_readback(self):
+        invalid_overrides = (
+            ('{"service:census_test":{"logs":123},"service:census_test":{"logs":124}}',
+             "transient_receipt_shape"),
+            ('{"service:other":{"logs":123}}', "transient_receipt_key"),
+            ('{"service:census_test":{"traces":123}}', "transient_receipt_key"),
+            ('{"service:census_test":{"logs":0}}', "transient_receipt_key"),
+            ('{"service:census_test":{"logs":123,"metrics":123}}', "transient_receipt_key"),
+            ('not-json', "transient_receipt_shape"),
+        )
+        for override, reason in invalid_overrides:
+            payload, _data = controller_payload()
+            payload["receipt_task_ids"] = override
+            reader_created = []
+
+            def reader_factory(*_args, calls=reader_created):
+                calls.append(True)
+                raise AssertionError("invalid transient IDs must not reach receipt readback")
+
+            with self.subTest(override=override), self.assertRaisesRegex(SEMAPHORE.Refusal, reason):
+                SEMAPHORE.controller_report(payload, reader_factory=reader_factory, census_module=CENSUS)
+            self.assertEqual(reader_created, [])
+
+    def test_controller_refuses_reused_and_oversized_transient_id_maps(self):
+        payload, _data = controller_payload()
+        target = payload["inventory"]["targets"][0]
+        target["signals"]["metrics"] = copy.deepcopy(target["signals"]["logs"])
+        payload["inventory"]["receipt_bindings"]["service:census_test"]["metrics"] = {
+            "template_id": TEMPLATE_ID, "observation_window_seconds": 300,
+        }
+        payload["inventory"]["inventory_revision"] = CENSUS.canonical_inventory_revision(
+            payload["inventory"]["targets"]
+        )
+        payload["receipt_task_ids"] = json.dumps({
+            "service:census_test": {"logs": 123, "metrics": 123},
+        })
+        with self.assertRaisesRegex(SEMAPHORE.Refusal, "transient_receipt_limit"):
+            SEMAPHORE.controller_report(payload, census_module=CENSUS)
+
+        oversized, _data = controller_payload()
+        targets, bindings, override = [], {}, {}
+        for index in range(SEMAPHORE.MAX_TRANSIENT_TASK_IDS + 1):
+            suffix = f"alpha{index:02}"
+            target = copy.deepcopy(oversized["inventory"]["targets"][0])
+            target["target_id"] = f"service:{suffix}"
+            target["service_identity"] = suffix
+            target["signals"]["logs"]["selector"] = f'{{target_id="service:{suffix}"}}'
+            targets.append(target)
+            bindings[target["target_id"]] = {"logs": {
+                "template_id": TEMPLATE_ID, "observation_window_seconds": 300,
+            }}
+            override[target["target_id"]] = {"logs": 1000 + index}
+        oversized["inventory"]["targets"] = targets
+        oversized["inventory"]["receipt_bindings"] = bindings
+        oversized["inventory"]["inventory_revision"] = CENSUS.canonical_inventory_revision(targets)
+        oversized["receipt_task_ids"] = json.dumps(override)
+        with self.assertRaisesRegex(SEMAPHORE.Refusal, "transient_receipt_limit"):
+            SEMAPHORE.controller_report(oversized, census_module=CENSUS)
+
+    def test_controller_leaves_stable_binding_without_task_id_incomplete(self):
+        payload, _data = controller_payload()
+        binding = payload["inventory"]["receipt_bindings"]["service:census_test"]["logs"]
+        binding.pop("task_id")
+        reader_created = []
+
+        def reader_factory(*_args):
+            reader_created.append(True)
+            raise AssertionError("missing task ID must not trigger a readback")
+
+        report = SEMAPHORE.controller_report(
+            payload, reader_factory=reader_factory, clock=lambda: NOW, census_module=CENSUS,
+        )
+        row = next(item for item in report["targets"] if item["target_id"] == "service:census_test")
+        self.assertEqual(row["signals"]["logs"], "incomplete")
+        self.assertEqual(reader_created, [])
+
     def test_controller_builds_census_without_reader_for_empty_bindings(self):
         payload, _data = controller_payload()
         payload["inventory"]["receipt_bindings"] = {}
@@ -314,6 +498,51 @@ class SemaphoreReceiptTests(unittest.TestCase):
         self.assertNotIn("semaphore.invalid", rendered)
         self.assertNotIn("o11y_coverage_observation", rendered)
 
+    def test_controller_reports_authenticated_stale_head_as_incomplete(self):
+        payload, data = controller_payload()
+        old_sha = "c" * 40
+        data["task"]["commit_hash"] = old_sha
+        launch = json.loads(data["task"]["environment"])
+        launch["expected_repository_sha"] = old_sha
+        data["task"]["environment"] = json.dumps(launch)
+        data["observation"]["repository_sha"] = old_sha
+        data["rows"][-1]["output"] = "RUN: " + json.dumps({
+            "o11y_coverage_observation": data["observation"],
+        })
+
+        def reader_factory(url, token, project_id):
+            return FakeControllerReader(
+                url, token, project_id,
+                {"task": data["task"], "output": data["rows"],
+                 "template": data["template"], "repository": data["repository"]},
+            )
+
+        report = SEMAPHORE.controller_report(
+            payload, reader_factory=reader_factory, clock=lambda: NOW, census_module=CENSUS,
+        )
+        row = next(item for item in report["targets"] if item["target_id"] == "service:census_test")
+        self.assertEqual(row["signals"]["logs"], "incomplete")
+        self.assertEqual(row["coverage"], "incomplete")
+
+    def test_stale_receipt_still_refuses_current_inventory_or_selector_mismatch(self):
+        old_sha = "c" * 40
+        for field, value in (
+            ("expected_inventory_revision", "d" * 64),
+            ("signal_selector", '{target_id="service:other"}'),
+        ):
+            data = fixture()
+            data["task"]["commit_hash"] = old_sha
+            launch = json.loads(data["task"]["environment"])
+            launch["expected_repository_sha"] = old_sha
+            launch[field] = value
+            data["task"]["environment"] = json.dumps(launch)
+            data["observation"]["repository_sha"] = old_sha
+            data["rows"][-1]["output"] = "RUN: " + json.dumps({
+                "o11y_coverage_observation": data["observation"],
+            })
+            with self.subTest(field=field), self.assertRaisesRegex(SEMAPHORE.Refusal, "launch_inputs"):
+                accept(data)
+
     def test_controller_refuses_wrong_binding_after_readback(self):
         payload, data = controller_payload()
         payload["inventory"]["receipt_bindings"]["service:census_test"]["logs"]["task_id"] += 1
@@ -342,11 +571,13 @@ class SemaphoreReceiptTests(unittest.TestCase):
                  "template": data["template"], "repository": data["repository"]},
             )
 
-        with self.assertRaisesRegex(SEMAPHORE.Refusal, "observation_expired"):
-            SEMAPHORE.controller_report(
-                payload, reader_factory=reader_factory, clock=lambda: "2026-10-11T12:55:05Z",
-                census_module=CENSUS,
-            )
+        report = SEMAPHORE.controller_report(
+            payload, reader_factory=reader_factory, clock=lambda: "2026-10-11T12:55:05Z",
+            census_module=CENSUS,
+        )
+        row = next(item for item in report["targets"] if item["target_id"] == "service:census_test")
+        self.assertEqual(row["signals"]["logs"], "incomplete")
+        self.assertEqual(row["coverage"], "incomplete")
 
     def test_controller_rejects_supplied_inventory_evidence_before_reader_creation(self):
         payload, _data = controller_payload()
@@ -410,10 +641,53 @@ class SemaphoreReceiptTests(unittest.TestCase):
             input=json.dumps(payload), text=True, capture_output=True, check=False,
         )
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(result.stdout, '{"reason": "receipt_verification_failed", "status": "refused"}\n')
+        self.assertEqual(result.stdout, '{"reason": "invalid_controller_input", "status": "refused"}\n')
         self.assertEqual(result.stderr, "")
         self.assertNotIn("private-token", result.stdout + result.stderr)
         self.assertNotIn("private.invalid", result.stdout + result.stderr)
+
+    def test_main_emits_each_fixed_refusal_code_and_hides_unknown_failures(self):
+        self.assertEqual(SEMAPHORE.SAFE_REFUSAL_CODES, {
+            "binding_limit", "conflicting_stats", "deadline", "http_status", "invalid_binding",
+            "invalid_controller_input", "invalid_credentials", "invalid_declaration", "invalid_endpoint",
+            "invalid_template_repository", "invalid_utc_time", "launch_inputs", "malformed_json",
+            "observation_binding", "observation_shape", "observation_time_order",
+            "output_rows", "output_shape", "output_time_order", "readback_shape", "repository_mismatch",
+            "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
+            "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
+            "task_not_accepted", "task_override", "task_params", "task_time_order", "template_drift",
+            "template_mismatch", "terminal_stats", "transient_receipt_key", "transient_receipt_legacy_pointer",
+            "transient_receipt_limit", "transient_receipt_shape", "transient_receipt_size",
+            "transport", "truncated_response",
+        })
+
+        def run_with(error):
+            output = io.StringIO()
+            with patch.object(SEMAPHORE.sys, "argv", [str(SCRIPT), "--controller"]), \
+                    patch.object(SEMAPHORE.sys, "stdin", io.StringIO("{}")), \
+                    patch.object(SEMAPHORE, "controller_report", side_effect=error), \
+                    redirect_stdout(output):
+                result = SEMAPHORE.main()
+            return result, output.getvalue()
+
+        for code in sorted(SEMAPHORE.SAFE_REFUSAL_CODES):
+            with self.subTest(code=code):
+                result, output = run_with(SEMAPHORE.Refusal(code))
+                self.assertEqual(result, 2)
+                self.assertEqual(json.loads(output), {"status": "refused", "reason": code})
+
+        for error in (
+            SEMAPHORE.Refusal("private-token"), SEMAPHORE.Refusal(["private-token"]),
+            RuntimeError("private-url private-token"), SystemExit("private-url private-token"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                result, output = run_with(error)
+                self.assertEqual(result, 2)
+                self.assertEqual(json.loads(output), {
+                    "status": "refused", "reason": "receipt_verification_failed",
+                })
+                self.assertNotIn("private-token", output)
+                self.assertNotIn("private-url", output)
 
     def test_synthetic_receipt_is_accepted_with_bounded_attribution(self):
         result = accept(fixture())
@@ -446,8 +720,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
 
     def test_expiry_is_conservative_and_expires_at_equality(self):
         self.assertEqual(accept(fixture(), "2026-10-11T12:55:04Z")["status"], "verified")
-        with self.assertRaisesRegex(SEMAPHORE.Refusal, "observation_expired"):
-            accept(fixture(), "2026-10-11T12:55:05Z")
+        self.assertEqual(accept(fixture(), "2026-10-11T12:55:05Z")["status"], "incomplete")
 
     def test_task_identity_status_and_revision_are_exact(self):
         for key, value, code in (
@@ -455,7 +728,8 @@ class SemaphoreReceiptTests(unittest.TestCase):
             ("project_id", PROJECT_ID + 1, "task_identity_mismatch"),
             ("template_id", TEMPLATE_ID + 1, "task_not_accepted"),
             ("status", "running", "task_not_accepted"),
-            ("commit_hash", "c" * 40, "repository_revision_mismatch"),
+            ("commit_hash", "c" * 40, "launch_inputs"),
+            ("commit_hash", "invalid", "repository_revision_mismatch"),
             ("playbook", "other.yml", "task_override"),
             ("arguments", "--limit all", "task_override"),
             ("git_branch", "main", "task_override"),
@@ -525,6 +799,20 @@ class SemaphoreReceiptTests(unittest.TestCase):
             data = fixture()
             mutate(data["rows"])
             with self.assertRaises(SEMAPHORE.Refusal):
+                accept(data)
+
+    def test_output_rows_accept_all_zero_ids_but_reject_mixed_or_invalid_ids(self):
+        data = fixture()
+        for row in data["rows"]:
+            row["id"] = 0
+        self.assertEqual(accept(data)["status"], "verified")
+
+        for ids in ((0, 902), (901, 0), (-1, 902), (True, 902), ("901", 902),
+                    (901, 901), (902, 901)):
+            data = fixture()
+            for row, row_id in zip(data["rows"], ids, strict=True):
+                row["id"] = row_id
+            with self.subTest(ids=ids), self.assertRaisesRegex(SEMAPHORE.Refusal, "^output_rows$"):
                 accept(data)
 
     def test_preliminary_queue_output_may_precede_task_start(self):

@@ -27,6 +27,16 @@
 
 templates:
   # ── Deployment ─────────────────────────────────────────────────
+  - name: Reconcile Semaphore API URL (Dev)
+    playbook: platform/playbooks/reconcile-semaphore-api-url.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+
   - name: Audit o11y Containers
     playbook: platform/playbooks/audit-o11y-containers.yml
     dev_variant: true
@@ -86,13 +96,14 @@ templates:
         required: true
       - name: journal_collector_action
         title: "Collector action"
-        description: "Stage the exact reviewed Dev checkout, survey read-only, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
+        description: "Stage the exact reviewed Dev checkout, survey metadata or the bounded cursor read-only, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
         type: enum
         required: true
         default_value: survey
         values:
           - { name: "Stage reviewed checkout", value: "stage" }
           - { name: "Survey journal paths", value: "survey" }
+          - { name: "Survey journal cursor read-only", value: "survey-cursor" }
           - { name: "Repair positions root ownership", value: "repair-positions" }
           - { name: "Apply pilot", value: "apply" }
           - { name: "Stop pilot", value: "stop" }
@@ -151,6 +162,12 @@ templates:
         description: "Exact Dev commit required on the Semaphore controller"
         type: string
         required: true
+      - name: receipt_task_ids
+        title: "Transient receipt task IDs (JSON)"
+        description: "Optional one-run target-to-signal task ID map; IDs are not written to inventory"
+        type: string
+        required: false
+        default_value: ""
 
   - name: Verify o11y Target Receipt
     playbook: platform/playbooks/verify-o11y-service.yml
@@ -2129,6 +2146,55 @@ templates:
         type: string
         required: true
 
+  - name: Survey PBS VM Census (Dev)
+    playbook: platform/playbooks/survey-pbs-vm-census.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Proxmox VM and storage census"
+        type: string
+        required: true
+    # Emits counts and fixed status only. Debian names and guest type are hints;
+    # image provenance requires a trusted build receipt and is not inferred here.
+
+  - name: Provision PBS Debian Cloud Template (Dev)
+    playbook: platform/playbooks/provision-pbs-debian-template.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for pinned Debian cloud template publication"
+        type: string
+        required: true
+    # VM identity, node, stage storage and destination storage are private inventory
+    # declarations. The publication play refuses check mode and never starts a VM.
+
+  - name: Survey PBS Provisioning Candidates (Dev)
+    playbook: platform/playbooks/survey-pbs-provisioning-candidates.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only PBS identity and storage survey"
+        type: string
+        required: true
+    # The exact free VMIDs and active storage capabilities are shown only in this
+    # private Semaphore task output. No Proxmox or storage configuration is changed.
+
+  - name: Enable PBS Import Storage Content (Dev)
+    playbook: platform/playbooks/enable-o11y-pbs-import-content.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the inventory-pinned Proxmox import-content update"
+        type: string
+        required: true
+    # Storage content is cluster-wide. The playbook updates only the distinct private
+    # import-store declaration, preserves its current content list, and uses Proxmox's
+    # digest concurrency guard. Check mode is read-only.
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev
@@ -2167,6 +2233,18 @@ templates:
     # Reuses protected GET responses after the private declaration exactly
     # matches. Serial and optional WWN are for private operator review only;
     # reported identity does not prove physical locality or authorize writes.
+
+  - name: Preflight o11y PBS Thick-LVM Allocation (Dev)
+    playbook: platform/playbooks/preflight-o11y-pbs-thick-lvm-allocation.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only PBS allocation preflight"
+        type: string
+        required: true
+    # Reads the existing protected survey payload and private inventory identity
+    # pin. It emits fixed status only and authorizes no allocation or writes.
 
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
@@ -2645,6 +2723,16 @@ templates:
         description: "Which declared host to provision — REQUIRED when the group declares more than one"
         type: string
         required: false
+
+  - name: Provision PBS VM (Dev)
+    playbook: platform/playbooks/provision-pbs-vm.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).

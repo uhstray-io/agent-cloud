@@ -26,14 +26,18 @@ PLAYBOOKS = REPO / "platform/playbooks"
 # Every play that builds a PVEAPIToken header, and the variable that carries its token id there.
 TOKEN_ID_VAR = {
     "destroy-vm.yml": "_pve_token_id",
+    "enable-o11y-pbs-import-content.yml": "_pve_token_id",
     "provision-template.yml": "_pve_token_id",
     "provision-vm.yml": "_pve_token_id",
+    "provision-pbs-debian-template.yml": "_pve_token_id",
     "proxmox-validate.yml": "_pve_token_id",
     "reconcile-o11y-backup-job.yml": "_pve_token_id",
     "resize-vm.yml": "_pve_token_id",
     "snapshot-vm.yml": "_pve_tid",
     "survey-o11y-backup-artifact.yml": "_pve_token_id",
     "survey-o11y-backup-readiness.yml": "_pve_token_id",
+    "survey-pbs-vm-census.yml": "_pve_token_id",
+    "survey-pbs-provisioning-candidates.yml": "_pve_token_id",
     "survey-o11y-pbs-physical-storage.yml": "_pve_token_id",
     "validate-address-free.yml": "_pve.token_id",
 }

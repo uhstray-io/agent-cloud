@@ -193,7 +193,7 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert variables["log_service"]["datasource"]["uid"] == "loki"
     assert "label_values" in variables["log_service"]["query"]
     loki_panels = [panel for panel in overview["panels"] if panel["datasource"]["type"] == "loki"]
-    assert len(loki_panels) == 7
+    assert len(loki_panels) == 8
     assert all("selected Logs service" in panel["description"] for panel in loki_panels)
     source_panels = {panel["title"]: panel for panel in loki_panels}
     container_query = source_panels["Recent container logs"]["targets"][0]["expr"]
@@ -210,15 +210,25 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert 'signal="access-log"' in source_panels["Recent gateway access records"]["targets"][0]["expr"]
     assert 'signal="span"' in source_panels["Recent optional span logs"]["targets"][0]["expr"]
     assert 'job="agent-cloud-conformance"' in source_panels["Recent workflow conformance records"]["targets"][0]["expr"]
+    unclassified = source_panels["Recent unclassified records"]
+    assert unclassified["targets"][0]["expr"] == (
+        '{service=~"$log_service", container!~".+", '
+        'signal!~"^(container|access-log|span)$", job!="agent-cloud-conformance"}'
+    )
     all_streams = source_panels["All Loki streams (mixed-source drill-down)"]
     assert all_streams["targets"][0]["expr"] == '{service=~"$log_service"}'
     assert all_streams["targets"][0]["maxLines"] == 100
     volume_targets = {target["legendFormat"].split(" · ", 1)[0]: target["expr"]
                       for target in next(p for p in overview["panels"]
                                          if p["title"] == "Log volume by source")["targets"]}
-    assert set(volume_targets) == {"Legacy container", "Journal container", "Access", "Span", "Conformance"}
+    assert set(volume_targets) == {
+        "Legacy container", "Journal container", "Access", "Span", "Conformance", "Unclassified"
+    }
     assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Legacy container"]
     assert 'signal="container"' in volume_targets["Journal container"]
+    assert 'container!~".+"' in volume_targets["Unclassified"]
+    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Unclassified"]
+    assert 'job!="agent-cloud-conformance"' in volume_targets["Unclassified"]
     assert all('job!="agent-cloud-conformance"' in volume_targets[source]
                for source in ("Legacy container", "Journal container", "Access", "Span"))
     # Label combinations that carry more than one source hint still contribute once.
@@ -228,6 +238,7 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
         {"container": "gateway", "signal": "access-log"},
         {"container": "gateway", "signal": "span"},
         {"container": "alloy", "signal": "container", "job": "agent-cloud-conformance"},
+        {"job": "alloy"},
     ]
     selected = [
         [i for i, row in enumerate(records) if row.get("container") and
@@ -240,6 +251,9 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
         [i for i, row in enumerate(records) if row.get("signal") == "span" and
          row.get("job") != "agent-cloud-conformance"],
         [i for i, row in enumerate(records) if row.get("job") == "agent-cloud-conformance"],
+        [i for i, row in enumerate(records) if not row.get("container") and
+         row.get("signal", "") not in {"container", "access-log", "span"} and
+         row.get("job") != "agent-cloud-conformance"],
     ]
     assert sorted(i for source in selected for i in source) == list(range(len(records)))
     assert sum(map(len, selected)) == len({i for source in selected for i in source})

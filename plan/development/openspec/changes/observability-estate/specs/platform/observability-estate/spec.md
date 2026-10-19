@@ -95,6 +95,18 @@ Tempo-derived service-graph and span metrics SHALL remain disabled by default an
 - **AND** each applicable signal has an exact-target readback receipt
 - **AND** profiles count as correlated only when profile data and the span-profile bridge are present
 
+#### Scenario: Authentic stale or expired receipt stays incomplete
+- **WHEN** a bound successful task has a valid exact task/template/repository identity and its launch and terminal output match the current inventory digest and exact target/signal/selector, but its task SHA differs from the census head or its observation has expired
+- **THEN** only that target/signal is reported `incomplete` and the receipt does not count as verified
+- **AND** malformed metadata or any task, template, repository, inventory, target, signal, selector, output, or identity mismatch still refuses the census
+
+#### Scenario: Fresh receipt task IDs stay transient
+- **WHEN** an operator supplies fresh IDs for a bounded set of already-reviewed target/signal bindings
+- **THEN** the census merges each ID only into its matching binding and preserves that binding's template ID and observation window
+- **AND** an absent ID without a transient override stays incomplete
+- **AND** malformed, duplicate, reused, oversized, or undeclared overrides refuse before receipt readback
+- **AND** no task ID is written to the private inventory
+
 #### Scenario: Grafana major-version dependency stays gated
 - **WHEN** trace-correlations UI from Grafana 12 is proposed while the service runs pinned Grafana 11.4
 - **THEN** the upgrade remains a separate change with backup/restore and capacity gates

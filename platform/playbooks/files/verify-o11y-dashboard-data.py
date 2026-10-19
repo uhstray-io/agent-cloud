@@ -102,6 +102,7 @@ REFERENCE = re.compile(
 )
 # Types whose saved current value is the literal text Grafana interpolates.
 LITERAL_TYPES = {"custom", "constant", "interval", "textbox"}
+QUERY_DEFAULT = re.compile(r"[A-Za-z0-9_/-]{1,128}")
 POINTS_PER_PANEL = 1000
 QUERY_TIMEOUT = 30
 LOKI_RESULT_LIMIT = 100
@@ -243,7 +244,19 @@ def template_values(dashboard: dict[str, Any], overrides: dict[str, Any]) -> tup
             isinstance(current, str)
             and current
             and not current.startswith("$")
-            and variable.get("type") in LITERAL_TYPES
+            and (
+                variable.get("type") in LITERAL_TYPES
+                or (
+                    variable.get("type") == "query"
+                    # Grafana regex-escapes multi-select query values; this
+                    # evaluator substitutes literals directly, so only accept
+                    # the default single-select behavior.
+                    and variable.get("multi", False) is False
+                    and variable.get("includeAll", False) is False
+                    and current.casefold() != "all"
+                    and QUERY_DEFAULT.fullmatch(current)
+                )
+            )
         ):
             values[name], sources[name] = current, "saved_value"
         # Anything else is resolved only if a query uses it, and refused there.

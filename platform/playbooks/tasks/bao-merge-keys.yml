@@ -28,6 +28,10 @@
 #                    one key. A changed value or concurrent version change fails
 #                    closed instead of overwriting a rotation. Guarded merges may
 #                    set and remove keys atomically, preserving all other siblings.
+#   _bm_guard_values optional dict of key -> expected value. Every listed key is
+#                    compared with the initial read before the version-CAS write.
+#                    When provided, this multi-key guard supersedes the single-key
+#                    form and is useful when preflight proved a related credential.
 #
 # Sets for the caller:
 #   _bm_changed      whether anything was written
@@ -44,6 +48,7 @@
       - _bm_token is defined and _bm_token | length > 0
       - _bm_path is defined and _bm_path | length > 0
       - ((_bm_data | default({})) | length > 0) or ((_bm_remove | default([])) | length > 0)
+      - _bm_guard_values is not defined or _bm_guard_values is mapping
     fail_msg: "bao-merge-keys.yml needs _bm_url, _bm_token, _bm_path and a non-empty _bm_data dict or _bm_remove list."
   no_log: true
 
@@ -105,9 +110,14 @@
 - name: "Require the guarded key to be unchanged"
   ansible.builtin.assert:
     that:
-      - _bm_current.get(_bm_guard_key, none) == _bm_guard_value
-    fail_msg: "The guarded OpenBao key changed before reconciliation; no write occurred."
-  when: _bm_guard_key is defined
+      - >-
+        ((_bm_current | dict2items
+          | selectattr('key', 'in', _bm_guard_values.keys() | list)
+          | list | items2dict) == _bm_guard_values)
+        if _bm_guard_values is defined
+        else (_bm_current.get(_bm_guard_key, none) == _bm_guard_value)
+    fail_msg: "A guarded OpenBao key changed before reconciliation; no write occurred."
+  when: _bm_guard_values is defined or _bm_guard_key is defined
   no_log: true
 
 - name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
@@ -128,6 +138,7 @@
   when:
     - not ansible_check_mode
     - _bm_existing.status == 200
+    - _bm_guard_values is not defined
     - _bm_guard_key is not defined
     - ((_bm_current | combine(_bm_set)) != _bm_current) or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
   register: _bm_patch
@@ -155,7 +166,7 @@
     status_code: [200, 400]
   when:
     - not ansible_check_mode
-    - _bm_guard_key is defined
+    - _bm_guard_values is defined or _bm_guard_key is defined
     - _bm_existing.status == 200
     - _bm_guarded_data != _bm_current
   register: _bm_guarded
@@ -215,6 +226,7 @@
   when:
     - not ansible_check_mode
     - (_bm_create.status | default(0)) == 400
+    - _bm_guard_values is not defined
     - _bm_guard_key is not defined
   register: _bm_patch_after_race
   changed_when: true
@@ -226,7 +238,7 @@
     that: _bm_create.status == 200
     fail_msg: "OpenBao rejected the version-guarded creation; retry after checking the live key."
   when:
-    - _bm_guard_key is defined
+    - _bm_guard_values is defined or _bm_guard_key is defined
     - _bm_create is not skipped
 
 - name: "Record whether anything was written"

@@ -38,12 +38,16 @@
       ansible.builtin.assert:
         that:
           - _thick_lvm_backing_identity | type_debug == 'dict'
-          - _thick_lvm_backing_identity.keys() | list | sort == ['backing_disk_serial', 'backing_disk_wwn', 'candidate_storage_id']
+          - _thick_lvm_backing_identity.keys() | list | sort == ['backing_disk_health', 'backing_disk_serial', 'backing_disk_wwn', 'candidate_storage_id']
           - _thick_lvm_backing_identity.candidate_storage_id is string
           - _thick_lvm_backing_identity.candidate_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
           - _thick_lvm_backing_identity.backing_disk_serial is string
           - _thick_lvm_backing_identity.backing_disk_serial is match('^[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}$')
-          - _thick_lvm_backing_identity.backing_disk_wwn is none or (_thick_lvm_backing_identity.backing_disk_wwn is string and _thick_lvm_backing_identity.backing_disk_wwn is match('^[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}$'))
+          - >-
+            _thick_lvm_backing_identity.backing_disk_wwn is none or
+            (_thick_lvm_backing_identity.backing_disk_wwn is string and
+            _thick_lvm_backing_identity.backing_disk_wwn is match('^[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}$'))
+          - _thick_lvm_backing_identity.backing_disk_health in ['passed', 'failed', 'unknown']
         fail_msg: "The candidate identity output did not match the reviewed private shape."
       no_log: true
 
@@ -52,4 +56,5 @@
         msg: >-
           Candidate storage ID for private review: {{ _thick_lvm_backing_identity.candidate_storage_id }};
           backing disk serial: {{ _thick_lvm_backing_identity.backing_disk_serial }};
-          backing disk WWN: {{ _thick_lvm_backing_identity.backing_disk_wwn if _thick_lvm_backing_identity.backing_disk_wwn is not none else 'not reported' }}.
+          backing disk WWN: {{ _thick_lvm_backing_identity.backing_disk_wwn if _thick_lvm_backing_identity.backing_disk_wwn is not none else 'not reported' }};
+          SMART health: {{ _thick_lvm_backing_identity.backing_disk_health }}.

@@ -1,15 +1,15 @@
 // Grafana Alloy config (River) — committed config-as-code. Plan: O11Y-DEPLOYMENT.md.
 //
-// Phase 0/1: discover local containers over the mounted engine socket and ship
-// their stdout/stderr to Loki. The socket is mounted at /var/run/docker.sock by
-// compose.local.yml (the podman API is docker-API-compatible).
+// Local mode discovers containers over the socket mounted by compose.local.yml
+// (the Podman API is Docker-compatible). Production receives telemetry over OTLP.
 //
 // Gateway traces and access logs arrive over OTLP/gRPC. Tempo receives spans;
-// Loki receives labeled access records alongside the local container logs.
+// Loki receives labeled access records, plus container logs in local mode.
 
 {% set _o11y_otlp_memory_limit = '384MiB' %}
 {% set _o11y_otlp_memory_spike = '64MiB' %}
 
+{% if local_mode | default(false) | bool %}
 discovery.docker "containers" {
   host = "unix:///var/run/docker.sock"
 }
@@ -55,6 +55,7 @@ loki.source.docker "default" {
   targets    = discovery.relabel.containers.output
   forward_to = [loki.write.default.receiver]
 }
+{% endif %}
 
 loki.write "default" {
   endpoint {
@@ -66,6 +67,7 @@ loki.write "default" {
   }
 }
 
+{% if local_mode | default(false) | bool %}
 // Reuse Alloy's socket discovery for opted-in metrics. Prometheus has no socket.
 discovery.relabel "metrics" {
   targets = discovery.docker.containers.targets
@@ -157,6 +159,7 @@ prometheus.remote_write "local" {
     url = "http://prometheus:9090/api/v1/write"
   }
 }
+{% endif %}
 
 otelcol.receiver.otlp "traces" {
   grpc {

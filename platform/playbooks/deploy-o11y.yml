@@ -1151,6 +1151,14 @@
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.queries | selectattr('name', 'equalto', 'Span calls') | selectattr('query', 'equalto', 'sum(rate(traces_spanmetrics_calls_total{$__tags}[5m]))') | list | length == 1
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.datasourceUid == 'loki'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service') | list | length == 1
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanStartTimeShift == '-2s'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanEndTimeShift == '2s'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterByTraceID == false
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterBySpanID == false
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.customQuery == true
+          - >-
+            (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.query
+            == '{${__tags}} | json | (traceid=~"0*${__trace.traceId}" or body=~".*(^|[[:space:]])tid=0*${__trace.traceId}([[:space:]]|$).*")'
           - (_tempo_datasource_config.stdout | from_json).jsonData.serviceMap.datasourceUid == 'prometheus'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.datasourceUid == 'pyroscope'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.profileTypeId == 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'
@@ -1420,14 +1428,63 @@
           - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | list | length == 1
           - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Scrape target health') | list | length == 1
           - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Log volume by source') | list | length == 1
+          - >-
+            (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Recent unclassified records') | list | length == 1
           - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'All Loki streams (mixed-source drill-down)') | list | length == 1
-          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | list | length == 5
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | list | length == 6
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten | list | length == 6
+          - >-
+            '{service=~"$log_service", container!~".+", signal!~"^(container|access-log|span)$", job!="agent-cloud-conformance"}'
+            in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Recent unclassified records') | map(attribute='targets')
+            | flatten | map(attribute='expr') | join(' ')
           - "'or on() vector(0)' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'container=~\".+\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'signal=\"container\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'signal=\"access-log\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'signal=\"span\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'job=\"agent-cloud-conformance\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - >-
+            (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'match', '^Unclassified') | list | length == 1
+          - >-
+            (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | list | length == 1
+          - >-
+            'service=~"$log_service"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'container!~".+"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'signal!~"^(container|access-log|span)$"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'job!="agent-cloud-conformance"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'service=~"$log_service"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'container!~".+"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'signal!~"^(container|access-log|span)$"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'job!="agent-cloud-conformance"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
         fail_msg: "Grafana's service overview dashboard is missing selected service identities or explicit source-presence indicators."
       when: not ansible_check_mode
 
@@ -1557,6 +1614,17 @@
               - _o11y_rules | map(attribute='uid') | list == _o11y_expected_rules | map(attribute='uid') | list
               - _active_rules.stdout | from_json | map(attribute='uid') | select('in', _o11y_withdrawn_uids) | list | length == 0
             fail_msg: "Live Grafana alert rules do not match the provisioned rules file (missing, extra or withdrawn)."
+
+        - name: Require the live agentgateway trace-silence query to equal its provisioned expression
+          ansible.builtin.assert:
+            that:
+              - _o11y_trace_silence_expected | length == 1
+              - _o11y_trace_silence_live | length == 1
+              - _o11y_trace_silence_live[0].data[0].model.expr == _o11y_trace_silence_expected[0].data[0].model.expr
+            fail_msg: "Live agentgateway trace-silence rule is missing or its Prometheus expression differs from the provisioned file."
+          vars:
+            _o11y_trace_silence_expected: "{{ _o11y_expected_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
+            _o11y_trace_silence_live: "{{ _o11y_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
 
         # Same uid order on both sides (asserted above), so each field compares rule by
         # rule; absent or null maps compare as empty maps. The durations are strings in
