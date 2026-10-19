@@ -227,7 +227,6 @@
         that: _scsi1 | length > 0 or ansible_check_mode or (_attach_status.json.data.exitstatus | default('')) == 'OK'
         fail_msg: "Proxmox did not complete the PBS virtual-disk allocation."
         quiet: true
-      no_log: true
 
     - name: Read back the PBS VM configuration after allocation
       ansible.builtin.uri:
@@ -262,4 +261,3 @@
         fail_msg: "Proxmox VM configuration readback does not prove the exact PBS data disk."
         quiet: true
       when: not ansible_check_mode
-      no_log: true

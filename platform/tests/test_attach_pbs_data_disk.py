@@ -91,6 +91,39 @@ def test_conflicting_or_mismatched_existing_disks_refuse_but_exact_scsi1_is_idem
     assert "_final_config.json.data.scsi1" in str(final_readback["ansible.builtin.assert"])
 
 
+def test_credential_free_assertions_remain_visible_without_rendering_protected_results() -> None:
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    names = (
+        "Require successful Proxmox task completion",
+        "Require exact scsi1 readback and no additional disks",
+        "Refuse VM identity, layout, bus, or storage drift before any write",
+    )
+    for name in names:
+        task = next(task for task in tasks if task.get("name") == name)
+        assertion = task["ansible.builtin.assert"]
+        assert task.get("no_log") is not True
+        assert assertion.get("quiet") is True
+        assert "{{" not in assertion["fail_msg"]
+        assert "loop" not in task and "with_items" not in task
+
+    credential_tasks = [
+        task
+        for task in tasks
+        if task.get("name", "").startswith((
+            "Read Proxmox API credentials",
+            "Keep Proxmox API credentials",
+            "Read the exact declared PBS VM configuration",
+            "Re-read the exact PBS VM config",
+            "Allocate exactly one virtual data disk",
+            "Wait for the virtual-disk allocation task",
+            "Read back the PBS VM configuration",
+            "Protect the final PBS VM configuration",
+        ))
+    ]
+    assert credential_tasks
+    assert all(task.get("no_log") is True for task in credential_tasks)
+
+
 def test_exact_guest_validation_matches_declared_network_bridge_cores_and_memory() -> None:
     play_vars = yaml.safe_load(PLAYBOOK.read_text())[2]["vars"]
     for name in ("_ip", "_gw", "_netmask", "_bridge", "_cores", "_memory"):

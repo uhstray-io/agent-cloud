@@ -31,4 +31,3 @@
       - _scsi1 | length == 0 or _scsi1 is search(_expected_disk_pattern)
     fail_msg: "The PBS VM configuration does not match its declaration or contains a conflicting disk. No disk was allocated."
     quiet: true
-  no_log: true
