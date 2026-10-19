@@ -62,6 +62,20 @@ def test_dev_template_and_write_guards_are_declared() -> None:
     )
     assert any("'none' not in _current_content" in item for item in validation)
     assert any("_node_storage_status.json.data.type == _storage_config.json.data.type" in item for item in validation)
+    assert all("_node_storage_status.json.data.storage" not in item for item in validation)
+    status_request = next(task for task in tasks if task["name"] == "Read the exact node storage status")
+    assert status_request["ansible.builtin.uri"]["url"] == (
+        "{{ _pve_host }}/api2/json/nodes/{{ _target_node | urlencode }}"
+        "/storage/{{ _storage_id | urlencode }}/status"
+    )
+    assert all(
+        "no_log" not in task
+        for task in tasks
+        if task["name"] in {
+            "Preserve the current content list",
+            "Add import to the requested content list only when absent",
+        }
+    )
     assert names.index("Verify import content readback") > names.index(
         "Add import while preserving content with the observed digest"
     )

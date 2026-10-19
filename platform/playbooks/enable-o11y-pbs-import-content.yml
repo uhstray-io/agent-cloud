@@ -155,7 +155,6 @@
     - name: Validate active file storage and the digest-protected content list
       ansible.builtin.assert:
         that:
-          - _node_storage_status.json.data.storage | default('') == _storage_id
           - _node_storage_status.json.data.active | default(0) | int == 1
           - _node_storage_status.json.data.type | default('') in ['dir', 'nfs', 'cifs', 'cephfs']
           - _storage_config.json.data.storage | default('') == _storage_id
@@ -175,13 +174,11 @@
     - name: Preserve the current content list
       ansible.builtin.set_fact:
         _current_content: "{{ (_storage_config.json.data.content | string).split(',') | map('trim') | reject('equalto', '') | list }}"
-      no_log: true
 
     - name: Add import to the requested content list only when absent
       ansible.builtin.set_fact:
         _desired_content: "{{ _current_content + ([] if 'import' in _current_content else ['import']) }}"
         _add_import: "{{ 'import' not in _current_content }}"
-      no_log: true
 
     - name: Add import while preserving content with the observed digest
       ansible.builtin.uri:
