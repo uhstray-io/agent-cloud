@@ -48,6 +48,14 @@ reads but never writes. The 2026-10-18 candidate census in task 7081 found zero
 active import stores, so publication remains gated on private inventory
 reconciliation and a successful run; no live write is authorized by this design.
 
+Production Semaphore task 7106 refused before any Proxmox request because the
+workflow required HTTPS for the inventory OpenBao URL. The shared transport
+guard permits internal RFC1918 HTTP and refuses public cleartext, so the workflow
+now checks that the inventory URL is present and exactly matches Semaphore's
+OpenBao URL before applying that shared guard ahead of AppRole authentication.
+Task 7106 made no Proxmox read or write; a reviewed rerun must still verify the
+declared store, and this failure does not close the publication gate.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.

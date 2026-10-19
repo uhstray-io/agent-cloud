@@ -2040,10 +2040,18 @@ private `proxmox_pbs_storage_node`; do not reuse the VM image store identity,
 which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
 workflow checks the exact node and active file-store status, preserves the
 existing content list, applies the `import` union with Proxmox's observed digest,
-and reads the config back. Its check mode is read-only. This source change does
-not mean the workflow has been published or run; template publication stays
-blocked until the private declaration is reviewed and task output confirms the
-exact store now includes `import`. No Proxmox config changed in task 7081. The
-physical-disk origin remains operator-attested; the serial-to-chassis match is
-not independently verified. No template VM, PBS VM, or data disk has been
-created.
+and reads the config back. Its check mode is read-only. Template publication
+stays blocked until the private declaration is reviewed and a successful run
+confirms the exact store now includes `import`. No Proxmox config changed in
+task 7081. The physical-disk origin remains operator-attested; the
+serial-to-chassis match is not independently verified. No template VM, PBS VM,
+or data disk has been created.
+
+Production Semaphore task 7106 refused before issuing any Proxmox request: the
+workflow's initial inventory URL assertion required HTTPS, while the shared
+OpenBao transport guard explicitly permits internal RFC1918 HTTP. The public
+workflow now requires a nonempty private inventory URL, still requires exact
+equality with Semaphore's OpenBao URL, and delegates transport policy to the
+shared guard before the AppRole lookup. Task 7106 made no Proxmox read or write;
+the import-content verification gate remains open until a reviewed rerun proves
+the exact store configuration.
