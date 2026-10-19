@@ -224,6 +224,15 @@
         fail_msg: "agw_skynet_route_enabled cannot be rendered: {{ _agw_skynet_route_problems | join('; ') }}."
         quiet: true
 
+    # The route sends skynet's bearer to its backend over plain HTTP, so the backend must be loopback or
+    # private (single-label container names only under local_mode): the platform's transport rule.
+    - name: "Refuse a cleartext skynet route backend outside the private network"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "http://{{ agw_skynet_backend }}"
+        _assert_url_label: "skynet route backend"
+      when: agw_skynet_route_enabled | default(false) | bool
+
     # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
     # and its expiry must be a real calendar date in ISO form, or the string comparison above
     # means nothing. The parse rejects a non-date (2026-13-01, 2026-02-30), the round trip rejects

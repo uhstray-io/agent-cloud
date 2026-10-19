@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 import yaml
 from fake_http import DrainingHandler
-from test_agw_admin_identities import CONFIG, PHASE1, SECRETS, _ansible, _task
+from test_agw_admin_identities import CONFIG, PHASE1, REPO, SECRETS, _ansible, _task
 from test_agw_stream_usage import IMAGE, _free_port, _image_present
 
 ENV_TEMPLATE = CONFIG.with_name("env.j2")
@@ -120,6 +120,8 @@ def test_enabled_renders_one_route_with_its_own_strict_key_policy(tmp_path):
     assert route["name"] == "skynet"
     assert route["matches"] == [{"path": {"pathPrefix": "/skynet/"}}]
     assert route["backends"] == [{"host": BACKEND}]
+    # Pinned to the external listener, never `ui` or the MCP self-call's `loopback` (review of #719).
+    assert route["gateways"] == ["default"]
     policy = route["policies"]["apiKey"]
     assert policy["mode"] == "strict"
     assert policy["location"] == {"header": {"name": "authorization", "prefix": "Bearer "}}
@@ -421,3 +423,38 @@ def test_the_route_admits_only_its_identity_and_skynet_sees_only_its_own_token(t
         subprocess.run(["podman", "rm", "-f", name], capture_output=True)
         server.shutdown()
         server.server_close()
+
+
+# -- The backend receives skynet's bearer over plain HTTP: it must be loopback or private --------------
+TRANSPORT_TASK = "Refuse a cleartext skynet route backend outside the private network"
+
+
+def _transport_task() -> dict:
+    task = dict(_task(PHASE1, TRANSPORT_TASK))
+    task["ansible.builtin.include_tasks"] = str(REPO / "platform/playbooks" / task["ansible.builtin.include_tasks"])
+    return task
+
+
+def test_the_transport_check_runs_before_secrets_and_only_while_the_route_is_on():
+    names = [t.get("name") for t in PHASE1["tasks"]]
+    assert names.index(TRANSPORT_TASK) < names.index("Manage secrets and render env + config")
+    task = _task(PHASE1, TRANSPORT_TASK)
+    assert task["ansible.builtin.include_tasks"] == "tasks/assert-bao-transport.yml"
+    assert task["vars"]["_assert_bao_url"] == "http://{{ agw_skynet_backend }}"
+    assert task["when"] == "agw_skynet_route_enabled | default(false) | bool"
+
+
+@pytest.mark.parametrize(
+    "backend, local, passes",
+    [
+        ("skynet.example.com:8080", False, False),  # a public name: the bearer would cross in cleartext
+        (".".join(["10", "20", "30", "40"]) + ":8080", False, True),  # synthetic RFC1918 address, built so no literal sits in the repo
+        ("127.0.0.1:8080", False, True),  # loopback
+        ("skynet:8080", True, True),  # a container name on the local podman network
+        ("skynet:8080", False, False),  # a bare name outside local-dev can resolve to a public FQDN
+    ],
+)
+def test_a_cleartext_backend_is_refused_unless_private(tmp_path, backend, local, passes):
+    hv = {"agw_skynet_route_enabled": True, "agw_skynet_backend": backend, "local_mode": local}
+    r = _ansible(tmp_path, hv, [_transport_task()])
+    assert (r.returncode == 0) is passes, r.stdout[-2000:]

@@ -450,6 +450,9 @@ mcp:
 # Disabled, there is no `routes:` key at all, so a disabled render is what it was before this route existed.
 routes:
 - name: skynet
+  # Pinned to the external listener: never the `ui` listener or the MCP self-call's `loopback` one
+  # (`gateways` on a route is accepted by v1.5.0, validated 2026-10-19).
+  gateways: [default]
   matches:
   - path: {pathPrefix: /skynet/}
   policies:
