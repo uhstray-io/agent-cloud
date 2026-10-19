@@ -2770,6 +2770,20 @@ templates:
         type: string
         required: false
 
+  # Ephemeral runner lifecycle (openspec add-ephemeral-github-runners): keeps each ephemeral
+  # host's root-only stock of just-in-time runner configurations full, minted on the
+  # controller from the App key in OpenBao, and fails while a host's supervisor is stopped or
+  # quarantined. A host on the default persistent lifecycle is skipped, so the schedule
+  # changes nothing until a host declares github_runner_lifecycle: ephemeral. Dev-bound like
+  # the o11y watcher: a schedule on a main-bound base would run `main`, which has no copy of
+  # the playbook until promotion. The App client id comes from the inventory
+  # (github_app_client_id), because a schedule cannot answer a survey.
+  - name: Stock GitHub Runner JIT (Dev)
+    playbook: platform/playbooks/stock-github-runner-jit.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/10 * * * *"
+
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml
     dev_variant: true

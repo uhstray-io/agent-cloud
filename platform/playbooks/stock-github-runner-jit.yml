@@ -1,0 +1,111 @@
+---
+# stock-github-runner-jit.yml: keep every ephemeral GitHub runner host's stock of
+# just-in-time runner configurations full, and report each host's supervisor state.
+# Scheduled in Semaphore ("Stock GitHub Runner JIT (Dev)", every 10 minutes).
+# Design: plan/development/openspec/changes/add-ephemeral-github-runners/design.md (D3).
+#
+# A host on the persistent lifecycle (github_runner_lifecycle unset or `persistent`, the
+# default) is skipped, so the schedule changes nothing until a host declares `ephemeral`.
+#
+# Minting happens on the controller; only the configurations reach the host, root-only.
+# The App private key is read from OpenBao (secret/services/github-runner:app_private_key),
+# never from a Semaphore environment or survey. The App's client id is not a secret and
+# comes from the inventory (github_app_client_id) or the GITHUB_APP_CLIENT_ID environment,
+# because a schedule cannot answer a survey.
+#
+# The run FAILS while a host's supervisor is quarantined or stopped, so the schedule's own
+# history is the alert: a host that cannot prove a clean reset takes no job, and this
+# template turns red every 10 minutes until a deploy clears it.
+#
+# Dry run (--check): lists the runner records and the stock, writes and deletes nothing.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Stock just-in-time GitHub runner configurations"
+  # A fixed group, not a survey target: a schedule cannot answer a survey.
+  hosts: github_runner_svc
+  gather_facts: false
+  become: true
+
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _org: "{{ github_org | default('uhstray-io') }}"
+    _app_id: >-
+      {{ github_app_client_id
+         | default(lookup('env', 'GITHUB_APP_CLIENT_ID'), true)
+         | default(github_app_id, true)
+         | default(lookup('env', 'GITHUB_APP_ID'), true)
+         | default('', true) }}
+    _lifecycle: "{{ github_runner_lifecycle | default('persistent') }}"
+    _state_dir: "{{ github_runner_state_dir | default('/var/lib/github-runner') }}"
+
+  tasks:
+    - name: "Skip a host on the persistent lifecycle"
+      ansible.builtin.meta: end_host
+      when: _lifecycle != 'ephemeral'
+
+    - name: "Validate the declaration"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _app_id | length > 0
+          - github_runner_name | default('') | length > 0
+          - github_runner_group | default('') | length > 0
+          - (github_runner_labels | default([])) | length > 0
+        fail_msg: >-
+          Need the OpenBao address, the App's client id (inventory github_app_client_id, or
+          GITHUB_APP_CLIENT_ID), and this host's github_runner_name / github_runner_group /
+          github_runner_labels.
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Stock this host"
+      ansible.builtin.include_tasks: tasks/github-runner-jit-stock.yml
+
+    - name: "Read the supervisor's state"
+      ansible.builtin.command: /usr/local/libexec/github-runner/ephemeral-supervisor.sh status
+      environment:
+        RUNNER_EPHEMERAL_ENV: /etc/github-runner/ephemeral.env
+      register: _supervisor_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Read whether the supervisor is running"
+      ansible.builtin.command: systemctl is-active github-runner-ephemeral.service
+      register: _supervisor_active
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Read the supervisor's recent log"
+      # The supervisor logs cycle outcomes and reset findings only; it never writes a
+      # configuration or token to its output.
+      ansible.builtin.command: journalctl -u github-runner-ephemeral.service -n 20 --no-pager -o cat
+      register: _supervisor_log
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Require a running, unquarantined supervisor"
+      ansible.builtin.assert:
+        that:
+          - (_supervisor_active.stdout | default('') | trim) == 'active'
+          - "'quarantine=no' in (_supervisor_status.stdout_lines | default([]))"
+        fail_msg: >-
+          {{ inventory_hostname }} takes no jobs: supervisor
+          {{ _supervisor_active.stdout | default('?') | trim }};
+          {{ (_supervisor_status.stdout_lines | default([])) | join('; ') }}
+          {{ (_supervisor_status.stderr | default('')) | trim }}.
+          Recent supervisor log: {{ (_supervisor_log.stdout_lines | default([])) | join(' | ') }}.
+          Fix the cause, then run Deploy GitHub Runner, which clears a quarantine only after
+          a clean reset.
+        success_msg: "{{ inventory_hostname }}: {{ (_supervisor_status.stdout_lines | default([])) | join('; ') }}"

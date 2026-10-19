@@ -1,0 +1,255 @@
+---
+# github-runner-lifecycle.yml: the ephemeral lifecycle's part of deploy-github-runner.yml
+# (openspec add-ephemeral-github-runners). Included twice by that play:
+#
+#   grl_phase: prepare   before anything is rendered into the runner home. On a host that is
+#                        or was ephemeral: stop the supervisor, drain and stop the runner,
+#                        then reset the account (every process and file of it destroyed), so
+#                        the deploy builds the home from nothing. On an ephemeral host it also
+#                        installs the supervisor, its declaration and keyutils.
+#   grl_phase: activate  after the deploy's own probes passed. Ephemeral: snapshot the home
+#                        into the root-owned seed, reset again, start the supervisor, stock
+#                        just-in-time configurations, and verify one runner is up and online.
+#                        Leaving ephemeral: remove the supervisor and the stock, and delete
+#                        this host's ephemeral runner records.
+#
+# Reads the play's _lifecycle, _home, _account, _deploy_dir and _org. Every registered name
+# starts with _grl_ (the internal-name guard, refuse-internal-extra-vars.yml).
+
+- name: "Lifecycle: resolve the runner account's uid"
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ _account }}"
+
+- name: "Lifecycle: record the paths this lifecycle uses"
+  ansible.builtin.set_fact:
+    _grl_uid: "{{ getent_passwd[_account][1] }}"
+    _grl_seed: "{{ github_runner_seed | default(_home ~ '-seed') }}"
+    _grl_state: "{{ github_runner_state_dir | default('/var/lib/github-runner') }}"
+    _grl_supervisor: /usr/local/libexec/github-runner/ephemeral-supervisor.sh
+    _grl_unit_path: /etc/systemd/system/github-runner-ephemeral.service
+    _grl_max_age: "{{ github_runner_jit_max_age_minutes | default(1200) }}"
+    _grl_max_failures: "{{ github_runner_max_start_failures | default(3) }}"
+    # Resolved copies for the template's raw names: mapping a raw name to the play's
+    # `_`-prefixed copy of itself is a recursive template (see "Pin the resolved values").
+    _grl_account: "{{ _account }}"
+    _grl_home: "{{ _home }}"
+
+- name: "Lifecycle: is the supervisor installed (the host is or was ephemeral)"
+  ansible.builtin.stat:
+    path: "{{ _grl_unit_path }}"
+  register: _grl_unit_stat
+
+- name: "Lifecycle: record whether this host runs, or is leaving, the ephemeral lifecycle"
+  ansible.builtin.set_fact:
+    _grl_ephemeral: "{{ _lifecycle == 'ephemeral' }}"
+    _grl_leaving: "{{ _lifecycle != 'ephemeral' and _grl_unit_stat.stat.exists }}"
+
+# ── prepare ──────────────────────────────────────────────────────────────────
+- name: "Lifecycle (prepare): stop the host's work before the home is rebuilt"
+  when:
+    - grl_phase == 'prepare'
+    - _grl_ephemeral or _grl_leaving
+    - not ansible_check_mode
+  block:
+    - name: "Lifecycle: install keyutils (the reset clears the account's keyrings)"
+      ansible.builtin.apt:
+        name: [keyutils]
+        state: present
+      when: _grl_ephemeral
+
+    - name: "Lifecycle: create the supervisor's directories"
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: /usr/local/libexec/github-runner, mode: "0755" }
+        - { path: /etc/github-runner, mode: "0755" }
+        # Root only: the stock holds just-in-time configurations, each good for one job of
+        # any repository the runner group admits. A job runs as the runner account and
+        # must never read the next job's runner credential.
+        - { path: "{{ _grl_state }}", mode: "0700" }
+        - { path: "{{ _grl_state }}/jit", mode: "0700" }
+      when: _grl_ephemeral
+
+    - name: "Lifecycle: install the supervisor script (a root-owned copy, never run from the checkout)"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../services/github-runner/deployment/ephemeral-supervisor.sh"
+        dest: "{{ _grl_supervisor }}"
+        owner: root
+        group: root
+        mode: "0755"
+      register: _grl_script_file
+      when: _grl_ephemeral
+
+    - name: "Lifecycle: install the supervisor's declaration"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/github-runner-ephemeral.env.j2"
+        dest: /etc/github-runner/ephemeral.env
+        owner: root
+        group: root
+        mode: "0644"
+      vars:
+        github_runner_account: "{{ _grl_account }}"
+        github_runner_home: "{{ _grl_home }}"
+        github_runner_seed: "{{ _grl_seed }}"
+        github_runner_state_dir: "{{ _grl_state }}"
+        github_runner_jit_max_age_minutes: "{{ _grl_max_age }}"
+        github_runner_max_start_failures: "{{ _grl_max_failures }}"
+      register: _grl_env_file
+      when: _grl_ephemeral
+
+    - name: "Lifecycle: stop the supervisor (it adopts, never resets under, a running job)"
+      ansible.builtin.systemd_service:
+        name: github-runner-ephemeral.service
+        state: stopped
+      when: _grl_unit_stat.stat.exists
+
+    - name: "Lifecycle: start the account's user manager for the drain"
+      # The supervisor may have been stopped in the middle of a reset, which stops the user
+      # manager. The drain below talks to the runner unit through it.
+      ansible.builtin.systemd_service:
+        name: "user@{{ _grl_uid }}.service"
+        state: started
+
+    - name: "Lifecycle: is there a runner declaration to drain with"
+      ansible.builtin.stat:
+        path: "{{ _home }}/config/runner.env"
+      register: _grl_runner_env
+
+    - name: "Lifecycle: drain and stop the runner (persistent or ephemeral), leaving no Listener"
+      # deploy.sh quiesce: waits up to github_runner_drain_seconds for no Worker, then stops
+      # the unit and every Listener of the account (service CLAUDE.md, "Restarting the
+      # runner"). A persistent registration stopped here is retired at activation.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh quiesce"
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _grl_uid }}"
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+        RUNNER_DRAIN_SECONDS: "{{ github_runner_drain_seconds | default(600) }}"
+      register: _grl_quiesce
+      changed_when: true
+      when: _grl_runner_env.stat.exists
+
+    - name: "Lifecycle: reset the runner account (every process and file of it destroyed)"
+      # The deploy then builds the home from nothing, so the seed it snapshots holds what the
+      # deploy made and no leftover of a job or of a registration.
+      ansible.builtin.command: "{{ _grl_supervisor }} reset"
+      environment:
+        RUNNER_EPHEMERAL_ENV: /etc/github-runner/ephemeral.env
+      register: _grl_reset_prepare
+      changed_when: true
+      failed_when: "'reset=clean' not in _grl_reset_prepare.stdout_lines"
+
+# ── activate ─────────────────────────────────────────────────────────────────
+- name: "Lifecycle (activate): seed, start and stock the ephemeral runner"
+  when: grl_phase == 'activate' and _grl_ephemeral and not ansible_check_mode
+  block:
+    - name: "Lifecycle: snapshot the deployed home into the root-owned seed"
+      ansible.builtin.command: "{{ _grl_supervisor }} snapshot"
+      environment:
+        RUNNER_EPHEMERAL_ENV: /etc/github-runner/ephemeral.env
+      register: _grl_snapshot
+      changed_when: "'snapshot=changed' in _grl_snapshot.stdout_lines"
+      failed_when: >-
+        'snapshot=changed' not in _grl_snapshot.stdout_lines
+        and 'snapshot=unchanged' not in _grl_snapshot.stdout_lines
+
+    - name: "Lifecycle: reset again (the deploy's probes ran processes as the account)"
+      ansible.builtin.command: "{{ _grl_supervisor }} reset"
+      environment:
+        RUNNER_EPHEMERAL_ENV: /etc/github-runner/ephemeral.env
+      register: _grl_reset_activate
+      changed_when: true
+      failed_when: "'reset=clean' not in _grl_reset_activate.stdout_lines"
+
+    - name: "Lifecycle: install the supervisor unit"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/github-runner-ephemeral.service.j2"
+        dest: "{{ _grl_unit_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: _grl_unit_file
+
+    - name: "Lifecycle: record whether the seed or the supervisor changed"
+      ansible.builtin.set_fact:
+        _grl_changed: >-
+          {{ (_grl_snapshot is changed) or (_grl_unit_file is changed)
+             or (_grl_script_file is changed) or (_grl_env_file is changed) }}
+
+    - name: "Lifecycle: stock just-in-time configurations and retire the persistent registration"
+      ansible.builtin.include_tasks: github-runner-jit-stock.yml
+      vars:
+        grs_retire: "{{ github_runner_name }}"
+
+    - name: "Lifecycle: start the supervisor"
+      ansible.builtin.systemd_service:
+        name: github-runner-ephemeral.service
+        daemon_reload: true
+        enabled: true
+        state: started
+
+    - name: "Lifecycle: wait for the supervisor to start one runner"
+      ansible.builtin.command: "{{ _grl_supervisor }} status"
+      environment:
+        RUNNER_EPHEMERAL_ENV: /etc/github-runner/ephemeral.env
+      register: _grl_status
+      changed_when: false
+      until: >-
+        'quarantine=no' in _grl_status.stdout_lines
+        and (_grl_status.stdout_lines | select('match', '^current=.+') | list | length) == 1
+      retries: 24
+      delay: 5
+
+    - name: "Lifecycle: read the runner's Listener and Worker processes"
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh procs"
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _grl_uid }}"
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      register: _grl_procs
+      changed_when: false
+      until: _runner_converged | difference(_grl_procs.stdout_lines) | length == 0
+      retries: 12
+      delay: 5
+
+    - name: "Lifecycle: require the started runner to be online at the organisation"
+      ansible.builtin.include_tasks: github-runner-jit-stock.yml
+      vars:
+        grs_verify_only: true
+        grs_expect: "{{ (_grl_status.stdout_lines | select('match', '^current=') | first)[8:] }}"
+
+- name: "Lifecycle (activate): leave the ephemeral lifecycle"
+  when: grl_phase == 'activate' and _grl_leaving and not ansible_check_mode
+  block:
+    - name: "Lifecycle: disable the supervisor and remove its files and stock"
+      ansible.builtin.systemd_service:
+        name: github-runner-ephemeral.service
+        enabled: false
+        state: stopped
+
+    - name: "Lifecycle: delete this host's ephemeral runner records"
+      ansible.builtin.include_tasks: github-runner-jit-stock.yml
+      vars:
+        grs_prune_only: true
+
+    - name: "Lifecycle: remove the supervisor, its declaration and the stock"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ _grl_unit_path }}"
+        - /etc/github-runner/ephemeral.env
+        - "{{ _grl_supervisor }}"
+        - "{{ _grl_state }}"
+        - "{{ _grl_seed }}"
+
+    - name: "Lifecycle: reload systemd after removing the supervisor unit"
+      ansible.builtin.systemd_service:
+        daemon_reload: true
