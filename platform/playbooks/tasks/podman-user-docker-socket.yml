@@ -14,7 +14,11 @@
 # packages/docker/src/dockerCommands/container.ts:56-65). No setting removes it. The
 # podman-docker package links the path to ROOT's API socket, /run/podman/podman.sock, in
 # a directory that only root can enter. Rootless podman then refuses the mount with
-# "statfs /var/run/docker.sock: permission denied", so every container job fails.
+# "statfs /var/run/docker.sock: permission denied", so every container job fails. Where
+# Docker's CLI client replaces podman-docker (install-podman.yml,
+# podman_docker_api_client), nothing creates the path at all, and the mount fails as a
+# missing bind source. Either way this task is what makes the path exist and lead to
+# the right engine.
 #
 # WHAT IT GIVES. A process that can use this socket controls the account's own rootless
 # podman: it can do what the account can do, and no more. Root's socket is not touched
@@ -28,9 +32,11 @@
 #
 # HOW. A tmpfiles.d file in /etc with the same name as the package's
 # (/usr/lib/tmpfiles.d/podman-docker.conf) replaces that file completely (tmpfiles.d(5)),
-# so the link stays correct after a reboot and after a package upgrade. The account's
-# podman.socket user unit (shipped by the podman package) makes the socket; lingering,
-# enabled by the caller, starts it at boot.
+# so the link stays correct after a reboot and after a package upgrade, and it creates
+# the link on its own when the package is absent. The account's podman.socket user unit
+# (shipped by the podman package) makes the socket; lingering, enabled by the caller,
+# starts it at boot. The same socket serves a Docker CLI client the caller points at it
+# with DOCKER_HOST.
 #
 # Idempotent: the link is recreated only when its target is wrong.
 
