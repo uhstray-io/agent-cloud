@@ -21,6 +21,8 @@ TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 def test_dev_template_and_write_guards_are_declared() -> None:
     plays = yaml.safe_load(PLAYBOOK.read_text())
     catalog = yaml.safe_load(TEMPLATES.read_text())["templates"]
+    assert plays[0]["tags"] == ["always"]
+    assert plays[1]["tags"] == ["always"]
     rows = [row for row in catalog if row.get("name") == "Enable PBS Import Storage Content (Dev)"]
     assert len(rows) == 1
     assert rows[0]["playbook"] == "platform/playbooks/enable-o11y-pbs-import-content.yml"
@@ -61,7 +63,9 @@ def test_dev_template_and_write_guards_are_declared() -> None:
         if task["name"] == "Validate active file storage and the digest-protected content list"
     )
     assert any("'none' not in _current_content" in item for item in validation)
+    assert any("'' not in _current_content" in item for item in validation)
     assert any("_node_storage_status.json.data.type == _storage_config.json.data.type" in item for item in validation)
+    assert any("_storage_config.json.data.type | default('') == 'dir'" in item for item in validation)
     assert all("_node_storage_status.json.data.storage" not in item for item in validation)
     status_request = next(task for task in tasks if task["name"] == "Read the exact node storage status")
     assert status_request["ansible.builtin.uri"]["url"] == (
@@ -83,6 +87,7 @@ def test_dev_template_and_write_guards_are_declared() -> None:
     write = next(
         task for task in tasks if task["name"] == "Add import while preserving content with the observed digest"
     )
+    assert "verify" not in write.get("tags", [])
     request = write["ansible.builtin.uri"]
     assert request["method"] == "PUT"
     assert request["body"] == {
@@ -95,6 +100,16 @@ def test_dev_template_and_write_guards_are_declared() -> None:
         task.get("no_log") is True
         for task in tasks
         if task.get("ansible.builtin.uri", {}).get("headers", {}).get("Authorization")
+    )
+    assert all(
+        "verify" in task.get("tags", [])
+        for task in tasks
+        if task["name"] != "Add import while preserving content with the observed digest"
+    )
+    assert all(
+        task["ansible.builtin.uri"].get("method", "GET") == "GET"
+        for task in tasks
+        if "verify" in task.get("tags", []) and "ansible.builtin.uri" in task
     )
 
 

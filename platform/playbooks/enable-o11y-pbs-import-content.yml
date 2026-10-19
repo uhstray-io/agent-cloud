@@ -1,11 +1,15 @@
 ---
 # Enable Proxmox's import content on the exact private file store reserved for PBS.
+# Every read and guard is tagged verify. The sole PUT has no verify tag, so `--tags verify`
+# checks the current state and never changes it.
 
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
 
 - name: Require the exact reviewed checkout
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  tags: [always]
   vars:
     _reviewed_checkout_payload_paths:
       - platform/playbooks/enable-o11y-pbs-import-content.yml
@@ -36,6 +40,7 @@
     _forged_names: "{{ _forgery_names | intersect('' | extra_var_names) }}"
   tasks:
     - name: Require the exact Dev run and one private declaration
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _forged_names | length == 0
@@ -52,6 +57,7 @@
         quiet: true
 
     - name: Read controller revision
+      tags: [verify]
       ansible.builtin.command:
         argv: [git, rev-parse, HEAD]
         chdir: "{{ _project_root }}"
@@ -60,12 +66,14 @@
       check_mode: false
 
     - name: Require exact reviewed revision
+      tags: [verify]
       ansible.builtin.assert:
         that: _controller_revision.stdout == expected_repository_sha
         fail_msg: "Semaphore checked out a different reviewed Dev revision."
         quiet: true
 
     - name: Read controller changes
+      tags: [verify]
       ansible.builtin.command:
         argv: [git, status, --porcelain, --untracked-files=all]
         chdir: "{{ _project_root }}"
@@ -74,22 +82,26 @@
       check_mode: false
 
     - name: Require clean reviewed checkout
+      tags: [verify]
       ansible.builtin.assert:
         that: _controller_changes.stdout | length == 0
         fail_msg: "The reviewed controller checkout contains uncommitted files."
         quiet: true
 
     - name: Refuse cleartext OpenBao transport
+      tags: [verify]
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
     - name: Read Proxmox API credentials from OpenBao
+      tags: [verify]
       ansible.builtin.set_fact:
         _pve_data: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
       no_log: true
 
     - name: Derive Proxmox API connection values
+      tags: [verify]
       ansible.builtin.set_fact:
         _pve_host: "{{ _pve_data.url | default('') }}"
         _pve_token_id: "{{ _pve_data.token_id | default('') }}"
@@ -97,6 +109,7 @@
       no_log: true
 
     - name: Require secure Proxmox API credentials
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _pve_host is match('^https://')
@@ -106,6 +119,7 @@
         quiet: true
 
     - name: Read Proxmox nodes
+      tags: [verify]
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes"
         method: GET
@@ -119,6 +133,7 @@
       check_mode: false
 
     - name: Refuse an absent, offline, or ambiguous declared node
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _pve_nodes.json.data | selectattr('node', 'equalto', _target_node) | list | length == 1
@@ -127,6 +142,7 @@
         quiet: true
 
     - name: Read the exact node storage status
+      tags: [verify]
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _target_node | urlencode }}/storage/{{ _storage_id | urlencode }}/status"
         method: GET
@@ -140,6 +156,7 @@
       check_mode: false
 
     - name: Read the exact cluster-wide storage configuration
+      tags: [verify]
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/storage/{{ _storage_id | urlencode }}"
         method: GET
@@ -153,29 +170,33 @@
       check_mode: false
 
     - name: Validate active file storage and the digest-protected content list
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _node_storage_status.json.data.active | default(0) | int == 1
-          - _node_storage_status.json.data.type | default('') in ['dir', 'nfs', 'cifs', 'cephfs']
+          - _node_storage_status.json.data.type | default('') == 'dir'
           - _storage_config.json.data.storage | default('') == _storage_id
-          - _storage_config.json.data.type | default('') in ['dir', 'nfs', 'cifs', 'cephfs']
+          - _storage_config.json.data.type | default('') == 'dir'
           - _node_storage_status.json.data.type == _storage_config.json.data.type
           - (_storage_config.json.data.nodes | default('') | string | length == 0) or _target_node in ((_storage_config.json.data.nodes | string).split(',') | map('trim') | list)
           - _current_content | length > 0
+          - "'' not in _current_content"
           - _current_content | unique | length == _current_content | length
           - _current_content | select('match', '^(images|rootdir|vztmpl|iso|backup|snippets|import|none)$') | list | length == _current_content | length
           - "'none' not in _current_content"
           - _storage_config.json.data.digest | default('') is match('^[0-9a-fA-F]{40}$')
-        fail_msg: "The exact declared storage must be active on the private node, file-based, and have an unambiguous content list and Proxmox digest."
+        fail_msg: "The exact declared directory storage must be active on the private node and have an unambiguous content list and Proxmox digest."
         quiet: true
       vars:
-        _current_content: "{{ (_storage_config.json.data.content | default('') | string).split(',') | map('trim') | reject('equalto', '') | list }}"
+        _current_content: "{{ (_storage_config.json.data.content | default('') | string).split(',') | map('trim') | list }}"
 
     - name: Preserve the current content list
+      tags: [verify]
       ansible.builtin.set_fact:
-        _current_content: "{{ (_storage_config.json.data.content | string).split(',') | map('trim') | reject('equalto', '') | list }}"
+        _current_content: "{{ (_storage_config.json.data.content | string).split(',') | map('trim') | list }}"
 
     - name: Add import to the requested content list only when absent
+      tags: [verify]
       ansible.builtin.set_fact:
         _desired_content: "{{ _current_content + ([] if 'import' in _current_content else ['import']) }}"
         _add_import: "{{ 'import' not in _current_content }}"
@@ -200,6 +221,7 @@
       check_mode: false
 
     - name: Read back exact storage configuration
+      tags: [verify]
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/storage/{{ _storage_id | urlencode }}"
         method: GET
@@ -213,6 +235,7 @@
       check_mode: false
 
     - name: Verify import content readback
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _storage_readback.json.data.storage | default('') == _storage_id
@@ -221,6 +244,7 @@
         quiet: true
 
     - name: Report sanitized storage workflow result
+      tags: [verify]
       ansible.builtin.debug:
         msg:
           verified: "{{ not ansible_check_mode or not (_add_import | bool) }}"
