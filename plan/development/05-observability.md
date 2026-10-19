@@ -2067,3 +2067,24 @@ PBS description and verified NetBox readback. Address and VMID values remain
 private. Template publication awaits the separate PBS host declaration,
 reviewed private inventory merge, Semaphore sync, and exact inventory readback.
 No template VM, PBS VM, or data disk has been created; retention is unchanged.
+
+The first scoped Semaphore publisher check, task 7152, refused because the
+Debian template workflow did not yet exist as a Semaphore template; it made no
+configuration change. The documented one-template creation path then passed
+check mode in task 7155. Task 7156 created only `Provision PBS Debian Cloud
+Template (Dev)` and read back its exact Dev repository, inventory, environment,
+and playbook bindings at reviewed Dev
+`a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`. It did not run the playbook or
+create a Proxmox template. That run still awaits the reviewed private PBS host
+declaration and inventory sync.
+
+The next public change prepares a separate Dev-bound PBS guest-disk attachment
+workflow for OpenSpec task 3.1. It first verifies the exact declared guest,
+network, OS disk, and data-disk slot. An already matching `scsi1` is a safe
+rerun without another capacity allocation. If `scsi1` is absent, the workflow
+reuses the pinned backing survey and 512-GiB headroom preflight, re-reads the
+VM config, and sends one digest-protected Proxmox API request for the declared
+virtual disk. Check mode performs reads only. The workflow has passed local
+focused tests and syntax checks; it has not been reviewed, merged, published to
+Semaphore, or run against Proxmox. The private inventory and template gates
+still precede any live attachment.

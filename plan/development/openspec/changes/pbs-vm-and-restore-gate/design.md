@@ -51,6 +51,15 @@ observed-digest content union and verified readback, and task 7131 confirmed
 idempotence. Task 7132 then found active import candidates. All ran at reviewed
 Dev `a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`. Template publication
 still requires the separate PBS host declaration and inventory readback.
+The Dev-bound Semaphore template itself was created through the reviewed
+single-template publisher: task 7155 passed check mode, and task 7156 verified
+the resulting playbook and Dev bindings. This publishes only the automation
+entry; no Proxmox template or PBS VM exists yet.
+The guest-disk attachment implementation is prepared on a separate public
+branch. Its missing-disk path reuses the pinned read-only survey and preflight
+before one digest-protected Proxmox VM-config update; an exact-disk rerun checks
+the declared guest and disk without requiring headroom for a second allocation.
+Review, Dev merge, Semaphore publication, and live validation remain pending.
 
 Production Semaphore task 7106 refused before any Proxmox request because the
 workflow required HTTPS for the inventory OpenBao URL. The shared transport
