@@ -333,14 +333,10 @@ _committed_files() {
   [ -z "$output" ]
   grep -q 'Refusing to send secret material' "$shared"
 
-  # ESCAPING PIN, updated for the var form. The pattern now lives in a YAML
-  # single-quoted VAR (_pat_strict), which Jinja passes to match() as a value —
-  # no string-literal escape processing — so a single `\.` IS the escaped dot
-  # and `\\.` would put a literal backslash into the regex. (The old inline
-  # `is match('...')` form was the opposite; runtime-proven 2026-08-30 across
-  # eight accept/refuse cases when this moved.)
-  grep -qE "_pat_strict: '.*127\(\\\.\[0-9\]" "$shared"
-  ! grep -qE "_pat_strict: '.*127\(\\\\\." "$shared"
+  # The strict policy composes the bounded IPv4 fragment for loopback HTTP;
+  # the behavioral table below verifies the expanded regex and octet boundaries.
+  grep -F "_pat_strict:" "$shared" | grep -Fq "{{ _pat_loopback }}"
+  grep -Fq "_pat_loopback: '127(?:\.{{ _pat_ipv4_octet }}){3}'" "$shared"
 
   # Every playbook that reaches OpenBao, not just the ones the guard started in.
   # The two seed playbooks kept their own inline copies for one commit and were
