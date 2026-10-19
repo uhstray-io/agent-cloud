@@ -84,6 +84,7 @@
           - vm_node
           - proxmox_pbs_storage_node
           - proxmox_pbs_vm_storage_id
+          - pbs_data_disk_storage
           - pbs_data_disk_size
           - pbs_data_disk_bus
         _pbs_forgeries: "{{ _pbs_allocation_names | intersect('' | extra_var_names) }}"
@@ -97,8 +98,10 @@
           - _node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
           - _node == _storage_node
           - _storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _decl.pbs_data_disk_storage | default('') == _storage
+          - _decl.pbs_data_disk_size | default('') == '512G'
           - _name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
-        fail_msg: "The sole PBS declaration must match the pinned storage node and thick-LVM store."
+        fail_msg: "The sole PBS declaration must match the pinned storage node and thick-LVM store, with its data disk declared as 512G."
         quiet: true
 
     - name: Refuse cleartext OpenBao transport

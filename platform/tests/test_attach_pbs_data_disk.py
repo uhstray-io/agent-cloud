@@ -73,6 +73,22 @@ def test_conflicting_or_mismatched_existing_disks_refuse_but_exact_scsi1_is_idem
     assert "_final_config.json.data.scsi1" in str(final_readback["ansible.builtin.assert"])
 
 
+def test_pbs_data_disk_inventory_must_match_pinned_store_and_exact_512g_declaration() -> None:
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[3])
+    declaration = next(
+        task for task in tasks if task.get("name", "").startswith("Require one declared PBS VM")
+    )
+    checks = declaration["ansible.builtin.assert"]["that"]
+    assert "_decl.pbs_data_disk_storage | default('') == _storage" in checks
+    assert "_decl.pbs_data_disk_size | default('') == '512G'" in checks
+    override_guard = next(
+        task for task in tasks if task.get("name", "").startswith("Refuse launch-time PBS")
+    )
+    assert "pbs_data_disk_storage" in str(override_guard)
+    assert "pbs_data_disk_size" in str(override_guard)
+    assert "_disk_request: \"{{ _storage }}:512\"" in PLAYBOOK.read_text()
+
+
 def test_check_mode_reads_and_reports_without_any_mutation_or_host_device_operation() -> None:
     plays = yaml.safe_load(PLAYBOOK.read_text())
     tasks = _tasks(plays[3])
