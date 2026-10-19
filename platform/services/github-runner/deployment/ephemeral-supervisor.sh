@@ -77,7 +77,9 @@ EXIT_QUARANTINED=3
 SEED_EXCLUDE=(_work _diag .runner .credentials .credentials_rsaparams .local/share/containers
   .cache .config/systemd/user/default.target.wants/actions-runner.service)
 
-log() { printf '[ephemeral] %s\n' "$*"; }
+# Diagnostics go to stderr (the journal either way), so a function whose stdout is captured,
+# like take_jit, returns only its value.
+log() { printf '[ephemeral] %s\n' "$*" >&2; }
 die() {
   log "ERROR: $*"
   exit 1
@@ -251,7 +253,8 @@ owner_predicate() {
   printf '%s\n' ')'
 }
 
-# Paths owned by the account outside the home, one per line. A matched directory is pruned:
+# Paths owned by the account outside the home, NUL-terminated: a job chooses its file names,
+# and a name with a newline in it must not split into two paths. A matched directory is pruned:
 # it is removed whole, so listing its contents adds nothing. A sweep root itself, and any
 # mount point (the account's /run/user/<uid> while it is still mounted), is never listed:
 # each mounted filesystem is swept as its own root.
@@ -260,14 +263,14 @@ owned_paths() {
   mapfile -t pred < <(owner_predicate)
   while read -r root; do
     [ -d "$root" ] || continue
-    while read -r p; do
-      if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$p"; then continue; fi
-      echo "$p"
-    done < <(find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o "${pred[@]}" -print -prune 2>/dev/null || true)
+    while IFS= read -r -d '' p; do
+      if command -v mountpoint >/dev/null 2>&1 && mountpoint -q -- "$p"; then continue; fi
+      printf '%s\0' "$p"
+    done < <(find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o "${pred[@]}" -print0 -prune 2>/dev/null || true)
   done < <(sweep_roots)
 }
 
-file_owner() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }
+file_owner() { stat -c %u -- "$1" 2>/dev/null || stat -f %u -- "$1"; }
 
 # Never crosses into another mounted filesystem where rm can promise that (GNU rm; the
 # runner hosts). The tests also run on BSD rm, which has no such option.
@@ -287,7 +290,7 @@ sweep_files() {
   if [ -e "$RUNNER_HOME" ]; then
     rm_tree "$RUNNER_HOME" 2>/dev/null || log "WARNING: could not fully remove $RUNNER_HOME"
   fi
-  while read -r p; do
+  while IFS= read -r -d '' p; do
     [ -n "$p" ] && [ "$p" != / ] || continue
     if owned_id "$(file_owner "$p")"; then
       rm_tree "$p" 2>/dev/null || log "WARNING: could not remove $p"
@@ -315,7 +318,7 @@ do_reset() {
     log "reset: IPC objects remain: $left"
     return 1
   fi
-  left=$(owned_paths | head -n 20 | tr '\n' ' ')
+  left=$(owned_paths | tr '\0' '\n' | head -n 20 | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
     log "reset: files remain: $left"
     return 1

@@ -120,7 +120,7 @@ EOF
   : >"$T/homes/runner/_work/repo/marker"
   : >"$T/tmp/leftover-file"
   : >"$T/tmp/leftover-dir/sub/marker"
-  run sup 'check_config; sweep_files; owned_paths'
+  run sup 'check_config; sweep_files; owned_paths | tr "\0" "\n"'
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   [ ! -e "$T/homes/runner" ]
@@ -140,16 +140,30 @@ EOF
   [ ! -e "$T/tmp/ours" ]
 }
 
+@test "ephemeral: a file name with a newline is one path, not two" {
+  # A job chooses its file names. Split on the newline, the sweep would re-check an
+  # unrelated path and leave the real file, and the verification would then quarantine.
+  : >"$T/tmp/evil
+name"
+  run sup 'check_config; owned_paths | tr "\0" "@"'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$T/tmp/evil
+name@" ]
+  run sup 'check_config; sweep_files; owned_paths | tr "\0" "\n"'
+  [ -z "$output" ]
+}
+
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {
   printf 'OLD' >"$T/state/gh/jit/gh-runner-01-jit-a.jit"
   printf 'MID' >"$T/state/gh/jit/gh-runner-01-jit-b.jit"
   printf 'NEW' >"$T/state/gh/jit/gh-runner-01-jit-c.jit"
   touch -t 202001010000 "$T/state/gh/jit/gh-runner-01-jit-a.jit"
   touch -t "$(date -v-30M +%Y%m%d%H%M 2>/dev/null || date -d '-30 min' +%Y%m%d%H%M)" "$T/state/gh/jit/gh-runner-01-jit-b.jit"
-  run sup 'check_config; take_jit'
+  run sup 'check_config; take_jit 2>"'"$T"'/log"'
   [ "$status" -eq 0 ]
-  assert_contains "$output" "discarded expired gh-runner-01-jit-a"
-  [ "$(printf '%s\n' "$output" | tail -1)" = "$T/state/gh/jit/gh-runner-01-jit-b.jit" ]
+  # Only the path on stdout: the caller captures it.
+  [ "$output" = "$T/state/gh/jit/gh-runner-01-jit-b.jit" ]
+  assert_contains "$(cat "$T/log")" "discarded expired gh-runner-01-jit-a"
   [ ! -e "$T/state/gh/jit/gh-runner-01-jit-a.jit" ]
   run sup 'stock_count'
   [ "$output" = 2 ]
