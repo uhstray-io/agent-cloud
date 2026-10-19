@@ -95,6 +95,7 @@ def test_dev_template_and_write_guards_are_declared() -> None:
         "digest": "{{ _storage_config.json.data.digest }}",
     }
     assert "not ansible_check_mode" in write["when"]
+    assert "check_mode" not in write
     assert write["no_log"] is True
     assert all(
         task.get("no_log") is True

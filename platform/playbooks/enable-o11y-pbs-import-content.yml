@@ -218,7 +218,6 @@
       changed_when: true
       when: _add_import | bool and not ansible_check_mode
       no_log: true
-      check_mode: false
 
     - name: Read back exact storage configuration
       tags: [verify]
