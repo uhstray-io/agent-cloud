@@ -1,7 +1,7 @@
 """Focused guards for the PBS virtual data-disk attachment workflow."""
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import yaml
 from jinja2.nativetypes import NativeEnvironment
@@ -214,7 +214,10 @@ def test_openbao_url_match_and_shared_transport_policy_accept_internal_http_and_
     template = NativeEnvironment().from_string("{{ " + match_expression + " }}")
     internal_http = "http://" + ".".join(("10", "1", "2", "3")) + ":8200"
     assert template.render(openbao_addr=internal_http, _openbao_inventory_url=internal_http) is True
-    assert template.render(openbao_addr="http://public.example.invalid:8200", _openbao_inventory_url=internal_http) is False
+    assert template.render(
+        openbao_addr="http://public.example.invalid:8200",
+        _openbao_inventory_url=internal_http,
+    ) is False
 
     source = (ROOT / "platform/playbooks/tasks/assert-bao-transport.yml").read_text()
     patterns = dict(re.findall(r"^\s+(_pat_[a-z0-9_]+): '(.*?)'$", source, re.M))
@@ -256,7 +259,11 @@ def test_check_mode_reads_and_reports_without_any_mutation_or_host_device_operat
         and "/qemu/{{ _vmid }}/config" in task.get("ansible.builtin.uri", {}).get("url", "")
     ]
     assert len(config_reads) == 3
-    assert all(task.get("check_mode") is False for task in tasks if task.get("ansible.builtin.uri", {}).get("method") == "GET")
+    assert all(
+        task.get("check_mode") is False
+        for task in tasks
+        if task.get("ansible.builtin.uri", {}).get("method") == "GET"
+    )
 
 
 def test_semaphore_template_is_dev_bound_and_only_accepts_reviewed_sha() -> None:
