@@ -448,7 +448,8 @@ def test_the_transport_check_runs_before_secrets_and_only_while_the_route_is_on(
     "backend, local, passes",
     [
         ("skynet.example.com:8080", False, False),  # a public name: the bearer would cross in cleartext
-        (".".join(["10", "20", "30", "40"]) + ":8080", False, True),  # synthetic RFC1918 address, built so no literal sits in the repo
+        # A synthetic RFC1918 address, built from parts so no literal sits in the repo.
+        (".".join(["10", "20", "30", "40"]) + ":8080", False, True),
         ("127.0.0.1:8080", False, True),  # loopback
         ("skynet:8080", True, True),  # a container name on the local podman network
         ("skynet:8080", False, False),  # a bare name outside local-dev can resolve to a public FQDN
