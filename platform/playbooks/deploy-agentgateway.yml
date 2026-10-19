@@ -71,6 +71,12 @@
 #                                        gateway's own /v1, the schema a .json file in deployment/mcp-schemas/; nothing
 #                                        else is accepted (_agw_mcp_problems)
 #   agw_loopback_port                    (default 4002) the loopback gateway's port, never published
+#   agw_skynet_route_enabled             (default false) serve skynet's orchestration API at /skynet/ on the default
+#                                        gateway; false renders no routes block and reads no skynet secret
+#   agw_skynet_backend                   (required when enabled) host:port of the skynet API the route proxies to
+#   agw_skynet_route_identities          (required when enabled) the declared identities that may call /skynet/;
+#                                        each must be in agw_identities and never mcp-self or legacy-shared
+#                                        (_agw_skynet_route_problems)
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -127,9 +133,13 @@
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
     # gateway's clientSecret matches what agentgateway-oidc.yaml injected via !Env.
     # Skipped with agw_ui_enabled: false, so /v1 deploys before that client exists.
+    # The skynet route's backend token (agentgateway task 3.3) is skynet's own secret, read the same way and
+    # only while the route is enabled: a missing key stops manage-secrets by name, so skynet deploys first.
     _shared_reads: >-
-      {{ [{'from_service': 'authentik', 'read_keys': ['agentgateway_oidc_client_secret']}]
-         if (agw_ui_enabled | default(true) | bool) else [] }}
+      {{ ([{'from_service': 'authentik', 'read_keys': ['agentgateway_oidc_client_secret']}]
+          if (agw_ui_enabled | default(true) | bool) else [])
+         + ([{'from_service': 'skynet', 'read_keys': ['api_token']}]
+          if (agw_skynet_route_enabled | default(false) | bool) else []) }}
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
       # 0644 on purpose: the gateway image runs as a non-root user and the file is
@@ -204,6 +214,14 @@
       ansible.builtin.assert:
         that: _agw_mcp_problems | length == 0
         fail_msg: "agw_mcp_enabled cannot be rendered: {{ _agw_mcp_problems | join('; ') }}."
+        quiet: true
+
+    # The skynet route (agentgateway task 3.3): its backend, identities and reserved names are checked before
+    # anything is rendered, so a bad declaration stops the deploy before the gateway is restarted.
+    - name: "Refuse a malformed skynet route declaration"
+      ansible.builtin.assert:
+        that: _agw_skynet_route_problems | length == 0
+        fail_msg: "agw_skynet_route_enabled cannot be rendered: {{ _agw_skynet_route_problems | join('; ') }}."
         quiet: true
 
     # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
@@ -539,6 +557,11 @@
             mcp = text.split("\nmcp:\n", 1)[1] if "\nmcp:\n" in text else None
             if mcp is not None:
                 mcp = re.split(r"^[^\s#]", mcp, maxsplit=1, flags=re.M)[0]
+            # The skynet route the same way. Its block is a top-level list, so its first line starts with "-":
+            # the split is on the next column-0 KEY, not on any non-space character.
+            skynet = text.split("\nroutes:\n", 1)[1] if "\nroutes:\n" in text else None
+            if skynet is not None:
+                skynet = re.split(r"^[A-Za-z]", skynet, maxsplit=1, flags=re.M)[0]
             names = r"^[ \t]+metadata:\n[ \t]+name: (\S+)[ \t]*$"
             print(json.dumps({
                 "names": re.findall(names, block, re.M),
@@ -548,6 +571,9 @@
                 "mcp_names": re.findall(names, mcp, re.M) if mcp else [],
                 "mcp_entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", mcp, re.M)) if mcp else 0,
                 "loopback": bool(re.search(r"^  loopback:$", text, re.M)),
+                "skynet_route": skynet is not None,
+                "skynet_apikey": bool(skynet and re.search(r"^    apiKey:$", skynet, re.M) and re.search(r"^      mode: strict$", skynet, re.M)),
+                "skynet_names": re.findall(names, skynet, re.M) if skynet else [],
             }))
           - "{{ _deploy_dir }}/config.yaml"
       register: _agw_render_read
@@ -647,6 +673,48 @@
         - not ansible_check_mode
         - agw_mcp_enabled | default(false) | bool
 
+    # The skynet route in the render (agentgateway task 3.3). Names and counts only, one assert per property. A
+    # routes block with no strict key policy would hand skynet to every caller, so it must never reach a restart;
+    # with the flag false no routes block may render at all.
+    - name: "Require the rendered skynet route to match agw_skynet_route_enabled"
+      ansible.builtin.assert:
+        that: _render.skynet_route | bool == (agw_skynet_route_enabled | default(false) | bool)
+        fail_msg: >-
+          The rendered config.yaml has a skynet routes block: {{ _render.skynet_route }}, but agw_skynet_route_enabled is
+          {{ agw_skynet_route_enabled | default(false) | bool }}; the two must agree.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered skynet route to carry its own strict key policy"
+      ansible.builtin.assert:
+        that: not (_render.skynet_route | bool) or (_render.skynet_apikey | bool)
+        fail_msg: >-
+          The rendered config.yaml has a skynet routes block with no strict apiKey policy: /skynet/ would
+          reach skynet without a key.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the skynet route's key policy to enrol exactly the declared route identities"
+      ansible.builtin.assert:
+        that:
+          - _missing | length == 0
+          - _extra | length == 0
+          - _render.skynet_names | length == _expected | length
+        fail_msg: >-
+          The rendered skynet key policy does not enrol exactly the declared route identities: missing {{ _missing | join(', ') }};
+          not allowed {{ _extra | join(', ') }}; {{ _render.skynet_names | length }} key entries for {{ _expected | length }} identities.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+        _expected: "{{ (agw_skynet_route_identities | default([])) if (agw_skynet_route_enabled | default(false) | bool) else [] }}"
+        _missing: "{{ _expected | difference(_render.skynet_names) | sort }}"
+        _extra: "{{ _render.skynet_names | difference(_expected) | sort }}"
+      when: not ansible_check_mode
+
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client
     # with the upstream's invalid_api_key. Refuse that unless the inventory declares
@@ -662,6 +730,19 @@
           value staged by scripts/semaphore-seed-input.py) before deploying, or set
           agw_upstream_requires_key: false for an upstream that takes no key.
         success_msg: "Upstream key present (or not required by this upstream)."
+
+    # The skynet token is shared-read, so manage-secrets refuses a missing KEY by name; this refuses an EMPTY
+    # value, which would render a route that presents an empty bearer to skynet. Presence only; never printed.
+    - name: "Refuse a skynet route whose backend token is empty"
+      ansible.builtin.assert:
+        that: (_shared | default({})).api_token | default('', true) | length > 0
+        fail_msg: >-
+          secret/services/skynet:api_token is empty: the skynet route cannot present a token to skynet.
+          Seed skynet's token before enabling agw_skynet_route_enabled.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_skynet_route_enabled | default(false) | bool
 
     # Shared-key retirement (gateway task 5.1): while the grace period runs, record the shared
     # key's sha256 fingerprint once; on or after legacy_shared_expires the render above has

@@ -351,6 +351,13 @@ all:
           #   agw_openrouter_identities: [dev-local]
           #   agw_openrouter_admins: false   # true: every admin-derived identity may call them too
           #   agw_verify_openrouter: false   # true: the deploy spends one 8-token completion to prove it
+          # skynet's orchestration API at /skynet/ (agentgateway task 3.3), OFF here. Enabling it needs
+          # secret/services/skynet:api_token (skynet owns it; the deploy refuses an empty one), a host:port
+          # backend, and the identities allowed to call it. Those identities also pass /v1 (see the
+          # architecture doc, "skynet orchestration route").
+          #   agw_skynet_route_enabled: false
+          #   agw_skynet_backend: host.containers.internal:18556
+          #   agw_skynet_route_identities: [dev-local]
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs
