@@ -48,7 +48,7 @@
           - not (local_mode | default(false) | bool)
           - _openbao_hosts | length == 1
           - _o11y_hosts | length == 1
-          - _openbao_inventory_url | string is match('^https://')
+          - _openbao_inventory_url | string | length > 0
           - openbao_addr | default('') == _openbao_inventory_url
           - _target_node | string is match('^[A-Za-z0-9._-]{1,64}$')
           - _target_node not in ['.', '..']

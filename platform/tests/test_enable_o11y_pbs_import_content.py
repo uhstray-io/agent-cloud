@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from jinja2.nativetypes import NativeEnvironment
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/enable-o11y-pbs-import-content.yml"
 TEMPLATES = ROOT / "platform/semaphore/templates.yml"
+BAO_TRANSPORT = ROOT / "platform/playbooks/tasks/assert-bao-transport.yml"
 
 
 def test_dev_template_and_write_guards_are_declared() -> None:
@@ -112,6 +114,42 @@ def test_dev_template_and_write_guards_are_declared() -> None:
         for task in tasks
         if "verify" in task.get("tags", []) and "ansible.builtin.uri" in task
     )
+
+
+def test_inventory_openbao_url_uses_shared_transport_policy() -> None:
+    play = yaml.safe_load(PLAYBOOK.read_text())[2]
+    tasks = play["tasks"]
+    names = [task["name"] for task in tasks]
+    initial_guard = next(
+        task["ansible.builtin.assert"]["that"]
+        for task in tasks
+        if task["name"] == "Require the exact Dev run and one private declaration"
+    )
+    assert "_openbao_inventory_url | string | length > 0" in initial_guard
+    assert "openbao_addr | default('') == _openbao_inventory_url" in initial_guard
+    assert "not (local_mode | default(false) | bool)" in initial_guard
+    assert "service_url" in play["vars"]["_forgery_names"]
+    transport_index = names.index("Refuse cleartext OpenBao transport")
+    lookup_index = names.index("Read Proxmox API credentials from OpenBao")
+    assert transport_index < lookup_index
+    assert tasks[transport_index]["ansible.builtin.include_tasks"] == "tasks/assert-bao-transport.yml"
+    assert tasks[transport_index]["vars"]["_assert_bao_url"] == "{{ _bao_url }}"
+
+    source = BAO_TRANSPORT.read_text()
+    strict_match = re.search(r"_pat_strict: '(.*?)'", source)
+    https_match = re.search(r"_pat_https: '(.*?)'", source)
+    assert strict_match and https_match
+    strict = strict_match.group(1).replace(r"\\", "\\")
+    https = https_match.group(1).replace(r"\\", "\\")
+    assert "_assert_bao_url is match(_pat_strict)" in source
+    assert "or ((local_mode | default(false) | bool)" in source
+
+    def shared_guard_accepts(url: str) -> bool:
+        return bool(re.match(strict, url) and (not url.startswith("https://") or re.match(https, url)))
+
+    internal_host = ".".join(str(octet) for octet in (10, 1, 2, 3))
+    assert shared_guard_accepts(f"http://{internal_host}:8200")
+    assert not shared_guard_accepts("http://openbao.example.invalid:8200")
 
 
 def test_content_union_preserves_existing_values_and_is_idempotent() -> None:
