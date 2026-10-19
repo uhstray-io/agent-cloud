@@ -323,6 +323,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
 | `install-qemu-guest-agent.yml` | Install `qemu-guest-agent` on existing VMs (idempotent); refuses a VM without the Proxmox guest-agent channel. Enable that channel first with `resize-vm.yml`, which converges `agent=1` (a running VM needs `allow_reboot=true` to pick it up) |
 | `resize-vm.yml` | Converge a live VM's cores/memory/disk and its guest-agent option (`agent=1`, per-host opt-out `vm_agent: false`) to its declaration; grow-only disk, opt-in reboot, and a run without `allow_reboot` is a safe preview |
+| `attach-pbs-data-disk.yml` | Re-run the pinned thick-LVM preflight, then attach only the declared PBS VM's 512-GiB `scsi1` virtual disk through the Proxmox API; check mode is read-only and config-digest guarded |
 | `install-podman.yml` | Install Podman + podman-compose + uidmap (idempotent); optional `podman_docker_cli` adds the `docker` CLI shim for consumers that shell out to a docker binary |
 | `deploy-github-runner.yml` | Install + register one self-hosted GitHub Actions runner. Registration token minted on the CONTROLLER — the host is firewalled away from OpenBao by design |
 | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false` |

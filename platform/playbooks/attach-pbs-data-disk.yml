@@ -1,0 +1,228 @@
+---
+# Allocate only the PBS guest's declared 512-GiB data disk. The imported
+# preflight's write_authorized=false denies host-device writes; this workflow
+# separately authorizes one guarded virtual disk allocation through PVE's API.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/attach-pbs-data-disk.yml
+      - platform/playbooks/refuse-internal-extra-vars.yml
+      - platform/playbooks/preflight-o11y-pbs-thick-lvm-allocation.yml
+      - platform/playbooks/survey-o11y-pbs-physical-storage.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/files/inspect_o11y_pbs_physical_storage.py
+      - platform/semaphore/templates.yml
+
+- name: Re-run the pinned thick-LVM allocation preflight immediately before attachment
+  ansible.builtin.import_playbook: preflight-o11y-pbs-thick-lvm-allocation.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Attach the declared PBS guest data disk
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _pve_data: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+    _decl_hosts: "{{ groups['pbs_svc'] | default([]) }}"
+    _decl_host: "{{ _decl_hosts[0] if (_decl_hosts | length == 1) else '' }}"
+    _decl: "{{ hostvars[_decl_host] | default({}) }}"
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ _o11y_hosts[0] if (_o11y_hosts | length == 1) else '' }}"
+    _o11y_decl: "{{ hostvars[_o11y_host] | default({}) }}"
+    _vmid: "{{ _decl.vm_vmid | default('') }}"
+    _node: "{{ _decl.vm_node | default('') }}"
+    _storage_node: "{{ _o11y_decl.proxmox_pbs_storage_node | default('') }}"
+    _storage: "{{ _o11y_decl.proxmox_pbs_vm_storage_id | default('') }}"
+    _name: "{{ _decl.vm_name | default('') }}"
+    _vm_description: "Managed by agent-cloud; target_service=pbs; declaration=private inventory"
+    _expected_disk_pattern: "^{{ _storage }}:vm-{{ _vmid }}-disk-[0-9]+,size=512G(,|$)"
+    _pve_host: "{{ _pve_data.url | default('') }}"
+    _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+    _pve_secret: "{{ _pve_data.api_token | default('') }}"
+    _disk_keys_pattern: "^(scsi|sata|virtio)[0-9]+$|^ide[013]$|^unused[0-9]+$"
+    _disk_request: "{{ _storage }}:512"
+
+  tasks:
+    - name: Require an exact reviewed Dev write run
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not (local_mode | default(false) | bool)
+        fail_msg: "PBS data-disk attachment requires the exact reviewed Dev revision."
+        quiet: true
+
+    - name: Refuse launch-time PBS allocation overrides
+      ansible.builtin.assert:
+        that: _pbs_forgeries | length == 0
+        fail_msg: "PBS VM identity, node, storage, credentials, and TLS policy are inventory or OpenBao inputs; remove launch-time overrides."
+        quiet: true
+      vars:
+        _pbs_allocation_names:
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - proxmox_validate_certs
+          - local_mode
+          - pbs_svc
+          - target_host
+          - target_vmid
+          - target_node
+          - vmid
+          - vm_node
+          - proxmox_pbs_storage_node
+          - proxmox_pbs_vm_storage_id
+          - pbs_data_disk_size
+          - pbs_data_disk_bus
+        _pbs_forgeries: "{{ _pbs_allocation_names | intersect('' | extra_var_names) }}"
+
+    - name: Require one declared PBS VM and one backing-storage declaration
+      ansible.builtin.assert:
+        that:
+          - _decl_hosts | length == 1
+          - _o11y_hosts | length == 1
+          - _vmid | string is match('^[1-9][0-9]{2,5}$')
+          - _node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _node == _storage_node
+          - _storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+        fail_msg: "The sole PBS declaration must match the pinned storage node and thick-LVM store."
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Require complete HTTPS Proxmox credentials from OpenBao
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+          - _pve_token_id | length > 0
+          - _pve_secret | length > 0
+        fail_msg: "OpenBao must provide the HTTPS Proxmox endpoint and complete API credentials."
+        quiet: true
+      no_log: true
+
+    - name: Read the exact declared PBS VM configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _vm_config
+      no_log: true
+      check_mode: false
+
+    - name: Extract the occupied disk buses and intended scsi1 value
+      ansible.builtin.set_fact:
+        _disk_keys: >-
+          {{ _vm_config.json.data | dict2items
+             | selectattr('key', 'match', _disk_keys_pattern)
+             | map(attribute='key') | list }}
+        _scsi1: "{{ _vm_config.json.data.scsi1 | default('') }}"
+        _os_disk: "{{ _vm_config.json.data.scsi0 | default('') }}"
+        _vm_config_digest: "{{ _vm_config.json.data.digest | default('') }}"
+      no_log: true
+
+    - name: Refuse VM identity, layout, bus, or storage drift before any write
+      ansible.builtin.assert:
+        that:
+          - _vm_config.json.data.name | default('') == _name
+          - _vm_config.json.data.description | default('') == _vm_description
+          - _vm_config.json.data.template | default(0) | int == 0
+          - _vm_config.json.data.ostype | default('') == 'l26'
+          - _vm_config.json.data.scsihw | default('') == 'virtio-scsi-pci'
+          - _vm_config.json.data.ide2 | default('') is search('cloudinit')
+          - _os_disk is search('^' ~ (_decl.vm_disk_storage | default('')) ~ ':')
+          - _os_disk is search('(^|,)size=' ~ (_decl.vm_disk | default('')) ~ '(,|$)')
+          - _vm_config_digest is match('^[0-9a-f]{40}$')
+          - _disk_keys | difference(['scsi0', 'scsi1', 'ide2']) | length == 0
+          - _scsi1 | length == 0 or _scsi1 is search(_expected_disk_pattern)
+        fail_msg: "The PBS VM configuration does not match its declaration or contains a conflicting disk. No disk was allocated."
+        quiet: true
+      no_log: true
+
+    - name: Report the read-only attachment plan
+      ansible.builtin.debug:
+        msg: >-
+          PBS data disk: {{ 'already attached and matches the pinned 512-GiB scsi1 declaration' if _scsi1 | length > 0
+          else 'check mode: would allocate one 512-GiB scsi1 virtual disk on the pinned thick-LVM store'
+          if ansible_check_mode else 'validated; allocating one 512-GiB scsi1 virtual disk on the pinned thick-LVM store' }}.
+
+    - name: Allocate exactly one virtual data disk through the Proxmox API
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          scsi1: "{{ _disk_request }}"
+          digest: "{{ _vm_config_digest }}"
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _attach_task
+      when:
+        - not ansible_check_mode
+        - _scsi1 | length == 0
+      no_log: true
+
+    - name: Wait for the virtual-disk allocation task
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/tasks/{{ _attach_task.json.data | urlencode }}/status"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _attach_status
+      until: _attach_status.json.data.status | default('') == 'stopped'
+      retries: 60
+      delay: 5
+      when: _scsi1 | length == 0 and not ansible_check_mode
+      no_log: true
+      check_mode: false
+
+    - name: Require successful Proxmox task completion
+      ansible.builtin.assert:
+        that: _scsi1 | length > 0 or ansible_check_mode or (_attach_status.json.data.exitstatus | default('')) == 'OK'
+        fail_msg: "Proxmox did not complete the PBS virtual-disk allocation."
+        quiet: true
+      no_log: true
+
+    - name: Read back the PBS VM configuration after allocation
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _final_config
+      when: not ansible_check_mode
+      no_log: true
+      check_mode: false
+
+    - name: Require exact scsi1 readback and no additional disks
+      ansible.builtin.assert:
+        that:
+          - _final_config.json.data.scsi1 | default('') is search(_expected_disk_pattern)
+          - >-
+            (_final_config.json.data | dict2items
+             | selectattr('key', 'match', _disk_keys_pattern)
+             | map(attribute='key') | reject('in', ['scsi0', 'scsi1', 'ide2']) | list | length) == 0
+        fail_msg: "Proxmox VM configuration readback does not prove the exact PBS data disk."
+        quiet: true
+      when: not ansible_check_mode
+      no_log: true
