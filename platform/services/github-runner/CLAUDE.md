@@ -35,9 +35,35 @@ The access list is converged by `manage-github-runner-group.yml`, which **refuse
 if any declared repository resolves as public. In a web console the exclusion would hold
 only until someone widened it in a hurry, with no review trail.
 
+## Lifecycles: persistent (default) and ephemeral
+
+`github_runner_lifecycle` in a host's inventory chooses one; unset means `persistent`.
+
+- **persistent**: one long-lived registration per host, restarted by systemd. Everything
+  below this section describes it, and its isolation table is what holds on such a host.
+- **ephemeral** (openspec `add-ephemeral-github-runners`, issue #545): every job runs on a
+  runner started from a just-in-time configuration, which the service gives one job and
+  then removes. Between jobs a root supervisor (`deployment/ephemeral-supervisor.sh`, unit
+  `github-runner-ephemeral.service`) kills every process of `ghrunner` and of its
+  subordinate ids, removes every file they own on the local filesystems (the home
+  included), their System V IPC objects and the account's keyrings, verifies all of it, and
+  copies a root-owned seed of the deployed home into the empty home. A reset it cannot
+  verify, or runners that keep exiting without a job, quarantine the host: it takes no job
+  until a deploy proves a clean reset. The configurations are minted on the orchestrator
+  (`stock-github-runner-jit.yml`, scheduled every 10 minutes) and stocked root-only in
+  `/var/lib/github-runner/jit`; the App key still never reaches the host.
+
+What changes on an ephemeral host, against the table below: per-job process reaping and
+everything a job leaves outside its workspace become **enforced between jobs**; the
+runner's own credential is bound to the job it is running instead of serving every later
+job. What does not change: **during** a job it runs as `ghrunner` on the host and can read
+what that account can read, so the placement rule below still holds. Every file the account
+needs must live in its home (the seed): a file it owns anywhere else is removed by the next
+reset. Read the design's D2 before relying on more.
+
 ## What isolation you actually get
 
-Verified from inside a running job, on both hosts:
+Verified from inside a running job, on both hosts (persistent lifecycle):
 
 | Control | Status |
 |---|---|
@@ -307,6 +333,7 @@ A registration token is single use, so it is minted **per host**. Nothing here i
 |---|---|
 | `deploy-github-runner.yml` | Install, register, start. Idempotent: a re-run leaves an existing registration intact. |
 | `manage-github-runner-group.yml` | Converge the group's repository access list. Read-only unless `-e dry_run=false`. |
+| `stock-github-runner-jit.yml` | Ephemeral hosts only: keep the just-in-time stock full, delete runner records that can no longer take a job, and fail while a host's supervisor is stopped or quarantined. Scheduled as Stock GitHub Runner JIT (Dev). |
 | `grant-github-runner-app-repository.yml` | Add only private `uhstray-io/site-config` to the runner App installation. Directly Dev-bound in Semaphore; reads the dedicated repo-scoped administration token and App key from `secret/services/github-runner`, previews in check mode, and verifies a grant with a fresh App token. |
 | `netbox-allocate-ip.yml` | Ask the address authority for free addresses. Read-only unless `-e reserve=true`. |
 
@@ -392,11 +419,13 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
 
 ## Known limitations
 
-1. Per-job containerisation is not enforced (above), and neither is process reaping: a
-   job may leave a process running after it ends. Both have the same fix — an ephemeral
-   runner whose process and filesystem are containerised per job. A best-effort reaper is
+1. On the persistent lifecycle, per-job containerisation is not enforced (above), and
+   neither is process reaping: a job may leave a process running after it ends. The
+   ephemeral lifecycle (above) enforces the reaping between jobs; containerising the runner
+   itself per job is still not done. A best-effort reaper on a persistent host is
    deliberately not shipped: one that cannot tell a leftover process from the runner's own
-   is more dangerous than the gap it closes. A stop of the unit is not a per-job reaper:
+   is more dangerous than the gap it closes. The ephemeral supervisor can tell, because it
+   resets only when the account should have no process at all. A stop of the unit is not a per-job reaper:
    it ends every process in the unit's cgroup, a leftover of a finished job included,
    because none of them belongs to a running runner any more (`KillMode=mixed`).
 2. Both hosts are on one hypervisor node. The cluster has no shared image storage and the
