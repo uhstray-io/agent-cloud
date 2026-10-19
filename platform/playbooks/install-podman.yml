@@ -52,16 +52,6 @@
     _docker_api_client_version: "{{ podman_docker_api_client_version | default('29.9.1') }}"
 
   tasks:
-    - name: "Refuse both Docker options at once"
-      # Both put a `docker` at /usr/bin/docker and their packages conflict; apt would
-      # remove whichever was installed first, and the result would depend on task order.
-      ansible.builtin.assert:
-        that: not (_docker_cli and _docker_api_client)
-        fail_msg: >-
-          podman_docker_cli and podman_docker_api_client are both true. Declare one: the
-          shim (podman as a CLI) or Docker's CLI client against a podman API socket.
-        quiet: true
-
     - name: "Resolve the sudo password (host may not be hardened yet)"
       # Play-level become means even fact gathering escalates, so this must be the
       # first task or the play dies at "Gathering Facts" with ok=0 on any host that
@@ -73,6 +63,18 @@
       # BEFORE the resolver above and escalated without a password, killing the
       # play at "Gathering Facts" — which is exactly what happened before this.
       ansible.builtin.setup:
+
+    - name: "Refuse both Docker options at once"
+      # Both put a `docker` at /usr/bin/docker and their packages conflict; apt would
+      # remove whichever was installed first, and the result would depend on task order.
+      # After the escalation and fact-gathering pair, which must open every play here
+      # (test_become_password_resolution.bats), and before anything is installed.
+      ansible.builtin.assert:
+        that: not (_docker_cli and _docker_api_client)
+        fail_msg: >-
+          podman_docker_cli and podman_docker_api_client are both true. Declare one: the
+          shim (podman as a CLI) or Docker's CLI client against a podman API socket.
+        quiet: true
 
     - name: "Wait for a freshly-booted host to accept package installs"
       ansible.builtin.include_tasks: tasks/wait-for-apt.yml

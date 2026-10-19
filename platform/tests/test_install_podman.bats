@@ -145,7 +145,7 @@ PYSCRIPT
   [ -n "$t" ]
   assert_contains "$t" 'that: not (_docker_cli and _docker_api_client)'
   refute_contains "$t" 'when:'
-  assert_precedes "$PB" 'name: "Refuse both Docker options at once"' 'tasks/resolve-become-password.yml'
+  assert_precedes "$PB" 'name: "Refuse both Docker options at once"' 'tasks/wait-for-apt.yml'
 }
 
 @test "install-podman: the Docker CLI client is pinned, client-only, and replaces the shim" {
