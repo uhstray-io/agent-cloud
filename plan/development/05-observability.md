@@ -2017,3 +2017,17 @@ not prove the assigned object's Proxmox VMID. If discovery activates the
 record, a later provisioning rerun stops before writes until a reviewed
 identity mapping is available; ordinary PBS operations do not depend on
 rerunning VM provisioning.
+
+PR #711 merged the publisher, VM workflow, and GET-only candidate survey to
+`dev` as `bab2eea0736deee2832ee33998c7f6c5e3ed7386` after independent
+review and final-head CI. Semaphore task 7060 safely refused a request to
+create three templates at once; the publisher permits one new Dev template per
+run. Task 7061 passed the scoped check-mode preview, and task 7063 published
+the candidate survey template. Its readback proved the intended Dev repository,
+private inventory and environment bindings, and survey playbook. GET-only task
+7064 then refused before querying Proxmox: its launch-override guard also
+rejected the standard OpenBao connection fields supplied by the Semaphore
+environment. The follow-up binds the OpenBao URL to the single private
+inventory declaration and accepts those standard credential fields while
+refusing launch-supplied `service_url` and placement overrides. No template
+VM, PBS VM, or data disk has been created; retention remains unchanged.

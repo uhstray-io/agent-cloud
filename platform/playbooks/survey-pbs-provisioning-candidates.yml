@@ -23,7 +23,10 @@
     _project_root: "{{ playbook_dir | dirname | dirname }}"
     _inspector: "{{ playbook_dir }}/files/inspect_o11y_pbs_physical_storage.py"
     _selector: "{{ playbook_dir }}/files/select_pbs_provisioning_candidates.py"
-    _bao_url: "{{ openbao_addr | default('') }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ _openbao_hosts | first | default('') }}"
+    _openbao_inventory_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_url: "{{ _openbao_inventory_url }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
@@ -38,9 +41,9 @@
       - proxmox_pbs_storage_node
       - proxmox_pbs_vm_storage_id
       - proxmox_validate_certs
-      - openbao_addr
-      - bao_role_id
-      - bao_secret_id
+      # HostVars member fields remain extra-var-overridable even though `groups` and
+      # `hostvars` themselves are Ansible magic variables.
+      - service_url
     _survey_forged_names: "{{ _survey_override_names | intersect('' | extra_var_names) }}"
   tasks:
     - name: Require the exact Dev run and one private declaration
@@ -51,10 +54,13 @@
           - not ansible_check_mode
           - not (local_mode | default(false) | bool)
           - _o11y_hosts | length == 1
+          - _openbao_hosts | length == 1
+          - _openbao_inventory_url | string | length > 0
+          - openbao_addr | default('') == _openbao_inventory_url
           - _target_node | string is match('^[A-Za-z0-9._-]{1,64}$')
           - _target_node not in ['.', '..']
           - _declared_vm_storage | string is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
-        fail_msg: "This read-only survey requires one private PBS node and VM-image storage declaration plus an exact reviewed Dev revision."
+        fail_msg: "This read-only survey requires one private PBS node, VM-image storage, and OpenBao declaration matching the Semaphore environment, plus an exact reviewed Dev revision."
         quiet: true
 
     - name: Read controller revision
