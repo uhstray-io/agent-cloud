@@ -53,6 +53,12 @@
     _pinned_serial: "{{ _o11y_decl.proxmox_pbs_backing_disk_serial | default(none) }}"
     _pinned_wwn: "{{ _o11y_decl.proxmox_pbs_backing_disk_wwn | default(none) }}"
     _name: "{{ _decl.vm_name | default('') }}"
+    _ip: "{{ _decl.vm_ip | default('') }}"
+    _gw: "{{ _decl.vm_gateway | default('') }}"
+    _netmask: "{{ _decl.vm_netmask | default(24) }}"
+    _bridge: "{{ _decl.vm_net_bridge | default('vmbr0') }}"
+    _cores: "{{ _decl.vm_cores | default('') }}"
+    _memory: "{{ _decl.vm_memory | default('') }}"
     _vm_description: "Managed by agent-cloud; target_service=pbs; declaration=private inventory"
     _expected_disk_pattern: "^{{ _storage }}:vm-{{ _vmid }}-disk-[0-9]+,size=512G(,|$)"
     _disk_keys_pattern: "^(scsi|sata|virtio)[0-9]+$|^ide[013]$|^unused[0-9]+$"
@@ -104,8 +110,12 @@
           - _storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
           - _decl.pbs_data_disk_storage | default('') == _storage
           - _decl.pbs_data_disk_size | default('') == '512G'
+          - _ip | length > 0
+          - _gw | length > 0
+          - _cores | int > 0
+          - _memory | int > 0
           - _name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
-        fail_msg: "The sole PBS declaration must match the pinned storage node and thick-LVM store, with its data disk declared as 512G."
+        fail_msg: "The sole PBS declaration must provide its static network, guest shape, and 512G data disk on the pinned store and node."
         quiet: true
 
     - name: Refuse cleartext OpenBao transport

@@ -20,6 +20,10 @@
       - _vm_config.json.data.ostype | default('') == 'l26'
       - _vm_config.json.data.scsihw | default('') == 'virtio-scsi-pci'
       - _vm_config.json.data.ide2 | default('') is search('cloudinit')
+      - _vm_config.json.data.net0 | default('') is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
+      - _vm_config.json.data.ipconfig0 | default('') == ('ip=' ~ _ip ~ '/' ~ (_netmask | string) ~ ',gw=' ~ _gw)
+      - _vm_config.json.data.cores | default(0) | int == _cores | int
+      - _vm_config.json.data.memory | default(0) | int == _memory | int
       - _os_disk is search('^' ~ (_decl.vm_disk_storage | default('')) ~ ':')
       - _os_disk is search('(^|,)size=' ~ (_decl.vm_disk | default('')) ~ '(,|$)')
       - _vm_config_digest is match('^[0-9a-f]{40}$')

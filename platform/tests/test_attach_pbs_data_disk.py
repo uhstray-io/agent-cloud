@@ -91,6 +91,63 @@ def test_conflicting_or_mismatched_existing_disks_refuse_but_exact_scsi1_is_idem
     assert "_final_config.json.data.scsi1" in str(final_readback["ansible.builtin.assert"])
 
 
+def test_exact_guest_validation_matches_declared_network_bridge_cores_and_memory() -> None:
+    play_vars = yaml.safe_load(PLAYBOOK.read_text())[2]["vars"]
+    for name in ("_ip", "_gw", "_netmask", "_bridge", "_cores", "_memory"):
+        assert name in play_vars
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    declaration = next(task for task in tasks if task.get("name", "").startswith("Require one declared PBS VM"))
+    declaration_checks = declaration["ansible.builtin.assert"]["that"]
+    for check in ("_ip | length > 0", "_gw | length > 0", "_cores | int > 0", "_memory | int > 0"):
+        assert check in declaration_checks
+
+    tasks = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml").read_text()
+    )
+    validate = next(task for task in tasks if task.get("name", "").startswith("Refuse VM identity"))
+    checks = validate["ansible.builtin.assert"]["that"]
+    expressions = [
+        next(check for check in checks if ".net0" in check),
+        next(check for check in checks if ".ipconfig0" in check),
+        next(check for check in checks if ".cores" in check),
+        next(check for check in checks if ".memory" in check),
+    ]
+    env = NativeEnvironment()
+    env.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
+    context = {
+        "_vm_config": {
+            "json": {
+                "data": {
+                    "net0": "virtio=DE:AD:BE:EF:00:01,bridge=vmbr0",
+                    "ipconfig0": "ip=192.0.2.44/24,gw=192.0.2.1",
+                    "cores": 4,
+                    "memory": 8192,
+                }
+            }
+        },
+        "_bridge": "vmbr0",
+        "_ip": "192.0.2.44",
+        "_netmask": 24,
+        "_gw": "192.0.2.1",
+        "_cores": "4",
+        "_memory": "8192",
+    }
+    render_checks = [env.from_string("{{ " + expression + " }}") for expression in expressions]
+    assert all(template.render(**context) is True for template in render_checks)
+
+    context["_vm_config"]["json"]["data"]["ipconfig0"] = "ip=192.0.2.45/24,gw=192.0.2.1"
+    assert render_checks[1].render(**context) is False
+    context["_vm_config"]["json"]["data"]["ipconfig0"] = "ip=192.0.2.44/24,gw=192.0.2.1"
+    context["_vm_config"]["json"]["data"]["net0"] = "virtio=DE:AD:BE:EF:00:01,bridge=vmbr1"
+    assert render_checks[0].render(**context) is False
+    context["_vm_config"]["json"]["data"]["net0"] = "virtio=DE:AD:BE:EF:00:01,bridge=vmbr0"
+    context["_vm_config"]["json"]["data"]["cores"] = 8
+    assert render_checks[2].render(**context) is False
+    context["_vm_config"]["json"]["data"]["cores"] = 4
+    context["_vm_config"]["json"]["data"]["memory"] = 16384
+    assert render_checks[3].render(**context) is False
+
+
 def test_pbs_data_disk_inventory_must_match_pinned_store_and_exact_512g_declaration() -> None:
     tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
     declaration = next(
