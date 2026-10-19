@@ -330,6 +330,37 @@ agw_openrouter_admins: false          # true: also every admin-derived identity 
   `legacy-shared` can never be granted OpenRouter models, and a glob character in any model name is
   refused.
 
+## skynet orchestration route (workflow task 3.3, render half)
+
+With `agw_skynet_route_enabled`, the gateway serves skynet's orchestration API at `/skynet/...` on the
+`default` gateway. It is off by default: the render carries no `routes:` block and the deploy reads no
+skynet secret. The verify probes for this route are a later task.
+
+```yaml
+agw_skynet_route_enabled: true
+agw_skynet_backend: host.containers.internal:18556   # host:port only, the one fixed upstream
+agw_skynet_route_identities: [dev-local]             # declared identities; never mcp-self or legacy-shared
+```
+
+- **Admission.** The route has its own `apiKey` policy, strict, the same header location as `/v1`.
+  Its keys are the `client_<name>` hashes of the named identities only. It carries no budget and no
+  model list: it is not an LLM surface. A keyless call, or a key the route does not name, is 401 at
+  the gateway and never reaches skynet.
+- **Backend credential.** `backendAuth.key` is the env reference `$SKYNET_API_TOKEN`. It replaces the
+  caller's `Authorization` on the upstream call, so skynet receives only its own bearer. The value is
+  `secret/services/skynet:api_token`, shared-read from skynet (never generated here), and it is written
+  to `.env` only while the route is on. An empty value is refused; a missing key stops `manage-secrets`
+  by name, so skynet deploys first.
+- **No rewrite.** The path reaches skynet unchanged; skynet serves under `/skynet/` itself.
+- **Refusals before any restart.** `_agw_skynet_route_problems` (`vars/secret-declarations/agentgateway.yml`)
+  refuses a backend that is not `host:port`, an empty or non-list identity list, an undeclared, internal
+  or repeated name. The render check then requires the routes block to match the flag, to carry a strict
+  key policy, and to enrol exactly the declared identities.
+- **A route identity is also a `/v1` identity.** `config.yaml.j2` enrols every entry of `agw_identities`
+  in the `llm` key policy, so a key named here also passes `/v1`, under that identity's budget and
+  model list. The route narrows nothing about `/v1`. Naming an identity here is therefore a grant on
+  both surfaces. Checked against the template (`config.yaml.j2` `llm` policy); not run against the gateway.
+
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 
 **Results.** The first production run (Semaphore task 2592, sent as an enrolled identity for
