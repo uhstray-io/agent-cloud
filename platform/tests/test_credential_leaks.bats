@@ -399,13 +399,19 @@ _committed_files() {
   run python3 -c "
 import re, codecs, sys
 src = open('$REPO_ROOT/platform/playbooks/tasks/assert-bao-transport.yml').read()
-m = re.search(r\"_pat_strict: '(.*?)'\", src)
-mh = re.search(r\"_pat_https: '(.*?)'\", src)
-ms = re.search(r\"_pat_single_label: '(.*?)'\", src)
-assert m and mh and ms, 'patterns not found in the shared task'
-pat = m.group(1)
-pat_https = mh.group(1)
-pat_single = ms.group(1)
+patterns = dict(re.findall(r\"^\\s+(_pat_[a-z0-9_]+): '(.*?)'\", src, re.M))
+assert all(name in patterns for name in ('_pat_strict', '_pat_https', '_pat_single_label', '_pat_ipv4_octet')), 'patterns not found in the shared task'
+def expand(name):
+    pattern = patterns[name]
+    for _ in range(5):
+        expanded = re.sub(r\"\\{\\{\\s*(_pat_[a-z0-9_]+)\\s*\\}\\}\",
+                          lambda match: patterns[match.group(1)], pattern)
+        if expanded == pattern: break
+        pattern = expanded
+    return codecs.decode(pattern, 'unicode_escape')
+pat = expand('_pat_strict')
+pat_https = expand('_pat_https')
+pat_single = expand('_pat_single_label')
 # The single-label branch must be gated on local_mode in the assert expression —
 # unconditional single-label acceptance is what the resolver search-suffix
 # refusal below exists to prevent.
@@ -449,6 +455,12 @@ refuse = [
     'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space, refused
     'http://local-openbao:8200',           # single-label: allowed ONLY under local_mode, strict refuses
 ]
+def url(*octets): return 'http://' + '.'.join(map(str, octets)) + ':8200'
+accept.extend(url(*octets) for octets in ((10, 0, 0, 0), (10, 255, 255, 255)))
+refuse.extend(url(*octets) for octets in (
+    (10, 999, 2, 3), (10, 1, 2, 256), (192, 168, 256, 1),
+    (172, 16, 999, 3), (127, 256, 0, 1),
+))
 bad = []
 def accepted(u):
     return bool(re.match(pat, u) and
@@ -477,7 +489,7 @@ if bad:
 print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 36 cases correct"* ]]
+  [[ "$output" == *"all 43 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {

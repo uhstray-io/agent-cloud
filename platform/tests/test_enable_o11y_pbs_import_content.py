@@ -136,11 +136,24 @@ def test_inventory_openbao_url_uses_shared_transport_policy() -> None:
     assert tasks[transport_index]["vars"]["_assert_bao_url"] == "{{ _bao_url }}"
 
     source = BAO_TRANSPORT.read_text()
-    strict_match = re.search(r"_pat_strict: '(.*?)'", source)
-    https_match = re.search(r"_pat_https: '(.*?)'", source)
-    assert strict_match and https_match
-    strict = strict_match.group(1).replace(r"\\", "\\")
-    https = https_match.group(1).replace(r"\\", "\\")
+    patterns = dict(re.findall(r"^\s+(_pat_[a-z0-9_]+): '(.*?)'$", source, re.M))
+    assert all(name in patterns for name in ("_pat_strict", "_pat_https", "_pat_ipv4_octet"))
+
+    def expand(name: str) -> str:
+        pattern = patterns[name]
+        for _ in range(5):
+            expanded = re.sub(
+                r"\{\{\s*(_pat_[a-z0-9_]+)\s*\}\}",
+                lambda match: patterns[match.group(1)],
+                pattern,
+            )
+            if expanded == pattern:
+                break
+            pattern = expanded
+        return pattern.replace(r"\\", "\\")
+
+    strict = expand("_pat_strict")
+    https = expand("_pat_https")
     assert "_assert_bao_url is match(_pat_strict)" in source
     assert "or ((local_mode | default(false) | bool)" in source
 
@@ -149,7 +162,11 @@ def test_inventory_openbao_url_uses_shared_transport_policy() -> None:
 
     internal_host = ".".join(str(octet) for octet in (10, 1, 2, 3))
     assert shared_guard_accepts(f"http://{internal_host}:8200")
+    assert shared_guard_accepts(f"http://{'.'.join(map(str, (10, 0, 0, 0)))}:8200")
+    assert shared_guard_accepts(f"http://{'.'.join(map(str, (10, 255, 255, 255)))}:8200")
     assert not shared_guard_accepts("http://openbao.example.invalid:8200")
+    for octets in ((10, 999, 2, 3), (10, 1, 2, 256), (192, 168, 256, 1)):
+        assert not shared_guard_accepts(f"http://{'.'.join(map(str, octets))}:8200")
 
 
 def test_content_union_preserves_existing_values_and_is_idempotent() -> None:
