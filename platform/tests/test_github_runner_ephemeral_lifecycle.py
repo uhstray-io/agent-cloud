@@ -211,3 +211,15 @@ def test_the_stock_writes_and_deletes_nothing_in_a_dry_run():
         assert "not ansible_check_mode" in task(STOCK, name)["when"], name
     cmd = task(STOCK, "JIT stock: list, prune or retire this host's runner records")["ansible.builtin.command"]["cmd"]
     assert "'list-runners' if (_grs_mode == 'verify' or ansible_check_mode) else 'prune-runners'" in cmd
+
+
+def test_leaving_cleans_up_before_the_persistent_registration():
+    # The leaving cleanup runs in the prepare phase, so a failed prune stops the play before
+    # the persistent runner registers (CodeRabbit review of #716).
+    blocks = {t["name"]: t for t in yaml.safe_load(LIFECYCLE.read_text()) if "block" in t}
+    leave = blocks["Lifecycle (prepare): leave the ephemeral lifecycle"]
+    assert "grl_phase == 'prepare'" in leave["when"] and "_grl_leaving" in leave["when"]
+    activate = blocks["Lifecycle (activate): seed, start and stock the ephemeral runner"]
+    assert "_grl_ephemeral" in activate["when"]
+    names = [t.get("name") for t in tasks(DEPLOY)]
+    assert names.index("Prepare the runner lifecycle") < names.index("Install and register the runner")

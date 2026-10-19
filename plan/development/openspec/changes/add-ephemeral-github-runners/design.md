@@ -145,8 +145,9 @@ The reset, in order (`ephemeral-supervisor.sh`, `do_reset`):
    `/tmp`, `/var/tmp`, `/dev/shm`, `/run`, `/dev/mqueue` and any other local mount),
    re-checking each path's owner before removing it.
 6. Verify: no process, no IPC object, no owned path. Any finding quarantines the host.
-7. Recreate the empty home, start the user manager, and copy the seed into the home as
-   the account.
+7. Recreate the empty home, copy the seed into it as the account, and only then start the
+   user manager, which reads its units and their enablement links (podman's socket among
+   them) when it starts.
 
 **Why a reset and not a container or VM per job.** The threat #545 names is persistence
 across jobs: a process or file of one job reaching the next. The reset removes every
@@ -205,8 +206,10 @@ runner through a 0600 file in the account's runtime directory that the unit read
 `EnvironmentFile=` and removes in `ExecStartPost=`; never through argv. A configuration
 older than `github_runner_jit_max_age_minutes` (default 1200, under the one-day removal) is
 discarded. The same template deletes runner records with the host's `<name>-jit-` prefix
-that are ephemeral, offline, idle, and neither stocked nor running, and the first deploy to
-ephemeral retires the host's persistent registration.
+that are ephemeral, offline, idle, neither stocked nor running, and minted more than 30
+minutes ago (the stock is read before the prune, and the deploy and the schedule can
+overlap, so a younger record may be one the other run has just stocked). The first deploy
+to ephemeral retires the host's persistent registration.
 
 **Why.** It keeps the platform's credential rule intact: the App key stays where it is
 today, the orchestrator mints, and the host receives single-use credentials over the same
@@ -250,8 +253,10 @@ host's inventory. `deploy-github-runner.yml` reads it:
 - *activate*, after the probes: snapshot the home into the root-owned seed, reset again,
   stock and retire the persistent registration, start the supervisor, and verify one
   runner started, one Listener converged, and the runner online at the organisation.
-- Leaving ephemeral: the prepare reset, then remove the supervisor, its stock and its
-  runner records, and register the persistent runner through the existing path.
+- Leaving ephemeral, still in prepare: the reset, then remove the supervisor, its stock, its
+  seed and its runner records, all before the persistent runner registers through the
+  existing path, so a failed prune stops the play before the host serves under the other
+  lifecycle.
 
 **The bounded fallback.** A reset that cannot be verified, or `github_runner_max_start_failures`
 (default 3) runners in a row that exit within two minutes without a job, quarantines the

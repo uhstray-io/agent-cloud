@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -200,3 +201,25 @@ def test_api_sends_a_json_body_only_when_given_one():
         gat.api("/y", "t", method="POST", body={"a": 1})
     assert sent[0].data is None and "Content-type" not in sent[0].headers
     assert json.loads(sent[1].data) == {"a": 1} and sent[1].headers["Content-type"] == "application/json"
+
+
+def test_a_young_unheld_record_survives_a_prune():
+    # The stock was read before the prune; a concurrent run may have minted and stocked this
+    # one since (CodeRabbit review of #716). Deleting it would strand a stocked configuration.
+    young = gat.jit_name(PREFIX)
+    old = PREFIX + "20200101000000-abcdef"
+    forge = Forge(runners=[runner(1, young), runner(2, old)])
+    with patch.object(gat, "api", forge):
+        out = gat.prune("itok", ORG, PREFIX, [], None, grace_minutes=30)
+    assert forge.deleted() == ["2"] and out["deleted"] == [old]
+
+    forge = Forge(runners=[runner(1, young)])
+    with patch.object(gat, "api", forge):
+        gat.prune("itok", ORG, PREFIX, [], None, grace_minutes=0)
+    assert forge.deleted() == ["1"]
+
+
+def test_the_mint_time_is_read_back_from_the_name():
+    name = gat.jit_name(PREFIX)
+    assert abs(gat.minted_at(name, PREFIX) - time.time()) < 5
+    assert gat.minted_at(PREFIX + "notatime-abc", PREFIX) is None

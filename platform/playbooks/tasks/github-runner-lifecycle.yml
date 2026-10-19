@@ -7,11 +7,13 @@
 #                        then reset the account (every process and file of it destroyed), so
 #                        the deploy builds the home from nothing. On an ephemeral host it also
 #                        installs the supervisor, its declaration and keyutils.
-#   grl_phase: activate  after the deploy's own probes passed. Ephemeral: snapshot the home
-#                        into the root-owned seed, reset again, start the supervisor, stock
-#                        just-in-time configurations, and verify one runner is up and online.
-#                        Leaving ephemeral: remove the supervisor and the stock, and delete
-#                        this host's ephemeral runner records.
+#                        Leaving ephemeral, right after that reset: remove the supervisor, its
+#                        stock and seed, and delete this host's ephemeral runner records,
+#                        before the play registers the persistent runner.
+#   grl_phase: activate  after the deploy's own probes passed, ephemeral only: snapshot the
+#                        home into the root-owned seed, reset again, stock just-in-time
+#                        configurations, start the supervisor, and verify one runner is up and
+#                        online.
 #
 # Reads the play's _lifecycle, _home, _account, _deploy_dir and _org. Every registered name
 # starts with _grl_ (the internal-name guard, refuse-internal-extra-vars.yml).
@@ -145,6 +147,42 @@
       changed_when: true
       failed_when: "'reset=clean' not in _grl_reset_prepare.stdout_lines"
 
+# ── leave (in the prepare phase, before the persistent registration) ──────────
+# The reset above has already destroyed the account's state. The supervisor, its stock and
+# the host's ephemeral runner records go before the play registers the persistent runner,
+# so a failed prune stops the play before the host serves under the other lifecycle.
+- name: "Lifecycle (prepare): leave the ephemeral lifecycle"
+  when:
+    - grl_phase == 'prepare'
+    - _grl_leaving
+    - not ansible_check_mode
+  block:
+    - name: "Lifecycle: disable the supervisor"
+      ansible.builtin.systemd_service:
+        name: github-runner-ephemeral.service
+        enabled: false
+        state: stopped
+
+    - name: "Lifecycle: delete this host's ephemeral runner records"
+      ansible.builtin.include_tasks: github-runner-jit-stock.yml
+      vars:
+        grs_prune_only: true
+
+    - name: "Lifecycle: remove the supervisor, its declaration and the stock"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ _grl_unit_path }}"
+        - /etc/github-runner/ephemeral.env
+        - "{{ _grl_supervisor }}"
+        - "{{ _grl_state }}"
+        - "{{ _grl_seed }}"
+
+    - name: "Lifecycle: reload systemd after removing the supervisor unit"
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
 # ── activate ─────────────────────────────────────────────────────────────────
 - name: "Lifecycle (activate): seed, start and stock the ephemeral runner"
   when: grl_phase == 'activate' and _grl_ephemeral and not ansible_check_mode
@@ -224,32 +262,3 @@
       vars:
         grs_verify_only: true
         grs_expect: "{{ (_grl_status.stdout_lines | select('match', '^current=') | first)[8:] }}"
-
-- name: "Lifecycle (activate): leave the ephemeral lifecycle"
-  when: grl_phase == 'activate' and _grl_leaving and not ansible_check_mode
-  block:
-    - name: "Lifecycle: disable the supervisor and remove its files and stock"
-      ansible.builtin.systemd_service:
-        name: github-runner-ephemeral.service
-        enabled: false
-        state: stopped
-
-    - name: "Lifecycle: delete this host's ephemeral runner records"
-      ansible.builtin.include_tasks: github-runner-jit-stock.yml
-      vars:
-        grs_prune_only: true
-
-    - name: "Lifecycle: remove the supervisor, its declaration and the stock"
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ _grl_unit_path }}"
-        - /etc/github-runner/ephemeral.env
-        - "{{ _grl_supervisor }}"
-        - "{{ _grl_state }}"
-        - "{{ _grl_seed }}"
-
-    - name: "Lifecycle: reload systemd after removing the supervisor unit"
-      ansible.builtin.systemd_service:
-        daemon_reload: true

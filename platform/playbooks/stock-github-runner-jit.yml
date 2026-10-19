@@ -28,7 +28,9 @@
   # A fixed group, not a survey target: a schedule cannot answer a survey.
   hosts: github_runner_svc
   gather_facts: false
-  become: true
+  # Escalation per task, on the few host tasks that need root (the stock and the supervisor's
+  # state are root-only). The hosts are deployed runners, hardened before this can run.
+  become: false
 
   vars:
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
@@ -75,6 +77,7 @@
       environment:
         RUNNER_EPHEMERAL_ENV: /etc/github-runner/ephemeral.env
       register: _supervisor_status
+      become: true
       changed_when: false
       failed_when: false
       check_mode: false
@@ -82,6 +85,7 @@
     - name: "Read whether the supervisor is running"
       ansible.builtin.command: systemctl is-active github-runner-ephemeral.service
       register: _supervisor_active
+      become: true
       changed_when: false
       failed_when: false
       check_mode: false
@@ -91,6 +95,7 @@
       # configuration or token to its output.
       ansible.builtin.command: journalctl -u github-runner-ephemeral.service -n 20 --no-pager -o cat
       register: _supervisor_log
+      become: true
       changed_when: false
       failed_when: false
       check_mode: false

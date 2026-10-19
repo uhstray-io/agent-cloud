@@ -325,7 +325,6 @@ do_reset() {
   fi
 
   install -d -o "$RUNNER_ACCOUNT" -g "$GROUP_" -m 0750 "$RUNNER_HOME"
-  start_user_manager
 }
 
 # systemctl --user reaches the manager through the user bus, or its private socket.
@@ -414,9 +413,11 @@ quarantine() {
 }
 
 # ── commands ──────────────────────────────────────────────────────────────────
+# The deploy's reset. The user manager is started on the empty home, because the deploy then
+# builds the home through it; the supervisor's own cycle seeds the home first instead.
 cmd_reset() {
   check_config
-  if do_reset; then
+  if do_reset && start_user_manager; then
     rm -f "$QUARANTINE" "$CURRENT"
     echo "reset=clean"
   else
@@ -490,6 +491,9 @@ cmd_loop() {
   while :; do
     do_reset || quarantine "reset did not prove a clean account"
     seed_home || quarantine "the home could not be seeded"
+    # After the seed: the manager reads its units, and their enablement links (podman.socket
+    # among them), when it starts, so starting it on an empty home would miss them.
+    start_user_manager || quarantine "the user manager did not start"
     waited=0
     while :; do
       cfg=$(take_jit)

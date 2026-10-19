@@ -231,3 +231,19 @@ name@" ]
   assert_contains "$output" "holds a runner registration"
   [ ! -e "$T/seeds/runner" ]
 }
+
+@test "ephemeral: each cycle seeds the home before it starts the user manager" {
+  # The manager reads its units and their enablement links (podman.socket among them) when
+  # it starts; started on an empty home it would miss them (CodeRabbit review of #716).
+  local fn
+  fn=$(sed -n '/^cmd_loop() {$/,/^}$/p' "$SUP")
+  local r s m
+  r=$(printf '%s\n' "$fn" | grep -n 'do_reset ||' | cut -d: -f1)
+  s=$(printf '%s\n' "$fn" | grep -n 'seed_home ||' | cut -d: -f1)
+  m=$(printf '%s\n' "$fn" | grep -n 'start_user_manager ||' | cut -d: -f1)
+  [ -n "$r" ] && [ -n "$s" ] && [ -n "$m" ]
+  [ "$r" -lt "$s" ]
+  [ "$s" -lt "$m" ]
+  # do_reset itself starts nothing.
+  refute_grep -q 'start_user_manager' <(sed -n '/^do_reset() {$/,/^}$/p' "$SUP")
+}

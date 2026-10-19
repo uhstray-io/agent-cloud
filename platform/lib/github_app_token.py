@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import calendar
 import json
 import os
 import re
@@ -230,6 +231,15 @@ def jit_name(prefix: str) -> str:
     return f"{prefix}{time.strftime('%Y%m%d%H%M%S', time.gmtime())}-{secrets.token_hex(3)}"
 
 
+def minted_at(name: str, prefix: str) -> float | None:
+    """The mint time encoded in a just-in-time runner's name (jit_name), or None."""
+    stamp = name[len(prefix) :].split("-", 1)[0]
+    try:
+        return calendar.timegm(time.strptime(stamp, "%Y%m%d%H%M%S"))
+    except ValueError:
+        return None
+
+
 def jit_configs(token: str, org: str, group: str, labels: list[str], prefix: str, count: int) -> list[dict]:
     if count < 0 or count > 50:
         die("--count must be between 0 and 50", 2)
@@ -269,7 +279,9 @@ def summarise(runners: list[dict]) -> dict:
     }
 
 
-def prune(token: str, org: str, prefix: str, keep: list[str], retire: str | None) -> dict:
+def prune(
+    token: str, org: str, prefix: str, keep: list[str], retire: str | None, grace_minutes: int = 30
+) -> dict:
     """Delete this host's ephemeral runners that can never take a job.
 
     An ephemeral runner that is offline, not busy, and not in the host's stock (`keep`) is a
@@ -277,15 +289,23 @@ def prune(token: str, org: str, prefix: str, keep: list[str], retire: str | None
     the service itself reports as ephemeral are touched, so a persistent registration that
     happens to share the prefix is never deleted by this path.
 
+    A record younger than `grace_minutes` (by the mint time in its name) is kept even when
+    it is not in `keep`: `keep` is read from the host before this call, so a concurrent run
+    (the deploy and the schedule) may have minted and stocked it since. Deleting it would
+    leave a stocked configuration whose runner no longer exists. A record whose name holds
+    no readable time is treated as old.
+
     `retire` names the persistent registration a host is leaving (the switch to the
     ephemeral lifecycle). It is deleted unless it is running a job.
     """
     keep_set = set(keep)
+    cutoff = time.time() - grace_minutes * 60
     found = runners_with_prefix(token, org, prefix)
     deleted = []
     for r in found:
         idle = r.get("status") != "online" and not r.get("busy")
-        if r.get("ephemeral") is True and idle and r["name"] not in keep_set:
+        young = (minted_at(r["name"], prefix) or 0) > cutoff
+        if r.get("ephemeral") is True and idle and not young and r["name"] not in keep_set:
             api(f"/orgs/{org}/actions/runners/{int(r['id'])}", token, method="DELETE")
             deleted.append(r["name"])
     retired = None
@@ -325,6 +345,9 @@ def main() -> None:
     ap.add_argument("--count", type=int, default=1, help="jit-config: how many configurations")
     ap.add_argument("--keep", action="append", default=[], help="prune-runners: a stocked name (repeat)")
     ap.add_argument("--retire", help="prune-runners: a persistent registration to delete")
+    ap.add_argument(
+        "--grace-minutes", type=int, default=30, help="prune-runners: keep unheld records minted more recently"
+    )
     args = ap.parse_args()
 
     if args.action in ("jit-config", "list-runners", "prune-runners"):
@@ -338,7 +361,8 @@ def main() -> None:
         elif args.action == "list-runners":
             sys.stdout.write(json.dumps(summarise(runners_with_prefix(token, args.org, prefix))))
         else:
-            sys.stdout.write(json.dumps(prune(token, args.org, prefix, args.keep, args.retire)))
+            result = prune(token, args.org, prefix, args.keep, args.retire, args.grace_minutes)
+            sys.stdout.write(json.dumps(result))
         return
 
     key_pem = read_key(args.key)

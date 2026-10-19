@@ -99,14 +99,18 @@
 
 - name: "JIT stock: list, prune or retire this host's runner records"
   # On the controller, key on stdin (never argv). prune-runners deletes only runners the
-  # service reports as ephemeral, offline, not busy, named with this host's prefix and not
-  # held in its stock or running (--keep). A dry run lists and deletes nothing.
+  # service reports as ephemeral, offline, not busy, named with this host's prefix, not held
+  # in its stock or running (--keep), and minted more than 30 minutes ago: the stock was read
+  # before this call, and a concurrent run (the deploy and the schedule) may have minted and
+  # stocked a runner since. Leaving the lifecycle (prune mode) keeps no grace: the schedule
+  # skips a host that is no longer ephemeral. A dry run lists and deletes nothing.
   ansible.builtin.command:
     cmd: >-
       {{ ansible_playbook_python }} {{ playbook_dir }}/../lib/github_app_token.py
       {{ 'list-runners' if (_grs_mode == 'verify' or ansible_check_mode) else 'prune-runners' }}
       --issuer {{ _app_id | quote }} --org {{ _org | quote }} --prefix {{ _grs_prefix | quote }}
       {% for n in (_grs_have + _grs_current) %}--keep {{ n | quote }} {% endfor %}
+      --grace-minutes {{ 0 if _grs_mode == 'prune' else 30 }}
       {% if _grs_mode == 'stock' and (grs_retire | default('') | length) > 0 and not ansible_check_mode %}--retire {{ grs_retire | quote }}{% endif %}
       --key -
     stdin: "{{ _grs_app_secret.json.data.data.app_private_key }}"
