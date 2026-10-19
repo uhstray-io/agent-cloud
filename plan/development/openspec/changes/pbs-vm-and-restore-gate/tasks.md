@@ -3,6 +3,7 @@
 - [x] 1.1 Add a Dev-bound GET-only Proxmox template/VM/store survey using the existing OpenBao credential, exact reviewed SHA, fixed sanitized visible counts, explicit unverified inventory visibility, and refusal tests for missing or ambiguous evidence; address authority is checked in 1.3.
 - [x] 1.2 Review, merge, publish, and run the survey from Dev; record the exact task and evidence in the observability plan.
 - [ ] 1.3 Resolve the PBS static IP and VMID through NetBox/IPAM and pfSense DHCP checks; declare one PBS host, Debian template, node, OS disk, selected data store, 512-GiB disk, and operator physical-origin attestation in private site-config. Review, merge, sync, and read back the exact inventory bytes.
+- [ ] 1.4 Declare a distinct `proxmox_pbs_import_storage_id` in private inventory, then run the reviewed Dev-bound import-content workflow. It must verify the exact node and active file store, preserve all existing content, PUT with the current storage digest, and verify readback. The GET-only task 7081 census found zero active import stores; do not run template publication until this gate passes.
 
 ## 2. Provision a supported PBS VM
 

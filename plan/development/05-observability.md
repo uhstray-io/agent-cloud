@@ -2031,3 +2031,19 @@ environment. The follow-up binds the OpenBao URL to the single private
 inventory declaration and accepts those standard credential fields while
 refusing launch-supplied `service_url` and placement overrides. No template
 VM, PBS VM, or data disk has been created; retention remains unchanged.
+
+The read-only PBS candidate survey, Dev-bound task 7081, found two exact free
+VMID candidates, three active image stores, one active directory image store,
+and **zero active stores with `import` content**. Before publishing the pinned
+Debian template, declare a separate `proxmox_pbs_import_storage_id` beside the
+private `proxmox_pbs_storage_node`; do not reuse the VM image store identity,
+which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
+workflow checks the exact node and active file-store status, preserves the
+existing content list, applies the `import` union with Proxmox's observed digest,
+and reads the config back. Its check mode is read-only. This source change does
+not mean the workflow has been published or run; template publication stays
+blocked until the private declaration is reviewed and task output confirms the
+exact store now includes `import`. No Proxmox config changed in task 7081. The
+physical-disk origin remains operator-attested; the serial-to-chassis match is
+not independently verified. No template VM, PBS VM, or data disk has been
+created.
