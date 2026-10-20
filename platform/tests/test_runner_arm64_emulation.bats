@@ -64,6 +64,9 @@ setup() {
   assert_grep -qF 'name: systemd-binfmt.service' <<<"$restart"
   assert_grep -qF 'state: restarted' <<<"$restart"
   assert_grep -qF "!= 'enabled'" <<<"$restart"
+  # Gated on the state read BEFORE registering: an undefined or later variable would restart
+  # systemd-binfmt on every deploy, re-registering handlers under running emulated builds.
+  assert_grep -qF "when: (_qemu_binfmt_before.stdout_lines" <<<"$restart"
   # A shell systemctl here would be a host write the check-mode contract has to guard; the
   # module simulates under --check by itself.
   refute_grep -qE 'systemctl' <<<"$restart"
@@ -106,8 +109,9 @@ setup() {
     ansible-playbook "$pb" -e "@$BATS_TEST_TMPDIR/fixture.json" > "$out" 2>&1
   }
 
-  # Enabled: the assert passes and prints the interpreter and flags it verified.
-  run run_fixture '{"_qemu_binfmt":{"stdout_lines":["enabled","interpreter /usr/bin/qemu-aarch64-static","flags: OCF"]}}'
+  # Enabled: the assert passes and prints the interpreter and flags it verified. The values are
+  # what Ubuntu 24.04's qemu-user-static registers (debian/binfmt-install): flags OPF, no C.
+  run run_fixture '{"_qemu_binfmt":{"stdout_lines":["enabled","interpreter /usr/libexec/qemu-binfmt/aarch64-binfmt-P","flags: OPF"]}}'
   [ "$status" -eq 0 ]
   assert_grep -qF 'arm64 binfmt handler enabled' "$out"
 

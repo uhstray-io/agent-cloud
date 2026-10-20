@@ -67,8 +67,13 @@ is what lets a multi-arch build produce `linux/arm64` on these amd64 hosts.
 fails. On Ubuntu 24.04 the package ships `/usr/lib/binfmt.d/qemu-aarch64.conf`, so
 `systemd-binfmt.service` registers the handler at boot
 (https://www.freedesktop.org/software/systemd/man/latest/binfmt.d.html). The registration
-flags are not recorded in this repository and are unverified here; the deploy prints the
-`interpreter` and `flags` lines on success, so the first run on a host is the record.
+flags are `OPF` (verified 2026-10-20 in Ubuntu noble's qemu packaging, `debian/binfmt-install`:
+`:qemu-$fmt:M::magic:mask:/usr/libexec/qemu-binfmt/$fmt-binfmt-P:OP${FIXB}` with `FIXB=F` for
+qemu-user-static, https://git.launchpad.net/ubuntu/+source/qemu/plain/debian/binfmt-install?h=ubuntu/noble-updates).
+No `C` flag: credentials are not computed from the foreign binary, so emulation grants no setuid
+path and no privilege beyond the runner account. `F` pins the interpreter at registration, which
+is what lets rootless podman containers use it. The deploy prints the `interpreter` and `flags`
+lines on success.
 Enforced by `platform/tests/test_runner_arm64_emulation.bats`.
 
 **Why `NoNewPrivileges` is off.** Rootless podman maps a container's users onto the
