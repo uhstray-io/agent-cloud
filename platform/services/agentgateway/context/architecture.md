@@ -272,7 +272,7 @@ in place until that run reports them.
 
 | Environment | `agw_upstream_base_url` | Key |
 |---|---|---|
-| local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | LM Studio's API token, seeded as `vllm_api_key` with `seed-openbao-key.yml` (2026-09-17); before that, none — `params.apiKey` omitted |
+| local-dev | `https://inference.uhstray.io/v1`, the public edge, while the operator is off the LAN (2026-10-20); on the LAN, the DGX directly (address only in the gitignored local inventory). Until 2026-10-20: `http://host.containers.internal:1234/v1` (LM Studio) | the production `local-gateway` identity's key, seeded as `vllm_api_key` in local OpenBao |
 | prod | `http://<spark-1>:8000/v1` (site-config) | `secret/services/agentgateway:vllm_api_key`, seeded by a separate playbook |
 
 ## OpenRouter models (change `agentgateway-openrouter`)
@@ -325,6 +325,13 @@ agw_openrouter_admins: false          # true: also every admin-derived identity 
   system roots, so a local gateway cannot verify `openrouter.ai`'s certificate. The commented
   example in `platform/inventory/local-dev.yml.example` is off for that reason. Production sets no
   `SSL_CERT_FILE`, and the image ships public roots (`/etc/ssl/certs/ca-certificates.crt`).
+  - *2026-10-20:* the local upstream is now the public edge (`https://inference.uhstray.io/v1`,
+    Cloudflare-proxied, public certificate), which step-ca cannot sign. So `SSL_CERT_FILE` now names
+    `certs/ca-bundle-combined.crt`: step-ca's root and intermediate, then the play host's public
+    roots (the first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` that
+    exists; the play fails if neither does). `tasks/distribute-ca-root.yml` writes it beside the
+    step-ca-only `certs/step-ca-bundle.crt`, which other consumers still read. Local OpenRouter
+    models verify through the same bundle.
 - **Probes.** The conformance run, the isolation probe and the MCP verify's chat call never pick an
   OpenRouter model (`agw_conformance_model` still names one explicitly). `mcp-self` and
   `legacy-shared` can never be granted OpenRouter models, and a glob character in any model name is

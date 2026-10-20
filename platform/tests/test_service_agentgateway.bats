@@ -77,6 +77,16 @@ setup() {
   refute_grep -qE 'admin.inference.*forward_auth' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
 }
 
+@test "agentgateway: local overlay trusts the COMBINED bundle (step-ca + public roots), built only in local_mode" {
+  # SSL_CERT_FILE replaces the trust store; the local upstream is the public edge, so the file it
+  # names must also carry the public roots. The deploy builds it only for local_mode, and the
+  # step-ca-only bundle stays for the other consumers.
+  assert_grep -qF 'SSL_CERT_FILE: /certs/ca-bundle-combined.crt' "$DEPLOY_DIR/compose.local.yml"
+  refute_grep -qF 'SSL_CERT_FILE: /certs/step-ca-bundle.crt' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qF "_ca_root_combined_dest: \"{{ (_deploy_dir ~ '/certs/ca-bundle-combined.crt') if (local_mode | default(false) | bool) else '' }}\"" "$PLAYBOOK"
+  assert_grep -qF 'Refuse a combined bundle when the play host holds no public roots' "$REPO_ROOT/platform/playbooks/tasks/distribute-ca-root.yml"
+}
+
 @test "agentgateway: admin port 15000 is never published" {
   # The admin listener stays on the container loopback (spec: "Admin interface
   # is not exposed"). Any `ports:` line carrying 15000 is a regression.

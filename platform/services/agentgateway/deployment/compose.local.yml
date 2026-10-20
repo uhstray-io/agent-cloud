@@ -5,9 +5,10 @@
 # central Caddy reaches the gateway by name (agentgateway:4000) for the
 # inference.agent-cloud.test route.
 #
-# The upstream in local-dev is LM Studio on the Mac host, reached from inside
-# the podman machine as host.containers.internal:1234 (inventory
-# agw_upstream_base_url) — the same name the Caddy fake-upstream route uses.
+# The upstream in local-dev is the public edge, https://inference.uhstray.io/v1 (inventory
+# agw_upstream_base_url; a LAN override points it at the DGX instead). That certificate is
+# public, so the trust bundle is combined: step-ca's root + intermediate AND the public roots
+# (see SSL_CERT_FILE below).
 
 networks:
   # podman-compose requires every referenced network declared. `agentgateway`
@@ -42,15 +43,18 @@ services:
       - local-dev
     # OIDC: the gateway does discovery + token exchange against the IdP at
     # https://auth.<zone>:8443 (Caddy's step-ca-minted leaf), so it must trust
-    # the step-ca chain. The bundle is distributed into ./certs by
-    # tasks/distribute-ca-root.yml; rustls-native-certs reads SSL_CERT_FILE.
-    # Local-only (prod's IdP chain is publicly trusted).
+    # the step-ca chain. Local-only (prod's IdP chain is publicly trusted).
+    # SSL_CERT_FILE REPLACES the trust store, so the file it names is the COMBINED bundle:
+    # step-ca's root + intermediate AND the public roots (the local upstream is public TLS).
+    # tasks/distribute-ca-root.yml writes it as certs/ca-bundle-combined.crt, beside the
+    # step-ca-only certs/step-ca-bundle.crt, which other consumers still read.
+    # rustls-native-certs reads SSL_CERT_FILE.
     # The whole ./certs DIRECTORY, not the one file (production-internal-ca task 5.2): with
     # listener TLS it also holds the server leaf, whose `current/` renewal swaps.
     volumes:
       - ./certs:/certs:ro
     environment:
-      SSL_CERT_FILE: /certs/step-ca-bundle.crt
+      SSL_CERT_FILE: /certs/ca-bundle-combined.crt
     # Rootful here, so userns keep-id does not apply: with listener TLS the deploy renders
     # AGW_RUN_AS (the 0600 key's owner); otherwise the image's own non-root user.
     user: "${AGW_RUN_AS:-65532:65532}"
