@@ -160,13 +160,13 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
-            # inference — the OpenAI-compatible vLLM edge (the DGX Spark pair in
-            # prod). inference_api renders the /v1 + /health allowlist with an edge
-            # 401 and 404-for-everything-else; the upstream is a stand-in on the Mac
-            # host (scripts/fake-inference-upstream.py) so the edge rules can be
-            # exercised without a GPU box. Prod points the same shape at spark-1 via
-            # site-config's caddy_managed_sites.
-            - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
+            # inference — the OpenAI-compatible edge, the same shape as prod: this route
+            # fronts the local agentgateway's default listener (/v1), which holds the
+            # per-client keys and budgets. inference_api renders the /v1 + /health
+            # allowlist with an edge 401 and 404-for-everything-else. In-network clients
+            # (skynet) reach it at https://inference.agent-cloud.test/v1 (port 443).
+            # The gateway's upstream is the public edge (agentgateway_svc below).
+            - { host: "inference.agent-cloud.test", upstream: "agentgateway:4000", inference_api: true }
             # agentgateway operator UI — the gateway runs its own OIDC login against
             # Authentik (ui.policies), so this is a plain proxy to its UI listener.
             - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
@@ -274,9 +274,12 @@ all:
           tududi_sync_user_email: admin@agent-cloud.test
     # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
     # per-client API keys + limits) in front of the model API. Locally the
-    # upstream is LM Studio on the Mac host (host.containers.internal:1234, no
-    # key); prod points the same shape at vLLM on the DGX Spark head node via
-    # site-config. Deploy: make local-deploy-agentgateway.
+    # upstream is the PUBLIC edge, https://inference.uhstray.io/v1 (prod's route to
+    # vLLM on the DGX Spark head node), authenticated with the prod identity
+    # `local-gateway`: its key is seeded into local OpenBao (operator step). On the
+    # LAN the upstream is the DGX directly; that address stays in this gitignored
+    # file, never in the committed example. Prod points the same shape at vLLM
+    # via site-config. Deploy: make local-deploy-agentgateway.
     # Change: plan/development/openspec/changes/inference-gateway-agentgateway
     agentgateway_svc:
       hosts:
@@ -288,10 +291,13 @@ all:
           container_engine: podman
           # Local debug publishes (127.0.0.1:4400 api, :4401 readiness, :4402 metrics) are
           # literals in compose.local.yml; the UI is reachable only via Caddy + SSO.
-          agw_upstream_base_url: http://host.containers.internal:1234/v1
+          # LAN override (DGX directly, no public edge): http://<dgx-address>:<port>/v1 in your
+          # gitignored local-dev.yml. Placeholder text only; never commit a real address here.
+          agw_upstream_base_url: https://inference.uhstray.io/v1
           agw_models:
-            # The name clients send -> the model id LM Studio serves.
-            - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+            # The name clients send. No upstream_model: the upstream receives the same name, which
+            # is the name prod's gateway lists (plan/development/openspec/changes/inference-gateway-agentgateway).
+            - { name: qwen3.8-flash-next }
           # One API-key identity each; manage-secrets mints client_<name> once
           # into secret/services/agentgateway and reuses it on every deploy.
           agw_clients:
@@ -303,6 +309,14 @@ all:
             # on /v1 whether or not MCP is on; keep it AFTER the person identities (the deploy's verify
             # defaults to the first one).
             - mcp-self
+            # skynet's role identities (plan/development/15-service-deployment-workflow-agents.md,
+            # including the eval identity): one key each, enrolled on /v1 for skynet's agents.
+            - infra-agent
+            - security-agent
+            - o11y-agent
+            - service-agent
+            - network-agent
+            - skynet-eval
           # isolation-probe: local probe identity for "Probe agentgateway Isolation (Dev)", a budget
           # small enough to exhaust in two requests. Prod declares its own probe identity in site-config.
           agw_client_policies:
@@ -334,19 +348,18 @@ all:
           # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
           # playground lists them as saved keys. Never set in prod inventory.
           agw_plaintext_keys: true
-          # The upstream key is OPTIONAL here, not forbidden: the deploy stops requiring it,
-          # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
-          # Prod leaves this unset (true = refuse an empty key).
-          agw_upstream_requires_key: false
+          # true: the deploy refuses an empty upstream key, and the public edge refuses a keyless
+          # call. Seed secret/services/agentgateway:vllm_api_key with the local-gateway identity's
+          # key (operator step) before deploying.
+          agw_upstream_requires_key: true
           # OpenRouter models (change agentgateway-openrouter), OFF here: nothing below is declared
           # until you uncomment it. It is billed per token, so a model is listed by name with its
           # OpenRouter id and only the identities named in agw_openrouter_identities may call it
           # (every other identity is denied it in config.yaml). Needs
-          # secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key). A local gateway
-          # cannot verify openrouter.ai's certificate: compose.local.yml points SSL_CERT_FILE at the
-          # step-ca bundle only, so use this against production-shaped inventory, not here.
+          # secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key). The local gateway
+          # trusts public roots too (compose.local.yml's combined bundle), so openrouter.ai verifies here.
           #   agw_models:
-          #     - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+          #     - { name: qwen3.8-flash-next }
           #     - { name: or-mini, provider: openrouter, upstream_model: openai/gpt-4o-mini }
           #   agw_openrouter_identities: [dev-local]
           #   agw_openrouter_admins: false   # true: every admin-derived identity may call them too

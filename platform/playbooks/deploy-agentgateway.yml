@@ -774,6 +774,10 @@
         # The task resolves the CA host's own container_engine (review of af16a670: `omit` is a
         # module-argument placeholder, not a way to leave a task variable unset).
         _ca_host: "{{ inventory_hostname if (local_mode | default(false) | bool) else (groups['step_ca_svc'] | first) }}"
+        # Local only: compose.local.yml's SSL_CERT_FILE replaces the trust store, so the gateway's
+        # bundle also carries the play host's public roots (its upstream is a public-CA host).
+        # Production sets no SSL_CERT_FILE and never builds this bundle.
+        _ca_root_combined_dest: "{{ (_deploy_dir ~ '/certs/ca-bundle-combined.crt') if (local_mode | default(false) | bool) else '' }}"
       when: (local_mode | default(false) | bool) or _tls
 
     # Pull through deploy.sh's shared Compose resolver first; validation and deployment

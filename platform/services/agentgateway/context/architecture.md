@@ -325,6 +325,13 @@ agw_openrouter_admins: false          # true: also every admin-derived identity 
   system roots, so a local gateway cannot verify `openrouter.ai`'s certificate. The commented
   example in `platform/inventory/local-dev.yml.example` is off for that reason. Production sets no
   `SSL_CERT_FILE`, and the image ships public roots (`/etc/ssl/certs/ca-certificates.crt`).
+  - *2026-10-20:* the local upstream is now the public edge (`https://inference.uhstray.io/v1`,
+    Cloudflare-proxied, public certificate), which step-ca cannot sign. So `SSL_CERT_FILE` now names
+    `certs/ca-bundle-combined.crt`: step-ca's root and intermediate, then the play host's public
+    roots (the first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` that
+    exists; the play fails if neither does). `tasks/distribute-ca-root.yml` writes it beside the
+    step-ca-only `certs/step-ca-bundle.crt`, which other consumers still read. Local OpenRouter
+    models verify through the same bundle.
 - **Probes.** The conformance run, the isolation probe and the MCP verify's chat call never pick an
   OpenRouter model (`agw_conformance_model` still names one explicitly). `mcp-self` and
   `legacy-shared` can never be granted OpenRouter models, and a glob character in any model name is
