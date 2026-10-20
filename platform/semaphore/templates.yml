@@ -2631,15 +2631,20 @@ templates:
         required: false
         default_value: "caddy_svc"
 
-  # Promote every declared platform admin (inventory var semaphore_admin_users)
-  # to a Semaphore admin via the API. Sanctioned replacement for the manual
-  # grant — Semaphore 2.18.12 has no group->role mapping (closes task #37).
+  # Promote every declared admin to a Semaphore admin via the API: each entry of
+  # platform_admins (the administrator list the Authentik deploy renders into
+  # platform-admins) plus semaphore_admin_users. Sanctioned replacement for the
+  # manual grant: Semaphore 2.18.12 has no group->role mapping (closes task #37;
+  # derived from platform_admins since #604). The Dev copy runs the derivation
+  # from dev before it is promoted to main.
   - name: Promote Semaphore Admins
     playbook: platform/playbooks/promote-semaphore-admins.yml
+    dev_variant: true
 
   # Launch rights are runner rights (plan 01, "Launch permission is runner access"): hold the
   # project team, the system admins and the integrations to the private declarations
-  # semaphore_project_members and semaphore_admin_users. Run under check mode first.
+  # semaphore_project_members, platform_admins and semaphore_admin_users. Run under check
+  # mode first.
   - name: Manage Semaphore Access
     playbook: platform/playbooks/manage-semaphore-access.yml
     dev_variant: true
