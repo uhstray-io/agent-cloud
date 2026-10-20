@@ -272,7 +272,7 @@ in place until that run reports them.
 
 | Environment | `agw_upstream_base_url` | Key |
 |---|---|---|
-| local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | LM Studio's API token, seeded as `vllm_api_key` with `seed-openbao-key.yml` (2026-09-17); before that, none — `params.apiKey` omitted |
+| local-dev | `https://inference.uhstray.io/v1`, the public edge, while the operator is off the LAN (2026-10-20); on the LAN, the DGX directly (address only in the gitignored local inventory). Until 2026-10-20: `http://host.containers.internal:1234/v1` (LM Studio) | the production `local-gateway` identity's key, seeded as `vllm_api_key` in local OpenBao |
 | prod | `http://<spark-1>:8000/v1` (site-config) | `secret/services/agentgateway:vllm_api_key`, seeded by a separate playbook |
 
 ## OpenRouter models (change `agentgateway-openrouter`)
