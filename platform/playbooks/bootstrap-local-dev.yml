@@ -81,6 +81,9 @@
       # gateway's key check is the authentication, everything else 404); upstream is the
       # gateway's `default` listener.
       - {'host': 'mcp.{{ _dev_zone }}', 'upstream': 'agentgateway:4000', 'mcp_api': true}
+      # OPA decision API — HTTPS for callers (skynet) so they verify it via step-ca; a plain proxy
+      # with no edge gate (OPA's Phase 1 stays unauthenticated). Mirrors local-dev.yml.example.
+      - {'host': 'opa.{{ _dev_zone }}', 'upstream': 'opa:8181'}
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.

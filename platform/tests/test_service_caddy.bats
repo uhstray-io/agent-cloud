@@ -252,19 +252,31 @@ _render_mcp() {
   ! grep -qE '^[[:space:]]*ports:' "$f"
 }
 
-@test "caddy: local overlay aliases the auth, inference and Semaphore names onto local-dev" {
+@test "caddy: local overlay aliases the auth, inference, Semaphore and OPA names onto local-dev" {
   # Skynet and the other local-dev containers reach the edge by these names over HTTPS; each
-  # alias must sit on the local-dev network (the one the gateway and Semaphore share), not on
-  # the default network.
+  # alias must sit on the local-dev network (the one the gateway, Semaphore and OPA share), not
+  # on the default network.
   command -v python3 >/dev/null || skip "python3 not installed"
   python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
   python3 - "$DEPLOY_DIR/compose.local.yml" <<'PY'
 import sys, yaml
 svc = yaml.safe_load(open(sys.argv[1]))["services"]["caddy"]
 aliases = svc["networks"]["local-dev"]["aliases"]
-want = ["auth.agent-cloud.test", "inference.agent-cloud.test", "semaphore.agent-cloud.test"]
+want = ["auth.agent-cloud.test", "inference.agent-cloud.test", "semaphore.agent-cloud.test", "opa.agent-cloud.test"]
 assert sorted(aliases) == sorted(want), aliases
 PY
+}
+
+@test "caddy: the OPA site renders as a plain TLS proxy to opa:8181, with no edge gate" {
+  # OPA's Phase 1 stays unauthenticated: this site adds server authentication for callers and
+  # nothing else, so it must not gain forward_auth, an allowlist edge or a Bearer check.
+  _render_caddy '[{host: opa.agent-cloud.test, upstream: "opa:8181"}]'
+  local c="$BATS_TEST_TMPDIR/Caddyfile"
+  assert_grep -qF 'opa.agent-cloud.test {' "$c"
+  assert_grep -qF 'reverse_proxy opa:8181' "$c"
+  refute_grep -qF 'forward_auth' "$c"
+  refute_grep -qF 'respond 401' "$c"
+  refute_grep -qF 'handle' "$c"
 }
 
 @test "caddy: reviewed revision gates the controller and production receiver" {

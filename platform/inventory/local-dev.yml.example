@@ -176,6 +176,11 @@ all:
             # 404). The upstream is the gateway's `default` listener (:4000), the one that
             # serves /mcp; the single-label host sits under the wildcard certificate.
             - { host: "mcp.agent-cloud.test", upstream: "agentgateway:4000", mcp_api: true }
+            # OPA — the decision API (platform/services/opa), over HTTPS so callers such as skynet
+            # verify its certificate via step-ca instead of trusting plain http on the shared network.
+            # A plain proxy with NO edge gate: OPA's Phase 1 stays unauthenticated, and this route
+            # adds server authentication only. Upstream opa:8181 is in-network plain HTTP.
+            - { host: "opa.agent-cloud.test", upstream: "opa:8181" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The

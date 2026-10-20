@@ -265,6 +265,18 @@ PY
     "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
 }
 
+@test "inventory example and bootstrap INI: OPA is served over HTTPS by a plain Caddy proxy, no edge gate" {
+  # Skynet trusts OPA's allow, so the decision API is reached over HTTPS (server-verified via
+  # step-ca) rather than plain http on the shared network. Phase 1 OPA stays unauthenticated, so
+  # the route must carry no forward_auth, allowlist flag or other edge gate.
+  grep -qE 'host: "opa\.agent-cloud\.test", upstream: "opa:8181" \}' "$INVENTORY"
+  run grep -E 'opa\.agent-cloud\.test' "$INVENTORY"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c 'forward_auth\|_api: true')" -eq 0 ]
+  local bp="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  grep -qF "{'host': 'opa.{{ _dev_zone }}', 'upstream': 'opa:8181'}" "$bp"
+}
+
 @test "bootstrap: the INI route table is emitted as a Python literal, not JSON" {
   # ansible's ini plugin reads a value with ast.literal_eval; JSON parses only
   # while it contains no boolean/null. The first `true` left caddy_routes a
