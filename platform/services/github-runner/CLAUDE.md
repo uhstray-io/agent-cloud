@@ -49,6 +49,7 @@ Verified from inside a running job, on both hosts:
 | Per-job process reaping | **NOT enforced** — the wipe removes files and containers, not a process an undeclared host job left running |
 | Container engine out of a job container's reach | **NOT enforced**, by design (since 2026-10-11): `/var/run/docker.sock` in a job container is the runner account's own rootless podman socket, so a job container can do what the account can do. It can never reach root's socket. See "Container jobs under rootless podman" |
 | Setuid programs out of a job's reach | **NOT enforced** (since 2026-10-11): the unit runs without `NoNewPrivileges`, because rootless podman needs the setuid `newuidmap`/`newgidmap`. The deploy strips the setuid/setgid bit from helpers a runner never uses (`chfn`, `chsh`, `passwd`, `gpasswd`, `newgrp`, `chage`, `expiry`, `su`, `crontab`, `ssh-keysign`, `polkit-agent-helper-1`); `sudo`, `mount`, `umount`, `fusermount3`, `newuidmap` and `newgidmap` stay executable by jobs |
+| Foreign-architecture binaries out of a job's reach | **NOT enforced**, by design (since 2026-10-20): every host carries `qemu-user-static`, which registers user-mode emulators for arm64 and other architectures with the kernel's binfmt_misc. Any job on the pool can execute a foreign-architecture binary through it. The interpreter is an ordinary user-mode program and grants no privilege beyond what the runner account already holds. See "arm64 image builds" |
 
 **Per-job containerisation is not a control here.** The container-hook mechanism manages
 containers for a job that *declares* one; it does not place an undeclared job into a
@@ -58,6 +59,22 @@ recreated per job — a lifecycle change, not a setting.
 
 **Practical consequence:** a job can read whatever `ghrunner` can read on that host. Do not
 place anything on a runner host that every repository declared in `manage-github-runner-group.yml` is not entitled to.
+
+**arm64 image builds.** The hosts run arm64 binaries through qemu's user-mode emulator, which
+is what lets a multi-arch build produce `linux/arm64` on these amd64 hosts.
+`deploy-github-runner.yml` installs `qemu-user-static` and proves the handler from
+`/proc/sys/fs/binfmt_misc/qemu-aarch64`: the first line must be `enabled`, or the deploy
+fails. On Ubuntu 24.04 the package ships `/usr/lib/binfmt.d/qemu-aarch64.conf`, so
+`systemd-binfmt.service` registers the handler at boot
+(https://www.freedesktop.org/software/systemd/man/latest/binfmt.d.html). The registration
+flags are `OPF` (verified 2026-10-20 in Ubuntu noble's qemu packaging, `debian/binfmt-install`:
+`:qemu-$fmt:M::magic:mask:/usr/libexec/qemu-binfmt/$fmt-binfmt-P:OP${FIXB}` with `FIXB=F` for
+qemu-user-static, https://git.launchpad.net/ubuntu/+source/qemu/plain/debian/binfmt-install?h=ubuntu/noble-updates).
+No `C` flag: credentials are not computed from the foreign binary, so emulation grants no setuid
+path and no privilege beyond the runner account. `F` pins the interpreter at registration, which
+is what lets rootless podman containers use it. The deploy prints the `interpreter` and `flags`
+lines on success.
+Enforced by `platform/tests/test_runner_arm64_emulation.bats`.
 
 **Why `NoNewPrivileges` is off.** Rootless podman maps a container's users onto the
 account's `/etc/subuid` range with `newuidmap`/`newgidmap`. A `uid_map` of more than the
