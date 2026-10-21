@@ -91,9 +91,10 @@ def test_conflicting_or_mismatched_existing_disks_refuse_but_exact_scsi1_is_idem
     assert "_final_config.json.data.scsi1" in str(final_readback["ansible.builtin.assert"])
 
 
-def test_credential_free_assertions_remain_visible_without_rendering_protected_results() -> None:
+def test_assertions_remain_visible_without_rendering_protected_results() -> None:
     tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
     names = (
+        "Require complete HTTPS Proxmox credentials from OpenBao",
         "Require successful Proxmox task completion",
         "Require exact scsi1 readback and no additional disks",
         "Refuse VM identity, layout, bus, or storage drift before any write",

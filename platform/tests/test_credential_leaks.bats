@@ -339,47 +339,109 @@ _committed_files() {
   grep -Fq "_pat_loopback: '127(?:\.{{ _pat_ipv4_octet }}){3}'" "$shared"
 
   # Every playbook that reaches OpenBao, not just the ones the guard started in.
-  # The two seed playbooks kept their own inline copies for one commit and were
-  # therefore still bypassable in exactly the way the shared task now prevents.
-  # Population selected by the CONDITION (the play resolves a store URL), never
-  # by a hand-kept list of names. The previous form of this test listed FOUR files
-  # under a comment claiming "every playbook that reaches OpenBao" — deriving the
-  # population found 40 of 52 unguarded (docs/MISTAKES.md 2.18).
+  # Follow static task imports recursively because an extracted survey task may
+  # include the shared guard from its own directory. Resolve each include from
+  # the file that contains it, matching Ansible's task-file-relative lookup.
+  # Population is selected by the condition (the play resolves a store URL),
+  # never by a hand-kept list of names.
   #
-  # A RATCHET rather than a blanket assertion, because guarding 38 live-service
-  # deploys is its own change: every unguarded play must be named in the ratchet
-  # file, and every play named there must still be unguarded — so a gap cannot
-  # appear silently, and a fix cannot leave its exception behind.
+  # A RATCHET rather than a blanket assertion: every unguarded play must be named
+  # in the ratchet file, and every play named there must still be unguarded.
   local ratchet="$REPO_ROOT/platform/tests/known_unguarded_bao_plays.txt"
   [ -f "$ratchet" ]
-  local f base n_url n_inc n_seen=0 unguarded="" bad=""
-  for f in "$pb"/*.yml; do
-    n_url=$(grep -cE '^    _bao_url:' "$f" || true)
-    [ "$n_url" -gt 0 ] || continue
-    n_seen=$((n_seen + 1))
-    base=$(basename "$f")
-    # >= not ==: a play may guard MORE endpoints than it resolves store URLs for
-    # (netbox-allocate-ip.yml guards the NetBox API too, via _assert_url_label).
-    n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$f" || true)
-    if [ "$n_inc" -lt "$n_url" ]; then
-      unguarded="${unguarded}${base}"$'\n'
-      grep -qxF "$base" "$ratchet" || bad="${bad}NEW unguarded play not in the ratchet: ${base}"$'\n'
-    fi
-  done
-  # The other direction: a listed play that is now guarded must leave the list.
-  local listed
-  while read -r listed; do
-    case "$listed" in ''|'#'*) continue ;; esac
-    [ -f "$pb/$listed" ] || { bad="${bad}ratchet names a play that no longer exists: ${listed}"$'\n'; continue; }
-    printf '%s' "$unguarded" | grep -qxF "$listed" \
-      || bad="${bad}${listed} is now guarded — remove it from the ratchet"$'\n'
-  done < "$ratchet"
-  if [ -n "$bad" ]; then
-    printf '%s' "$bad" >&2
-    return 1
-  fi
-  # Not vacuous: the guard's original four plays, plus this change's, are in the set.
-  [ "$n_seen" -ge 8 ]
+  run python3 - "$pb" "$ratchet" "$shared" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+playbooks, ratchet_path, shared_path = map(Path, sys.argv[1:])
+shared_path = shared_path.resolve()
+ratchet = {
+    line.strip()
+    for line in ratchet_path.read_text().splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+}
+
+
+def count_guard(tasks, source, stack, overrides=None):
+    overrides = overrides or {}
+    count = 0
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        for key in ("ansible.builtin.import_tasks", "ansible.builtin.include_tasks", "import_tasks", "include_tasks"):
+            target = task.get(key)
+            if not isinstance(target, str) or "{{" in target:
+                continue
+            resolved = (source.parent / target).resolve()
+            if resolved == shared_path:
+                count += 1
+            elif resolved.is_file() and resolved not in stack:
+                nested = overrides.get(resolved)
+                if nested is None:
+                    nested = yaml.safe_load(resolved.read_text())
+                count += count_guard(
+                    nested if isinstance(nested, list) else [],
+                    resolved,
+                    stack | {resolved},
+                    overrides,
+                )
+        for section in ("block", "rescue", "always"):
+            count += count_guard(task.get(section), source, stack, overrides)
+    return count
+
+
+seen = set()
+unguarded = set()
+for playbook in sorted(playbooks.glob("*.yml")):
+    plays = yaml.safe_load(playbook.read_text()) or []
+    for play in plays:
+        if not isinstance(play, dict) or "_bao_url" not in (play.get("vars") or {}):
+            continue
+        seen.add(playbook.name)
+        if count_guard(play.get("tasks"), playbook, {playbook.resolve()}) < 1:
+            unguarded.add(playbook.name)
+
+# Prove the recursive discovery catches the exact failure mode: removing the
+# nested include from the standalone survey makes that play unguarded and would
+# fail the ratchet as a new exception.
+survey_playbook = playbooks / "survey-o11y-pbs-physical-storage.yml"
+survey_play = next(
+    play
+    for play in yaml.safe_load(survey_playbook.read_text())
+    if isinstance(play, dict) and "_bao_url" in (play.get("vars") or {})
+)
+survey_task_file = (playbooks / "tasks/o11y-pbs-physical-storage-survey.yml").resolve()
+mutated_survey_tasks = yaml.safe_load(survey_task_file.read_text())
+guard_task = next(
+    task
+    for task in mutated_survey_tasks
+    if task.get("name") == "Refuse public cleartext OpenBao transport"
+)
+guard_task["ansible.builtin.include_tasks"] = "missing-guard.yml"
+mutated_guard_count = count_guard(
+    survey_play.get("tasks"),
+    survey_playbook,
+    {survey_playbook.resolve()},
+    {survey_task_file: mutated_survey_tasks},
+)
+if mutated_guard_count != 0 or survey_playbook.name in ratchet:
+    errors = ["transport guard check did not detect removal of the extracted survey's nested guard"]
+else:
+    errors = []
+
+errors += [f"NEW unguarded play not in the ratchet: {name}" for name in sorted(unguarded - ratchet)]
+errors += [f"{name} is now guarded — remove it from the ratchet" for name in sorted(ratchet - unguarded)]
+errors += [f"ratchet names a playbook that no longer exists: {name}" for name in sorted(ratchet) if not (playbooks / name).is_file()]
+if len(seen) < 8:
+    errors.append(f"transport guard coverage unexpectedly found only {len(seen)} playbooks")
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    raise SystemExit(1)
+print(f"transport guard coverage checked for {len(seen)} playbooks")
+PY
+  [ "$status" -eq 0 ] || { printf '%s\n' "$output"; return 1; }
 }
 
 @test "the transport pattern accepts internal endpoints and refuses public ones" {

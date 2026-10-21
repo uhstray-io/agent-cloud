@@ -143,7 +143,6 @@
           - _pve_secret | length > 0
         fail_msg: "OpenBao must provide the HTTPS Proxmox endpoint and complete API credentials."
         quiet: true
-      no_log: true
 
     - name: Read the exact declared PBS VM configuration
       ansible.builtin.uri:
