@@ -142,7 +142,11 @@ def normalize_expected(value: Any) -> dict[str, Any]:
         node_list = nodes
     else:
         _refuse("Private PVE node declaration is malformed.")
-    if not node_list or any(not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", node) for node in node_list):
+    if not node_list or any(
+        not isinstance(node, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", node)
+        for node in node_list
+    ):
         _refuse("Private PVE node declaration is malformed.")
     if len(set(node_list)) != len(node_list):
         _refuse("Private PVE node declaration contains duplicates.")
@@ -323,7 +327,12 @@ def main() -> int:
         print(json.dumps(result, sort_keys=True))
         return 0
     except (Refusal, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        print(json.dumps({"refusal": str(exc) if isinstance(exc, Refusal) else "PVE storage input is not valid JSON."}, sort_keys=True))
+        print(
+            json.dumps(
+                {"refusal": str(exc) if isinstance(exc, Refusal) else "PVE storage input is not valid JSON."},
+                sort_keys=True,
+            )
+        )
         return 2
 
 

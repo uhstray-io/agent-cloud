@@ -13,7 +13,6 @@ import sys
 from typing import Any
 from urllib.parse import urlsplit
 
-
 USER_ID = "o11y-backup@pbs"
 TOKEN_ID = "o11y-backup@pbs!pve-o11y"
 DATASTORE = "o11y"
@@ -67,7 +66,10 @@ def plan_identity(
     """Return create/reuse only for the two complete safe states; refuse all drift."""
     user = _one_by_id(users, "userid", USER_ID, "user")
     token = _one_by_id(tokens, "tokenid", TOKEN_ID, "token")
-    _require(secret_record is None or isinstance(secret_record, dict), "OpenBao PBS secret record has an unsupported schema.")
+    _require(
+        secret_record is None or isinstance(secret_record, dict),
+        "OpenBao PBS secret record has an unsupported schema.",
+    )
     saved = secret_record or {}
     saved_any = bool(saved)
     token_exists = token is not None
@@ -78,8 +80,10 @@ def plan_identity(
 
     _require(user_exists and token_exists, "PBS user and token are incomplete; no identity mutation is allowed.")
     _require(saved_any, "PBS token exists without its OpenBao copy; no rotation or recovery is automatic.")
-    _require(saved.get("user") == USER_ID and saved.get("token_id") == TOKEN_ID,
-             "OpenBao PBS identity conflicts with the stable PBS user or token ID.")
+    _require(
+        saved.get("user") == USER_ID and saved.get("token_id") == TOKEN_ID,
+        "OpenBao PBS identity conflicts with the stable PBS user or token ID.",
+    )
     _require(saved.get("datastore") == DATASTORE, "OpenBao PBS identity names an unexpected datastore.")
     _require(isinstance(saved.get("secret"), str) and bool(saved["secret"]),
              "OpenBao PBS token secret is missing or invalid.")
@@ -87,7 +91,10 @@ def plan_identity(
              "OpenBao PBS certificate fingerprint is missing or invalid.")
     _require(user.get("enable", 0) in (1, True, "1"), "PBS backup user is disabled or has an unsupported enable field.")
     _require(user.get("expire", 0) in (0, "0", None), "PBS backup user has an expiry; automatic changes are refused.")
-    _require(token.get("enable", 0) in (1, True, "1"), "PBS backup token is disabled or has an unsupported enable field.")
+    _require(
+        token.get("enable", 0) in (1, True, "1"),
+        "PBS backup token is disabled or has an unsupported enable field.",
+    )
     _require(token.get("expire", 0) in (0, "0", None), "PBS backup token has an expiry; automatic renewal is refused.")
     _require(authenticated, "The existing PBS token was not authenticated successfully.")
     return {"action": "reuse", "user": USER_ID, "token_id": TOKEN_ID}
@@ -111,7 +118,11 @@ def _effective_map(value: Any) -> dict[str, dict[str, Any]]:
         # Some builds wrap the list in data; do not accept arbitrary envelope names.
         if set(value) == {"data"}:
             return _effective_map(value["data"])
-        if set(value) == {"path", "privileges"} and isinstance(value.get("path"), str) and isinstance(value.get("privileges"), dict):
+        if (
+            set(value) == {"path", "privileges"}
+            and isinstance(value.get("path"), str)
+            and isinstance(value.get("privileges"), dict)
+        ):
             return {value["path"]: value["privileges"]}
         if all(isinstance(path, str) and isinstance(privs, dict) for path, privs in value.items()):
             return value
@@ -162,10 +173,15 @@ def validate_permissions(*, user_permissions: Any, token_permissions: Any, acl_r
     actual = set()
     for row in relevant:
         path, role, ugid, propagate = row.get("path"), row.get("roleid"), row.get("ugid"), row.get("propagate")
-        _require(propagate in (0, "0", False),
-                 "PBS ACL grants propagation or has an unsupported propagation value.")
+        _require(
+            propagate in (0, "0", False),
+            "PBS ACL grants propagation or has an unsupported propagation value.",
+        )
         actual.add((ugid, path, role, 0))
-    _require(actual == expected, "PBS ACLs include an ancestor, other datastore, unknown role, or missing identity grant.")
+    _require(
+        actual == expected,
+        "PBS ACLs include an ancestor, other datastore, unknown role, or missing identity grant.",
+    )
     return {"valid": True, "user": user_result, "token": token_result, "acl_count": 2}
 
 

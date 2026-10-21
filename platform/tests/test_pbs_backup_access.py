@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import TestCase, main
 from unittest.mock import Mock, patch
 
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ROOT / "playbooks" / "files"
@@ -80,7 +81,9 @@ class IdentityStateTests(TestCase):
 
     def test_both_present_and_authenticated_reuses_stable_token(self):
         self.assertEqual(
-            pbs.plan_identity(users=[self.user], tokens=[self.token], secret_record=self.saved, authenticated=True)["action"],
+            pbs.plan_identity(
+                users=[self.user], tokens=[self.token], secret_record=self.saved, authenticated=True
+            )["action"],
             "reuse",
         )
 
@@ -170,14 +173,18 @@ class PermissionTests(TestCase):
 class PbsProbeTests(TestCase):
     def test_certificate_mismatch_stops_before_request_header(self):
         connection = Mock()
-        connection.connect.side_effect = pbs.Refusal("PBS TLS certificate fingerprint mismatch; no credential was sent.")
-        with patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection):
-            with self.assertRaisesRegex(pbs.Refusal, "no credential was sent"):
-                pbs.authenticate_token(
-                    url="https://pbs.internal.test:8007",
-                    fingerprint="aa" * 32,
-                    auth_id=pbs.TOKEN_ID,
-                    secret="must-not-be-sent",
+        connection.connect.side_effect = pbs.Refusal(
+            "PBS TLS certificate fingerprint mismatch; no credential was sent."
+        )
+        with (
+            patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection),
+            self.assertRaisesRegex(pbs.Refusal, "no credential was sent"),
+        ):
+            pbs.authenticate_token(
+                url="https://pbs.internal.test:8007",
+                fingerprint="aa" * 32,
+                auth_id=pbs.TOKEN_ID,
+                secret="must-not-be-sent",
                 )
         connection.request.assert_not_called()
 
@@ -219,9 +226,27 @@ class PveStorageTests(TestCase):
     def test_mismatch_duplicate_and_create_race_refuse(self):
         jobs = []
         cases = (
-            {"storage_id": "pbs-o11y", "rows": [], "current": existing_storage(), "expected": expected_storage(), "jobs_before": jobs},
-            {"storage_id": "pbs-o11y", "rows": [{"storage": "pbs-o11y"}] * 2, "current": None, "expected": expected_storage(), "jobs_before": jobs},
-            {"storage_id": "pbs-o11y", "rows": [{"storage": "pbs-o11y"}], "current": dict(existing_storage(), server="other.test"), "expected": expected_storage(), "jobs_before": jobs},
+            {
+                "storage_id": "pbs-o11y",
+                "rows": [],
+                "current": existing_storage(),
+                "expected": expected_storage(),
+                "jobs_before": jobs,
+            },
+            {
+                "storage_id": "pbs-o11y",
+                "rows": [{"storage": "pbs-o11y"}] * 2,
+                "current": None,
+                "expected": expected_storage(),
+                "jobs_before": jobs,
+            },
+            {
+                "storage_id": "pbs-o11y",
+                "rows": [{"storage": "pbs-o11y"}],
+                "current": dict(existing_storage(), server="other.test"),
+                "expected": expected_storage(),
+                "jobs_before": jobs,
+            },
         )
         for case in cases:
             with self.subTest(case=case), self.assertRaises(pve.Refusal):
@@ -231,7 +256,14 @@ class PveStorageTests(TestCase):
         before = [{"id": "nightly", "schedule": "daily"}]
         after = [{"id": "nightly", "schedule": "weekly"}]
         with self.assertRaisesRegex(pve.Refusal, "backup-job configuration changed"):
-            pve.plan_storage(storage_id="pbs-o11y", rows=[], current=None, expected=expected_storage(), jobs_before=before, jobs_after=after)
+            pve.plan_storage(
+                storage_id="pbs-o11y",
+                rows=[],
+                current=None,
+                expected=expected_storage(),
+                jobs_before=before,
+                jobs_after=after,
+            )
 
     def test_unknown_storage_fields_refuse(self):
         with self.assertRaisesRegex(pve.Refusal, "undeclared settings"):
@@ -347,6 +379,24 @@ class PveStorageTests(TestCase):
 
 
 class PlaybookBoundaryTests(TestCase):
+    def test_semaphore_template_is_dev_bound_and_only_accepts_reviewed_sha(self):
+        templates = yaml.safe_load((ROOT / "semaphore" / "templates.yml").read_text())["templates"]
+        template = next(item for item in templates if item["name"] == "Configure PBS Backup Access (Dev)")
+        self.assertEqual(template["playbook"], "platform/playbooks/configure-pbs-backup-access.yml")
+        self.assertEqual(template["repository"], "agent-cloud dev")
+        self.assertEqual(
+            template["survey_vars"],
+            [
+                {
+                    "name": "expected_repository_sha",
+                    "title": "Reviewed commit SHA",
+                    "description": "Exact reviewed Dev revision for PBS backup access configuration",
+                    "type": "string",
+                    "required": True,
+                }
+            ],
+        )
+
     def test_check_mode_skips_identity_mutation_and_pve_write(self):
         playbook = (ROOT / "playbooks" / "configure-pbs-backup-access.yml").read_text()
         identity_task = (ROOT / "playbooks" / "tasks" / "configure-pbs-backup-identity.yml").read_text()
@@ -411,6 +461,7 @@ class PlaybookBoundaryTests(TestCase):
 
     def test_actual_storage_validator_stdin_templates_parse_render_and_carry_proofs(self):
         import json
+
         import yaml
         from jinja2 import Environment, StrictUndefined
 
@@ -436,7 +487,12 @@ class PlaybookBoundaryTests(TestCase):
             "_pve_existing_access_proofs": [proof],
             "_pve_before_write": {"storage_rows": [], "backup_jobs": [], "nodes": [{"node": "node-a"}]},
             "_pve_before_write_target": {"status": 404, "json": {}},
-            "_pve_final_snapshot": {"storage_rows": [], "backup_jobs": [], "nodes": [{"node": "node-a"}], "target": None},
+            "_pve_final_snapshot": {
+                "storage_rows": [],
+                "backup_jobs": [],
+                "nodes": [{"node": "node-a"}],
+                "target": None,
+            },
             "_pve_final_access_reads": {"results": [
                 {"item": "node-a", "url": proof["url"], "status": 200, "json": {"data": []}}
             ]},
