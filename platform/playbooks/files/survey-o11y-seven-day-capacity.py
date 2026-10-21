@@ -30,7 +30,15 @@ FAILURE_REASONS = {
     "host_metric_history_unavailable",
     "transport_unavailable",
 }
-DIAGNOSTIC_LABEL_KEYS = ("cluster", "environment", "instance", "job", "service")
+DIAGNOSTIC_LABEL_KEYS = (
+    "cluster",
+    "component",
+    "environment",
+    "instance",
+    "job",
+    "service",
+    "target_id",
+)
 DIAGNOSTIC_EXCLUDED_LABEL_KEYS = {"__name__", *DIAGNOSTIC_LABEL_KEYS}
 QUERIES = {
     "source": (

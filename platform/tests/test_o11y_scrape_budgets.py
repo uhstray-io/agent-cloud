@@ -80,6 +80,79 @@ def _assert_bounded(job, sample_limit=None):
         assert job[key] == LIMIT_FIELDS[key]
 
 
+def _alloy_prometheus_relabel_rules(rendered):
+    component = rendered.split('prometheus.relabel "bounded_labels" {', 1)[1].split(
+        'prometheus.remote_write "local"', 1
+    )[0]
+    rules = []
+    for body in re.findall(r"\brule\s*\{([^{}]*)\}", component):
+        fields = {}
+        for name, value in re.findall(r"^\s*(\w+)\s*=\s*(.+?)\s*$", body, re.MULTILINE):
+            fields[name] = json.loads(value)
+        rules.append(fields)
+    return rules
+
+
+def _apply_alloy_prometheus_relabel_rules(labels, rules):
+    labels = labels.copy()
+    for rule in rules:
+        action = rule.get("action", "replace")
+        supported_fields = {
+            "labeldrop": {"action", "regex"},
+            "replace": {
+                "action", "source_labels", "regex", "replacement", "target_label", "separator"
+            },
+        }.get(action)
+        if supported_fields is None:
+            raise AssertionError(f"unexpected relabel action in bounded_labels: {action}")
+        unsupported_fields = set(rule) - supported_fields
+        if unsupported_fields:
+            raise AssertionError(
+                f"unsupported relabel rule fields for {action}: {sorted(unsupported_fields)}"
+            )
+
+        if action == "labeldrop":
+            pattern = re.compile(rule["regex"])
+            labels = {name: value for name, value in labels.items() if not pattern.fullmatch(name)}
+        elif action == "replace":
+            source = rule.get("separator", ";").join(
+                labels.get(name, "") for name in rule.get("source_labels", [])
+            )
+            match = re.fullmatch(rule.get("regex", "(.*)"), source)
+            if match:
+                replacement = re.sub(
+                    r"\$(\d+)",
+                    lambda group, match=match: match.group(int(group.group(1))) or "",
+                    rule.get("replacement", "$1"),
+                )
+                labels[rule["target_label"]] = replacement
+    return labels
+
+
+def test_alloy_relabel_evaluator_rejects_unsupported_fields():
+    rule = {
+        "action": "replace",
+        "source_labels": [],
+        "regex": "(.*)",
+        "replacement": "inventory-cluster",
+        "target_label": "cluster",
+        "unexpected": "ignored",
+    }
+    with pytest.raises(AssertionError, match="unsupported relabel rule fields for replace"):
+        _apply_alloy_prometheus_relabel_rules({}, [rule])
+
+
+def test_alloy_relabel_evaluator_rejects_unsupported_actions():
+    rule = {
+        "action": "hashmod",
+        "source_labels": ["cluster"],
+        "modulus": 2,
+        "target_label": "cluster_hash",
+    }
+    with pytest.raises(AssertionError, match="unexpected relabel action in bounded_labels: hashmod"):
+        _apply_alloy_prometheus_relabel_rules({"cluster": "inventory-cluster"}, [rule])
+
+
 def test_alloy_compose_environment_forwards_bounded_scrape_budgets_without_secrets():
     compose = yaml.safe_load((DEPLOY / "compose.yml").read_text(encoding="utf-8"))
     alloy = compose["services"]["alloy"]
@@ -129,6 +202,93 @@ def test_alloy_socket_discovery_and_container_metrics_render_only_in_local_mode(
         assert component in local
         assert component in production
     assert "unix:///var/run/docker.sock" not in production
+
+
+@pytest.mark.parametrize(
+    ("inventory", "expected"),
+    [
+        ({}, {"cluster": "agent-cloud-local", "environment": "local"}),
+        (
+            {"o11y_cluster": "inventory-east", "o11y_environment": "dev"},
+            {"cluster": "inventory-east", "environment": "dev"},
+        ),
+    ],
+)
+def test_local_alloy_inventory_labels_replace_app_values_and_keep_bounded_identity(inventory, expected):
+    rendered = _environment().from_string(
+        (DEPLOY / "templates/config.alloy.j2").read_text(encoding="utf-8")
+    ).render(
+        local_mode=True,
+        _o11y_forbidden_metric_label_names_regex=POLICY,
+        **inventory,
+    )
+    rules = _alloy_prometheus_relabel_rules(rendered)
+
+    assert rules[0] == {"action": "labeldrop", "regex": POLICY}
+    assert rules[1:] == [
+        {
+            "source_labels": [],
+            "regex": "(.*)",
+            "replacement": expected["cluster"],
+            "target_label": "cluster",
+            "action": "replace",
+        },
+        {
+            "source_labels": [],
+            "regex": "(.*)",
+            "replacement": expected["environment"],
+            "target_label": "environment",
+            "action": "replace",
+        },
+    ]
+
+    discovery = rendered.split('discovery.relabel "metrics" {', 1)[1].split(
+        'prometheus.scrape "local_containers"', 1
+    )[0]
+    assert 'action        = "keep"' in discovery
+    assert 'regex         = "true"' in discovery
+    assert 'action        = "drop"' in discovery
+    assert 'target_label  = "service"' in discovery
+    assert 'target_label  = "component"' in discovery
+    assert 'target_label  = "target_id"' in discovery
+    scrape = rendered.split('prometheus.scrape "local_containers" {', 1)[1].split(
+        'prometheus.relabel "bounded_labels"', 1
+    )[0]
+    assert 'scrape_interval = "15s"' in scrape
+    assert 'sample_limit    = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))' in scrape
+    assert 'label_limit     = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_LIMIT"))' in scrape
+    assert 'label_name_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"))' in scrape
+    assert 'label_value_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT"))' in scrape
+
+    identities = {
+        "__name__": "http_requests_total",
+        "service": "checkout/api",
+        "component": "api",
+        "target_id": "service:checkout",
+        "instance": "checkout-api:8080",
+        "status": "200",
+    }
+    for cluster in (None, expected["cluster"], "app-selected-wrong-cluster"):
+        for environment in (None, expected["environment"], "app-selected-prod"):
+            sample = identities.copy()
+            if cluster is not None:
+                sample["cluster"] = cluster
+            if environment is not None:
+                sample["environment"] = environment
+            sample["path"] = "/private/request/path"
+
+            without_inventory_rules = _apply_alloy_prometheus_relabel_rules(sample, rules[:1])
+            if cluster != expected["cluster"]:
+                assert without_inventory_rules.get("cluster") != expected["cluster"]
+            if environment != expected["environment"]:
+                assert without_inventory_rules.get("environment") != expected["environment"]
+
+            relabeled = _apply_alloy_prometheus_relabel_rules(sample, rules)
+
+            assert relabeled["cluster"] == expected["cluster"]
+            assert relabeled["environment"] == expected["environment"]
+            assert {key: relabeled[key] for key in identities} == identities
+            assert "path" not in relabeled
 
 
 def test_all_prometheus_scrape_jobs_render_finite_limits_and_keep_identity_policy():
