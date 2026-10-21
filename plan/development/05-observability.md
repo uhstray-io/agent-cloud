@@ -2115,11 +2115,12 @@ fallback. Safe enterprise subscription-key provisioning remains a separate
 dependency. Task 4.1 creates no Linux root password or PBS API token; the
 datastore-scoped PVE identity and OpenBao token lifecycle belongs to task 4.2.
 
-Source validation in the integration checkout: 277 focused tests passed; the
-three guest task-sequence cases that start Ansible could not start Ansible 14's
-local RPC server in the sandbox, including after moving pytest temporary files
-to `/private/tmp`. Both PBS playbooks passed Ansible syntax checks (with the
-expected absent-private-inventory `pbs_svc` warning). Ruff passed. Full
+Source validation in the integration checkout: 277 focused tests passed, and
+the three synthetic guest task-sequence cases also passed in a separate,
+scoped-escalation run: normal mode with the current helper, check mode with the
+helper absent, and check mode with an outdated helper. Both PBS playbooks passed
+Ansible syntax checks (with the expected absent-private-inventory `pbs_svc`
+warning). Ruff passed. Full
 `ansible-lint platform/playbooks/ platform/semaphore/` passed with zero fatal
 failures and three existing unrelated Jinja-spacing warnings; YAML lint exited
 0 with existing line-length warnings. Strict OpenSpec validation from the local
