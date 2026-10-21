@@ -60,10 +60,12 @@ def payload():
                 "name: private-o11y\n"
                 "scsi0: source-storage-private:vm-102-disk-0,size=100G\n"
                 "efidisk0: source-storage-private:vm-102-disk-1,size=4M\n"
+                "ide2: none,media=cdrom\n"
             ),
         },
         "vms": [{"vmid": 102, "node": "source-node-private", "type": "qemu"}],
         "target_config": {"status": 404},
+        "target_nextid": {"status": 200, "data": 202},
         "nodes": [
             {"node": "source-node-private", "status": "online"},
             {"node": "restore-node-private", "status": "online"},
@@ -99,6 +101,8 @@ def test_reports_only_fixed_sanitized_available_now_facts():
         "artifact_restore_layout_complete": True,
         "restore_disk_count": 2,
         "target_vmid_available_now": True,
+        "cluster_census_visibility": "unverified",
+        "target_vmid_exact_cluster_nextid_match": True,
         "target_vmid_reserved": False,
         "target_node_online_and_off_source": True,
         "target_storage_active_nonshared_image_store": True,
@@ -146,6 +150,33 @@ def test_refuses_target_vmid_census_collision_even_when_exact_read_says_absent()
     data["vms"].append({"vmid": 202, "node": "other-node-private", "type": "qemu"})
     with pytest.raises(ValueError, match="occupied or conflicts"):
         inspect(data)
+
+
+@pytest.mark.parametrize(
+    ("config_status", "nextid"),
+    [
+        (404, {"status": 400, "data": None}),
+        (404, {"status": 200, "data": 203}),
+        (404, {"status": 200, "data": 400}),
+        (500, {"status": 400, "data": None}),
+        (500, {"status": 200, "data": 203}),
+        (403, {"status": 200, "data": 202}),
+    ],
+)
+def test_refuses_missing_or_conflicting_exact_cluster_nextid_evidence(config_status, nextid):
+    data = payload()
+    data["target_config"]["status"] = config_status
+    data["target_nextid"] = nextid
+    with pytest.raises(ValueError, match="occupied or conflicts"):
+        inspect(data)
+
+
+def test_accepts_guarded_node_config_500_only_with_exact_nextid_match():
+    data = payload()
+    data["target_config"]["status"] = 500
+    data["target_nextid"] = {"status": 200, "data": "202"}
+    assert inspect(data)["target_vmid_available_now"] is True
+    assert inspect(data)["target_vmid_reserved"] is False
 
 
 def test_refuses_disagreement_between_exact_read_and_census():
@@ -221,6 +252,9 @@ def test_fails_closed_for_storage_capacity_and_authority_conflicts(mutate, messa
         "scsi0: local:vm-102-disk-0,size=100G\nscsi0: local:other,size=10G\n",
         "scsi0: local:vm-102-disk-0,size=100G,backup=0\n",
         "scsi0: local:vm-102-disk-0,backup=1\n",
+        "ide2: none,media=cdrom-invalid\nscsi0: local:disk,size=100G\n",
+        "ide2: none,media=cdrom-invalid,size=700M\nscsi0: local:disk,size=100G\n",
+        "ide2: none,media=cdrom\nide2: none,media=cdrom\nscsi0: local:disk,size=100G\n",
         "name: o11y\nnet0: e1000=00:11:22:33:44:55,bridge=vmbr0\n",
     ],
 )
@@ -247,6 +281,15 @@ def test_refuses_oversized_or_invalid_unicode_artifact_configuration(config):
     data["artifact_config"]["data"] = config
     with pytest.raises(ValueError, match="malformed artifact configuration"):
         inspect(data)
+
+
+def test_cdrom_does_not_count_as_restore_disk_or_require_size():
+    data = payload()
+    data["artifact_config"]["data"] = (
+        "ide2: none,media=cdrom\n"
+        "scsi0: source-storage-private:vm-102-disk-0,size=100G\n"
+    )
+    assert inspect(data)["restore_disk_count"] == 1
 
 
 def test_cli_refusal_uses_fixed_sanitized_message(monkeypatch, capsys):
@@ -289,6 +332,31 @@ def test_playbook_is_pinned_read_only_and_hides_protected_requests():
         in task["ansible.builtin.uri"]["url"]
         for task in uri_tasks
     )
+    target_config_task = next(
+        task["ansible.builtin.uri"]
+        for play in playbook
+        for task in play.get("tasks", [])
+        if task.get("register") == "_target_config"
+    )
+    nextid_task = next(
+        task["ansible.builtin.uri"]
+        for play in playbook
+        for task in play.get("tasks", [])
+        if task.get("register") == "_target_nextid"
+    )
+    assert target_config_task["method"] == "GET"
+    assert target_config_task["status_code"] == [200, 404, 500]
+    assert nextid_task["method"] == "GET"
+    assert nextid_task["status_code"] == [200, 400]
+    assert "cluster/nextid?vmid={{ _target_vmid }}" in nextid_task["url"]
+    helper_task = next(
+        task["ansible.builtin.command"]
+        for play in playbook
+        for task in play.get("tasks", [])
+        if task.get("register") == "_target_inspection"
+    )
+    assert "target_config" in helper_task["stdin"]
+    assert "target_nextid" in helper_task["stdin"]
     rendered = (ROOT / "platform/playbooks/preflight-o11y-restore-target.yml").read_text()
     assert "NetBox" not in rendered
     assert "network_mode" in rendered and "disconnected" in rendered

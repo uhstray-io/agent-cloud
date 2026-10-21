@@ -13,6 +13,7 @@ VMID = re.compile(r"[1-9][0-9]{0,8}")
 NODE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 STORAGE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 DISK_DEVICE = re.compile(r"(?:ide|sata|scsi|virtio|efidisk|tpmstate)[0-9]+")
+MEDIA_OPTION = re.compile(r"(?:^|,)media=([^,]+)(?:$|,)")
 SIZE = re.compile(r"(?:^|,)size=([0-9]+(?:\.[0-9]+)?)([KMGT])(?:$|,)", re.I)
 MULTIPLIERS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 MAX_ARTIFACT_CONFIG_BYTES = 256 * 1024
@@ -147,6 +148,7 @@ def _artifact_layout(payload: Mapping[str, object]) -> tuple[list[tuple[str, int
     except UnicodeEncodeError:
         raise ValueError("Proxmox returned malformed artifact configuration.") from None
     lines: dict[str, str] = {}
+    seen_devices: set[str] = set()
     try:
         for line in config_lines:
             if not line or line.lstrip().startswith("#") or ":" not in line:
@@ -155,8 +157,16 @@ def _artifact_layout(payload: Mapping[str, object]) -> tuple[list[tuple[str, int
             device = device.strip()
             if not DISK_DEVICE.fullmatch(device):
                 continue
-            _require(device not in lines, "The artifact restore layout is incomplete, excluded, or ambiguous.")
+            _require(device not in seen_devices, "The artifact restore layout is incomplete, excluded, or ambiguous.")
+            seen_devices.add(device)
             value = raw.strip()
+            media_option = MEDIA_OPTION.search(value)
+            if media_option is not None:
+                _require(
+                    media_option.group(1) == "cdrom",
+                    "The artifact restore layout is incomplete, excluded, or ambiguous.",
+                )
+                continue
             size_matches = SIZE.findall(value)
             _require(
                 len(size_matches) == 1,
@@ -312,12 +322,23 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
     disks, selected = _artifact_layout(payload)
     _, target_seen = _vm_census(payload.get("vms"), source_vmid, source_node, target_vmid)
     target_config = payload.get("target_config")
+    target_nextid = payload.get("target_nextid")
+    nextid_value = target_nextid.get("data") if isinstance(target_nextid, Mapping) else None
+    nextid_matches_target = (
+        type(nextid_value) is int and nextid_value == target_vmid
+    ) or (isinstance(nextid_value, str) and VMID.fullmatch(nextid_value) and int(nextid_value) == target_vmid)
     _require(
-        isinstance(target_config, Mapping) and target_config.get("status") in {200, 404},
+        isinstance(target_config, Mapping)
+        and target_config.get("status") in {200, 404, 500}
+        and isinstance(target_nextid, Mapping)
+        and target_nextid.get("status") in {200, 400},
         "The exact restore target is occupied or conflicts with the cluster census.",
     )
     _require(
-        target_config["status"] == 404 and not target_seen,
+        target_config["status"] in {404, 500}
+        and target_nextid["status"] == 200
+        and nextid_matches_target
+        and not target_seen,
         "The exact restore target is occupied or conflicts with the cluster census.",
     )
     _require(
@@ -339,6 +360,8 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
         "artifact_restore_layout_complete": True,
         "restore_disk_count": len(disks),
         "target_vmid_available_now": True,
+        "cluster_census_visibility": "unverified",
+        "target_vmid_exact_cluster_nextid_match": True,
         "target_vmid_reserved": False,
         "target_node_online_and_off_source": True,
         "target_storage_active_nonshared_image_store": True,

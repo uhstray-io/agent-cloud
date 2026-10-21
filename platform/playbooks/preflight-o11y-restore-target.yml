@@ -272,10 +272,21 @@
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _target_node | urlencode }}/qemu/{{ _target_vmid }}/config"
         method: GET
-        status_code: [200, 404]
+        status_code: [200, 404, 500]
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       register: _target_config
+      no_log: true
+      check_mode: false
+
+    - name: Read exact cluster VMID availability from Proxmox
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/nextid?vmid={{ _target_vmid }}"
+        method: GET
+        status_code: [200, 400]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _target_nextid
       no_log: true
       check_mode: false
 
@@ -306,6 +317,8 @@
                                   'data': _artifact_config.json.data | default(none)},
               'vms': _pve_vms.json.data,
               'target_config': {'status': _target_config.status},
+              'target_nextid': {'status': _target_nextid.status,
+                                'data': _target_nextid.json.data | default(none)},
               'nodes': _pve_nodes.json.data,
               'storage_reads': [{'item': _target_node,
                                  'status': _target_storages.status,
