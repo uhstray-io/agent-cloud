@@ -319,6 +319,22 @@
         fail_msg: "PBS datastore path is not safely contained by the verified data filesystem."
         quiet: true
 
+    - name: Read the existing datastore directory without following symlinks
+      ansible.builtin.stat:
+        path: "{{ _pbs_datastore_path }}"
+        follow: false
+      register: _pbs_verify_datastore_directory
+      changed_when: false
+
+    - name: Require the existing PBS datastore directory
+      ansible.builtin.assert:
+        that:
+          - _pbs_verify_datastore_directory.stat.exists | default(false)
+          - _pbs_verify_datastore_directory.stat.isdir | default(false)
+          - not (_pbs_verify_datastore_directory.stat.islnk | default(false))
+        fail_msg: "The registered PBS datastore path is absent, not a real directory, or a symlink."
+        quiet: true
+
     - name: Check PBS API health without changing service state
       ansible.builtin.uri:
         url: https://127.0.0.1:8007/api2/json/version

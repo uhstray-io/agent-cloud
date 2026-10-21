@@ -153,9 +153,18 @@ def test_verify_tag_is_read_only_and_requires_existing_mount_service_and_datasto
     datastore_acceptance = next(
         task for task in tasks if task.get("name") == "Require the exact datastore path and maintenance state"
     )
+    datastore_directory_check = next(
+        task for task in tasks if task.get("name") == "Require the existing PBS datastore directory"
+    )
+    directory_stat = next(
+        task for task in tasks if task.get("name") == "Read the existing datastore directory without following symlinks"
+    )
     assert tasks.index(helper_checksum) < tasks.index(containment)
     assert tasks.index(mount_identity) < tasks.index(containment)
-    assert tasks.index(containment) < tasks.index(datastore_read) < tasks.index(datastore_acceptance)
+    assert tasks.index(containment) < tasks.index(directory_stat) < tasks.index(datastore_directory_check)
+    assert tasks.index(datastore_directory_check) < tasks.index(datastore_read) < tasks.index(datastore_acceptance)
+    assert directory_stat["ansible.builtin.stat"]["follow"] is False
+    assert directory_stat["changed_when"] is False
     assert not any(
         module in str(verify)
         for module in (
@@ -163,6 +172,58 @@ def test_verify_tag_is_read_only_and_requires_existing_mount_service_and_datasto
             "ansible.builtin.service", "datastore, create", "verify-job, create", "bao-merge-keys",
         )
     )
+
+
+@pytest.mark.parametrize("directory_exists", [False, True])
+def test_verify_datastore_directory_tasks_refuse_missing_without_creating_and_accept_existing(
+    directory_exists, tmp_path
+):
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        pytest.skip("needs ansible-playbook")
+    verify = next(
+        play for play in yaml.safe_load(PLAYBOOK.read_text())
+        if play.get("name") == "Verify existing PBS service state without reconciling it"
+    )
+    stat_task = next(
+        task for task in verify["tasks"]
+        if task.get("name") == "Read the existing datastore directory without following symlinks"
+    )
+    assert_task = next(
+        task for task in verify["tasks"] if task.get("name") == "Require the existing PBS datastore directory"
+    )
+    datastore = tmp_path / "pbs-data" / "datastore"
+    if directory_exists:
+        datastore.mkdir(parents=True)
+        payload = datastore / "existing-index"
+        payload.write_text("preserve")
+
+    test_play = [{
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "vars": {"_pbs_datastore_path": str(datastore)},
+        "tasks": [stat_task, assert_task],
+    }]
+    play_path = tmp_path / "datastore-directory-verify.yml"
+    play_path.write_text(yaml.safe_dump(test_play))
+    local_tmp = tmp_path / "ansible-tmp"
+    local_tmp.mkdir()
+    completed = subprocess.run(
+        [ansible_playbook, "-i", "localhost,", "-c", "local", str(play_path)],
+        cwd=ROOT,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(local_tmp), "ANSIBLE_NOCOLOR": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert (completed.returncode == 0) is directory_exists, completed.stdout + completed.stderr
+    if directory_exists:
+        assert payload.read_text() == "preserve"
+    else:
+        assert not datastore.exists()
 
 
 @pytest.mark.parametrize("layout", ["contained", "symlink", "foreign_filesystem", "nested_mount"])
