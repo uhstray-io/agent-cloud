@@ -28,6 +28,14 @@ remote branch tip, tree entry type, exact public Semaphore bindings, and a
 duplicate-safe static YAML parse, and returns hashes/categories only. Existing
 site-config clone and OpenBao transport helpers are reused.
 
+The source Reader identity is managed alongside the existing PBS access setup
+as a separate stable user/token pair. Its token fields are additive under
+`secret/services/pbs` (`o11y_copy_reader_*`) and never replace or share the
+PVE `DatastoreBackup` token. Its only grants are the built-in
+`DatastoreReader` role on `/datastore/o11y` for both user and token with
+propagation disabled. Unknown, broader, or partially persisted state refuses;
+the generated token is persisted and read back before its ACL is granted.
+
 ## Implementation order
 
 1. Add and test the shared pure receipt/artifact module first; commit it so the

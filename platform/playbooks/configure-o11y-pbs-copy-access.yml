@@ -1,0 +1,301 @@
+---
+# Independently provision the source Reader identity used by destination pull
+# synchronization. This workflow does not change the existing PVE backup token.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed source checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/configure-o11y-pbs-copy-access.yml
+      - platform/playbooks/tasks/configure-pbs-copy-reader-identity.yml
+      - platform/playbooks/tasks/grant-pbs-copy-reader-acl.yml
+      - platform/playbooks/files/inspect_pbs_backup_access.py
+      - platform/tests/test_pbs_backup_access.py
+
+- name: Require one declared primary PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_svc
+    preflight_group_expected: pbs_svc
+    _preflight_redact_hostnames: true
+
+- name: Read primary PBS identity and certificate state
+  hosts: pbs_svc
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Resolve bootstrap sudo password before PBS read-only checks
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Require the existing primary datastore and endpoint declarations
+      ansible.builtin.assert:
+        that:
+          - pbs_api_host is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+        fail_msg: "The primary PBS endpoint and datastore must come from the declared pbs_svc inventory."
+        quiet: true
+      no_log: true
+
+    - name: Read the installed PBS server package version
+      ansible.builtin.command:
+        argv: [dpkg-query, -W, "-f=${Version}", proxmox-backup-server]
+      register: _pbs_reader_package_version
+      changed_when: false
+      check_mode: false
+
+    - name: Require the reviewed PBS package version
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", version]
+        stdin: "{{ {'package': _pbs_reader_package_version.stdout | trim} | to_json }}"
+      delegate_to: localhost
+      become: false
+      register: _pbs_reader_version_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Refuse unsupported PBS package or schema
+      ansible.builtin.assert:
+        that: _pbs_reader_version_check.rc == 0
+        fail_msg: "PBS copy access requires the reviewed PBS 4.2.8-1 package contract."
+        quiet: true
+
+    - name: Read active PBS proxy certificate fingerprint from the authenticated guest
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, /etc/proxmox-backup/proxy.pem, -fingerprint, -sha256, -noout]
+      register: _pbs_reader_guest_certificate
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Parse the guest certificate fingerprint
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", certificate]
+        stdin: "{{ {'openssl_fingerprint': _pbs_reader_guest_certificate.stdout} | to_json }}"
+      delegate_to: localhost
+      become: false
+      register: _pbs_reader_certificate_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the certificate fingerprint from the authenticated guest
+      ansible.builtin.assert:
+        that: _pbs_reader_certificate_check.rc == 0
+        fail_msg: "PBS guest certificate information did not provide a SHA-256 fingerprint."
+        quiet: true
+
+    - name: Retain the authenticated guest fingerprint in protected state
+      ansible.builtin.set_fact:
+        _pbs_reader_guest_fingerprint: "{{ (_pbs_reader_certificate_check.stdout | from_json).fingerprint }}"
+      no_log: true
+
+    - name: Read PBS users, reader tokens, ACLs, and existing effective grants
+      ansible.builtin.command:
+        argv: "{{ item.argv }}"
+      loop:
+        - {key: users, argv: [proxmox-backup-manager, user, list, --output-format, json]}
+        - {key: tokens, argv: [proxmox-backup-manager, user, list-tokens, o11y-copy-reader@pbs, --output-format, json]}
+        - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
+      loop_control:
+        label: "PBS source Reader {{ item.key }}"
+      register: _pbs_reader_initial_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Assemble the protected Reader metadata snapshot
+      ansible.builtin.set_fact:
+        _pbs_reader_initial_data: >-
+          {{ dict(_pbs_reader_initial_reads.results | map(attribute='item.key')
+            | zip(_pbs_reader_initial_reads.results | map(attribute='stdout') | map('from_json'))) }}
+      no_log: true
+
+    - name: Read effective permissions for the existing Reader user
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, user, permissions, o11y-copy-reader@pbs, --output-format, json]
+      register: _pbs_reader_user_permissions
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: >-
+        _pbs_reader_initial_data.users
+        | selectattr('userid', 'equalto', 'o11y-copy-reader@pbs') | list | length == 1
+
+    - name: Read effective permissions for the existing Reader token
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, user, permissions, "o11y-copy-reader@pbs!pbs-sync", --output-format, json]
+      register: _pbs_reader_token_permissions
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: >-
+        _pbs_reader_initial_data.tokens
+        | selectattr('tokenid', 'equalto', 'o11y-copy-reader@pbs!pbs-sync') | list | length == 1
+
+    - name: Retain absent or observed source Reader permissions
+      ansible.builtin.set_fact:
+        _pbs_reader_user_permission_data: >-
+          {{ _pbs_reader_user_permissions.stdout | from_json
+             if _pbs_reader_user_permissions is not skipped else [] }}
+        _pbs_reader_token_permission_data: >-
+          {{ _pbs_reader_token_permissions.stdout | from_json
+             if _pbs_reader_token_permissions is not skipped else [] }}
+      no_log: true
+
+- name: Validate managed Reader credential state before any identity mutation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_reader_guest: "{{ groups['pbs_svc'][0] }}"
+    _pbs_reader_api_url: "https://{{ pbs_api_host }}:8007"
+    _pbs_reader_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _pbs_reader_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _pbs_reader_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+  tasks:
+    - name: Require one primary PBS guest and the protected OpenBao connection
+      ansible.builtin.assert:
+        that:
+          - groups['pbs_svc'] | default([]) | length == 1
+          - _pbs_reader_bao_url | length > 0
+          - _pbs_reader_role_id | length > 0
+          - _pbs_reader_secret_id | length > 0
+        fail_msg: "PBS copy access requires one declared primary PBS guest and protected OpenBao AppRole values."
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _pbs_reader_bao_url }}"
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ _pbs_reader_bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _pbs_reader_role_id }}"
+          secret_id: "{{ _pbs_reader_secret_id }}"
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      register: _pbs_reader_bao_auth
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the existing PBS credential object from OpenBao
+      ansible.builtin.uri:
+        url: "{{ _pbs_reader_bao_url }}/v1/secret/data/services/pbs"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _pbs_reader_bao_auth.json.auth.client_token }}"
+        unredirected_headers: [X-Vault-Token]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200, 404]
+      register: _pbs_reader_bao_read
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Retain only the Reader-specific OpenBao credential fields
+      ansible.builtin.set_fact:
+        _pbs_reader_bao_data: "{{ _pbs_reader_bao_read.json.data.data if _pbs_reader_bao_read.status == 200 else {} }}"
+        _pbs_reader_saved_keys: >-
+          {{ ['o11y_copy_reader_user', 'o11y_copy_reader_token_id', 'o11y_copy_reader_token_secret',
+              'o11y_copy_reader_datastore', 'o11y_copy_reader_fingerprint']
+             | select('in', (_pbs_reader_bao_read.json.data.data | default({})).keys() | list) | list }}
+      no_log: true
+
+    - name: Build the closed source Reader credential record
+      ansible.builtin.set_fact:
+        _pbs_reader_saved_record: >-
+          {{ {'user': _pbs_reader_bao_data.get('o11y_copy_reader_user'),
+              'token_id': _pbs_reader_bao_data.get('o11y_copy_reader_token_id'),
+              'secret': _pbs_reader_bao_data.get('o11y_copy_reader_token_secret'),
+              'datastore': _pbs_reader_bao_data.get('o11y_copy_reader_datastore'),
+              'fingerprint': _pbs_reader_bao_data.get('o11y_copy_reader_fingerprint')}
+             if _pbs_reader_saved_keys | length > 0 else none }}
+      no_log: true
+
+    - name: Authenticate an existing Reader token only for a complete state
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", probe]
+        stdin: >-
+          {{ {'url': _pbs_reader_api_url,
+              'fingerprint': _pbs_reader_saved_record.fingerprint,
+              'auth_id': 'o11y-copy-reader@pbs!pbs-sync',
+              'secret': _pbs_reader_saved_record.secret} | to_json }}
+      register: _pbs_reader_auth_probe
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - >-
+          hostvars[_pbs_reader_guest]._pbs_reader_initial_data.users
+          | selectattr('userid', 'equalto', 'o11y-copy-reader@pbs') | list | length == 1
+        - >-
+          hostvars[_pbs_reader_guest]._pbs_reader_initial_data.tokens
+          | selectattr('tokenid', 'equalto', 'o11y-copy-reader@pbs!pbs-sync') | list | length == 1
+        - _pbs_reader_saved_keys | length == 5
+
+    - name: Validate the fixed Reader create or reuse state
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-reader-identity]
+        stdin: >-
+          {{ {'users': hostvars[_pbs_reader_guest]._pbs_reader_initial_data.users,
+              'tokens': hostvars[_pbs_reader_guest]._pbs_reader_initial_data.tokens,
+              'secret_record': _pbs_reader_saved_record,
+              'authenticated': (_pbs_reader_auth_probe.rc | default(2)) == 0} | to_json }}
+      register: _pbs_reader_identity_plan
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a complete or wholly absent Reader credential state
+      ansible.builtin.assert:
+        that: _pbs_reader_identity_plan.rc == 0
+        fail_msg: "PBS source Reader state is partial, conflicting, unauthenticated, or unsupported."
+        quiet: true
+      no_log: true
+
+    - name: Retain the sanitized create or reuse action
+      ansible.builtin.set_fact:
+        _pbs_reader_identity_action: "{{ (_pbs_reader_identity_plan.stdout | from_json).action }}"
+        _pbs_reader_reader_datastore: o11y
+        _pbs_reader_backup_bao_url: "{{ _pbs_reader_bao_url }}"
+      no_log: true
+
+- name: Provision the separate pull-only source credential and grants
+  hosts: pbs_svc
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Resolve bootstrap sudo password before Reader identity changes
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Configure Reader identity only when not in check mode
+      ansible.builtin.include_tasks: tasks/configure-pbs-copy-reader-identity.yml
+      vars:
+        _pbs_reader_identity_action: "{{ hostvars['localhost']._pbs_reader_identity_action }}"
+        _pbs_backup_fingerprint: "{{ _pbs_reader_guest_fingerprint }}"
+        _pbs_backup_bao_url: "{{ hostvars['localhost']._pbs_reader_backup_bao_url }}"
+      when: not ansible_check_mode
