@@ -107,6 +107,9 @@ QUERY_DEFAULT = re.compile(r"[A-Za-z0-9_/-]{1,128}")
 POINTS_PER_PANEL = 1000
 QUERY_TIMEOUT = 30
 LOKI_RESULT_LIMIT = 100
+WORKFLOW_STEP_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+MAX_WORKFLOW_STEPS = 128
+CURRENT_WORKFLOW_STATE_WINDOW_SECONDS = 45 * 60
 # The Prometheus HTTP API's errorType values (prometheus web/api/v1/api.go).
 ERROR_TYPES = {"timeout", "canceled", "execution", "bad_data", "internal", "unavailable", "not_found", "not_acceptable"}
 # These categorical observations are deliberately tied to the complete provisioned query
@@ -147,6 +150,19 @@ OBSERVATION_CONTRACTS = {
             'status=~"^(no_history|has_history|history_incomplete)$"} | json | '
             'inventory_code=~"^(0|1|2)$" | marker_time_seconds=~"^[0-9]+$" | '
             '__error__="" | unwrap inventory_code | __error__="" [45m]) by (service) * 0))'
+        ),
+    },
+    ("service-conformance", "Latest step status by service"): {
+        "name": "current_workflow_failed_steps",
+        "datasource": "loki",
+        "datasource_uid": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "window_seconds": CURRENT_WORKFLOW_STATE_WINDOW_SECONDS,
+        "scope": "latest_recorded_state",
+        "expr": (
+            'last_over_time({job="agent-cloud-conformance", step!="none"} | '
+            'json state_code | unwrap state_code | __error__="" [45m]) by (service, step)'
         ),
     },
     ("service-conformance", "Latest workflow completion age by service and step"): {
@@ -281,7 +297,11 @@ def _observation_contract(
         and not target.get("hide")
         for target in targets
     )
-    return {"name": expected["name"], "verified": exact}
+    contract = {"name": expected["name"], "verified": exact}
+    for key in ("window_seconds", "scope"):
+        if key in expected:
+            contract[key] = expected[key]
+    return contract
 
 
 def _observation_values(data: dict[str, Any]) -> list[float] | None:
@@ -335,6 +355,155 @@ def _categorical_observation(name: str, data: dict[str, Any]) -> str:
             return "unverified"
         return "unknown" if -1 in values else "known"
     return "unverified"
+
+
+def _workflow_identity_allowlists(
+    dashboards_dir: str, workflow_steps: Any
+) -> tuple[set[str], set[str]] | None:
+    """Read service ids locally and validate the controller-parsed registry's steps list."""
+    if not isinstance(workflow_steps, list) or not workflow_steps or len(workflow_steps) > MAX_WORKFLOW_STEPS:
+        return None
+    step_ids: list[str] = []
+    for entry in workflow_steps:
+        if not isinstance(entry, dict):
+            return None
+        step_id = entry.get("id")
+        if not isinstance(step_id, str) or not WORKFLOW_STEP_ID.fullmatch(step_id):
+            return None
+        step_ids.append(step_id)
+    if len(step_ids) != len(set(step_ids)):
+        return None
+
+    dashboards = Path(dashboards_dir).resolve()
+    repo_root = next(
+        (
+            parent
+            for parent in dashboards.parents
+            if (parent / "platform/services").is_dir()
+            and (parent / "agents").is_dir()
+        ),
+        None,
+    )
+    if repo_root is None:
+        return None
+
+    try:
+        service_ids = {
+            path.name
+            for parent in (repo_root / "platform/services", repo_root / "agents")
+            for path in parent.iterdir()
+            if path.is_dir() and re.fullmatch(r"[a-z][a-z0-9-]{0,39}", path.name)
+        }
+    except OSError:
+        return None
+    if not service_ids:
+        return None
+    return service_ids, set(step_ids)
+
+
+def _workflow_state_code(sample: Any) -> int | None:
+    """Accept only a complete Loki vector sample with a finite timestamp and string code."""
+    if not isinstance(sample, list) or len(sample) != 2:
+        return None
+    timestamp, value = sample
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+        return None
+    if not isinstance(value, str) or value not in {"0", "1", "2"}:
+        return None
+    try:
+        timestamp_number = float(timestamp)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(timestamp_number) or timestamp_number < 0:
+        return None
+    return int(value)
+
+
+def _failed_step_observation(
+    data: dict[str, Any], dashboards_dir: str, workflow_steps: Any,
+    window_seconds: int, scope: str,
+) -> dict[str, Any]:
+    """Return only registry-backed service/step failures, dropping all other Loki labels."""
+    metadata = {"window_seconds": window_seconds, "scope": scope}
+    allowlists = _workflow_identity_allowlists(dashboards_dir, workflow_steps)
+    if allowlists is None:
+        result = data.get("result")
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "unverified",
+            "reason": "registry_unavailable",
+            "unknown_series_count": len(result) if isinstance(result, list) else 0,
+            **metadata,
+        }
+    services, steps = allowlists
+    result = data.get("result")
+    if data.get("resultType") != "vector" or not isinstance(result, list):
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "unverified",
+            "reason": "unexpected_result_shape",
+            "unknown_series_count": len(result) if isinstance(result, list) else 0,
+            **metadata,
+        }
+    if not result:
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "no_data",
+            "failed_step_count": 0,
+            "failed_steps": [],
+            "truncated_count": 0,
+            "unknown_series_count": 0,
+            **metadata,
+        }
+
+    states: dict[tuple[str, str], int] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    unknown = 0
+    for series in result:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        sample = series.get("value") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or set(metric) != {"service", "step"}:
+            unknown += 1
+            continue
+        service, step = metric.get("service"), metric.get("step")
+        if (
+            not isinstance(service, str)
+            or not isinstance(step, str)
+            or service not in services
+            or step not in steps
+        ):
+            unknown += 1
+            continue
+        raw_state = _workflow_state_code(sample)
+        if raw_state is None:
+            unknown += 1
+            continue
+        key = (service, step)
+        if key in ambiguous:
+            unknown += 1
+            continue
+        if key in states:
+            # The provisioned last_over_time + by(service, step) query must return one
+            # reduced current state per pair. A duplicate makes that pair ambiguous.
+            unknown += 1
+            states.pop(key)
+            ambiguous.add(key)
+            continue
+        states[key] = int(raw_state)
+
+    failures = sorted({key for key, state in states.items() if state == 0})
+    cap = 50
+    failed_steps = [{"service": service, "step": step} for service, step in failures[:cap]]
+    status = "unverified" if unknown else ("present" if failures else "none")
+    return {
+        "name": "current_workflow_failed_steps",
+        "status": status,
+        "failed_step_count": len(failures),
+        "failed_steps": failed_steps,
+        "truncated_count": max(0, len(failures) - cap),
+        "unknown_series_count": unknown,
+        **metadata,
+    }
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -662,6 +831,9 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
         observation = None
         if contract:
             observation = {"name": contract["name"], "status": "unverified"}
+            for key in ("window_seconds", "scope"):
+                if key in contract:
+                    observation[key] = contract[key]
             if not contract["verified"]:
                 observation["reason"] = "contract_mismatch"
         for target in entry["targets"]:
@@ -698,7 +870,18 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                         series_with_values=with_values,
                     )
                     if observe_target:
-                        observation["status"] = _categorical_observation(contract["name"], answer["data"])
+                        if contract["name"] == "current_workflow_failed_steps":
+                            observation.update(
+                                _failed_step_observation(
+                                    answer["data"],
+                                    str(payload.get("dashboards_dir", "")),
+                                    payload.get("_vdd_workflow_steps"),
+                                    contract["window_seconds"],
+                                    contract["scope"],
+                                )
+                            )
+                        else:
+                            observation["status"] = _categorical_observation(contract["name"], answer["data"])
                         observation.pop("reason", None)
                 targets.append(row)
         queried = [t for t in targets if t["status"] in ("data", "empty", "error")]
