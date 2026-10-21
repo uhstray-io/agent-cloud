@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Plan fail-closed transitions for the fixed o11y restore coordination record.
+"""Plan strict versioned CAS transitions for one isolated o11y restore.
 
-This module validates inputs and produces OpenBao KV-v2 CAS payloads. It does
-not authenticate Proxmox or Semaphore evidence; a future caller must obtain
-that evidence from the live systems and guard every include input.
+This helper validates journal structure. It does not authenticate Proxmox,
+Semaphore, or QGA evidence; callers must obtain every fact through protected,
+exact-bound APIs. Schema 1 records are intentionally not adopted or migrated.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import secrets
 import sys
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RECORD_KEYS = {
     "schema_version",
     "declaration_fingerprint",
@@ -28,8 +28,9 @@ RECORD_KEYS = {
     "phase",
     "restore_nonce",
     "active_nonce",
-    "action",
-    "upid",
+    "pending",
+    "journal",
+    "restore_upid",
     "receipt_fingerprint",
     "prior_authenticated_task_id",
 }
@@ -37,10 +38,10 @@ PHASES = {"reserved", "restore_active", "awaiting_receipt", "cleanup_active", "c
 FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 REVISION = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 NONCE = re.compile(r"[0-9a-f]{64}\Z")
+NODE = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
 UPID = re.compile(
     r"UPID:[A-Za-z0-9_.-]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[A-Za-z0-9_-]+:[A-Za-z0-9_.-]*:[A-Za-z0-9_.@-]*:?\Z"
 )
-NODE = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
 SAFE_REASONS = {
     "invalid_input",
     "metadata_missing",
@@ -48,7 +49,6 @@ SAFE_REASONS = {
     "data_missing",
     "record_shape_invalid",
     "record_binding_mismatch",
-    "generation_mismatch",
     "phase_transition_invalid",
     "nonce_invalid",
     "evidence_invalid",
@@ -57,23 +57,25 @@ SAFE_REASONS = {
     "expected_snapshot_mismatch",
     "expected_version_mismatch",
 }
+JOURNAL_ACTIONS = {"restore", "isolate", "start", "guest_exec", "stop", "delete"}
+HANDLE_TYPES = {"upid", "qga_pid", "response_sha256"}
 
 
 class Refusal(ValueError):
     """A fixed, non-sensitive refusal category."""
 
     def __init__(self, reason: str) -> None:
-        super().__init__(reason if reason in SAFE_REASONS else "invalid_input")
         self.reason = reason if reason in SAFE_REASONS else "invalid_input"
-
-
-def _is_int(value: object, *, minimum: int = 0) -> bool:
-    return type(value) is int and value >= minimum
+        super().__init__(self.reason)
 
 
 def _require(condition: bool, reason: str) -> None:
     if not condition:
         raise Refusal(reason)
+
+
+def _is_int(value: object, minimum: int = 0) -> bool:
+    return type(value) is int and value >= minimum
 
 
 def _sha(value: object) -> bool:
@@ -89,12 +91,10 @@ def _nonce(value: object) -> bool:
 
 
 def fresh_nonce() -> str:
-    """Create the one 256-bit correlation nonce for a new operation phase."""
     return secrets.token_hex(32)
 
 
 def operation_identity(declaration: dict[str, Any]) -> str:
-    """Derive a stable opaque identity from the reviewed immutable bindings."""
     fields = (
         "declaration_fingerprint",
         "target_fingerprint",
@@ -102,85 +102,366 @@ def operation_identity(declaration: dict[str, Any]) -> str:
         "public_sha",
         "private_inventory_sha",
     )
-    canonical = {name: declaration[name] for name in fields}
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    encoded = json.dumps({key: declaration[key] for key in fields}, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
 def validate_declaration(declaration: object) -> dict[str, Any]:
-    """Validate exact declaration fields; values contain fingerprints only."""
-    required = {
+    keys = {
         "declaration_fingerprint",
         "target_fingerprint",
         "artifact_fingerprint",
         "public_sha",
         "private_inventory_sha",
     }
-    _require(isinstance(declaration, dict) and set(declaration) == required, "invalid_input")
-    _require(_sha(declaration["declaration_fingerprint"]), "invalid_input")
-    _require(_sha(declaration["target_fingerprint"]), "invalid_input")
-    _require(_sha(declaration["artifact_fingerprint"]), "invalid_input")
-    _require(_revision(declaration["public_sha"]), "invalid_input")
-    _require(_revision(declaration["private_inventory_sha"]), "invalid_input")
+    _require(isinstance(declaration, dict) and set(declaration) == keys, "invalid_input")
+    _require(
+        all(
+            _sha(declaration[key]) for key in ("declaration_fingerprint", "target_fingerprint", "artifact_fingerprint")
+        ),
+        "invalid_input",
+    )
+    _require(_revision(declaration["public_sha"]) and _revision(declaration["private_inventory_sha"]), "invalid_input")
     return declaration
 
 
+def _target_ref(value: object) -> dict[str, Any]:
+    _require(isinstance(value, dict) and set(value) == {"node", "vmid"}, "invalid_input")
+    _require(
+        isinstance(value["node"], str) and NODE.fullmatch(value["node"]) and value["node"] not in {".", ".."},
+        "invalid_input",
+    )
+    _require(_is_int(value["vmid"], 100) and value["vmid"] <= 999_999_999, "invalid_input")
+    return value
+
+
+def target_identity_fingerprint(target_ref: dict[str, Any]) -> str:
+    body = json.dumps(
+        {"node": target_ref["node"], "vmid": target_ref["vmid"]}, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(body).hexdigest()
+
+
+def declaration_fingerprint(target: object) -> str:
+    keys = {"vmid", "node", "storage_id", "network_mode", "headroom_percent"}
+    _require(isinstance(target, dict) and set(target) == keys, "invalid_input")
+    vmid = target["vmid"]
+    if isinstance(vmid, str):
+        _require(re.fullmatch(r"(?:0|[1-9][0-9]{0,8})", vmid) is not None, "invalid_input")
+        vmid = int(vmid)
+    _require(_is_int(vmid, 100) and vmid <= 999_999_999, "invalid_input")
+    node, storage, network, headroom = (
+        target["node"],
+        target["storage_id"],
+        target["network_mode"],
+        target["headroom_percent"],
+    )
+    _require(isinstance(node, str) and NODE.fullmatch(node) and node not in {".", ".."}, "invalid_input")
+    _require(
+        isinstance(storage, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", storage) and storage not in {".", ".."},
+        "invalid_input",
+    )
+    _require(network == "disconnected" and _is_int(headroom, 30) and headroom <= 90, "invalid_input")
+    canonical = {
+        "vmid": vmid,
+        "node": node,
+        "storage_id": storage,
+        "network_mode": network,
+        "headroom_percent": headroom,
+    }
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def _upid(value: object, target: dict[str, Any], operation: str) -> bool:
+    if not isinstance(value, str) or UPID.fullmatch(value) is None:
+        return False
+    fields = value.split(":")
+    return fields[1] == target["node"] and fields[5] == operation and fields[6] == str(target["vmid"])
+
+
+def _expected_handle(action: str, handle_type: object, handle: object, target: dict[str, Any]) -> bool:
+    expected = {"restore": "qmrestore", "start": "qmstart", "stop": "qmstop", "delete": "qmdestroy"}
+    if action in expected:
+        return handle_type == "upid" and _upid(handle, target, expected[action])
+    if action == "guest_exec":
+        return handle_type == "qga_pid" and _is_int(handle, 0)
+    return action == "isolate" and handle_type == "response_sha256" and _sha(handle)
+
+
+def _handle_shape(action: str, handle_type: object, handle: object) -> bool:
+    if action in {"restore", "start", "stop", "delete"}:
+        return handle_type == "upid" and isinstance(handle, str) and UPID.fullmatch(handle) is not None
+    if action == "guest_exec":
+        return handle_type == "qga_pid" and _is_int(handle, 0)
+    return action == "isolate" and handle_type == "response_sha256" and _sha(handle)
+
+
+def _action_effect_fingerprint(action: str, evidence: object, target: dict[str, Any], record: dict[str, Any]) -> str:
+    fields = {
+        "restore": {"type", "action", "node", "vmid", "task_state", "exit_status", "vm_state", "config_sha256"},
+        "isolate": {"type", "action", "node", "vmid", "status", "isolated", "nic_count", "onboot", "config_sha256"},
+        "start": {
+            "type",
+            "action",
+            "node",
+            "vmid",
+            "task_state",
+            "exit_status",
+            "vm_state",
+            "isolated",
+            "config_sha256",
+        },
+        "guest_exec": {
+            "type",
+            "action",
+            "node",
+            "vmid",
+            "pid",
+            "exit_code",
+            "checker_status",
+            "checker_receipt_fingerprint",
+            "output_sha256",
+        },
+        "stop": {
+            "type",
+            "action",
+            "node",
+            "vmid",
+            "task_state",
+            "exit_status",
+            "vm_state",
+            "isolated",
+            "config_sha256",
+        },
+        "delete": {"type", "action", "node", "vmid", "task_state", "exit_status", "task_output_sha256"},
+    }
+    _require(isinstance(evidence, dict) and set(evidence) == fields[action], "evidence_invalid")
+    _require(
+        evidence["action"] == action and evidence["node"] == target["node"] and evidence["vmid"] == target["vmid"],
+        "evidence_invalid",
+    )
+    if action == "restore":
+        _require(
+            evidence["type"] == "restore_effect/v2"
+            and evidence["task_state"] == "stopped"
+            and evidence["exit_status"] == "OK"
+            and evidence["vm_state"] == "stopped",
+            "evidence_invalid",
+        )
+        fingerprint = evidence["config_sha256"]
+    elif action == "isolate":
+        _require(
+            evidence["type"] == "isolation_effect/v2"
+            and evidence["status"] == 200
+            and evidence["isolated"] is True
+            and evidence["nic_count"] == 0
+            and evidence["onboot"] == 0,
+            "evidence_invalid",
+        )
+        fingerprint = evidence["config_sha256"]
+    elif action == "start":
+        _require(
+            evidence["type"] == "start_effect/v2"
+            and evidence["task_state"] == "stopped"
+            and evidence["exit_status"] == "OK"
+            and evidence["vm_state"] == "running"
+            and evidence["isolated"] is True,
+            "evidence_invalid",
+        )
+        fingerprint = evidence["config_sha256"]
+        _require(
+            len(record["journal"]) >= 2
+            and record["journal"][1]["action"] == "isolate"
+            and record["journal"][1]["effect_fingerprint"] == fingerprint,
+            "evidence_invalid",
+        )
+    elif action == "guest_exec":
+        _require(
+            evidence["type"] == "guest_effect/v2"
+            and evidence["pid"] == record["pending"]["handle"]
+            and _is_int(evidence["exit_code"])
+            and evidence["exit_code"] == 0
+            and evidence["checker_status"] == "verified",
+            "evidence_invalid",
+        )
+        fingerprint = evidence["checker_receipt_fingerprint"]
+        _require(_sha(evidence["output_sha256"]), "evidence_invalid")
+    elif action == "stop":
+        _require(
+            evidence["type"] == "stop_effect/v2"
+            and evidence["task_state"] == "stopped"
+            and evidence["exit_status"] == "OK"
+            and evidence["vm_state"] == "stopped"
+            and evidence["isolated"] is True,
+            "evidence_invalid",
+        )
+        fingerprint = evidence["config_sha256"]
+        _require(
+            len(record["journal"]) >= 3
+            and record["journal"][1]["action"] == "isolate"
+            and record["journal"][1]["effect_fingerprint"] == fingerprint,
+            "evidence_invalid",
+        )
+    else:
+        _require(
+            evidence["type"] == "delete_effect/v2"
+            and evidence["task_state"] == "stopped"
+            and evidence["exit_status"] == "OK",
+            "evidence_invalid",
+        )
+        fingerprint = evidence["task_output_sha256"]
+    _require(_sha(fingerprint), "evidence_invalid")
+    return fingerprint
+
+
+def _validate_event(event: object, target: dict[str, Any], *, completed: bool) -> None:
+    base = {"action", "request_fingerprint", "handle_type", "handle", "effect_fingerprint"}
+    _require(isinstance(event, dict) and set(event) == base, "record_shape_invalid")
+    action = event["action"]
+    _require(action in JOURNAL_ACTIONS and _sha(event["request_fingerprint"]), "record_shape_invalid")
+    if completed:
+        _require(_expected_handle(action, event["handle_type"], event["handle"], target), "record_shape_invalid")
+        _require(_sha(event["effect_fingerprint"]), "record_shape_invalid")
+    else:
+        _require(
+            event["handle_type"] is None and event["handle"] is None and event["effect_fingerprint"] is None,
+            "record_shape_invalid",
+        )
+
+
 def validate_record(record: object) -> dict[str, Any]:
-    """Require the exact versioned schema, types, and phase-specific invariants."""
     _require(isinstance(record, dict) and set(record) == RECORD_KEYS, "record_shape_invalid")
     _require(
-        record["schema_version"] == SCHEMA_VERSION and type(record["schema_version"]) is int, "record_shape_invalid"
+        type(record["schema_version"]) is int and record["schema_version"] == SCHEMA_VERSION, "record_shape_invalid"
     )
-    _require(_sha(record["declaration_fingerprint"]), "record_shape_invalid")
-    _require(_sha(record["target_fingerprint"]), "record_shape_invalid")
-    _require(_sha(record["artifact_fingerprint"]), "record_shape_invalid")
-    _require(_revision(record["public_sha"]), "record_shape_invalid")
-    _require(_revision(record["private_inventory_sha"]), "record_shape_invalid")
-    _require(_sha(record["operation_id"]), "record_shape_invalid")
+    for name in ("declaration_fingerprint", "target_fingerprint", "artifact_fingerprint", "operation_id"):
+        _require(_sha(record[name]), "record_shape_invalid")
+    for name in ("public_sha", "private_inventory_sha"):
+        _require(_revision(record[name]), "record_shape_invalid")
     _require(record["generation"] == 1 and type(record["generation"]) is int, "record_shape_invalid")
-    _require(isinstance(record["phase"], str) and record["phase"] in PHASES, "record_shape_invalid")
+    _require(record["phase"] in PHASES and isinstance(record["phase"], str), "record_shape_invalid")
     _require(_nonce(record["restore_nonce"]), "record_shape_invalid")
     _require(record["active_nonce"] is None or _nonce(record["active_nonce"]), "record_shape_invalid")
+    _require(record["pending"] is None or isinstance(record["pending"], dict), "record_shape_invalid")
+    _require(isinstance(record["journal"], list) and len(record["journal"]) <= 6, "record_shape_invalid")
+    target = record.get("_target_ref")
+    # The target reference is deliberately transient and not part of the stored schema.
+    _require(target is None, "record_shape_invalid")
+    for event in record["journal"]:
+        _require(
+            isinstance(event, dict)
+            and set(event) == {"action", "request_fingerprint", "handle_type", "handle", "effect_fingerprint"},
+            "record_shape_invalid",
+        )
+        _require(event["action"] in JOURNAL_ACTIONS and _sha(event["request_fingerprint"]), "record_shape_invalid")
+        _require(_handle_shape(event["action"], event["handle_type"], event["handle"]), "record_shape_invalid")
+        _require(_sha(event["effect_fingerprint"]), "record_shape_invalid")
+    if record["pending"] is not None:
+        pending = record["pending"]
+        _require(
+            isinstance(pending, dict)
+            and set(pending) == {"action", "request_fingerprint", "handle_type", "handle", "effect_fingerprint"},
+            "record_shape_invalid",
+        )
+        _require(pending["action"] in JOURNAL_ACTIONS and _sha(pending["request_fingerprint"]), "record_shape_invalid")
+        if pending["handle_type"] is None:
+            _require(pending["handle"] is None and pending["effect_fingerprint"] is None, "record_shape_invalid")
+        else:
+            _require(
+                _handle_shape(pending["action"], pending["handle_type"], pending["handle"]), "record_shape_invalid"
+            )
+            _require(pending["effect_fingerprint"] is None, "record_shape_invalid")
     _require(
-        record["action"] is None or (isinstance(record["action"], str) and record["action"] in {"restore", "delete"}),
-        "record_shape_invalid",
-    )
-    _require(
-        record["upid"] is None or (isinstance(record["upid"], str) and UPID.fullmatch(record["upid"]) is not None),
+        record["restore_upid"] is None
+        or (isinstance(record["restore_upid"], str) and UPID.fullmatch(record["restore_upid"])),
         "record_shape_invalid",
     )
     _require(record["receipt_fingerprint"] is None or _sha(record["receipt_fingerprint"]), "record_shape_invalid")
     _require(
-        record["prior_authenticated_task_id"] is None or _is_int(record["prior_authenticated_task_id"], minimum=1),
+        record["prior_authenticated_task_id"] is None or _is_int(record["prior_authenticated_task_id"], 1),
         "record_shape_invalid",
     )
-    if record["phase"] == "reserved":
+    actions = [event["action"] for event in record["journal"]]
+    if record["restore_upid"] is None:
+        _require(not actions or actions[0] != "restore", "record_shape_invalid")
+    else:
         _require(
-            record["active_nonce"] is None and record["action"] is None and record["upid"] is None,
+            bool(record["journal"])
+            and record["journal"][0]["action"] == "restore"
+            and record["journal"][0]["handle"] == record["restore_upid"],
             "record_shape_invalid",
         )
+    if record["phase"] == "reserved":
         _require(
-            record["receipt_fingerprint"] is None and record["prior_authenticated_task_id"] is None,
+            not actions
+            and record["pending"] is None
+            and record["active_nonce"] is None
+            and record["restore_upid"] is None,
             "record_shape_invalid",
         )
     elif record["phase"] == "restore_active":
-        _require(record["active_nonce"] == record["restore_nonce"], "record_shape_invalid")
-        _require(record["action"] == "restore" and record["receipt_fingerprint"] is None, "record_shape_invalid")
+        _require(
+            record["active_nonce"] == record["restore_nonce"] and record["receipt_fingerprint"] is None,
+            "record_shape_invalid",
+        )
+        _require(
+            actions == ["restore", "isolate", "start", "guest_exec", "stop"][: len(actions)], "record_shape_invalid"
+        )
+        expected_pending = (
+            ["restore", "isolate", "start", "guest_exec", "stop"][len(actions)] if len(actions) < 5 else None
+        )
+        _require(
+            record["pending"] is None
+            if expected_pending is None
+            else (record["pending"] is None or record["pending"]["action"] == expected_pending),
+            "record_shape_invalid",
+        )
     elif record["phase"] == "awaiting_receipt":
-        _require(record["active_nonce"] is None and record["action"] is None, "record_shape_invalid")
-        _require(record["upid"] is not None and _sha(record["receipt_fingerprint"]), "record_shape_invalid")
+        _require(
+            record["active_nonce"] is None
+            and record["pending"] is None
+            and actions == ["restore", "isolate", "start", "guest_exec", "stop"],
+            "record_shape_invalid",
+        )
+        _require(
+            isinstance(record["restore_upid"], str)
+            and UPID.fullmatch(record["restore_upid"]) is not None
+            and _sha(record["receipt_fingerprint"]),
+            "record_shape_invalid",
+        )
         _require(record["prior_authenticated_task_id"] is None, "record_shape_invalid")
     elif record["phase"] == "cleanup_active":
         _require(
             record["active_nonce"] != record["restore_nonce"] and _nonce(record["active_nonce"]), "record_shape_invalid"
         )
-        _require(record["action"] == "delete" and _sha(record["receipt_fingerprint"]), "record_shape_invalid")
-        _require(_is_int(record["prior_authenticated_task_id"], minimum=1), "record_shape_invalid")
-    elif record["phase"] == "cleaned":
-        _require(_nonce(record["active_nonce"]), "record_shape_invalid")
-        _require(record["action"] is None and record["upid"] is not None, "record_shape_invalid")
-        _require(_sha(record["receipt_fingerprint"]), "record_shape_invalid")
-        _require(_is_int(record["prior_authenticated_task_id"], minimum=1), "record_shape_invalid")
+        _require(
+            actions
+            in (
+                ["restore", "isolate", "start", "guest_exec", "stop"],
+                ["restore", "isolate", "start", "guest_exec", "stop", "delete"],
+            )
+            and record["receipt_fingerprint"]
+            and _is_int(record["prior_authenticated_task_id"], 1),
+            "record_shape_invalid",
+        )
+        _require(
+            record["pending"] is None or (record["pending"]["action"] == "delete" and len(actions) == 5),
+            "record_shape_invalid",
+        )
+    else:
+        _require(record["active_nonce"] is not None and record["pending"] is None, "record_shape_invalid")
+        _require(actions == ["restore", "isolate", "start", "guest_exec", "stop", "delete"], "record_shape_invalid")
+        _require(
+            _sha(record["receipt_fingerprint"]) and _is_int(record["prior_authenticated_task_id"], 1),
+            "record_shape_invalid",
+        )
+    if record["pending"] is not None:
+        _require(
+            record["pending"]["action"] == ("delete" if record["phase"] == "cleanup_active" else expected_pending),
+            "record_shape_invalid",
+        )
     _require(record["operation_id"] == operation_identity(record), "record_binding_mismatch")
     return record
 
@@ -188,107 +469,37 @@ def validate_record(record: object) -> dict[str, Any]:
 def read_snapshot(
     metadata_status: object, metadata_payload: object, data_status: object, data_payload: object
 ) -> tuple[dict[str, Any] | None, int]:
-    """Decode a KV-v2 read pair; only a true never-created path is absent."""
     _require(type(metadata_status) is int and metadata_status in {200, 404}, "invalid_input")
     _require(type(data_status) is int and data_status in {200, 404}, "invalid_input")
-    if metadata_status == 404 and data_status == 404:
+    if metadata_status == data_status == 404:
         return None, 0
-    _require(metadata_status == 200, "metadata_missing")
-    _require(isinstance(metadata_payload, dict), "record_shape_invalid")
-    current_version = metadata_payload.get("current_version")
-    _require(_is_int(current_version, minimum=1), "metadata_tombstone")
-    versions = metadata_payload.get("versions")
-    _require(isinstance(versions, dict), "record_shape_invalid")
-    current_metadata = versions.get(str(current_version))
-    _require(isinstance(current_metadata, dict), "metadata_tombstone")
-    _require(current_metadata.get("deletion_time") in (None, ""), "metadata_tombstone")
+    _require(metadata_status == 200 and isinstance(metadata_payload, dict), "metadata_missing")
+    version = metadata_payload.get("current_version")
+    _require(_is_int(version, 1), "metadata_tombstone")
+    current = metadata_payload.get("versions", {}).get(str(version))
     _require(
-        type(current_metadata.get("destroyed")) is bool and not current_metadata["destroyed"], "metadata_tombstone"
+        isinstance(current, dict) and current.get("deletion_time") in (None, "") and current.get("destroyed") is False,
+        "metadata_tombstone",
     )
     _require(data_status == 200 and isinstance(data_payload, dict), "data_missing")
     data = data_payload.get("data")
     _require(isinstance(data, dict) and set(data) == {"data", "metadata"}, "record_shape_invalid")
-    record = data.get("data")
-    kv_metadata = data.get("metadata")
     _require(
-        isinstance(kv_metadata, dict)
-        and type(kv_metadata.get("version")) is int
-        and kv_metadata["version"] == current_version,
+        isinstance(data["metadata"], dict)
+        and type(data["metadata"].get("version")) is int
+        and data["metadata"]["version"] == version,
         "cas_version_invalid",
     )
-    return validate_record(record), current_version
-
-
-def _bindings_match(record: dict[str, Any], declaration: dict[str, Any]) -> None:
-    for key, value in declaration.items():
-        _require(record[key] == value, "record_binding_mismatch")
-    _require(record["operation_id"] == operation_identity(declaration), "record_binding_mismatch")
-
-
-def _task_id(value: object) -> bool:
-    return _is_int(value, minimum=1)
-
-
-def _validate_target_ref(target_ref: object) -> dict[str, Any]:
-    _require(isinstance(target_ref, dict) and set(target_ref) == {"node", "vmid"}, "invalid_input")
-    _require(isinstance(target_ref["node"], str) and NODE.fullmatch(target_ref["node"]) is not None, "invalid_input")
-    _require(_is_int(target_ref["vmid"], minimum=100), "invalid_input")
-    return target_ref
-
-
-def target_identity_fingerprint(target_ref: dict[str, Any]) -> str:
-    """Fingerprint the canonical Proxmox node and VMID identity only."""
-    encoded = json.dumps(
-        {"node": target_ref["node"], "vmid": target_ref["vmid"]}, sort_keys=True, separators=(",", ":")
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def declaration_fingerprint(target_declaration: object) -> str:
-    """Hash exactly the normalized private restore-target declaration."""
-    keys = {"vmid", "node", "storage_id", "network_mode", "headroom_percent"}
-    _require(isinstance(target_declaration, dict) and set(target_declaration) == keys, "invalid_input")
-    vmid = target_declaration["vmid"]
-    if isinstance(vmid, str):
-        _require(re.fullmatch(r"(?:0|[1-9][0-9]{0,8})", vmid) is not None, "invalid_input")
-        vmid = int(vmid)
-    _require(_is_int(vmid, minimum=100) and vmid <= 999_999_999, "invalid_input")
-    node = target_declaration["node"]
-    storage = target_declaration["storage_id"]
-    mode = target_declaration["network_mode"]
-    headroom = target_declaration["headroom_percent"]
-    _require(isinstance(node, str) and NODE.fullmatch(node) is not None and node not in {".", ".."}, "invalid_input")
-    _require(isinstance(storage, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", storage) is not None, "invalid_input")
-    _require(storage not in {".", ".."}, "invalid_input")
-    _require(mode == "disconnected", "invalid_input")
-    _require(_is_int(headroom, minimum=30) and headroom <= 90, "invalid_input")
-    normalized = {
-        "vmid": vmid,
-        "node": node,
-        "storage_id": storage,
-        "network_mode": mode,
-        "headroom_percent": headroom,
-    }
-    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _upid_matches(upid: object, target_ref: dict[str, Any], operation: str) -> bool:
-    if not isinstance(upid, str) or UPID.fullmatch(upid) is None:
-        return False
-    parts = upid.split(":")
-    return parts[1] == target_ref["node"] and parts[5] == operation and parts[6] == str(target_ref["vmid"])
+    return validate_record(data["data"]), version
 
 
 def _owner_nonce(record: dict[str, Any]) -> str:
     return record["active_nonce"] if record["phase"] in {"cleanup_active", "cleaned"} else record["restore_nonce"]
 
 
-def _validate_saved_upid(record: dict[str, Any], target_ref: dict[str, Any]) -> None:
-    if record["upid"] is None:
-        return
-    operation = "qmdestroy" if record["phase"] in {"cleanup_active", "cleaned"} else "qmrestore"
-    _require(_upid_matches(record["upid"], target_ref, operation), "evidence_invalid")
+def _bindings_match(record: dict[str, Any], declaration: dict[str, Any]) -> None:
+    _require(all(record[key] == value for key, value in declaration.items()), "record_binding_mismatch")
+    _require(record["operation_id"] == operation_identity(declaration), "record_binding_mismatch")
 
 
 def _restore_receipt(evidence: object, record: dict[str, Any]) -> str:
@@ -299,25 +510,42 @@ def _restore_receipt(evidence: object, record: dict[str, Any]) -> str:
         "restore_upid",
         "target_state",
         "pending_action",
+        "completed_actions",
     }
-    _require(isinstance(evidence, dict) and set(evidence) == keys, "evidence_invalid")
-    _require(evidence["type"] == "restore_receipt/v1", "evidence_invalid")
-    _require(_sha(evidence["receipt_fingerprint"]), "evidence_invalid")
+    _require(
+        isinstance(evidence, dict) and set(evidence) == keys and evidence["type"] == "restore_receipt/v2",
+        "evidence_invalid",
+    )
     expected = {
-        "operation_id": record["operation_id"],
-        "target_fingerprint": record["target_fingerprint"],
-        "artifact_fingerprint": record["artifact_fingerprint"],
-        "restore_nonce": record["restore_nonce"],
-        "public_sha": record["public_sha"],
-        "private_inventory_sha": record["private_inventory_sha"],
+        key: record[key]
+        for key in (
+            "operation_id",
+            "target_fingerprint",
+            "artifact_fingerprint",
+            "restore_nonce",
+            "public_sha",
+            "private_inventory_sha",
+        )
     }
-    _require(evidence["bindings"] == expected, "evidence_invalid")
-    _require(evidence["restore_upid"] == record["upid"], "evidence_invalid")
-    _require(evidence["target_state"] == "stopped" and evidence["pending_action"] is None, "evidence_invalid")
+    _require(
+        evidence["bindings"] == expected and evidence["restore_upid"] == record["restore_upid"], "evidence_invalid"
+    )
+    _require(
+        evidence["target_state"] == "stopped"
+        and evidence["pending_action"] is None
+        and evidence["completed_actions"] == ["restore", "isolate", "start", "guest_exec", "stop"],
+        "evidence_invalid",
+    )
+    _require(_sha(evidence["receipt_fingerprint"]), "evidence_invalid")
+    body = {key: value for key, value in evidence.items() if key != "receipt_fingerprint"}
+    expected_fingerprint = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    _require(evidence["receipt_fingerprint"] == expected_fingerprint, "evidence_invalid")
     return evidence["receipt_fingerprint"]
 
 
-def _validate_restore_task_proof_shape(evidence: object, record: dict[str, Any], version: int) -> int:
+def _restore_task_proof(evidence: object, record: dict[str, Any], version: int) -> int:
     keys = {
         "type",
         "task_id",
@@ -328,66 +556,43 @@ def _validate_restore_task_proof_shape(evidence: object, record: dict[str, Any],
         "coordination_record",
         "coordination_version",
     }
-    _require(isinstance(evidence, dict) and set(evidence) == keys, "evidence_invalid")
-    _require(evidence["type"] == "prior_restore_task_proof/v1", "evidence_invalid")
-    _require(_task_id(evidence["task_id"]) and evidence["task_status"] == "success", "evidence_invalid")
-    _require(_sha(evidence["output_fingerprint"]) and _sha(evidence["receipt_fingerprint"]), "evidence_invalid")
-    expected = {
-        "operation_id": record["operation_id"],
-        "target_fingerprint": record["target_fingerprint"],
-        "artifact_fingerprint": record["artifact_fingerprint"],
-        "restore_nonce": record["restore_nonce"],
-        "public_sha": record["public_sha"],
-        "private_inventory_sha": record["private_inventory_sha"],
-        "restore_upid": record["upid"],
-    }
-    _require(evidence["bindings"] == expected, "evidence_invalid")
-    _require(evidence["receipt_fingerprint"] == record["receipt_fingerprint"], "evidence_invalid")
-    _require(evidence["coordination_record"] == record, "evidence_invalid")
     _require(
-        type(evidence["coordination_version"]) is int and evidence["coordination_version"] == version,
+        isinstance(evidence, dict) and set(evidence) == keys and evidence["type"] == "prior_restore_task_proof/v2",
+        "evidence_invalid",
+    )
+    _require(
+        _is_int(evidence["task_id"], 1)
+        and evidence["task_status"] == "success"
+        and _sha(evidence["output_fingerprint"]),
+        "evidence_invalid",
+    )
+    expected = {
+        key: record[key]
+        for key in (
+            "operation_id",
+            "target_fingerprint",
+            "artifact_fingerprint",
+            "restore_nonce",
+            "public_sha",
+            "private_inventory_sha",
+        )
+    }
+    expected["restore_upid"] = record["restore_upid"]
+    _require(
+        evidence["bindings"] == expected and evidence["receipt_fingerprint"] == record["receipt_fingerprint"],
+        "evidence_invalid",
+    )
+    _require(
+        evidence["coordination_record"] == record
+        and type(evidence["coordination_version"]) is int
+        and evidence["coordination_version"] == version,
         "evidence_invalid",
     )
     return evidence["task_id"]
 
 
-def _delete_verification(evidence: object, record: dict[str, Any], target_ref: dict[str, Any]) -> None:
-    keys = {"type", "bindings", "delete_upid", "task_state", "exit_status", "target_absence"}
-    _require(isinstance(evidence, dict) and set(evidence) == keys, "evidence_invalid")
-    _require(evidence["type"] == "pve_delete_verification/v1", "evidence_invalid")
-    expected_bindings = {
-        "operation_id": record["operation_id"],
-        "target_fingerprint": record["target_fingerprint"],
-        "artifact_fingerprint": record["artifact_fingerprint"],
-        "restore_nonce": record["restore_nonce"],
-        "active_nonce": record["active_nonce"],
-        "prior_authenticated_task_id": record["prior_authenticated_task_id"],
-        "public_sha": record["public_sha"],
-        "private_inventory_sha": record["private_inventory_sha"],
-    }
-    _require(evidence["bindings"] == expected_bindings, "evidence_invalid")
-    _require(evidence["delete_upid"] == record["upid"], "evidence_invalid")
-    _require(evidence["task_state"] == "stopped" and evidence["exit_status"] == "OK", "evidence_invalid")
-    absence = evidence["target_absence"]
-    absence_keys = {"type", "node", "vmid", "nextid_status", "nextid_echo", "node_config_status", "target_fingerprint"}
-    _require(isinstance(absence, dict) and set(absence) == absence_keys, "evidence_invalid")
-    _require(absence["type"] == "pve_exact_vmid_absence/v1", "evidence_invalid")
-    _require(absence["node"] == target_ref["node"], "evidence_invalid")
-    _require(type(absence["nextid_status"]) is int and absence["nextid_status"] == 200, "evidence_invalid")
-    _require(
-        _is_int(absence["vmid"], minimum=100)
-        and absence["vmid"] == target_ref["vmid"]
-        and _is_int(absence["nextid_echo"], minimum=1)
-        and absence["nextid_echo"] == absence["vmid"],
-        "evidence_invalid",
-    )
-    _require(type(absence["node_config_status"]) is int and absence["node_config_status"] == 404, "evidence_invalid")
-    _require(absence["target_fingerprint"] == record["target_fingerprint"], "evidence_invalid")
-
-
 def plan_transition(snapshot: dict[str, Any] | None, version: int, request: object) -> dict[str, Any]:
-    """Validate a single requested transition and return an exact CAS plan."""
-    expected_request_keys = {
+    keys = {
         "transition",
         "declaration",
         "target_ref",
@@ -395,126 +600,296 @@ def plan_transition(snapshot: dict[str, Any] | None, version: int, request: obje
         "expected_version",
         "nonce",
         "evidence",
-        "upid",
+        "action",
+        "request_fingerprint",
+        "handle_type",
+        "handle",
+        "effect_fingerprint",
     }
-    _require(isinstance(request, dict) and set(request) == expected_request_keys, "invalid_input")
+    _require(isinstance(request, dict) and set(request) == keys, "invalid_input")
     declaration = validate_declaration(request["declaration"])
-    target_ref = _validate_target_ref(request["target_ref"])
-    _require(target_identity_fingerprint(target_ref) == declaration["target_fingerprint"], "record_binding_mismatch")
+    target = _target_ref(request["target_ref"])
+    _require(target_identity_fingerprint(target) == declaration["target_fingerprint"], "record_binding_mismatch")
     transition = request["transition"]
-    _require(
-        isinstance(transition, str)
-        and transition
-        in {
-            "reserve",
-            "start_restore",
-            "record_restore_upid",
-            "awaiting_receipt",
-            "start_cleanup",
-            "record_cleanup_upid",
-            "cleaned",
-        },
-        "invalid_input",
-    )
-    _require(_is_int(version), "cas_version_invalid")
-    _require(_is_int(request["expected_version"]), "expected_version_mismatch")
-
+    allowed = {
+        "reserve",
+        "intent_restore",
+        "intent_action",
+        "record_handle",
+        "verify_effect",
+        "awaiting_receipt",
+        "start_cleanup",
+        "cleaned",
+    }
+    _require(transition in allowed and _is_int(version) and _is_int(request["expected_version"]), "invalid_input")
     if snapshot is None:
-        _require(transition == "reserve" and version == 0, "phase_transition_invalid")
-        _require(request["expected_record"] is None and request["expected_version"] == 0, "expected_snapshot_mismatch")
-        _require(request["evidence"] is None and request["upid"] is None, "invalid_input")
-        _require(request["nonce"] is None, "nonce_invalid")
-        generated_nonce = fresh_nonce()
-        _require(_nonce(generated_nonce), "nonce_invalid")
+        _require(
+            transition == "reserve"
+            and version == request["expected_version"] == 0
+            and request["expected_record"] is None
+            and request["nonce"] is None,
+            "phase_transition_invalid",
+        )
+        _require(
+            all(
+                request[key] is None
+                for key in ("evidence", "action", "request_fingerprint", "handle_type", "handle", "effect_fingerprint")
+            ),
+            "invalid_input",
+        )
+        nonce = fresh_nonce()
         record = {
             **declaration,
             "schema_version": SCHEMA_VERSION,
             "operation_id": operation_identity(declaration),
             "generation": 1,
             "phase": "reserved",
-            "restore_nonce": generated_nonce,
+            "restore_nonce": nonce,
             "active_nonce": None,
-            "action": None,
-            "upid": None,
+            "pending": None,
+            "journal": [],
+            "restore_upid": None,
             "receipt_fingerprint": None,
             "prior_authenticated_task_id": None,
         }
         cas = 0
     else:
-        expected_record = request["expected_record"]
-        _require(isinstance(expected_record, dict), "expected_snapshot_mismatch")
-        validate_record(expected_record)
-        _require(expected_record == snapshot, "expected_snapshot_mismatch")
+        expected = request["expected_record"]
+        _require(isinstance(expected, dict) and validate_record(expected) == snapshot, "expected_snapshot_mismatch")
         _require(request["expected_version"] == version, "expected_version_mismatch")
         _bindings_match(snapshot, declaration)
-        _validate_saved_upid(snapshot, target_ref)
-        _require(isinstance(request["nonce"], str) and request["nonce"] == _owner_nonce(snapshot), "nonce_invalid")
+        expected_actions = ["restore", "isolate", "start", "guest_exec", "stop"]
+        for index, event in enumerate(snapshot["journal"]):
+            action = event["action"]
+            _require(
+                index < len(expected_actions) + (action == "delete")
+                and action
+                == (
+                    "delete"
+                    if snapshot["phase"] in {"cleanup_active", "cleaned"} and index == 5
+                    else expected_actions[index]
+                ),
+                "record_shape_invalid",
+            )
+            _require(_expected_handle(action, event["handle_type"], event["handle"], target), "evidence_invalid")
+        if snapshot["restore_upid"] is not None:
+            _require(_upid(snapshot["restore_upid"], target, "qmrestore"), "evidence_invalid")
+        if snapshot["pending"] is not None and snapshot["pending"]["handle_type"] is not None:
+            _require(
+                _expected_handle(
+                    snapshot["pending"]["action"],
+                    snapshot["pending"]["handle_type"],
+                    snapshot["pending"]["handle"],
+                    target,
+                ),
+                "evidence_invalid",
+            )
+        _require(request["nonce"] == _owner_nonce(snapshot), "nonce_invalid")
         record = dict(snapshot)
+        record["journal"] = list(snapshot["journal"])
         cas = version
         if snapshot["phase"] == "cleaned" and transition == "reserve":
             return {"result": "unchanged", "record": snapshot, "version": version}
-        if transition == "start_restore":
-            _require(snapshot["phase"] == "reserved", "phase_transition_invalid")
-            _require(request["evidence"] is None and request["upid"] is None, "invalid_input")
-            record.update(phase="restore_active", active_nonce=snapshot["restore_nonce"], action="restore")
-        elif transition == "record_restore_upid":
+        if transition == "intent_restore":
             _require(
-                snapshot["phase"] == "restore_active" and snapshot["action"] == "restore" and snapshot["upid"] is None,
+                snapshot["phase"] == "reserved" and snapshot["pending"] is None and not snapshot["journal"],
                 "phase_transition_invalid",
             )
-            _require(request["evidence"] is None, "invalid_input")
-            _require(_upid_matches(request["upid"], target_ref, "qmrestore"), "evidence_invalid")
-            record["upid"] = request["upid"]
+            _require(request["action"] == "restore" and _sha(request["request_fingerprint"]), "evidence_invalid")
+            _require(
+                all(request[key] is None for key in ("evidence", "handle_type", "handle", "effect_fingerprint")),
+                "invalid_input",
+            )
+            record.update(
+                phase="restore_active",
+                active_nonce=snapshot["restore_nonce"],
+                pending={
+                    "action": "restore",
+                    "request_fingerprint": request["request_fingerprint"],
+                    "handle_type": None,
+                    "handle": None,
+                    "effect_fingerprint": None,
+                },
+            )
+        elif transition == "intent_action":
+            expected_actions = ["restore", "isolate", "start", "guest_exec", "stop"]
+            expected_index = len(snapshot["journal"])
+            _require(
+                snapshot["phase"] == "restore_active" and snapshot["pending"] is None and expected_index in range(1, 5),
+                "phase_transition_invalid",
+            )
+            _require(
+                request["action"] == expected_actions[expected_index] and _sha(request["request_fingerprint"]),
+                "evidence_invalid",
+            )
+            _require(
+                all(request[key] is None for key in ("evidence", "handle_type", "handle", "effect_fingerprint")),
+                "invalid_input",
+            )
+            record["pending"] = {
+                "action": request["action"],
+                "request_fingerprint": request["request_fingerprint"],
+                "handle_type": None,
+                "handle": None,
+                "effect_fingerprint": None,
+            }
+        elif transition == "record_handle":
+            pending = snapshot["pending"]
+            _require(
+                snapshot["phase"] in {"restore_active", "cleanup_active"} and isinstance(pending, dict),
+                "phase_transition_invalid",
+            )
+            _require(
+                request["action"] == pending["action"]
+                and _expected_handle(pending["action"], request["handle_type"], request["handle"], target),
+                "evidence_invalid",
+            )
+            _require(
+                request["request_fingerprint"] == pending["request_fingerprint"]
+                and request["evidence"] is None
+                and request["effect_fingerprint"] is None,
+                "evidence_invalid",
+            )
+            pending = dict(pending)
+            pending.update(handle_type=request["handle_type"], handle=request["handle"])
+            record["pending"] = pending
+        elif transition == "verify_effect":
+            pending = snapshot["pending"]
+            _require(
+                snapshot["phase"] in {"restore_active", "cleanup_active"}
+                and isinstance(pending, dict)
+                and pending["handle_type"] is not None,
+                "phase_transition_invalid",
+            )
+            _require(
+                request["action"] == pending["action"]
+                and request["request_fingerprint"] == pending["request_fingerprint"],
+                "evidence_invalid",
+            )
+            _require(
+                request["handle_type"] == pending["handle_type"] and request["handle"] == pending["handle"],
+                "evidence_invalid",
+            )
+            expected_effect = _action_effect_fingerprint(pending["action"], request["evidence"], target, snapshot)
+            _require(request["effect_fingerprint"] == expected_effect, "evidence_invalid")
+            action = pending["action"]
+            _require(
+                action
+                == (
+                    "delete"
+                    if snapshot["phase"] == "cleanup_active"
+                    else ["restore", "isolate", "start", "guest_exec", "stop"][len(snapshot["journal"])]
+                ),
+                "phase_transition_invalid",
+            )
+            event = dict(pending, effect_fingerprint=request["effect_fingerprint"])
+            record["journal"].append(event)
+            record["pending"] = None
+            if action == "restore":
+                _require(pending["handle_type"] == "upid", "evidence_invalid")
+                record["restore_upid"] = pending["handle"]
         elif transition == "awaiting_receipt":
             _require(
                 snapshot["phase"] == "restore_active"
-                and snapshot["action"] == "restore"
-                and snapshot["upid"] is not None,
+                and snapshot["pending"] is None
+                and [item["action"] for item in snapshot["journal"]]
+                == ["restore", "isolate", "start", "guest_exec", "stop"],
                 "phase_transition_invalid",
             )
-            _require(request["upid"] is None, "invalid_input")
-            receipt = _restore_receipt(request["evidence"], snapshot)
-            record.update(
-                phase="awaiting_receipt",
-                active_nonce=None,
-                action=None,
-                receipt_fingerprint=receipt,
-                prior_authenticated_task_id=None,
+            _require(
+                all(
+                    request[key] is None
+                    for key in ("action", "request_fingerprint", "handle_type", "handle", "effect_fingerprint")
+                ),
+                "invalid_input",
             )
+            receipt = _restore_receipt(request["evidence"], snapshot)
+            record.update(phase="awaiting_receipt", active_nonce=None, receipt_fingerprint=receipt)
         elif transition == "start_cleanup":
-            _require(snapshot["phase"] == "awaiting_receipt", "phase_transition_invalid")
-            cleanup_nonce = fresh_nonce()
-            _require(_nonce(cleanup_nonce) and cleanup_nonce != snapshot["restore_nonce"], "nonce_invalid")
-            _require(request["upid"] is None, "invalid_input")
-            task_id = _validate_restore_task_proof_shape(request["evidence"], snapshot, version)
+            _require(
+                snapshot["phase"] == "awaiting_receipt" and snapshot["pending"] is None, "phase_transition_invalid"
+            )
+            task_id = _restore_task_proof(request["evidence"], snapshot, version)
+            nonce = fresh_nonce()
+            _require(_nonce(nonce) and nonce != snapshot["restore_nonce"], "nonce_invalid")
             record.update(
                 phase="cleanup_active",
-                active_nonce=cleanup_nonce,
-                action="delete",
-                upid=None,
+                active_nonce=nonce,
                 prior_authenticated_task_id=task_id,
+                pending={
+                    "action": "delete",
+                    "request_fingerprint": request["request_fingerprint"],
+                    "handle_type": None,
+                    "handle": None,
+                    "effect_fingerprint": None,
+                },
             )
-        elif transition == "record_cleanup_upid":
             _require(
-                snapshot["phase"] == "cleanup_active" and snapshot["action"] == "delete" and snapshot["upid"] is None,
-                "phase_transition_invalid",
+                _sha(request["request_fingerprint"])
+                and all(request[key] is None for key in ("action", "handle_type", "handle", "effect_fingerprint")),
+                "evidence_invalid",
             )
-            _require(request["evidence"] is None, "invalid_input")
-            _require(_upid_matches(request["upid"], target_ref, "qmdestroy"), "evidence_invalid")
-            record["upid"] = request["upid"]
         elif transition == "cleaned":
             _require(
                 snapshot["phase"] == "cleanup_active"
-                and snapshot["action"] == "delete"
-                and snapshot["upid"] is not None,
+                and snapshot["pending"] is None
+                and [item["action"] for item in snapshot["journal"]][-1:] == ["delete"],
                 "phase_transition_invalid",
             )
-            _require(request["upid"] is None, "invalid_input")
-            _delete_verification(request["evidence"], snapshot, target_ref)
-            record.update(phase="cleaned", action=None)
+            evidence = request["evidence"]
+            _require(
+                isinstance(evidence, dict)
+                and set(evidence)
+                == {"type", "task_id", "delete_upid", "task_state", "exit_status", "target_absence", "bindings"},
+                "evidence_invalid",
+            )
+            _require(
+                evidence["type"] == "pve_delete_verification/v2"
+                and evidence["task_id"] == snapshot["prior_authenticated_task_id"],
+                "evidence_invalid",
+            )
+            _require(
+                evidence["delete_upid"] == snapshot["journal"][-1]["handle"]
+                and evidence["task_state"] == "stopped"
+                and evidence["exit_status"] == "OK",
+                "evidence_invalid",
+            )
+            absence = evidence["target_absence"]
+            _require(
+                isinstance(absence, dict)
+                and set(absence)
+                == {"node", "vmid", "nextid_status", "nextid_echo", "node_config_status", "target_fingerprint"},
+                "evidence_invalid",
+            )
+            _require(
+                absence
+                == {
+                    "node": target["node"],
+                    "vmid": target["vmid"],
+                    "nextid_status": 200,
+                    "nextid_echo": target["vmid"],
+                    "node_config_status": 404,
+                    "target_fingerprint": snapshot["target_fingerprint"],
+                },
+                "evidence_invalid",
+            )
+            expected_bindings = {
+                key: snapshot[key]
+                for key in (
+                    "operation_id",
+                    "target_fingerprint",
+                    "artifact_fingerprint",
+                    "restore_nonce",
+                    "active_nonce",
+                    "prior_authenticated_task_id",
+                    "public_sha",
+                    "private_inventory_sha",
+                )
+            }
+            _require(evidence["bindings"] == expected_bindings, "evidence_invalid")
+            record.update(phase="cleaned", active_nonce=record["active_nonce"])
         else:
             raise Refusal("phase_transition_invalid")
-
     validate_record(record)
     return {
         "result": "write",
@@ -527,20 +902,22 @@ def plan_transition(snapshot: dict[str, Any] | None, version: int, request: obje
 def verify_readback(
     plan: object, metadata_status: object, metadata_payload: object, data_status: object, data_payload: object
 ) -> dict[str, Any]:
-    """Require the CAS write to be visible exactly at the expected KV version."""
-    _require(isinstance(plan, dict) and plan.get("result") == "write", "invalid_input")
-    _require(_is_int(plan.get("expected_version"), minimum=1), "invalid_input")
+    _require(
+        isinstance(plan, dict) and plan.get("result") == "write" and _is_int(plan.get("expected_version"), 1),
+        "invalid_input",
+    )
     actual, version = read_snapshot(metadata_status, metadata_payload, data_status, data_payload)
     expected = validate_record(plan.get("record"))
-    _require(version == plan.get("expected_version") and actual == expected, "readback_mismatch")
+    _require(version == plan["expected_version"] and actual == expected, "readback_mismatch")
     return {"result": "verified", "phase": expected["phase"], "version": version}
 
 
 def _main() -> int:
     try:
         payload = json.load(sys.stdin)
-        mode = payload.get("mode") if isinstance(payload, dict) else None
-        if mode == "plan":
+        if not isinstance(payload, dict):
+            raise Refusal("invalid_input")
+        if payload.get("mode") == "plan":
             result = plan_transition(
                 *read_snapshot(
                     payload.get("metadata_status"),
@@ -550,7 +927,7 @@ def _main() -> int:
                 ),
                 payload.get("request"),
             )
-        elif mode == "readback":
+        elif payload.get("mode") == "readback":
             result = verify_readback(
                 payload.get("plan"),
                 payload.get("metadata_status"),
@@ -566,7 +943,7 @@ def _main() -> int:
         print(json.dumps({"result": "refused", "reason": exc.reason}, sort_keys=True, separators=(",", ":")))
         return 2
     except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        print(json.dumps({"result": "refused", "reason": "invalid_input"}, sort_keys=True, separators=(",", ":")))
+        print('{"reason":"invalid_input","result":"refused"}')
         return 2
 
 

@@ -48,6 +48,22 @@ The system SHALL configure a backup credential that cannot prune or delete exist
 - **WHEN** the artifact, target, or restored data cannot be verified
 - **THEN** the workflow refuses to mark the restore gate complete and preserves existing services and volumes
 
+#### Scenario: Restore action response is uncertain
+- **WHEN** any restore, isolation, start, guest-exec, stop, or cleanup mutation has an unknown response or mismatched versioned journal readback
+- **THEN** the workflow preserves the target and current journal state, does not retry or adopt a nonce, and does not report success or clean the target
+
+#### Scenario: Restore proof requires historical data
+- **WHEN** the restored guest exposes expected volume paths but cannot prove rootless volume ownership, exact mounts, Grafana database integrity, or receipt-bound historical backend data
+- **THEN** the restore remains unverified; paths alone cannot satisfy the restore gate
+
+#### Scenario: Cleanup selects a prior task
+- **WHEN** cleanup is launched with a prior restore task ID and expected receipt SHA
+- **THEN** it authenticates the completed task's project, status, reviewed commit, ordered output, and one fixed-contract receipt, compares the full coordination record/version, and deletes only the stopped target still owned by that record
+
+#### Scenario: Cleanup absence is ambiguous
+- **WHEN** the delete task, target config, or exact VMID absence cannot be authoritatively verified
+- **THEN** cleanup refuses to mark the record cleaned and preserves the record; arbitrary API errors or filtered list absence are not proof
+
 ### Requirement: Retention gate remains independent
 The system SHALL keep Prometheus, Loki, and Tempo at 15d, 7d, and 168h until an immutable or equivalent protected local copy, a successful isolated restore, and the separate seven-day capacity gate are all verified. A PBS protected flag or backup-only token alone SHALL NOT satisfy immutable-copy evidence.
 

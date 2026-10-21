@@ -16,6 +16,41 @@ See [proposal.md](proposal.md) for motivation and [the capability spec](specs/pb
 4. **Source secrets and restrict deletion.** Task 4.2 obtains the PVE backup token through OpenBao. Task 4.1's local privileged CLI path creates no PBS API credential and no Linux root password. PBS uses a datastore-scoped backup role without prune/delete; pruning and verification run on PBS under separate server authority. Read back effective permissions and an actual backup before changing the existing PVE backup job. [PBS roles](https://pbs.proxmox.com/docs/config/acl/man5.html) distinguish `DatastoreBackup` from prune-capable roles. A protected snapshot or client role is deletion resistance, not immutable-copy proof; that separate gate remains open.
 5. **Restore without touching the source.** Select a fresh artifact by exact VMID/time/storage identity, use the existing restore preflight to check the separate target's current availability, then independently recheck availability immediately before any allocation or restore write. The preflight does not reserve a VMID. Restore without overwrite, inspect guest filesystem and telemetry volumes, and emit a sanitized receipt. Remove only a target that this run created and still matches its ownership marker, after the receipt is durable. Alternative: restore over o11y or rely on snapshot presence; rejected because neither proves recoverability without risking the live service.
 
+### Isolated restore executor source child
+
+The 5.2 source child implements the restore as a schema-2 versioned CAS action
+journal. It records distinct restore, isolation, start, guest-exec, stop and
+delete actions; each mutation has a persisted intent before the call and a
+typed verified effect after the return handle/readback. Restore, start, stop and
+delete keep their real Proxmox UPIDs; guest execution keeps the QGA PID; the
+configuration isolation update keeps a request fingerprint. Schema-1 journal
+records are refused rather than adopted or migrated. Uncertain results retain
+both the target and record.
+
+The target remains disconnected with onboot/startup disabled and no passthrough
+or shared host backing before its first start. The checker runs only through
+QGA after the isolated VM starts and requires data evidence, not path presence:
+all five rootless Compose volume identities, ownership and mount relationships,
+Grafana SQLite integrity through a read-only WAL-aware connection, and bounded
+historical reads from Prometheus, Loki, Tempo and Pyroscope. Quiet backends are
+accepted only when a versioned authenticated prerequisite receipt explicitly
+proves that expectation. The receipt itself stays in protected task output;
+public output contains fixed categories, counts and hashes.
+
+Restore and cleanup are separate Dev-bound tasks. Restore authenticates
+successful backup, PBS verification, protected-copy sync and readiness tasks
+through their fixed receipts, the authenticated project/task/status/time/output,
+and the exact reviewed commit. Current Semaphore does not retain historical
+inventory, environment, repository, or playbook bindings; this path relies on
+the trusted cooperating controller's receipt attestation and makes no
+cryptographic or immutable-history claim. A shared producer-owned proof module
+will provide the closed receipt schema, exact-byte inventory provenance check,
+and stable artifact fingerprint. Cleanup re-authenticates the successful
+restore task and exact private receipt, compares the entire coordination
+record/version, checks the stopped owned target, and requires exact
+authoritative deletion readback. See the source-child runbook in
+`implementation/isolated-restore-executor-runbook.md`.
+
 ### Implementation refinements from the read-only census
 
 The census found no template with proven Debian provenance. A second GET-only
