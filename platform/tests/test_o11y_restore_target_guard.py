@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from ansible_python import ansible_python, needs_ansible
 from jinja2 import Environment
 
 ROOT = Path(__file__).parents[2]
@@ -144,20 +147,16 @@ def test_rendered_guard_include_uses_only_fixed_get_paths_and_protected_candidat
         "_o11y_rt_declaration": DECLARATION,
         "_o11y_restore_target_guard_candidates": [411, 410],
     }
+
+    def render_map(values):
+        return {key: env.from_string(value).render(context) for key, value in values.items()}
+
     rendered = [
         {
             "url": env.from_string(task["url"]).render(context),
             "method": task["method"],
-            "body": {
-                key: env.from_string(value).render(context)
-                for key, value in task.get("body", {}).items()
-            }
-            if isinstance(task.get("body"), dict)
-            else None,
-            "headers": {
-                name: env.from_string(value).render(context)
-                for name, value in task.get("headers", {}).items()
-            },
+            "body": render_map(task["body"]) if isinstance(task.get("body"), dict) else None,
+            "headers": render_map(task.get("headers", {})),
         }
         for task in uri_tasks
     ]
@@ -264,3 +263,115 @@ def test_policy_grants_only_the_fixed_coordination_capabilities():
     assert 'path "secret/metadata/coordination/o11y-restore-target" {\n  capabilities = ["read"]\n}' in policy
     assert 'secret/data/coordination/*' not in policy
     assert 'secret/metadata/coordination/*' not in policy
+
+
+def test_credential_free_preflight_is_first_and_pins_only_private_destination():
+    preflight = yaml.safe_load(
+        (PLAYBOOKS / "tasks" / "preflight-o11y-restore-target.yml").read_text()
+    )
+    assert len(preflight) == 2
+    checks = preflight[0]["ansible.builtin.assert"]["that"]
+    assert any("_o11y_rt_preflight_bao_hosts | length == 1" in item for item in checks)
+    assert any("openbao_addr | default('') == _o11y_rt_preflight_bao_url" in item for item in checks)
+    assert "service_url" in preflight[0]["vars"]["_o11y_rt_preflight_bao_url"]
+    assert "hostvars" in preflight[0]["vars"]["_o11y_rt_preflight_bao_url"]
+    assert any("extra_var_names" in item for item in checks)
+    assert "lookup(" not in str(preflight)
+    assert "ansible.builtin.uri" not in str(preflight)
+    assert "community.hashi_vault" not in str(preflight)
+    protected_aliases = {
+        "openbao_addr",
+        "service_url",
+        "bao_role_id",
+        "bao_secret_id",
+        "BAO_ROLE_ID",
+        "BAO_SECRET_ID",
+        "o11y_restore_target_vmid",
+        "o11y_restore_target_node",
+        "o11y_restore_target_storage_id",
+        "o11y_restore_target_network_mode",
+        "o11y_restore_target_headroom_percent",
+    }
+    assert protected_aliases <= set(preflight[0]["vars"]["_o11y_rt_preflight_protected_extra_vars"])
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "provision-vm.yml",
+        "provision-template.yml",
+        "provision-pbs-debian-template.yml",
+        "resize-vm.yml",
+        "destroy-vm.yml",
+        "snapshot-vm.yml",
+        "attach-pbs-data-disk.yml",
+    ],
+)
+def test_credential_free_preflight_precedes_each_mutator_lookup(filename):
+    plays = yaml.safe_load((PLAYBOOKS / filename).read_text())
+    assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    assert plays[1]["ansible.builtin.import_playbook"] == "preflight-o11y-restore-target-inputs.yml"
+    assert plays[1].get("tags") == ["always"]
+    # No launched play may evaluate an AppRole lookup until the standalone credential-free
+    # import has completed; imported playbooks then consume the protected process environment.
+    for play in plays[2:]:
+        serialized = json.dumps(play)
+        if "community.hashi_vault.hashi_vault" in serialized:
+            assert "lookup('env', 'BAO_ROLE_ID')" in serialized
+            assert "lookup('env', 'BAO_SECRET_ID')" in serialized
+            assert "bao_role_id | default" not in serialized
+            assert "bao_secret_id | default" not in serialized
+    assert "{{ _o11y_rt_preflight_bao_url }}" not in str(plays[1])
+
+
+@needs_ansible
+def test_installed_ansible_uri_defaults_are_replaced_by_guarded_request_arguments(tmp_path):
+    script = r"""import json
+from types import SimpleNamespace
+from ansible.executor.module_common import _apply_action_arg_defaults
+
+class Engine:
+    def resolve_to_container(self, value): return value
+
+class Templar:
+    _engine = Engine()
+    def template(self, value): return value
+
+play = SimpleNamespace(_action_groups={"ansible.builtin.uri": []})
+parent = SimpleNamespace(_play=play)
+task = SimpleNamespace(_parent=parent, module_defaults=[{
+    "ansible.builtin.uri": {
+        "headers": {"Authorization": "PVEAPIToken=must-not-leak"},
+        "validate_certs": False,
+        "use_proxy": True,
+    }
+}])
+cases = json.loads(__import__('sys').stdin.read())
+print(json.dumps([
+    _apply_action_arg_defaults("ansible.builtin.uri", task, request, Templar())
+    for request in cases
+]))
+"""
+    guard_tasks = yaml.safe_load((PLAYBOOKS / "tasks" / "guard-o11y-restore-target.yml").read_text())
+    requests = [task["ansible.builtin.uri"] for task in guard_tasks if "ansible.builtin.uri" in task]
+    env = {**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path), "ANSIBLE_REMOTE_TEMP": str(tmp_path)}
+    proc = subprocess.run(
+        [ansible_python(), "-c", script],
+        input=json.dumps(requests),
+        text=True,
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    merged = json.loads(proc.stdout)
+    assert merged[0]["headers"] == {}
+    assert merged[1]["headers"] == {"X-Vault-Token": "{{ _o11y_rt_login.json.auth.client_token }}"}
+    assert merged[2]["headers"] == {"X-Vault-Token": "{{ _o11y_rt_login.json.auth.client_token }}"}
+    assert all(request["validate_certs"] is True for request in merged)
+    assert all(request["use_proxy"] is False for request in merged)
+    assert all("Authorization" not in request["headers"] for request in merged)
+    assert all(request["ca_path"] is None for request in merged)
+    assert all(request["client_cert"] is None and request["client_key"] is None for request in merged)
+    assert all(request["url_username"] is None and request["url_password"] is None for request in merged)
+    assert all(request["force_basic_auth"] is False for request in merged)
+    assert all(request["follow_redirects"] == "none" for request in merged)

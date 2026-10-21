@@ -7,6 +7,11 @@
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: "Pre-validate: Cluster ready for VM provisioning"
   ansible.builtin.import_playbook: proxmox-validate.yml
@@ -25,10 +30,12 @@
   vars:
     _project_root: "{{ project_root | default(playbook_dir + '/..') }}"
     # OpenBao connection
-    _bao_url: "{{ openbao_addr | default('') }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
 
     # Secrets from OpenBao
     _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',

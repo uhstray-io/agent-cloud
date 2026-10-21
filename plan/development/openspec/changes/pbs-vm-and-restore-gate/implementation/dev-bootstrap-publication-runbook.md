@@ -12,6 +12,13 @@ identity, or storage exists.
   coordination worktree normally merged that exact Dev commit; no PBS files
   were copied between branches. This does not publish this worktree's source,
   verify the effective Semaphore role, or authorize a restore.
+- Dev catalog readback confirms all five reviewed task definitions point to
+  the expected repository, playbook, inventory, and environment and expose
+  only the exact `expected_repository_sha` survey field. Four publication task
+  runs succeeded at `c4eee`; a fifth invocation at reviewed PR #727 merge
+  `391a4f7` stopped after creating the template. Catalog readback proves the
+  definitions, not success of every publication invocation or acceptance of
+  the created Proxmox template.
 - Private site-config PR #110 is approval-blocked. This blocks target allocation
   and guest configuration until the PBS inventory declaration is approved,
   merged, synchronized, and read back. It does not block publishing the Dev
@@ -54,9 +61,10 @@ identity, or storage exists.
    are available through the existing Semaphore environment. This source does
    not create root passwords or bootstrap credentials outside OpenBao.
 
-## Dev catalog publication
+## Dev catalog publication and readback
 
-After source merge and final-head CI:
+The five Dev entries below have been published and their definitions read back.
+For future catalog changes, use the same reviewed publication mechanism:
 
 1. Use the existing **Publish Semaphore Template Surveys (Dev)** entry point
    (`platform/playbooks/publish-semaphore-templates.yml`) with the exact five
@@ -141,6 +149,16 @@ Semaphore AppRole environment. The source addition to `semaphore-read.hcl`
 does not prove the effective policy of the role Semaphore injects; policy
 publication, capability readback, and review of the actual role binding are
 required before any guarded writer is activated.
+
+Each writer's credential-free destination preflight runs after the reserved-name
+guard and before any AppRole or Proxmox credential lookup. Its OpenBao endpoint
+comes from the sole private `openbao_svc.service_url`; the existing
+`openbao_addr` must match it, and launch-supplied endpoint,
+AppRole, or restore-target aliases are refused. OpenBao URI tasks clear inherited
+PVE headers and URL authentication, require certificate validation, disable
+proxy use, and reject redirects. Focused source tests verify the effective URI
+arguments after installed Ansible module defaults are merged and pin the exact
+reviewed-checkout dependency list within the bounded 16-path limit.
 
 Source guard tests do not establish target availability or successful restore.
 Before task 5.2 can be accepted, every cooperating writer/template variant

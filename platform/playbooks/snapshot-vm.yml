@@ -24,6 +24,11 @@
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: "Proxmox pre-upgrade snapshot (create, wait, validate)"
   hosts: localhost
@@ -38,9 +43,11 @@
     # Operator-side secret (extra-var or env). When present, the OpenBao lookup is
     # skipped — so this runs without Semaphore/AppRole creds.
     _pve_secret_in: "{{ pve_token_secret | default(lookup('env', 'PVE_TOKEN_SECRET'), true) | default('', true) }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
     # Short-circuit ternary: the lookup is evaluated ONLY when no direct secret was
     # supplied (Semaphore path). Operator path -> {} -> no OpenBao call.
     _pve_data: >-

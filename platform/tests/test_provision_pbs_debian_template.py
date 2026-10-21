@@ -36,9 +36,16 @@ def test_dev_template_is_bound_to_exact_reviewed_revision():
         "required": True,
     }]
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
-    assert plays[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
-    assert plays[1]["vars"]["_reviewed_checkout_payload_paths"] == [
+    assert plays[1]["ansible.builtin.import_playbook"] == "preflight-o11y-restore-target-inputs.yml"
+    assert plays[2]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    assert plays[2]["vars"]["_reviewed_checkout_payload_paths"] == [
         "platform/playbooks/provision-pbs-debian-template.yml",
+        "platform/playbooks/preflight-o11y-restore-target-inputs.yml",
+        "platform/playbooks/tasks/preflight-o11y-restore-target.yml",
+        "platform/playbooks/tasks/assert-bao-transport.yml",
+        "platform/playbooks/tasks/guard-o11y-restore-target.yml",
+        "platform/playbooks/files/guard_o11y_restore_target.py",
+        "platform/playbooks/files/o11y_restore_coordination.py",
         "platform/semaphore/templates.yml",
     ]
     play = next(
@@ -56,7 +63,7 @@ def test_dev_template_is_bound_to_exact_reviewed_revision():
 
 def test_publisher_refuses_check_mode_and_requires_private_inventory_declaration():
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
-    tasks = plays[2]["tasks"]
+    tasks = plays[3]["tasks"]
     first_uri = next(i for i, task in enumerate(tasks) if "ansible.builtin.uri" in task)
 
     assert tasks[0]["name"] == "Require a reviewed production-mode write run"
@@ -74,14 +81,14 @@ def test_publisher_refuses_check_mode_and_requires_private_inventory_declaration
         "pbs_debian_template_vmid", "pbs_debian_template_name", "pbs_debian_template_node",
         "pbs_debian_template_import_storage", "vm_disk_storage",
     ):
-        assert field in str(declaration_checks) or field in str(plays[2]["vars"])
+        assert field in str(declaration_checks) or field in str(plays[3]["vars"])
     assert "_decl_hosts | length == 1" in str(declaration_checks)
 
 
 def test_fixed_debian_provenance_sha512_and_proxmox_readbacks_are_enforced():
     text = PLAYBOOK_PATH.read_text()
     plays = yaml.safe_load(text)
-    tasks = plays[2]["tasks"]
+    tasks = plays[3]["tasks"]
     task_names = [task["name"] for task in tasks]
     uri_tasks = [task for task in tasks if "ansible.builtin.uri" in task]
 
@@ -111,7 +118,7 @@ def test_fixed_debian_provenance_sha512_and_proxmox_readbacks_are_enforced():
 
 def test_config_http_500_is_absence_only_when_exact_vmid_check_proves_free():
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
-    tasks = plays[2]["tasks"]
+    tasks = plays[3]["tasks"]
     names = [task["name"] for task in tasks]
     config_index = names.index("Read the exact declared VM configuration if present")
     nextid_index = names.index("Ask Proxmox whether the exact VMID is free")
@@ -136,7 +143,7 @@ def test_config_http_500_is_absence_only_when_exact_vmid_check_proves_free():
 
 def test_every_pve_write_follows_review_mode_inventory_and_collision_gates():
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
-    tasks = plays[2]["tasks"]
+    tasks = plays[3]["tasks"]
     names = [task["name"] for task in tasks]
     first_write = min(
         i for i, task in enumerate(tasks)
@@ -153,7 +160,7 @@ def test_every_pve_write_follows_review_mode_inventory_and_collision_gates():
         "Refuse VMID collisions and mismatched partial templates",
     ):
         assert names.index(gate) < first_write
-    assert plays[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    assert plays[2]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
 
     assert "Read back the staged import volume" in names
     assert "Read back the final template configuration" in names
@@ -161,7 +168,7 @@ def test_every_pve_write_follows_review_mode_inventory_and_collision_gates():
 
 def test_every_publisher_write_is_individually_guarded_in_check_mode():
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
-    tasks = plays[2]["tasks"]
+    tasks = plays[3]["tasks"]
     expected = {
         "Download the pinned image into private Proxmox import storage",
         "Create the VM from the verified image when its VMID is free",
@@ -180,7 +187,7 @@ def test_every_publisher_write_is_individually_guarded_in_check_mode():
 
 def test_publisher_rejects_unexpected_attached_disks_on_existing_and_new_template():
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
-    tasks = plays[2]["tasks"]
+    tasks = plays[3]["tasks"]
     names = [task["name"] for task in tasks]
 
     assert names.index("Identify unexpected disks on an existing PBS template candidate") < names.index(
@@ -204,7 +211,7 @@ def test_publisher_rejects_unexpected_attached_disks_on_existing_and_new_templat
 
 def test_absent_publisher_config_null_evaluates_to_no_extra_disks():
     plays = yaml.safe_load(PLAYBOOK_PATH.read_text())
-    tasks = plays[2]["tasks"]
+    tasks = plays[3]["tasks"]
     classify = next(
         task for task in tasks
         if task["name"] == "Classify exact VMID occupancy across all cluster guest types"

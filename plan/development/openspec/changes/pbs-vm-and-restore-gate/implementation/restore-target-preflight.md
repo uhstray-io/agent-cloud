@@ -36,3 +36,20 @@ This source integration does not reserve the target, authenticate restore
 task output, establish authoritative VMID absence, execute a restore, or
 authorize cleanup. OpenSpec task 5.2 remains open; the guard and its writer
 coverage are a source prerequisite only.
+
+Every assigned mutator imports `preflight-o11y-restore-target-inputs.yml` after
+the internal-extra-var refusal and before any AppRole/PVE credential lookup.
+That standalone preflight is credential-free: it pins the destination to the
+sole private `openbao_svc.service_url`, requires the existing downstream
+`openbao_addr` value to match it, rejects launch aliases for the endpoint,
+protected AppRole environment names, and private target declaration, then
+checks the existing transport rule. The full GET guard repeats those checks
+before login. Its URI calls explicitly replace inherited headers, require TLS
+certificate validation, disable proxy and redirects, and clear inherited
+client-certificate and URL-authentication parameters. A rendered-request test
+uses the installed Ansible URI module-default merge function to prove PVE
+Authorization defaults cannot reach OpenBao.
+
+Reviewed-checkout manifests include the standalone input preflight and its task
+dependency. The bounded payload-path maximum is 16, with regression coverage
+for the exact PBS attachment dependency list and rejection above the bound.

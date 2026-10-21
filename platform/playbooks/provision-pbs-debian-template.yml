@@ -6,12 +6,20 @@
 
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: Require the exact reviewed checkout
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
   vars:
     _reviewed_checkout_payload_paths:
       - platform/playbooks/provision-pbs-debian-template.yml
+      - platform/playbooks/preflight-o11y-restore-target-inputs.yml
+      - platform/playbooks/tasks/preflight-o11y-restore-target.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
       - platform/playbooks/tasks/guard-o11y-restore-target.yml
       - platform/playbooks/files/guard_o11y_restore_target.py
       - platform/playbooks/files/o11y_restore_coordination.py
@@ -26,9 +34,11 @@
       validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
       follow_redirects: none
   vars:
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
     _image_url: "https://cloud.debian.org/cdimage/cloud/trixie/20260601-2496/debian-13-generic-amd64-20260601-2496.qcow2"
     _image_sha512: "97675b27e69153002c4e13644e36200c8f9067f661dca00918c54f1cacbdb88d4bff8c0fbf5cf5d63a0397bdf0cc472d7a6372bae5281bf7ced756249c10f8a2"
     _image_filename: "debian-13-generic-amd64-20260601-2496.qcow2"

@@ -24,6 +24,9 @@ def test_pbs_wrapper_is_sha_pinned_and_has_no_launch_identity_survey() -> None:
     assert wrapper[1]["vars"]["_reviewed_checkout_payload_paths"] == [
         "platform/playbooks/provision-pbs-vm.yml",
         "platform/playbooks/provision-vm.yml",
+        "platform/playbooks/preflight-o11y-restore-target-inputs.yml",
+        "platform/playbooks/tasks/preflight-o11y-restore-target.yml",
+        "platform/playbooks/tasks/assert-bao-transport.yml",
         "platform/playbooks/tasks/guard-o11y-restore-target.yml",
         "platform/playbooks/files/guard_o11y_restore_target.py",
         "platform/playbooks/files/o11y_restore_coordination.py",
@@ -214,7 +217,7 @@ def test_template_and_shared_lifecycle_use_identical_pinned_provenance() -> None
         "source=https://cloud.debian.org/cdimage/cloud/trixie/20260601-2496/"
         "debian-13-generic-amd64-20260601-2496.qcow2; detached signature unavailable"
     )
-    source = template[2]["vars"]["_image_url"]
+    source = template[3]["vars"]["_image_url"]
     publisher = next(
         play for play in template
         if play.get("name") == "Publish the pinned Debian cloud-init template"

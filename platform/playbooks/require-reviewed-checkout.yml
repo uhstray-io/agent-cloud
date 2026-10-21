@@ -16,7 +16,7 @@
           - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
           - _reviewed_checkout_requested_payloads is sequence
           - _reviewed_checkout_requested_payloads is not string
-          - _reviewed_checkout_requested_payloads | length <= 8
+          - _reviewed_checkout_requested_payloads | length <= 16
         fail_msg: "Pass expected_repository_sha: the full 40-character commit the review approved."
         quiet: true
       tags: [always]

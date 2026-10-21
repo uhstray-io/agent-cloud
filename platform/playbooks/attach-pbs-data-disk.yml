@@ -5,6 +5,11 @@
 
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: Require the exact reviewed checkout
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
@@ -12,6 +17,8 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/attach-pbs-data-disk.yml
       - platform/playbooks/refuse-internal-extra-vars.yml
+      - platform/playbooks/preflight-o11y-restore-target-inputs.yml
+      - platform/playbooks/tasks/preflight-o11y-restore-target.yml
       - platform/playbooks/tasks/o11y-pbs-physical-storage-survey.yml
       - platform/playbooks/tasks/preflight-o11y-pbs-thick-lvm-allocation.yml
       - platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml
@@ -36,8 +43,8 @@
     _openbao_host: "{{ _openbao_hosts[0] if (_openbao_hosts | length == 1) else '' }}"
     _openbao_inventory_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
     _bao_url: "{{ _openbao_inventory_url }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
     _decl_hosts: "{{ groups['pbs_svc'] | default([]) }}"
     _decl_host: "{{ _decl_hosts[0] if (_decl_hosts | length == 1) else '' }}"
     _decl: "{{ hostvars[_decl_host] | default({}) }}"
