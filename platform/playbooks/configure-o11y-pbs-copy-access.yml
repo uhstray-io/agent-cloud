@@ -26,6 +26,30 @@
     preflight_group_expected: pbs_svc
     _preflight_redact_hostnames: true
 
+- name: Refuse caller overrides for private PBS and OpenBao selectors
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Reject launch values that replace private source authority
+      ansible.builtin.assert:
+        that: _pbs_reader_forged_private_names | length == 0
+        fail_msg: "PBS source and OpenBao selectors must come from protected runtime inventory and environment."
+        quiet: true
+      vars:
+        _pbs_reader_private_names:
+          - pbs_svc
+          - pbs_api_host
+          - pbs_storage_id
+          - pbs_storage_nodes
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - local_mode
+        _pbs_reader_forged_private_names: >-
+          {{ _pbs_reader_private_names | intersect('' | extra_var_names) }}
+
 - name: Prove exact reviewed private and runtime inventory provenance
   hosts: localhost
   connection: local

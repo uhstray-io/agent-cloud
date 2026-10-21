@@ -264,6 +264,23 @@ class CopyReaderIdentityTests(TestCase):
         self.assertIn("configure-pbs-copy-reader-identity.yml", copy_text)
         self.assertNotIn("/api2/json/storage", copy_text)
         self.assertNotIn("DatastoreBackup", copy_text)
+        override_guard = next(
+            play for play in copy_access
+            if play.get("name") == "Refuse caller overrides for private PBS and OpenBao selectors"
+        )
+        private_names = override_guard["tasks"][0]["vars"]["_pbs_reader_private_names"]
+        self.assertIn("pbs_api_host", private_names)
+        self.assertIn("bao_role_id", private_names)
+        self.assertIn("bao_secret_id", private_names)
+        provenance_index = next(
+            index for index, play in enumerate(copy_access)
+            if play.get("name") == "Prove exact reviewed private and runtime inventory provenance"
+        )
+        pbs_read_index = next(
+            index for index, play in enumerate(copy_access)
+            if play.get("name") == "Read primary PBS identity and certificate state"
+        )
+        self.assertLess(provenance_index, pbs_read_index)
         review_gate = next(
             play for play in copy_access
             if play.get("name") == "Require the exact reviewed source checkout"
