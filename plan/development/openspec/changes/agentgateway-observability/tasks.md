@@ -90,9 +90,11 @@ is a separate dashboard, with operations as a second dashboard.
 
 ## 2. Gateway configuration deltas: sampling, team, content, guards
 
-- [ ] 2.1 `config.yaml.j2` tracing (design decision 2): `randomSampling` defaults to
+- [x] 2.1 `config.yaml.j2` tracing (design decision 2): `randomSampling` defaults to
       `0.1` instead of `0.05` (line 103), and `clientSampling` renders the literal
-      `false` (line 104). The landed guard (0, 0.1] is unchanged
+      `false` (line 104). The landed guard (0, 0.1] is unchanged. Source implementation
+      and focused checks recorded 2026-10-20 in `design.md`; live traceparent acceptance
+      remains task 8.3.
 - [ ] 2.2 `config.yaml.j2` access log (design decision 3): `accessLog.add` carries
       `identity: apiKey.name` and `team: apiKey.team`; `accessLog.otlp.fields.add`
       carries `service`, `identity`, `team` and `signal: '"access-log"'`. `signal` goes

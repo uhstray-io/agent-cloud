@@ -282,8 +282,9 @@ frontendPolicies:
     # The receiver is Alloy, which batches these spans to Tempo. Bound both
     # newly started and client-propagated traces; no prompt/completion fields.
     host: {{ agw_otlp_host }}
-    randomSampling: {{ agw_trace_sampling | default(0.05) }}
-    clientSampling: {{ agw_trace_sampling | default(0.05) }}
+    randomSampling: {{ agw_trace_sampling | default(0.1) }}
+    # Do not let an incoming traceparent opt a request into tracing.
+    clientSampling: false
     resources:
       service.name: '"agentgateway"'
     # Spans filter same-name defaults, then append CEL attributes (trc.rs:288-294,
