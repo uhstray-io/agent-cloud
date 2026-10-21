@@ -94,6 +94,35 @@ def test_manifest_parser_rejects_duplicate_json_keys() -> None:
         pbs.parse_manifest('{"backup-type":"vm","backup-type":"vm"}')
 
 
+def test_source_fingerprint_binds_logical_vm_and_completed_receipt_is_closed() -> None:
+    digest = pbs.artifact_fingerprint(manifest())
+    logical = pbs.source_fingerprint("120", "pve1")
+    assert logical != pbs.source_fingerprint("121", "pve1")
+    receipt = pbs.completed_receipt(
+        contract="o11y-pbs-backup/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        inventory_fingerprint="3" * 64,
+        source_fingerprint_value=logical,
+        artifact=digest,
+        observed_start="2026-10-21T15:00:00Z",
+        observed_end="2026-10-21T15:30:00Z",
+        evidence={
+            "backup_task_id": 10,
+            "backup_upid": UPID,
+            "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
+            "source_vmid": "120",
+            "source_node": "pve1",
+            "artifact_fingerprint": digest,
+            "playbook": BACKUP_PLAYBOOK,
+        },
+        now=NOW,
+    )
+    assert pbs.validate_receipt(
+        receipt, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+    ) == receipt
+
+
 def test_receipt_requires_exact_contract_and_recent_completed_evidence() -> None:
     receipt = backup_receipt()
     assert pbs.validate_receipt(

@@ -47,7 +47,11 @@ CONTRACTS = {
     },
     "o11y-pbs-copy-sync/v1": {
         "playbook": "platform/playbooks/sync-o11y-protected-pbs-copy.yml",
-        "roles": {"primary": "pve_backup", "verification": "primary_pbs_verify", "destination": "destination_pbs_pull"},
+        "roles": {
+            "primary": "pve_backup",
+            "verification": "primary_pbs_verify",
+            "destination": "destination_pbs_pull",
+        },
         "evidence": {
             "backup_task_id", "verify_task_id", "backup_upid", "verification_upid", "sync_upid",
             "verification_status", "snapshot", "artifact_fingerprint", "remove_vanished", "prune_enabled", "playbook",
@@ -255,6 +259,64 @@ def artifact_fingerprint(manifest: Mapping[str, object] | str | bytes) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def source_fingerprint(vmid: object, node: object) -> str:
+    """Bind a logical source VM independently from PBS storage location."""
+    _require(
+        isinstance(vmid, str)
+        and re.fullmatch(r"[1-9][0-9]{0,8}", vmid) is not None
+        and isinstance(node, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", node) is not None,
+        "invalid_input",
+    )
+    encoded = json.dumps(
+        {"contract": "o11y-pbs-source/v1", "vmid": vmid, "node": node},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def completed_receipt(
+    *,
+    contract: str,
+    public_sha: str,
+    private_sha: str,
+    inventory_fingerprint: str,
+    source_fingerprint_value: str,
+    artifact: str,
+    observed_start: str,
+    observed_end: str,
+    evidence: Mapping[str, object],
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Build and validate one complete closed receipt from verified operation facts."""
+    _require(contract in CONTRACTS, "invalid_input")
+    body = {
+        "schema_version": SCHEMA_VERSION,
+        "contract": contract,
+        "status": "complete",
+        "reason": "none",
+        "public_sha": public_sha,
+        "private_sha": private_sha,
+        "inventory_provenance": "exact_bytes_match",
+        "inventory_fingerprint": inventory_fingerprint,
+        "source_fingerprint": source_fingerprint_value,
+        "artifact_fingerprint": artifact,
+        "observed_start": observed_start,
+        "observed_end": observed_end,
+        "role_context": dict(CONTRACTS[contract]["roles"]),
+        "evidence": dict(evidence),
+    }
+    receipt = seal_receipt(body)
+    return validate_receipt(
+        receipt,
+        contract=contract,
+        public_sha=public_sha,
+        private_sha=private_sha,
+        now=now,
+    )
+
+
 def clean_refusal(contract: str, public_sha: str, private_sha: str, reason: str) -> dict[str, object]:
     """Return a closed, content-free refusal envelope for a known workflow."""
     _require(contract in CONTRACTS and _revision(public_sha) and _revision(private_sha), "invalid_input")
@@ -347,14 +409,22 @@ def validate_receipt(
     _require(contract in CONTRACTS and _revision(public_sha) and _revision(private_sha), "invalid_input")
     _require(isinstance(receipt, dict) and set(receipt) == ENVELOPE_KEYS, "invalid_input")
     _require(receipt["schema_version"] == SCHEMA_VERSION and type(receipt["schema_version"]) is int, "invalid_input")
-    _require(receipt["contract"] == contract and receipt["status"] == "complete" and receipt["reason"] == "none", "task_binding_mismatch")
+    _require(
+        receipt["contract"] == contract
+        and receipt["status"] == "complete"
+        and receipt["reason"] == "none",
+        "task_binding_mismatch",
+    )
     _require(receipt["public_sha"] == public_sha and receipt["private_sha"] == private_sha, "task_binding_mismatch")
     _require(receipt["inventory_provenance"] == "exact_bytes_match", "inventory_unavailable")
     _require(_sha(receipt["inventory_fingerprint"]) and _sha(receipt["source_fingerprint"]), "inventory_unavailable")
     artifact = receipt["artifact_fingerprint"]
     _require(_sha(artifact), "artifact_invalid")
     if expected_artifact_fingerprint is not None:
-        _require(_sha(expected_artifact_fingerprint) and artifact == expected_artifact_fingerprint, "artifact_mismatch")
+        _require(
+            _sha(expected_artifact_fingerprint) and artifact == expected_artifact_fingerprint,
+            "artifact_mismatch",
+        )
     _require(_sha(receipt["receipt_fingerprint"]), "invalid_input")
     _require(receipt_fingerprint(receipt) == receipt["receipt_fingerprint"], "invalid_input")
     started, ended = _parse_time(receipt["observed_start"]), _parse_time(receipt["observed_end"])
@@ -374,11 +444,17 @@ def validate_receipt(
             _require(_positive_id(evidence[key]), "task_binding_mismatch")
     for key in ("backup_upid", "verification_upid", "sync_upid"):
         if key in evidence:
-            _require(isinstance(evidence[key], str) and UPID.fullmatch(evidence[key]) is not None, "task_binding_mismatch")
+            _require(
+                isinstance(evidence[key], str) and UPID.fullmatch(evidence[key]) is not None,
+                "task_binding_mismatch",
+            )
     if contract in {"o11y-pbs-verify/v1", "o11y-pbs-copy-sync/v1"}:
         _require(evidence.get("verification_status") == "OK", "verification_incomplete")
     if contract == "o11y-pbs-copy-sync/v1":
-        _require(evidence.get("remove_vanished") is False and evidence.get("prune_enabled") is False, "copy_incomplete")
+        _require(
+            evidence.get("remove_vanished") is False and evidence.get("prune_enabled") is False,
+            "copy_incomplete",
+        )
     if contract == "o11y-pbs-copy-ready/v1":
         expected = {
             "readback_status": "readable", "acl_separation": "verified", "pull_direction": "destination_initiated",
@@ -478,7 +554,12 @@ def validate_completed_output(
         _require(frozenset(allowed_launch_keys) in CUSTOM_LAUNCH_KEYS[expected_selector], "invalid_input")
         _require(expected_receipt_keys == CUSTOM_RECEIPTS[expected_selector], "invalid_input")
     task_id, project_id = task.get("id"), task.get("project_id")
-    _require(_positive_id(task_id) and type(project_id) is int and project_id == expected_project_id, "task_binding_mismatch")
+    _require(
+        _positive_id(task_id)
+        and type(project_id) is int
+        and project_id == expected_project_id,
+        "task_binding_mismatch",
+    )
     _require(expected_task_id is None or task_id == expected_task_id, "task_binding_mismatch")
     _require(task.get("status") == "success" and task.get("commit_hash") == public_sha, "task_not_successful")
     _require(_revision(task.get("commit_hash")), "task_binding_mismatch")
@@ -630,10 +711,25 @@ def main() -> int:
         operation = request.get("operation")
         if operation == "fingerprint":
             result: object = {"artifact_fingerprint": artifact_fingerprint(request.get("manifest"))}
+        elif operation == "source_fingerprint":
+            result = {"source_fingerprint": source_fingerprint(request.get("vmid"), request.get("node"))}
+        elif operation == "complete_receipt":
+            result = completed_receipt(
+                contract=request.get("contract"),
+                public_sha=request.get("public_sha"),
+                private_sha=request.get("private_sha"),
+                inventory_fingerprint=request.get("inventory_fingerprint"),
+                source_fingerprint_value=request.get("source_fingerprint"),
+                artifact=request.get("artifact_fingerprint"),
+                observed_start=request.get("observed_start"),
+                observed_end=request.get("observed_end"),
+                evidence=request.get("evidence"),
+            )
         elif operation == "validate_receipt":
             result = validate_receipt(
                 request.get("receipt"), contract=request.get("contract"), public_sha=request.get("public_sha"),
-                private_sha=request.get("private_sha"), expected_artifact_fingerprint=request.get("expected_artifact_fingerprint"),
+                private_sha=request.get("private_sha"),
+                expected_artifact_fingerprint=request.get("expected_artifact_fingerprint"),
             )
         elif operation == "clean_refusal":
             result = clean_refusal(

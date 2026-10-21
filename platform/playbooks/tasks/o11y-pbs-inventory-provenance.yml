@@ -9,7 +9,6 @@
         that:
           - expected_repository_sha is match('^[0-9a-f]{40}$')
           - site_config_base_sha is match('^[0-9a-f]{40}$')
-          - site_config_base_branch == 'main'
           - _pbs_provenance_template_name is string
           - _pbs_provenance_playbook is string
           - estate_coverage_semaphore_project_id is defined
@@ -150,12 +149,12 @@
           vars:
             _sc_deploy_key: "{{ _pbs_prov_site_config_secret.private_key }}"
             _sc_reviewed_base_sha: "{{ site_config_base_sha }}"
-            _sc_base_branch: "{{ site_config_base_branch }}"
+            _sc_base_branch: main
             _sc_branch_prefix: "pbs/inventory-provenance-read"
 
         - name: Confirm private integration branch tip matches the reviewed revision
           ansible.builtin.command:
-            argv: [git, ls-remote, --heads, origin, "refs/heads/{{ site_config_base_branch }}"]
+            argv: [git, ls-remote, --heads, origin, refs/heads/main]
             chdir: "{{ _sc_clone }}"
           environment: "{{ _sc_git_env }}"
           register: _pbs_prov_private_tip
@@ -195,7 +194,7 @@
                     if _pbs_prov_private_tip.rc == 0
                     and _pbs_prov_private_tip.stdout.splitlines() | length == 1
                     and _pbs_prov_private_tip.stdout.split() | length == 2
-                    and _pbs_prov_private_tip.stdout.split()[1] == 'refs/heads/' ~ site_config_base_branch
+                    and _pbs_prov_private_tip.stdout.split()[1] == 'refs/heads/main'
                     else ''),
                   'private_tree_entry': (_pbs_prov_tree.stdout | trim if _pbs_prov_tree.rc == 0 else ''),
                   'private_inventory': _pbs_prov_private_inventory.stdout | default(''),
