@@ -157,9 +157,11 @@ def test_rendered_guard_include_uses_only_fixed_get_paths_and_protected_candidat
             "method": task["method"],
             "body": render_map(task["body"]) if isinstance(task.get("body"), dict) else None,
             "headers": render_map(task.get("headers", {})),
+            "use_netrc": task.get("use_netrc"),
         }
         for task in uri_tasks
     ]
+    assert [item["use_netrc"] for item in rendered] == [False, False, False]
     assert [item["url"] for item in rendered] == [
         "https://bao.private.example/v1/auth/approle/login",
         "https://bao.private.example/v1/secret/metadata/coordination/o11y-restore-target",
@@ -343,6 +345,7 @@ task = SimpleNamespace(_parent=parent, module_defaults=[{
     "ansible.builtin.uri": {
         "headers": {"Authorization": "PVEAPIToken=must-not-leak"},
         "validate_certs": False,
+        "use_netrc": True,
         "use_proxy": True,
     }
 }])
@@ -368,6 +371,7 @@ print(json.dumps([
     assert merged[1]["headers"] == {"X-Vault-Token": "{{ _o11y_rt_login.json.auth.client_token }}"}
     assert merged[2]["headers"] == {"X-Vault-Token": "{{ _o11y_rt_login.json.auth.client_token }}"}
     assert all(request["validate_certs"] is True for request in merged)
+    assert all(request["use_netrc"] is False for request in merged)
     assert all(request["use_proxy"] is False for request in merged)
     assert all("Authorization" not in request["headers"] for request in merged)
     assert all(request["ca_path"] is None for request in merged)
