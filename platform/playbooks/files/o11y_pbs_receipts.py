@@ -140,6 +140,35 @@ def seal_receipt(receipt: Mapping[str, object]) -> dict[str, object]:
     return result
 
 
+def restore_receipt_fingerprint(receipt: Mapping[str, object]) -> str:
+    """Hash restore receipt body with the coordination pointer normalized to null."""
+    body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
+    coordination = body.get("coordination_record")
+    _require(isinstance(coordination, Mapping), "invalid_input")
+    normalized_coordination = dict(coordination)
+    _require("receipt_fingerprint" in normalized_coordination, "invalid_input")
+    normalized_coordination["receipt_fingerprint"] = None
+    body["coordination_record"] = normalized_coordination
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def seal_restore_receipt(receipt: Mapping[str, object]) -> dict[str, object]:
+    """Seal both restore receipt pointers over the normalized closed body."""
+    _require(isinstance(receipt, Mapping) and "receipt_fingerprint" not in receipt, "invalid_input")
+    result = dict(receipt)
+    coordination = result.get("coordination_record")
+    _require(isinstance(coordination, Mapping), "invalid_input")
+    normalized_coordination = dict(coordination)
+    normalized_coordination["receipt_fingerprint"] = None
+    result["coordination_record"] = normalized_coordination
+    digest = restore_receipt_fingerprint(result)
+    normalized_coordination["receipt_fingerprint"] = digest
+    result["coordination_record"] = normalized_coordination
+    result["receipt_fingerprint"] = digest
+    return result
+
+
 def _duplicate_rejecting_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -479,7 +508,14 @@ def validate_completed_output(
     receipt = _extract_receipt(joined, selector, expected_selector, expected_receipt_keys)
     _require(receipt is not None, "receipt_missing")
     _require(_sha(receipt.get("receipt_fingerprint")), "receipt_missing")
-    _require(receipt_fingerprint(receipt) == receipt["receipt_fingerprint"], "receipt_missing")
+    if selector == "contract":
+        _require(receipt_fingerprint(receipt) == receipt["receipt_fingerprint"], "receipt_missing")
+    else:
+        _require(
+            restore_receipt_fingerprint(receipt) == receipt["receipt_fingerprint"]
+            and receipt["coordination_record"].get("receipt_fingerprint") == receipt["receipt_fingerprint"],
+            "receipt_missing",
+        )
     if selector == "contract":
         _require(
             _parse_time(receipt["observed_start"]) >= task_start

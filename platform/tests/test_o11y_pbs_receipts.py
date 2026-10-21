@@ -176,10 +176,12 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
 
 
 def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch() -> None:
-    receipt = pbs.seal_receipt({
+    receipt_body = {
         key: ("restore_receipt/v3" if key == "type" else "verified")
-        for key in pbs.RESTORE_RECEIPT_KEYS - {"receipt_fingerprint"}
-    })
+        for key in pbs.RESTORE_RECEIPT_KEYS - {"receipt_fingerprint", "coordination_record"}
+    }
+    receipt_body["coordination_record"] = {"receipt_fingerprint": None, "version": 1}
+    receipt = pbs.seal_restore_receipt(receipt_body)
     task = {
         "id": 14,
         "project_id": 1,
@@ -230,3 +232,29 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
         now=NOW,
     )
     assert result["receipt"] == receipt
+    forged = dict(receipt)
+    forged["coordination_record"] = {"receipt_fingerprint": "0" * 64, "version": 1}
+    forged_launch_task = dict(task)
+    forged_launch_task["id"] = 15
+    forged_rows = [
+        {"id": 5, "task_id": 15, "stage_id": None, "time": "2026-10-21T15:20:00Z", "output": json.dumps(forged)}
+    ]
+    with pytest.raises(pbs.Refusal, match="receipt_missing"):
+        pbs.validate_completed_output(
+            forged_launch_task,
+            forged_rows,
+            public_sha=PUBLIC,
+            expected_project_id=1,
+            expected_launch=task["environment"],
+            selector="type",
+            expected_selector="restore_receipt/v3",
+            expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
+            allowed_launch_keys={
+                "expected_repository_sha",
+                "backup_task_id",
+                "pbs_verify_task_id",
+                "copy_sync_task_id",
+                "copy_ready_task_id",
+            },
+            now=NOW,
+        )
