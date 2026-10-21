@@ -57,6 +57,27 @@ Diagnostics count returned source series, fixed allowlisted label variation, ser
 | Output inspection | Receipts contain fixed field names and aggregate values only |
 | OpenSpec status | Capacity task remains open pending Dev-bound live readback and seven-day evidence |
 
+### Follow-on: canonical scrape-label variation (2026-10-20)
+
+The latest read-only Dev receipt (task 7721) still refuses two historical source series:
+one series appears at the latest evaluation, one evaluation overlaps, no sampled source
+events overlap, all five existing allowlisted label-variation checks are false, and one
+unrecognized label key is present. This does not establish why Prometheus returned two
+series. The receiver-host scrape declares the static `target_id` label in
+`platform/services/o11y/deployment/templates/prometheus.yml.j2:58-61`, while the capacity
+emitter's timestamp metric has no intrinsic labels
+(`platform/services/o11y/deployment/capacity/collect-o11y-capacity.py:52`). Add only
+`target_id` and `component` to the fixed diagnostic variation allowlist and test that
+their variation is reported as booleans while their names and values remain hidden.
+Leave the query, historical series, selection, one-source refusal, and every readiness
+gate unchanged. This diagnostic cannot identify the cause or prove a label migration.
+
+**Source receipt:** implemented and covered by the capacity-history tests. The diagnostic
+now reports only variation booleans for the two additional fixed keys. The selector and
+single-source assessment are unchanged. No live survey was repeated; the existing Dev
+receipt and capacity readiness gates remain unchanged, and no label-migration cause is
+established.
+
 ## Security Considerations
 
 The diagnostic operates on an already bounded read-only query response. It must not print metric bodies, label values, timestamps, URLs, addresses, or unknown label names. It does not join or filter series, alter query selectors, prune history, or authorize retention/growth changes. The existing exact-revision controller and receiver guards remain authoritative.
