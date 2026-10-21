@@ -64,6 +64,17 @@
       vars:
         require_parsed_inventory_group: "{{ target_service | default('') }}"
 
+    - name: "Refuse launch-time overrides of private host identity declarations"
+      ansible.builtin.assert:
+        that:
+          - "'estate_coverage_inventory' not in ('' | extra_var_names)"
+          - "'o11y_host_metrics_identity_enabled' not in ('' | extra_var_names)"
+          - "'service_name' not in ('' | extra_var_names)"
+        fail_msg: >-
+          Host-metrics identity is controlled by reviewed inventory declarations; do not pass
+          estate_coverage_inventory, o11y_host_metrics_identity_enabled, or service_name as
+          launch-time extra vars.
+
     # The guard and the work read the SAME target_service, so one override moves both; the
     # guard only proves the group is populated (as in verify-service-persistence.yml).
     - name: "Require target_service to name a populated group and one o11y receiver"
@@ -78,6 +89,102 @@
           (the receiver scrapes its own host as receiver-host), with exactly one o11y_svc host;
           got target_service '{{ target_service | default('') }}' and
           {{ groups.get('o11y_svc', []) | length }} o11y_svc host(s).
+
+- name: "Resolve opted-in host metrics identities before any exporter or scrape mutation"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  any_errors_fatal: true
+  gather_facts: false
+  become: false
+  vars:
+    _ih_identity_enabled: "{{ o11y_host_metrics_identity_enabled | default(false) }}"
+    _ih_service_identity: "{{ service_name | default(target_service | regex_replace('_svc$', '')) }}"
+    _ih_coverage_inventory: "{{ estate_coverage_inventory | default({}) }}"
+    _ih_coverage_targets: "{{ _ih_coverage_inventory.targets | default([]) }}"
+    _ih_identity_candidates: >-
+      {{ _ih_coverage_targets
+         | selectattr('service_identity', 'defined')
+         | selectattr('service_identity', 'equalto', _ih_service_identity)
+         | selectattr('inventory_host', 'defined')
+         | selectattr('inventory_host', 'equalto', inventory_hostname)
+         | list }}
+    _ih_host_candidates: >-
+      {{ _ih_coverage_targets
+         | selectattr('lifecycle', 'equalto', 'deployed')
+         | selectattr('inventory_host', 'defined')
+         | selectattr('inventory_host', 'equalto', inventory_hostname)
+         | list }}
+    _ih_identity_matches: >-
+      {{ _ih_identity_candidates
+         | selectattr('lifecycle', 'equalto', 'deployed')
+         | selectattr('inventory_host', 'defined')
+         | selectattr('inventory_host', 'equalto', inventory_hostname)
+         | list }}
+  tasks:
+    - name: "Require the identity switch to be a boolean and consistent across the group"
+      ansible.builtin.assert:
+        that:
+          - _ih_identity_enabled is boolean
+          - >-
+            (groups[target_service]
+             | map('extract', hostvars, 'o11y_host_metrics_identity_enabled')
+             | map('default', false) | unique | list | length) == 1
+        fail_msg: "o11y_host_metrics_identity_enabled must be one inventory boolean value for the selected group."
+
+    - name: "Validate the opted-in estate declaration with the existing coverage schema"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+          - --inventory-revision
+        stdin: "{{ _ih_coverage_inventory | to_json }}"
+      delegate_to: localhost
+      register: _ih_inventory_validation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _ih_identity_enabled | bool
+
+    - name: "Require a valid reviewed estate inventory when identity binding is enabled"
+      ansible.builtin.assert:
+        that:
+          - _ih_coverage_inventory is mapping
+          - _ih_coverage_inventory.get('targets') is sequence
+          - _ih_coverage_inventory.get('targets') is not string
+          - _ih_coverage_inventory.get('revision') is string
+          - _ih_inventory_validation.rc == 0
+          - _ih_inventory_validation.stdout | trim == _ih_coverage_inventory.get('revision')
+        fail_msg: "Host-metrics identity refused: the estate coverage inventory is missing or invalid."
+      when: _ih_identity_enabled | bool
+
+    - name: "Require one deployed declaration bound to this exact host and service"
+      ansible.builtin.assert:
+        that:
+          - _ih_identity_candidates | length == 1
+          - _ih_host_candidates | length == 1
+          - _ih_identity_matches | length == 1
+          - _ih_identity_matches[0].target_type in ['service', 'agent', 'vm', 'guest']
+          - _ih_identity_matches[0].target_id is match('^(service|agent|vm|guest):[a-z][a-z0-9_-]{1,63}$')
+          - _ih_identity_matches[0].target_id.split(':', 1)[0] == _ih_identity_matches[0].target_type
+          - _ih_identity_matches[0].get('signals', {}).get('metrics', {}).get('applicable') is sameas true
+          - >-
+            (groups[target_service]
+             | map('extract', hostvars, 'o11y_host_exporter_bind')
+             | map('default', '') | list
+             | zip(groups[target_service]
+                  | map('extract', hostvars, 'o11y_host_exporter_port')
+                  | map('default', 9100) | map('string') | list)
+             | map('join', ':') | unique | list | length) == (groups[target_service] | length)
+        fail_msg: >-
+          Host-metrics identity refused for {{ inventory_hostname }}: expected one deployed,
+          schema-valid target with the exact service identity and inventory host, plus unique
+          exporter endpoints across the selected group.
+      when: _ih_identity_enabled | bool
+
+    - name: "Carry only the matched declared identity to the exporter and receiver plays"
+      ansible.builtin.set_fact:
+        _ih_target_id: "{{ _ih_identity_matches[0].target_id if (_ih_identity_enabled | bool) else '' }}"
+        _ih_identity_bound: "{{ _ih_identity_enabled | bool }}"
+      when: _ih_identity_enabled | bool
 
 - name: "Validate production scrape budgets before host instrumentation or rendering"
   hosts: o11y_svc
@@ -295,7 +402,9 @@
             'host': h,
             'address': (hv.o11y_host_exporter_bind | default('') | string) ~ ':'
                        ~ (hv.o11y_host_exporter_port | default(9100) | string),
-            'service': (hv.service_name | default(target_service | regex_replace('_svc$', ''))) ~ '/host'}) -%}
+            'service': (hv.service_name | default(target_service | regex_replace('_svc$', ''))) ~ '/host',
+            'target_id': (hv._ih_target_id | default('')),
+            'identity_bound': (hv._ih_identity_bound | default(false) | bool)}) -%}
       {%- endfor -%}
       {{ out }}
     _ih_deploy_dir: >-
@@ -495,7 +604,22 @@
             _ih_up_hosts: >-
               {{ _ih_up.json.data.result | default([]) | selectattr('value.1', 'equalto', '1')
                  | map(attribute='metric.host') | list }}
-            _ih_mem_hosts: "{{ _ih_mem.json.data.result | default([]) | map(attribute='metric.host') | list }}"
+            _ih_mem_hosts: >-
+              {%- set out = [] -%}
+              {%- for endpoint in _ih_endpoints -%}
+              {%- set returned = _ih_mem.json.data.result | default([]) -%}
+              {%- for row in returned -%}
+              {%- set metric = row.metric | default({}) -%}
+              {%- if metric.host | default('') == endpoint.host
+                    and (not endpoint.identity_bound
+                         or (metric.target_id | default('') == endpoint.target_id
+                             and metric.component | default('') == 'node-exporter'
+                             and metric.metrics_scope | default('') == 'host')) -%}
+              {%- set _ = out.append(endpoint.host) -%}
+              {%- endif -%}
+              {%- endfor -%}
+              {%- endfor -%}
+              {{ out | unique | list }}
 
       rescue:
         - name: "Record the receiver's failure"
