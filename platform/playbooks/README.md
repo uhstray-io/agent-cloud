@@ -236,6 +236,11 @@ untouched for explicit cleanup after the new token is confirmed.
 ### Validation & Provisioning
 | Playbook | Purpose |
 |----------|---------|
+| `attach-pbs-data-disk.yml` | Dev-bound, exact-SHA PBS disk attachment; proves target VM and storage immediately before allocating only the declared serial-pinned guest disk |
+| `prepare-pbs-guest-data-disk.yml` | Dev-bound guest filesystem workflow; formats only the proven blank serial-matched disk, mounts by UUID, and exposes `--tags verify` as read-only mount/disk verification |
+| `configure-pbs.yml` | Dev-bound PBS package/service/datastore configuration with an explicit repository-channel gate, mount identity proof, and `--tags verify` for existing service health and datastore state |
+| `configure-pbs-backup-access.yml` | Dev-bound OpenBao/PBS/PVE backup identity and storage workflow; `--tags verify` reads existing identity, ACL, storage, and content state and refuses missing configuration |
+| `preflight-o11y-restore-target.yml` | Dev-bound GET-only restore-target and exact-artifact preflight; `--tags verify` reads capacity/identity state but does not reserve or create a VM |
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
 | `verify-o11y-metrics-target.yml` | Dev-bound, read-only Prometheus receipt for one exact healthy target and one named exporter series; refuses an altered controller checkout |
 | `survey-o11y-expected-metrics-targets.yml` | Dev-bound, read-only comparison of the reviewed exact five-label target declaration with all active Prometheus targets, including unhealthy targets; reports only fixed status/reason values and bounded counts |
@@ -324,6 +329,8 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `install-qemu-guest-agent.yml` | Install `qemu-guest-agent` on existing VMs (idempotent); refuses a VM without the Proxmox guest-agent channel. Enable that channel first with `resize-vm.yml`, which converges `agent=1` (a running VM needs `allow_reboot=true` to pick it up) |
 | `resize-vm.yml` | Converge a live VM's cores/memory/disk and its guest-agent option (`agent=1`, per-host opt-out `vm_agent: false`) to its declaration; grow-only disk, opt-in reboot, and a run without `allow_reboot` is a safe preview |
 | `attach-pbs-data-disk.yml` | Re-run the pinned thick-LVM preflight, then attach only the declared PBS VM's 512-GiB `scsi1` virtual disk through the Proxmox API; check mode is read-only and config-digest guarded |
+| `prepare-pbs-guest-data-disk.yml` | Require the VMID-derived `ac-pbs-data-<vmid>` whole-disk serial and exact size, refuse nonblank/ambiguous devices, create ext4 only on that guest virtual disk, mount by UUID at `/srv/pbs-data`, and verify readback; check mode reads and validates only |
+| `configure-pbs.yml` | Install and configure PBS on the one declared Debian guest through an explicit private repository-channel choice; re-prove the serial-pinned UUID mount and shared no-follow datastore-path containment before writes, then verify PBS health and datastore policy |
 | `install-podman.yml` | Install Podman + podman-compose + uidmap (idempotent); optional `podman_docker_cli` adds the `docker` CLI shim for consumers that shell out to a docker binary |
 | `deploy-github-runner.yml` | Install + register one self-hosted GitHub Actions runner. Registration token minted on the CONTROLLER — the host is firewalled away from OpenBao by design |
 | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false` |

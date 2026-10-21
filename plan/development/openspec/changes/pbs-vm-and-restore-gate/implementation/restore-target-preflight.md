@@ -1,0 +1,21 @@
+# Restore target preflight source integration
+
+The independently reviewed, fix-verified source head
+`9099a421b01016226cb806560c43a6d6da819d69` is integrated by normal merge
+commit `64ed7ae0`. It adds the GET-only
+`platform/playbooks/preflight-o11y-restore-target.yml` workflow and the
+Dev-bound `Preflight o11y Restore Target (Dev)` catalog definition. The
+catalog exposes only the exact reviewed `expected_repository_sha`; target
+identity and artifact selector remain private inventory values.
+
+The preflight checks one distinct restore target declared as disconnected,
+one exact selected backup artifact, current Proxmox resource and storage state,
+and the configured headroom. It does not reserve a VMID, create or modify a
+VM, or prove restore success. The playbook's `verify` tag selects the same
+read-only checks. The separate implementation notes describe the exact
+sanitized failure/status contract.
+
+Source integration does not satisfy OpenSpec 5.1 live acceptance. The private
+target and artifact declarations, current VMID availability authority, and
+ACL census visibility remain unverified. No restore target has been reserved
+or used, and no restore has been attempted.

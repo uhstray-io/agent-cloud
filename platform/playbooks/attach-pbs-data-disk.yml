@@ -60,9 +60,12 @@
     _cores: "{{ _decl.vm_cores | default('') }}"
     _memory: "{{ _decl.vm_memory | default('') }}"
     _vm_description: "Managed by agent-cloud; target_service=pbs; declaration=private inventory"
-    _expected_disk_pattern: "^{{ _storage }}:vm-{{ _vmid }}-disk-[0-9]+,size=512G(,|$)"
+    _expected_disk_serial: "ac-pbs-data-{{ _vmid }}"
+    # Match the volume prefix, then require size and serial as independent comma-delimited
+    # options. Proxmox option order is not an identity signal and may change on readback.
+    _expected_disk_pattern: "^{{ _storage }}:vm-{{ _vmid }}-disk-[0-9]+(?=,|$)(?=.*(?:^|,)size=512G(?:,|$))(?=.*(?:^|,)serial={{ _expected_disk_serial }}(?:,|$))"
     _disk_keys_pattern: "^(scsi|sata|virtio)[0-9]+$|^ide[013]$|^unused[0-9]+$"
-    _disk_request: "{{ _storage }}:512"
+    _disk_request: "{{ _storage }}:512,serial={{ _expected_disk_serial }}"
 
   tasks:
     - name: Require an exact reviewed Dev write run
