@@ -264,7 +264,7 @@ frontendPolicies:
       # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L905-L910
       # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L1104-L1109
       http.path: request.path
-{% if agw_otlp_host | default('') %}
+{% if agw_otlp_host | default('') and agw_otlp_logs | default(false) | bool %}
     # Access logs share Alloy's OTLP receiver with traces. The service field
     # becomes Loki's bounded service label; stdout logging stays available.
     otlp:
@@ -273,10 +273,11 @@ frontendPolicies:
         add:
           service: '"agentgateway"'
           identity: apiKey.name
+          signal: '"access-log"'
           # OTLP has its own field overrides; keep the same-name replacement explicit.
           http.path: request.path
 {% endif %}
-{% if agw_otlp_host | default('') %}
+{% if agw_otlp_host | default('') and agw_otlp_traces | default(false) | bool %}
   tracing:
     # The receiver is Alloy, which batches these spans to Tempo. Bound both
     # newly started and client-propagated traces; no prompt/completion fields.

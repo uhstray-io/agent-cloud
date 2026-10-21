@@ -961,6 +961,7 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
         agw_listener_tls=False,
         internal_leaves=[],
         agw_otlp_host="alloy.example:4317",
+        agw_otlp_traces=True,
         agw_trace_sampling=0.05,
         agw_clients=["test-client"],
         agw_client_policies={},

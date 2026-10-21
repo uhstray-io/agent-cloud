@@ -60,6 +60,8 @@
 #   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key;
 #                                        false makes the key optional (still sent when present)
 #   agw_otlp_host          (optional) declared o11y Alloy OTLP host:port
+#   agw_otlp_logs          (default false) export access logs; requires agw_otlp_host
+#   agw_otlp_traces        (default false) export traces; requires agw_otlp_host
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 #   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
 #   agw_mcp_enabled                      (default false) serve MCP at /mcp on the default gateway (key-gated: the admin-derived
@@ -349,20 +351,45 @@
       check_mode: false
       when: _tls and (local_mode | default(false) | bool)
 
-    - name: "Require a declared o11y receiver for agentgateway tracing"
+    - name: "Refuse an OTLP receiver address without an enabled signal"
+      ansible.builtin.assert:
+        that:
+          - agw_otlp_logs | default(false) | bool or agw_otlp_traces | default(false) | bool
+        fail_msg: "A declared agw_otlp_host requires agw_otlp_logs or agw_otlp_traces."
+        quiet: true
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Refuse an OTLP signal without its receiver address"
+      ansible.builtin.assert:
+        that:
+          - agw_otlp_host | default('') | length > 0
+        fail_msg: "agw_otlp_logs and agw_otlp_traces each require agw_otlp_host."
+        quiet: true
+      when:
+        - agw_otlp_logs | default(false) | bool or agw_otlp_traces | default(false) | bool
+
+    - name: "Require a declared o11y receiver for agentgateway OTLP"
       ansible.builtin.assert:
         that:
           - groups.get('o11y_svc', []) | length == 1
           - agw_otlp_host is match('^[A-Za-z0-9.-]+:[0-9]{1,5}$')
           - agw_otlp_host == (hostvars[groups['o11y_svc'][0]].o11y_otlp_bind | default('')) ~ ':' ~ (hostvars[groups['o11y_svc'][0]].o11y_otlp_port | default(4317) | string)
+        fail_msg: "Gateway OTLP needs the declared o11y receiver and matching listener address."
+        quiet: true
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Require valid sampling when agentgateway traces are enabled"
+      ansible.builtin.assert:
+        that:
           - agw_trace_sampling | default(0.05) | float > 0
           - agw_trace_sampling | default(0.05) | float <= 0.1
         fail_msg: "Gateway tracing needs the declared o11y OTLP listener and sampling in (0, 0.1]."
-      when: agw_otlp_host | default('') | length > 0
+        quiet: true
+      when: agw_otlp_traces | default(false) | bool
 
     - name: "Require the recorded trace rollout gate before gateway tracing"
       ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
-      when: agw_otlp_host | default('') | length > 0
+      when: agw_otlp_traces | default(false) | bool
 
     - name: "Require the declared receiver's Tempo to answer before gateway tracing"
       ansible.builtin.command:
@@ -378,7 +405,7 @@
       delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       changed_when: false
       check_mode: false
-      when: agw_otlp_host | default('') | length > 0
+      when: agw_otlp_traces | default(false) | bool
 
     - name: "Require the gateway host to reach Alloy's declared OTLP listener"
       ansible.builtin.wait_for:
@@ -1015,7 +1042,8 @@
       check_mode: false
       when:
         - not ansible_check_mode
-        - agw_otlp_host | default('') | length > 0
+        - groups.get('o11y_svc', []) | length == 1
+        - hostvars[groups['o11y_svc'][0]].agentgateway_metrics_address is defined
 
     - name: "Require the receiver to collect the restarted gateway"
       ansible.builtin.command:
@@ -1043,7 +1071,8 @@
             > (_gateway_ready_epoch.stdout | float)
       when:
         - not ansible_check_mode
-        - agw_otlp_host | default('') | length > 0
+        - groups.get('o11y_svc', []) | length == 1
+        - hostvars[groups['o11y_svc'][0]].agentgateway_metrics_address is defined
 
     # All three probes below go through the one gateway probe path (tasks/agw-probe.yml, task
     # 6.1a): a `uri` call from this host to the published port. With listener TLS it presents

@@ -2126,9 +2126,34 @@ assert 'Trace rollout is blocked' in gate[1]['ansible.builtin.assert']['fail_msg
 o11y_tasks = next(play for play in receiver if 'manage o11y secrets' in play.get('name', ''))['tasks']
 gateway_tasks = next(play for play in gateway if 'manage agentgateway secrets' in play.get('name', ''))['tasks']
 receiver_gate = next(task for task in o11y_tasks if task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml')
-assert 'agw_otlp_host' in receiver_gate['when']
+assert 'agw_otlp_traces' in receiver_gate['when']
+assert 'agw_otlp_host' not in receiver_gate['when']
 assert 'o11y_trace_rollout_enabled' in receiver_gate['when']
 assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml' for task in gateway_tasks)
+
+from jinja2 import Environment
+condition = Environment()
+condition.filters['bool'] = bool
+gate_when = receiver_gate['when']
+if isinstance(gate_when, list):
+    gate_when = ' and '.join('(' + item + ')' for item in gate_when)
+
+def gate_runs(traces):
+    values = {
+        'local_mode': False,
+        'o11y_trace_rollout_enabled': False,
+        'o11y_trace_derived_metrics_enabled': False,
+        'groups': {'agentgateway_svc': ['gateway']},
+        'hostvars': {'gateway': {'agw_otlp_host': 'receiver.test:4317', 'agw_otlp_traces': traces}},
+    }
+    result = condition.from_string('{{ (' + gate_when + ') }}').render(**values)
+    return result.lower() == 'true'
+
+assert not gate_runs(False)  # An OTLP address for logs does not activate the trace rollout gate.
+assert gate_runs(True)
+
+private_bind = next(task for task in o11y_tasks if task.get('name') == 'Require a private declared OTLP bind when agentgateway tracing is enabled')
+assert any('agw_otlp_host' in item for item in private_bind['when'])
 PY
 }
 
