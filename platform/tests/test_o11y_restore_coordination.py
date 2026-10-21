@@ -1,0 +1,446 @@
+"""Regression tests for the source-only OpenBao restore coordination primitive."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "playbooks" / "files"))
+
+import o11y_restore_coordination as coordination  # noqa: E402
+
+DECLARATION = {
+    "declaration_fingerprint": "1" * 64,
+    "target_fingerprint": "2" * 64,
+    "artifact_fingerprint": "3" * 64,
+    "public_sha": "a" * 40,
+    "private_inventory_sha": "b" * 64,
+}
+RESTORE_UPID = "UPID:pve:00000001:00000002:00000003:qmrestore:102:root@pam:"
+DELETE_UPID = "UPID:pve:00000004:00000005:00000006:qmdelete:102:root@pam:"
+
+
+def request(transition: str, *, snapshot=None, nonce=None, evidence=None, upid=None, generation=None):
+    expected_generation = (snapshot["generation"] if snapshot else None) if generation is None else generation
+    return {
+        "transition": transition,
+        "declaration": DECLARATION,
+        "expected_generation": expected_generation,
+        "nonce": nonce,
+        "evidence": evidence,
+        "upid": upid,
+    }
+
+
+def planned_reservation():
+    plan = coordination.plan_transition(
+        None,
+        0,
+        request("reserve"),
+    )
+    return plan["record"]
+
+
+def start_restore(snapshot=None):
+    current = snapshot or planned_reservation()
+    return coordination.plan_transition(
+        current,
+        1,
+        request("start_restore", snapshot=current),
+    )["record"]
+
+
+def record_restore_upid(snapshot=None):
+    current = snapshot or start_restore()
+    return coordination.plan_transition(
+        current,
+        2,
+        request("record_restore_upid", snapshot=current, upid=RESTORE_UPID),
+    )["record"]
+
+
+def restore_evidence(snapshot=None):
+    current = snapshot or record_restore_upid()
+    return {
+        "type": "restore_receipt/v1",
+        "receipt_fingerprint": "5" * 64,
+        "bindings": {
+            "operation_id": current["operation_id"],
+            "target_fingerprint": current["target_fingerprint"],
+            "artifact_fingerprint": current["artifact_fingerprint"],
+            "restore_nonce": current["restore_nonce"],
+            "public_sha": current["public_sha"],
+            "private_inventory_sha": current["private_inventory_sha"],
+        },
+        "restore_upid": current["upid"],
+        "target_state": "stopped",
+        "pending_action": None,
+    }
+
+
+def authenticated_restore_task(snapshot=None):
+    current = snapshot or awaiting_receipt()
+    return {
+        "type": "prior_restore_task_proof/v1",
+        "task_id": 4102,
+        "task_status": "success",
+        "output_fingerprint": "4" * 64,
+        "receipt_fingerprint": current["receipt_fingerprint"],
+        "bindings": {
+            "operation_id": current["operation_id"],
+            "target_fingerprint": current["target_fingerprint"],
+            "artifact_fingerprint": current["artifact_fingerprint"],
+            "restore_nonce": current["restore_nonce"],
+            "public_sha": current["public_sha"],
+            "private_inventory_sha": current["private_inventory_sha"],
+            "restore_upid": current["upid"],
+        },
+    }
+
+
+def awaiting_receipt(snapshot=None):
+    current = snapshot or record_restore_upid()
+    return coordination.plan_transition(
+        current,
+        3,
+        request("awaiting_receipt", snapshot=current, evidence=restore_evidence(current)),
+    )["record"]
+
+
+def start_cleanup(snapshot=None):
+    current = snapshot or awaiting_receipt()
+    return coordination.plan_transition(
+        current,
+        4,
+        request("start_cleanup", snapshot=current, evidence=authenticated_restore_task(current)),
+    )["record"]
+
+
+def record_cleanup_upid(snapshot=None):
+    current = snapshot or start_cleanup()
+    return coordination.plan_transition(
+        current,
+        5,
+        request("record_cleanup_upid", snapshot=current, upid=DELETE_UPID),
+    )["record"]
+
+
+def cleanup_evidence(snapshot=None):
+    current = snapshot or record_cleanup_upid()
+    return {
+        "type": "pve_delete_verification/v1",
+        "bindings": {
+            "operation_id": current["operation_id"],
+            "target_fingerprint": current["target_fingerprint"],
+            "artifact_fingerprint": current["artifact_fingerprint"],
+            "restore_nonce": current["restore_nonce"],
+            "active_nonce": current["active_nonce"],
+            "prior_authenticated_task_id": current["prior_authenticated_task_id"],
+            "public_sha": current["public_sha"],
+            "private_inventory_sha": current["private_inventory_sha"],
+        },
+        "target_absence": {
+            "type": "pve_exact_vmid_absence/v1",
+            "vmid": 102,
+            "nextid_status": 200,
+            "nextid_echo": 102,
+            "node_config_status": 404,
+            "target_fingerprint": current["target_fingerprint"],
+        },
+        "delete_upid": current["upid"],
+        "task_state": "stopped",
+        "exit_status": "OK",
+    }
+
+
+def cleaned(snapshot=None):
+    current = snapshot or record_cleanup_upid()
+    return coordination.plan_transition(
+        current,
+        6,
+        request("cleaned", snapshot=current, evidence=cleanup_evidence(current)),
+    )["record"]
+
+
+def kv_reads(record, version=1):
+    metadata = {
+        "current_version": version,
+        "versions": {str(version): {"created_time": "2026-10-21T12:00:00Z", "deletion_time": "", "destroyed": False}},
+    }
+    secret = {"data": {"data": record, "metadata": {"version": version}}}
+    return metadata, secret
+
+
+def test_absent_path_reserves_once_with_cas_zero_and_exact_record_shape():
+    plan = coordination.plan_transition(None, 0, request("reserve"))
+
+    assert plan["result"] == "write"
+    assert plan["payload"] == {"data": plan["record"], "options": {"cas": 0}}
+    assert plan["record"]["phase"] == "reserved"
+    assert plan["record"]["generation"] == 1
+    assert coordination._nonce(plan["record"]["restore_nonce"])
+    assert set(plan["record"]) == coordination.RECORD_KEYS
+
+
+def test_restore_nonce_comes_from_one_token_hex_32_call_per_new_phase(monkeypatch):
+    calls = []
+    tokens = iter(["c" * 64, "d" * 64])
+
+    def fixed_token_hex(size):
+        calls.append(size)
+        return next(tokens)
+
+    monkeypatch.setattr(coordination.secrets, "token_hex", fixed_token_hex)
+    reserved = coordination.plan_transition(None, 0, request("reserve"))["record"]
+    assert calls == [32]
+
+    receipt = awaiting_receipt(record_restore_upid(start_restore(reserved)))
+    cleanup = coordination.plan_transition(
+        receipt,
+        4,
+        request("start_cleanup", snapshot=receipt, evidence=authenticated_restore_task(receipt)),
+    )["record"]
+    assert calls == [32, 32]
+    assert cleanup["active_nonce"] == "d" * 64
+
+
+def test_a_lost_reservation_response_cannot_turn_a_rerun_into_takeover():
+    # Model a successful CAS whose response was lost: the next invocation sees
+    # the stored reservation, and its attempted second reservation must stop.
+    snapshot = planned_reservation()
+
+    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
+        coordination.plan_transition(
+            snapshot,
+            1,
+            request("reserve", snapshot=snapshot),
+        )
+
+
+def test_stale_generation_cannot_be_used_for_a_competing_transition():
+    snapshot = planned_reservation()
+    stale = request("start_restore", snapshot=snapshot, generation=0)
+
+    with pytest.raises(coordination.Refusal, match="generation_mismatch"):
+        coordination.plan_transition(snapshot, 1, stale)
+
+
+def test_transition_write_uses_the_observed_kv_version_as_cas():
+    snapshot = planned_reservation()
+    plan = coordination.plan_transition(snapshot, 8, request("start_restore", snapshot=snapshot))
+
+    assert plan["payload"]["options"] == {"cas": 8}
+    assert plan["expected_version"] == 9
+
+
+def test_metadata_and_kv_version_drift_refuse_before_planning_a_write():
+    snapshot = planned_reservation()
+    metadata, secret = kv_reads(snapshot, version=2)
+    secret["data"]["metadata"]["version"] = 1
+
+    with pytest.raises(coordination.Refusal, match="cas_version_invalid"):
+        coordination.read_snapshot(200, metadata, 200, secret)
+
+
+def test_deleted_metadata_and_metadata_only_records_are_never_absence():
+    tombstone = {"current_version": 1, "versions": {"1": {"deletion_time": "2026-10-21T12:00:00Z", "destroyed": False}}}
+    with pytest.raises(coordination.Refusal, match="metadata_tombstone"):
+        coordination.read_snapshot(200, tombstone, 404, None)
+
+    metadata, _secret = kv_reads(planned_reservation())
+    with pytest.raises(coordination.Refusal, match="data_missing"):
+        coordination.read_snapshot(200, metadata, 404, None)
+
+
+def test_wrong_target_or_inventory_owner_fingerprint_refuses():
+    snapshot = planned_reservation()
+    wrong_owner = {**DECLARATION, "private_inventory_sha": "f" * 64}
+
+    with pytest.raises(coordination.Refusal, match="record_binding_mismatch"):
+        coordination.plan_transition(
+            snapshot,
+            1,
+            {**request("start_restore", snapshot=snapshot), "declaration": wrong_owner},
+        )
+
+
+def test_record_generation_is_fixed_and_cannot_be_reinterpreted():
+    snapshot = planned_reservation()
+    changed_generation = {**snapshot, "generation": 2}
+
+    with pytest.raises(coordination.Refusal, match="record_shape_invalid"):
+        coordination.validate_record(changed_generation)
+
+
+def test_unsupported_lifecycle_action_is_refused():
+    with pytest.raises(coordination.Refusal, match="invalid_input"):
+        coordination.plan_transition(None, 0, request("isolate_nic"))
+
+    record = planned_reservation()
+    with pytest.raises(coordination.Refusal, match="record_shape_invalid"):
+        coordination.validate_record({**record, "action": "start"})
+
+
+def test_restore_nonce_must_bind_receipt_and_cleanup_uses_a_fresh_nonce():
+    snapshot = record_restore_upid()
+    evidence = restore_evidence(snapshot)
+    evidence["bindings"]["restore_nonce"] = "e" * 64
+
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 3, request("awaiting_receipt", snapshot=snapshot, evidence=evidence))
+
+    receipt = awaiting_receipt()
+    cleanup = start_cleanup(receipt)
+    assert cleanup["active_nonce"] != receipt["restore_nonce"]
+    assert coordination._nonce(cleanup["active_nonce"])
+
+
+def test_pending_upid_or_missing_restore_action_refuses_receipt_transition():
+    snapshot = start_restore()
+
+    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
+        coordination.plan_transition(
+            snapshot, 2, request("awaiting_receipt", snapshot=snapshot, evidence=restore_evidence(snapshot))
+        )
+
+
+def test_lost_restore_response_keeps_the_target_reserved_for_manual_reconciliation():
+    snapshot = start_restore()
+
+    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
+        coordination.plan_transition(snapshot, 2, request("start_restore", snapshot=snapshot))
+    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
+        coordination.plan_transition(
+            snapshot, 2, request("awaiting_receipt", snapshot=snapshot, evidence=restore_evidence(snapshot))
+        )
+
+
+def test_boolean_and_unbound_receipt_proofs_are_rejected():
+    snapshot = record_restore_upid()
+
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 3, request("awaiting_receipt", snapshot=snapshot, evidence=True))
+
+    evidence = restore_evidence(snapshot)
+    evidence["bindings"]["target_fingerprint"] = "0" * 64
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 3, request("awaiting_receipt", snapshot=snapshot, evidence=evidence))
+
+
+def test_generated_receipt_does_not_authorize_cleanup_without_prior_task_proof():
+    snapshot = awaiting_receipt()
+    assert snapshot["prior_authenticated_task_id"] is None
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(
+            snapshot,
+            4,
+            request("start_cleanup", snapshot=snapshot, evidence=restore_evidence(snapshot)),
+        )
+
+    proof = authenticated_restore_task(snapshot)
+    proof["task_status"] = "running"
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 4, request("start_cleanup", snapshot=snapshot, evidence=proof))
+
+
+def test_lost_cleanup_upid_response_leaves_deletion_pending_and_uncleanable():
+    snapshot = start_cleanup()
+
+    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
+        coordination.plan_transition(
+            snapshot, 5, request("cleaned", snapshot=snapshot, evidence=cleanup_evidence(snapshot))
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("nextid_echo", 103),
+        ("nextid_status", 400),
+        ("node_config_status", 500),
+        ("node_config_status", 403),
+        ("target_fingerprint", "0" * 64),
+    ],
+)
+def test_cleaned_requires_authoritative_exact_vmid_absence(field, value):
+    snapshot = record_cleanup_upid()
+    evidence = cleanup_evidence(snapshot)
+    evidence["target_absence"][field] = value
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=evidence))
+
+
+def test_cleaned_does_not_accept_boolean_absence_or_wrong_delete_upid():
+    snapshot = record_cleanup_upid()
+    proof = cleanup_evidence(snapshot)
+    proof["target_absence"] = True
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=proof))
+
+    proof = cleanup_evidence(snapshot)
+    proof["delete_upid"] = RESTORE_UPID
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=proof))
+
+
+def test_cleaned_rerun_is_idempotent_and_never_creates_a_new_generation():
+    snapshot = cleaned()
+    assert snapshot["prior_authenticated_task_id"] == 4102
+    assert snapshot["receipt_fingerprint"] == "5" * 64
+    plan = coordination.plan_transition(snapshot, 7, request("reserve", snapshot=snapshot))
+
+    assert plan == {"result": "unchanged", "record": snapshot, "version": 7}
+
+
+def test_exact_readback_requires_expected_record_and_version():
+    reserve = coordination.plan_transition(None, 0, request("reserve"))
+    expected = reserve["record"]
+    metadata, secret = kv_reads(expected, version=1)
+
+    assert coordination.verify_readback(reserve, 200, metadata, 200, secret) == {
+        "result": "verified",
+        "phase": "reserved",
+        "version": 1,
+    }
+    transition = coordination.plan_transition(expected, 1, request("start_restore", snapshot=expected))
+    drifted_metadata, drifted_secret = kv_reads(expected, version=2)
+    with pytest.raises(coordination.Refusal, match="readback_mismatch"):
+        coordination.verify_readback(transition, 200, drifted_metadata, 200, drifted_secret)
+
+
+def test_cli_refusals_never_echo_untrusted_payload_values():
+    secret_marker = "PRIVATE_TARGET_SENTINEL"
+    proc = subprocess.run(
+        [sys.executable, str(Path(coordination.__file__))],
+        input=json.dumps({"mode": "unknown", "private_value": secret_marker}),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 2
+    assert secret_marker not in proc.stdout
+    assert secret_marker not in proc.stderr
+    assert json.loads(proc.stdout) == {"result": "refused", "reason": "invalid_input"}
+
+
+def test_ansible_include_is_fixed_path_cas_only_and_hides_protected_results():
+    task_path = Path(__file__).parents[1] / "playbooks" / "tasks" / "o11y-restore-coordination.yml"
+    source = task_path.read_text()
+    parsed = yaml.safe_load(source)
+
+    assert isinstance(parsed, list) and parsed
+    assert "/v1/secret/data/coordination/o11y-restore-target" in source
+    assert "/v1/secret/metadata/coordination/o11y-restore-target" in source
+    assert "follow_redirects: none" in source
+    assert "no_log: true" in source
+    assert "status_code: [200, 400, 412]" in source
+    assert "retries:" not in source
+    assert "until:" not in source
+    assert "ttl" not in source.lower()
+    assert "cas" in source.lower()
