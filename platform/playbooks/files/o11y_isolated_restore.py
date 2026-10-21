@@ -7,9 +7,18 @@ import hashlib
 import json
 import re
 import sys
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
-from o11y_pbs_receipts import Refusal, validate_completed_task
+from o11y_pbs_receipts import (
+    CONTRACTS,
+    RESTORE_RECEIPT_KEYS,
+    Refusal,
+    artifact_fingerprint,
+    parse_manifest,
+    validate_completed_output,
+    validate_completed_task,
+)
 
 VMID = re.compile(r"(?:0|[1-9][0-9]{0,8})\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
@@ -119,7 +128,24 @@ SAFE_REASONS = {
     "task_receipt_ambiguous",
     "receipt_binding_mismatch",
     "target_config_invalid",
+    "task_chain_invalid",
+    "artifact_stale",
+    "restore_receipt_invalid",
 }
+PREREQUISITE_CONTRACTS = (
+    "o11y-pbs-backup/v1",
+    "o11y-pbs-verify/v1",
+    "o11y-pbs-copy-sync/v1",
+    "o11y-pbs-copy-ready/v1",
+)
+RESTORE_LAUNCH_KEYS = {
+    "expected_repository_sha",
+    "backup_task_id",
+    "pbs_verify_task_id",
+    "copy_sync_task_id",
+    "copy_ready_task_id",
+}
+CLEANUP_LAUNCH_KEYS = {"expected_repository_sha", "restore_task_id", "expected_receipt_sha"}
 
 
 def require(condition: bool, reason: str) -> None:
@@ -280,6 +306,140 @@ def verify_task_proof(payload: object) -> dict:
         expected_artifact_fingerprint=payload["expected_artifact_fingerprint"],
     )
     require(isinstance(result, dict) and set(result) == {"receipt", "task_metadata"}, "task_proof_invalid")
+    return result
+
+
+def verify_prerequisite_chain(payload: object) -> dict:
+    """Authenticate the exact ordered backup, verify, copy and readback task chain."""
+    keys = {
+        "public_sha",
+        "private_sha",
+        "expected_project_id",
+        "expected_task_ids",
+        "expected_launches",
+        "task_proofs",
+        "manifest",
+    }
+    require(isinstance(payload, dict) and set(payload) == keys, "invalid_input")
+    expected_contracts = set(PREREQUISITE_CONTRACTS)
+    require(
+        isinstance(payload["expected_task_ids"], dict) and set(payload["expected_task_ids"]) == expected_contracts,
+        "task_chain_invalid",
+    )
+    require(
+        isinstance(payload["expected_launches"], dict) and set(payload["expected_launches"]) == expected_contracts,
+        "task_chain_invalid",
+    )
+    require(
+        isinstance(payload["task_proofs"], dict) and set(payload["task_proofs"]) == expected_contracts,
+        "task_chain_invalid",
+    )
+    manifest = parse_manifest(payload["manifest"])
+    fingerprint = artifact_fingerprint(manifest)
+    observed_fingerprint = None
+    validated = {}
+    ids = []
+    receipts = {}
+    for contract in PREREQUISITE_CONTRACTS:
+        task_id = payload["expected_task_ids"][contract]
+        proof = payload["task_proofs"][contract]
+        require(type(task_id) is int and task_id > 0, "task_chain_invalid")
+        require(isinstance(proof, dict) and set(proof) == {"task", "output_rows"}, "task_chain_invalid")
+        require(isinstance(payload["expected_launches"][contract], dict), "task_chain_invalid")
+        result = validate_completed_task(
+            proof["task"],
+            proof["output_rows"],
+            contract=contract,
+            public_sha=payload["public_sha"],
+            private_sha=payload["private_sha"],
+            playbook=CONTRACTS[contract]["playbook"],
+            expected_project_id=payload["expected_project_id"],
+            expected_task_id=task_id,
+            expected_launch=payload["expected_launches"][contract],
+            expected_artifact_fingerprint=fingerprint,
+        )
+        receipt = result["receipt"]
+        evidence = receipt["evidence"]
+        require(evidence.get("artifact_fingerprint") == fingerprint, "task_chain_invalid")
+        ids.append(result["task_metadata"]["id"])
+        receipts[contract] = receipt
+        validated[contract] = result["task_metadata"]
+        observed_fingerprint = observed_fingerprint or fingerprint
+
+    require(ids == sorted(ids) and len(ids) == len(set(ids)), "task_chain_invalid")
+    backup, verify, sync, ready = (receipts[item]["evidence"] for item in PREREQUISITE_CONTRACTS)
+    require(
+        verify["backup_task_id"] == ids[0]
+        and verify["backup_upid"] == backup["backup_upid"]
+        and verify["snapshot"] == backup["snapshot"],
+        "task_chain_invalid",
+    )
+    require(
+        sync["backup_task_id"] == ids[0]
+        and sync["verify_task_id"] == ids[1]
+        and sync["backup_upid"] == backup["backup_upid"]
+        and sync["verification_upid"] == verify["verification_upid"]
+        and sync["snapshot"] == backup["snapshot"],
+        "task_chain_invalid",
+    )
+    require(ready["sync_task_id"] == ids[2] and ready["snapshot"] == backup["snapshot"], "task_chain_invalid")
+    require(
+        manifest["backup_time"] <= int(datetime.now(UTC).timestamp())
+        and int(datetime.now(UTC).timestamp()) - manifest["backup_time"] <= 24 * 60 * 60,
+        "artifact_stale",
+    )
+    return {
+        "status": "verified",
+        "artifact_fingerprint": observed_fingerprint,
+        "snapshot": {key: backup["snapshot"][key] for key in ("backup_type", "backup_id", "backup_time")},
+        "task_ids": ids,
+        "task_metadata": validated,
+        "readiness_evidence": ready,
+    }
+
+
+def verify_restore_task_proof(payload: object) -> dict:
+    """Authenticate a prior restore task, exact launch and one closed v3 receipt."""
+    keys = {
+        "task",
+        "output_rows",
+        "public_sha",
+        "expected_project_id",
+        "expected_task_id",
+        "expected_template_id",
+        "expected_launch",
+        "selector",
+        "expected_selector",
+        "expected_receipt_fingerprint",
+        "now",
+    }
+    require(isinstance(payload, dict) and set(payload) == keys, "invalid_input")
+    require(
+        payload["selector"] == "type" and payload["expected_selector"] == "restore_receipt/v3",
+        "restore_receipt_invalid",
+    )
+    require(
+        isinstance(payload["expected_launch"], dict)
+        and set(payload["expected_launch"]) == CLEANUP_LAUNCH_KEYS
+        and payload["expected_launch"]["expected_receipt_sha"] == payload["expected_receipt_fingerprint"],
+        "restore_receipt_invalid",
+    )
+    result = validate_completed_output(
+        payload["task"],
+        payload["output_rows"],
+        public_sha=payload["public_sha"],
+        expected_project_id=payload["expected_project_id"],
+        expected_launch=payload["expected_launch"],
+        selector="type",
+        expected_selector="restore_receipt/v3",
+        expected_receipt_keys=RESTORE_RECEIPT_KEYS,
+        allowed_launch_keys=CLEANUP_LAUNCH_KEYS,
+        expected_task_id=payload["expected_task_id"],
+        expected_template_id=payload["expected_template_id"],
+        now=payload["now"],
+    )
+    receipt = result["receipt"]
+    require(receipt["receipt_fingerprint"] == payload["expected_receipt_fingerprint"], "restore_receipt_invalid")
     return result
 
 

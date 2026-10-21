@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "playbooks" / "files"))
+import o11y_pbs_receipts as pbs_receipts  # noqa: E402
 import o11y_restore_coordination as coordination  # noqa: E402
 
 TARGET = {"node": "restore-node", "vmid": 910001}
@@ -175,9 +174,32 @@ def completed_restore():
         ("stop", "upid", STOP_UPID, 5),
     ):
         record, version = action(record, version, name, kind, handle, marker)
+    data_checks = {
+        "schema_version": 1,
+        "status": "verified",
+        "reason": "restored_historical_data_verified",
+        "volume_count": 5,
+        "volume_bindings_sha256": "4" * 64,
+        "container_bindings_sha256": "5" * 64,
+        "backend_count": 4,
+        "grafana_integrity": "ok",
+        "grafana_migrations": 3,
+        "grafana_database_sha256": "6" * 64,
+        "backends": {
+            name: {
+                "expectation": "present",
+                "historical_records": 1,
+                "evidence_sha256": "7" * 64,
+                "readback_sha256": "8" * 64,
+            }
+            for name in ("prometheus", "loki", "tempo", "pyroscope")
+        },
+        "receipt_fingerprint": "9" * 64,
+    }
+    nested_record = copy.deepcopy(record)
+    nested_record.update(phase="awaiting_receipt", active_nonce=None)
     evidence = {
-        "type": "restore_receipt/v2",
-        "receipt_fingerprint": "",
+        "type": "restore_receipt/v3",
         "bindings": {
             key: record[key]
             for key in (
@@ -193,15 +215,23 @@ def completed_restore():
         "target_state": "stopped",
         "pending_action": None,
         "completed_actions": ["restore", "isolate", "start", "guest_exec", "stop"],
+        "coordination_record": nested_record,
+        "coordination_version": version + 1,
+        "artifact_config": {
+            "config_sha256": "a" * 64,
+            "disk_count": 1,
+            "disks": [{"device": "scsi0", "size_bytes": 20 * 1024**3}],
+            "nic_count": 1,
+            "nic_keys": ["net0"],
+            "config_keys_sha256": "b" * 64,
+        },
+        "checker_sha256": "c" * 64,
+        "checker_receipt_fingerprint": data_checks["receipt_fingerprint"],
+        "guest_execution_pid": 44,
+        "data_checks": data_checks,
+        "isolation_config_sha256": "d" * 64,
     }
-    evidence["receipt_fingerprint"] = hashlib.sha256(
-        json.dumps(
-            {key: value for key, value in evidence.items() if key != "receipt_fingerprint"},
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode()
-    ).hexdigest()
+    evidence = pbs_receipts.seal_restore_receipt(evidence)
     record, version = apply(record, version, "awaiting_receipt", evidence=evidence)
     return record, version
 

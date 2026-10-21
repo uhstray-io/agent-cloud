@@ -15,6 +15,8 @@ import secrets
 import sys
 from typing import Any
 
+from o11y_pbs_receipts import restore_receipt_fingerprint
+
 SCHEMA_VERSION = 2
 RECORD_KEYS = {
     "schema_version",
@@ -502,7 +504,7 @@ def _bindings_match(record: dict[str, Any], declaration: dict[str, Any]) -> None
     _require(record["operation_id"] == operation_identity(declaration), "record_binding_mismatch")
 
 
-def _restore_receipt(evidence: object, record: dict[str, Any]) -> str:
+def _restore_receipt(evidence: object, record: dict[str, Any], expected_version: int) -> str:
     keys = {
         "type",
         "receipt_fingerprint",
@@ -511,9 +513,17 @@ def _restore_receipt(evidence: object, record: dict[str, Any]) -> str:
         "target_state",
         "pending_action",
         "completed_actions",
+        "coordination_record",
+        "coordination_version",
+        "artifact_config",
+        "checker_sha256",
+        "checker_receipt_fingerprint",
+        "guest_execution_pid",
+        "data_checks",
+        "isolation_config_sha256",
     }
     _require(
-        isinstance(evidence, dict) and set(evidence) == keys and evidence["type"] == "restore_receipt/v2",
+        isinstance(evidence, dict) and set(evidence) == keys and evidence["type"] == "restore_receipt/v3",
         "evidence_invalid",
     )
     expected = {
@@ -536,13 +546,97 @@ def _restore_receipt(evidence: object, record: dict[str, Any]) -> str:
         and evidence["completed_actions"] == ["restore", "isolate", "start", "guest_exec", "stop"],
         "evidence_invalid",
     )
-    _require(_sha(evidence["receipt_fingerprint"]), "evidence_invalid")
-    body = {key: value for key, value in evidence.items() if key != "receipt_fingerprint"}
-    expected_fingerprint = hashlib.sha256(
-        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    ).hexdigest()
-    _require(evidence["receipt_fingerprint"] == expected_fingerprint, "evidence_invalid")
-    return evidence["receipt_fingerprint"]
+    _require(
+        type(evidence["coordination_version"]) is int and evidence["coordination_version"] == expected_version,
+        "evidence_invalid",
+    )
+    _require(
+        _sha(evidence["checker_sha256"])
+        and _sha(evidence["checker_receipt_fingerprint"])
+        and _is_int(evidence["guest_execution_pid"], 1)
+        and _sha(evidence["isolation_config_sha256"]),
+        "evidence_invalid",
+    )
+    config = evidence["artifact_config"]
+    _require(
+        isinstance(config, dict)
+        and set(config) == {"config_sha256", "disk_count", "disks", "nic_count", "nic_keys", "config_keys_sha256"}
+        and _sha(config["config_sha256"])
+        and _is_int(config["disk_count"], 1)
+        and _is_int(config["nic_count"])
+        and isinstance(config["disks"], list)
+        and len(config["disks"]) == config["disk_count"]
+        and isinstance(config["nic_keys"], list)
+        and len(config["nic_keys"]) == config["nic_count"]
+        and _sha(config["config_keys_sha256"]),
+        "evidence_invalid",
+    )
+    data = evidence["data_checks"]
+    data_keys = {
+        "schema_version", "status", "reason", "volume_count", "volume_bindings_sha256",
+        "container_bindings_sha256", "backend_count", "grafana_integrity", "grafana_migrations",
+        "grafana_database_sha256", "backends", "receipt_fingerprint",
+    }
+    _require(
+        isinstance(data, dict)
+        and set(data) == data_keys
+        and data["schema_version"] == 1
+        and type(data["schema_version"]) is int
+        and data["status"] == "verified"
+        and data["reason"] == "restored_historical_data_verified"
+        and data["volume_count"] == 5
+        and data["backend_count"] == 4
+        and data["grafana_integrity"] == "ok"
+        and _is_int(data["grafana_migrations"])
+        and all(_sha(data[key]) for key in (
+            "volume_bindings_sha256", "container_bindings_sha256", "grafana_database_sha256", "receipt_fingerprint"
+        ))
+        and evidence["checker_receipt_fingerprint"] == data["receipt_fingerprint"],
+        "evidence_invalid",
+    )
+    backends = data["backends"]
+    _require(
+        isinstance(backends, dict) and set(backends) == {"prometheus", "loki", "tempo", "pyroscope"},
+        "evidence_invalid",
+    )
+    for item in backends.values():
+        _require(
+            isinstance(item, dict)
+            and set(item) == {"expectation", "historical_records", "evidence_sha256", "readback_sha256"}
+            and item["expectation"] in {"present", "quiet"}
+            and _is_int(item["historical_records"])
+            and (
+                item["historical_records"] > 0
+                if item["expectation"] == "present"
+                else item["historical_records"] == 0
+            )
+            and _sha(item["evidence_sha256"])
+            and _sha(item["readback_sha256"]),
+            "evidence_invalid",
+        )
+    nested = evidence["coordination_record"]
+    _require(isinstance(nested, dict) and set(nested) == RECORD_KEYS, "evidence_invalid")
+    final_record = dict(record)
+    final_record.update(phase="awaiting_receipt", active_nonce=None)
+    final_record["receipt_fingerprint"] = None
+    normalized_nested = dict(nested)
+    normalized_nested["receipt_fingerprint"] = None
+    _require(normalized_nested == final_record, "evidence_invalid")
+    candidate = dict(evidence)
+    candidate["coordination_record"] = dict(final_record)
+    candidate["receipt_fingerprint"] = None
+    fingerprint = restore_receipt_fingerprint(candidate)
+    final_record["receipt_fingerprint"] = fingerprint
+    candidate["coordination_record"] = final_record
+    candidate["receipt_fingerprint"] = fingerprint
+    _require(
+        evidence == candidate
+        and evidence["coordination_record"]["receipt_fingerprint"] == fingerprint
+        and _sha(fingerprint),
+        "evidence_invalid",
+    )
+    validate_record(final_record)
+    return fingerprint
 
 
 def _restore_task_proof(evidence: object, record: dict[str, Any], version: int) -> int:
@@ -803,7 +897,7 @@ def plan_transition(snapshot: dict[str, Any] | None, version: int, request: obje
                 ),
                 "invalid_input",
             )
-            receipt = _restore_receipt(request["evidence"], snapshot)
+            receipt = _restore_receipt(request["evidence"], snapshot, version + 1)
             record.update(phase="awaiting_receipt", active_nonce=None, receipt_fingerprint=receipt)
         elif transition == "start_cleanup":
             _require(
