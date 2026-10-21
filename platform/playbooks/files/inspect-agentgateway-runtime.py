@@ -93,12 +93,8 @@ def main() -> int:
     if isinstance(random_sampling, bool) or not 0 < random_sampling <= 0.1:
         print(json.dumps({"status": "refused", "reason": "rendered random sampling is outside the reviewed range"}))
         return 2
-    if client_sampling is not False and (
-        isinstance(client_sampling, bool)
-        or not 0 < client_sampling <= 0.1
-        or client_sampling != random_sampling
-    ):
-        print(json.dumps({"status": "refused", "reason": "rendered trace sampling is outside the reviewed range"}))
+    if client_sampling is not False:
+        print(json.dumps({"status": "refused", "reason": "rendered client sampling must be disabled"}))
         return 2
     if not REVISION.fullmatch(checkout_revision):
         print(json.dumps({"status": "refused", "reason": "checkout revision is unavailable"}))
