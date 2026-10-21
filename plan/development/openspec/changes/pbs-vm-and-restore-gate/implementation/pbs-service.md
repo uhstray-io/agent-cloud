@@ -55,6 +55,15 @@ status is reported. Task 4.1 does not generate or set a Linux root password,
 PBS API token, or any other unused secret. The datastore-scoped PVE backup
 identity and its OpenBao secret are task 4.2, not created here.
 
+The reviewed integration follow-up corrects the package executable path to
+`/usr/sbin/proxmox-backup-manager` and adds a separate `--tags verify` play.
+That play rechecks the installed shared-helper checksum, serial-pinned UUID
+mount, PBS API and service health, datastore path/maintenance/GC/verify-new
+state, and the weekly verification job. It performs only `stat`, `command`,
+`script`, `uri`, and assertion reads; it refuses missing or drifted state and
+does not inherit the package, service-start, or datastore-reconciliation tasks.
+The verify tag also selects the target-group preflight.
+
 ## Source checks
 
 - Proxmox documents Debian installation using `apt install proxmox-backup-server`,

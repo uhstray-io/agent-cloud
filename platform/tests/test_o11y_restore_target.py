@@ -362,3 +362,26 @@ def test_playbook_is_pinned_read_only_and_hides_protected_requests():
     assert "network_mode" in rendered and "disconnected" in rendered
     assert "o11y_restore_target_vmid" in rendered
     assert "o11y_backup_artifact_selector" in rendered
+
+
+def test_dev_catalog_and_verify_tag_are_read_only_and_require_only_reviewed_sha():
+    templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    matches = [item for item in templates if item["name"] == "Preflight o11y Restore Target (Dev)"]
+    assert len(matches) == 1
+    template = matches[0]
+    assert template["playbook"] == "platform/playbooks/preflight-o11y-restore-target.yml"
+    assert template["repository"] == "agent-cloud dev"
+    assert [field["name"] for field in template["survey_vars"]] == ["expected_repository_sha"]
+    assert template["survey_vars"][0]["required"] is True
+
+    plays = yaml.safe_load((ROOT / "platform/playbooks/preflight-o11y-restore-target.yml").read_text())
+    main = next(play for play in plays if play.get("name") == "Preflight one exact o11y restore target")
+    assert main["tags"] == ["verify"]
+    transport = next(
+        task for task in main["tasks"]
+        if task.get("ansible.builtin.include_tasks", {}).get("file") == "tasks/assert-bao-transport.yml"
+    )
+    assert transport["ansible.builtin.include_tasks"]["apply"]["tags"] == ["verify"]
+    assert all(task["ansible.builtin.uri"]["method"] == "GET" for task in main["tasks"]
+               if "ansible.builtin.uri" in task)
+    assert not any("method: POST" in str(task) or "method: DELETE" in str(task) for task in main["tasks"])

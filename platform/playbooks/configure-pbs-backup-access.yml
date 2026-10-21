@@ -22,12 +22,14 @@
     preflight_group: pbs_svc
     preflight_group_expected: pbs_svc
     _preflight_redact_hostnames: true
+  tags: [verify]
 
 - name: Require exactly one PBS guest
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
+  tags: [verify]
   tasks:
     - name: Refuse multiple PBS targets for the stable backup identity
       ansible.builtin.assert:
@@ -39,6 +41,7 @@
   hosts: pbs_svc
   gather_facts: false
   become: true
+  tags: [verify]
   tasks:
     - name: Read the installed PBS server package version
       ansible.builtin.command:
@@ -146,6 +149,7 @@
   connection: local
   gather_facts: false
   become: false
+  tags: [verify]
   vars:
     _pbs_service_group: pbs_svc
     _pbs_guest: "{{ groups['pbs_svc'][0] }}"
@@ -184,7 +188,10 @@
         quiet: true
 
     - name: Refuse public cleartext OpenBao transport before authentication
-      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      ansible.builtin.include_tasks:
+        file: tasks/assert-bao-transport.yml
+        apply:
+          tags: [verify]
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
@@ -297,6 +304,13 @@
         _bao_token: "{{ _bao_auth.json.auth.client_token }}"
       no_log: true
 
+    - name: Require existing OpenBao-backed PBS identity for verify-only runs
+      ansible.builtin.assert:
+        that: _pbs_identity_action == 'reuse'
+        fail_msg: "Verify-only mode requires the backup identity and secret to exist already."
+        quiet: true
+      when: "'verify' in ansible_run_tags"
+
     - name: Validate all pre-existing effective paths and ACLs before any PBS mutation
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", acl-plan]
@@ -320,6 +334,13 @@
                == ['o11y-backup@pbs', 'o11y-backup@pbs!pve-o11y']
         fail_msg: "Pre-existing PBS ACLs are outside the backup identity contract or would grant before OpenBao persistence."
         quiet: true
+
+    - name: Require existing datastore-scoped ACLs for verify-only runs
+      ansible.builtin.assert:
+        that: (_pbs_initial_acl_plan.stdout | from_json).missing_auth_ids == []
+        fail_msg: "Verify-only mode requires both declared PBS backup identities to already have their exact ACLs."
+        quiet: true
+      when: "'verify' in ansible_run_tags"
 
     - name: Read Proxmox API credentials from OpenBao
       ansible.builtin.uri:
@@ -496,6 +517,13 @@
         _pve_backup_jobs_before: "{{ _pve_snapshot.backup_jobs }}"
       no_log: true
 
+    - name: Require existing PVE registration and readable backup content for verify-only runs
+      ansible.builtin.assert:
+        that: _pbs_storage_action == 'verify_access'
+        fail_msg: "Verify-only mode requires the exact PVE PBS storage to exist and its backup content endpoint to be readable."
+        quiet: true
+      when: "'verify' in ansible_run_tags"
+
     - name: Report the read-only check-mode plan
       ansible.builtin.debug:
         msg:
@@ -543,8 +571,6 @@
           content: backup
           nodes: "{{ pbs_storage_nodes | join(',') }}"
           prune-backups: keep-all=1
-          disable: "0"
-          shared: "0"
       no_log: true
       when: not ansible_check_mode
 

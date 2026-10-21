@@ -2,7 +2,9 @@
 
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,6 +78,107 @@ def test_enterprise_subscription_read_is_private_and_only_boolean_escapes():
     assert raw["no_log"] is True
     assert safe_fact["no_log"] is True
     assert raw["ansible.builtin.command"]["argv"][:3] == ["proxmox-backup-manager", "subscription", "get"]
+
+
+def test_enterprise_manager_discovery_uses_the_packaged_sbin_path_and_check_mode_verifies_installed_state():
+    tasks = host_tasks()
+    manager_checks = [
+        task for task in tasks
+        if task.get("ansible.builtin.stat", {}).get("path") == "/usr/sbin/proxmox-backup-manager"
+    ]
+    assert len(manager_checks) == 2
+    assert manager_checks[0]["when"] == "_pbs_repository_channel == 'enterprise'"
+    datastore_include = next(
+        task for task in tasks if task.get("ansible.builtin.include_tasks") == "tasks/configure-pbs-datastore.yml"
+    )
+    assert datastore_include["when"] == "not ansible_check_mode or _pbs_ready_after_install.stat.exists"
+    assert all(
+        task.get("ansible.builtin.stat", {}).get("path") != "/usr/bin/proxmox-backup-manager"
+        for task in tasks
+    )
+
+
+def test_pve_create_form_omits_derived_or_default_only_storage_fields():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/configure-pbs-backup-access.yml").read_text())
+    tasks = next(play["tasks"] for play in playbook if play.get("hosts") == "localhost" and
+                 any("Build the exact PVE storage form" in task["name"] for task in play.get("tasks", [])))
+    build = next(task for task in tasks if "Build the exact PVE storage form" in task["name"])
+    form = build["ansible.builtin.set_fact"]["_pve_pbs_storage_form"]
+    assert "shared" not in form and "disable" not in form
+
+
+def test_verify_tag_is_read_only_and_requires_existing_mount_service_and_datastore_state():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    preflight = next(
+        play for play in plays if play.get("name") == "Require one declared PBS guest"
+    )
+    verify = next(
+        play for play in plays
+        if play.get("name") == "Verify existing PBS service state without reconciling it"
+    )
+    assert preflight["tags"] == ["verify"]
+    assert verify["tags"] == ["verify"]
+    tasks = verify["tasks"]
+    assert any("assert_pbs_data_mount.py" in str(task) for task in tasks)
+    assert any("/usr/sbin/proxmox-backup-manager" in str(task) for task in tasks)
+    assert any("api2/json/version" in str(task) for task in tasks)
+    assert any(task.get("name") == "Read existing PBS datastore state" for task in tasks)
+    assert any(task.get("name") == "Read existing PBS verification job state" for task in tasks)
+    assert not any(
+        module in str(verify)
+        for module in (
+            "ansible.builtin.apt", "ansible.builtin.template", "ansible.builtin.file",
+            "ansible.builtin.service", "datastore, create", "verify-job, create", "bao-merge-keys",
+        )
+    )
+
+
+@pytest.mark.parametrize(("relative_path", "selected", "excluded"), [
+    (
+        "prepare-pbs-guest-data-disk.yml",
+        "Require the serial-pinned disk to be an existing formatted disk",
+        "Create ext4 on the proven blank guest virtual disk",
+    ),
+    (
+        "configure-pbs.yml",
+        "Require the exact datastore path and maintenance state",
+        "Create the PBS datastore",
+    ),
+    (
+        "configure-pbs-backup-access.yml",
+        "Require existing OpenBao-backed PBS identity",
+        "Configure the stable PBS backup identity",
+    ),
+    (
+        "preflight-o11y-restore-target.yml",
+        "Validate exact target identity, isolated layout, and reported capacity",
+        "POST",
+    ),
+])
+def test_ansible_verify_tag_selects_read_only_sequence(relative_path, selected, excluded, tmp_path):
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        pytest.skip("needs ansible-playbook")
+    local_tmp = tmp_path / "ansible-local"
+    local_tmp.mkdir()
+    path = ROOT / "platform/playbooks" / relative_path
+    completed = subprocess.run(
+        [ansible_playbook, "-i", "localhost,", "--list-tasks", "--tags", "verify", str(path)],
+        cwd=ROOT,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(local_tmp), "ANSIBLE_NOCOLOR": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    selected_tasks = [
+        line.split("TAGS:", 1)[0].strip()
+        for line in completed.stdout.splitlines()
+        if "TAGS: [verify]" in line and "play #" not in line
+    ]
+    assert any(selected in task for task in selected_tasks)
+    assert not any(excluded in task for task in selected_tasks)
 
 
 def test_service_path_never_schedules_pruning_or_removes_backups():

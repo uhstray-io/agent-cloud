@@ -247,7 +247,10 @@ def test_selector_task_sequence_preserves_result_in_normal_and_check_mode(
     if ansible_playbook is None:
         pytest.skip("needs ansible-playbook")
     playbook_path = ROOT / "platform/playbooks/prepare-pbs-guest-data-disk.yml"
-    playbook = yaml.safe_load(playbook_path.read_text())[4]
+    playbook = next(
+        play for play in yaml.safe_load(playbook_path.read_text())
+        if play.get("hosts") == "pbs_svc" and play.get("name") == "Prepare only the declared PBS guest's data disk"
+    )
     tasks = playbook["tasks"]
     selector = next(
         task for task in tasks if task.get("name") == "Select the unique disk carrying the declared Proxmox serial"
@@ -342,7 +345,10 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
         "platform/playbooks/attach-pbs-data-disk.yml",
         "platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml",
     ]
-    pve_play = plays[3]
+    pve_play = next(
+        play for play in plays
+        if play.get("name") == "Re-read and validate the Proxmox PBS VM disk identity"
+    )
     assert pve_play["hosts"] == "localhost"
     pve_tasks = pve_play["tasks"]
     pve_reads = [task["ansible.builtin.uri"] for task in pve_tasks if "ansible.builtin.uri" in task]
@@ -352,8 +358,9 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert all(task.get("no_log") is True for task in pve_tasks if "ansible.builtin.uri" in task)
     assert "tasks/validate-pbs-data-disk-vm-config.yml" in str(pve_tasks)
 
-    assert plays[4]["hosts"] == "pbs_svc"
-    tasks = plays[4]["tasks"]
+    guest_play = next(play for play in plays if play.get("name") == "Prepare only the declared PBS guest's data disk")
+    assert guest_play["hosts"] == "pbs_svc"
+    tasks = guest_play["tasks"]
     names = [task["name"] for task in tasks]
     transfer = next(task for task in tasks if task["name"].startswith("Transfer the reviewed guest guard"))
     assert transfer["ansible.builtin.copy"]["src"] == "{{ _controller_helper }}"
@@ -366,7 +373,7 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert source_digest["ansible.builtin.stat"]["checksum_algorithm"] == "sha256"
     assert "_guest_helper_stat.stat.checksum == _controller_helper_stat.stat.checksum" in installed_digest[
         "ansible.builtin.assert"]["that"]
-    assert plays[4]["vars"]["_helper"] == "/usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py"
+    assert guest_play["vars"]["_helper"] == "/usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py"
     lsblk = next(task for task in tasks if task["name"].startswith("Read guest block-device"))
     select = next(task for task in tasks if task["name"].startswith("Select the unique disk"))
     assert lsblk["no_log"] is True
@@ -400,6 +407,23 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert not any("ansible.builtin.script" in task for task in tasks)
     assert select["delegate_to"] == "{{ 'localhost' if ansible_check_mode else omit }}"
     assert "_helper" in str(select["ansible.builtin.command"]["argv"])
+
+
+def test_verify_tag_has_read_only_guest_path_and_required_prerequisites():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/prepare-pbs-guest-data-disk.yml").read_text())
+    preflight = next(play for play in plays if play.get("name") == "Require the PBS guest declaration for verification")
+    verify = next(play for play in plays if play.get("name") == "Verify the mounted PBS data disk without changing it")
+    assert preflight["tags"] == ["verify"]
+    assert verify["hosts"] == "pbs_svc" and verify["tags"] == ["verify"]
+    assert not any(
+        module in str(verify)
+        for module in (
+            "ansible.posix.mount", "ansible.builtin.file", "mkfs", "--ensure-datastore-path",
+            "ansible.builtin.copy",
+        )
+    )
+    assert any("serial-pinned disk" in task["name"] for task in verify["tasks"])
+    assert any("UUID mount and fstab" in task["name"] for task in verify["tasks"])
 
 
 def test_attachment_config_carries_stable_proxmox_serial_and_requires_it_on_reruns():

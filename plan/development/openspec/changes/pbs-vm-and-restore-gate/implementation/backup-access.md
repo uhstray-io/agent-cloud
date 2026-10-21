@@ -46,3 +46,22 @@ Focused tests use pure state/permission planners and mock PBS CLI, OpenBao CAS, 
 ## Boundaries and dependencies
 
 Use the existing reviewed PBS bootstrap sequence only through its checked-out, guarded Semaphore Dev path. Keep private hostnames, IPs, storage IDs, node names, and other real inventory values in site-config. Do not change the shared Semaphore catalog or inventory in this task. Task 4.3 must separately verify a successful backup and artifact before scheduled cutover; isolated restore and retention growth remain later gates.
+
+## Task 4.4 protected-copy planning candidate
+
+The current candidate is a second local PBS guest with a separate datastore and
+administrative boundary. The destination initiates a pull sync using a source
+`DatastoreReader` identity, `remove-vanished=false`, and independent pruning
+initially disabled. This improves separation from ordinary backup credentials
+and primary-PBS compromise; destination PBS administrators, shared hypervisor
+administration, and shared backing storage remain trusted failure domains. It
+is not an absolute immutability claim. Do not treat a PBS protected flag or the
+PVE backup credential's ACL as equivalent to this independent copy.
+
+This remains planning only. GET-only capacity/placement evidence and the
+installed PBS sync schema are prerequisites before declaring or provisioning a
+second guest. Acceptance requires destination-side protection checks and an
+isolated restore while the primary PBS guest is unavailable, plus the separate
+seven-day capacity forecast gate. Proxmox documents pull sync and
+`remove-vanished` in [Managing Remotes](https://pbs.proxmox.com/docs/managing-remotes.html)
+and the required role separation in [User Management](https://pbs.proxmox.com/docs/user-management.html).

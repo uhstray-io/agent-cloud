@@ -2294,6 +2294,18 @@ templates:
     # PBS/OpenBao/PVE identity state comes from the declared private inventory
     # and OpenBao. No credential or target values are launch-time survey input.
 
+  - name: Preflight o11y Restore Target (Dev)
+    playbook: platform/playbooks/preflight-o11y-restore-target.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only restore-target preflight"
+        type: string
+        required: true
+    # Reads private target/artifact declarations and Proxmox state only. It
+    # reserves no VMID, creates no VM, and emits no private identity values.
+
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
     repository: agent-cloud dev

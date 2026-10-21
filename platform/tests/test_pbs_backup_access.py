@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest import TestCase, main
 from unittest.mock import Mock, patch
@@ -41,14 +46,12 @@ def expected_storage(password="secret"):
         "content": "backup",
         "nodes": ["node-a"],
         "prune-backups": "keep-all=1",
-        "disable": "0",
-        "shared": "0",
     }
 
 
 def existing_storage(password="**********"):
     result = {key: value for key, value in expected_storage(password).items() if key != "prune-backups"}
-    result.update({"storage": "pbs-o11y", "nodes": "node-a", "prune-backups": "keep-all=1"})
+    result.update({"storage": "pbs-o11y", "nodes": "node-a", "prune-backups": "keep-all=1", "shared": 1})
     return result
 
 
@@ -223,6 +226,28 @@ class PveStorageTests(TestCase):
         )
         self.assertEqual(existing["action"], "noop")
 
+    def test_pbs_derived_shared_and_default_enabled_flags_match_api_shapes(self):
+        current = existing_storage()
+        current.pop("shared")
+        current.pop("disable", None)
+        self.assertEqual(
+            pve.plan_storage(
+                storage_id="pbs-o11y", rows=[{"storage": "pbs-o11y", "type": "pbs"}],
+                current=current, expected=expected_storage(), jobs_before=[],
+                api_base="https://pve.internal.test", access_proofs=[access_proof()],
+            )["action"],
+            "noop",
+        )
+        for drift in ({"disable": 1}, {"shared": 0}):
+            with self.subTest(drift=drift), self.assertRaisesRegex(
+                pve.Refusal, "differs from the declared"
+            ):
+                pve.plan_storage(
+                    storage_id="pbs-o11y", rows=[{"storage": "pbs-o11y", "type": "pbs"}],
+                    current={**current, **drift}, expected=expected_storage(), jobs_before=[],
+                    api_base="https://pve.internal.test", access_proofs=[access_proof()],
+                )
+
     def test_mismatch_duplicate_and_create_race_refuse(self):
         jobs = []
         cases = (
@@ -320,8 +345,9 @@ class PveStorageTests(TestCase):
                                   current=dict(target, server="other.internal"), expected=expected_storage())
 
     def test_final_readback_uses_final_target_rows_and_original_unrelated_rows(self):
-        before = [{"storage": "old", "type": "dir", "path": "/backup"}]
-        final = before + [{"storage": "pbs-o11y", "type": "pbs"}]
+        before = [{"storage": "old", "type": "dir", "path": "/backup", "digest": "before"}]
+        final = [{"storage": "old", "type": "dir", "path": "/backup", "digest": "after"}]
+        final.append({"storage": "pbs-o11y", "type": "pbs", "digest": "after"})
         result = pve.plan_storage(
             storage_id="pbs-o11y", rows=final, original_rows=before, rows_after=final,
             current=existing_storage(), expected=expected_storage(), jobs_before=[], jobs_after=[],
@@ -329,7 +355,7 @@ class PveStorageTests(TestCase):
             api_base="https://pve.internal.test", access_proofs=[access_proof()],
         )
         self.assertEqual(result["action"], "noop")
-        changed = [{"storage": "old", "type": "dir", "path": "/changed"}] + final[1:]
+        changed = [{"storage": "old", "type": "dir", "path": "/changed", "digest": "after"}] + final[1:]
         with self.assertRaisesRegex(pve.Refusal, "existing PVE storage configuration changed"):
             pve.plan_storage(
                 storage_id="pbs-o11y", rows=changed, original_rows=before, rows_after=changed,
@@ -406,6 +432,93 @@ class PlaybookBoundaryTests(TestCase):
         self.assertIn("- not ansible_check_mode", playbook)
         self.assertIn("not executed in check mode", playbook)
         self.assertIn("file: bao-merge-keys.yml", identity_task)
+
+    def test_verify_tag_selects_only_read_paths_and_refuses_missing_identity_acl_or_storage(self):
+        plays = yaml.safe_load((ROOT / "playbooks" / "configure-pbs-backup-access.yml").read_text())
+        tagged = [play for play in plays if "verify" in play.get("tags", [])]
+        self.assertEqual(
+            [play["name"] for play in tagged],
+            [
+                "Require one declared PBS guest",
+                "Require exactly one PBS guest",
+                "Read current PBS version, identity, ACL and guest certificate state",
+                "Validate identity state and read all current PVE configuration",
+            ],
+        )
+        transport = next(
+            task for task in tagged[-1]["tasks"]
+            if task.get("ansible.builtin.include_tasks", {}).get("file") == "tasks/assert-bao-transport.yml"
+        )
+        self.assertEqual(transport["ansible.builtin.include_tasks"]["apply"]["tags"], ["verify"])
+        selected_text = str(tagged)
+        for write in ("configure-pbs-backup-identity.yml", "method: POST", "method: PUT", "bao-merge-keys.yml"):
+            self.assertNotIn(write, selected_text)
+        validation_tasks = tagged[-1]["tasks"]
+        for refusal in (
+            "Require existing OpenBao-backed PBS identity for verify-only runs",
+            "Require existing datastore-scoped ACLs for verify-only runs",
+            "Require existing PVE registration and readable backup content for verify-only runs",
+        ):
+            self.assertIn(refusal, [task.get("name") for task in validation_tasks])
+
+    def test_verify_refusal_chain_executes_real_guards_without_mutation_tasks(self):
+        ansible_playbook = shutil.which("ansible-playbook")
+        if ansible_playbook is None:
+            self.skipTest("needs ansible-playbook")
+        playbook = yaml.safe_load((ROOT / "playbooks" / "configure-pbs-backup-access.yml").read_text())
+        validation = next(
+            play for play in playbook
+            if play.get("name") == "Validate identity state and read all current PVE configuration"
+        )
+        guard_names = {
+            "Require existing OpenBao-backed PBS identity for verify-only runs",
+            "Require existing datastore-scoped ACLs for verify-only runs",
+            "Require existing PVE registration and readable backup content for verify-only runs",
+        }
+        guards = [task for task in validation["tasks"] if task.get("name") in guard_names]
+        self.assertEqual({task["name"] for task in guards}, guard_names)
+        self.assertTrue(all(set(task) - {"name", "when", "ansible.builtin.assert"} == set() for task in guards))
+        cases = [
+            ("reuse", [], "verify_access", True),
+            ("create", [], "verify_access", False),
+            ("reuse", ["o11y-backup@pbs!pve-o11y"], "verify_access", False),
+            ("reuse", [], "create", False),
+        ]
+        for identity_action, missing_auth_ids, storage_action, expect_success in cases:
+            with (
+                self.subTest(identity_action=identity_action, missing_auth_ids=missing_auth_ids,
+                             storage_action=storage_action),
+                tempfile.TemporaryDirectory(prefix="pbs-verify-guards-") as temporary,
+            ):
+                tmp_path = Path(temporary)
+                harness = [{
+                    "name": "Exercise the production verify refusal chain",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "tags": ["verify"],
+                    "vars": {
+                        "_pbs_identity_action": identity_action,
+                        "_pbs_initial_acl_plan": {"stdout": json.dumps({"missing_auth_ids": missing_auth_ids})},
+                        "_pbs_storage_action": storage_action,
+                    },
+                    "tasks": guards,
+                }]
+                harness_path = tmp_path / "verify-guards.yml"
+                harness_path.write_text(yaml.safe_dump(harness))
+                ansible_tmp = tmp_path / "ansible-local"
+                ansible_tmp.mkdir()
+                completed = subprocess.run(
+                    [ansible_playbook, "-i", "localhost,", "-c", "local", "--tags", "verify", str(harness_path)],
+                    cwd=ROOT.parent,
+                    env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(ansible_tmp), "ANSIBLE_NOCOLOR": "1"},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
+                self.assertEqual(completed.returncode == 0, expect_success,
+                                 completed.stdout + completed.stderr)
 
     def test_real_playbook_handoffs_validators_and_guards_all_pve_auth_requests(self):
         import yaml

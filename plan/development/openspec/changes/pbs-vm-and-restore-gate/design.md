@@ -103,6 +103,20 @@ review, final CI, Dev merge, Semaphore publication/readback, and guarded
 Dev-bound execution. Their source and tests do not establish that a Proxmox
 template, PBS VM, data disk, filesystem, mount, or PBS service exists live.
 
+The current task 4.4 planning candidate is a second PBS guest with its own
+datastore/admin boundary, destination-initiated pull sync, a source
+`DatastoreReader` identity, `remove-vanished=false`, and independent pruning
+initially disabled. This reduces dependence on the ordinary PVE backup
+credential and primary-PBS availability; it does not remove destination PBS
+administrator, shared hypervisor administration, or shared backing storage
+from the trusted boundary, and is not an absolute immutability claim. Do not
+declare or provision that guest before GET-only placement/capacity evidence and
+installed PBS sync-schema verification. Acceptance needs destination-side
+protection checks and an isolated restore while the primary is unavailable,
+plus the separate seven-day capacity gate. The source-only restore-target
+preflight requires a private exact-artifact declaration; it reserves no VMID
+and does not establish allocation authority or ACL census visibility.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.

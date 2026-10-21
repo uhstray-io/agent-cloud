@@ -18,6 +18,7 @@
   vars:
     preflight_group: pbs_svc
     preflight_group_expected: pbs_svc
+  tags: [verify]
 
 - name: Configure the PBS service
   hosts: pbs_svc
@@ -90,7 +91,7 @@
 
     - name: Check whether PBS subscription state can be read before package changes
       ansible.builtin.stat:
-        path: /usr/bin/proxmox-backup-manager
+        path: /usr/sbin/proxmox-backup-manager
       register: _pbs_manager_binary
       when: _pbs_repository_channel == 'enterprise'
 
@@ -178,9 +179,180 @@
 
     - name: Check whether PBS is installed after the package plan
       ansible.builtin.stat:
-        path: /usr/bin/proxmox-backup-manager
+        path: /usr/sbin/proxmox-backup-manager
       register: _pbs_ready_after_install
 
     - name: Verify PBS health and reconcile datastore configuration
       ansible.builtin.include_tasks: tasks/configure-pbs-datastore.yml
       when: not ansible_check_mode or _pbs_ready_after_install.stat.exists
+
+- name: Verify existing PBS service state without reconciling it
+  hosts: pbs_svc
+  gather_facts: true
+  become: true
+  tags: [verify]
+  vars:
+    _pbs_vmid: "{{ vm_vmid | default('') | string }}"
+    _pbs_mountpoint: /srv/pbs-data
+    _pbs_datastore: o11y
+    _pbs_datastore_path: /srv/pbs-data/datastore
+    _pbs_verify_job: o11y-weekly
+    _pbs_verify_schedule: "Sun 03:00"
+    _pbs_gc_schedule: daily
+    _pbs_repository_channel: "{{ pbs_repository_channel | default('') }}"
+  tasks:
+    - name: Require the declared PBS and repository contract for verification
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Debian'
+          - ansible_distribution_major_version == '13'
+          - _pbs_vmid is match('^[1-9][0-9]{2,5}$')
+          - _pbs_repository_channel in ['enterprise', 'no-subscription']
+          - pbs_data_mount | default('') == _pbs_mountpoint
+          - pbs_data_filesystem | default('') == 'ext4'
+          - pbs_data_disk_serial | default('') == 'ac-pbs-data-' ~ _pbs_vmid
+          - _pbs_repository_channel != 'no-subscription' or (pbs_accept_no_subscription_risk | default(false) | bool)
+        fail_msg: "PBS verification requires the private service, data mount, and explicit repository declaration."
+        quiet: true
+
+    - name: Require the installed PBS CLI before read-only verification
+      ansible.builtin.stat:
+        path: /usr/sbin/proxmox-backup-manager
+        follow: false
+      register: _pbs_verify_manager
+      changed_when: false
+
+    - name: Read the reviewed datastore helper checksum from the controller
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/files/prepare_pbs_guest_disk.py"
+        follow: false
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: _pbs_verify_helper_source
+      changed_when: false
+
+    - name: Read the installed datastore helper checksum
+      ansible.builtin.stat:
+        path: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
+        follow: false
+        checksum_algorithm: sha256
+      register: _pbs_verify_helper_installed
+      changed_when: false
+
+    - name: Require the installed datastore helper to match the reviewed source
+      ansible.builtin.assert:
+        that:
+          - _pbs_verify_helper_source.stat.isreg | default(false)
+          - not (_pbs_verify_helper_source.stat.islnk | default(false))
+          - _pbs_verify_helper_installed.stat.isreg | default(false)
+          - not (_pbs_verify_helper_installed.stat.islnk | default(false))
+          - _pbs_verify_helper_installed.stat.checksum == _pbs_verify_helper_source.stat.checksum
+        fail_msg: "The installed PBS datastore path helper is missing or differs from the reviewed source."
+        quiet: true
+
+    - name: Refuse verification when the PBS CLI is absent or unsafe
+      ansible.builtin.assert:
+        that:
+          - _pbs_verify_manager.stat.isreg | default(false)
+          - not (_pbs_verify_manager.stat.islnk | default(false))
+        fail_msg: "PBS service verification requires the installed /usr/sbin/proxmox-backup-manager binary."
+        quiet: true
+
+    - name: Read enterprise subscription state during verification
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, subscription, get, --output-format, json]
+      register: _pbs_verify_subscription_raw
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Keep only the enterprise subscription validity bit
+      ansible.builtin.set_fact:
+        _pbs_verify_subscription_active: "{{ ((_pbs_verify_subscription_raw.stdout | from_json).status | default('') | lower) == 'active' }}"
+      no_log: true
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Require an active enterprise subscription for verify-only runs
+      ansible.builtin.assert:
+        that: _pbs_verify_subscription_active | default(false) | bool
+        fail_msg: "The declared enterprise repository requires an active PBS subscription."
+        quiet: true
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Re-prove the serial-pinned data disk mount
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/files/assert_pbs_data_mount.py --vmid {{ _pbs_vmid | quote }}"
+      register: _pbs_verify_mount
+      changed_when: false
+      check_mode: false
+
+    - name: Require the verified UUID mount contract
+      ansible.builtin.assert:
+        that:
+          - (_pbs_verify_mount.stdout | from_json).target == _pbs_mountpoint
+          - (_pbs_verify_mount.stdout | from_json).fstype == 'ext4'
+          - (_pbs_verify_mount.stdout | from_json).uuid | length > 0
+        fail_msg: "PBS service verification could not prove the declared UUID-backed ext4 mount."
+        quiet: true
+
+    - name: Check PBS API health without changing service state
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8007/api2/json/version
+        method: GET
+        validate_certs: false
+        status_code: 200
+      register: _pbs_verify_api
+      changed_when: false
+      check_mode: false
+
+    - name: Require both PBS services to be active
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ item }}"]
+      loop: [proxmox-backup.service, proxmox-backup-proxy.service]
+      loop_control:
+        label: "{{ item }}"
+      register: _pbs_verify_services
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse unhealthy PBS services
+      ansible.builtin.assert:
+        that: _pbs_verify_services.results | map(attribute='stdout') | map('trim') | select('equalto', 'active') | list | length == 2
+        fail_msg: "PBS API and service health verification failed."
+        quiet: true
+
+    - name: Read existing PBS datastore state
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, datastore, show, "{{ _pbs_datastore }}", --output-format, json]
+      register: _pbs_verify_datastore
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact datastore path and maintenance state
+      ansible.builtin.assert:
+        that:
+          - (_pbs_verify_datastore.stdout | from_json).path == _pbs_datastore_path
+          - (_pbs_verify_datastore.stdout | from_json).get('maintenance-mode', '') | default('', true) == ''
+          - (_pbs_verify_datastore.stdout | from_json).get('gc-schedule', '') == _pbs_gc_schedule
+          - (_pbs_verify_datastore.stdout | from_json).get('verify-new', false) | string | lower == 'true'
+        fail_msg: "PBS datastore verification found missing or drifted configuration."
+        quiet: true
+
+    - name: Read existing PBS verification job state
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, verify-job, show, "{{ _pbs_verify_job }}", --output-format, json]
+      register: _pbs_verify_job_state
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact weekly verification job
+      ansible.builtin.assert:
+        that:
+          - (_pbs_verify_job_state.stdout | from_json).store == _pbs_datastore
+          - (_pbs_verify_job_state.stdout | from_json).schedule == _pbs_verify_schedule
+          - (_pbs_verify_job_state.stdout | from_json).get('ignore-verified', false) | string | lower == 'true'
+          - (_pbs_verify_job_state.stdout | from_json).get('outdated-after', 0) | int == 7
+        fail_msg: "PBS verification job is absent or differs from the declared weekly policy."
+        quiet: true

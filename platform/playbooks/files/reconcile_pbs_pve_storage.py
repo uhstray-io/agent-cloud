@@ -100,6 +100,13 @@ def preflight_storage(
     target.pop("password", None)
     for key, value in target.items():
         observed = actual.get(key)
+        if key == "disable":
+            observed = _flag_value(observed, absent_default="0")
+        elif key == "shared":
+            observed = _flag_value(
+                observed,
+                absent_default="1" if actual.get("type") == "pbs" else "0",
+            )
         if key == "nodes" and isinstance(observed, list):
             observed = ",".join(observed)
         if key == "nodes" and isinstance(observed, str):
@@ -124,6 +131,22 @@ def _safe_identity(value: Any, pattern: str, label: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(pattern, value):
         _refuse(f"Private {label} is malformed.")
     return value
+
+
+def _flag_value(value: Any, *, absent_default: str) -> str:
+    """Normalize PVE's optional boolean fields to their serialized 0/1 form."""
+    if value is None:
+        return absent_default
+    if value is True or value == 1 or value == "1":
+        return "1"
+    if value is False or value == 0 or value == "0":
+        return "0"
+    return str(value)
+
+
+def _without_global_digest(row: dict[str, Any]) -> dict[str, Any]:
+    """Drop only API response metadata, not configuration fields, from row comparisons."""
+    return {key: value for key, value in row.items() if key != "digest"}
 
 
 def normalize_expected(value: Any) -> dict[str, Any]:
@@ -157,8 +180,10 @@ def normalize_expected(value: Any) -> dict[str, Any]:
         "content": "backup",
         "nodes": ",".join(node_list),
         "prune-backups": "keep-all=1",
+        # An absent disable flag is enabled by default. PVE derives shared=1
+        # for PBS from its storage type; shared is not a create option.
         "disable": "0",
-        "shared": "0",
+        "shared": "1",
     })
     if not isinstance(expected["password"], str) or not expected["password"]:
         _refuse("OpenBao PBS token secret is missing.")
@@ -200,6 +225,13 @@ def plan_storage(
             _refuse("PVE target storage holds a different PBS token secret.")
         for key, value in target.items():
             observed = actual.get(key)
+            if key == "disable":
+                observed = _flag_value(observed, absent_default="0")
+            elif key == "shared":
+                observed = _flag_value(
+                    observed,
+                    absent_default="1" if actual.get("type") == "pbs" else "0",
+                )
             if key == "nodes" and isinstance(observed, list):
                 observed = ",".join(observed)
             if key == "nodes" and isinstance(observed, str):
@@ -234,8 +266,16 @@ def plan_storage(
         comparison_rows = original_rows if original_rows is not None else rows
         if not isinstance(comparison_rows, list):
             _refuse("Original PVE storage snapshot has an unsupported schema.")
-        before_existing = [row for row in comparison_rows if isinstance(row, dict) and row.get("storage") != sid]
-        after_existing = [row for row in rows_after if isinstance(row, dict) and row.get("storage") != sid]
+        before_existing = [
+            _without_global_digest(row)
+            for row in comparison_rows
+            if isinstance(row, dict) and row.get("storage") != sid
+        ]
+        after_existing = [
+            _without_global_digest(row)
+            for row in rows_after
+            if isinstance(row, dict) and row.get("storage") != sid
+        ]
         if before_existing != after_existing:
             _refuse("An existing PVE storage configuration changed during PBS registration.")
         final_ids = [row.get("storage") for row in rows_after if isinstance(row, dict)]

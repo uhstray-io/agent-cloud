@@ -10,6 +10,7 @@
     preflight_group: o11y_svc
     preflight_group_expected: o11y_svc
     _preflight_redact_hostnames: true
+  tags: [verify]
 
 - name: Require one declared restore-target host
   ansible.builtin.import_playbook: preflight-target-group.yml
@@ -17,6 +18,7 @@
     preflight_group: o11y_restore_target_svc
     preflight_group_expected: o11y_restore_target_svc
     _preflight_redact_hostnames: true
+  tags: [verify]
 
 - name: Require the reviewed preflight implementation
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
@@ -32,6 +34,7 @@
   connection: local
   gather_facts: false
   become: false
+  tags: [verify]
   module_defaults:
     ansible.builtin.uri:
       validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
@@ -107,7 +110,10 @@
         quiet: true
 
     - name: Refuse public cleartext OpenBao transport
-      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      ansible.builtin.include_tasks:
+        file: tasks/assert-bao-transport.yml
+        apply:
+          tags: [verify]
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 

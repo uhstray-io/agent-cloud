@@ -236,6 +236,11 @@ untouched for explicit cleanup after the new token is confirmed.
 ### Validation & Provisioning
 | Playbook | Purpose |
 |----------|---------|
+| `attach-pbs-data-disk.yml` | Dev-bound, exact-SHA PBS disk attachment; proves target VM and storage immediately before allocating only the declared serial-pinned guest disk |
+| `prepare-pbs-guest-data-disk.yml` | Dev-bound guest filesystem workflow; formats only the proven blank serial-matched disk, mounts by UUID, and exposes `--tags verify` as read-only mount/disk verification |
+| `configure-pbs.yml` | Dev-bound PBS package/service/datastore configuration with an explicit repository-channel gate, mount identity proof, and `--tags verify` for existing service health and datastore state |
+| `configure-pbs-backup-access.yml` | Dev-bound OpenBao/PBS/PVE backup identity and storage workflow; `--tags verify` reads existing identity, ACL, storage, and content state and refuses missing configuration |
+| `preflight-o11y-restore-target.yml` | Dev-bound GET-only restore-target and exact-artifact preflight; `--tags verify` reads capacity/identity state but does not reserve or create a VM |
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
 | `verify-o11y-metrics-target.yml` | Dev-bound, read-only Prometheus receipt for one exact healthy target and one named exporter series; refuses an altered controller checkout |
 | `survey-o11y-expected-metrics-targets.yml` | Dev-bound, read-only comparison of the reviewed exact five-label target declaration with all active Prometheus targets, including unhealthy targets; reports only fixed status/reason values and bounded counts |
