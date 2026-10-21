@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+FILE = Path(__file__).resolve().parents[1] / "playbooks/files/o11y_pbs_receipts.py"
+SPEC = importlib.util.spec_from_file_location("o11y_pbs_receipts", FILE)
+pbs = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(pbs)
+
+PUBLIC = "a" * 40
+PRIVATE = "b" * 40
+NOW = datetime(2026, 10, 21, 16, 0, tzinfo=UTC)
+BACKUP_PLAYBOOK = "platform/playbooks/backup-o11y-to-pbs.yml"
+UPID = "UPID:pve1:00000001:00000002:00000003:vzdump:100:root@pam:"
+
+
+def manifest() -> dict[str, object]:
+    return {
+        "backup-type": "vm",
+        "backup-id": "120",
+        "backup-time": 1792598400,
+        "files": [
+            {"filename": "drive-scsi0.img.fidx", "crypt-mode": "none", "size": 17, "csum": "1" * 64},
+            {"filename": "qemu-server.conf.blob", "crypt-mode": "none", "size": 19, "csum": "2" * 64},
+        ],
+        "unprotected": {"note": "ignored mutable metadata"},
+        "signature": "ignored mutable signature",
+    }
+
+
+def backup_receipt() -> dict[str, object]:
+    digest = pbs.artifact_fingerprint(manifest())
+    return {
+        "schema_version": 1,
+        "contract": "o11y-pbs-backup/v1",
+        "status": "complete",
+        "reason": "none",
+        "public_sha": PUBLIC,
+        "private_sha": PRIVATE,
+        "inventory_provenance": "verified",
+        "inventory_fingerprint": "3" * 64,
+        "source_fingerprint": "4" * 64,
+        "artifact_fingerprint": digest,
+        "observed_start": "2026-10-21T15:00:00Z",
+        "observed_end": "2026-10-21T15:30:00Z",
+        "role_context": pbs.CONTRACTS["o11y-pbs-backup/v1"]["roles"],
+        "evidence": {
+            "backup_task_id": 10,
+            "backup_upid": UPID,
+            "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
+            "source_vmid": "120",
+            "source_node": "pve1",
+            "artifact_fingerprint": digest,
+            "playbook": BACKUP_PLAYBOOK,
+        },
+    }
+
+
+def test_artifact_fingerprint_is_stable_and_excludes_mutable_fields() -> None:
+    first = pbs.artifact_fingerprint(manifest())
+    altered = manifest()
+    altered["signature"] = "changed"
+    altered["unprotected"] = {"note": "also changed"}
+    altered["files"] = list(reversed(altered["files"]))
+    assert pbs.artifact_fingerprint(altered) == first
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda value: value.update({"backup-time": True}),
+        lambda value: value.update({"unknown": 1}),
+        lambda value: value["files"][0].update({"crypt-mode": "mystery"}),
+        lambda value: value["files"][0].update({"size": True}),
+        lambda value: value["files"][0].update({"csum": "short"}),
+        lambda value: value["files"].append(value["files"][0]),
+    ],
+)
+def test_manifest_rejects_noncanonical_or_ambiguous_fields(change) -> None:
+    value = manifest()
+    change(value)
+    with pytest.raises(pbs.Refusal):
+        pbs.artifact_fingerprint(value)
+
+
+def test_manifest_parser_rejects_duplicate_json_keys() -> None:
+    with pytest.raises(pbs.Refusal):
+        pbs.parse_manifest('{"backup-type":"vm","backup-type":"vm"}')
+
+
+def test_receipt_requires_exact_contract_and_recent_completed_evidence() -> None:
+    receipt = backup_receipt()
+    assert pbs.validate_receipt(
+        receipt, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+    ) == receipt
+    stale = dict(receipt, observed_start="2026-10-20T14:00:00Z", observed_end="2026-10-20T15:00:00Z")
+    with pytest.raises(pbs.Refusal, match="receipt_stale"):
+        pbs.validate_receipt(
+            stale, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+        )
+    forged = dict(receipt, role_context={"primary": "pve_backup", "verification": "destination_pbs_pull", "destination": "not_applicable"})
+    with pytest.raises(pbs.Refusal, match="task_binding_mismatch"):
+        pbs.validate_receipt(
+            forged, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+        )
+
+
+def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> None:
+    receipt = backup_receipt()
+    task = {
+        "id": 10,
+        "project_id": 1,
+        "template_id": 55,
+        "commit_hash": PUBLIC,
+        "status": "success",
+        "created": "2026-10-21T14:59:00Z",
+        "start": "2026-10-21T15:00:00Z",
+        "end": "2026-10-21T15:30:00Z",
+        "environment": json.dumps({"expected_repository_sha": PUBLIC}),
+        "playbook": "",
+        "params": {"diff": False, "dry_run": False},
+    }
+    serialized = json.dumps(receipt, indent=2)
+    lines = serialized.splitlines()
+    split = len(lines) // 2
+    rows = [
+        {"id": 1, "task_id": 10, "stage_id": None, "time": "2026-10-21T15:20:00Z", "output": "\n".join(lines[:split])},
+        {"id": 2, "task_id": 10, "stage_id": None, "time": "2026-10-21T15:20:01Z", "output": "\n".join(lines[split:])},
+    ]
+    result = pbs.validate_completed_task(
+        task,
+        rows,
+        contract="o11y-pbs-backup/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        playbook=BACKUP_PLAYBOOK,
+        expected_project_id=1,
+        expected_task_id=10,
+        expected_launch={"expected_repository_sha": PUBLIC},
+        now=NOW,
+    )
+    assert result["receipt"] == receipt
+    assert result["task_metadata"]["template_id"] == 55
+    with pytest.raises(pbs.Refusal, match="output_invalid"):
+        pbs.validate_completed_task(
+            task,
+            [{"id": 1, "task_id": 11, "stage_id": None, "time": "2026-10-21T15:20:00Z", "output": serialized}],
+            contract="o11y-pbs-backup/v1",
+            public_sha=PUBLIC,
+            private_sha=PRIVATE,
+            playbook=BACKUP_PLAYBOOK,
+            expected_project_id=1,
+            now=NOW,
+        )
