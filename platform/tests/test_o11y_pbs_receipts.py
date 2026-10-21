@@ -258,3 +258,59 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
             },
             now=NOW,
         )
+
+
+def test_copy_readiness_binds_exact_restore_locator_and_destination_fingerprints() -> None:
+    pbs_manifest = manifest()
+    pbs_manifest["backup-time"] = 1792594800
+    digest = pbs.artifact_fingerprint(pbs_manifest)
+    evidence = {
+        "sync_task_id": 12,
+        "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792594800},
+        "artifact_fingerprint": digest,
+        "readback_status": "readable",
+        "acl_separation": "verified",
+        "pull_direction": "destination_initiated",
+        "deletion_isolation": "verified",
+        "maintenance_isolation": "verified",
+        "playbook": "platform/playbooks/verify-o11y-protected-pbs-copy.yml",
+        "normalized_restore_locator": {
+            "storage_id": "o11y-protected",
+            "volid": "o11y-protected:backup/vm/120/2026-10-21T15:00:00Z",
+            "backend": "pbs",
+            "format": "pbs-vm",
+            "creation_time_epoch": 1792594800,
+            "size_bytes": 1024,
+        },
+        "destination_identity_fingerprint": "5" * 64,
+        "destination_storage_config_fingerprint": "6" * 64,
+    }
+    receipt = pbs.seal_receipt({
+        "schema_version": 1,
+        "contract": "o11y-pbs-copy-ready/v1",
+        "status": "complete",
+        "reason": "none",
+        "public_sha": PUBLIC,
+        "private_sha": PRIVATE,
+        "inventory_provenance": "exact_bytes_match",
+        "inventory_fingerprint": "3" * 64,
+        "source_fingerprint": "4" * 64,
+        "artifact_fingerprint": digest,
+        "observed_start": "2026-10-21T15:00:00Z",
+        "observed_end": "2026-10-21T15:30:00Z",
+        "role_context": pbs.CONTRACTS["o11y-pbs-copy-ready/v1"]["roles"],
+        "evidence": evidence,
+    })
+    assert pbs.validate_receipt(
+        receipt, contract="o11y-pbs-copy-ready/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+    ) == receipt
+    bad_body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
+    bad_body["evidence"] = dict(evidence, normalized_restore_locator={"volid": "invented"})
+    with pytest.raises(pbs.Refusal, match="readback_incomplete"):
+        pbs.validate_receipt(
+            pbs.seal_receipt(bad_body),
+            contract="o11y-pbs-copy-ready/v1",
+            public_sha=PUBLIC,
+            private_sha=PRIVATE,
+            now=NOW,
+        )

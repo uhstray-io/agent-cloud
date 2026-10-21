@@ -63,6 +63,8 @@ CONTRACTS = {
         "evidence": {
             "sync_task_id", "snapshot", "artifact_fingerprint", "readback_status", "acl_separation",
             "pull_direction", "deletion_isolation", "maintenance_isolation", "playbook",
+            "normalized_restore_locator", "destination_identity_fingerprint",
+            "destination_storage_config_fingerprint",
         },
     },
 }
@@ -304,6 +306,34 @@ def _validate_snapshot(value: object) -> bool:
     )
 
 
+def _validate_restore_locator(locator: object, snapshot: object) -> bool:
+    selector_keys = {"volid", "backend", "format", "creation_time_epoch", "size_bytes"}
+    if not isinstance(locator, dict) or set(locator) != selector_keys | {"storage_id"}:
+        return False
+    volid = locator.get("volid")
+    match = re.fullmatch(
+        r"(?P<storage>[A-Za-z0-9._-]{1,64}):backup/vm/(?P<vmid>[1-9][0-9]{0,8})/"
+        r"(?P<timestamp>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)",
+        volid if isinstance(volid, str) else "",
+    )
+    if match is None or not _validate_snapshot(snapshot):
+        return False
+    try:
+        timestamp = datetime.strptime(match.group("timestamp"), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return (
+        locator.get("storage_id") == match.group("storage")
+        and locator.get("backend") == "pbs"
+        and locator.get("format") == "pbs-vm"
+        and type(locator.get("creation_time_epoch")) is int
+        and locator["creation_time_epoch"] == int(timestamp.timestamp()) == snapshot["backup_time"]
+        and match.group("vmid") == snapshot["backup_id"]
+        and type(locator.get("size_bytes")) is int
+        and locator["size_bytes"] > 0
+    )
+
+
 def validate_receipt(
     receipt: object,
     *,
@@ -345,7 +375,7 @@ def validate_receipt(
     for key in ("backup_upid", "verification_upid", "sync_upid"):
         if key in evidence:
             _require(isinstance(evidence[key], str) and UPID.fullmatch(evidence[key]) is not None, "task_binding_mismatch")
-    if contract != "o11y-pbs-backup/v1":
+    if contract in {"o11y-pbs-verify/v1", "o11y-pbs-copy-sync/v1"}:
         _require(evidence.get("verification_status") == "OK", "verification_incomplete")
     if contract == "o11y-pbs-copy-sync/v1":
         _require(evidence.get("remove_vanished") is False and evidence.get("prune_enabled") is False, "copy_incomplete")
@@ -355,6 +385,16 @@ def validate_receipt(
             "deletion_isolation": "verified", "maintenance_isolation": "verified",
         }
         _require(all(evidence.get(key) == value for key, value in expected.items()), "readback_incomplete")
+        locator = evidence.get("normalized_restore_locator")
+        _require(
+            _validate_restore_locator(locator, evidence.get("snapshot")),
+            "readback_incomplete",
+        )
+        _require(
+            _sha(evidence.get("destination_identity_fingerprint"))
+            and _sha(evidence.get("destination_storage_config_fingerprint")),
+            "readback_incomplete",
+        )
     return receipt
 
 
