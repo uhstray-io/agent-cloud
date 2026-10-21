@@ -54,22 +54,26 @@
 
 - name: "Restore coordination: plan the strict transition"
   ansible.builtin.command:
-    cmd: "python3 {{ playbook_dir }}/files/o11y_restore_coordination.py"
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y_restore_coordination.py"
     stdin: "{{ {'mode': 'plan', 'metadata_status': _o11y_rc_metadata.status, 'metadata': _o11y_rc_metadata.json.data | default(none), 'data_status': _o11y_rc_secret.status, 'secret': _o11y_rc_secret.json | default(none), 'request': o11y_restore_coordination_request} | to_json }}"
   register: _o11y_rc_plan_result
   delegate_to: localhost
   become: false
   changed_when: false
+  failed_when: false
   check_mode: false
   no_log: true
 
 - name: "Restore coordination: refuse an invalid or stale transition"
   ansible.builtin.assert:
     that:
+      - _o11y_rc_plan_result is defined
+      - _o11y_rc_plan_result.rc is defined
       - _o11y_rc_plan_result.rc == 0
-    fail_msg: "Restore coordination refused the requested transition; inspect the protected record and task history."
+    fail_msg: "Restore coordination refused the requested transition."
     quiet: true
-  no_log: true
 
 - name: "Restore coordination: retain the validated plan in controller memory"
   ansible.builtin.set_fact:
@@ -106,13 +110,14 @@
 - name: "Restore coordination: require CAS success"
   ansible.builtin.assert:
     that:
+      - _o11y_rc_write is defined
+      - _o11y_rc_write.status is defined
       - _o11y_rc_write.status == 200
-    fail_msg: "Restore coordination CAS did not succeed; retain the claim and inspect OpenBao before retrying."
+    fail_msg: "Restore coordination CAS did not succeed; stop and retain the claim."
     quiet: true
   when:
     - not ansible_check_mode
     - _o11y_rc_plan.result == 'write'
-  no_log: true
 
 - name: "Restore coordination: read back written metadata"
   ansible.builtin.uri:
@@ -152,12 +157,15 @@
 
 - name: "Restore coordination: verify exact readback and KV version"
   ansible.builtin.command:
-    cmd: "python3 {{ playbook_dir }}/files/o11y_restore_coordination.py"
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y_restore_coordination.py"
     stdin: "{{ {'mode': 'readback', 'plan': _o11y_rc_plan, 'metadata_status': _o11y_rc_after_metadata.status, 'metadata': _o11y_rc_after_metadata.json.data | default(none), 'data_status': _o11y_rc_after_secret.status, 'secret': _o11y_rc_after_secret.json | default(none)} | to_json }}"
   register: _o11y_rc_verify
   delegate_to: localhost
   become: false
   changed_when: false
+  failed_when: false
   check_mode: false
   no_log: true
   when:
@@ -167,13 +175,14 @@
 - name: "Restore coordination: require verified readback"
   ansible.builtin.assert:
     that:
+      - _o11y_rc_verify is defined
+      - _o11y_rc_verify.rc is defined
       - _o11y_rc_verify.rc == 0
-    fail_msg: "Restore coordination readback did not match the CAS write; retain the claim and stop."
+    fail_msg: "Restore coordination readback did not match the CAS write; stop and retain the claim."
     quiet: true
   when:
     - not ansible_check_mode
     - _o11y_rc_plan.result == 'write'
-  no_log: true
 
 - name: "Restore coordination: report verified transition"
   ansible.builtin.debug:

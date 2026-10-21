@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21  
 **Status:** ACTIVE  
-**Context:** This plan defines a source-only shared coordination primitive for the PBS isolated-restore workflow in OpenSpec `pbs-vm-and-restore-gate`, task 5.2. The OpenSpec change currently lives on the separate PBS bootstrap branch pending PR #726; this implementation is stacked on the verified `dev` base and does not modify that change.
+**Context:** This plan defines a source-only shared coordination primitive for the PBS isolated-restore workflow in OpenSpec `pbs-vm-and-restore-gate`, task 5.2. The OpenSpec change currently lives on the separate PBS bootstrap branch pending PR #726; no PBS artifacts are ported here. This branch is based on `dev` `fad68aea`; PR #725 is already merged to Dev at `6605942e`, and a normal Dev merge into this branch remains pending before integration.
 
 ## Problem
 
@@ -107,3 +107,4 @@ Acceptance requires the helper to reject malformed and stale transitions, the in
 
 - 2026-10-21: Initial approved implementation plan for the source-only coordination primitive.
 - 2026-10-21: Clarified restore-proof lifecycle, authoritative exact-VMID absence evidence, and future action-journal integration gate.
+- 2026-10-21: Recorded the pending normal Dev merge and source-only boundary; specified safe command/result diagnostics without exposing protected payloads.

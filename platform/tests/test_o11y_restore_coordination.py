@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "playbooks" / "files"))
 
@@ -174,6 +175,29 @@ def kv_reads(record, version=1):
     }
     secret = {"data": {"data": record, "metadata": {"version": version}}}
     return metadata, secret
+
+
+def invoke_rendered_plan_command(request_value, *, metadata_status=404, metadata=None, data_status=404, secret=None):
+    """Render the include's actual stdin expression and invoke its helper argv."""
+    task_path = Path(__file__).parents[1] / "playbooks" / "tasks" / "o11y-restore-coordination.yml"
+    tasks = yaml.safe_load(task_path.read_text())
+    plan_task = next(task for task in tasks if task["name"] == "Restore coordination: plan the strict transition")
+    command = plan_task["ansible.builtin.command"]
+    assert command["argv"] == ["python3", "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+    environment = Environment()
+    environment.filters["to_json"] = lambda value: json.dumps(value, separators=(",", ":"))
+    rendered_stdin = environment.from_string(command["stdin"]).render(
+        _o11y_rc_metadata={"status": metadata_status, "json": {"data": metadata}},
+        _o11y_rc_secret={"status": data_status, "json": secret},
+        o11y_restore_coordination_request=request_value,
+    )
+    return subprocess.run(
+        [sys.executable, str(Path(coordination.__file__))],
+        input=rendered_stdin,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def test_absent_path_reserves_once_with_cas_zero_and_exact_record_shape():
@@ -429,16 +453,95 @@ def test_cli_refusals_never_echo_untrusted_payload_values():
     assert json.loads(proc.stdout) == {"result": "refused", "reason": "invalid_input"}
 
 
-def test_ansible_include_is_fixed_path_cas_only_and_hides_protected_results():
+def test_rendered_include_request_executes_real_helper_with_fixed_cas_payload():
+    proc = invoke_rendered_plan_command(request("reserve"))
+
+    assert proc.returncode == 0
+    result = json.loads(proc.stdout)
+    assert result["result"] == "write"
+    assert result["payload"]["options"] == {"cas": 0}
+    assert result["payload"]["data"]["phase"] == "reserved"
+    assert proc.stderr == ""
+
+
+def test_rendered_include_request_rejects_stale_generation():
+    snapshot = planned_reservation()
+    metadata, secret = kv_reads(snapshot)
+    stale_request = request("start_restore", snapshot=snapshot, generation=0)
+    proc = invoke_rendered_plan_command(
+        stale_request,
+        metadata_status=200,
+        metadata=metadata,
+        data_status=200,
+        secret=secret,
+    )
+
+    assert proc.returncode == 2
+    assert json.loads(proc.stdout) == {"result": "refused", "reason": "generation_mismatch"}
+
+
+@pytest.mark.parametrize(
+    ("input_text", "expected_reason"),
+    [
+        ('{"mode":"plan","request":{}}', "invalid_input"),
+        ("{", "invalid_input"),
+    ],
+)
+def test_helper_command_refuses_missing_status_or_malformed_json(input_text, expected_reason):
+    proc = subprocess.run(
+        [sys.executable, str(Path(coordination.__file__))],
+        input=input_text,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 2
+    assert json.loads(proc.stdout) == {"result": "refused", "reason": expected_reason}
+    assert proc.stderr == ""
+
+
+def test_ansible_include_enforces_path_argv_and_safe_logging_boundaries():
     task_path = Path(__file__).parents[1] / "playbooks" / "tasks" / "o11y-restore-coordination.yml"
     source = task_path.read_text()
     parsed = yaml.safe_load(source)
+    tasks = {task["name"]: task for task in parsed}
 
     assert isinstance(parsed, list) and parsed
     assert "/v1/secret/data/coordination/o11y-restore-target" in source
     assert "/v1/secret/metadata/coordination/o11y-restore-target" in source
-    assert "follow_redirects: none" in source
-    assert "no_log: true" in source
+    command_tasks = [task for task in parsed if "ansible.builtin.command" in task]
+    assert len(command_tasks) == 2
+    for task in command_tasks:
+        command = task["ansible.builtin.command"]
+        assert command["argv"] == ["python3", "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        assert "cmd" not in command
+        assert task["no_log"] is True
+        assert task["failed_when"] is False
+    uri_tasks = [task for task in parsed if "ansible.builtin.uri" in task]
+    assert len(uri_tasks) == 5
+    assert all(task["no_log"] is True for task in uri_tasks)
+    assert all(task["ansible.builtin.uri"]["follow_redirects"] == "none" for task in uri_tasks)
+    assert tasks["Restore coordination: retain the validated plan in controller memory"]["no_log"] is True
+
+    safe_assertions = (
+        "Restore coordination: refuse an invalid or stale transition",
+        "Restore coordination: require CAS success",
+        "Restore coordination: require verified readback",
+    )
+    for name in safe_assertions:
+        task = tasks[name]
+        assert "no_log" not in task
+        assert "{{" not in task["ansible.builtin.assert"]["fail_msg"]
+        condition_text = " ".join(task["ansible.builtin.assert"]["that"])
+        assert "stdout" not in condition_text and ".json" not in condition_text
+
+    plan_assert = tasks[safe_assertions[0]]["ansible.builtin.assert"]["that"]
+    assert plan_assert == [
+        "_o11y_rc_plan_result is defined",
+        "_o11y_rc_plan_result.rc is defined",
+        "_o11y_rc_plan_result.rc == 0",
+    ]
     assert "status_code: [200, 400, 412]" in source
     assert "retries:" not in source
     assert "until:" not in source
