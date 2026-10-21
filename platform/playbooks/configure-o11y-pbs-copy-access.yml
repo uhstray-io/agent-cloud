@@ -13,6 +13,11 @@
       - platform/playbooks/tasks/grant-pbs-copy-reader-acl.yml
       - platform/playbooks/files/inspect_pbs_backup_access.py
       - platform/tests/test_pbs_backup_access.py
+      - platform/playbooks/tasks/o11y-pbs-inventory-provenance.yml
+      - platform/playbooks/files/inspect_o11y_pbs_provenance.py
+      - platform/playbooks/tasks/site-config-clone.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/files/reviewed-checkout.py
 
 - name: Require one declared primary PBS guest
   ansible.builtin.import_playbook: preflight-target-group.yml
@@ -20,6 +25,19 @@
     preflight_group: pbs_svc
     preflight_group_expected: pbs_svc
     _preflight_redact_hostnames: true
+
+- name: Prove exact reviewed private and runtime inventory provenance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Compare the exact production inventory bytes before PBS access
+      ansible.builtin.include_tasks:
+        file: tasks/o11y-pbs-inventory-provenance.yml
+      vars:
+        _pbs_provenance_template_name: Configure o11y PBS Copy Access (Dev)
+        _pbs_provenance_playbook: platform/playbooks/configure-o11y-pbs-copy-access.yml
 
 - name: Read primary PBS identity and certificate state
   hosts: pbs_svc
