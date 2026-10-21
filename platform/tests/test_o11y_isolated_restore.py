@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -106,107 +104,32 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
             )
 
 
-def task_payload(receipt):
-    ended = datetime.now(UTC).replace(microsecond=0)
-    started = ended - timedelta(minutes=1)
-    created = ended - timedelta(minutes=2)
-    expected = {
-        "task_id": 123,
-        "project_id": 1,
-        "environment_id": 2,
-        "inventory_id": 3,
-        "template_id": 4,
-        "repository_id": 5,
-        "expected_commit": "a" * 40,
-        "expected_template_name": "fixture template",
-        "expected_playbook": "fixture/playbook.yml",
-        "expected_repository_url": "https://github.com/uhstray-io/agent-cloud.git",
-        "expected_receipt_type": "o11y_backup_task/v1",
-        "expected_receipt_bindings": {"artifact_fingerprint": "f" * 64},
+def test_task_proof_adapter_delegates_only_the_authenticated_closed_fields(monkeypatch):
+    proof = {
+        "task": {"id": 123},
+        "output_rows": [{"task_id": 123, "id": 1}],
+        "contract": "o11y-pbs-backup/v1",
+        "public_sha": "a" * 40,
+        "private_sha": "b" * 40,
+        "playbook": "platform/playbooks/backup-o11y-to-pbs.yml",
+        "expected_project_id": 7,
+        "expected_task_id": 123,
+        "expected_launch": {"expected_repository_sha": "a" * 40},
+        "expected_artifact_fingerprint": None,
     }
-    task = {
-        "id": 123,
-        "project_id": 1,
-        "environment_id": 2,
-        "inventory_id": 3,
-        "template_id": 4,
-        "repository_id": 5,
-        "status": "success",
-        "commit_hash": "a" * 40,
-        "playbook": "fixture/playbook.yml",
-        "arguments": "",
-        "git_branch": "",
-        "limit": "",
-        "secret": "",
-        "schedule_id": None,
-        "workflow_run_id": None,
+    captured = {}
+
+    def validate(task, output_rows, **kwargs):
+        captured.update(task=task, output_rows=output_rows, **kwargs)
+        return {"receipt": {"contract": kwargs["contract"]}, "task_metadata": {"id": task["id"]}}
+
+    monkeypatch.setattr(restore, "validate_completed_task", validate)
+    assert restore.verify_task_proof(proof) == {
+        "receipt": {"contract": "o11y-pbs-backup/v1"},
+        "task_metadata": {"id": 123},
     }
-    task.update(
-        created=created.isoformat().replace("+00:00", "Z"),
-        start=started.isoformat().replace("+00:00", "Z"),
-        end=ended.isoformat().replace("+00:00", "Z"),
-    )
-    template = {
-        "id": 4,
-        "project_id": 1,
-        "name": expected["expected_template_name"],
-        "playbook": expected["expected_playbook"],
-        "environment_id": 2,
-        "inventory_id": 3,
-        "repository_id": 5,
-    }
-    repo = {"id": 5, "project_id": 1, "name": "agent-cloud dev", "git_url": expected["expected_repository_url"]}
-    return {
-        **expected,
-        "task": task,
-        "output": [
-            {
-                "id": 1,
-                "task_id": 123,
-                "time": ended.isoformat().replace("+00:00", "Z"),
-                "output": "TASK CUSTOM STATS\n" + json.dumps(receipt),
-            }
-        ],
-        "template": template,
-        "repository": repo,
-    }
-
-
-def test_task_authentication_requires_historical_bindings_and_one_full_receipt():
-    receipt = {"type": "o11y_backup_task/v1", "status": "verified", "bindings": {"artifact_fingerprint": "f" * 64}}
-    receipt["receipt_fingerprint"] = restore.receipt_fingerprint(receipt)
-    proof = restore.verify_task_proof(task_payload(receipt))
-    assert proof["status"] == "verified"
-    missing_history = task_payload(receipt)
-    del missing_history["task"]["environment_id"]
-    with pytest.raises(restore.Refusal, match="task_binding_unknown"):
-        restore.verify_task_proof(missing_history)
-
-
-def test_task_must_be_successful_exact_revision_and_bound_to_dev_environment_inventory():
-    receipt = {"type": "o11y_backup_task/v1", "status": "verified", "bindings": {"artifact_fingerprint": "f" * 64}}
-    receipt["receipt_fingerprint"] = restore.receipt_fingerprint(receipt)
-    for mutate in (
-        lambda p: p["task"].update(status="running"),
-        lambda p: p["task"].update(commit_hash="b" * 40),
-        lambda p: p["task"].update(inventory_id=99),
-        lambda p: p["template"].update(playbook="other.yml"),
-        lambda p: p["repository"].update(git_url="https://example.invalid/repo.git"),
-    ):
-        payload = task_payload(receipt)
-        mutate(payload)
-        with pytest.raises(restore.Refusal):
-            restore.verify_task_proof(payload)
-
-
-def test_task_output_receipt_duplicate_or_changed_content_fails_closed():
-    receipt = {"type": "o11y_backup_task/v1", "status": "verified", "bindings": {"artifact_fingerprint": "f" * 64}}
-    receipt["receipt_fingerprint"] = restore.receipt_fingerprint(receipt)
-    payload = task_payload(receipt)
-    payload["output"].append({"id": 2, "task_id": 123, "output": json.dumps(receipt)})
+    assert captured["expected_project_id"] == 7
+    assert captured["expected_task_id"] == 123
+    forged = dict(proof, repository={"git_url": "caller supplied"})
     with pytest.raises(restore.Refusal):
-        restore.verify_task_proof(payload)
-    payload = task_payload(receipt)
-    payload["output"][0]["output"] = payload["output"][0]["output"].replace("verified", "failed")
-    with pytest.raises(restore.Refusal):
-        restore.verify_task_proof(payload)
+        restore.verify_task_proof(forged)

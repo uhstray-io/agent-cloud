@@ -7,12 +7,13 @@ import hashlib
 import json
 import re
 import sys
-from collections.abc import Mapping
-from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+
+from o11y_pbs_receipts import Refusal, validate_completed_task
 
 VMID = re.compile(r"(?:0|[1-9][0-9]{0,8})\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
+MAX_INPUT_BYTES = 4 * 1024 * 1024
 ALLOWED_CONFIG_KEYS = {
     "acpi",
     "agent",
@@ -121,12 +122,6 @@ SAFE_REASONS = {
 }
 
 
-class Refusal(ValueError):
-    def __init__(self, reason: str):
-        self.reason = reason if reason in SAFE_REASONS else "invalid_input"
-        super().__init__(self.reason)
-
-
 def require(condition: bool, reason: str) -> None:
     if not condition:
         raise Refusal(reason)
@@ -143,9 +138,13 @@ def _strict_int(value: object, minimum: int = 0) -> bool:
 def exact_artifact_config(value: object, *, source_vmid: int) -> dict:
     """Reject unsafe restore directives before the target reservation or write."""
     require(
-        isinstance(value, dict) and value.get("status") == 200 and isinstance(value.get("data"), str),
+        isinstance(value, dict)
+        and set(value) == {"status", "data"}
+        and value.get("status") == 200
+        and isinstance(value.get("data"), str),
         "artifact_config_invalid",
     )
+    require(_strict_int(source_vmid, 100) and source_vmid <= 999_999_999, "artifact_config_invalid")
     raw = value["data"]
     require(len(raw.encode("utf-8")) <= 256 * 1024 and len(raw.splitlines()) <= 4096, "artifact_config_invalid")
     parsed: dict[str, str] = {}
@@ -214,12 +213,20 @@ def validate_target_config(
         isinstance(value, dict) and value.get("status") == 200 and isinstance(value.get("data"), dict),
         "target_config_invalid",
     )
+    require(type(isolated) is bool, "target_config_invalid")
+    require(isinstance(marker, str) and 1 <= len(marker.encode("utf-8")) <= 128, "target_config_invalid")
     data = value["data"]
     require(type(data.get("vmid")) is int and data["vmid"] == target_vmid, "target_config_invalid")
     require(data.get("onboot") in (0, "0", False, None), "target_config_invalid")
     require(data.get("startup") in (None, ""), "target_config_invalid")
     require(data.get("description") == marker, "target_config_invalid")
-    require(isinstance(expected_disk_keys, list) and expected_disk_keys, "target_config_invalid")
+    require(
+        isinstance(expected_disk_keys, list)
+        and expected_disk_keys
+        and all(isinstance(key, str) and DISK.fullmatch(key) for key in expected_disk_keys)
+        and len(expected_disk_keys) == len(set(expected_disk_keys)),
+        "target_config_invalid",
+    )
     require(isinstance(storage_id, str) and SAFE_ID.fullmatch(storage_id) is not None, "target_config_invalid")
     disk_keys = sorted(key for key in data if DISK.fullmatch(key))
     require(disk_keys == sorted(expected_disk_keys), "target_config_invalid")
@@ -245,199 +252,35 @@ def validate_target_config(
     }
 
 
-def receipt_fingerprint(receipt: Mapping[str, object]) -> str:
-    body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
-    return sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
-
-
-def _objects(text: str):
-    """Yield complete JSON objects embedded in bounded Semaphore output."""
-    start = None
-    depth = 0
-    quoted = escaped = False
-    for index, char in enumerate(text):
-        if start is None:
-            if char == "{":
-                start, depth, quoted, escaped = index, 1, False, False
-            continue
-        if quoted:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                quoted = False
-        elif char == '"':
-            quoted = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    value = json.loads(text[start : index + 1], object_pairs_hook=_unique_pairs)
-                except (json.JSONDecodeError, UnicodeError, ValueError):
-                    value = None
-                if isinstance(value, dict):
-                    yield value
-                    for nested in value.values():
-                        if isinstance(nested, str):
-                            yield from _objects(nested)
-                start = None
-
-
-def _utc(value: object) -> datetime:
-    require(isinstance(value, str), "task_output_invalid")
-    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|\+00:00)", value)
-    require(match is not None, "task_output_invalid")
-    stamp = match.group(1) + ("." + match.group(2)[:6] if match.group(2) else "") + "+00:00"
-    try:
-        return datetime.fromisoformat(stamp).astimezone(UTC)
-    except ValueError:
-        raise Refusal("task_output_invalid") from None
-
-
 def verify_task_proof(payload: object) -> dict:
-    """Validate a task already fetched over the protected Semaphore API path.
-
-    The caller supplies historical task bindings separately from current
-    template metadata. Missing task-level environment, inventory, project, or
-    repository binding is unknown and fails closed.
-    """
+    """Delegate task and receipt authentication to the shared closed contract."""
     keys = {
-        "task_id",
-        "project_id",
-        "environment_id",
-        "inventory_id",
-        "template_id",
-        "repository_id",
-        "expected_commit",
-        "expected_template_name",
-        "expected_playbook",
-        "expected_repository_url",
-        "expected_receipt_type",
-        "expected_receipt_bindings",
         "task",
-        "output",
-        "template",
-        "repository",
+        "output_rows",
+        "contract",
+        "public_sha",
+        "private_sha",
+        "playbook",
+        "expected_project_id",
+        "expected_task_id",
+        "expected_launch",
+        "expected_artifact_fingerprint",
     }
     require(isinstance(payload, dict) and set(payload) == keys, "invalid_input")
-    for key in ("task_id", "project_id", "environment_id", "inventory_id", "template_id", "repository_id"):
-        require(_strict_int(payload[key], 1), "invalid_input")
-    task, template, repository = payload["task"], payload["template"], payload["repository"]
-    require(
-        isinstance(task, dict) and isinstance(template, dict) and isinstance(repository, dict), "task_binding_unknown"
+    result = validate_completed_task(
+        payload["task"],
+        payload["output_rows"],
+        contract=payload["contract"],
+        public_sha=payload["public_sha"],
+        private_sha=payload["private_sha"],
+        playbook=payload["playbook"],
+        expected_project_id=payload["expected_project_id"],
+        expected_task_id=payload["expected_task_id"],
+        expected_launch=payload["expected_launch"],
+        expected_artifact_fingerprint=payload["expected_artifact_fingerprint"],
     )
-    required_task = {
-        "id": payload["task_id"],
-        "project_id": payload["project_id"],
-        "environment_id": payload["environment_id"],
-        "inventory_id": payload["inventory_id"],
-        "template_id": payload["template_id"],
-        "repository_id": payload["repository_id"],
-        "status": "success",
-        "commit_hash": payload["expected_commit"],
-        "playbook": payload["expected_playbook"],
-    }
-    for name, expected in required_task.items():
-        require(name in task, "task_binding_unknown")
-        require(task[name] == expected, "task_binding_mismatch")
-    require(
-        task.get("arguments") in (None, "")
-        and task.get("git_branch") in (None, "")
-        and task.get("limit", "") == ""
-        and task.get("secret", "") in (None, "")
-        and task.get("schedule_id") is None
-        and task.get("workflow_run_id") is None
-        and task.get("params") in (None, {"dry_run": False, "diff": False}),
-        "task_binding_mismatch",
-    )
-    require(
-        template.get("id") == payload["template_id"]
-        and template.get("project_id") == payload["project_id"]
-        and template.get("name") == payload["expected_template_name"]
-        and template.get("playbook") == payload["expected_playbook"]
-        and template.get("environment_id") == payload["environment_id"]
-        and template.get("inventory_id") == payload["inventory_id"]
-        and template.get("repository_id") == payload["repository_id"],
-        "task_binding_mismatch",
-    )
-    require(
-        repository.get("id") == payload["repository_id"]
-        and repository.get("project_id") == payload["project_id"]
-        and repository.get("name") == "agent-cloud dev"
-        and repository.get("git_url") == payload["expected_repository_url"],
-        "task_binding_mismatch",
-    )
-    require(
-        isinstance(payload["expected_commit"], str) and re.fullmatch(r"[0-9a-f]{40}", payload["expected_commit"]),
-        "invalid_input",
-    )
-    rows = payload["output"]
-    require(isinstance(rows, list) and 1 <= len(rows) <= 5000, "task_output_invalid")
-    consumed = 0
-    fragments = []
-    last_id = -1
-    zero_id_mode = None
-    prior_time = None
-    created = _utc(task.get("created"))
-    started = _utc(task.get("start"))
-    ended = _utc(task.get("end"))
-    now = datetime.now(UTC)
-    require(created <= started <= ended <= now, "task_binding_mismatch")
-    for row in rows:
-        require(
-            isinstance(row, dict)
-            and row.get("task_id") == payload["task_id"]
-            and type(row.get("id")) is int
-            and row["id"] >= 0
-            and isinstance(row.get("output"), str),
-            "task_output_invalid",
-        )
-        is_zero = row["id"] == 0
-        require(
-            (zero_id_mode is None or zero_id_mode == is_zero) and (is_zero or row["id"] > last_id),
-            "task_output_invalid",
-        )
-        zero_id_mode = is_zero
-        if not is_zero:
-            last_id = row["id"]
-        stamp = _utc(row.get("time"))
-        require(created <= stamp <= ended <= now and (prior_time is None or prior_time <= stamp), "task_output_invalid")
-        prior_time = stamp
-        raw = row["output"]
-        consumed += len(raw.encode("utf-8"))
-        require(consumed <= 1024 * 1024, "task_output_invalid")
-        fragments.append(raw)
-    combined = re.sub(r"\x1b\[[0-9;]*m", "", "\n".join(fragments))
-    candidates = [item for item in _objects(combined) if item.get("type") == payload["expected_receipt_type"]]
-    require(len(candidates) == 1, "task_receipt_ambiguous" if candidates else "task_output_invalid")
-    receipt = candidates[0]
-    require(
-        isinstance(receipt, dict)
-        and receipt.get("type") == payload["expected_receipt_type"]
-        and receipt.get("status") == "verified",
-        "task_receipt_invalid",
-    )
-    require(receipt.get("bindings") == payload["expected_receipt_bindings"], "receipt_binding_mismatch")
-    fp = receipt.get("receipt_fingerprint")
-    require(
-        isinstance(fp, str) and re.fullmatch(r"[0-9a-f]{64}", fp) and receipt_fingerprint(receipt) == fp,
-        "task_receipt_invalid",
-    )
-    return {
-        "schema_version": 1,
-        "status": "verified",
-        "task_id": payload["task_id"],
-        "project_id": payload["project_id"],
-        "template_id": payload["template_id"],
-        "repository_id": payload["repository_id"],
-        "commit": payload["expected_commit"],
-        "receipt_type": payload["expected_receipt_type"],
-        "receipt_fingerprint": fp,
-        "output_fingerprint": sha256(combined.encode()),
-    }
+    require(isinstance(result, dict) and set(result) == {"receipt", "task_metadata"}, "task_proof_invalid")
+    return result
 
 
 def _unique_pairs(pairs):
@@ -451,7 +294,9 @@ def _unique_pairs(pairs):
 
 def _main() -> int:
     try:
-        payload = json.load(sys.stdin)
+        raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+        require(len(raw) <= MAX_INPUT_BYTES, "invalid_input")
+        payload = json.loads(raw, object_pairs_hook=_unique_pairs)
         mode = payload.get("mode") if isinstance(payload, dict) else None
         if mode == "artifact_config":
             result = exact_artifact_config(payload.get("config"), source_vmid=payload.get("source_vmid"))
@@ -473,7 +318,7 @@ def _main() -> int:
     except Refusal as exc:
         print(json.dumps({"status": "refused", "reason": exc.reason}, sort_keys=True, separators=(",", ":")))
         return 2
-    except (AttributeError, KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, UnicodeError, ValueError):
         print('{"reason":"invalid_input","status":"refused"}')
         return 2
 
