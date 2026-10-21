@@ -370,7 +370,7 @@ def test_identity_inventory_cannot_be_overridden_at_launch(estate, name, value):
     proc = _run(estate, "-e", f"{name}={value}", identity_enabled=True,
                 coverage=_coverage_targets(estate))
     assert proc.returncode != 0
-    assert f"do not pass estate_coverage_inventory, o11y_host_metrics_identity_enabled, or service_name" in proc.stdout
+    assert "do not pass estate_coverage_inventory, o11y_host_metrics_identity_enabled, or service_name" in proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
     assert _engine_calls(estate, "alpha") == []
     assert not estate["fragment"].exists()
