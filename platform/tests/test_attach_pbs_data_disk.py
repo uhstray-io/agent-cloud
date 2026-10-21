@@ -71,9 +71,12 @@ def test_only_guarded_api_allocation_writes_exact_scsi1_with_config_digest() -> 
     assert len(writes) == 1
     assert "/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config" in writes[0]["url"]
     assert writes[0]["body"] == {"scsi1": "{{ _disk_request }}", "digest": "{{ _vm_config_digest }}"}
-    assert "{{ _storage }}:512" in str(yaml.safe_load(PLAYBOOK.read_text())[2]["vars"])
+    assert "{{ _storage }}:512,serial={{ _expected_disk_serial }}" in str(
+        yaml.safe_load(PLAYBOOK.read_text())[2]["vars"]
+    )
     source = PLAYBOOK.read_text() + (ROOT / "platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml").read_text()
-    assert "vm-{{ _vmid }}-disk-[0-9]+,size=512G" in source
+    assert "vm-{{ _vmid }}-disk-[0-9]+(?=,|$)" in source
+    assert "serial={{ _expected_disk_serial }}" in source
     assert "host-device" in source
     assert "_disk_keys | difference(['scsi0', 'scsi1', 'ide2']) | length == 0" in source
 
@@ -194,7 +197,7 @@ def test_pbs_data_disk_inventory_must_match_pinned_store_and_exact_512g_declarat
     )
     assert "pbs_data_disk_storage" in str(override_guard)
     assert "pbs_data_disk_size" in str(override_guard)
-    assert "_disk_request: \"{{ _storage }}:512\"" in PLAYBOOK.read_text()
+    assert "_disk_request: \"{{ _storage }}:512,serial={{ _expected_disk_serial }}\"" in PLAYBOOK.read_text()
 
 
 def test_openbao_uses_matching_inventory_url_and_guards_transport_before_lookup() -> None:
@@ -322,6 +325,23 @@ def test_rerun_preflight_condition_skips_exact_existing_disk_and_requires_missin
         if task.get("name", "").startswith("Require pinned backing identity")
     )
     evaluate = NativeEnvironment().from_string("{{ " + include["when"] + " }}")
-    exact = "pbs-data:vm-101-disk-1,size=512G"
+    exact = "pbs-data:vm-101-disk-1,size=512G,serial=ac-pbs-data-101"
     assert evaluate.render(_scsi1=exact) is False
     assert evaluate.render(_scsi1="") is True
+    # A present but mismatched disk bypasses fresh-allocation preflight; the VM config
+    # validator then refuses it before any write.
+    assert evaluate.render(_scsi1="pbs-data:vm-101-disk-1,size=512G") is False
+    assert evaluate.render(_scsi1="pbs-data:vm-101-disk-1,size=512G,serial=wrong") is False
+
+
+def test_serial_contract_is_vm_derived_and_option_order_independent():
+    play = yaml.safe_load(PLAYBOOK.read_text())[2]
+    assert play["vars"]["_expected_disk_serial"] == "ac-pbs-data-{{ _vmid }}"
+    assert "serial={{ _expected_disk_serial }}" in play["vars"]["_disk_request"]
+    pattern = play["vars"]["_expected_disk_pattern"]
+    pattern = pattern.replace("{{ _storage }}", "pbs-data").replace("{{ _vmid }}", "101")
+    pattern = pattern.replace("{{ _expected_disk_serial }}", "ac-pbs-data-101")
+    assert re.search(pattern, "pbs-data:vm-101-disk-1,size=512G,serial=ac-pbs-data-101")
+    assert re.search(pattern, "pbs-data:vm-101-disk-1,serial=ac-pbs-data-101,size=512G")
+    assert not re.search(pattern, "pbs-data:vm-101-disk-1,size=512G")
+    assert not re.search(pattern, "pbs-data:vm-101-disk-1,size=512G,serial=ac-pbs-data-102")
