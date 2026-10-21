@@ -17,21 +17,56 @@ import o11y_restore_coordination as coordination  # noqa: E402
 
 DECLARATION = {
     "declaration_fingerprint": "1" * 64,
-    "target_fingerprint": "2" * 64,
+    "target_fingerprint": coordination.target_identity_fingerprint({"node": "pve", "vmid": 102}),
     "artifact_fingerprint": "3" * 64,
     "public_sha": "a" * 40,
     "private_inventory_sha": "b" * 64,
 }
 RESTORE_UPID = "UPID:pve:00000001:00000002:00000003:qmrestore:102:root@pam:"
 DELETE_UPID = "UPID:pve:00000004:00000005:00000006:qmdelete:102:root@pam:"
+_AUTO = object()
 
 
-def request(transition: str, *, snapshot=None, nonce=None, evidence=None, upid=None, generation=None):
-    expected_generation = (snapshot["generation"] if snapshot else None) if generation is None else generation
+def record_version(snapshot):
+    if snapshot["phase"] == "reserved":
+        return 1
+    if snapshot["phase"] == "restore_active":
+        return 2 if snapshot["upid"] is None else 3
+    if snapshot["phase"] == "awaiting_receipt":
+        return 4
+    if snapshot["phase"] == "cleanup_active":
+        return 5 if snapshot["upid"] is None else 6
+    if snapshot["phase"] == "cleaned":
+        return 7
+    raise AssertionError(f"unexpected test phase: {snapshot['phase']}")
+
+
+def owner_nonce(snapshot):
+    return snapshot["active_nonce"] if snapshot["phase"] in {"cleanup_active", "cleaned"} else snapshot["restore_nonce"]
+
+
+def request(
+    transition: str,
+    *,
+    snapshot=None,
+    nonce=_AUTO,
+    evidence=None,
+    upid=None,
+    expected_record=_AUTO,
+    expected_version=_AUTO,
+):
+    if expected_record is _AUTO:
+        expected_record = snapshot
+    if expected_version is _AUTO:
+        expected_version = record_version(snapshot) if snapshot is not None else 0
+    if nonce is _AUTO:
+        nonce = owner_nonce(snapshot) if snapshot is not None else None
     return {
         "transition": transition,
         "declaration": DECLARATION,
-        "expected_generation": expected_generation,
+        "target_ref": {"node": "pve", "vmid": 102},
+        "expected_record": expected_record,
+        "expected_version": expected_version,
         "nonce": nonce,
         "evidence": evidence,
         "upid": upid,
@@ -101,6 +136,8 @@ def authenticated_restore_task(snapshot=None):
             "private_inventory_sha": current["private_inventory_sha"],
             "restore_upid": current["upid"],
         },
+        "coordination_record": current,
+        "coordination_version": record_version(current),
     }
 
 
@@ -147,6 +184,7 @@ def cleanup_evidence(snapshot=None):
         },
         "target_absence": {
             "type": "pve_exact_vmid_absence/v1",
+            "node": "pve",
             "vmid": 102,
             "nextid_status": 200,
             "nextid_echo": 102,
@@ -238,28 +276,106 @@ def test_a_lost_reservation_response_cannot_turn_a_rerun_into_takeover():
     # the stored reservation, and its attempted second reservation must stop.
     snapshot = planned_reservation()
 
-    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
+    with pytest.raises(coordination.Refusal, match="expected_snapshot_mismatch"):
         coordination.plan_transition(
             snapshot,
             1,
-            request("reserve", snapshot=snapshot),
+            request("reserve", snapshot=snapshot, expected_record=None, expected_version=0, nonce=None),
         )
 
 
-def test_stale_generation_cannot_be_used_for_a_competing_transition():
+def test_stale_expected_version_cannot_be_used_for_a_competing_transition():
     snapshot = planned_reservation()
-    stale = request("start_restore", snapshot=snapshot, generation=0)
+    stale = request("start_restore", snapshot=snapshot, expected_version=0)
 
-    with pytest.raises(coordination.Refusal, match="generation_mismatch"):
+    with pytest.raises(coordination.Refusal, match="expected_version_mismatch"):
         coordination.plan_transition(snapshot, 1, stale)
 
 
-def test_transition_write_uses_the_observed_kv_version_as_cas():
+def test_transition_refuses_a_newer_observed_version_instead_of_adopting_it():
     snapshot = planned_reservation()
-    plan = coordination.plan_transition(snapshot, 8, request("start_restore", snapshot=snapshot))
 
-    assert plan["payload"]["options"] == {"cas": 8}
-    assert plan["expected_version"] == 9
+    with pytest.raises(coordination.Refusal, match="expected_version_mismatch"):
+        coordination.plan_transition(snapshot, 8, request("start_restore", snapshot=snapshot))
+
+
+def test_fresh_get_cannot_be_adopted_as_expected_state_by_a_new_run():
+    stored = planned_reservation()
+    metadata, secret = kv_reads(stored)
+    fresh_record, fresh_version = coordination.read_snapshot(200, metadata, 200, secret)
+
+    attempt = request(
+        "start_restore",
+        snapshot=fresh_record,
+        expected_record=None,
+        expected_version=0,
+        nonce=None,
+    )
+    with pytest.raises(coordination.Refusal, match="expected_snapshot_mismatch"):
+        coordination.plan_transition(fresh_record, fresh_version, attempt)
+
+
+def test_reading_the_latest_record_does_not_supply_the_held_owner_nonce():
+    snapshot = awaiting_receipt()
+    metadata, secret = kv_reads(snapshot, version=record_version(snapshot))
+    fresh_record, fresh_version = coordination.read_snapshot(200, metadata, 200, secret)
+
+    with pytest.raises(coordination.Refusal, match="nonce_invalid"):
+        coordination.plan_transition(
+            fresh_record,
+            fresh_version,
+            request("start_cleanup", snapshot=fresh_record, nonce=None, evidence=authenticated_restore_task(snapshot)),
+        )
+
+
+def test_two_cleanup_claimants_cannot_take_over_after_the_cas_loser(monkeypatch):
+    awaiting = awaiting_receipt()
+    evidence = authenticated_restore_task(awaiting)
+    nonces = iter(["d" * 64, "e" * 64])
+    monkeypatch.setattr(coordination.secrets, "token_hex", lambda size: next(nonces))
+    owner_request = request("start_cleanup", snapshot=awaiting, evidence=evidence)
+
+    winner = coordination.plan_transition(awaiting, 4, owner_request)
+    loser = coordination.plan_transition(awaiting, 4, owner_request)
+    assert winner["payload"]["options"] == loser["payload"]["options"] == {"cas": 4}
+    assert winner["record"]["active_nonce"] != loser["record"]["active_nonce"]
+
+    metadata, secret = kv_reads(winner["record"], version=5)
+    with pytest.raises(coordination.Refusal, match="readback_mismatch"):
+        coordination.verify_readback(loser, 200, metadata, 200, secret)
+
+    with pytest.raises(coordination.Refusal, match="nonce_invalid"):
+        coordination.plan_transition(
+            winner["record"],
+            5,
+            request(
+                "record_cleanup_upid",
+                snapshot=winner["record"],
+                nonce=loser["record"]["active_nonce"],
+                upid=DELETE_UPID,
+            ),
+        )
+
+
+def test_each_later_transition_requires_the_held_nonce_after_a_fresh_read():
+    restore_active = start_restore()
+    restore_upid_record = record_restore_upid()
+    awaiting = awaiting_receipt()
+    cleanup_active = start_cleanup(awaiting)
+    cleanup_upid_record = record_cleanup_upid(cleanup_active)
+    attempts = [
+        (restore_active, "record_restore_upid", {"upid": RESTORE_UPID}),
+        (restore_upid_record, "awaiting_receipt", {"evidence": restore_evidence(restore_upid_record)}),
+        (awaiting, "start_cleanup", {"evidence": authenticated_restore_task(awaiting)}),
+        (cleanup_upid_record, "cleaned", {"evidence": cleanup_evidence(cleanup_upid_record)}),
+    ]
+
+    for stored, transition, extra in attempts:
+        metadata, secret = kv_reads(stored, version=record_version(stored))
+        fresh_record, fresh_version = coordination.read_snapshot(200, metadata, 200, secret)
+        attempt = request(transition, snapshot=fresh_record, nonce=None, **extra)
+        with pytest.raises(coordination.Refusal, match="nonce_invalid"):
+            coordination.plan_transition(fresh_record, fresh_version, attempt)
 
 
 def test_metadata_and_kv_version_drift_refuse_before_planning_a_write():
@@ -333,6 +449,43 @@ def test_pending_upid_or_missing_restore_action_refuses_receipt_transition():
         )
 
 
+@pytest.mark.parametrize(
+    "upid",
+    [
+        DELETE_UPID,
+        "UPID:other-node:00000001:00000002:00000003:qmrestore:102:root@pam:",
+        "UPID:pve:00000001:00000002:00000003:qmrestore:103:root@pam:",
+    ],
+)
+def test_restore_upid_must_match_exact_target_node_vmid_and_operation(upid):
+    snapshot = start_restore()
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(
+            snapshot,
+            2,
+            request("record_restore_upid", snapshot=snapshot, upid=upid),
+        )
+
+
+def test_cleanup_upid_must_be_the_exact_delete_operation():
+    snapshot = start_cleanup()
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(
+            snapshot,
+            5,
+            request("record_cleanup_upid", snapshot=snapshot, upid=RESTORE_UPID),
+        )
+
+
+def test_swapped_transient_target_ref_cannot_reuse_expected_record_and_nonce():
+    snapshot = start_restore()
+    req = request("record_restore_upid", snapshot=snapshot, upid=RESTORE_UPID)
+    req["target_ref"] = {"node": "other-node", "vmid": 102}
+
+    with pytest.raises(coordination.Refusal, match="record_binding_mismatch"):
+        coordination.plan_transition(snapshot, 2, req)
+
+
 def test_lost_restore_response_keeps_the_target_reserved_for_manual_reconciliation():
     snapshot = start_restore()
 
@@ -371,6 +524,11 @@ def test_generated_receipt_does_not_authorize_cleanup_without_prior_task_proof()
     with pytest.raises(coordination.Refusal, match="evidence_invalid"):
         coordination.plan_transition(snapshot, 4, request("start_cleanup", snapshot=snapshot, evidence=proof))
 
+    proof = authenticated_restore_task(snapshot)
+    proof["coordination_version"] -= 1
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 4, request("start_cleanup", snapshot=snapshot, evidence=proof))
+
 
 def test_lost_cleanup_upid_response_leaves_deletion_pending_and_uncleanable():
     snapshot = start_cleanup()
@@ -386,6 +544,7 @@ def test_lost_cleanup_upid_response_leaves_deletion_pending_and_uncleanable():
     [
         ("nextid_echo", 103),
         ("nextid_status", 400),
+        ("node", "other-node"),
         ("node_config_status", 500),
         ("node_config_status", 403),
         ("target_fingerprint", "0" * 64),
@@ -408,6 +567,12 @@ def test_cleaned_does_not_accept_boolean_absence_or_wrong_delete_upid():
 
     proof = cleanup_evidence(snapshot)
     proof["delete_upid"] = RESTORE_UPID
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=proof))
+
+    proof = cleanup_evidence(snapshot)
+    proof["target_absence"]["vmid"] = True
+    proof["target_absence"]["nextid_echo"] = True
     with pytest.raises(coordination.Refusal, match="evidence_invalid"):
         coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=proof))
 
@@ -464,10 +629,33 @@ def test_rendered_include_request_executes_real_helper_with_fixed_cas_payload():
     assert proc.stderr == ""
 
 
-def test_rendered_include_request_rejects_stale_generation():
+def test_rendered_include_hands_protected_record_version_and_nonce_to_next_transition():
+    reserve_proc = invoke_rendered_plan_command(request("reserve"))
+    assert reserve_proc.returncode == 0
+    reservation = json.loads(reserve_proc.stdout)
+    held_record = reservation["record"]
+    held_version = reservation["expected_version"]
+    metadata, secret = kv_reads(held_record, version=held_version)
+
+    next_proc = invoke_rendered_plan_command(
+        request("start_restore", snapshot=held_record, expected_version=held_version),
+        metadata_status=200,
+        metadata=metadata,
+        data_status=200,
+        secret=secret,
+    )
+
+    assert next_proc.returncode == 0
+    transition = json.loads(next_proc.stdout)
+    assert transition["payload"]["options"] == {"cas": held_version}
+    assert transition["record"]["phase"] == "restore_active"
+    assert transition["record"]["active_nonce"] == held_record["restore_nonce"]
+
+
+def test_rendered_include_request_rejects_stale_expected_version():
     snapshot = planned_reservation()
     metadata, secret = kv_reads(snapshot)
-    stale_request = request("start_restore", snapshot=snapshot, generation=0)
+    stale_request = request("start_restore", snapshot=snapshot, expected_version=0)
     proc = invoke_rendered_plan_command(
         stale_request,
         metadata_status=200,
@@ -477,7 +665,7 @@ def test_rendered_include_request_rejects_stale_generation():
     )
 
     assert proc.returncode == 2
-    assert json.loads(proc.stdout) == {"result": "refused", "reason": "generation_mismatch"}
+    assert json.loads(proc.stdout) == {"result": "refused", "reason": "expected_version_mismatch"}
 
 
 @pytest.mark.parametrize(

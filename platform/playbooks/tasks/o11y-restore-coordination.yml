@@ -2,10 +2,14 @@
 # Fixed-path CAS coordination only. This include never contacts Proxmox and
 # never performs a restore, stop, or delete operation.
 #
-# Caller supplies o11y_restore_coordination_request, protected OpenBao URL and
-# token include vars. The caller must refuse all three names when they arrive
-# as extra vars before including this task. This shared task cannot authenticate
-# values passed to it by a future caller.
+# Caller supplies a request with the private target reference, owner nonce, and
+# complete expected prior record/version, plus protected OpenBao URL and token
+# include vars. The expected state and nonce must come from a prior successful
+# readback held in protected controller state; a fresh GET here is comparison
+# only and must never be adopted. For a separate cleanup invocation, expected
+# state must come from the authenticated restore task output. The caller must
+# refuse these input names as extra vars before including this task. This shared
+# task validates structure but cannot authenticate caller-supplied values.
 
 - name: "Restore coordination: validate caller inputs"
   ansible.builtin.assert:
