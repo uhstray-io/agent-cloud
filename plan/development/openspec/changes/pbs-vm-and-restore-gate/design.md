@@ -45,16 +45,29 @@ inactive, non-file, or node-mismatched stores. It preserves the existing content
 list, sends the replacement list with the GET response digest as Proxmox's
 concurrency guard, and verifies readback. Check mode performs the same guarded
 reads but never writes. The 2026-10-18 candidate census in task 7081 found zero
-active import stores, so publication remains gated on private inventory
-reconciliation and a successful run; no live write is authorized by this design.
+active import stores. After private inventory reconciliation, Dev-bound task
+7128 confirmed the update was needed in check mode, task 7129 applied the
+observed-digest content union and verified readback, and task 7131 confirmed
+idempotence. Task 7132 then found active import candidates. All ran at reviewed
+Dev `a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`. Template publication
+still requires the separate PBS host declaration and inventory readback.
+The Dev-bound Semaphore template itself was created through the reviewed
+single-template publisher: task 7155 passed check mode, and task 7156 verified
+the resulting playbook and Dev bindings. This publishes only the automation
+entry; no Proxmox template or PBS VM exists yet.
+The guest-disk attachment implementation is prepared on a separate public
+branch. Its missing-disk path reuses the pinned read-only survey and preflight
+before one digest-protected Proxmox VM-config update; an exact-disk rerun checks
+the declared guest and disk without requiring headroom for a second allocation.
+Review, Dev merge, Semaphore publication, and live validation remain pending.
 
 Production Semaphore task 7106 refused before any Proxmox request because the
 workflow required HTTPS for the inventory OpenBao URL. The shared transport
 guard permits internal RFC1918 HTTP and refuses public cleartext, so the workflow
 now checks that the inventory URL is present and exactly matches Semaphore's
 OpenBao URL before applying that shared guard ahead of AppRole authentication.
-Task 7106 made no Proxmox read or write; a reviewed rerun must still verify the
-declared store, and this failure does not close the publication gate.
+Task 7106 made no Proxmox read or write. The reviewed rerun above closed the
+import-content gate; it did not create a template or PBS VM.
 
 ## Risks / Trade-offs
 

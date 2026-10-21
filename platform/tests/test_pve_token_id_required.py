@@ -25,6 +25,7 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
 # Every play that builds a PVEAPIToken header, and the variable that carries its token id there.
 TOKEN_ID_VAR = {
+    "attach-pbs-data-disk.yml": "_pve_token_id",
     "destroy-vm.yml": "_pve_token_id",
     "enable-o11y-pbs-import-content.yml": "_pve_token_id",
     "provision-template.yml": "_pve_token_id",
@@ -46,10 +47,23 @@ TOKEN_ID_VAR = {
 LITERAL_TOKEN_ID = re.compile(r"['\"][A-Za-z0-9._-]+@(pve|pam)![A-Za-z0-9._-]+['\"]")
 
 
+def _expand_import_tasks(play, base):
+    tasks = []
+    for task in play.get("tasks", []):
+        tasks.append(task)
+        imported = task.get("ansible.builtin.import_tasks")
+        if imported and (base / imported).is_file():
+            tasks.extend(_expand_import_tasks({"tasks": playbook_yaml.load(base / imported)}, base))
+    return tasks
+
+
 def _plays_with_pve_header(path):
     for play in playbook_yaml.load(path) or []:
-        if isinstance(play, dict) and any("PVEAPIToken" in s for s in playbook_yaml.strings(play)):
-            yield play
+        if isinstance(play, dict):
+            play = copy.deepcopy(play)
+            play["tasks"] = _expand_import_tasks(play, PLAYBOOKS)
+            if any("PVEAPIToken" in s for s in playbook_yaml.strings(play)):
+                yield play
 
 
 def _token_asserts(play, var):

@@ -2040,10 +2040,8 @@ private `proxmox_pbs_storage_node`; do not reuse the VM image store identity,
 which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
 workflow checks the exact node and active file-store status, preserves the
 existing content list, applies the `import` union with Proxmox's observed digest,
-and reads the config back. Its check mode is read-only. Template publication
-stays blocked until the private declaration is reviewed and a successful run
-confirms the exact store now includes `import`. No Proxmox config changed in
-task 7081. The physical-disk origin remains operator-attested; the
+and reads the config back. Its check mode is read-only. Task 7081 made no
+Proxmox config change. The physical-disk origin remains operator-attested; the
 serial-to-chassis match is not independently verified. No template VM, PBS VM,
 or data disk has been created.
 
@@ -2053,5 +2051,40 @@ OpenBao transport guard explicitly permits internal RFC1918 HTTP. The public
 workflow now requires a nonempty private inventory URL, still requires exact
 equality with Semaphore's OpenBao URL, and delegates transport policy to the
 shared guard before the AppRole lookup. Task 7106 made no Proxmox read or write;
-the import-content verification gate remains open until a reviewed rerun proves
-the exact store configuration.
+the later reviewed rerun closed that gate.
+
+At reviewed Dev `a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`, scoped
+Semaphore template publisher tasks 7124 and 7125 succeeded and verified the
+import-content template declaration. Import-content task 7128 confirmed in
+read-only check mode that `import` was absent; task 7129 applied the
+observed-digest union and verified readback; task 7131 confirmed a second run
+was unchanged. GET-only candidate survey task 7132 then found active import
+candidates, two free VMID candidates, and an available declared VM image store.
+NetBox allocator task 7140 found 32 free addresses on the declared network;
+a live pfSense DHCP boundary check left seven eligible. Task 7143 checked the
+selected address in read-only mode, and task 7145 reserved it with the exact
+PBS description and verified NetBox readback. Address and VMID values remain
+private. Template publication awaits the separate PBS host declaration,
+reviewed private inventory merge, Semaphore sync, and exact inventory readback.
+No template VM, PBS VM, or data disk has been created; retention is unchanged.
+
+The first scoped Semaphore publisher check, task 7152, refused because the
+Debian template workflow did not yet exist as a Semaphore template; it made no
+configuration change. The documented one-template creation path then passed
+check mode in task 7155. Task 7156 created only `Provision PBS Debian Cloud
+Template (Dev)` and read back its exact Dev repository, inventory, environment,
+and playbook bindings at reviewed Dev
+`a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`. It did not run the playbook or
+create a Proxmox template. That run still awaits the reviewed private PBS host
+declaration and inventory sync.
+
+The next public change prepares a separate Dev-bound PBS guest-disk attachment
+workflow for OpenSpec task 3.1. It first verifies the exact declared guest,
+network, OS disk, and data-disk slot. An already matching `scsi1` is a safe
+rerun without another capacity allocation. If `scsi1` is absent, the workflow
+reuses the pinned backing survey and 512-GiB headroom preflight, re-reads the
+VM config, and sends one digest-protected Proxmox API request for the declared
+virtual disk. Check mode performs reads only. The workflow has passed local
+focused tests and syntax checks; it has not been reviewed, merged, published to
+Semaphore, or run against Proxmox. The private inventory and template gates
+still precede any live attachment.
