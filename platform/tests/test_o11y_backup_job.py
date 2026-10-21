@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import forgeries
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -255,12 +256,16 @@ def test_inspect_yaml_handoff_uses_private_job_and_never_echoes_it(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-def test_full_playbook_refuses_forged_private_backup_job_id_before_api_reads(tmp_path):
+@pytest.mark.parametrize(
+    "forge",
+    forgeries.templated_forgeries("_backup_job_id", "honest-id", "forged-id"),
+)
+def test_full_playbook_refuses_forged_private_backup_job_id_before_api_reads(tmp_path, forge):
     playbook = ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml"
     env = {key: value for key, value in os.environ.items() if key != "ANSIBLE_CONFIG"}
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
     result = subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", str(playbook), "-e", json.dumps({"_backup_job_id": "forged-id"})],
+        ["ansible-playbook", "-i", "localhost,", str(playbook), "-e", forge(tmp_path)],
         cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=120,
     )
     assert result.returncode != 0

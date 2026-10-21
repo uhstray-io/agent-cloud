@@ -224,7 +224,7 @@
         fail_msg: >-
           Host-metrics identity refused: every opted-in host must resolve from the same reviewed
           estate inventory revision to one unique declared target ID.
-      run_once: true
+      run_once: true  # noqa: run-once[task] — compare the entire selected group exactly once.
       when: _ih_identity_enabled | bool
 
     - name: "Carry only the matched declared identity to the exporter and receiver plays"
