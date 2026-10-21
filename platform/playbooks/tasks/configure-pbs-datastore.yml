@@ -72,6 +72,7 @@
     get_checksum: true
     checksum_algorithm: sha256
   delegate_to: localhost
+  become: false
   run_once: true
   register: _pbs_guest_path_helper_source
   changed_when: false
@@ -201,6 +202,8 @@
       - "true"
   when:
     - not ansible_check_mode
+    - _pbs_datastores | selectattr('name', 'equalto', _pbs_datastore) | list | length == 1
+    - _pbs_datastore_current is not skipped
     - >-
       (_pbs_datastore_current.stdout | from_json).get('gc-schedule', '') != _pbs_gc_schedule
       or (_pbs_datastore_current.stdout | from_json).get('verify-new', false) | string | lower != 'true'
@@ -277,6 +280,8 @@
       - "7"
   when:
     - not ansible_check_mode
+    - _pbs_verify_job_list | selectattr('id', 'equalto', _pbs_verify_job) | list | length == 1
+    - _pbs_verify_job_current is not skipped
     - >-
       (_pbs_verify_job_current.stdout | from_json).get('schedule', '') != _pbs_verify_schedule
       or (_pbs_verify_job_current.stdout | from_json).get('ignore-verified', false) | string | lower != 'true'

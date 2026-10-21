@@ -2,11 +2,13 @@
 
 from pathlib import Path
 import importlib.util
+import json
 import shutil
 import sys
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 
 ROOT = Path(__file__).parents[2]
@@ -93,6 +95,44 @@ def test_check_mode_skips_missing_object_readbacks_and_reports_planned_create():
     )
 
 
+def test_reconcile_conditions_skip_fresh_objects_and_apply_existing_drift():
+    tasks = yaml.safe_load(DATASTORE_TASKS.read_text())
+    datastore_update = next(task for task in tasks if "Reconcile datastore garbage collection" in task["name"])
+    verify_update = next(task for task in tasks if "Reconcile the managed verification schedule" in task["name"])
+    assert "_pbs_datastore_current is not skipped" in datastore_update["when"]
+    assert "_pbs_verify_job_current is not skipped" in verify_update["when"]
+
+    datastore_absent = {
+        "ansible_check_mode": False,
+        "_pbs_datastores": [],
+        "_pbs_datastore": "o11y",
+        "_pbs_datastore_current": {"skipped": True},
+        "_pbs_gc_schedule": "daily",
+    }
+    verify_absent = {
+        "ansible_check_mode": False,
+        "_pbs_verify_job_list": [],
+        "_pbs_verify_job": "weekly-o11y",
+        "_pbs_verify_job_current": {"skipped": True},
+        "_pbs_verify_schedule": "sun 02:00",
+    }
+    datastore_existing_drift = {
+        **datastore_absent,
+        "_pbs_datastores": [{"name": "o11y"}],
+        "_pbs_datastore_current": {"stdout": json.dumps({"gc-schedule": "weekly", "verify-new": False})},
+    }
+    verify_existing_drift = {
+        **verify_absent,
+        "_pbs_verify_job_list": [{"id": "weekly-o11y"}],
+        "_pbs_verify_job_current": {"stdout": json.dumps({"schedule": "daily", "ignore-verified": False, "outdated-after": 30})},
+    }
+
+    assert not _evaluate_when(datastore_update["when"], datastore_absent)
+    assert not _evaluate_when(verify_update["when"], verify_absent)
+    assert _evaluate_when(datastore_update["when"], datastore_existing_drift)
+    assert _evaluate_when(verify_update["when"], verify_existing_drift)
+
+
 @pytest.mark.parametrize("entry_kind", ["populated_directory", "symlink"])
 def test_ansible_find_any_detects_unsafe_datastore_entries(tmp_path, entry_kind):
     tasks = yaml.safe_load(DATASTORE_TASKS.read_text())
@@ -164,3 +204,10 @@ def _ansible_find_module_path():
         site_packages = candidates[0].parents[2]
         sys.path.insert(0, str(site_packages))
         return candidates[0]
+
+
+def _evaluate_when(conditions, context):
+    environment = Environment()
+    environment.filters["from_json"] = json.loads
+    environment.tests["skipped"] = lambda value: isinstance(value, dict) and value.get("skipped", False)
+    return all(environment.compile_expression(str(condition))(**context) for condition in conditions)
