@@ -2078,13 +2078,150 @@ and playbook bindings at reviewed Dev
 create a Proxmox template. That run still awaits the reviewed private PBS host
 declaration and inventory sync.
 
-The next public change prepares a separate Dev-bound PBS guest-disk attachment
-workflow for OpenSpec task 3.1. It first verifies the exact declared guest,
-network, OS disk, and data-disk slot. An already matching `scsi1` is a safe
-rerun without another capacity allocation. If `scsi1` is absent, the workflow
-reuses the pinned backing survey and 512-GiB headroom preflight, re-reads the
-VM config, and sends one digest-protected Proxmox API request for the declared
-virtual disk. Check mode performs reads only. The workflow has passed local
-focused tests and syntax checks; it has not been reviewed, merged, published to
-Semaphore, or run against Proxmox. The private inventory and template gates
-still precede any live attachment.
+PR #715 added the separate Dev-bound PBS guest-disk attachment source workflow
+for OpenSpec task 3.1. It verifies the exact declared guest, network, OS disk,
+and data-disk slot; an already matching `scsi1` is a safe rerun without another
+capacity allocation. If `scsi1` is absent, it reuses the pinned backing survey
+and 512-GiB headroom preflight, re-reads the VM config, and sends one
+digest-protected Proxmox API request. Check mode performs reads only. PR #715
+passed final CI and CodeRabbit review and merged to `dev` at
+`621396b660c120056fc835900d70a38618f87535` (reviewed head
+`bc0ca6d3b29ee1db8ef78bcfccf8a0e0e7f75451bc`). Its initial allocation request
+does not set the required `ac-pbs-data-<vm_vmid>` serial. A serial-aware
+bootstrap enhancement must land and be read back before any live disk
+allocation. The Dev task has not been published/read back here and no live disk
+was allocated; tasks 3.2 and 3.3 remain open.
+
+### PBS guest filesystem and service source integration (2026-10-20)
+
+The reviewed guest filesystem head `05acf2269081cf9e273fb77c0a5d1ffbd66ad280`
+and service head `4b4ef07c7bee21adee14ec55900de56ba5a76d28` are integrated by
+normal merge commits `c07a91e5` and `72f7a24b` after PR #715's exact head,
+retaining its transport-test and visible-token assertions. PR #715 subsequently
+merged to Dev at `621396b660c120056fc835900d70a38618f87535` after final CI and
+CodeRabbit approval. The guest workflow identifies the one 512-GiB whole
+virtual disk by the Proxmox serial `ac-pbs-data-<vm_vmid>` (at most 18 ASCII
+bytes for the six-digit VMID), formats only a proven blank disk as ext4, and
+mounts it by UUID at `/srv/pbs-data` with `noatime`. Service configuration
+independently re-proves serial, size, UUID, mount, and fstab state before
+package or datastore writes. It verifies the installed shared helper against
+the exact reviewed checkout, then uses its no-follow containment checks to
+require the datastore as a real direct child on the pinned filesystem and
+reject symlinks and nested mounts, including for registered datastores. The
+helper and disk contract are source dependencies; no receipt or marker is
+treated as proof.
+
+Two Dev-only Semaphore catalog definitions were added with the guest and
+service source integration. Each
+targets the `agent-cloud dev` repository, requires only
+`expected_repository_sha`, and names the matching guest or service playbook.
+The service's Proxmox repository channel remains an explicit private-inventory
+choice: enterprise needs an already-active subscription before changes, while
+no-subscription requires explicit operator acceptance and is not an automatic
+fallback. Safe enterprise subscription-key provisioning remains a separate
+dependency. Task 4.1 creates no Linux root password or PBS API token; the
+datastore-scoped PVE identity and OpenBao token lifecycle belongs to task 4.2.
+
+Source validation in the integration checkout: 277 focused tests passed, and
+the three synthetic guest task-sequence cases also passed in a separate,
+scoped-escalation run: normal mode with the current helper, check mode with the
+helper absent, and check mode with an outdated helper. Both PBS playbooks passed
+Ansible syntax checks (with the expected absent-private-inventory `pbs_svc`
+warning). Ruff passed. Full
+`ansible-lint platform/playbooks/ platform/semaphore/` passed with zero fatal
+failures and three existing unrelated Jinja-spacing warnings; YAML lint exited
+0 with existing line-length warnings. Strict OpenSpec validation from the local
+`plan/development/openspec` root reports this change valid. These are source-only
+results. The Dev
+Semaphore entries have not been published or read back, and no template VM,
+PBS VM, data disk, filesystem, mount, or PBS service has been observed live.
+Task 3.2 remains open. The source implementation for 3.3 and 4.1 is recorded
+separately from their original acceptance checkboxes; those remain open until
+the guest preservation, mount, and PBS health receipts are collected.
+
+### PBS backup access source integration (2026-10-20)
+
+The independently reviewed and fix-verified PBS backup-access head
+`9f6b041a4f85ef56b92f7fe14cc7001c1b9c1fd5` is merged into the bootstrap
+integration branch by normal merge commit `4f02fdc0`. It adds the
+OpenBao-backed PBS token lifecycle, exact non-propagating
+`DatastoreBackup` grants at `/datastore/o11y`, PVE PBS storage registration,
+and checks that the existing backup jobs and storage remain unchanged. The
+Dev-only `Configure PBS Backup Access (Dev)` catalog entry requires only
+`expected_repository_sha`; host, storage, and secret values remain private
+inventory/OpenBao inputs. The reviewed Dev merge `f259e2a77515115306563f0dcb96db1142060519`
+(PR #723) is also integrated by normal merge commit `88736a8d`; it carries the
+gateway access-discriminator source and is unrelated to PBS live state.
+
+The third Dev-only Semaphore catalog definition, `Configure PBS Backup Access
+(Dev)`, binds `platform/playbooks/configure-pbs-backup-access.yml` to the
+`agent-cloud dev` repository and requires only the exact reviewed SHA. The
+source implementation does not create a PBS user/token, grant an ACL,
+register PVE storage, or redirect any backup job until its guarded Dev-bound
+workflow is explicitly executed. No live PBS identity, OpenBao credential,
+ACL, PVE target, or backup has been observed. Tasks 3.3, 4.1, and 4.2 have
+reviewed source workflows; their original acceptance items remain open until
+the separate live receipts recorded in OpenSpec task subtasks. Tasks 3.2, 4.3,
+and 4.4 also remain open. This source branch is not yet merged to Dev, so the
+catalog workflows are not published or runnable from Dev.
+
+The combined integration validation was rerun after merging the reviewed
+backup-access branch and Dev PR #723. The focused PBS bootstrap/service/access
+and OpenBao-guard suite passed **331 tests**, including the three synthetic
+Ansible selector task sequences (normal mode/current helper, check mode/absent
+helper, and check mode/outdated helper); 18 subtests passed. All four PBS
+attachment, guest filesystem, service, and backup-access playbooks passed
+Ansible syntax check, with the expected missing-private-inventory `pbs_svc`
+warning on guest-targeted playbooks. Repository Ruff passed. Full Ansible lint
+processed 368 files with zero fatal failures and three existing Jinja-spacing
+warnings. Repository YAML lint exited 0 with existing line-length warnings.
+Strict OpenSpec validation passed. These checks prove source behavior against
+synthetic fixtures only; no Semaphore API, Proxmox API, PBS guest, OpenBao, or
+live storage was contacted.
+
+### PBS verify-only paths and restore-target preflight (2026-10-20)
+
+The source integration adds `verify`-tagged read-only paths for guest disk,
+PBS service, backup access, and restore-target preflight. These paths inspect
+existing state and refuse missing components; they do not prepare a disk,
+install packages, change service state, create secrets, grant ACLs, register
+storage, or reserve a restore VMID. PBS service verification uses the package
+path `/usr/sbin/proxmox-backup-manager` and read-only API/CLI health checks.
+
+OpenSpec tasks 3.3, 4.1, 4.2, and 5.1 distinguish checked source subtasks
+from still-open live acceptance. Task 3.3 still needs the guest rerun and data
+preservation receipt; 4.1 needs live UUID mount and PBS health readback; 4.2
+needs actual identity, token, ACL, and PVE storage verification; 5.1 needs the
+private target/artifact declaration and live exact-artifact preflight. The
+serial-aware bootstrap change must be published and read back from Dev before
+any live disk allocation. No PBS VM, disk, filesystem, mount, service,
+credential, ACL, PVE storage, or restore target has been validated live.
+
+The source-only restore preflight is merged from reviewed head
+`9099a421b01016226cb806560c43a6d6da819d69` by merge `64ed7ae0`. The target is
+still disconnected and undeclared. Current VMID availability authority is
+required; ACL census visibility is explicitly unverified. Capacity and
+retention remain blocked by the separate seven-day capacity gate.
+
+The separate read-only Seven-Day Capacity History survey, task 7710, ran from
+reviewed controller Dev `f259e2a77515115306563f0dcb96db1142060519` against
+expected and measured receiver source
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. It refused with
+`source_series_ambiguous`. The receipt proves no capacity gate pass or
+forecast, and it made no state mutation. The cause remains unconfirmed; the
+next step is a bounded diagnostic to distinguish duplicate collectors from a
+label migration. Do not prune/reset data or relax the single-source guard.
+Retention changes and VM growth remain blocked pending a successful seven-day
+capacity gate.
+
+Final integrated source validation on the bootstrap branch ran 116 focused
+tests, followed by four separately escalated synthetic Ansible task-sequence
+cases; all passed. The latter cover guest selector behavior and backup-access
+refusal assertions using disposable fixtures. They do not exercise live
+OpenBao, PBS, PVE, or Semaphore requests. `--list-tasks --tags verify` confirms
+tag selection but does not expand dynamic includes; the included transport
+guard's `apply.tags` and read-only child task were inspected separately. All
+four playbooks passed syntax check. Ruff passed; full Ansible lint reported
+zero failures and three existing Jinja-spacing warnings; YAML lint exited 0
+with existing line-length warnings; strict OpenSpec validation passed. These
+are source checks only and do not close the live acceptance items above.
