@@ -1,0 +1,186 @@
+---
+# Install and configure PBS only after the guest proves the UUID-mounted data disk.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/configure-pbs.yml
+      - platform/playbooks/tasks/configure-pbs-datastore.yml
+      - platform/playbooks/files/assert_pbs_data_mount.py
+      - platform/playbooks/templates/pbs.sources.j2
+
+- name: Require one declared PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_svc
+    preflight_group_expected: pbs_svc
+
+- name: Configure the PBS service
+  hosts: pbs_svc
+  gather_facts: true
+  become: true
+  vars:
+    _pbs_vmid: "{{ vm_vmid | default('') | string }}"
+    _pbs_mountpoint: /srv/pbs-data
+    _pbs_datastore: o11y
+    _pbs_datastore_path: /srv/pbs-data/datastore
+    _pbs_verify_job: o11y-weekly
+    _pbs_verify_schedule: "Sun 03:00"
+    _pbs_gc_schedule: daily
+    _pbs_repository_channel: "{{ pbs_repository_channel | default('') }}"
+    _pbs_repository_uri: "{{ 'https://enterprise.proxmox.com/debian/pbs' if _pbs_repository_channel == 'enterprise' else 'http://download.proxmox.com/debian/pbs' }}"
+    _pbs_repository_component: "{{ 'pbs-enterprise' if _pbs_repository_channel == 'enterprise' else 'pbs-no-subscription' }}"
+    _pbs_keyring_url: https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
+    _pbs_keyring_sha256: 136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45
+
+  tasks:
+    - name: Refuse launch-time PBS identity and repository overrides
+      ansible.builtin.assert:
+        that: _pbs_forgeries | length == 0
+        fail_msg: "PBS identity, repository, and data-mount values are private inventory inputs."
+        quiet: true
+      vars:
+        _pbs_private_names:
+          - pbs_svc
+          - vm_vmid
+          - pbs_repository_channel
+          - pbs_accept_no_subscription_risk
+          - service_url
+          - openbao_addr
+          - local_mode
+          - pbs_data_mount
+          - pbs_data_filesystem
+          - pbs_data_disk_size
+          - pbs_data_disk_serial
+        _pbs_forgeries: "{{ _pbs_private_names | intersect('' | extra_var_names) }}"
+
+    - name: Require the supported Debian guest and explicit repository selection
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Debian'
+          - ansible_distribution_major_version == '13'
+          - _pbs_vmid is match('^[1-9][0-9]{2,5}$')
+          - _pbs_repository_channel in ['enterprise', 'no-subscription']
+          - pbs_data_mount | default('') == _pbs_mountpoint
+          - pbs_data_filesystem | default('') == 'ext4'
+          - pbs_data_disk_serial | default('') == 'ac-pbs-data-' ~ _pbs_vmid
+          - _pbs_repository_channel != 'no-subscription' or (pbs_accept_no_subscription_risk | default(false) | bool)
+        fail_msg: "PBS requires Debian 13, the declared disk identity/mount contract, and an explicit supported repository channel."
+        quiet: true
+
+    - name: Prove the data mount before any PBS package or datastore write
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/files/assert_pbs_data_mount.py --vmid {{ _pbs_vmid | quote }}"
+      register: _pbs_mount_identity
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse a mount identity result outside the fixed contract
+      ansible.builtin.assert:
+        that:
+          - (_pbs_mount_identity.stdout | from_json).target == _pbs_mountpoint
+          - (_pbs_mount_identity.stdout | from_json).fstype == 'ext4'
+          - (_pbs_mount_identity.stdout | from_json).uuid | length > 0
+        fail_msg: "PBS data mount readback did not prove the declared UUID-backed ext4 mount."
+        quiet: true
+
+    - name: Check whether PBS subscription state can be read before package changes
+      ansible.builtin.stat:
+        path: /usr/bin/proxmox-backup-manager
+      register: _pbs_manager_binary
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Require an existing PBS CLI for an enterprise subscription check
+      ansible.builtin.assert:
+        that: _pbs_manager_binary.stat.exists | default(false)
+        fail_msg: "Enterprise repository requires an already installed PBS CLI with verified active subscription state; use only an explicitly accepted no-subscription channel for first bootstrap."
+        quiet: true
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Read PBS subscription state without exposing its credential fields
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, subscription, get, --output-format, json]
+      register: _pbs_subscription_raw
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Keep only the subscription validity result
+      ansible.builtin.set_fact:
+        _pbs_enterprise_subscription_active: "{{ ((_pbs_subscription_raw.stdout | from_json).status | default('') | lower) == 'active' }}"
+      no_log: true
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Require an active PBS enterprise subscription
+      ansible.builtin.assert:
+        that: _pbs_enterprise_subscription_active | default(false) | bool
+        fail_msg: "The declared enterprise repository channel requires an active PBS subscription."
+        quiet: true
+      when: _pbs_repository_channel == 'enterprise'
+
+    - name: Report sanitized enterprise subscription state
+      ansible.builtin.debug:
+        msg: "Enterprise subscription: valid"
+      when: _pbs_repository_channel == 'enterprise' and _pbs_enterprise_subscription_active | bool
+
+    - name: Check for a Proxmox-managed archive keyring
+      ansible.builtin.stat:
+        path: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        checksum_algorithm: sha256
+      register: _pbs_keyring
+
+    - name: Read installed package ownership for the Proxmox archive keyring
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: Refuse an unowned Proxmox keyring that differs from the official Trixie key
+      ansible.builtin.assert:
+        that:
+          - >-
+            not _pbs_keyring.stat.exists
+            or 'proxmox-archive-keyring' in ansible_facts.packages
+            or _pbs_keyring.stat.checksum == _pbs_keyring_sha256
+        fail_msg: "An existing unowned Proxmox keyring does not match the official Trixie key checksum."
+        quiet: true
+
+    - name: Install the official Trixie archive keyring when absent
+      ansible.builtin.get_url:
+        url: "{{ _pbs_keyring_url }}"
+        dest: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        checksum: "sha256:{{ _pbs_keyring_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not _pbs_keyring.stat.exists
+
+    - name: Configure the explicitly selected PBS Trixie repository
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/pbs.sources.j2"
+        dest: /etc/apt/sources.list.d/proxmox.sources
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install supported PBS packages from the selected repository
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - proxmox-archive-keyring
+          - proxmox-backup-server
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Check whether PBS is installed after the package plan
+      ansible.builtin.stat:
+        path: /usr/bin/proxmox-backup-manager
+      register: _pbs_ready_after_install
+
+    - name: Verify PBS health and reconcile datastore configuration
+      ansible.builtin.include_tasks: tasks/configure-pbs-datastore.yml
+      when: not ansible_check_mode or _pbs_ready_after_install.stat.exists
