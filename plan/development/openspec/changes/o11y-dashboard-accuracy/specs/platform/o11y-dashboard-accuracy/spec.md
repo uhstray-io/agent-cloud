@@ -109,6 +109,8 @@ The existing read-only dashboard verifier SHALL allow a caller to name exact sel
 
 The existing read-only dashboard verifier SHALL report current failed service and workflow-step pairs only when the selected panel matches the exact provisioned latest-status query contract and the pair identities are present in the public component directories and the actual `steps` collection of the service-onboarding workflow registry. The controller SHALL parse and validate that canonical registry before invoking the receiver-side verifier; caller-supplied survey values MUST NOT replace it. The verifier SHALL accept exactly the `service` and `step` labels, validate the complete Loki vector sample shape and types before interpreting its timestamp or state code, recognize only the provisioned failure, pass, and skip state codes, sort and cap failure pairs deterministically, and count unknown or ambiguous series categorically without returning their labels or sample values. It SHALL include `window_seconds: 2700` and `scope: latest_recorded_state` for present, none, no_data, and unverified observations. Missing query data SHALL remain `no_data`; it MUST NOT be interpreted as a cleared failure. The report SHALL describe latest state within the query's 45-minute lookback and MUST NOT claim complete history, original task provenance, dashboard rendering, or absence of older failures outside that lookback.
 
+The observation SHALL report fixed numeric counts for unknown label shapes, unregistered identities, malformed samples, and duplicate pairs, while preserving the total unknown-series count and `unverified` status. It MUST NOT echo unknown labels or sample values. When both the exact latest-status panel and the exact latest workflow completion-age panel are selected, the report SHALL attach a numeric completion age in seconds or null to each returned failed pair, along with known/unknown age counts. It SHALL validate the age panel's full existing query and datasource contract and exact public service/step labels. The 2700-second window bounds the observed collector snapshot; completion age derives from its workflow completion timestamp and MUST NOT be described as elapsed failure duration. Missing, duplicate, malformed, non-finite, boolean, negative, or explicit unknown ages SHALL be null and count as age-unknown; no zero fallback is permitted. When the completion-age panel is not selected, the report SHALL make no age query, set `completion_age_status` to `not_selected`, emit null pair ages, and count each returned failed pair as age-unknown. This age evidence SHALL NOT change the main workflow observation status or imply application health.
+
 #### Scenario: Current failed workflow steps are identified safely
 
 - **WHEN** the exact latest-status query returns a unique failed state for a registry-backed service and step
@@ -118,6 +120,16 @@ The existing read-only dashboard verifier SHALL report current failed service an
 - **AND** an empty result remains `no_data` rather than `none`
 - **AND** malformed sample shapes, timestamps, or values make the observation `unverified`
 - **AND** every result status reports its fixed 45-minute window and latest-recorded-state scope
+
+#### Scenario: Failure uncertainty and completion age remain bounded
+
+- **WHEN** the exact latest-status panel returns unknown rows, and both exact workflow panels are selected
+- **THEN** the report splits unknown rows into fixed label-shape, identity, sample, and duplicate counters while retaining the total and `unverified` status
+- **AND** the report never echoes unknown labels or sample values
+- **AND** each returned failure pair includes a numeric completion age in seconds or null, with known and unknown age counts
+- **AND** missing, duplicate, malformed, non-finite, boolean, negative, and explicit unknown ages are null and counted as unknown
+- **AND** when the completion-age panel is not selected, the verifier makes no age query, reports `completion_age_status: not_selected`, emits null ages, and counts each returned pair as age-unknown
+- **AND** age evidence does not alter the main workflow observation status or assert application health
 
 #### Scenario: Latest-status query or identity source drifts
 

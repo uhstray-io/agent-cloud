@@ -4,8 +4,10 @@
 Read-only: it reads the dashboard JSON the receiver's Grafana provisions from, and sends
 query and query_range requests to the receiver's Prometheus and Loki APIs. It prints one
 JSON report on stdout carrying panel titles, target status and counts plus exact-contract
-categorical observations: no label value, log line, query expression, provenance identifier or
-sample value leaves this script.
+observations. No unknown label, log line, query expression, provenance identifier or raw
+sample leaves this script. When both exact latest-workflow panels are selected, the bounded
+failure observation may include validated numeric completion-age seconds for public failed
+pairs; missing or invalid ages are null.
 
 Input (stdin, JSON):
   dashboards_dir   directory Grafana's file provider loads (config/grafana/dashboards)
@@ -108,6 +110,7 @@ POINTS_PER_PANEL = 1000
 QUERY_TIMEOUT = 30
 LOKI_RESULT_LIMIT = 100
 WORKFLOW_STEP_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+COMPLETION_AGE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
 MAX_WORKFLOW_STEPS = 128
 CURRENT_WORKFLOW_STATE_WINDOW_SECONDS = 45 * 60
 # The Prometheus HTTP API's errorType values (prometheus web/api/v1/api.go).
@@ -419,6 +422,76 @@ def _workflow_state_code(sample: Any) -> int | None:
     return int(value)
 
 
+def _completion_age_seconds(sample: Any) -> float | None:
+    """Accept one complete Loki vector sample; -1 is the query's explicit unknown."""
+    if not isinstance(sample, list) or len(sample) != 2:
+        return None
+    timestamp, value = sample
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+        return None
+    try:
+        timestamp_number = float(timestamp)
+        age = float(value) if isinstance(value, str) and COMPLETION_AGE.fullmatch(value) else math.nan
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(timestamp_number) or timestamp_number < 0:
+        return None
+    if not math.isfinite(age) or age < 0 and age != -1:
+        return None
+    return None if age == -1 else age
+
+
+def _completion_age_map(
+    data: Any, dashboards_dir: str, workflow_steps: Any
+) -> dict[tuple[str, str], float | None] | None:
+    """Read only exact public service/step age rows; malformed identities invalidate the join."""
+    allowlists = _workflow_identity_allowlists(dashboards_dir, workflow_steps)
+    if allowlists is None or not isinstance(data, dict):
+        return None
+    services, steps = allowlists
+    result = data.get("result")
+    if data.get("resultType") != "vector" or not isinstance(result, list):
+        return None
+    ages: dict[tuple[str, str], float | None] = {}
+    for series in result:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or set(metric) != {"service", "step"}:
+            return None
+        service, step = metric.get("service"), metric.get("step")
+        if (
+            not isinstance(service, str)
+            or not isinstance(step, str)
+            or service not in services
+            or step not in steps
+        ):
+            return None
+        key = (service, step)
+        if key in ages:
+            # A duplicate is ambiguous even if one row carried a plausible age.
+            ages[key] = None
+            continue
+        sample = series.get("value")
+        age = _completion_age_seconds(sample)
+        ages[key] = age
+    return ages
+
+
+def _attach_completion_ages(
+    observation: dict[str, Any], age_status: str,
+    age_map: dict[tuple[str, str], float | None] | None,
+) -> None:
+    """Join strict numeric ages to returned public pairs without changing failure status."""
+    pairs = observation.get("failed_steps", [])
+    known = 0
+    for pair in pairs:
+        age = age_map.get((pair["service"], pair["step"])) if age_map is not None else None
+        pair["completion_age_seconds"] = age
+        known += int(age is not None)
+    observation["completion_age_status"] = age_status
+    observation["failed_pairs_with_known_completion_age"] = known
+    observation["failed_pairs_with_unknown_completion_age"] = len(pairs) - known
+
+
 def _failed_step_observation(
     data: dict[str, Any], dashboards_dir: str, workflow_steps: Any,
     window_seconds: int, scope: str,
@@ -433,6 +506,13 @@ def _failed_step_observation(
             "status": "unverified",
             "reason": "registry_unavailable",
             "unknown_series_count": len(result) if isinstance(result, list) else 0,
+            "unknown_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "unknown_sample_count": 0,
+            "duplicate_pair_count": 0,
+            "failed_step_count": 0,
+            "failed_steps": [],
+            "truncated_count": 0,
             **metadata,
         }
     services, steps = allowlists
@@ -443,6 +523,13 @@ def _failed_step_observation(
             "status": "unverified",
             "reason": "unexpected_result_shape",
             "unknown_series_count": len(result) if isinstance(result, list) else 0,
+            "unknown_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "unknown_sample_count": 0,
+            "duplicate_pair_count": 0,
+            "failed_step_count": 0,
+            "failed_steps": [],
+            "truncated_count": 0,
             **metadata,
         }
     if not result:
@@ -453,17 +540,24 @@ def _failed_step_observation(
             "failed_steps": [],
             "truncated_count": 0,
             "unknown_series_count": 0,
+            "unknown_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "unknown_sample_count": 0,
+            "duplicate_pair_count": 0,
             **metadata,
         }
 
-    states: dict[tuple[str, str], int] = {}
-    ambiguous: set[tuple[str, str]] = set()
+    pair_series: dict[tuple[str, str], list[dict[str, Any]]] = {}
     unknown = 0
+    unknown_label_shape = 0
+    unknown_identity = 0
+    unknown_sample = 0
+    duplicate_pairs = 0
     for series in result:
         metric = series.get("metric") if isinstance(series, dict) else None
-        sample = series.get("value") if isinstance(series, dict) else None
         if not isinstance(metric, dict) or set(metric) != {"service", "step"}:
             unknown += 1
+            unknown_label_shape += 1
             continue
         service, step = metric.get("service"), metric.get("step")
         if (
@@ -473,21 +567,23 @@ def _failed_step_observation(
             or step not in steps
         ):
             unknown += 1
-            continue
-        raw_state = _workflow_state_code(sample)
-        if raw_state is None:
-            unknown += 1
+            unknown_identity += 1
             continue
         key = (service, step)
-        if key in ambiguous:
-            unknown += 1
+        pair_series.setdefault(key, []).append(series)
+
+    states: dict[tuple[str, str], int] = {}
+    for key, rows in pair_series.items():
+        if len(rows) > 1:
+            # Count only excess rows, preserving the prior total-unknown semantics.
+            duplicate_count = len(rows) - 1
+            unknown += duplicate_count
+            duplicate_pairs += duplicate_count
             continue
-        if key in states:
-            # The provisioned last_over_time + by(service, step) query must return one
-            # reduced current state per pair. A duplicate makes that pair ambiguous.
+        raw_state = _workflow_state_code(rows[0].get("value"))
+        if raw_state is None:
             unknown += 1
-            states.pop(key)
-            ambiguous.add(key)
+            unknown_sample += 1
             continue
         states[key] = int(raw_state)
 
@@ -502,6 +598,10 @@ def _failed_step_observation(
         "failed_steps": failed_steps,
         "truncated_count": max(0, len(failures) - cap),
         "unknown_series_count": unknown,
+        "unknown_label_shape_count": unknown_label_shape,
+        "unknown_identity_count": unknown_identity,
+        "unknown_sample_count": unknown_sample,
+        "duplicate_pair_count": duplicate_pairs,
         **metadata,
     }
 
@@ -825,12 +925,29 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
     end = time.time() if now is None else now
     bases = {"prometheus": str(payload.get("prometheus_url", "")), "loki": str(payload.get("loki_url", ""))}
     panels = []
+    failed_step_observation = None
+    completion_age_data = None
+    age_contract_selected = any(
+        entry.get("title") == "Latest workflow completion age by service and step"
+        and isinstance(entry.get("observation"), dict)
+        and entry["observation"].get("name") == "workflow_completion_age"
+        for entry in planned["panels"]
+    )
+    age_contract_verified = any(
+        entry.get("title") == "Latest workflow completion age by service and step"
+        and isinstance(entry.get("observation"), dict)
+        and entry["observation"].get("name") == "workflow_completion_age"
+        and entry["observation"].get("verified")
+        for entry in planned["panels"]
+    )
     for entry in planned["panels"]:
         targets = []
         contract = entry.get("observation")
         observation = None
         if contract:
             observation = {"name": contract["name"], "status": "unverified"}
+            if contract["name"] == "current_workflow_failed_steps":
+                failed_step_observation = observation
             for key in ("window_seconds", "scope"):
                 if key in contract:
                     observation[key] = contract[key]
@@ -880,6 +997,10 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                                     contract["scope"],
                                 )
                             )
+                            failed_step_observation = observation
+                        elif contract["name"] == "workflow_completion_age":
+                            completion_age_data = answer["data"]
+                            observation["status"] = _categorical_observation(contract["name"], answer["data"])
                         else:
                             observation["status"] = _categorical_observation(contract["name"], answer["data"])
                         observation.pop("reason", None)
@@ -904,6 +1025,29 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
         if observation is not None:
             panel_report["observation"] = observation
         panels.append(panel_report)
+
+    if failed_step_observation is not None:
+        for key in (
+            "unknown_series_count", "unknown_label_shape_count", "unknown_identity_count",
+            "unknown_sample_count", "duplicate_pair_count", "failed_step_count",
+            "failed_steps", "truncated_count",
+        ):
+            failed_step_observation.setdefault(key, 0 if key != "failed_steps" else [])
+        if age_contract_selected and age_contract_verified and completion_age_data is not None:
+            age_map = _completion_age_map(
+                completion_age_data,
+                str(payload.get("dashboards_dir", "")),
+                payload.get("_vdd_workflow_steps"),
+            )
+            age_status = "unverified" if age_map is None else ("no_data" if not age_map else "observed")
+            _attach_completion_ages(
+                failed_step_observation,
+                age_status,
+                age_map if age_status in ("observed", "no_data") else None,
+            )
+        else:
+            age_status = "unverified" if age_contract_selected else "not_selected"
+            _attach_completion_ages(failed_step_observation, age_status, None)
 
     verified = [p for p in panels if p["status"] != "skipped"]
     failing = [p["title"] for p in verified if p["status"] not in ("pass", "expected_empty")]
