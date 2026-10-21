@@ -152,6 +152,24 @@ prometheus.relabel "bounded_labels" {
     action = "labeldrop"
     regex  = {{ _o11y_forbidden_metric_label_names_regex | to_json }}
   }
+
+  // The collector's inventory defines site identity for every local sample.
+  // Replace app-provided values so they cannot split or misattribute series.
+  rule {
+    source_labels = []
+    regex         = "(.*)"
+    replacement   = {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+    target_label  = "cluster"
+    action        = "replace"
+  }
+
+  rule {
+    source_labels = []
+    regex         = "(.*)"
+    replacement   = {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+    target_label  = "environment"
+    action        = "replace"
+  }
 }
 
 prometheus.remote_write "local" {
