@@ -1,0 +1,383 @@
+---
+# deploy-skynet.yml — skynet orchestration API deploy (composable).
+#
+# Phase 1: Refuse invalid inputs before anything changes; place repo + manage-secrets
+#          (api_token + db_password generated once into OpenBao, reused thereafter;
+#          the agentgateway role keys shared-read, because the gateway enrolls them
+#          for skynet's agents); template .env.
+# Phase 2: registry login (GHCR package is private) + image pre-flight + deploy.sh
+#          (container lifecycle only).
+# Phase 3: Verify inside the skynet container: /skynet/healthz answers 200, an
+#          authenticated run request is accepted (400 for the verify graph name,
+#          which no graph carries), and the same request without a token is 401.
+#
+# skynet is a two-container rootless-podman stack (skynet API on the CI-built GHCR
+# image pinned by digest, and its own Postgres). The API listens on 8080 inside the
+# container; nothing here publishes it. The gateway's /skynet/ route (agentgateway
+# task 3.3) reads secret/services/skynet:api_token through a shared read, so this
+# deploy must run before that route is enabled, and the route must stay off until
+# this deploy has run once.
+#
+# Deploy order on a host: agentgateway (route off) -> skynet -> agentgateway (route on).
+#
+# Plan: plan/development/15-service-deployment-workflow-agents.md (skynet, workflow 3.7).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: skynet_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: skynet_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: skynet_svc
+
+# ── Phase 1: Refuse invalid inputs, place repo + secrets + env ──────────────
+- name: "Phase 1: Place repo + manage skynet secrets"
+  hosts: skynet_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Both secrets must be STABLE across redeploys: a new api_token would break the
+    # gateway's /skynet/ route until its backend token is re-read, and a new db_password
+    # would lock skynet out of the existing Postgres volume, so manage-secrets generates
+    # once into OpenBao and reuses on later runs.
+    _secret_definitions:
+      - { name: api_token, type: random, length: 48 }
+      - { name: db_password, type: random, length: 32 }
+    # The agentgateway owns one client_<role> key per skynet role identity (declared in
+    # its agw_clients). Read-only: skynet presents these to the gateway, never stores
+    # them back under secret/services/skynet. Every key must exist, or manage-secrets
+    # stops by name; the gateway deploy that enrolls the roles has to run first.
+    _shared_reads:
+      - from_service: agentgateway
+        read_keys:
+          - client_infra-agent
+          - client_security-agent
+          - client_o11y-agent
+          - client_service-agent
+          - client_network-agent
+          - client_skynet-eval
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+
+  tasks:
+    # Read-only check of the credential path before anything is written: a refused
+    # run must not have already placed the repo or written a secret.
+    - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # Inputs are refused BEFORE the repo is placed or any OpenBao write happens. Each
+    # refusal names its variable and the fix, so a bad inventory reads as a bad input,
+    # not as a failed deploy.
+    - name: "Refuse skynet_image unless it is a digest-pinned skynet-tier2 reference"
+      ansible.builtin.assert:
+        that:
+          - (skynet_image | default('', true) | string) is match('^ghcr[.]io/uhstray-io/skynet-tier2@sha256:[0-9a-f]{64}$')
+        fail_msg: >-
+          skynet_image must be a digest-pinned reference of the form
+          ghcr.io/uhstray-io/skynet-tier2@sha256:<64 lowercase hex>, the digest skynet CI
+          publishes. A tag drifts and is refused. Set it in the inventory and re-run.
+
+    - name: "Refuse skynet_gateway_url unless it is https"
+      ansible.builtin.assert:
+        that:
+          - (skynet_gateway_url | default('', true) | string) is match('^https://')
+        fail_msg: "skynet_gateway_url must be an https:// URL (the public inference edge). Set it in the inventory and re-run."
+
+    - name: "Refuse skynet_opa_url unless it is https"
+      ansible.builtin.assert:
+        that:
+          - (skynet_opa_url | default('', true) | string) is match('^https://')
+        fail_msg: "skynet_opa_url must be an https:// URL (the OPA decision API, which skynet calls over TLS). Set it in the inventory and re-run."
+
+    - name: "Refuse skynet_semaphore_url unless it is https"
+      ansible.builtin.assert:
+        that:
+          - (skynet_semaphore_url | default('', true) | string) is match('^https://')
+        fail_msg: "skynet_semaphore_url must be an https:// URL (the Semaphore API skynet dispatches to). Set it in the inventory and re-run."
+
+    - name: "Refuse skynet_semaphore_catalog outside production and local"
+      ansible.builtin.assert:
+        that:
+          - (skynet_semaphore_catalog | default('', true) | string) in ['production', 'local']
+        fail_msg: "skynet_semaphore_catalog must be 'production' or 'local'. Set it in the inventory and re-run."
+
+    - name: "Refuse skynet_semaphore_project unless it is a positive integer id"
+      ansible.builtin.assert:
+        that:
+          - (skynet_semaphore_project | default('', true) | string) is match('^[1-9][0-9]*$')
+        fail_msg: >-
+          skynet_semaphore_project must be the integer id of the agent-cloud project in
+          Semaphore (a positive whole number, not a name or a boolean). Set it in the
+          inventory and re-run.
+
+    # LOCAL-DEV STOPGAP: skynet's Semaphore client needs an API token. This is the operator's
+    # token (secret/services/semaphore:api_token), read so the local skynet can call the local
+    # Semaphore. The refusal below keeps it out of every other environment. Follow-up: verify the
+    # Semaphore project role for skynet's calls, replace this read with a token scoped to that
+    # role, and remove the block. The fact is underscore-named so an extra var cannot replace it
+    # (the executor-override invariant). Never printed; no_log is on this credential read only.
+    - name: "Refuse the Semaphore operator-token stopgap outside local mode"
+      ansible.builtin.assert:
+        that:
+          - local_mode | default(false) | bool
+        fail_msg: >-
+          skynet's Semaphore token is the local-dev operator-token stopgap; production needs a
+          scoped token first (follow-up: verify the Semaphore project role for skynet's calls).
+
+    - name: "Read the Semaphore API token for skynet (local-dev stopgap)"
+      ansible.builtin.set_fact:
+        _skynet_semaphore_token: >-
+          {{ lookup('community.hashi_vault.hashi_vault',
+                    'secret/data/services/semaphore:api_token',
+                    url=(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)),
+                    auth_method='approle',
+                    role_id=(bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))),
+                    secret_id=(bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')))) }}
+      no_log: true
+
+    - name: "Require a usable Semaphore token before rendering skynet's env"
+      ansible.builtin.assert:
+        that:
+          - (_skynet_semaphore_token | default('') | length) > 0
+        fail_msg: >-
+          No api_token at secret/services/semaphore in OpenBao. skynet's env needs the
+          operator's Semaphore token for the local-dev stopgap; store it there, then re-run.
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Manage secrets and template env file"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # skynet's calls to the local OPA, Semaphore and gateway run over https with step-ca leaves.
+    # Distribute the step-ca trust bundle into ./certs; compose.local.yml mounts it and sets
+    # SSL_CERT_FILE. Local-only (the prod endpoints use a public chain).
+    - name: "Distribute the step-ca root for internal TLS trust (local)"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_engine: "{{ container_engine | default('podman') }}"
+      when: local_mode | default(false) | bool
+
+    - name: "Create convenience symlink ~/skynet -> deploy dir"
+      # Points ~/skynet at the deployment dir in the composable monorepo clone.
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort: tolerate a permission-denied home, surface any other failure.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start skynet"
+  hosts: skynet_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}"
+
+    # The GHCR package is PRIVATE, in local mode too: a fresh VM cannot pull the digest
+    # anonymously. Log the deploy user's podman into ghcr.io first (PAT from OpenBao
+    # secret/services/github, read:packages).
+    - name: "Registry login for the private GHCR image"
+      ansible.builtin.include_tasks: tasks/registry-login.yml
+
+    # Pre-flight: the skynet image is a CI-published private digest that nothing builds on
+    # the VM, so it must be obtainable before deploy.sh runs. The pull warms the same
+    # cache deploy.sh reuses (idempotent). A failed pull is tolerated only when the digest
+    # is already in the local image store. Skipped under --check: a pull is a change.
+    - name: "Pre-flight: pull the pinned skynet image"
+      ansible.builtin.command: "{{ _engine }} pull {{ skynet_image }}"
+      register: _skynet_pull
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: "Pre-flight: fall back to the local image store when the pull failed"
+      ansible.builtin.command: "{{ _engine }} image exists {{ skynet_image }}"
+      register: _skynet_local_img
+      changed_when: false
+      failed_when: false
+      when:
+        - not ansible_check_mode
+        - _skynet_pull.rc | default(1) != 0
+      check_mode: false
+
+    - name: "Pre-flight: require the pinned skynet image before deploying"
+      ansible.builtin.assert:
+        that:
+          - (_skynet_pull.rc | default(1)) == 0 or (_skynet_local_img.rc | default(1)) == 0
+        fail_msg: >-
+          skynet image {{ skynet_image }} is not pullable from GHCR and is not in the local
+          image store. Publish it first (the skynet CI image build), confirm this host can
+          pull from ghcr.io with the PAT in secret/services/github, then re-run this deploy.
+        success_msg: "skynet image {{ skynet_image }} is available — proceeding."
+      when: not ansible_check_mode
+
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path; empty on the
+        # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
+        # leaks its placeholder into environment (rc 127).
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
+      register: _deploy
+      # deploy.sh recreates only when its inputs or images changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+      when: not ansible_check_mode
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify skynet"
+  hosts: skynet_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    # Every check runs INSIDE the container, so it never depends on a published port or
+    # on Caddy. The bearer token is read from the container's own environment by the
+    # probe script; it never appears in argv, the task output, or this file.
+    - name: "Container health (GET /skynet/healthz -> 200, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import urllib.request
+            print(urllib.request.urlopen('http://127.0.0.1:8080/skynet/healthz', timeout=5).status)
+      register: _skynet_health
+      changed_when: false
+      retries: 10
+      delay: 6
+      until: _skynet_health.rc == 0
+      check_mode: false
+
+    - name: "Assert healthz answered 200"
+      ansible.builtin.assert:
+        that:
+          - _skynet_health.stdout | trim == '200'
+        fail_msg: "skynet /skynet/healthz did not answer 200 (got {{ _skynet_health.stdout | trim }})."
+
+    # The authenticated probe POSTs a run for a graph that does not exist. A 400 proves
+    # the server is up AND the bearer was accepted, because auth is checked before the
+    # graph is looked up. Anything else (401 = token rejected, 404/5xx = wrong route or
+    # broken server) fails the deploy.
+    - name: "Authenticated run request is accepted (POST /skynet/runs -> 400, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import os
+            import urllib.error
+            import urllib.request
+            request = urllib.request.Request(
+                'http://127.0.0.1:8080/skynet/runs',
+                data=b'{"graph": "__agent_cloud_verify__", "input": {}}',
+                headers={'Authorization': 'Bearer ' + os.environ['SKYNET_API_TOKEN'], 'Content-Type': 'application/json'},
+                method='POST',
+            )
+            try:
+                print(urllib.request.urlopen(request, timeout=10).status)
+            except urllib.error.HTTPError as error:
+                print(error.code)
+      register: _skynet_authed
+      changed_when: false
+      check_mode: false
+
+    - name: "Assert the authenticated run request got 400 (auth accepted, unknown graph)"
+      ansible.builtin.assert:
+        that:
+          - _skynet_authed.stdout | trim == '400'
+        fail_msg: >-
+          skynet authenticated POST /skynet/runs answered {{ _skynet_authed.stdout | trim }}, not 400.
+          401 means the bearer was rejected (api_token and the container's SKYNET_API_TOKEN disagree);
+          anything else means the route or the server is wrong.
+
+    # The same request with no Authorization header must be refused before anything else.
+    - name: "Unauthenticated run request is refused (POST /skynet/runs -> 401, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import urllib.error
+            import urllib.request
+            request = urllib.request.Request(
+                'http://127.0.0.1:8080/skynet/runs',
+                data=b'{"graph": "__agent_cloud_verify__", "input": {}}',
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            try:
+                print(urllib.request.urlopen(request, timeout=10).status)
+            except urllib.error.HTTPError as error:
+                print(error.code)
+      register: _skynet_unauthed
+      changed_when: false
+      check_mode: false
+
+    - name: "Assert the unauthenticated run request got 401"
+      ansible.builtin.assert:
+        that:
+          - _skynet_unauthed.stdout | trim == '401'
+        fail_msg: >-
+          skynet unauthenticated POST /skynet/runs answered {{ _skynet_unauthed.stdout | trim }}, not 401.
+          The run endpoint is reachable without a bearer token.
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "skynet healthy — /skynet/healthz 200, run endpoint 400 with a token and 401 without (internal :8080; the gateway's /skynet/ route fronts it)."
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy
