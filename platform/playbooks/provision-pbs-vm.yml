@@ -11,6 +11,9 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/provision-pbs-vm.yml
       - platform/playbooks/provision-vm.yml
+      - platform/playbooks/tasks/guard-o11y-restore-target.yml
+      - platform/playbooks/files/guard_o11y_restore_target.py
+      - platform/playbooks/files/o11y_restore_coordination.py
       - platform/semaphore/templates.yml
 
 - name: Require one declared PBS target before provisioning

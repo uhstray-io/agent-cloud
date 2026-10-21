@@ -9,6 +9,11 @@ identity, or storage exists.
 - PR #726 is still open at the time of this runbook draft. Its CI failure fixes,
   final-head checks, and merge to `dev` must complete before the playbooks are
   available from the Dev repository.
+- The source-only restore coordination worktree has merged exact Dev
+  `6605942ea7218989d10ab03376c4dc15908cadb3` and PBS feature head
+  `e149fe641cf9f2a9034969dc9b3c2daf51032b09` through normal local merges for
+  integration. This does not bypass PR #726 checks, publish the source, or
+  authorize a restore. No PBS files were copied between branches.
 - Private site-config PR #110 is approval-blocked. This blocks target allocation
   and guest configuration until the PBS inventory declaration is approved,
   merged, synchronized, and read back. It does not block publishing the Dev
@@ -127,3 +132,22 @@ Proxmox/PBS API calls, manual guest commands, or alternate credentials.
 The protected-copy candidate (task 4.4), isolated restore (task 5.2), capacity
 forecast, retention changes, and VM growth have separate acceptance evidence;
 successful bootstrap or backup-access configuration does not satisfy them.
+
+## Restore coordination source prerequisite
+
+OpenSpec task 5.2 remains open. Source preparation adds a fixed-path OpenBao
+coordination record, read-only reserved-target checks, and guard calls before
+all assigned managed QEMU mutators, including legacy direct-token operator
+modes. It uses the sole private `openbao_svc` inventory endpoint and protected
+Semaphore AppRole environment. The source addition to `semaphore-read.hcl`
+does not prove the effective policy of the role Semaphore injects; policy
+publication, capability readback, and review of the actual role binding are
+required before any guarded writer is activated.
+
+Source guard tests do not establish target availability or successful restore.
+Before task 5.2 can be accepted, every cooperating writer/template variant
+must contain the guard and older invocations must be drained. The future restore
+workflow must journal each PVE write before execution, authenticate the completed
+prior restore task output, prove stopped/no-pending-action state, and prove
+cleanup task success plus authoritative exact-VMID absence. No restore target
+has been reserved or used, and no restore or cleanup has been performed.

@@ -19,3 +19,19 @@ Source integration does not satisfy OpenSpec 5.1 live acceptance. The private
 target and artifact declarations, current VMID availability authority, and
 ACL census visibility remain unverified. No restore target has been reserved
 or used, and no restore has been attempted.
+
+## Coordination and mutator guard source boundary
+
+The coordination and reserved-target guard source is developed separately in
+`plan/development/O11Y-RESTORE-COORDINATION.md`. Its local worktree includes
+the exact PBS feature source head `e149fe641cf9f2a9034969dc9b3c2daf51032b09`
+by normal merge while PR #726 remains pending its required checks and merge.
+The source guard protects the declared target VMID clusterwide and refuses
+ambiguous OpenBao state before managed writers proceed. It cannot establish
+that the injected Semaphore role has the required effective permissions or
+that every older writer invocation has drained.
+
+This source integration does not reserve the target, authenticate restore
+task output, establish authoritative VMID absence, execute a restore, or
+authorize cleanup. OpenSpec task 5.2 remains open; the guard and its writer
+coverage are a source prerequisite only.

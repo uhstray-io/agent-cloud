@@ -36,7 +36,10 @@ def test_workflow_reruns_pinned_preflight_before_vm_config_read_and_write() -> N
         "platform/playbooks/tasks/preflight-o11y-pbs-thick-lvm-allocation.yml",
         "platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml",
         "platform/playbooks/tasks/assert-bao-transport.yml",
+            "platform/playbooks/tasks/guard-o11y-restore-target.yml",
         "platform/playbooks/files/inspect_o11y_pbs_physical_storage.py",
+            "platform/playbooks/files/guard_o11y_restore_target.py",
+            "platform/playbooks/files/o11y_restore_coordination.py",
         "platform/semaphore/templates.yml",
     ]
     play = plays[2]
@@ -75,6 +78,7 @@ def test_only_guarded_api_allocation_writes_exact_scsi1_with_config_digest() -> 
         task["ansible.builtin.uri"]
         for task in tasks
         if task.get("ansible.builtin.uri", {}).get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+        and "/api2/json/" in task.get("ansible.builtin.uri", {}).get("url", "")
     ]
     assert len(writes) == 1
     assert "/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config" in writes[0]["url"]

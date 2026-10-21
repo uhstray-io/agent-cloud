@@ -16,7 +16,10 @@
       - platform/playbooks/tasks/preflight-o11y-pbs-thick-lvm-allocation.yml
       - platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml
       - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/tasks/guard-o11y-restore-target.yml
       - platform/playbooks/files/inspect_o11y_pbs_physical_storage.py
+      - platform/playbooks/files/guard_o11y_restore_target.py
+      - platform/playbooks/files/o11y_restore_coordination.py
       - platform/semaphore/templates.yml
 
 - name: Attach the declared PBS guest data disk
@@ -191,6 +194,12 @@
           PBS data disk: {{ 'already attached and matches the pinned 512-GiB scsi1 declaration' if _scsi1 | length > 0
           else 'check mode: would allocate one 512-GiB scsi1 virtual disk on the pinned thick-LVM store'
           if ansible_check_mode else 'validated; allocating one 512-GiB scsi1 virtual disk on the pinned thick-LVM store' }}.
+
+    - name: Guard PBS VMID before allocation
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+      tags: [always]
 
     - name: Allocate exactly one virtual data disk through the Proxmox API
       ansible.builtin.uri:

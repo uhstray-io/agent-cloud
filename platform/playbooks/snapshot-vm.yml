@@ -112,6 +112,12 @@
           status={{ _vm_status.json.data.status | default('?') }}) on node {{ pve_node }}
           as snapshot '{{ _snapname }}' (vmstate={{ _vmstate }}).
 
+    - name: "Guard target VMID before snapshot creation"
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ pve_vmid }}"]
+      tags: [always]
+
     - name: "Create the snapshot (returns a task UPID)"
       ansible.builtin.uri:
         url: "{{ _pve_url }}/api2/json/nodes/{{ pve_node }}/qemu/{{ pve_vmid }}/snapshot"

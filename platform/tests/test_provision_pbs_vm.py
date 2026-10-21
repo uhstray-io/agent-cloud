@@ -24,6 +24,9 @@ def test_pbs_wrapper_is_sha_pinned_and_has_no_launch_identity_survey() -> None:
     assert wrapper[1]["vars"]["_reviewed_checkout_payload_paths"] == [
         "platform/playbooks/provision-pbs-vm.yml",
         "platform/playbooks/provision-vm.yml",
+        "platform/playbooks/tasks/guard-o11y-restore-target.yml",
+        "platform/playbooks/files/guard_o11y_restore_target.py",
+        "platform/playbooks/files/o11y_restore_coordination.py",
         "platform/semaphore/templates.yml",
     ]
     assert wrapper[-1]["vars"]["target_service"] == "pbs"

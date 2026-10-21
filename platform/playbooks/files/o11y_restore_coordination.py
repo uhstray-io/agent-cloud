@@ -244,6 +244,35 @@ def target_identity_fingerprint(target_ref: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def declaration_fingerprint(target_declaration: object) -> str:
+    """Hash exactly the normalized private restore-target declaration."""
+    keys = {"vmid", "node", "storage_id", "network_mode", "headroom_percent"}
+    _require(isinstance(target_declaration, dict) and set(target_declaration) == keys, "invalid_input")
+    vmid = target_declaration["vmid"]
+    if isinstance(vmid, str):
+        _require(re.fullmatch(r"(?:0|[1-9][0-9]{0,8})", vmid) is not None, "invalid_input")
+        vmid = int(vmid)
+    _require(_is_int(vmid, minimum=100) and vmid <= 999_999_999, "invalid_input")
+    node = target_declaration["node"]
+    storage = target_declaration["storage_id"]
+    mode = target_declaration["network_mode"]
+    headroom = target_declaration["headroom_percent"]
+    _require(isinstance(node, str) and NODE.fullmatch(node) is not None and node not in {".", ".."}, "invalid_input")
+    _require(isinstance(storage, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", storage) is not None, "invalid_input")
+    _require(storage not in {".", ".."}, "invalid_input")
+    _require(mode == "disconnected", "invalid_input")
+    _require(_is_int(headroom, minimum=30) and headroom <= 90, "invalid_input")
+    normalized = {
+        "vmid": vmid,
+        "node": node,
+        "storage_id": storage,
+        "network_mode": mode,
+        "headroom_percent": headroom,
+    }
+    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _upid_matches(upid: object, target_ref: dict[str, Any], operation: str) -> bool:
     if not isinstance(upid, str) or UPID.fullmatch(upid) is None:
         return False

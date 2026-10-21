@@ -116,6 +116,12 @@
             msg: "VMID {{ _vmid }} exists but is not a template."
           when: _existing_tmpl.status == 200 and (_existing_tmpl.json.data.template | default(0) | int != 1)
 
+        - name: "Guard template VMID before seed preparation"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Create the template when it does not exist yet"
           when: not (_tmpl_present | bool)
           block:
@@ -136,6 +142,12 @@
             - name: "Upload seed ISO via uri module"
               when: _local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
               block:
+                - name: "Guard template VMID before seed upload"
+                  ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+                  vars:
+                    _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+                  tags: [always]
+
                 - name: "Attempt upload via uri module"
                   ansible.builtin.uri:
                     url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/upload"
@@ -151,6 +163,12 @@
                   register: _upload_result
                   when: not ansible_check_mode
               rescue:
+                - name: "Refresh reserved-target guard before seed-upload fallback"
+                  ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+                  vars:
+                    _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+                  tags: [always]
+
                 - name: "Upload seed ISO via curl (fallback)"
                   ansible.builtin.command:
                     cmd: >
@@ -163,6 +181,12 @@
                   changed_when: true
                   no_log: true
                   when: not ansible_check_mode
+
+            - name: "Guard template VMID before creation"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
 
             - name: "Create template VM"
               ansible.builtin.uri:
@@ -200,6 +224,12 @@
                 - not ansible_check_mode
                 - _create_result.json.data is defined and _create_result.json.data is string
 
+            - name: "Guard template VMID before start"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
             - name: "Start VM for autoinstall"
               ansible.builtin.uri:
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
@@ -231,6 +261,12 @@
               delay: 15
               when: not ansible_check_mode
 
+            - name: "Guard template VMID before post-install config"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
             - name: "Post-install: remove CDs, add cloud-init, set defaults"
               ansible.builtin.uri:
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -247,6 +283,12 @@
                   nameserver: "{{ nameserver | default(gateway | default('')) }}"
                 status_code: [200]
               when: not ansible_check_mode
+
+            - name: "Guard template VMID before template conversion"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
 
             - name: "Convert VM to template"
               ansible.builtin.uri:

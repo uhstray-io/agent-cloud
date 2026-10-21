@@ -365,6 +365,12 @@
                  | combine({} if not (_want_agent | bool) or (_have_agent | bool) else
                      {'agent': (['enabled=1'] + (_agent_items | reject('match', '^(enabled=)?[01]$') | list)) | join(',')}) }}
 
+        - name: "Guard target VMID before configuration write"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Apply cores/memory/agent to the VM config"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -379,6 +385,12 @@
           changed_when: _cfg_changes | length > 0
 
         # ── Apply: disk growth ──────────────────────────────────────────────────
+        - name: "Guard target VMID before disk growth"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Grow the disk"
           # Proxmox takes an INCREMENT (+NG) for a grow. Computed as the delta so
           # re-running is a no-op rather than adding the full size again.
@@ -425,6 +437,12 @@
             - _needs_restart | bool
             - _allow_reboot | bool
           block:
+            - name: "Guard target VMID before shutdown"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
             - name: "Shut the guest down cleanly"
               ansible.builtin.uri:
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/shutdown"
@@ -443,6 +461,12 @@
               delay: 5
               changed_when: false
               when: not ansible_check_mode
+
+            - name: "Guard target VMID before restart"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
 
             - name: "Start the guest again"
               ansible.builtin.uri:
@@ -472,6 +496,12 @@
               register: _rescue_state
               changed_when: false
               when: not ansible_check_mode
+
+            - name: "Recovery: guard target VMID before start"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
 
             - name: "Recovery: bring a stopped guest back up"
               # Only when it is actually stopped. A guest still mid-shutdown must not
