@@ -30,6 +30,8 @@ FAILURE_REASONS = {
     "host_metric_history_unavailable",
     "transport_unavailable",
 }
+DIAGNOSTIC_LABEL_KEYS = ("cluster", "environment", "instance", "job", "service")
+DIAGNOSTIC_EXCLUDED_LABEL_KEYS = {"__name__", *DIAGNOSTIC_LABEL_KEYS}
 QUERIES = {
     "source": (
         'o11y_capacity_sample_timestamp_seconds'
@@ -92,6 +94,87 @@ def points(series: dict, reason: str = "malformed_or_incomplete_history") -> dic
 
 def percentile95(values: list[float]) -> float:
     return statistics.quantiles(values, n=100, method="inclusive")[94]
+
+
+def source_diagnostics(body: object) -> dict[str, object]:
+    """Return fixed-schema aggregate evidence without exposing series labels or values."""
+    unavailable: dict[str, object] = {
+        "available": False,
+        "source_series_count": None,
+        "label_variation": dict.fromkeys(DIAGNOSTIC_LABEL_KEYS),
+        "unrecognized_label_key_count": None,
+        "series_at_latest_evaluation": None,
+        "overlapping_evaluations": None,
+        "overlapping_source_events": None,
+    }
+    try:
+        rows = parse_matrix(body)
+        metric_rows = [row.get("metric") for row in rows]
+        if not all(isinstance(metric, dict) for metric in metric_rows):
+            return unavailable
+
+        evaluation_sets: list[set[int]] = []
+        event_sets: list[set[int]] = []
+        for row in rows:
+            raw_values = row.get("values")
+            if not isinstance(raw_values, list):
+                return unavailable
+            evaluations: set[int] = set()
+            events: set[int] = set()
+            for point in raw_values:
+                if not isinstance(point, list) or len(point) != 2:
+                    return unavailable
+                try:
+                    evaluation_number = float(point[0])
+                    event_number = float(point[1])
+                    if not math.isfinite(evaluation_number) or not math.isfinite(event_number):
+                        return unavailable
+                    evaluations.add(int(evaluation_number))
+                    events.add(int(event_number))
+                except (TypeError, ValueError, OverflowError):
+                    return unavailable
+            evaluation_sets.append(evaluations)
+            event_sets.append(events)
+
+        label_variation: dict[str, bool | None] = {}
+        for key in DIAGNOSTIC_LABEL_KEYS:
+            if len(metric_rows) < 2:
+                label_variation[key] = None
+                continue
+            # Missing and present are distinct states; values are compared only
+            # in memory and never copied into the diagnostic receipt.
+            states = [(key in metric, metric.get(key)) for metric in metric_rows]
+            label_variation[key] = any(
+                state != states[0] for state in states[1:]
+            )
+
+        evaluation_counts: dict[int, int] = {}
+        event_counts: dict[int, int] = {}
+        for evaluations, events in zip(evaluation_sets, event_sets, strict=True):
+            for timestamp in evaluations:
+                evaluation_counts[timestamp] = evaluation_counts.get(timestamp, 0) + 1
+            for timestamp in events:
+                event_counts[timestamp] = event_counts.get(timestamp, 0) + 1
+        latest_evaluation = max(evaluation_counts, default=None)
+        unknown_label_keys = {
+            key
+            for metric in metric_rows
+            for key in metric
+            if key not in DIAGNOSTIC_EXCLUDED_LABEL_KEYS
+        }
+        return {
+            "available": True,
+            "source_series_count": len(rows),
+            "label_variation": label_variation,
+            "unrecognized_label_key_count": len(unknown_label_keys),
+            "series_at_latest_evaluation": (
+                evaluation_counts[latest_evaluation] if latest_evaluation is not None else 0
+            ),
+            "overlapping_evaluations": sum(count > 1 for count in evaluation_counts.values()),
+            "overlapping_source_events": sum(count > 1 for count in event_counts.values()),
+        }
+    except InsufficientHistory:
+        return unavailable
 
 
 def assess(responses: dict[str, object], now: int) -> dict:
@@ -172,6 +255,7 @@ def assess(responses: dict[str, object], now: int) -> dict:
 
     return {
         "status": "ready_for_separate_forecast_review",
+        "source_diagnostics": source_diagnostics(responses.get("source")),
         "history": {
             "source_samples": len(timestamps),
             "source_span_seconds": timestamps[-1] - timestamps[0],
@@ -215,10 +299,12 @@ def query(metric: str, start: int, end: int) -> object:
 
 
 def main() -> int:
+    responses: dict[str, object] = {}
     try:
         end = int(time.time())
         start = end - RANGE_SECONDS
-        responses = {key: query(key, start, end) for key in QUERIES}
+        for key in QUERIES:
+            responses[key] = query(key, start, end)
         receipt = assess(responses, end)
     except InsufficientHistory as exc:
         reason = exc.reason
@@ -231,7 +317,11 @@ def main() -> int:
         return 0
     print(
         json.dumps(
-            {"status": "insufficient", "reason": reason},
+            {
+                "status": "insufficient",
+                "reason": reason,
+                "source_diagnostics": source_diagnostics(responses.get("source")),
+            },
             sort_keys=True,
         )
     )
