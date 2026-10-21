@@ -169,7 +169,8 @@
     _mountpoint: /srv/pbs-data
     _datastore_path: /srv/pbs-data/datastore
     _expected_bytes: 549755813888
-    _helper: "{{ playbook_dir }}/files/prepare_pbs_guest_disk.py"
+    _controller_helper: "{{ playbook_dir }}/files/prepare_pbs_guest_disk.py"
+    _helper: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
   tasks:
     - name: Refuse launch-time identity or filesystem overrides
       ansible.builtin.assert:
@@ -198,7 +199,74 @@
         fail_msg: "The private PBS declaration must match the single Proxmox scsi1 serial, ext4 format, and fixed mount contract."
         quiet: true
 
-    - name: Read block-device identities and existing filesystem metadata
+    - name: Read the reviewed helper checksum from the controller checkout
+      ansible.builtin.stat:
+        path: "{{ _controller_helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: _controller_helper_stat
+      changed_when: false
+      check_mode: false
+
+    - name: Require a regular checked-out helper source
+      ansible.builtin.assert:
+        that:
+          - _controller_helper_stat.stat.isreg | default(false)
+          - not (_controller_helper_stat.stat.islnk | default(false))
+          - _controller_helper_stat.stat.checksum | default('') is match('^[0-9a-f]{64}$')
+        fail_msg: "The reviewed guest guard source is unavailable or is not a regular file."
+        quiet: true
+
+    - name: Inspect the bounded guest helper destination without following links
+      ansible.builtin.stat:
+        path: "{{ _helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      register: _existing_helper_stat
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse a non-regular existing helper destination
+      ansible.builtin.assert:
+        that:
+          - not _existing_helper_stat.stat.exists or _existing_helper_stat.stat.isreg
+          - not (_existing_helper_stat.stat.islnk | default(false))
+        fail_msg: "The bounded guest helper destination is not a regular file."
+        quiet: true
+
+    - name: Transfer the reviewed guest guard to its bounded root-owned path
+      ansible.builtin.copy:
+        src: "{{ _controller_helper }}"
+        dest: "{{ _helper }}"
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Read back the installed guest helper checksum and ownership
+      ansible.builtin.stat:
+        path: "{{ _helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      register: _guest_helper_stat
+      changed_when: false
+      check_mode: false
+
+    - name: Require the installed helper to match the reviewed controller source
+      ansible.builtin.assert:
+        that:
+          - _guest_helper_stat.stat.isreg | default(false)
+          - not (_guest_helper_stat.stat.islnk | default(false))
+          - _guest_helper_stat.stat.checksum == _controller_helper_stat.stat.checksum
+          - _guest_helper_stat.stat.pw_name == 'root'
+          - _guest_helper_stat.stat.gr_name == 'root'
+          - _guest_helper_stat.stat.mode == '0700'
+        fail_msg: "The guest helper does not match the reviewed controller source and root-owned mode."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Read guest block-device identities and filesystem metadata
       ansible.builtin.command:
         argv:
           - lsblk
@@ -209,6 +277,7 @@
       register: _lsblk
       changed_when: false
       check_mode: false
+      no_log: true
 
     - name: Select the unique disk carrying the declared Proxmox serial
       ansible.builtin.command:
@@ -226,6 +295,14 @@
       register: _disk_selection
       changed_when: false
       check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: Require successful unique guest-disk identity validation
+      ansible.builtin.assert:
+        that: _disk_selection.rc == 0
+        fail_msg: "The declared Proxmox virtual disk is missing, ambiguous, or mismatched in the guest."
+        quiet: true
 
     - name: Save selected disk state without displaying raw device inventory
       ansible.builtin.set_fact:
@@ -299,6 +376,7 @@
         paths: "{{ _mountpoint }}"
         recurse: false
         hidden: true
+        file_type: any
       register: _mountpoint_contents
       when:
         - _pbs_disk.state != 'existing'
@@ -369,13 +447,52 @@
         state: mounted
       when: not ansible_check_mode
 
-    - name: Ensure the future PBS datastore directory exists on the mounted disk
-      ansible.builtin.file:
+    - name: Create or verify the datastore directory without following paths outside the mount
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _helper }}"
+          - --ensure-datastore-path
+          - --mountpoint
+          - "{{ _mountpoint }}"
+          - --datastore-path
+          - "{{ _datastore_path }}"
+      register: _datastore_path_validation
+      when: not ansible_check_mode
+      failed_when: false
+      changed_when: _datastore_path_validation.rc == 0 and (_datastore_path_validation.stdout | from_json).created
+
+    - name: Require safe datastore path validation and creation
+      ansible.builtin.assert:
+        that: _datastore_path_validation.rc == 0
+        fail_msg: "PBS datastore path is not a real directory on the selected data filesystem."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Inspect the datastore directory without following symlinks
+      ansible.builtin.stat:
         path: "{{ _datastore_path }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0750"
+        follow: false
+      register: _datastore_info
+      when: not ansible_check_mode
+
+    - name: Inspect the selected filesystem mount root
+      ansible.builtin.stat:
+        path: "{{ _mountpoint }}"
+        follow: false
+      register: _mount_root_info
+      when: not ansible_check_mode
+
+    - name: Require the datastore directory to remain on the selected mounted filesystem
+      ansible.builtin.assert:
+        that:
+          - _datastore_info.stat.exists
+          - _datastore_info.stat.isdir
+          - not _datastore_info.stat.islnk | default(false)
+          - _datastore_info.stat.dev == _mount_root_info.stat.dev
+          - (_datastore_path_validation.stdout | from_json).datastore_path == 'validated'
+        fail_msg: "PBS datastore path is not a real directory on the selected data filesystem."
+        quiet: true
       when: not ansible_check_mode
 
     - name: Read back the mounted UUID and filesystem
@@ -399,7 +516,6 @@
           - _mount_after.stdout.split()[2] == _filesystem_uuid.stdout | trim
           - _mount_after.stdout.split()[3] == _mountpoint
           - _mount_after.stdout.split()[0] == _pbs_disk.device
-          - _datastore_path.startswith(_mountpoint + '/')
         fail_msg: "PBS data filesystem mount readback does not match the selected virtual disk UUID."
         quiet: true
       when: not ansible_check_mode

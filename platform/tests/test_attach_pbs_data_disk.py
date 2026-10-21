@@ -16,12 +16,12 @@ def _tasks(play: dict, base: Path = ROOT / "platform/playbooks") -> list[dict]:
         result.append(task)
         result.extend(_tasks({"tasks": task.get("block", [])}, base))
         imported = task.get("ansible.builtin.import_tasks") or task.get("ansible.builtin.include_tasks")
-        if imported and "assert-bao-transport.yml" not in imported:
+        if imported:
             resolved = imported.replace("{{ playbook_dir }}", str(base))
             resolved_path = Path(resolved)
             if not resolved_path.is_absolute():
                 resolved_path = base / resolved_path
-            result.extend(_tasks({"tasks": yaml.safe_load(resolved_path.read_text())}, base))
+            result.extend(_tasks({"tasks": yaml.safe_load(resolved_path.read_text())}, resolved_path.parent))
     return result
 
 
@@ -42,6 +42,14 @@ def test_workflow_reruns_pinned_preflight_before_vm_config_read_and_write() -> N
     play = plays[2]
     tasks = _tasks(play)
     names = [task.get("name", "") for task in tasks]
+    survey_tasks = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/o11y-pbs-physical-storage-survey.yml").read_text()
+    )
+    survey_guard = next(
+        task for task in survey_tasks if task.get("name") == "Refuse public cleartext OpenBao transport"
+    )
+    assert survey_guard["ansible.builtin.include_tasks"] == "assert-bao-transport.yml"
+    assert (ROOT / "platform/playbooks/tasks/assert-bao-transport.yml").is_file()
     assert play["hosts"] == "localhost"
     assert names.index("Refuse VM identity, layout, bus, or storage drift before any write") < names.index(
         "Allocate exactly one virtual data disk through the Proxmox API"
@@ -228,10 +236,10 @@ def test_openbao_uses_matching_inventory_url_and_guards_transport_before_lookup(
     include_path = next(
         task["ansible.builtin.include_tasks"]
         for task in tasks
-        if task.get("ansible.builtin.include_tasks", "").startswith("{{ playbook_dir }}")
+        if task.get("name") == "Refuse cleartext OpenBao transport"
     )
-    assert include_path == "{{ playbook_dir }}/tasks/assert-bao-transport.yml"
-    resolved_guard = Path(include_path.replace("{{ playbook_dir }}", str(PLAYBOOK.parent)))
+    assert include_path == "tasks/assert-bao-transport.yml"
+    resolved_guard = PLAYBOOK.parent / include_path
     assert resolved_guard.is_file()
     assert tasks[lookup_index].get("no_log") is True
     assert tasks[derive_index].get("no_log") is True

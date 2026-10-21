@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -13,7 +15,15 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
 
-from prepare_pbs_guest_disk import Refusal, disk_state, main, select_disk  # noqa: E402
+import prepare_pbs_guest_disk as guest_disk  # noqa: E402
+from prepare_pbs_guest_disk import (  # noqa: E402
+    Refusal,
+    disk_state,
+    ensure_datastore_path,
+    main,
+    select_disk,
+    validate_datastore_path,
+)
 
 SERIAL = "ac-pbs-data-1234"
 MOUNT = "/srv/pbs-data"
@@ -82,6 +92,121 @@ def test_duplicate_filesystem_uuid_refuses_uuid_mount_ambiguity():
                              disk(name="vdc", serial="other-disk", uuid=uuid)), SERIAL, SIZE)
 
 
+def test_datastore_creation_is_confined_and_exact_rerun_preserves_contents(tmp_path):
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    datastore = mountpoint / "datastore"
+    targets = [str(mountpoint)]
+
+    assert ensure_datastore_path(str(mountpoint), str(datastore), targets) is True
+    payload = datastore / "backup-index"
+    payload.write_text("existing backup metadata")
+
+    assert ensure_datastore_path(str(mountpoint), str(datastore), targets) is False
+    assert payload.read_text() == "existing backup metadata"
+    assert datastore.stat().st_dev == mountpoint.stat().st_dev
+
+
+def test_datastore_symlink_refuses_without_changing_outside_target(tmp_path):
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    payload = outside / "protected"
+    payload.write_text("leave untouched")
+    payload.chmod(0o640)
+    datastore = mountpoint / "datastore"
+    datastore.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(Refusal, match="symlink"):
+        ensure_datastore_path(str(mountpoint), str(datastore), [str(mountpoint)])
+
+    assert payload.read_text() == "leave untouched"
+    assert payload.stat().st_mode & 0o777 == 0o640
+
+
+def test_nested_mount_below_datastore_refuses_before_any_directory_write(tmp_path):
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    datastore = mountpoint / "datastore"
+    nested = datastore / "child"
+    targets = [str(mountpoint), str(nested)]
+
+    with pytest.raises(Refusal, match="nested mount"):
+        ensure_datastore_path(str(mountpoint), str(datastore), targets)
+
+    assert not datastore.exists()
+
+
+def test_existing_populated_mountpoint_children_and_symlinks_are_detectable(tmp_path):
+    mountpoint = tmp_path / "mountpoint"
+    mountpoint.mkdir()
+    child = mountpoint / "existing-dir"
+    child.mkdir()
+    (child / "payload").write_text("keep")
+    symlink = mountpoint / "existing-link"
+    symlink.symlink_to(child, target_is_directory=True)
+
+    found = {entry.name for entry in os.scandir(mountpoint)}
+    assert found == {"existing-dir", "existing-link"}
+    assert (child / "payload").read_text() == "keep"
+
+
+def test_datastore_path_rejects_nonchild_and_nested_filesystem_paths(tmp_path):
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    with pytest.raises(Refusal, match="outside"):
+        validate_datastore_path(str(mountpoint), str(tmp_path / "pbs-data-escape"), [str(mountpoint)])
+
+    datastore = mountpoint / "datastore"
+    datastore.mkdir()
+    with pytest.raises(Refusal, match="nested mount"):
+        validate_datastore_path(
+            str(mountpoint), str(datastore), [str(mountpoint), str(datastore / "child")]
+        )
+
+
+def test_datastore_cli_readback_reports_only_validated_state(monkeypatch, capsys, tmp_path):
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    mount_tree = {"filesystems": [{"target": str(mountpoint), "children": []}]}
+    monkeypatch.setattr(guest_disk.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps(mount_tree), stderr=""
+    ))
+    monkeypatch.setattr(sys, "argv", [
+        "prepare_pbs_guest_disk.py", "--validate-datastore-path", "--mountpoint", str(mountpoint),
+        "--datastore-path", str(mountpoint / "datastore"),
+    ])
+
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out) == {"datastore_path": "validated", "created": False}
+
+
+def test_datastore_cli_refuses_nested_mount_without_disclosing_paths(monkeypatch, capsys, tmp_path):
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    datastore = mountpoint / "datastore"
+    mount_tree = {
+        "filesystems": [{
+            "target": str(mountpoint),
+            "children": [{"target": str(datastore), "children": []}],
+        }]
+    }
+    monkeypatch.setattr(guest_disk.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps(mount_tree), stderr=""
+    ))
+    monkeypatch.setattr(sys, "argv", [
+        "prepare_pbs_guest_disk.py", "--ensure-datastore-path", "--mountpoint", str(mountpoint),
+        "--datastore-path", str(datastore),
+    ])
+
+    assert main() == 2
+    output = capsys.readouterr()
+    assert "nested mount" in output.err
+    assert str(tmp_path) not in output.err + output.out
+    assert not datastore.exists()
+
+
 def test_cli_emits_only_selected_device_and_state_or_sanitized_refusal(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["prepare_pbs_guest_disk.py", "--expected-serial", SERIAL,
                                       "--expected-size", str(SIZE), "--mountpoint", MOUNT])
@@ -120,6 +245,24 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert plays[4]["hosts"] == "pbs_svc"
     tasks = plays[4]["tasks"]
     names = [task["name"] for task in tasks]
+    transfer = next(task for task in tasks if task["name"].startswith("Transfer the reviewed guest guard"))
+    assert transfer["ansible.builtin.copy"]["src"] == "{{ _controller_helper }}"
+    assert transfer["ansible.builtin.copy"]["dest"] == "{{ _helper }}"
+    assert transfer["ansible.builtin.copy"]["owner"] == "root"
+    assert transfer["ansible.builtin.copy"]["mode"] == "0700"
+    source_digest = next(task for task in tasks if task["name"].startswith("Read the reviewed helper checksum"))
+    installed_digest = next(task for task in tasks if task["name"].startswith("Require the installed helper"))
+    assert source_digest["delegate_to"] == "localhost"
+    assert source_digest["ansible.builtin.stat"]["checksum_algorithm"] == "sha256"
+    assert "_guest_helper_stat.stat.checksum == _controller_helper_stat.stat.checksum" in installed_digest[
+        "ansible.builtin.assert"]["that"]
+    assert plays[4]["vars"]["_helper"] == "/usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py"
+    lsblk = next(task for task in tasks if task["name"].startswith("Read guest block-device"))
+    select = next(task for task in tasks if task["name"].startswith("Select the unique disk"))
+    assert lsblk["no_log"] is True
+    assert select["ansible.builtin.command"]["stdin"] == "{{ _lsblk.stdout }}"
+    assert select["no_log"] is True
+    assert "{{ _helper }}" in str(select["ansible.builtin.command"]["argv"])
     assert names.index("Select the unique disk carrying the declared Proxmox serial") < names.index(
         "Refuse signatures on the new disk before formatting"
     ) < names.index("Create ext4 on the proven blank guest virtual disk")
@@ -136,8 +279,15 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert findmnt["ansible.builtin.command"]["argv"] == [
         "findmnt", "--noheadings", "--mountpoint", "{{ _mountpoint }}", "--output", "SOURCE,FSTYPE"
     ]
-    stat = next(task for task in tasks if task["name"].startswith("Inspect the existing mountpoint"))
-    assert stat["ansible.builtin.stat"]["follow"] is False
+    contents = next(task for task in tasks if task["name"].startswith("Inspect existing mountpoint contents"))
+    assert contents["ansible.builtin.find"]["file_type"] == "any"
+    assert contents["ansible.builtin.find"]["recurse"] is False
+    datastore = next(task for task in tasks if task["name"].startswith("Create or verify the datastore"))
+    assert "--ensure-datastore-path" in datastore["ansible.builtin.command"]["argv"]
+    assert "ansible.builtin.file" not in datastore
+    assert not any("ansible.builtin.script" in task for task in tasks)
+    assert "_controller_helper" not in str(select["ansible.builtin.command"]["argv"])
+    assert "_helper" in str(select["ansible.builtin.command"]["argv"])
 
 
 def test_attachment_config_carries_stable_proxmox_serial_and_requires_it_on_reruns():

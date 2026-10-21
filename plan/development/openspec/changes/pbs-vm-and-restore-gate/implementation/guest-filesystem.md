@@ -20,8 +20,18 @@ before mount, a filesystem labelled `pbs-data` with a valid UUID is safely resum
 UUID; an unlabeled or differently mounted filesystem refuses. The mount is recorded
 by filesystem UUID in fstab. Duplicate filesystem UUIDs refuse before mounting, and
 readback checks that the selected device, UUID, filesystem type, and target all agree.
-A pre-existing unmounted mountpoint must be an empty directory. The future PBS datastore
-directory is `/srv/pbs-data/datastore`.
+A pre-existing unmounted mountpoint must be an empty directory; the nonrecursive
+Ansible census includes files, directories, and symlinks so mounting cannot hide existing
+content. The future PBS datastore directory is `/srv/pbs-data/datastore`. The workflow
+copies the exact SHA-gated helper source from the controller checkout to the bounded
+root-owned guest path `/usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py`, checks its
+SHA-256 readback, and passes raw guest `lsblk` JSON to its parser over command stdin.
+Datastore creation uses a no-follow directory descriptor rooted at `/srv/pbs-data`; it
+refuses datastore symlinks, filesystem-device mismatch, and any nested mount at or below
+the datastore. Reruns leave datastore contents and permissions untouched. The read-only
+`--validate-datastore-path` mode exposes the same path-containment checks for the PBS
+service workflow, which must independently verify its Proxmox/guest disk and mount
+identity before configuring the datastore.
 
 The serial value is 18 ASCII bytes for the six-digit maximum supported VMID and below
 Proxmox's documented 20-byte maximum for a virtual drive serial. Proxmox's `scsi[n]`
