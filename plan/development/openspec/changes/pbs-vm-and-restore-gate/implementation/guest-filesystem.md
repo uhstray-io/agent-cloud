@@ -28,7 +28,11 @@ root-owned guest path `/usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py`, ch
 SHA-256 readback, and passes raw guest `lsblk` JSON to its parser over command stdin.
 Datastore creation uses a no-follow directory descriptor rooted at `/srv/pbs-data`; it
 refuses datastore symlinks, filesystem-device mismatch, and any nested mount at or below
-the datastore. Reruns leave datastore contents and permissions untouched. The read-only
+the datastore. It checks the mount tree before creation and repeats the census afterward;
+if topology changes during creation, it refuses success before PBS configuration. Reruns
+leave datastore contents and permissions untouched. In Ansible check mode the selector
+runs the exact checked-out controller helper against guest `lsblk` data, so an absent or
+stale installed helper cannot affect the preview. The read-only
 `--validate-datastore-path` mode exposes the same path-containment checks for the PBS
 service workflow, which must independently verify its Proxmox/guest disk and mount
 identity before configuring the datastore.

@@ -5,10 +5,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from jinja2.nativetypes import NativeEnvironment
 import pytest
 import yaml
 
@@ -205,6 +207,87 @@ def test_datastore_cli_refuses_nested_mount_without_disclosing_paths(monkeypatch
     assert "nested mount" in output.err
     assert str(tmp_path) not in output.err + output.out
     assert not datastore.exists()
+
+
+def test_ensure_cli_rechecks_mount_tree_after_creating_datastore(monkeypatch, capsys, tmp_path):
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    datastore = mountpoint / "datastore"
+    mount_trees = iter([
+        {"filesystems": [{"target": str(mountpoint), "children": []}]},
+        {"filesystems": [{
+            "target": str(mountpoint),
+            "children": [{"target": str(datastore), "children": []}],
+        }]},
+    ])
+    monkeypatch.setattr(guest_disk.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps(next(mount_trees)), stderr=""
+    ))
+    monkeypatch.setattr(sys, "argv", [
+        "prepare_pbs_guest_disk.py", "--ensure-datastore-path", "--mountpoint", str(mountpoint),
+        "--datastore-path", str(datastore),
+    ])
+
+    assert main() == 2
+    output = capsys.readouterr()
+    assert "nested mount" in output.err
+    assert datastore.is_dir()
+    assert list(datastore.iterdir()) == []
+
+
+@pytest.mark.parametrize("guest_helper_state", ["absent", "outdated"])
+def test_check_mode_selector_runs_checked_out_controller_helper_not_guest_copy(
+    guest_helper_state, tmp_path
+):
+    playbook_path = ROOT / "platform/playbooks/prepare-pbs-guest-data-disk.yml"
+    playbook = yaml.safe_load(playbook_path.read_text())[4]
+    tasks = playbook["tasks"]
+    check_selector = next(
+        task for task in tasks if task.get("name", "").startswith("Select the unique disk with the reviewed controller")
+    )
+    selector = check_selector["ansible.builtin.command"]
+    assert check_selector["delegate_to"] == "localhost"
+    assert check_selector["become"] is False
+    assert check_selector["when"] == "ansible_check_mode"
+
+    installed_helper = tmp_path / "guest-installed-helper.py"
+    previous_bytes = None
+    if guest_helper_state == "outdated":
+        previous_bytes = b"stale helper must not be executed"
+        installed_helper.write_bytes(previous_bytes)
+    assert (guest_helper_state == "absent") is (not installed_helper.exists())
+
+    source_helper = ROOT / "platform/playbooks/files/prepare_pbs_guest_disk.py"
+    context = {
+        "_controller_helper": str(source_helper),
+        "_helper": str(installed_helper),
+        "_expected_serial": SERIAL,
+        "_expected_bytes": SIZE,
+        "_mountpoint": MOUNT,
+        "_lsblk": {"stdout": json.dumps(document(disk()))},
+    }
+    env = NativeEnvironment()
+    argv = [str(env.from_string(arg).render(**context)) for arg in selector["argv"]]
+    stdin = env.from_string(selector["stdin"]).render(**context)
+    normal_selector = next(
+        task for task in tasks if task.get("name") == "Select the unique disk carrying the declared Proxmox serial"
+    )
+    assert "{{ _helper }}" in str(normal_selector["ansible.builtin.command"]["argv"])
+    assert Path(argv[1]) == source_helper
+    assert Path(argv[1]) != installed_helper
+
+    completed = subprocess.run(
+        [sys.executable, *argv[1:]],
+        input=stdin,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout) == {"device": "/dev/vdb", "state": "blank"}
+    if previous_bytes is not None:
+        assert installed_helper.read_bytes() == previous_bytes
 
 
 def test_cli_emits_only_selected_device_and_state_or_sanitized_refusal(monkeypatch, capsys):

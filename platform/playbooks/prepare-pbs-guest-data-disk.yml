@@ -297,6 +297,29 @@
       check_mode: false
       failed_when: false
       no_log: true
+      when: not ansible_check_mode
+
+    - name: Select the unique disk with the reviewed controller helper in check mode
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _controller_helper }}"
+          - --expected-serial
+          - "{{ _expected_serial }}"
+          - --expected-size
+          - "{{ _expected_bytes }}"
+          - --mountpoint
+          - "{{ _mountpoint }}"
+        stdin: "{{ _lsblk.stdout }}"
+        stdin_add_newline: true
+      delegate_to: localhost
+      become: false
+      register: _disk_selection
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+      when: ansible_check_mode
 
     - name: Require successful unique guest-disk identity validation
       ansible.builtin.assert:

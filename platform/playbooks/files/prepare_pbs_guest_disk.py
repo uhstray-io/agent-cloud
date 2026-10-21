@@ -230,6 +230,9 @@ def main() -> int:
             created = False
             if args.ensure_datastore_path:
                 created = ensure_datastore_path(args.mountpoint, args.datastore_path, mount_targets)
+                validate_datastore_path(
+                    args.mountpoint, args.datastore_path, _discover_mount_tree(args.mountpoint)
+                )
             else:
                 validate_datastore_path(args.mountpoint, args.datastore_path, mount_targets)
             print(json.dumps({"datastore_path": "validated", "created": created}))
