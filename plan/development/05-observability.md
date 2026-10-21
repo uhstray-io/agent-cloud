@@ -2078,23 +2078,28 @@ and playbook bindings at reviewed Dev
 create a Proxmox template. That run still awaits the reviewed private PBS host
 declaration and inventory sync.
 
-The next public change prepares a separate Dev-bound PBS guest-disk attachment
-workflow for OpenSpec task 3.1. It first verifies the exact declared guest,
-network, OS disk, and data-disk slot. An already matching `scsi1` is a safe
-rerun without another capacity allocation. If `scsi1` is absent, the workflow
-reuses the pinned backing survey and 512-GiB headroom preflight, re-reads the
-VM config, and sends one digest-protected Proxmox API request for the declared
-virtual disk. Check mode performs reads only. The workflow has passed local
-focused tests and syntax checks; it has not been reviewed, merged, published to
-Semaphore, or run against Proxmox. The private inventory and template gates
-still precede any live attachment.
+PR #715 added the separate Dev-bound PBS guest-disk attachment source workflow
+for OpenSpec task 3.1. It verifies the exact declared guest, network, OS disk,
+and data-disk slot; an already matching `scsi1` is a safe rerun without another
+capacity allocation. If `scsi1` is absent, it reuses the pinned backing survey
+and 512-GiB headroom preflight, re-reads the VM config, and sends one
+digest-protected Proxmox API request. Check mode performs reads only. PR #715
+passed final CI and CodeRabbit review and merged to `dev` at
+`621396b660c120056fc835900d70a38618f87535` (reviewed head
+`bc0ca6d3b29ee1db8ef78bcfccf8a0e0e7f75451bc`). Its initial allocation request
+does not set the required `ac-pbs-data-<vm_vmid>` serial. A serial-aware
+bootstrap enhancement must land and be read back before any live disk
+allocation. The Dev task has not been published/read back here and no live disk
+was allocated; tasks 3.2 and 3.3 remain open.
 
 ### PBS guest filesystem and service source integration (2026-10-20)
 
 The reviewed guest filesystem head `05acf2269081cf9e273fb77c0a5d1ffbd66ad280`
 and service head `4b4ef07c7bee21adee14ec55900de56ba5a76d28` are integrated by
 merge commits after PR #715's exact head, retaining its transport-test and
-visible-token assertions. The guest workflow identifies the one 512-GiB whole
+visible-token assertions. PR #715 subsequently merged to Dev at
+`621396b660c120056fc835900d70a38618f87535` after final CI and CodeRabbit
+approval. The guest workflow identifies the one 512-GiB whole
 virtual disk by the Proxmox serial `ac-pbs-data-<vm_vmid>` (at most 18 ASCII bytes for the
 six-digit VMID), formats only a proven blank disk as ext4, and mounts it by
 UUID at `/srv/pbs-data` with `noatime`. Service configuration independently

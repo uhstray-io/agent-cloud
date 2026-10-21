@@ -13,7 +13,7 @@
 
 ## 3. Attach and mount the data disk
 
-- [ ] 3.1 Add a separate idempotent Dev-bound virtual-disk attachment workflow that re-runs the pinned preflight immediately before allocation, checks the exact guest/bus/store, and refuses concurrent drift or existing mismatched disks. Test refusal and safe rerun.
+- [x] 3.1 Add a separate idempotent Dev-bound virtual-disk attachment workflow that re-runs the pinned preflight immediately before allocation, checks the exact guest/bus/store, and refuses concurrent drift or existing mismatched disks. Test refusal and safe rerun. **Source complete:** PR #715 passed final CI and CodeRabbit review, then merged to `dev` at `621396b660c120056fc835900d70a38618f87535` (reviewed head `bc0ca6d3b29ee1db8ef78bcfccf8a0e7f75451bc`). The focused attachment and bootstrap tests pass in the integration source validation. The PR's initial virtual-disk allocation request does not set the required `ac-pbs-data-<vm_vmid>` serial. A serial-aware bootstrap enhancement must be reviewed, merged, and read back before any live disk allocation; no disk was allocated by the PR. This checkbox records source completion, not live acceptance.
 - [ ] 3.2 Attach only the 512-GiB guest disk through Proxmox API and verify its task/config readback; never select or format a host physical device.
 - [ ] 3.3 Add guest-side blank-disk identity and content guards, filesystem creation, UUID mount, and readback. Run only after the new virtual disk is proven unique; verify a second run preserves the data.
 
