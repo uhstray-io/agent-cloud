@@ -61,6 +61,11 @@
   connection: local
   gather_facts: false
   any_errors_fatal: true
+  vars:
+    # Parse the canonical registry on the Ansible controller, where the existing Ansible
+    # YAML parser is available. The receiver-side verifier remains stdlib-only.
+    _vdd_workflow_registry: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}
   tasks:
     - name: Refuse a malformed request before touching the receiver
       ansible.builtin.assert:
@@ -73,6 +78,20 @@
           - _expected_empty_panels | type_debug == 'list'
           - _expected_empty_panels | reject('string') | list | length == 0
           - _dashboard_variables is mapping
+          - >-
+            _vdd_workflow_registry is mapping
+            and (_vdd_workflow_registry.get('steps') | type_debug == 'list')
+            and (_vdd_workflow_registry.get('steps') | length > 0)
+            and (_vdd_workflow_registry.get('steps') | length <= 128)
+            and ((_vdd_workflow_registry.get('steps') | select('mapping') | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
+            and ((_vdd_workflow_registry.get('steps') | map(attribute='id') | select('string') | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
+            and ((_vdd_workflow_registry.get('steps') | map(attribute='id') | select('string')
+                 | select('match', '^[a-z][a-z0-9-]{0,63}$') | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
+            and ((_vdd_workflow_registry.get('steps') | map(attribute='id') | unique | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
         fail_msg: >-
           Declare exactly one o11y_svc host and pass dashboard_uid (a Grafana uid), lookback
           (one duration unit, e.g. 1h), panel_titles and expected_empty_panels as JSON lists,
@@ -89,6 +108,8 @@
   become: false
   any_errors_fatal: true
   vars:
+    _vdd_workflow_registry: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}
     _vdd_deploy_dir: >-
       {{ (local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud'))
          ~ '/' ~ monorepo_deploy_path | default('platform/services/o11y/deployment') }}
@@ -126,6 +147,7 @@
               'lookback': _vdd_lookback,
               'panel_titles': _vdd_panel_titles,
               'expected_empty_panels': _vdd_expected_empty_panels,
+              '_vdd_workflow_steps': _vdd_workflow_registry.steps,
               'variables': _vdd_variables,
               'prometheus_url': 'http://' ~ (o11y_prom_bind | default('127.0.0.1')) ~ ':' ~ (o11y_prom_port | default(9090)),
               'loki_url': 'http://' ~ _vdd_loki_host ~ ':' ~ (o11y_loki_port | default(3100)),

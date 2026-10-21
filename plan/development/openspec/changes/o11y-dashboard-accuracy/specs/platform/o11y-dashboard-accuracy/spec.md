@@ -107,7 +107,7 @@ The existing read-only dashboard verifier SHALL allow a caller to name exact sel
 
 ### Requirement: Dashboard verification reports bounded current workflow failures
 
-The existing read-only dashboard verifier SHALL report current failed service and workflow-step pairs only when the selected panel matches the exact provisioned latest-status query contract and the pair identities are present in the public component directories and service-onboarding workflow registry. It SHALL accept exactly the `service` and `step` labels, recognize only the provisioned failure, pass, and skip state codes, sort and cap failure pairs deterministically, and count unknown or ambiguous series categorically without returning their labels or sample values. Missing query data SHALL remain `no_data`; it MUST NOT be interpreted as a cleared failure. The report SHALL describe latest state within the query's 45-minute lookback and MUST NOT claim complete history, original task provenance, dashboard rendering, or absence of older failures outside that lookback.
+The existing read-only dashboard verifier SHALL report current failed service and workflow-step pairs only when the selected panel matches the exact provisioned latest-status query contract and the pair identities are present in the public component directories and the actual `steps` collection of the service-onboarding workflow registry. The controller SHALL parse and validate that canonical registry before invoking the receiver-side verifier; caller-supplied survey values MUST NOT replace it. The verifier SHALL accept exactly the `service` and `step` labels, validate the complete Loki vector sample shape and types before interpreting its timestamp or state code, recognize only the provisioned failure, pass, and skip state codes, sort and cap failure pairs deterministically, and count unknown or ambiguous series categorically without returning their labels or sample values. It SHALL include `window_seconds: 2700` and `scope: latest_recorded_state` for present, none, no_data, and unverified observations. Missing query data SHALL remain `no_data`; it MUST NOT be interpreted as a cleared failure. The report SHALL describe latest state within the query's 45-minute lookback and MUST NOT claim complete history, original task provenance, dashboard rendering, or absence of older failures outside that lookback.
 
 #### Scenario: Current failed workflow steps are identified safely
 
@@ -116,6 +116,8 @@ The existing read-only dashboard verifier SHALL report current failed service an
 - **AND** newer pass or skip state is not reported as a current failure
 - **AND** unknown labels, identities, states, and duplicate pairs make the observation `unverified` without echoing those values
 - **AND** an empty result remains `no_data` rather than `none`
+- **AND** malformed sample shapes, timestamps, or values make the observation `unverified`
+- **AND** every result status reports its fixed 45-minute window and latest-recorded-state scope
 
 #### Scenario: Latest-status query or identity source drifts
 
