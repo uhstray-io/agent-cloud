@@ -33,8 +33,7 @@ CONTRACTS = {
         "playbook": "platform/playbooks/backup-o11y-to-pbs.yml",
         "roles": {"primary": "pve_backup", "verification": "primary_pbs_verify", "destination": "not_applicable"},
         "evidence": {
-            "backup_task_id", "backup_upid", "snapshot", "source_vmid", "source_node",
-            "artifact_fingerprint", "playbook",
+            "backup_upid", "snapshot", "source_vmid", "source_node", "artifact_fingerprint", "playbook",
         },
     },
     "o11y-pbs-verify/v1": {
@@ -205,7 +204,7 @@ def parse_manifest(data: str | bytes) -> dict[str, object]:
     seen = set()
     for item in raw["files"]:
         _require(isinstance(item, dict) and set(item) <= FILE_KEYS, "artifact_invalid")
-        _require(FILE_KEYS <= set(item), "artifact_invalid")
+        _require(set(item) >= FILE_KEYS, "artifact_invalid")
         filename, crypt_mode, size, csum = item["filename"], item["crypt-mode"], item["size"], item["csum"]
         _require(isinstance(filename, str) and FILE_NAME.fullmatch(filename) is not None, "artifact_invalid")
         _require(filename not in seen, "artifact_invalid")

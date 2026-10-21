@@ -171,6 +171,38 @@ class CopyApiRequestTests(TestCase):
             with self.subTest(payload=payload), self.assertRaises(pbs.Refusal):
                 pbs._copy_api_request_shape(payload)
 
+    def test_snapshot_verification_binds_the_full_snapshot_selector(self):
+        method, path, body = pbs._copy_api_request_shape({
+            "operation": "snapshot-verify",
+            "backup_type": "vm",
+            "backup_id": "120",
+            "backup_time": 1792594800,
+        })
+        self.assertEqual((method, path), ("POST", "/api2/json/admin/datastore/o11y/verify"))
+        self.assertEqual(body, {
+            "store": "o11y",
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": "1792594800",
+            "ignore-verified": "0",
+        })
+        for payload in (
+            {"operation": "snapshot-verify", "backup_type": "ct", "backup_id": "120", "backup_time": 1},
+            {"operation": "snapshot-verify", "backup_type": "vm", "backup_id": "120", "backup_time": True},
+            {"operation": "snapshot-verify", "backup_type": "vm", "backup_id": "120", "backup_time": 1,
+             "store": "other"},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(pbs.Refusal):
+                pbs._copy_api_request_shape(payload)
+
+    def test_sync_run_is_one_fixed_async_job_route(self):
+        self.assertEqual(
+            pbs._copy_api_request_shape({"operation": "sync-run", "sync_job_id": "o11y-copy-sync"}),
+            ("POST", "/api2/json/admin/sync/o11y-copy-sync/run", None),
+        )
+        with self.assertRaises(pbs.Refusal):
+            pbs._copy_api_request_shape({"operation": "sync-run", "sync_job_id": "bad/id"})
+
     def test_endpoint_rejects_paths_queries_and_credential_bearing_urls(self):
         for url in (
             "https://pbs.internal.test/api2/json",

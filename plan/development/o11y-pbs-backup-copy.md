@@ -21,6 +21,14 @@ responses stay inside protected Semaphore task state. Receipts attest to
 controller/template/source-admin/protected-environment/launcher trust, not to
 cryptographic or immutable task history.
 
+Semaphore assigns a task ID only after the playbook exits, so the producer
+cannot truthfully include its own completed-task ID in its receipt. Receipt
+evidence records the operation UPID and artifact identity. Consumers bind that
+receipt to the authenticated completed-task ID returned by Semaphore, then
+carry that ID as a fixed selector into the next workflow. No task ID is
+discovered by guessing from a template/commit pair or self-declared by the
+playbook.
+
 The inventory provenance workflow compares the exact regular
 `inventory/production.yml` Git blob at the caller-pinned private revision to the
 sole current static Ansible inventory source's complete bytes. It verifies the

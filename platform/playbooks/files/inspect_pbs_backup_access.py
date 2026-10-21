@@ -40,6 +40,8 @@ COPY_API_OPERATIONS = {
     "sync-read": ("GET", "sync-item"),
     "sync-create": ("POST", "sync-collection"),
     "sync-update": ("PUT", "sync-item"),
+    "snapshot-verify": ("POST", "snapshot-verify"),
+    "sync-run": ("POST", "sync-run"),
 }
 
 
@@ -512,6 +514,26 @@ def _copy_api_request_shape(payload: Any) -> tuple[str, str, dict[str, str] | No
     _require(operation in COPY_API_OPERATIONS, "PBS copy API operation is not allowed.")
     method, path_kind = COPY_API_OPERATIONS[operation]
     allowed_payload_keys = {"operation", "body"}
+    if path_kind == "snapshot-verify":
+        allowed_payload_keys = {"operation", "backup_type", "backup_id", "backup_time"}
+        _require(set(payload).issubset(allowed_payload_keys),
+                 "PBS snapshot verification contains unknown selectors.")
+        _require(payload.get("backup_type") == "vm", "PBS verification must target an o11y VM snapshot.")
+        backup_id = payload.get("backup_id")
+        backup_time = payload.get("backup_time")
+        _require(isinstance(backup_id, str) and re.fullmatch(r"[1-9][0-9]{0,8}", backup_id) is not None,
+                 "PBS verification backup ID is malformed.")
+        _require(type(backup_time) is int and backup_time > 0, "PBS verification backup time is malformed.")
+        path = f"/api2/json/admin/datastore/{DATASTORE}/verify"
+        body = {"store": DATASTORE, "backup-type": "vm", "backup-id": backup_id,
+                "backup-time": str(backup_time), "ignore-verified": "0"}
+        return method, path, body
+    if path_kind == "sync-run":
+        allowed_payload_keys = {"operation", "sync_job_id"}
+        _require(set(payload).issubset(allowed_payload_keys),
+                 "PBS sync run contains unknown selectors.")
+        identifier = _safe_api_identifier(payload.get("sync_job_id"), "sync job id")
+        return method, f"/api2/json/admin/sync/{identifier}/run", None
     if path_kind.endswith("item"):
         key = "remote_id" if path_kind == "remote-item" else "sync_job_id"
         identifier = _safe_api_identifier(payload.get(key), key.replace("_", " "))
@@ -641,6 +663,12 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
     _require(isinstance(auth_id, str) and re.fullmatch(r"[A-Za-z0-9._@!-]{1,128}", auth_id),
              "PBS copy API identity is invalid.")
     _require(isinstance(secret, str) and bool(secret), "PBS copy API credential is missing.")
+    if isinstance(payload, dict) and payload.get("operation") == "snapshot-verify":
+        _require(auth_id == COPY_READER_TOKEN_ID,
+                 "PBS snapshot verification must use the independent source Reader identity.")
+    if isinstance(payload, dict) and payload.get("operation") == "sync-run":
+        _require(auth_id == COPY_MANAGER_TOKEN_ID,
+                 "PBS protected-copy sync must use the dedicated destination manager identity.")
     method, path, body_fields = _copy_api_request_shape(payload)
     connection = _PinnedHTTPSConnection(parsed.hostname, port, fingerprint)
     try:

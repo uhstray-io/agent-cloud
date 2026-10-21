@@ -51,7 +51,6 @@ def backup_receipt() -> dict[str, object]:
         "observed_end": "2026-10-21T15:30:00Z",
         "role_context": pbs.CONTRACTS["o11y-pbs-backup/v1"]["roles"],
         "evidence": {
-            "backup_task_id": 10,
             "backup_upid": UPID,
             "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
             "source_vmid": "120",
@@ -108,7 +107,6 @@ def test_source_fingerprint_binds_logical_vm_and_completed_receipt_is_closed() -
         observed_start="2026-10-21T15:00:00Z",
         observed_end="2026-10-21T15:30:00Z",
         evidence={
-            "backup_task_id": 10,
             "backup_upid": UPID,
             "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
             "source_vmid": "120",
@@ -233,8 +231,20 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
     lines = json.dumps(receipt, indent=2).splitlines()
     midpoint = len(lines) // 2
     rows = [
-        {"id": 3, "task_id": 14, "stage_id": None, "time": "2026-10-21T15:20:00Z", "output": "\n".join(lines[:midpoint])},
-        {"id": 4, "task_id": 14, "stage_id": None, "time": "2026-10-21T15:20:01Z", "output": "\n".join(lines[midpoint:])},
+        {
+            "id": 3,
+            "task_id": 14,
+            "stage_id": None,
+            "time": "2026-10-21T15:20:00Z",
+            "output": "\n".join(lines[:midpoint]),
+        },
+        {
+            "id": 4,
+            "task_id": 14,
+            "stage_id": None,
+            "time": "2026-10-21T15:20:01Z",
+            "output": "\n".join(lines[midpoint:]),
+        },
     ]
     result = pbs.validate_completed_output(
         task,
