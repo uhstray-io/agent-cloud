@@ -1,0 +1,350 @@
+# GET-only preflight for one private, disconnected o11y restore target.
+# This reports a current availability snapshot; it does not reserve or authorize it.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require one declared source o11y host
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Require one declared restore-target host
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_restore_target_svc
+    preflight_group_expected: o11y_restore_target_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the reviewed preflight implementation
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/preflight-o11y-restore-target.yml
+      - platform/playbooks/files/inspect_o11y_restore_target.py
+      - platform/playbooks/files/inspect_o11y_backup_artifact.py
+      - platform/playbooks/tasks/assert-bao-transport.yml
+
+- name: Preflight one exact o11y restore target
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_restore_target.py"
+    _artifact_inspector: "{{ playbook_dir }}/files/inspect_o11y_backup_artifact.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ _openbao_hosts | first | default('') }}"
+    _inventory_bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _source_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _source_host: "{{ _source_hosts | first | default('') }}"
+    _target_hosts: "{{ groups['o11y_restore_target_svc'] | default([]) }}"
+    _target_host: "{{ _target_hosts | first | default('') }}"
+    _source_vmid: "{{ hostvars[_source_host].vm_vmid | default('') if _source_host else '' }}"
+    _source_node: "{{ hostvars[_source_host].vm_node | default('') if _source_host else '' }}"
+    _artifact_selector: "{{ hostvars[_source_host].o11y_backup_artifact_selector | default(none) if _source_host else none }}"
+    _target_vmid: "{{ hostvars[_target_host].o11y_restore_target_vmid | default('') if _target_host else '' }}"
+    _target_node: "{{ hostvars[_target_host].o11y_restore_target_node | default('') if _target_host else '' }}"
+    _target_storage_id: "{{ hostvars[_target_host].o11y_restore_target_storage_id | default('') if _target_host else '' }}"
+    _target_network_mode: "{{ hostvars[_target_host].o11y_restore_target_network_mode | default('') if _target_host else '' }}"
+    _target_headroom_percent: "{{ hostvars[_target_host].o11y_restore_target_headroom_percent | default(0) if _target_host else 0 }}"
+    _prohibited_extra_names:
+      - local_mode
+      - openbao_addr
+      - bao_role_id
+      - bao_secret_id
+      - proxmox_validate_certs
+      - vm_vmid
+      - vm_node
+      - o11y_backup_artifact_selector
+      - o11y_restore_target_vmid
+      - o11y_restore_target_node
+      - o11y_restore_target_storage_id
+      - o11y_restore_target_network_mode
+      - o11y_restore_target_headroom_percent
+    _forged_extra_names: "{{ _prohibited_extra_names | intersect('' | extra_var_names) }}"
+  tasks:
+    - name: Refuse launch-time identity, artifact, transport, or TLS overrides
+      ansible.builtin.assert:
+        that: _forged_extra_names | length == 0
+        fail_msg: "Restore target, artifact, OpenBao, Proxmox transport, and TLS values come from reviewed inventory and Semaphore environment."
+        quiet: true
+
+    - name: Require exact production declarations and a selected artifact
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - _openbao_hosts | length == 1
+          - _bao_url | length > 0
+          - _bao_url == _inventory_bao_url
+          - _source_hosts | length == 1
+          - _target_hosts | length == 1
+          - _source_host != _target_host
+          - _source_vmid | string is match('^[1-9][0-9]{0,8}$')
+          - _source_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _target_vmid | string is match('^[1-9][0-9]{0,8}$')
+          - _target_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _target_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _target_vmid | string != _source_vmid | string
+          - _target_node != _source_node
+          - _target_network_mode == 'disconnected'
+          - _target_headroom_percent | int >= 30
+          - _target_headroom_percent | int <= 90
+          - _target_headroom_percent | string is match('^[0-9]+$')
+          - _artifact_selector is mapping
+        fail_msg: "This read-only preflight requires one exact source, one distinct disconnected restore target, an exact selected artifact, and the reviewed OpenBao endpoint."
+        quiet: true
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Keep protected Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token | default('') }}"
+      no_log: true
+
+    - name: Require a complete HTTPS Proxmox credential from OpenBao
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+          - _pve_token_id | length > 0
+          - _pve_secret | length > 0
+        fail_msg: "OpenBao must provide the HTTPS Proxmox endpoint and a complete API credential."
+        quiet: true
+
+    - name: Read source o11y backup artifacts from Proxmox
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_vms
+      no_log: true
+      check_mode: false
+
+    - name: Read source o11y backup-capable storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _source_node | urlencode }}/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _source_storages
+      no_log: true
+      check_mode: false
+
+    - name: Select active backup storages for exact artifact census
+      ansible.builtin.set_fact:
+        _backup_storages: >-
+          {{ _source_storages.json.data
+             | selectattr('active', 'defined')
+             | selectattr('active', 'equalto', 1)
+             | selectattr('content', 'defined')
+             | selectattr('content', 'search', '(^|,)backup(,|$)')
+             | list }}
+      no_log: true
+
+    - name: Read source VM configuration for artifact census binding
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _source_node | urlencode }}/qemu/{{ _source_vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _source_config
+      no_log: true
+      check_mode: false
+
+    - name: Read backup content from each active declared source storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _source_node | urlencode }}/storage/{{ item.storage | urlencode }}/content?content=backup&vmid={{ _source_vmid }}"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _backup_storages }}"
+      loop_control:
+        label: "source artifact read"
+      register: _backup_content_reads
+      no_log: true
+      check_mode: false
+
+    - name: Verify the exact selected artifact against the current source census
+      ansible.builtin.command:
+        argv: [python3, "{{ _artifact_inspector }}", inspect]
+        stdin: >-
+          {{ {'vmid': _source_vmid | string,
+              'node': _source_node,
+              'vms': _pve_vms.json.data,
+              'storages': _backup_storages,
+              'artifact_selector_defined': true,
+              'artifact_selector': _artifact_selector,
+              'content_reads': _backup_content_reads.results,
+              'vm_config': {'status': _source_config.status,
+                            'data': _source_config.json.data}}
+             | to_json }}
+      register: _artifact_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a current exact artifact selector match
+      ansible.builtin.assert:
+        that:
+          - _artifact_inspection.rc == 0
+          - (_artifact_inspection.stdout | from_json).selected_candidate_index is defined
+        fail_msg: "The exact private backup-artifact selector does not match one current source artifact."
+        quiet: true
+      no_log: true
+
+    - name: Keep the protected artifact census receipt
+      ansible.builtin.set_fact:
+        _artifact_receipt: "{{ _artifact_inspection.stdout | from_json }}"
+      no_log: true
+
+    - name: Read Proxmox cluster node status
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nodes
+      no_log: true
+      check_mode: false
+
+    - name: Validate node identities before target storage request
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_o11y_restore_feasibility.py", validate-nodes]
+        stdin: "{{ _pve_nodes.json.data | to_json }}"
+      register: _validated_nodes_raw
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the declared target on a distinct online node
+      ansible.builtin.assert:
+        that:
+          - _validated_nodes_raw.rc == 0
+          - _target_node in (_validated_nodes_raw.stdout | from_json).online_nodes
+          - _target_node != _source_node
+        fail_msg: "The declared disconnected restore target must be on a distinct online Proxmox node."
+        quiet: true
+      no_log: true
+
+    - name: Read only the declared restore node storage status
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _target_node | urlencode }}/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _target_storages
+      no_log: true
+      check_mode: false
+
+    - name: Read the exact declared restore VMID configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _target_node | urlencode }}/qemu/{{ _target_vmid }}/config"
+        method: GET
+        status_code: [200, 404, 500]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _target_config
+      no_log: true
+      check_mode: false
+
+    - name: Read exact cluster VMID availability from Proxmox
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/nextid?vmid={{ _target_vmid }}"
+        method: GET
+        status_code: [200, 400]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _target_nextid
+      no_log: true
+      check_mode: false
+
+    - name: Read the exact selected artifact restore configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _source_node | urlencode }}/vzdump/extractconfig?volume={{ _artifact_selector.volid | urlencode }}"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _artifact_config
+      no_log: true
+      check_mode: false
+
+    - name: Validate exact target identity, isolated layout, and reported capacity
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", inspect]
+        stdin: >-
+          {{ {'source': {'vmid': _source_vmid | string, 'node': _source_node},
+              'target': {'vmid': _target_vmid | string,
+                         'node': _target_node,
+                         'storage_id': _target_storage_id,
+                         'network_mode': _target_network_mode,
+                         'headroom_percent': _target_headroom_percent | int},
+              'artifact_selector': _artifact_selector,
+              'artifact_receipt': _artifact_receipt,
+              'artifact_config': {'status': _artifact_config.status,
+                                  'data': _artifact_config.json.data | default(none)},
+              'vms': _pve_vms.json.data,
+              'target_config': {'status': _target_config.status},
+              'target_nextid': {'status': _target_nextid.status,
+                                'data': _target_nextid.json.data | default(none)},
+              'nodes': _pve_nodes.json.data,
+              'storage_reads': [{'item': _target_node,
+                                 'status': _target_storages.status,
+                                 'data': _target_storages.json.data | default(none)}]}
+             | to_json }}
+      register: _target_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a complete sanitized target preflight receipt
+      ansible.builtin.assert:
+        that: _target_inspection.rc == 0
+        fail_msg: >-
+          Restore-target preflight refused:
+          {{ ((_target_inspection.stdout | from_json).refusal
+              | default('Protected Proxmox response data was invalid.')) }}
+        quiet: true
+      no_log: true
+
+    - name: Keep the sanitized restore-target snapshot
+      ansible.builtin.set_fact:
+        _restore_target_receipt: "{{ _target_inspection.stdout | from_json }}"
+      no_log: true
+
+    - name: Report read-only availability facts without private identities
+      ansible.builtin.debug:
+        msg: "{{ _restore_target_receipt }}"
