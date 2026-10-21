@@ -4,8 +4,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from jinja2 import Environment
+import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
@@ -41,7 +42,7 @@ def _render(**overrides):
 
 
 def test_signal_discriminator_is_scoped_to_otlp_access_logs():
-    rendered = _render()
+    rendered = _render(agw_otlp_logs=True, agw_otlp_traces=True)
     access_log = rendered["frontendPolicies"]["accessLog"]
     otlp_fields = access_log["otlp"]["fields"]["add"]
 
@@ -50,6 +51,26 @@ def test_signal_discriminator_is_scoped_to_otlp_access_logs():
     assert otlp_fields["identity"] == "apiKey.name"
     assert otlp_fields["http.path"] == "request.path"
     assert "request.uri" not in otlp_fields
+    assert "request.pathAndQuery" not in otlp_fields.values()
     assert "signal" not in access_log["add"]
     assert "signal" not in access_log["otlp"]
     assert "signal" not in rendered["frontendPolicies"]["tracing"]["attributes"]
+
+
+@pytest.mark.parametrize(
+    ("logs", "traces"),
+    [(True, False), (False, True), (True, True), (False, False)],
+    ids=["logs-only", "traces-only", "both", "neither"],
+)
+def test_otlp_switches_render_independently(logs, traces):
+    rendered = _render(agw_otlp_logs=logs, agw_otlp_traces=traces)
+    policies = rendered["frontendPolicies"]
+    assert ("otlp" in policies["accessLog"]) is logs
+    assert ("tracing" in policies) is traces
+
+
+def test_otlp_switches_default_off():
+    rendered = _render()
+    policies = rendered["frontendPolicies"]
+    assert "otlp" not in policies["accessLog"]
+    assert "tracing" not in policies

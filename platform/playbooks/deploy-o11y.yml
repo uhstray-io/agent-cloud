@@ -252,7 +252,7 @@
         (o11y_trace_derived_metrics_enabled | default(false) | bool) or
         (not (local_mode | default(false) | bool) and
          groups.get('agentgateway_svc', []) | length == 1 and
-         hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0)
+         hostvars[groups['agentgateway_svc'][0]].agw_otlp_traces | default(false) | bool)
 
     - name: "Require complete DGX scrape settings when scraping is enabled"
       ansible.builtin.assert:
