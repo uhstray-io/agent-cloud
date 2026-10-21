@@ -460,12 +460,13 @@ PY
 # (`--validate-only` on a UI-on render fails "failed to decode oidc discovery
 # response", 2026-09-22), so a UI-on gateway cannot even start before its
 # Authentik provider exists. The flag renders the gateway without any of it.
-_render_ui() {  # $1 = true|false|unset ; renders into $BATS_TEST_TMPDIR/<name>
+_render_ui() {  # $1 = true|false|unset ; $5 optional trace sample ; renders into $BATS_TEST_TMPDIR/<name>
   command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
-  local flag="" logs="" traces="" play="$BATS_TEST_TMPDIR/render.yml"
+  local flag="" logs="" traces="" sampling="" play="$BATS_TEST_TMPDIR/render.yml"
   [ "$1" != unset ] && flag="agw_ui_enabled: $1"
   [ "${3:-unset}" != unset ] && logs="agw_otlp_logs: $3"
   [ "${4:-unset}" != unset ] && traces="agw_otlp_traces: $4"
+  [ "${5:-unset}" != unset ] && sampling="agw_trace_sampling: $5"
   cat >"$play" <<YML
 - hosts: localhost
   gather_facts: false
@@ -473,6 +474,7 @@ _render_ui() {  # $1 = true|false|unset ; renders into $BATS_TEST_TMPDIR/<name>
     $flag
     $logs
     $traces
+    $sampling
     agw_otlp_host: "${2:-}"
     agw_clients: [workstation]
     agw_models: [{name: m}]
@@ -531,10 +533,23 @@ config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 assert 'otlp' not in config['frontendPolicies']['accessLog']
 tracing = config['frontendPolicies']['tracing']
 assert tracing['host'] == 'receiver.test:4317'
-assert tracing['randomSampling'] == tracing['clientSampling'] == 0.05
+assert tracing['randomSampling'] == 0.1
+assert tracing['clientSampling'] is False
 assert tracing['resources']['service.name'] == '"agentgateway"'
 assert tracing['attributes']['http.path'] == 'request.path'
 assert 'signal' not in tracing['attributes']
+PY
+
+  # An explicit random rate changes only random sampling; client traceparents
+  # remain unable to opt requests into tracing.
+  _render_ui false receiver.test:4317 false true 0.05
+  python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+tracing = config['frontendPolicies']['tracing']
+assert tracing['randomSampling'] == 0.05
+assert tracing['clientSampling'] is False
 PY
 
   # Both signals can be enabled together.

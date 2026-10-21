@@ -493,3 +493,25 @@ Rollback is in `proposal.md`.
 None open for Joe. The dependencies recorded as unverified are resolved by tasks that
 name them: the `/v1/models` record fields (task 4.2), the collector's reach (task 3.3),
 the receiver TLS declaration's name (task 6.1), and other Tempo producers (task 8.2).
+
+## Implementation receipt — sampling source contract (2026-10-20)
+
+OpenSpec task 2.1 is implemented in the gateway template: unset
+`agw_trace_sampling` renders `randomSampling: 0.1`, an explicit `0.05` remains supported,
+and `clientSampling` always renders the literal `false`. The existing random sampling
+guard remains `(0, 0.1]`. The rendered-runtime inspector now accepts only boolean false
+for client sampling and refuses `true` or numeric values, including a numeric value that
+matches random sampling.
+
+Focused source verification passed: `python3 -m pytest -q
+platform/tests/test_agentgateway_runtime_proof.py
+platform/tests/test_agentgateway_access_signal.py` (35 passed), `ruff check
+platform/playbooks/files/inspect-agentgateway-runtime.py
+platform/tests/test_agentgateway_runtime_proof.py
+platform/tests/test_agentgateway_access_signal.py`, and
+`ANSIBLE_LOCAL_TEMP=/private/tmp/agw-sampling-ansible-tmp bats
+platform/tests/test_service_agentgateway.bats` (35 passed). The BATS command required
+the writable temp directory and execution outside the restricted sandbox because
+Ansible's local RPC subprocess could not start inside it. These checks establish source
+rendering and inspection only; the client-started `traceparent` runtime drill and live
+sampling acceptance remain open under task 8.3.
