@@ -27,9 +27,10 @@
 # supplied.
 #
 # Read-only and identical under --check: the dashboard is read and Prometheus or Loki is queried in
-# both. Output is names and counts only: no label value or sample value is printed, so a
-# per-identity panel reports the NUMBER of identities that answered, never their names; Loki
-# log lines and label values are also discarded.
+# both. Output is counts plus bounded public identities: only the exact latest-workflow-state
+# observation may report service/step pairs validated against the public registries. A
+# per-identity panel reports the NUMBER of identities that answered, never their names. All
+# other labels, raw sample values, and Loki log lines are discarded.
 # Override values are not printed either, only the first 12 hex digits of each one's sha256.
 # No backend error body is printed: errors may embed label sets or log content. Only a fixed
 # status or exception class is reported.
