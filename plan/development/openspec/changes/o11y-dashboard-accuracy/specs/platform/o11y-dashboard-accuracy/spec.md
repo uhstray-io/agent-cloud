@@ -105,6 +105,23 @@ The existing read-only dashboard verifier SHALL allow a caller to name exact sel
 - **WHEN** a required selected panel returns no data or its backend query fails
 - **THEN** verification fails and reports the panel outcome without exposing backend error bodies or sample values
 
+### Requirement: Dashboard verification reports bounded current workflow failures
+
+The existing read-only dashboard verifier SHALL report current failed service and workflow-step pairs only when the selected panel matches the exact provisioned latest-status query contract and the pair identities are present in the public component directories and service-onboarding workflow registry. It SHALL accept exactly the `service` and `step` labels, recognize only the provisioned failure, pass, and skip state codes, sort and cap failure pairs deterministically, and count unknown or ambiguous series categorically without returning their labels or sample values. Missing query data SHALL remain `no_data`; it MUST NOT be interpreted as a cleared failure. The report SHALL describe latest state within the query's 45-minute lookback and MUST NOT claim complete history, original task provenance, dashboard rendering, or absence of older failures outside that lookback.
+
+#### Scenario: Current failed workflow steps are identified safely
+
+- **WHEN** the exact latest-status query returns a unique failed state for a registry-backed service and step
+- **THEN** the verifier reports the validated pair in the bounded failure list
+- **AND** newer pass or skip state is not reported as a current failure
+- **AND** unknown labels, identities, states, and duplicate pairs make the observation `unverified` without echoing those values
+- **AND** an empty result remains `no_data` rather than `none`
+
+#### Scenario: Latest-status query or identity source drifts
+
+- **WHEN** the dashboard query contract changes or the public identity sources cannot be read or parsed
+- **THEN** the verifier marks the observation `unverified` and returns no service or step labels
+
 ### Requirement: Dashboard verification reproduces bounded panel-relative time
 
 The dashboard verifier SHALL accept `timeFrom` only as one positive Prometheus duration unit. It SHALL use the resulting per-panel lookback for range-query starts, range steps, and Grafana range built-ins. Instant queries SHALL remain evaluated at the current end time. Other unsupported panel and target settings SHALL remain refused.

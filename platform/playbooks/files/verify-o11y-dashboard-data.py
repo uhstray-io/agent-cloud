@@ -149,6 +149,17 @@ OBSERVATION_CONTRACTS = {
             '__error__="" | unwrap inventory_code | __error__="" [45m]) by (service) * 0))'
         ),
     },
+    ("service-conformance", "Latest step status by service"): {
+        "name": "current_workflow_failed_steps",
+        "datasource": "loki",
+        "datasource_uid": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "expr": (
+            'last_over_time({job="agent-cloud-conformance", step!="none"} | '
+            'json state_code | unwrap state_code | __error__="" [45m]) by (service, step)'
+        ),
+    },
     ("service-conformance", "Latest workflow completion age by service and step"): {
         "name": "workflow_completion_age",
         "datasource": "loki",
@@ -335,6 +346,120 @@ def _categorical_observation(name: str, data: dict[str, Any]) -> str:
             return "unverified"
         return "unknown" if -1 in values else "known"
     return "unverified"
+
+
+def _workflow_identity_allowlists(dashboards_dir: str) -> tuple[set[str], set[str]] | None:
+    """Read service ids from public component directories and step ids from the registry."""
+    dashboards = Path(dashboards_dir).resolve()
+    repo_root = next(
+        (
+            parent
+            for parent in dashboards.parents
+            if (parent / "platform/services").is_dir()
+            and (parent / "agents").is_dir()
+            and (parent / "platform/workflows/service-onboarding/registry.yml").is_file()
+        ),
+        None,
+    )
+    if repo_root is None:
+        return None
+
+    try:
+        service_ids = {
+            path.name
+            for parent in (repo_root / "platform/services", repo_root / "agents")
+            for path in parent.iterdir()
+            if path.is_dir() and re.fullmatch(r"[a-z][a-z0-9-]{0,39}", path.name)
+        }
+        registry = (repo_root / "platform/workflows/service-onboarding/registry.yml").read_text()
+    except OSError:
+        return None
+    step_ids = re.findall(r"(?m)^  - id: ([a-z][a-z0-9-]{0,63})\s*$", registry)
+    if not service_ids or not step_ids or len(step_ids) != len(set(step_ids)):
+        return None
+    return service_ids, set(step_ids)
+
+
+def _failed_step_observation(data: dict[str, Any], dashboards_dir: str) -> dict[str, Any]:
+    """Return only registry-backed service/step failures, dropping all other Loki labels."""
+    allowlists = _workflow_identity_allowlists(dashboards_dir)
+    if allowlists is None:
+        result = data.get("result")
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "unverified",
+            "reason": "registry_unavailable",
+            "unknown_series_count": len(result) if isinstance(result, list) else 0,
+        }
+    services, steps = allowlists
+    result = data.get("result")
+    if data.get("resultType") != "vector" or not isinstance(result, list):
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "unverified",
+            "reason": "unexpected_result_shape",
+        }
+    if not result:
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "no_data",
+            "failed_step_count": 0,
+            "failed_steps": [],
+            "truncated_count": 0,
+            "unknown_series_count": 0,
+        }
+
+    states: dict[tuple[str, str], int] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    unknown = 0
+    for series in result:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        sample = series.get("value") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or set(metric) != {"service", "step"} or not _finite(sample):
+            unknown += 1
+            continue
+        service, step = metric.get("service"), metric.get("step")
+        if (
+            not isinstance(service, str)
+            or not isinstance(step, str)
+            or service not in services
+            or step not in steps
+        ):
+            unknown += 1
+            continue
+        try:
+            raw_state = float(sample[1])
+        except (TypeError, ValueError, IndexError):
+            unknown += 1
+            continue
+        if raw_state not in (0.0, 1.0, 2.0):
+            unknown += 1
+            continue
+        key = (service, step)
+        if key in ambiguous:
+            unknown += 1
+            continue
+        if key in states:
+            # The provisioned last_over_time + by(service, step) query must return one
+            # reduced current state per pair. A duplicate makes that pair ambiguous.
+            unknown += 1
+            states.pop(key)
+            ambiguous.add(key)
+            continue
+        states[key] = int(raw_state)
+
+    failures = sorted({key for key, state in states.items() if state == 0})
+    cap = 50
+    failed_steps = [{"service": service, "step": step} for service, step in failures[:cap]]
+    status = "unverified" if unknown else ("present" if failures else "none")
+    return {
+        "name": "current_workflow_failed_steps",
+        "status": status,
+        "failed_step_count": len(failures),
+        "failed_steps": failed_steps,
+        "truncated_count": max(0, len(failures) - cap),
+        "unknown_series_count": unknown,
+    }
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -698,7 +823,12 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                         series_with_values=with_values,
                     )
                     if observe_target:
-                        observation["status"] = _categorical_observation(contract["name"], answer["data"])
+                        if contract["name"] == "current_workflow_failed_steps":
+                            observation.update(
+                                _failed_step_observation(answer["data"], str(payload.get("dashboards_dir", "")))
+                            )
+                        else:
+                            observation["status"] = _categorical_observation(contract["name"], answer["data"])
                         observation.pop("reason", None)
                 targets.append(row)
         queried = [t for t in targets if t["status"] in ("data", "empty", "error")]

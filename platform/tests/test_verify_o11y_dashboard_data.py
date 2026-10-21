@@ -350,6 +350,16 @@ def _numeric_vector(values):
     }
 
 
+def _workflow_step_vector(rows):
+    return {
+        "resultType": "vector",
+        "result": [
+            {"metric": labels, "value": [1700000000, str(state)]}
+            for labels, state in rows
+        ],
+    }
+
+
 def _observe_dashboard(monkeypatch, uid, title, data):
     seen = []
 
@@ -414,6 +424,131 @@ def test_current_workflow_failure_absence_differs_from_zero(monkeypatch):
     )
     assert panel["status"] == "empty"
     assert panel["observation"] == {"name": "current_workflow_failures", "status": "no_data"}
+
+
+def test_latest_workflow_status_reports_only_registry_backed_current_failure_pairs(monkeypatch):
+    data = _workflow_step_vector([
+        ({"service": "netbox", "step": "provision-vm"}, 0),
+        ({"service": "netbox", "step": "service-validate"}, 1),
+    ])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {
+        "name": "current_workflow_failed_steps",
+        "status": "present",
+        "failed_step_count": 1,
+        "failed_steps": [{"service": "netbox", "step": "provision-vm"}],
+        "truncated_count": 0,
+        "unknown_series_count": 0,
+    }
+
+
+def test_latest_status_query_reduction_does_not_relabel_a_later_pass_as_failure(monkeypatch):
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 1)])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["observation"]["status"] == "none"
+    assert panel["observation"]["failed_steps"] == []
+
+
+def test_latest_status_skip_is_not_reported_as_a_current_failure(monkeypatch):
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 2)])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["observation"]["status"] == "none"
+    assert panel["observation"]["failed_steps"] == []
+
+
+def test_latest_status_empty_result_is_no_data_not_a_cleared_failure(monkeypatch):
+    data = _workflow_step_vector([])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["status"] == "empty"
+    assert panel["observation"]["status"] == "no_data"
+    assert panel["observation"]["failed_steps"] == []
+
+
+def test_duplicate_current_status_for_a_pair_is_unverified(monkeypatch):
+    data = _workflow_step_vector([
+        ({"service": "netbox", "step": "provision-vm"}, 0),
+        ({"service": "netbox", "step": "provision-vm"}, 1),
+    ])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["observation"]["status"] == "unverified"
+    assert panel["observation"]["failed_steps"] == []
+    assert panel["observation"]["unknown_series_count"] == 1
+
+
+def test_unknown_identity_labels_are_counted_but_never_echoed(monkeypatch):
+    data = _workflow_step_vector([
+        ({"service": "netbox", "step": "provision-vm", "identity": "private-user-123"}, 0),
+        ({"service": "private-user-123", "step": "provision-vm"}, 0),
+    ])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    serialized = json.dumps(panel)
+    assert panel["observation"]["status"] == "unverified"
+    assert panel["observation"]["unknown_series_count"] == 2
+    assert "private-user-123" not in serialized
+
+
+def test_failed_step_output_is_capped_and_deterministic(monkeypatch):
+    service_ids, step_ids = vdd._workflow_identity_allowlists(str(DASHBOARDS))
+    pairs = [(service, step) for service in sorted(service_ids) for step in sorted(step_ids)][:51]
+    assert len(pairs) == 51
+    data = _workflow_step_vector([({"service": service, "step": step}, 0) for service, step in pairs])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    observation = panel["observation"]
+    assert observation["status"] == "present"
+    assert observation["failed_step_count"] == 51
+    assert len(observation["failed_steps"]) == 50
+    assert observation["truncated_count"] == 1
+    assert observation["failed_steps"] == sorted(
+        observation["failed_steps"], key=lambda row: (row["service"], row["step"])
+    )
+
+
+@pytest.mark.parametrize("drift", ["expr", "datasource"])
+def test_changed_latest_status_contract_is_unverified_without_returning_labels(monkeypatch, tmp_path, drift):
+    dashboard = json.loads((DASHBOARDS / "service-conformance.json").read_text())
+    dashboard["panels"] = [
+        p for p in dashboard["panels"] if p.get("title") == "Latest step status by service"
+    ]
+    if drift == "expr":
+        dashboard["panels"][0]["targets"][0]["expr"] += " + 0"
+    else:
+        dashboard["panels"][0]["targets"][0]["datasource"] = {"type": "prometheus", "uid": "prometheus"}
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    report = vdd.evaluate(
+        _payload(
+            "service-conformance",
+            panel_titles=["Latest step status by service"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "current_workflow_failed_steps",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+    assert "netbox" not in json.dumps(report)
+
+
+def test_unavailable_public_identity_sources_are_unverified_without_labels(monkeypatch, tmp_path):
+    dashboard = json.loads((DASHBOARDS / "service-conformance.json").read_text())
+    dashboard["panels"] = [
+        p for p in dashboard["panels"] if p.get("title") == "Latest step status by service"
+    ]
+    dashboard_dir = _dashboard_dir(tmp_path, dashboard)
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    report = vdd.evaluate(
+        _payload("service-conformance", panel_titles=["Latest step status by service"], dashboards_dir=dashboard_dir),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"]["status"] == "unverified"
+    assert report["panels"][0]["observation"]["unknown_series_count"] == 1
+    assert "netbox" not in json.dumps(report)
 
 
 @pytest.mark.parametrize(("age", "observation"), [(42, "known"), (-1, "unknown")])
