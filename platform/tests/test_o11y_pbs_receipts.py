@@ -404,8 +404,8 @@ def test_copy_readiness_binds_exact_restore_locator_and_destination_fingerprints
     receipt = pbs.seal_receipt({
         "schema_version": 1,
         "contract": "o11y-pbs-copy-ready/v1",
-        "status": "complete",
-        "reason": "none",
+        "status": "ready",
+        "reason": "destination_copy_ready_for_isolated_restore",
         "public_sha": PUBLIC,
         "private_sha": PRIVATE,
         "inventory_provenance": "exact_bytes_match",

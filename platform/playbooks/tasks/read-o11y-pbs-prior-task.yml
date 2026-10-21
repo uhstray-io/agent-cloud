@@ -1,0 +1,97 @@
+# Authenticate one finished PBS workflow task using its explicit ID and the
+# Semaphore task/output rows. No search by commit/template is performed.
+- name: Refuse public cleartext OpenBao access for PBS task authentication
+  ansible.builtin.include_tasks: assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ _pbs_task_bao_url }}"
+
+- name: Read Semaphore task API credentials from OpenBao
+  ansible.builtin.set_fact:
+    _pbs_task_semaphore_secret: >-
+      {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore',
+        url=_pbs_task_bao_url, auth_method='approle', role_id=_pbs_task_bao_role_id,
+        secret_id=_pbs_task_bao_secret_id) }}
+  no_log: true
+
+- name: Require a private HTTPS Semaphore endpoint and API token
+  ansible.builtin.assert:
+    that:
+      - _pbs_task_semaphore_secret.url is match('^https://[^/]+$')
+      - _pbs_task_semaphore_secret.api_token | length > 0
+      - _pbs_task_id is integer
+      - _pbs_task_id > 0
+      - _pbs_task_contract in ['o11y-pbs-backup/v1', 'o11y-pbs-verify/v1', 'o11y-pbs-copy-sync/v1', 'o11y-pbs-copy-ready/v1']
+    fail_msg: "PBS task authentication requires its fixed task ID and protected Semaphore API credentials."
+    quiet: true
+  no_log: true
+
+- name: Read the exact completed PBS workflow task by its fixed ID
+  ansible.builtin.uri:
+    url: "{{ _pbs_task_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _pbs_task_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _pbs_task_semaphore_secret.api_token }}"
+    unredirected_headers: [Authorization]
+    status_code: [200]
+    follow_redirects: none
+    use_netrc: false
+    use_proxy: false
+  register: _pbs_task_task_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read all bounded output rows for the exact PBS task
+  ansible.builtin.uri:
+    url: "{{ _pbs_task_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _pbs_task_id }}/output"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _pbs_task_semaphore_secret.api_token }}"
+    unredirected_headers: [Authorization]
+    status_code: [200]
+    follow_redirects: none
+    use_netrc: false
+    use_proxy: false
+  register: _pbs_task_output_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate the completed task and its joined protected receipt output
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_receipts.py"]
+    stdin: >-
+      {{ {'operation': 'validate_completed_task',
+          'task': _pbs_task_task_read.json | default({}),
+          'output_rows': _pbs_task_output_read.json | default([]),
+          'contract': _pbs_task_contract,
+          'public_sha': expected_repository_sha,
+          'private_sha': site_config_base_sha,
+          'playbook': _pbs_task_playbook,
+          'expected_project_id': estate_coverage_semaphore_project_id,
+          'expected_task_id': _pbs_task_id | int,
+          'expected_launch': _pbs_task_expected_launch,
+          'expected_artifact_fingerprint': _pbs_task_expected_artifact | default(none)} | to_json }}
+    stdin_add_newline: false
+  register: _pbs_task_validation_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the authenticated PBS task receipt
+  ansible.builtin.assert:
+    that:
+      - _pbs_task_validation_raw.rc == 0
+      - (_pbs_task_validation_raw.stdout | from_json).receipt.status == 'complete'
+      - (_pbs_task_validation_raw.stdout | from_json).task_metadata.id == _pbs_task_id | int
+    fail_msg: "The declared PBS predecessor task has no fresh, exact completed receipt."
+    quiet: true
+  no_log: true
+
+- name: Retain the authenticated predecessor task receipt and task metadata
+  ansible.builtin.set_fact:
+    _pbs_task_validated: "{{ _pbs_task_validation_raw.stdout | from_json }}"
+  no_log: true

@@ -1,0 +1,410 @@
+---
+# Create one manual, snapshot-mode backup for the declared o11y VM on the
+# already-registered primary PBS storage. Scheduled jobs and destinations are
+# never edited here.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed source checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/backup-o11y-to-pbs.yml
+      - platform/playbooks/tasks/emit-o11y-pbs-receipt.yml
+      - platform/playbooks/tasks/o11y-pbs-inventory-provenance.yml
+      - platform/playbooks/files/o11y_pbs_receipts.py
+      - platform/playbooks/files/o11y_pbs_operations.py
+      - platform/playbooks/files/inspect_pbs_backup_access.py
+      - platform/playbooks/files/inspect_o11y_pbs_provenance.py
+      - platform/playbooks/tasks/site-config-clone.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/files/reviewed-checkout.py
+
+- name: Require one declared o11y VM and primary PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the declared primary PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_svc
+    preflight_group_expected: pbs_svc
+    _preflight_redact_hostnames: true
+
+- name: Refuse unsafe launch overrides and unsupported run modes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_o11y_host: "{{ groups['o11y_svc'][0] }}"
+    _pbs_primary_host: "{{ groups['pbs_svc'][0] }}"
+    _pbs_vmid: "{{ hostvars[_pbs_o11y_host].vm_vmid | default('') | string }}"
+    _pbs_node: "{{ hostvars[_pbs_o11y_host].vm_node | default('') | string }}"
+  tasks:
+    - name: Reject caller values that replace protected PBS authority
+      ansible.builtin.assert:
+        that: _pbs_forged_names | length == 0
+        fail_msg: "PBS endpoints, credentials, inventory bindings, and VM selectors come from protected runtime configuration."
+        quiet: true
+      vars:
+        _pbs_private_names:
+          - pbs_api_host
+          - pbs_storage_id
+          - pbs_storage_nodes
+          - vm_vmid
+          - vm_node
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - local_mode
+        _pbs_forged_names: "{{ _pbs_private_names | intersect('' | extra_var_names) }}"
+
+    - name: Require the fixed reviewed Dev workflow selectors
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - site_config_base_sha is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - _pbs_vmid is match('^[1-9][0-9]{0,8}$')
+          - _pbs_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - hostvars[_pbs_primary_host].pbs_api_host is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+          - hostvars[_pbs_primary_host].pbs_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+        fail_msg: "Backup requires the declared production VM, primary PBS storage, reviewed revision, and a real run."
+        quiet: true
+      no_log: true
+
+- name: Prove the reviewed inventory before contacting service APIs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Compare exact private inventory and Semaphore bindings
+      ansible.builtin.include_tasks: tasks/o11y-pbs-inventory-provenance.yml
+      vars:
+        _pbs_provenance_template_name: Backup o11y to PBS (Dev)
+        _pbs_provenance_playbook: platform/playbooks/backup-o11y-to-pbs.yml
+
+- name: Create and bind the fresh PBS artifact to one PVE task
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_o11y_host: "{{ groups['o11y_svc'][0] }}"
+    _pbs_primary_host: "{{ groups['pbs_svc'][0] }}"
+    _pbs_vmid: "{{ hostvars[_pbs_o11y_host].vm_vmid | string }}"
+    _pbs_node: "{{ hostvars[_pbs_o11y_host].vm_node }}"
+    _pbs_storage: "{{ hostvars[_pbs_primary_host].pbs_storage_id }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    _pve_url: "{{ _pve_credentials.url | default('') }}"
+    _pve_token_id: "{{ _pve_credentials.token_id | default('') }}"
+    _pve_token_secret: "{{ _pve_credentials.api_token | default('') }}"
+    _pve_auth_header: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+    _pbs_manifest_auth_id: "{{ _pbs_backup_credentials.o11y_copy_reader_token_id | default('') }}"
+    _pbs_manifest_secret: "{{ _pbs_backup_credentials.o11y_copy_reader_token_secret | default('') }}"
+    _pbs_api_url: "https://{{ hostvars[_pbs_primary_host].pbs_api_host }}:8007"
+    _pbs_fingerprint: "{{ _pbs_backup_credentials.o11y_copy_reader_fingerprint | default('') }}"
+    _pbs_inventory: "{{ hostvars['localhost']._pbs_inventory_provenance }}"
+  tasks:
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read PVE and primary PBS reader credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_credentials: >-
+          {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox',
+            url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+        _pbs_backup_credentials: >-
+          {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/pbs',
+            url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+      no_log: true
+
+    - name: Require supported HTTPS services and fixed primary PBS source-reader identity
+      ansible.builtin.assert:
+        that:
+          - _pve_url is match('^https://[^/]+$')
+          - _pve_token_id | length > 0
+          - _pve_token_secret | length > 0
+          - _pbs_manifest_auth_id == 'o11y-copy-reader@pbs!pbs-sync'
+          - _pbs_manifest_secret | length > 0
+          - _pbs_fingerprint | length == 64
+          - _pbs_inventory.status == 'observed'
+          - _pbs_inventory.reason == 'exact_bytes_match'
+          - _pbs_inventory.inventory_fingerprint is match('^[0-9a-f]{64}$')
+        fail_msg: "PBS backup prerequisites or exact inventory provenance are unavailable."
+        quiet: true
+      no_log: true
+
+    - name: Read exact PVE storage configuration before any write
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/storage/{{ _pbs_storage | urlencode }}"
+        method: GET
+        headers: {Authorization: "{{ _pve_auth_header }}"}
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      register: _pbs_pve_storage
+      changed_when: false
+      no_log: true
+
+    - name: Require the existing PBS datastore registration to match primary authority
+      ansible.builtin.assert:
+        that:
+          - _pbs_pve_storage.json.data.type == 'pbs'
+          - _pbs_pve_storage.json.data.server == hostvars[_pbs_primary_host].pbs_api_host
+          - _pbs_pve_storage.json.data.port | int == 8007
+          - _pbs_pve_storage.json.data.datastore == 'o11y'
+          - _pbs_pve_storage.json.data.content == 'backup'
+          - _pbs_pve_storage.json.data.fingerprint | lower | replace(':', '') == _pbs_fingerprint | lower | replace(':', '')
+          - _pbs_pve_storage.json.data.username == 'o11y-backup@pbs!pve-o11y'
+        fail_msg: "The registered PVE backup storage is not the reviewed primary PBS endpoint and datastore."
+        quiet: true
+      no_log: true
+
+    - name: Read the exact source VM status and configuration
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        method: GET
+        headers: {Authorization: "{{ _pve_auth_header }}"}
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      loop:
+        - "{{ _pve_url }}/api2/json/nodes/{{ _pbs_node | urlencode }}/qemu/{{ _pbs_vmid }}/status/current"
+        - "{{ _pve_url }}/api2/json/nodes/{{ _pbs_node | urlencode }}/qemu/{{ _pbs_vmid }}/config"
+      loop_control:
+        label: "declared o11y VM read"
+      register: _pbs_vm_reads
+      changed_when: false
+      no_log: true
+
+    - name: Require the exact running source VM configuration
+      ansible.builtin.assert:
+        that:
+          - _pbs_vm_reads.results | length == 2
+          - _pbs_vm_reads.results[0].json.data.status == 'running'
+          - _pbs_vm_reads.results[1].json.data | length > 0
+        fail_msg: "The declared o11y VM is absent, stopped, or has no readable disk configuration."
+        quiet: true
+      no_log: true
+
+    - name: Read existing exact-store backup snapshots before creating a new one
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/nodes/{{ _pbs_node | urlencode }}/storage/{{ _pbs_storage | urlencode }}/content?content=backup&vmid={{ _pbs_vmid }}"
+        method: GET
+        headers: {Authorization: "{{ _pve_auth_header }}"}
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      register: _pbs_baseline_content
+      changed_when: false
+      no_log: true
+
+    - name: Record the bounded PVE operation window start
+      ansible.builtin.set_fact:
+        _pbs_operation_start: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        _pbs_operation_start_epoch: "{{ now(utc=true, fmt='%s') | int }}"
+        _pbs_baseline_volids: "{{ _pbs_baseline_content.json.data | map(attribute='volid') | list }}"
+      no_log: true
+
+    - name: Start one snapshot-mode backup to the existing primary PBS registration
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/nodes/{{ _pbs_node | urlencode }}/vzdump"
+        method: POST
+        headers: {Authorization: "{{ _pve_auth_header }}"}
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        body_format: form-urlencoded
+        body:
+          vmid: "{{ _pbs_vmid }}"
+          storage: "{{ _pbs_storage }}"
+          mode: snapshot
+        status_code: [200]
+      register: _pbs_backup_start
+      no_log: true
+
+    - name: Retain the exact PVE backup UPID
+      ansible.builtin.set_fact:
+        _pbs_backup_upid: "{{ _pbs_backup_start.json.data }}"
+      no_log: true
+
+    - name: Validate the PVE backup UPID before polling it
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_operations.py"]
+        stdin: "{{ {'operation': 'validate_upid', 'upid': _pbs_backup_upid} | to_json }}"
+        stdin_add_newline: false
+      register: _pbs_backup_upid_check
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require the exact PVE UPID
+      ansible.builtin.assert:
+        that: _pbs_backup_upid_check.rc == 0
+        fail_msg: "PVE did not return a valid task identifier for the requested backup."
+        quiet: true
+      no_log: true
+
+    - name: Poll only the exact PVE UPID until it stops
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/nodes/{{ _pbs_node | urlencode }}/tasks/{{ _pbs_backup_upid | urlencode }}/status"
+        method: GET
+        headers: {Authorization: "{{ _pve_auth_header }}"}
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      register: _pbs_backup_status
+      changed_when: false
+      until: _pbs_backup_status.json.data.status == 'stopped'
+      retries: 1440
+      delay: 60
+      no_log: true
+
+    - name: Require exact PVE backup operation success
+      ansible.builtin.assert:
+        that:
+          - _pbs_backup_status.json.data.status == 'stopped'
+          - _pbs_backup_status.json.data.exitstatus == 'OK'
+        fail_msg: "The exact PVE snapshot-mode backup operation did not succeed."
+        quiet: true
+      no_log: true
+
+    - name: Read the exact-store backup listing after the operation
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/nodes/{{ _pbs_node | urlencode }}/storage/{{ _pbs_storage | urlencode }}/content?content=backup&vmid={{ _pbs_vmid }}"
+        method: GET
+        headers: {Authorization: "{{ _pve_auth_header }}"}
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      register: _pbs_new_content
+      changed_when: false
+      no_log: true
+
+    - name: Select one new snapshot inside the exact operation window
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_operations.py"]
+        stdin: >-
+          {{ {'operation': 'snapshot_from_operation', 'rows': _pbs_new_content.json.data,
+              'vmid': _pbs_vmid, 'storage_id': _pbs_storage,
+              'started_epoch': _pbs_operation_start_epoch | int,
+              'ended_epoch': now(utc=true, fmt='%s') | int,
+              'baseline_volids': _pbs_baseline_volids} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_snapshot_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Retain only the exact new snapshot selectors
+      ansible.builtin.set_fact:
+        _pbs_snapshot: "{{ _pbs_snapshot_raw.stdout | from_json }}"
+        _pbs_operation_end: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+      no_log: true
+
+    - name: Read the manifest through the primary Reader over pinned TLS
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", snapshot-manifest]
+        stdin: >-
+          {{ {'url': _pbs_api_url, 'expected_host': hostvars[_pbs_primary_host].pbs_api_host,
+              'fingerprint': _pbs_fingerprint, 'auth_id': _pbs_manifest_auth_id,
+              'secret': _pbs_manifest_secret, 'backup_id': _pbs_snapshot.backup_id,
+              'backup_time': _pbs_snapshot.backup_time,
+              'include_files': true} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_manifest_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid exact PBS manifest and retain only its stable digest
+      ansible.builtin.assert:
+        that:
+          - _pbs_manifest_raw.rc == 0
+          - (_pbs_manifest_raw.stdout | from_json).artifact_fingerprint is match('^[0-9a-f]{64}$')
+        fail_msg: "The PBS manifest for the exact operation snapshot is unavailable or malformed."
+        quiet: true
+      no_log: true
+
+    - name: Require PBS manifest files to bind the readable VM disk layout
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_operations.py"]
+        stdin: >-
+          {{ {'operation': 'validate_manifest_disk_layout',
+              'manifest_filenames': (_pbs_manifest_raw.stdout | from_json).manifest_filenames,
+              'vm_config': _pbs_vm_reads.results[1].json.data} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_disk_layout_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require every declared backup disk in the PBS manifest
+      ansible.builtin.assert:
+        that:
+          - _pbs_disk_layout_raw.rc == 0
+          - (_pbs_disk_layout_raw.stdout | from_json).source_disk_count > 0
+          - (_pbs_disk_layout_raw.stdout | from_json).manifest_disk_count > 0
+        fail_msg: "The new PBS manifest does not contain the declared source VM configuration and disk set."
+        quiet: true
+      no_log: true
+
+    - name: Compute the fixed logical o11y source fingerprint
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_receipts.py"]
+        stdin: "{{ {'operation': 'source_fingerprint', 'vmid': _pbs_vmid, 'node': _pbs_node} | to_json }}"
+        stdin_add_newline: false
+      register: _pbs_source_raw
+      changed_when: false
+      no_log: true
+
+    - name: Emit the backup receipt bound to the exact UPID and manifest
+      ansible.builtin.include_tasks: tasks/emit-o11y-pbs-receipt.yml
+      vars:
+        pbs_receipt_contract: o11y-pbs-backup/v1
+        pbs_receipt_public_sha: "{{ expected_repository_sha }}"
+        pbs_receipt_private_sha: "{{ site_config_base_sha }}"
+        pbs_receipt_inventory_fingerprint: "{{ _pbs_inventory.inventory_fingerprint }}"
+        pbs_receipt_source_fingerprint: "{{ (_pbs_source_raw.stdout | from_json).source_fingerprint }}"
+        pbs_receipt_artifact_fingerprint: "{{ (_pbs_manifest_raw.stdout | from_json).artifact_fingerprint }}"
+        pbs_receipt_observed_start: "{{ _pbs_operation_start }}"
+        pbs_receipt_observed_end: "{{ _pbs_operation_end }}"
+        pbs_receipt_evidence:
+          backup_upid: "{{ _pbs_backup_upid }}"
+          snapshot:
+            backup_type: vm
+            backup_id: "{{ _pbs_snapshot.backup_id }}"
+            backup_time: "{{ _pbs_snapshot.backup_time }}"
+          source_vmid: "{{ _pbs_vmid }}"
+          source_node: "{{ _pbs_node }}"
+          artifact_fingerprint: "{{ (_pbs_manifest_raw.stdout | from_json).artifact_fingerprint }}"
+          playbook: platform/playbooks/backup-o11y-to-pbs.yml

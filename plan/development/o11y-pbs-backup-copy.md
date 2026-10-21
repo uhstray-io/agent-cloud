@@ -66,6 +66,23 @@ management writes use its native form encoding. `pbs_svc` and `pbs_copy_svc`
 are independent pre-existing guests; this workflow refuses when either is
 missing and provisions neither.
 
+Credential creation and API access use separate paths. The management workflow
+runs `proxmox-backup-manager` only on the authenticated PBS guests to create the
+fixed user/token objects and apply exact ACL entries. Token material is captured
+from stdout only inside `no_log` task state, merged into the existing
+`secret/services/pbs` record with CAS, read back, and then authenticated through
+the pinned HTTPS helper before ACL changes. Existing-but-unrecorded tokens,
+partial identities, or broader effective grants refuse without rotation. API
+configuration requests reuse that same-connection pinning transport; the
+certificate is checked before an auth header or secret body is sent.
+
+The primary PBS API contract is explicitly version-gated to the reviewed
+4.2.8-1 package. The helper uses the documented snapshot verification API and
+the PBS-decoded manifest download route, so DataBlob decompression remains
+inside PBS and only a strict normalized manifest digest leaves the protected
+request state. No transport disables verification without binding the exact
+peer certificate on that request.
+
 ## Implementation order
 
 1. Add and test the shared pure receipt/artifact module first; commit it so the

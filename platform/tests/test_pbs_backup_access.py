@@ -422,6 +422,69 @@ class CopyApiRequestTests(TestCase):
             )
         self.assertEqual(connection.paths, [("GET", "/api2/json/config/sync")])
 
+    def test_exact_task_status_uses_pinned_manager_and_fixed_encoded_upid_path(self):
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return b'{"data":{"status":"stopped","exitstatus":"OK"}}'
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.connected = False
+                self.requests = []
+
+            def connect(self):
+                self.connected = True
+
+            def request(self, method, path, **kwargs):
+                assert self.connected
+                self.requests.append((method, path, kwargs))
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        connection = PinnedConnection()
+        with patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection):
+            result = pbs.copy_api_request(
+                url="https://pbs-copy.internal.test",
+                fingerprint="b" * 64,
+                auth_id=pbs.COPY_MANAGER_TOKEN_ID,
+                secret="private-manager-secret",
+                expected_host="pbs-copy.internal.test",
+                payload={
+                    "operation": "task-status",
+                    "node": "pbs-copy",
+                    "upid": "UPID:pbs-copy:0000ABCD:00000001:5F000000:sync:job1:user@pbs:",
+                },
+            )
+        self.assertEqual(result, {"status": "stopped", "exitstatus": "OK"})
+        self.assertEqual(len(connection.requests), 1)
+        method, path, kwargs = connection.requests[0]
+        self.assertEqual(method, "GET")
+        self.assertIn("/nodes/pbs-copy/tasks/UPID%3Apbs-copy%3A", path)
+        self.assertTrue(kwargs["headers"]["Authorization"].startswith("PBSAPIToken "))
+
+    def test_task_status_rejects_unowned_identity_and_unknown_selector(self):
+        for auth_id, payload in (
+            (pbs.TOKEN_ID, {"operation": "task-status", "node": "pbs", "upid": "UPID:x"}),
+            (pbs.COPY_MANAGER_TOKEN_ID, {
+                "operation": "task-status", "node": "pbs", "upid": "UPID:x", "extra": "x",
+            }),
+        ):
+            with self.subTest(auth_id=auth_id), self.assertRaises(pbs.Refusal):
+                pbs.copy_api_request(
+                    url="https://pbs-copy.internal.test",
+                    fingerprint="b" * 64,
+                    auth_id=auth_id,
+                    secret="private-secret",
+                    expected_host="pbs-copy.internal.test",
+                    payload=payload,
+                )
+
 
 class CopyManagerIdentityTests(TestCase):
     remote_id = "o11y-primary"

@@ -12,7 +12,7 @@ import ssl
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -40,6 +40,8 @@ SUPPORTED_VERSION = (4, 2, 8, 1)
 MAX_API_RESPONSE_BYTES = 1024 * 1024
 MAX_MANIFEST_BLOB_BYTES = 1024 * 1024
 COPY_API_OPERATIONS = {
+    "datastore-read": ("GET", "datastore-item"),
+    "remote-list": ("GET", "remote-collection"),
     "remote-read": ("GET", "remote-item"),
     "remote-create": ("POST", "remote-collection"),
     "remote-update": ("PUT", "remote-item"),
@@ -49,6 +51,7 @@ COPY_API_OPERATIONS = {
     "sync-update": ("PUT", "sync-item"),
     "snapshot-verify": ("POST", "snapshot-verify"),
     "sync-run": ("POST", "sync-run"),
+    "task-status": ("GET", "task-status"),
 }
 
 
@@ -541,6 +544,25 @@ def _copy_api_request_shape(payload: Any) -> tuple[str, str, dict[str, str] | No
                  "PBS sync run contains unknown selectors.")
         identifier = _safe_api_identifier(payload.get("sync_job_id"), "sync job id")
         return method, f"/api2/json/admin/sync/{identifier}/run", None
+    if path_kind == "task-status":
+        allowed_payload_keys = {"operation", "node", "upid"}
+        _require(set(payload) == allowed_payload_keys,
+                 "PBS task status contains unknown selectors.")
+        node = payload.get("node")
+        upid = payload.get("upid")
+        _require(isinstance(node, str)
+                 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", node) is not None,
+                 "PBS task status node is malformed.")
+        _require(isinstance(upid, str) and re.fullmatch(
+            r"UPID:[A-Za-z0-9_.-]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:"
+            r"[A-Za-z0-9_-]+:[A-Za-z0-9_.-]*:[A-Za-z0-9_.@-]*:?", upid
+        ) is not None, "PBS task status UPID is malformed.")
+        return method, f"/api2/json/nodes/{node}/tasks/{quote(upid, safe='')}/status", None
+    if path_kind == "datastore-item":
+        allowed_payload_keys = {"operation", "store"}
+        _require(set(payload) == allowed_payload_keys and payload.get("store") == DATASTORE,
+                 "PBS datastore read is not the fixed o11y datastore.")
+        return method, f"/api2/json/config/datastore/{DATASTORE}", None
     if path_kind.endswith("item"):
         key = "remote_id" if path_kind == "remote-item" else "sync_job_id"
         identifier = _safe_api_identifier(payload.get(key), key.replace("_", " "))
@@ -676,6 +698,12 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
     if isinstance(payload, dict) and payload.get("operation") == "sync-run":
         _require(auth_id == COPY_MANAGER_TOKEN_ID,
                  "PBS protected-copy sync must use the dedicated destination manager identity.")
+    if isinstance(payload, dict) and payload.get("operation") == "task-status":
+        _require(auth_id in {COPY_READER_TOKEN_ID, COPY_MANAGER_TOKEN_ID},
+                 "PBS task status requires a dedicated copy workflow identity.")
+    if isinstance(payload, dict) and payload.get("operation") == "datastore-read":
+        _require(auth_id == COPY_MANAGER_TOKEN_ID,
+                 "PBS protected-copy datastore read requires the dedicated destination manager identity.")
     method, path, body_fields = _copy_api_request_shape(payload)
     connection = _PinnedHTTPSConnection(parsed.hostname, port, fingerprint)
     try:
@@ -698,6 +726,15 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
             raise Refusal("PBS copy API response is not valid JSON.") from exc
         _require(isinstance(decoded, dict) and set(decoded) == {"data"},
                  "PBS copy API response has an unsupported envelope.")
+        if isinstance(payload, dict) and payload.get("operation") == "task-status":
+            data = decoded["data"]
+            _require(isinstance(data, dict)
+                     and data.get("status") in {"running", "stopped"},
+                     "PBS task status returned an unsupported schema.")
+            if data["status"] == "stopped":
+                _require(data.get("exitstatus") == "OK",
+                         "PBS task did not finish successfully.")
+            return {"status": data["status"], "exitstatus": data.get("exitstatus")}
         return decoded["data"]
     finally:
         connection.close()
@@ -705,7 +742,7 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
 
 def read_snapshot_manifest(*, url: str, expected_host: str, fingerprint: str,
                            auth_id: str, secret: str, backup_id: str,
-                           backup_time: int) -> dict[str, Any]:
+                           backup_time: int, include_files: bool = False) -> dict[str, Any]:
     """Read exactly one manifest over a same-connection pinned PBS reader session."""
     _require(auth_id == COPY_READER_TOKEN_ID,
              "PBS manifest read must use the independent source Reader identity.")
@@ -750,10 +787,13 @@ def read_snapshot_manifest(*, url: str, expected_host: str, fingerprint: str,
         _require(manifest["backup_type"] == "vm" and manifest["backup_id"] == backup_id
                  and manifest["backup_time"] == backup_time,
                  "PBS manifest does not match the requested snapshot identity.")
-        return {
+        result = {
             "snapshot": {"backup_type": "vm", "backup_id": backup_id, "backup_time": backup_time},
             "artifact_fingerprint": artifact_fingerprint(manifest),
         }
+        if include_files:
+            result["manifest_filenames"] = [item["filename"] for item in manifest["files"]]
+        return result
     finally:
         connection.close()
 
@@ -871,6 +911,7 @@ def main() -> int:
                     secret=payload.get("secret", ""),
                     backup_id=payload.get("backup_id", ""),
                     backup_time=payload.get("backup_time"),
+                    include_files=payload.get("include_files", False) is True,
                 )
             else:
                 result = authenticate_token(

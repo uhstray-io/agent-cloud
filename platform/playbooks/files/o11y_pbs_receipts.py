@@ -305,6 +305,8 @@ def completed_receipt(
     observed_start: str,
     observed_end: str,
     evidence: Mapping[str, object],
+    status: str = "complete",
+    reason: str = "none",
     now: datetime | None = None,
 ) -> dict[str, object]:
     """Build and validate one complete closed receipt from verified operation facts."""
@@ -312,8 +314,8 @@ def completed_receipt(
     body = {
         "schema_version": SCHEMA_VERSION,
         "contract": contract,
-        "status": "complete",
-        "reason": "none",
+        "status": status,
+        "reason": reason,
         "public_sha": public_sha,
         "private_sha": private_sha,
         "inventory_provenance": "exact_bytes_match",
@@ -427,12 +429,16 @@ def validate_receipt(
     _require(contract in CONTRACTS and _revision(public_sha) and _revision(private_sha), "invalid_input")
     _require(isinstance(receipt, dict) and set(receipt) == ENVELOPE_KEYS, "invalid_input")
     _require(receipt["schema_version"] == SCHEMA_VERSION and type(receipt["schema_version"]) is int, "invalid_input")
-    _require(
-        receipt["contract"] == contract
-        and receipt["status"] == "complete"
-        and receipt["reason"] == "none",
-        "task_binding_mismatch",
-    )
+    readiness = contract == "o11y-pbs-copy-ready/v1"
+    _require(receipt["contract"] == contract, "task_binding_mismatch")
+    if readiness:
+        _require(
+            receipt["status"] == "ready"
+            and receipt["reason"] == "destination_copy_ready_for_isolated_restore",
+            "readback_incomplete",
+        )
+    else:
+        _require(receipt["status"] == "complete" and receipt["reason"] == "none", "task_binding_mismatch")
     _require(receipt["public_sha"] == public_sha and receipt["private_sha"] == private_sha, "task_binding_mismatch")
     _require(receipt["inventory_provenance"] == "exact_bytes_match", "inventory_unavailable")
     _require(_sha(receipt["inventory_fingerprint"]) and _sha(receipt["source_fingerprint"]), "inventory_unavailable")
@@ -750,11 +756,26 @@ def main() -> int:
                 observed_start=request.get("observed_start"),
                 observed_end=request.get("observed_end"),
                 evidence=request.get("evidence"),
+                status=request.get("status", "complete"),
+                reason=request.get("reason", "none"),
             )
         elif operation == "validate_receipt":
             result = validate_receipt(
                 request.get("receipt"), contract=request.get("contract"), public_sha=request.get("public_sha"),
                 private_sha=request.get("private_sha"),
+                expected_artifact_fingerprint=request.get("expected_artifact_fingerprint"),
+            )
+        elif operation == "validate_completed_task":
+            result = validate_completed_task(
+                request.get("task"),
+                request.get("output_rows"),
+                contract=request.get("contract"),
+                public_sha=request.get("public_sha"),
+                private_sha=request.get("private_sha"),
+                playbook=request.get("playbook"),
+                expected_project_id=request.get("expected_project_id"),
+                expected_task_id=request.get("expected_task_id"),
+                expected_launch=request.get("expected_launch"),
                 expected_artifact_fingerprint=request.get("expected_artifact_fingerprint"),
             )
         elif operation == "clean_refusal":
