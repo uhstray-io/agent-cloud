@@ -1,0 +1,433 @@
+<title>Dispatch Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!--
+THESIS: The home screen is the work. Every request is a strip moving through Awaiting approval → Queued → Running → Blocked/paused · Failed → Done, owned by a named skynet role, and selecting one opens its vertical agent → workflow → tasks stepper. Refuses the metrics-dashboard home.
+OWN-WORLD: Control-room HMI greys; color only for state (shape + label, never color alone); one process-blue for actions. Flight-progress strips, vertical steppers, dashed cluster containers, chat composers.
+STORY: An operator scopes to a tenant (sidebar) and org/site/env (scope bar), sees what is stuck, asks about it in plain words, approves what agents propose, and drills down to Semaphore receipts; fine-grained telemetry is one click away in Grafana.
+FIRST VIEWPORT: Sidebar left (tenant switcher, nav with red issue badges, agent roles). Scope bar + iteration on top. Business-domain tiles, collapsible hierarchy, "Ask about current work" composer, then six lanes (Done collapsed). Details panel right, minimizable to a summary rail.
+FORM: Prototype C of 3, chosen 2026-10-20 and refined through 30+ review comments; concept-seed returned no roll (degraded); structure pinned by the brief.
+-->
+<link rel="stylesheet" href="shared.css">
+<style>
+  .app { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100%; }
+  .side { background: var(--panel); border-right: 1px solid var(--line); padding: 14px 10px; padding-left: max(10px, env(safe-area-inset-left, 0px)); display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; overflow: auto; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -.02em; padding: 2px 8px 14px; }
+  .brand .mark { width: 26px; height: 26px; border-radius: 7px; background: var(--fg); color: var(--bg); display: grid; place-items: center; font: 700 11px var(--mono); }
+  .side a { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px; color: var(--fg2); text-decoration: none; font-size: 13.5px; font-weight: 550; }
+  .side a:hover { background: var(--line); color: var(--fg); }
+  .side a[aria-current="page"] { background: var(--raised); color: var(--fg); box-shadow: var(--shadow); }
+  .side a[aria-current="page"] svg { color: var(--accent); }
+  .side a .n { margin-left: auto; font: 600 11px var(--mono); color: var(--fg3); }
+  .tenant-switch { height: auto; width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid var(--line-strong); background: var(--raised); justify-content: flex-start; text-align: left; }
+  .tenant-switch:hover { border-color: var(--accent); background: var(--raised); }
+  .tenant-switch .tw { display: grid; flex: 1; min-width: 0; line-height: 1.25; }
+  .tenant-switch .tw b { font-size: 14px; overflow: hidden; text-overflow: ellipsis; }
+  .side a.role-link { padding: 6px 8px; }
+  .side a.role-link small { font-size: 11px; }
+  .side a .n + .n { margin-left: 4px; }
+  .side a .n.crit { color: #fff; background: var(--crit); border-radius: 99px; padding: 0 6px; }
+  .side .grp { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); padding: 14px 10px 4px; }
+  .top { display: flex; align-items: center; gap: 10px; padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; flex-wrap: wrap; }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+  .top .scope { flex: 1; min-width: 0; }
+  #view { padding-block: 18px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); min-width: 0; }
+  .c-home { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 18px; align-items: start; }
+  .c-main { display: grid; gap: 14px; min-width: 0; }
+  .ribbon { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+  .site { display: grid; gap: 4px; padding: 10px 12px 10px; border-radius: var(--r-sm); background: var(--raised); border: 1px solid var(--line); position: relative; overflow: hidden; cursor: pointer; text-align: left; }
+  .site::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: var(--ok); }
+  .site.warn::before { background: var(--warn); } .site.crit::before { background: var(--crit); }
+  .site:hover { border-color: var(--line-strong); }
+  .site b { font-size: 13px; } .site small { font-size: 11.5px; color: var(--fg3); }
+  /* chat composer: reads as a conversation with agent-cloud, not a search field */
+  .qchat { padding: 14px 16px; display: grid; gap: 10px; }
+  .qchat-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .qchat-h b { font-size: 14px; }
+  .qchat-h .faint { font-size: 12px; }
+  .qanswer { display: grid; gap: 6px; padding: 12px 14px; border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--line); font-size: 13px; }
+  .qanswer ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+  .qchat .composer-box textarea { min-height: 52px; font-size: 15px; padding: 12px 14px 4px; }
+  .board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; gap: 10px; align-items: start; }
+  .board.done-open { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .lane-collapsed { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 46px; padding: 10px 4px; cursor: pointer; color: var(--fg2); font: inherit; }
+  .lane-collapsed:hover { border-color: var(--accent); color: var(--fg); }
+  .lane-collapsed .vert { writing-mode: vertical-rl; font-size: 12.5px; font-weight: 600; }
+  .lane-collapsed .num { font: 600 11px var(--mono); color: var(--fg3); }
+  .lane { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 8px; display: grid; gap: 7px; min-width: 0; }
+  .lane-h { display: flex; align-items: center; gap: 6px; padding: 2px 4px 4px; }
+  .lane-h b { font-size: 12.5px; flex: 1; }
+  .lane-h .num { font: 600 11px var(--mono); color: var(--fg3); }
+  .lane .strip-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .lane .strip-meta .mono { display: none; }
+  .lane-empty { font-size: 12px; color: var(--fg3); padding: 10px 6px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--r-sm); }
+  .c-drill { position: sticky; top: calc(70px + env(safe-area-inset-top, 0px)); max-height: calc(100vh - 90px); overflow: auto; }
+  .c-home.drill-min { grid-template-columns: minmax(0, 1fr) 44px; }
+  .c-rail { position: sticky; top: calc(70px + env(safe-area-inset-top, 0px)); display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); min-height: 160px; }
+  .c-rail.has-sel { cursor: pointer; } .c-rail.has-sel:hover { border-color: var(--accent); }
+  .c-rail .st { justify-content: center; }
+  .steps.vert { flex-direction: column; height: auto; width: 6px; margin: 0; }
+  .steps.vert i { flex: none; height: 16px; }
+  .rail-needs { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--warn-bg); }
+  .rail-needs.crit { background: var(--crit-bg); }
+  .rail-needs.warn svg { color: var(--warn); } .rail-needs.crit svg { color: var(--crit); }
+  .c-rail-label { writing-mode: vertical-rl; font: 600 11px var(--mono); color: var(--fg3); letter-spacing: .04em; }
+  .drill-h { display: flex; align-items: center; gap: 4px; padding: 8px 8px 0 14px; }
+  .drill-min .board { grid-template-columns: repeat(5, minmax(0, 1fr)) auto; }
+  .drill-min .board.done-open { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .filter-chip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; }
+  .site[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .iter { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--raised); }
+  .c-topo { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 16px; align-items: start; }
+  .c-tree { position: sticky; top: calc(70px + env(safe-area-inset-top, 0px)); max-height: calc(100vh - 90px); overflow: auto; }
+  .ctxask { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 12px; border: 1.5px solid var(--line-strong); border-radius: 10px; background: var(--raised); }
+  .ctxask:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+  .ctxask input { border: 0; background: transparent; outline: none; flex: 1; min-width: 0; font-size: 14px; }
+  .sel-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--fg2); padding: 0 4px; }
+  @media (max-width: 1380px) { .board, .board.done-open { grid-template-columns: repeat(3, minmax(0, 1fr)); } .lane-collapsed { flex-direction: row; width: auto; justify-content: center; } .lane-collapsed .vert { writing-mode: horizontal-tb; } }
+  @media (max-width: 1100px) { .c-home, .c-home.drill-min, .c-topo { grid-template-columns: 1fr; } .c-rail { position: static; flex-direction: row; min-height: 0; padding: 4px 8px; } .c-rail-label { writing-mode: horizontal-tb; } .c-rail .steps.vert { flex-direction: row; width: 90px; height: 4px; } .c-rail .steps.vert i { flex: 1; height: 4px; } .drill-min .board, .drill-min .board.done-open { grid-template-columns: repeat(3, minmax(0, 1fr)); } .lane-collapsed { flex-direction: row; width: auto; justify-content: center; } .lane-collapsed .vert { writing-mode: horizontal-tb; } .c-tree { position: static; max-height: 340px; } .c-drill { position: static; max-height: none; } }
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; }
+    .side { position: static; height: auto; flex-direction: row; overflow-x: auto; padding: 8px max(16px, env(safe-area-inset-left, 0px)); border-right: 0; border-bottom: 1px solid var(--line); }
+    .side .grp, .side .n { display: none; }
+    .brand { padding: 0 8px 0 0; }
+    .side a { flex: none; }
+    .board, .board.done-open, .drill-min .board, .drill-min .board.done-open { grid-template-columns: 1fr; }
+    .hide-sm { display: none; }
+  }
+</style>
+
+<div class="app">
+  <nav class="side" id="side" aria-label="Main"></nav>
+  <div style="min-width:0">
+    <header class="top">
+      <div id="scope" class="scope"></div>
+      <span class="iter hide-sm" title="Agile iteration this work belongs to"><i data-lucide="calendar-range"></i>Iteration 42 · Oct 14 – 27</span>
+      <span class="synthetic" title="Every tenant, person and figure here is an example"><i data-lucide="flask-conical"></i><span class="hide-sm">Synthetic data</span></span>
+      <button class="btn sm ghost" id="tagsBtn" aria-pressed="true"><i data-lucide="tags"></i><span class="hide-sm">Tags</span></button>
+      <button class="btn sm" id="picksBtn"><i data-lucide="heart"></i>Kept <b data-picks-count>0</b></button>
+      <button class="iconbtn" id="themeBtn" aria-label="Toggle theme"><i data-lucide="sun-moon"></i></button>
+    </header>
+    <main id="view"></main>
+  </div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js" integrity="sha384-m/CoPp6wBQz6MoZXP+VveuxfvSx0NGXiQyyakzXVOVHgG1fP5bM/UiO4pSNPV6PT" crossorigin="anonymous"></script>
+<script src="data.js"></script>
+<script src="kit.js"></script>
+<script>
+const { D, ic, esc, st, comp } = K;
+K.opts.tenantInSidebar = true; // the sidebar brand is the only place the tenant shows or changes
+let SCOPE = ["Uhstray.io", "Platform", "site-hq", "prod"];
+let selKey = "AC-1184";
+let drillOpen = true; // the details panel; it also folds away whenever nothing is selected
+// the request dashboard from prototype A lives here too, beside the board
+const NAVX = [...K.NAV, ["dashboard", "Dashboard", "layout-dashboard"], ["agentrole", "Agent role", "bot"]];
+let cur = "home";
+let selRole = "service-agent"; // the skynet role shown on the agent-role page
+window.onWorkChanged = () => side(cur);
+let TARGET = null; // a tenant/org/site/cluster/host picked from the hierarchy
+// Work filter: picking an asset shows only work aimed at it or anything beneath it
+let FILTER = null; // {kind, name}
+const toAsset = (label) => { const [kind, ...rest] = label.split(": "); return { kind, name: rest.join(": ") }; };
+// the scope bar (tenant · org · site · env) bounds everything on the board; tiles and tree rows narrow it further
+const matchesScope = (w) => w.scope[0] === SCOPE[0] && w.scope[1] === SCOPE[1] && w.scope[2] === SCOPE[2] && w.scope[3] === SCOPE[3];
+function matches(w) {
+  return matchesScope(w) && (!FILTER || K.workMatches(w, FILTER));
+}
+// "N workflows running in this scope" banners land here: Work, filtered to that scope
+window.onGotoWork = (a) => { FILTER = a; TARGET = `${a.kind}: ${a.name}`; if ((location.hash || "#home") === "#home") route(); else location.hash = "home"; };
+window.onScopeChange = (s) => { SCOPE = s; TARGET = null; FILTER = null; topoSel = null; K.dash.state.target = null; route(); K.toast(`Scope: ${s.join(" › ")}`, "crosshair"); };
+window.onQueueHere = (label, node) => {
+  document.querySelector(".drawer")?.remove();
+  if (cur === "topology") {
+    mapPick = [];
+    const [kind, name] = label.split(": "), t = D.tenants.find((x) => x.name === SCOPE[0]);
+    const o = kind === "Site" && t?.orgs.find((x) => x.sites.some((y) => y.name === name));
+    if (o) { const site = o.sites.find((y) => y.name === name); SCOPE = [SCOPE[0], o.name, name, site.envs.includes(SCOPE[3]) ? SCOPE[3] : site.envs[0]]; imapNode = null; route(); }
+    topoSelect(label, node); return;
+  }
+  if (cur === "dashboard") { K.dash.state.target = label; route(); document.getElementById("askText")?.focus(); return; }
+  TARGET = label; FILTER = toAsset(label);
+  if ((location.hash || "#home") !== "#home") location.hash = "home";
+  setTimeout(() => { route(); const q = document.getElementById("quickText"); q.focus(); }, 30);
+};
+const LANES = [["proposed", "Awaiting approval", "hourglass"], ["queued", "Queued", "list-todo"], ["running", "Running", "loader-circle"], ["blocked", "Blocked / paused", "shield-alert"], ["failed", "Failed", "octagon-x"], ["done", "Done", "circle-check"]];
+const STUCK = ["blocked", "failed", "paused"];
+const laneOf = (w) => (w.state === "paused" ? "blocked" : w.state);
+let doneOpen = false; // Done stays collapsed until asked for
+
+function side(cur) {
+  const mine = D.work.filter((w) => w.scope[0] === SCOPE[0]), stuck = mine.filter((w) => STUCK.includes(w.state));
+  const inT = (hostId) => K.findHost(hostId)?.path[0] === SCOPE[0];
+  const downHosts = Object.keys(D.capacity).filter(inT).map((id) => K.findHost(id).h).filter((h) => h.st === "crit"), downVms = D.vms.filter((v) => v.st === "crit" && inT(v.node));
+  const counts = { work: mine.filter((w) => w.state !== "done").length, services: K.tenantServices().filter((s) => s.st === "crit").length, stuck: stuck.length, compute: downHosts.length + downVms.length };
+  const computeTip = [...downHosts.map((h) => `${h.name} (node)`), ...downVms.map((v) => `${v.name} (VM)`)].join(", ");
+  // Work is the board itself (one list, one place), so it has no separate entry
+  const groups = [["", ["dashboard", "home"]],["Infrastructure", ["topology", "services", "compute", "telemetry"]], ["Governance", ["access", "secrets", "policy"]], ["Automation", ["agents", "llm", "cicd"]]];
+  document.getElementById("side").innerHTML = `<button type="button" class="brand scope-chip tenant-switch" data-level="0" aria-haspopup="listbox" title="Switch tenant"><span class="mark">ac</span><span class="tw"><small>agent-cloud · tenant</small><b>${esc(SCOPE[0])}</b></span>${ic("chevrons-up-down")}</button>` + groups.map(([g, ids]) =>
+    (g ? `<div class="grp">${g}</div>` : "") + ids.map((id) => { const [, label, icon] = NAVX.find((n) => n[0] === id);
+      const n = id === "home" ? `<span class="n" title="${counts.work} open work items">${counts.work}</span>${counts.stuck ? `<span class="n crit" title="${counts.stuck} blocked, failed or paused: ${esc(stuck.map((w) => w.key).join(", "))}">${counts.stuck}</span>` : ""}`
+        : id === "services" && counts.services ? `<span class="n crit" title="${counts.services} down">${counts.services}</span>`
+        : id === "compute" && counts.compute ? `<span class="n crit" title="Down: ${esc(computeTip)}">${counts.compute}</span>` : "";
+      return `<a href="#${id}" ${id === cur ? 'aria-current="page"' : ""}>${ic(id === "home" ? "list-todo" : icon)}${id === "home" ? "Work" : label}${n}</a>`; }).join("")).join("") +
+    // skynet roles: pick one to see only the work it owns or takes part in
+    `<div class="grp">Agent roles</div>` + D.agentGroups[0].members.filter((m) => m.dynamic).map((m) => { const L = K.roleLoad(m.name);
+      return `<a href="#agentrole" class="role-link" data-role="${m.name}" ${cur === "agentrole" && selRole === m.name ? 'aria-current="page"' : ""}>${K.roleTile(m)}<span class="grow" style="display:grid;min-width:0"><span>${m.name}</span><small class="faint" style="font-weight:500">${m.domain}</small></span>${m.planned ? `<span class="n" title="Not live yet">planned</span>` : L.now.length ? `<span class="n" title="${L.now.length} assigned now">${L.now.length}</span>` : ""}</a>`; }).join("") +
+    `<span style="flex:1"></span><a href="#access" title="Signed in via Authentik · platform-admins"><span class="av human" style="background:#15191e">JW</span><span>You<br><small class="faint" style="font-weight:500">via Authentik</small></span></a>`;
+}
+
+// business domains, not org/site (the scope bar already picks those): health of the domain's services + its open and stuck work in scope
+function domainTiles() {
+  const svcs = K.tenantServices(), inScope = D.work.filter((w) => matchesScope(w) && w.state !== "done");
+  return D.domains.map(([name, icon]) => {
+    const ss = svcs.filter((x) => x.domain === name), worst = ss.some((x) => x.st === "crit") ? "crit" : ss.some((x) => x.st === "warn") ? "warn" : "ok";
+    const ws = inScope.filter((w) => K.domainOfWork(w) === name), stuck = ws.filter((w) => STUCK.includes(w.state)).length;
+    return `<button class="site ${worst}" type="button" aria-pressed="${FILTER?.kind === "Domain" && FILTER.name === name}" title="Show only ${esc(name)} work"><small class="row" style="gap:4px">${ic(icon)}${ss.length} ${ss.length === 1 ? "service" : "services"}</small><span class="row"><b class="grow">${esc(name)}</b><span class="rollup"><span title="Open work">${ic("list-todo")}${ws.length}</span>${stuck ? `<span title="Blocked, failed or paused" style="color:var(--crit)">${ic("octagon-x")}${stuck}</span>` : ""}</span></span></button>`;
+  }).join("");
+}
+
+// minimized details: a summary that fits a 44px column (key, state, agent, step progress, what needs you)
+function railHtml(sel) {
+  if (!sel) return `<aside class="c-rail" aria-label="Details panel, minimized"><button class="iconbtn" disabled aria-label="Select a strip to see its details" title="Select a strip to see its details">${ic("panel-right-open")}</button><span class="c-rail-label">Details</span></aside>`;
+  const curStep = sel.steps.find((x) => x[1] !== "done"), a = D.agents[sel.agent];
+  const needs = { proposed: ["hourglass", "Needs your approval"], blocked: ["shield-alert", "Blocked by policy"], failed: ["octagon-x", "Failed"], paused: ["circle-pause", "Paused"] }[sel.state];
+  const tip = `${sel.key} · ${sel.title} · ${K.stateLabel[sel.state]}${curStep ? ` · step: ${curStep[0]}` : ""} · ${a.name}. Click to open details.`;
+  return `<aside class="c-rail has-sel" data-drill-open role="button" tabindex="0" aria-label="${esc(tip)}" title="${esc(tip)}">
+    <span class="iconbtn" aria-hidden="true">${ic("panel-right-open")}</span>
+    <span class="c-rail-label">${esc(sel.key)}</span>
+    ${st(K.stateSt[sel.state], "")}
+    <span class="av" style="background:${a.color}" title="${esc(a.name)}">${ic(a.icon)}</span>
+    <div class="steps vert" aria-hidden="true">${sel.steps.map((x) => `<i class="${{ done: "done", run: "run", fail: "fail", wait: "wait", todo: "" }[x[1]]}"></i>`).join("")}</div>
+    ${needs ? `<span class="rail-needs ${sel.state === "proposed" || sel.state === "paused" ? "warn" : "crit"}" title="${needs[1]}">${ic(needs[0])}</span>` : ""}
+  </aside>`;
+}
+
+// ---- the Work chat box asks about current work; a new request is the secondary mode ----
+let qMode = "ask", lastQA = null;
+const selWork = () => D.work.find((w) => w.key === selKey && matches(w));
+const qTarget = () => (selWork() ? selWork().key : FILTER ? `${FILTER.kind}: ${FILTER.name}` : qMode === "new" && TARGET ? TARGET : `${SCOPE[2]} · ${SCOPE[3]}`);
+const qPlaceholder = () => (qMode === "new" ? (TARGET ? `Tell agent-cloud what to do on ${TARGET}…` : "Describe new work, e.g. “rotate the postiz signing secret”")
+  : selWork() ? `Ask about ${selWork().key}: why is it ${K.stateLabel[selWork().state].toLowerCase()}, what's next…` : `Ask about the work in ${qTarget()}…`);
+function qChips() {
+  if (qMode === "new") return ["Rotate the postiz signing secret", "Upgrade n8n after a database backup", "Give the research team an LLM key"];
+  const w = selWork();
+  return [...(w ? [`Why is ${w.key} ${K.stateLabel[w.state].toLowerCase()}?`] : []), "What's blocked and what does it need?", "What failed?", "What needs my approval?", "What's running right now?"];
+}
+function reasonOf(w) {
+  if (w.state === "blocked") return w.opa.rule;
+  if (w.state === "failed") return (w.log ?? []).filter((l) => l[0] === "err").map((l) => l[1].trim()).pop() ?? "its Semaphore task failed";
+  if (w.state === "paused") return w.why ?? "paused";
+  if (w.state === "proposed") return w.opa.cond ?? "waiting for approval";
+  const cur = w.steps.find((x) => x[1] !== "done");
+  return cur ? `${cur[0]} (${K.currentRole(w)})` : "finishing";
+}
+const NEXT = { blocked: "Propose policy change", failed: "Ask skynet to retry", paused: "Resume", proposed: "Approve and queue" };
+function answerWork(q) {
+  const t = q.toLowerCase(), inScope = D.work.filter(matches), k = (q.match(/AC-\d+/i) || [])[0]?.toUpperCase();
+  // a named key wins; then a category question; only then "this/it" falls back to the selected item
+  const cat = /approv|waiting on me|review/.test(t) ? "approval" : /block|stuck/.test(t) ? "stuck" : /fail|error|broke/.test(t) ? "failed" : /running|in progress|right now|doing/.test(t) ? "running" : null;
+  const w = k ? D.work.find((x) => x.key === k) : !cat && /\b(this|it|selected)\b/.test(t) ? selWork() : null;
+  const list = (items, empty) => ({ items, empty });
+  if (w) { const cur = w.steps.find((x) => x[1] !== "done"), next = w.steps[w.steps.indexOf(cur) + 1];
+    return { q, title: `${w.key}: ${w.title}`, lines: [`It is ${K.stateLabel[w.state].toLowerCase()}: ${reasonOf(w)}.`, cur ? `Current step "${cur[0]}" is owned by ${K.currentRole(w)}${next ? `; after that, "${next[0]}".` : "; it's the last step."}` : "All steps are done.", NEXT[w.state] ? `What it needs: ${NEXT[w.state].toLowerCase()}.` : `Requested by ${D.people[w.by]?.name ?? w.by}, ${w.age}${w.age === "now" ? "" : " ago"}.`], ...list([w]) }; }
+  if (cat === "approval") { const xs = inScope.filter((x) => x.state === "proposed"); return { q, title: `${xs.length} waiting on approval`, lines: xs.map((x) => `${x.key}: ${reasonOf(x)}.`), ...list(xs, "Nothing is waiting on you.") }; }
+  if (cat === "stuck") { const xs = inScope.filter((x) => STUCK.includes(x.state)); return { q, title: `${xs.length} stuck in scope`, lines: xs.map((x) => `${x.key} is ${K.stateLabel[x.state].toLowerCase()}: ${reasonOf(x)}. Next: ${NEXT[x.state].toLowerCase()}.`), ...list(xs, "Nothing is blocked, failed or paused.") }; }
+  if (cat === "failed") { const xs = inScope.filter((x) => x.state === "failed"); return { q, title: `${xs.length} failed`, lines: xs.map((x) => `${x.key}: ${reasonOf(x)}.`), ...list(xs, "Nothing failed in this scope.") }; }
+  if (cat === "running") { const xs = inScope.filter((x) => x.state === "running"); return { q, title: `${xs.length} running`, lines: xs.map((x) => `${x.key}: ${reasonOf(x)}.`), ...list(xs, "Nothing is running right now.") }; }
+  const c = (st) => inScope.filter((x) => x.state === st).length;
+  return { q, title: `Work in ${FILTER ? `${FILTER.kind}: ${FILTER.name}` : `${SCOPE[2]} · ${SCOPE[3]}`}`, lines: [`${c("running")} running, ${c("queued")} queued, ${c("proposed")} waiting on approval, ${inScope.filter((x) => STUCK.includes(x.state)).length} stuck, ${c("done")} done.`, "Ask about a key (e.g. AC-1184), or what's blocked, failed, waiting or running."], items: inScope.filter((x) => STUCK.includes(x.state) || x.state === "proposed"), empty: "" };
+}
+const qAnswerHtml = (a) => `<div class="qanswer" role="status"><div class="row"><span class="faint grow" style="font-size:12px">“${esc(a.q)}”</span><button type="button" class="iconbtn" data-qclear aria-label="Dismiss answer" style="width:24px;height:24px">${ic("x")}</button></div>
+  <b>${esc(a.title)}</b>${a.lines.length ? `<ul>${a.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : `<p class="faint" style="margin:0">${esc(a.empty)}</p>`}
+  ${a.items.length ? `<div class="row wrap" style="gap:6px">${a.items.map((x) => `<button type="button" class="btn sm ghost mono" data-choose="${x.key}">${x.key}</button>`).join("")}</div>` : ""}
+  <span class="faint" style="font-size:11.5px">Answered from the work queue (example data). In the console, skynet answers with the live plan, logs and receipts.</span></div>`;
+
+function home() {
+  const sel = D.work.find((w) => w.key === selKey);
+  const svcCrit = K.tenantServices().filter((s) => s.st === "crit").length, svcWarn = K.tenantServices().filter((s) => s.st === "warn").length;
+  return `<div class="c-home${sel && drillOpen ? "" : " drill-min"}"><div class="c-main">
+    ${comp("C.domain-ribbon", "Business-domain ribbon (health + work per domain)", `<div class="ribbon">${domainTiles()}</div>`, "", "div")}
+    ${comp("K.hier", "Hierarchy with health rollups", `<details class="card"><summary class="card-h" style="cursor:pointer;list-style:none">${ic("layers")}<h3>Tenants, sites, clusters and hosts</h3><span class="faint" style="font-size:12px">Press + on any row to show only its work</span>${ic("chevron-down")}</summary><div class="card-b">${K.hier()}</div></details>`, "", "div")}
+    ${comp("C.quick-add", "Ask about current work (new request is secondary)", `<form class="card qchat" id="quick">
+      <div class="qchat-h"><span class="av" style="background:#2448b8">${ic("bot")}</span><b>${qMode === "ask" ? "Ask about current work" : "New request"}</b><span class="faint grow">${qMode === "ask" ? "Answers come from the work in scope: what is running, waiting, blocked or failed, and why." : "Describe new work in plain words. skynet plans it, OPA checks it, you approve it."}</span>
+        <div class="seg" role="group" aria-label="Composer mode"><button type="button" data-qmode="ask" aria-pressed="${qMode === "ask"}">Ask about work</button><button type="button" data-qmode="new" aria-pressed="${qMode === "new"}">New request</button></div></div>
+      <div class="composer-box"><textarea id="quickText" rows="2" placeholder="${esc(qPlaceholder())}" aria-label="${qMode === "ask" ? "Ask about current work" : "Describe new work"}"></textarea>
+        <div class="composer-foot"><span class="tag" title="${qMode === "ask" ? "Questions are about this work" : "New work applies to this target"}">${ic("crosshair")}${esc(qTarget())}</span><span class="grow"></span><span class="faint hide-sm" style="font-size:12px">Enter to send · Shift+Enter for a new line</span><button class="btn primary sm" type="submit">${ic(qMode === "ask" ? "message-circle-question" : "send-horizontal")}${qMode === "ask" ? "Ask" : "Send"}</button></div></div>
+      <div class="chips">${qChips().map((c) => `<button type="button" class="chip" data-qchip>${esc(c)}</button>`).join("")}</div>
+      ${qMode === "ask" && lastQA ? qAnswerHtml(lastQA) : ""}
+    </form>`, "", "div")}
+    ${comp("C.board", "Work board: lanes of strips, Done collapsed", `${FILTER ? `<div class="filter-chip"><span class="tag accent">${ic("filter")}${esc(FILTER.kind)}: ${esc(FILTER.name)}</span><span class="faint num">${D.work.filter(matches).length} of ${D.work.filter(matchesScope).length} work items in scope</span><button class="btn sm ghost" data-clear-filter>${ic("x")}Show all work</button></div>` : ""}<div class="board${doneOpen ? " done-open" : ""}">${LANES.map(([id, label, icon]) => { const ws = D.work.filter((w) => laneOf(w) === id && matches(w));
+      if (id === "done" && !doneOpen) return `<button type="button" class="lane lane-collapsed" data-done-toggle aria-expanded="false" title="Show ${ws.length} done ${ws.length === 1 ? "item" : "items"}">${ic(icon)}<span class="vert">Done</span><span class="num">${ws.length}</span>${ic("chevron-left")}</button>`;
+      return `<section class="lane" aria-label="${label}"><div class="lane-h">${ic(icon, id === "running" ? "spin" : "")}<b>${label}</b><span class="num">${ws.length}</span>${id === "done" ? `<button class="iconbtn" data-done-toggle aria-expanded="true" aria-label="Collapse Done" title="Collapse Done" style="width:24px;height:24px">${ic("chevron-right")}</button>` : ""}</div>${ws.length ? ws.map((w) => K.strip(w, w.key === selKey)).join("") : `<div class="lane-empty">Nothing here</div>`}</section>`; }).join("")}</div>`, "", "div")}
+    </div>
+    ${sel && drillOpen
+      ? `<aside class="c-drill" id="drill" aria-live="polite">${comp("K.drill", "Drill-down: agent → tasks → workflows", `<div class="card"><div class="drill-h"><span class="label grow">Details</span><button class="iconbtn" data-drill-min aria-label="Minimize details" title="Minimize: give Work the full width">${ic("panel-right-close")}</button><button class="iconbtn" data-drill-close aria-label="Close details" title="Deselect">${ic("x")}</button></div><div class="card-b">${K.drill(sel)}</div></div>`, "", "div")}</aside>`
+      : railHtml(sel)}
+  </div>`;
+}
+
+// Topology: B's tenant → host tree beside the map, plus an ask bar aimed at whatever is selected
+let topoSel = null; // {label, node}
+let topoMode = "map"; // "map" = compute (site → cluster → node), "net" = network segments, "flows" = guardrail-layer dependency map
+let imapNode = null;  // the node expanded on the infrastructure map
+const curSite = () => D.tenants.find((t) => t.name === SCOPE[0])?.orgs.flatMap((o) => o.sites).find((x) => x.name === SCOPE[2]);
+const mapHead = (title, sub) => `<div class="card-h" style="flex-wrap:wrap"><div class="grow"><h3>${title}</h3><span class="faint" style="font-size:12.5px">${sub}</span></div><div class="seg" role="group" aria-label="Map view"><button type="button" data-tmode="map" aria-pressed="${topoMode === "map"}">Compute Topology</button><button type="button" data-tmode="net" aria-pressed="${topoMode === "net"}">Network Topology</button><button type="button" data-tmode="flows" aria-pressed="${topoMode === "flows"}">Data flows</button></div></div>`;
+const toAssetKind = (label) => { const [kind, ...rest] = label.split(": "); return { kind, name: rest.join(": ") }; };
+const topoTarget = () => topoSel?.label ?? `Site: ${SCOPE[2]}`;
+let mapPick = []; // compute-map selection: [{kind: Host|VM|Service, id, name}]
+const pickName = (m) => (m.kind === "Host" ? K.findHost(m.id).h.name : m.kind === "Service" ? D.svc(m.id).name : m.id);
+const topoAsset = () => topoSel?.group ?? (topoSel ? toAssetKind(topoSel.label) : { kind: "Site", name: SCOPE[2] });
+function pickStatus(m) { return m.kind === "Host" ? K.findHost(m.id).h.st : m.kind === "Service" ? D.svc(m.id).st : D.vms.find((v) => v.name === m.id)?.st ?? "idle"; }
+function selLine() {
+  if (topoSel?.group) return `<b>${mapPick.length} selected</b>${mapPick.map((m) => `<span class="imap-chip picked"><span class="dot ${pickStatus(m)}"></span>${esc(pickName(m))}</span>`).join("")}<span class="faint">Shift-click on the map to add or remove</span><button class="btn sm ghost" data-clear-sel>${ic("x")}Clear</button>`;
+  const f = topoSel && K.findHost(topoSel.node), s = topoSel && D.svc(topoSel.node);
+  if (!topoSel) return `<span class="faint">Pick a row in the tree or a service on the map to aim requests at it.</span>`;
+  const stt = f ? f.h.st : s ? s.st : "ok", why = f?.h.why ?? s?.why;
+  return `${st(stt, null, true)}<b>${esc(topoTarget())}</b>${f ? `<span class="mono faint">${esc(f.path.join(" › "))}</span>` : s ? `<span class="mono faint">${esc(s.where)}</span>` : ""}${why ? `<span>${esc(why)}</span>` : ""}${s ? `<button class="btn sm ghost" data-svc-row="${s.id}">${ic("panel-right-open")}Details</button>` : f && D.capacity[topoSel.node] ? `<button class="btn sm ghost" data-resource="Node:${topoSel.node}">${ic("panel-right-open")}Inspect</button>` : ""}<button class="btn sm ghost" data-clear-sel>${ic("x")}Clear</button>`;
+}
+function topoView() {
+  return `<div class="view"><div class="view-h"><h1>${ic("waypoints", "i-lg")}Topology</h1><span class="authority">${ic("network")}Source of truth: NetBox + service inventory</span><p>Pick a scope on the left; the map shows services by guardrail layer and how they integrate. Requests in the ask bar go to whatever you picked.</p></div>
+    <div class="c-topo">
+      <aside class="card card-b c-tree">${comp("B.scope-tree", "Tenant → host tree with rollups", `<div class="stack" style="gap:8px"><div class="row"><span class="label grow">Scope</span><button class="iconbtn" data-add-site aria-label="Add site" title="Add a site">${ic("plus")}</button></div>${K.hier()}
+        <div class="label" style="margin-top:8px">Environments</div><div class="seg" id="envSeg">${["prod", "dev", "local"].map((e) => `<button type="button" aria-pressed="${e === SCOPE[3]}">${e}</button>`).join("")}</div></div>`, "", "div")}</aside>
+      <div class="stack" style="min-width:0">
+        ${comp("B.context-ask", "Chat composer aimed at the selection", `<div class="stack" style="gap:6px"><form class="card qchat" id="ctxask">
+          <div class="qchat-h"><span class="av" style="background:#2448b8">${ic("bot")}</span><b>Ask agent-cloud about <span id="ctxHead">${esc(topoTarget().split(": ")[1] ?? topoTarget())}</span></b><span class="faint">Plain words. What you send becomes a proposal in Work for approval.</span></div>
+          <div class="composer-box"><textarea id="ctxText" rows="2" placeholder="Ask about ${esc(topoTarget())}…" aria-label="Message agent-cloud about the selection"></textarea>
+            <div class="composer-foot"><span class="tag" id="ctxTarget" title="Requests apply to this target">${ic("crosshair")}${esc(topoTarget())}</span><span class="grow"></span><span class="faint hide-sm" style="font-size:12px">Enter to send · Shift+Enter for a new line</span><button class="btn primary sm" type="submit">${ic("send-horizontal")}Send</button></div></div>
+          <div class="chips" id="ctxChips">${ctxChips()}</div></form><div class="sel-line" id="selLine">${selLine()}</div></div>`, "", "div")}
+        <div id="topoBanner">${K.scopeBanner(topoAsset())}</div>
+        ${topoMode === "map"
+          ? comp("C.infra-map", "Compute topology: site → cluster → node → hosts", `<div class="card imap">${mapHead("Compute topology", "Select a node to see what it hosts; inspect any site, cluster or node.")}${K.infraMap(curSite(), imapNode, new Set(mapPick.map((m) => `${m.kind}:${m.id}`)))}</div>`, "", "div")
+          : topoMode === "net"
+          ? comp("C.network-map", "Network topology: ingress → gateway → segments", `<div class="card imap">${mapHead("Network topology", "How traffic reaches this site and which segment each host, VM and service sits on.")}${K.networkMap(curSite())}</div>`, "", "div")
+          : comp("K.topology", "Dependency map (4-layer)", `<div class="card">${mapHead("Data flows", "Services by guardrail layer and how they integrate.")}<div class="card-b">${K.legend()}${K.topology()}</div></div>`, "", "div")}
+      </div></div></div>`;
+}
+// suggestions follow the selection: health checks when it is unhealthy, capacity questions for compute
+function ctxChips() {
+  if (topoSel?.group) { const n = mapPick.length, sick = mapPick.some((m) => pickStatus(m) !== "ok");
+    return [...(sick ? [`Verify the health of these ${n}`] : []), `Assess these ${n} for rightsizing`, `What depends on these ${n}?`, `Patch these ${n} one at a time`].map((c) => `<button type="button" class="chip" data-ctxchip>${esc(c)}</button>`).join(""); }
+  const name = topoTarget().split(": ")[1] ?? topoTarget(), f = topoSel && K.findHost(topoSel.node), x = topoSel && D.svc(topoSel.node);
+  const sick = (f && f.h.st !== "ok") || (x && x.st !== "ok");
+  const items = [...(sick ? [`Verify the health of ${name}`, `Why is ${name} ${(f?.h.st ?? x?.st) === "crit" ? "down" : "degraded"}?`] : []), x ? `Restart ${name} safely` : `Assess ${name} for rightsizing`, `What depends on ${name}?`];
+  return items.map((c) => `<button type="button" class="chip" data-ctxchip>${esc(c)}</button>`).join("");
+}
+function topoSelect(label, node, group) {
+  topoSel = { label, node, group };
+  const box = document.getElementById("selLine"); if (!box) return;
+  box.innerHTML = selLine();
+  document.getElementById("ctxTarget").innerHTML = `${ic("crosshair")}${esc(topoTarget())}`;
+  document.getElementById("ctxText").placeholder = `Ask about ${topoTarget()}…`;
+  document.getElementById("ctxHead").textContent = topoTarget().split(": ")[1] ?? topoTarget();
+  document.getElementById("ctxChips").innerHTML = ctxChips();
+  const tb = document.getElementById("topoBanner"); if (tb) { tb.innerHTML = K.scopeBanner(topoAsset()); K.after(tb); }
+  K.icons(); document.getElementById("ctxText").focus();
+}
+
+function route() {
+  let id = (location.hash || "#home").slice(1);
+  if (id === "work") id = "home"; // old #work links land on the board
+  const v = NAVX.some((n) => n[0] === id) ? id : "home";
+  cur = v; side(v);
+  document.getElementById("scope").outerHTML = `<div id="scope" class="scope">${K.scope(SCOPE)}</div>`;
+  const view = document.getElementById("view");
+  view.innerHTML = v === "home" ? home() : v === "dashboard" ? K.dash.html() : v === "topology" ? topoView() : v === "agentrole" ? K.roleView(selRole) : K.V[v]();
+  if (v === "topology") K.bindTopology(view, (sid) => { if (sid) { topoSelect(`Service: ${D.svc(sid).name}`, sid); K.openService(sid); } });
+  K.after(view);
+}
+
+function choose(key) {
+  selKey = key;
+  // panel folded (minimized, or closed because nothing was selected): reopen it with this strip
+  if (!document.getElementById("drill") && (location.hash || "#home") === "#home") { drillOpen = true; route(); return; }
+  if ((location.hash || "#home") !== "#home") { const w = D.work.find((x) => x.key === key); K.drawer(key, K.drill(w)); return; }
+  document.querySelectorAll(".strip").forEach((s) => s.setAttribute("aria-selected", s.dataset.key === key));
+  const d = document.querySelector("#drill .card"); d.innerHTML = K.drill(D.work.find((x) => x.key === key)); K.after(d);
+  if (matchMedia("(max-width: 1100px)").matches) d.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (e.target.id === "ctxask") {
+    const t = document.getElementById("ctxText").value;
+    if (!t.trim()) { K.toast("Describe the work first.", "info"); return; }
+    const p = K.parse(t, SCOPE); if (D.svc(topoSel?.node)) p.target = topoSel.node;
+    p.title = `${p.title} · ${topoTarget().split(": ")[1]}`; p.asset = topoSel?.group ?? toAsset(topoTarget());
+    D.work.unshift(p); side(cur); document.getElementById("ctxText").value = "";
+    K.toast(`${p.key} proposed for ${topoTarget()}. It's in Work, awaiting approval.`, "sparkles"); return;
+  }
+  if (e.target.id === "quick") {
+    const t = document.getElementById("quickText").value;
+    if (!t.trim()) { K.toast(qMode === "ask" ? "Type a question about the work first." : "Describe the work first.", "info"); return; }
+    if (qMode === "ask") { lastQA = answerWork(t); route(); return; }
+    const p = K.parse(t, SCOPE); if (FILTER) { p.asset = FILTER; p.title = `${p.title} · ${FILTER.name}`; } D.work.unshift(p); selKey = p.key; route(); K.toast(`${p.key} proposed. OPA allowed it; it waits for your approval.`, "sparkles");
+  }
+  if (e.target.dataset.form === "add-user") K.toast("Queued: add dana@kestrel.example through the Authentik blueprint");
+  if (e.target.dataset.form === "key") K.toast("Proposal created: provision research-team key. Waiting on Admin approval.", "sparkles");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.id === "ctxText" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("ctxask").requestSubmit(); return; }
+  if (e.target.id === "quickText" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("quick").requestSubmit(); return; } if (e.key === "Enter" && e.target.matches(".strip")) choose(e.target.dataset.key);
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches(".c-rail.has-sel")) { e.preventDefault(); drillOpen = true; route(); } });
+document.addEventListener("click", (e) => {
+  const s = e.target.closest(".strip"); if (s) { choose(s.dataset.key); return; }
+  const qc = e.target.closest("[data-qchip]"); if (qc) { document.getElementById("quickText").value = qc.textContent; document.getElementById("quick").requestSubmit(); return; }
+  const rl = e.target.closest("a[data-role]"); if (rl) { selRole = rl.dataset.role; if (location.hash === "#agentrole") { e.preventDefault(); route(); } return; }
+  const cc = e.target.closest("[data-ctxchip]"); if (cc) { document.getElementById("ctxText").value = cc.textContent; document.getElementById("ctxask").requestSubmit(); return; }
+  const qm = e.target.closest("[data-qmode]"); if (qm) { qMode = qm.dataset.qmode; lastQA = null; route(); return; }
+  if (e.target.closest("[data-qclear]")) { lastQA = null; route(); return; }
+  const ch = e.target.closest("[data-choose]"); if (ch) { choose(ch.dataset.choose); return; }
+  const tm = e.target.closest("[data-tmode]"); if (tm) { topoMode = tm.dataset.tmode; route(); return; }
+  // compute map: click selects one host/VM/service; shift-click adds or removes it, building a group scope
+  const ms = e.target.closest("[data-mapsel]");
+  if (ms) {
+    const [kind, id] = ms.dataset.mapsel.split(":"), item = { kind, id }, has = mapPick.findIndex((m) => m.kind === kind && m.id === id);
+    if (e.shiftKey) { if (has >= 0) mapPick.splice(has, 1); else mapPick.push(item); } else mapPick = [item];
+    if (kind === "Host" && !e.shiftKey) imapNode = id;
+    route();
+    if (!mapPick.length) { topoSel = null; return; }
+    if (mapPick.length === 1) { const m = mapPick[0]; topoSelect(`${m.kind}: ${pickName(m)}`, m.kind === "VM" ? null : m.id); return; }
+    const names = mapPick.map(pickName), name = `${names.length} resources (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""})`;
+    topoSelect(`Group: ${name}`, null, { kind: "Group", name, members: mapPick.map((m) => ({ kind: m.kind, name: pickName(m) })) });
+    return;
+  }
+  const mn = e.target.closest("[data-imap-node]");
+  if (mn) { const id = mn.dataset.imapNode; imapNode = imapNode === id ? null : id; route(); if (imapNode) topoSelect(`Host: ${K.findHost(id).h.name}`, id); return; }
+  if (e.target.closest("[data-done-toggle]")) { doneOpen = !doneOpen; route(); return; }
+  if (e.target.closest("[data-drill-min]")) { drillOpen = false; route(); return; }
+  if (e.target.closest("[data-drill-open]")) { drillOpen = true; route(); return; }
+  if (e.target.closest("[data-drill-close]")) { selKey = null; route(); return; }
+  if (e.target.closest("[data-clear-filter]")) { FILTER = null; TARGET = null; route(); return; }
+  const hostRow = e.target.closest("[data-host]"); if (hostRow && cur === "home") { window.onQueueHere(`Host: ${K.findHost(hostRow.dataset.host).h.name}`, hostRow.dataset.host); return; }
+  if (hostRow && cur === "topology") { topoSelect(`Host: ${K.findHost(hostRow.dataset.host).h.name}`, hostRow.dataset.host); return; }
+  if (e.target.closest("[data-clear-sel]")) { topoSel = null; mapPick = []; route(); return; }
+  if (e.target.closest("[data-add-site]")) { K.toast("Adding a site opens a site-onboarding request in Work", "plus"); return; }
+  const env = e.target.closest("#envSeg button"); if (env) { window.onScopeChange(SCOPE.slice(0, 3).concat(env.textContent)); return; }
+  const site = e.target.closest("button.site"); if (site) { const name = site.querySelector("b").textContent; if (FILTER?.kind === "Domain" && FILTER.name === name) { FILTER = null; TARGET = null; } else { FILTER = { kind: "Domain", name }; TARGET = null; } route(); return; }
+  const lv = e.target.closest("[data-level]"); if (lv) { lv.parentElement.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b === lv)); return; }
+  const fix = e.target.closest("[data-fix]");
+  if (fix) {
+    const p = K.parse(fix.dataset.fix, SCOPE); D.work.unshift(p); selKey = p.key; document.querySelector(".drawer")?.remove();
+    if ((location.hash || "#home") !== "#home") location.hash = "home"; else route();
+    K.toast(`${p.key} proposed. It waits for your approval in Work.`, "sparkles"); return;
+  }
+  if (e.target.closest("[data-grafana]")) { K.toast("Opens Grafana Explore filtered to this service", "external-link"); return; }
+  const a = e.target.closest("[data-act]"); if (!a) return;
+  const act = a.dataset.act, w = D.work.find((x) => x.key === a.dataset.key);
+  if (act === "approve" && w) { w.state = "queued"; w.steps.forEach((x) => x[1] === "wait" && (x[1] = "done")); document.querySelector(".drawer")?.remove(); route(); K.toast(`${w.key} approved. It moved to Queued.`); }
+  if (act === "retry") K.toast("skynet will re-plan AC-1169 with the anti-lockout failure attached.", "rotate-ccw");
+  if (act === "policy") K.proposePolicy(a.dataset.key);
+  if (act === "pause" && w) { w.state = "paused"; w.why = "Paused by you after the current Semaphore task"; route(); K.toast(`${w.key} pauses after its current Semaphore task.`, "circle-pause"); }
+  if (act === "resume" && w) { w.state = "running"; route(); K.toast(`${w.key} resumed.`, "play"); }
+  if (act === "queue-svc") { location.hash = "home"; setTimeout(() => { const q = document.getElementById("quickText"); q.value = `On ${D.svc(a.dataset.svc).name}: `; q.focus(); }, 40); }
+});
+document.getElementById("tagsBtn").onclick = (e) => { const on = document.body.classList.toggle("notags"); e.currentTarget.setAttribute("aria-pressed", !on); };
+document.getElementById("picksBtn").onclick = () => K.picksDrawer();
+document.getElementById("themeBtn").onclick = () => { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = dark ? "light" : "dark"; };
+// a new proposal (e.g. a policy change) opens selected in Work, details showing
+window.onWorkCreated = (w) => { selKey = w.key; drillOpen = true; FILTER = null; TARGET = null; if (!matchesScope(w)) SCOPE = w.scope.slice(); location.hash = "home"; if (location.hash === "#home") route(); };
+addEventListener("hashchange", route);
+route();
+K.initPicks("C");
+</script>
