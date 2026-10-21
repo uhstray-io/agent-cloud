@@ -439,6 +439,18 @@
       no_log: true
       when: (_pve_storage_plan.stdout | from_json).action == 'verify_access'
 
+    - name: Normalize existing PVE access responses for the storage validator
+      ansible.builtin.set_fact:
+        _pve_existing_access_proofs: >-
+          {{ _pve_existing_access_proofs | default([]) + [
+            {'node': item.item, 'url': item.url | default(''),
+             'status': item.status | default(0),
+             'data': item.json.data | default(none)}] }}
+      loop: "{{ _pve_existing_access_reads.results | default([]) }}"
+      loop_control:
+        label: "Normalize PVE storage access response"
+      no_log: true
+
     - name: Plan exact idempotent PBS storage registration with PVE-retained credential evidence
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", plan]
@@ -455,14 +467,7 @@
               'jobs_before': _pve_snapshot.backup_jobs,
               'nodes_before': _pve_snapshot.nodes,
               'api_base': _pve_host,
-              'access_proofs': [
-                {% for result in _pve_existing_access_reads.results | default([]) %}
-                {{ {'node': result.item, 'url': result.url | default(''),
-                    'status': result.status | default(0),
-                    'data': result.json.data | default(none)} | to_json }}
-                {% if not loop.last %},{% endif %}
-                {% endfor %}
-              ]} | to_json }}
+              'access_proofs': _pve_existing_access_proofs | default([])} | to_json }}
       register: _pve_storage_plan
       failed_when: false
       changed_when: false
@@ -601,14 +606,7 @@
               'nodes_before': hostvars['localhost']._pve_nodes_before,
               'nodes_now': _pve_before_write.nodes,
               'api_base': hostvars['localhost']._pve_host,
-              'access_proofs': [
-                {% for result in _pve_existing_access_reads.results | default([]) %}
-                {{ {'node': result.item, 'url': result.url | default(''),
-                    'status': result.status | default(0),
-                    'data': result.json.data | default(none)} | to_json }}
-                {% if not loop.last %},{% endif %}
-                {% endfor %}
-              ]} | to_json }}
+              'access_proofs': _pve_existing_access_proofs | default([])} | to_json }}
       register: _pve_prewrite_validation
       failed_when: false
       changed_when: false
@@ -706,6 +704,19 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Normalize final PVE access responses for the storage validator
+      ansible.builtin.set_fact:
+        _pve_final_access_proofs: >-
+          {{ _pve_final_access_proofs | default([]) + [
+            {'node': item.item, 'url': item.url | default(''),
+             'status': item.status | default(0),
+             'data': item.json.data | default(none)}] }}
+      loop: "{{ _pve_final_access_reads.results | default([]) }}"
+      loop_control:
+        label: "Normalize final PVE storage access response"
+      no_log: true
+      when: not ansible_check_mode
+
     - name: Verify exact PBS registration, every prior storage row, nodes, and backup jobs
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", plan]
@@ -721,14 +732,7 @@
               'nodes_before': hostvars['localhost']._pve_nodes_before,
               'nodes_after': _pve_final_snapshot.nodes,
               'api_base': hostvars['localhost']._pve_host,
-              'access_proofs': [
-                {% for result in _pve_final_access_reads.results | default([]) %}
-                {{ {'node': result.item, 'url': result.url | default(''),
-                    'status': result.status | default(0),
-                    'data': result.json.data | default(none)} | to_json }}
-                {% if not loop.last %},{% endif %}
-                {% endfor %}
-              ]} | to_json }}
+              'access_proofs': _pve_final_access_proofs | default([])} | to_json }}
       register: _pve_final_validation
       failed_when: false
       changed_when: false

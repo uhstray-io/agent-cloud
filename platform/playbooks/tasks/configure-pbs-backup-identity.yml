@@ -47,7 +47,10 @@
   no_log: true
 
 - name: Persist the newly minted token with guarded OpenBao CAS before granting PBS ACLs
-  ansible.builtin.include_tasks: bao-merge-keys.yml
+  ansible.builtin.include_tasks:
+    file: bao-merge-keys.yml
+    apply:
+      become: false
   vars:
     _bm_url: "{{ _pbs_backup_bao_url }}"
     _bm_token: "{{ hostvars['localhost']._bao_token }}"
@@ -58,14 +61,14 @@
       o11y_backup_token_secret: "{{ _pbs_token_secret }}"
       o11y_backup_datastore: o11y
       o11y_backup_fingerprint: "{{ _pbs_backup_fingerprint }}"
-      # Each field selected as absent by the PBS identity preflight must still
-      # be absent in bao-merge-keys' own fresh read before the token is written.
-      _bm_guard_absent_keys:
-        - o11y_backup_user
-        - o11y_backup_token_id
-        - o11y_backup_token_secret
-        - o11y_backup_datastore
-        - o11y_backup_fingerprint
+    # Each field selected as absent by the PBS identity preflight must still
+    # be absent in bao-merge-keys' own fresh read before the token is written.
+    _bm_guard_absent_keys:
+      - o11y_backup_user
+      - o11y_backup_token_id
+      - o11y_backup_token_secret
+      - o11y_backup_datastore
+      - o11y_backup_fingerprint
   when: _pbs_backup_identity_action == 'create'
 
 - name: Read back the authoritative PBS token record from OpenBao

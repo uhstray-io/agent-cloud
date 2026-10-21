@@ -355,7 +355,7 @@ class PlaybookBoundaryTests(TestCase):
         self.assertIn("method: POST", playbook)
         self.assertIn("- not ansible_check_mode", playbook)
         self.assertIn("not executed in check mode", playbook)
-        self.assertIn("include_tasks: bao-merge-keys.yml", identity_task)
+        self.assertIn("file: bao-merge-keys.yml", identity_task)
 
     def test_real_playbook_handoffs_validators_and_guards_all_pve_auth_requests(self):
         import yaml
@@ -396,9 +396,81 @@ class PlaybookBoundaryTests(TestCase):
                             and task.get("validate_certs", True) is True
                             for task in pve_auth))
 
+    def test_absent_key_guard_is_an_include_input_not_a_secret_data_field(self):
+        import yaml
+
+        identity_path = ROOT / "playbooks" / "tasks" / "configure-pbs-backup-identity.yml"
+        tasks = yaml.safe_load(identity_path.read_text())
+        include = next(task for task in tasks
+                       if task.get("ansible.builtin.include_tasks", {}).get("file") == "bao-merge-keys.yml")
+        expected = ["o11y_backup_user", "o11y_backup_token_id", "o11y_backup_token_secret",
+                    "o11y_backup_datastore", "o11y_backup_fingerprint"]
+        self.assertEqual(include["vars"]["_bm_guard_absent_keys"], expected)
+        self.assertNotIn("_bm_guard_absent_keys", include["vars"]["_bm_data"])
+        self.assertIs(include["ansible.builtin.include_tasks"]["apply"]["become"], False)
+
+    def test_actual_storage_validator_stdin_templates_parse_render_and_carry_proofs(self):
+        import json
+        import yaml
+        from jinja2 import Environment, StrictUndefined
+
+        playbook_path = ROOT / "playbooks" / "configure-pbs-backup-access.yml"
+        plays = yaml.safe_load(playbook_path.read_text())
+        env = Environment(undefined=StrictUndefined)
+        env.filters["to_json"] = lambda value: json.dumps(value)
+        env.tests["skipped"] = lambda value: bool(value.get("skipped", False))
+        proof = access_proof()
+        expected = expected_storage()
+        ctx = {
+            "pbs_storage_id": "pbs-o11y",
+            "pbs_api_host": "pbs.internal.test",
+            "pbs_storage_nodes": ["node-a"],
+            "_pve_host": "https://pve.internal.test",
+            "_pve_snapshot": {"storage_rows": [], "backup_jobs": [], "nodes": [{"node": "node-a"}]},
+            "_pve_managed_storage_read": {"skipped": True, "status": 404, "json": {}},
+            "_pbs_saved_token_record": None,
+            "_pbs_guest_fingerprint": "a" * 64,
+            "_pve_existing_access_reads": {"results": [
+                {"item": "node-a", "url": proof["url"], "status": 200, "json": {"data": []}}
+            ]},
+            "_pve_existing_access_proofs": [proof],
+            "_pve_before_write": {"storage_rows": [], "backup_jobs": [], "nodes": [{"node": "node-a"}]},
+            "_pve_before_write_target": {"status": 404, "json": {}},
+            "_pve_final_snapshot": {"storage_rows": [], "backup_jobs": [], "nodes": [{"node": "node-a"}], "target": None},
+            "_pve_final_access_reads": {"results": [
+                {"item": "node-a", "url": proof["url"], "status": 200, "json": {"data": []}}
+            ]},
+            "_pve_final_access_proofs": [proof],
+            "hostvars": {
+                "localhost": {
+                    "_pve_storage_rows_before": [], "_pve_backup_jobs_before": [],
+                    "_pve_nodes_before": [{"node": "node-a"}], "_pve_host": "https://pve.internal.test",
+                    "_pve_pbs_storage_form": expected,
+                },
+                "pbs-guest": {"_pbs_token_secret": "private-token", "_pbs_fingerprint": "a" * 64},
+            },
+            "groups": {"pbs_svc": ["pbs-guest"]},
+        }
+        rendered = []
+        for play in plays:
+            for task in play.get("tasks", []):
+                command = task.get("ansible.builtin.command", {})
+                argv = command.get("argv", [])
+                if len(argv) < 2 or "reconcile_pbs_pve_storage.py" not in argv[1]:
+                    continue
+                stdin_template = command["stdin"]
+                env.parse(stdin_template)
+                payload = json.loads(env.from_string(stdin_template).render(**ctx))
+                rendered.append(payload)
+
+        self.assertEqual(len(rendered), 4, "render every real storage-validator stdin payload")
+        for payload in rendered:
+            if "access_proofs" in payload:
+                self.assertEqual(payload["access_proofs"], [proof])
+
     def test_openbao_guarded_write_precedes_any_pbs_acl_grant(self):
         identity_task = (ROOT / "playbooks" / "tasks" / "configure-pbs-backup-identity.yml").read_text()
-        persist = identity_task.index("include_tasks: bao-merge-keys.yml")
+        persist = identity_task.index("file: bao-merge-keys.yml")
         verify = identity_task.index("Require OpenBao to hold the exact stable PBS credential fields")
         grant_user = identity_task.index("Grant only the non-propagating DatastoreBackup role to the PBS user")
         grant_token = identity_task.index("Grant only the non-propagating DatastoreBackup role to the PBS token")
