@@ -180,14 +180,20 @@
     quiet: true
   no_log: true
 
+- name: Retain only the validated source Reader ACL additions
+  ansible.builtin.set_fact:
+    _pbs_reader_missing_auth_ids: "{{ (_pbs_reader_acl_plan.stdout | from_json).missing_auth_ids }}"
+  no_log: true
+
 - name: Grant only the non-propagating DatastoreReader role to missing identities
   ansible.builtin.include_tasks:
     file: grant-pbs-copy-reader-acl.yml
-  loop: "{{ (_pbs_reader_acl_plan.stdout | from_json).missing_auth_ids }}"
+  loop: "{{ _pbs_reader_missing_auth_ids }}"
   loop_control:
     loop_var: _pbs_reader_auth_id
     label: "Grant exact copy-reader access"
   when: not ansible_check_mode
+  no_log: true
 
 - name: Read final copy-reader effective permissions and PBS ACL list
   ansible.builtin.command:

@@ -1,0 +1,14 @@
+- name: Grant one exact destination copy-manager role
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - acl
+      - update
+      - "{{ _pbs_manager_acl_grant.path }}"
+      - "{{ _pbs_manager_acl_grant.auth_id }}"
+      - "{{ _pbs_manager_acl_grant.role }}"
+      - --propagate
+      - "0"
+  register: _pbs_manager_acl_write
+  changed_when: true
+  no_log: true

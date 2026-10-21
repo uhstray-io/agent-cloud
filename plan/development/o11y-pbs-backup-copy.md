@@ -28,13 +28,28 @@ remote branch tip, tree entry type, exact public Semaphore bindings, and a
 duplicate-safe static YAML parse, and returns hashes/categories only. Existing
 site-config clone and OpenBao transport helpers are reused.
 
-The source Reader identity is managed alongside the existing PBS access setup
-as a separate stable user/token pair. Its token fields are additive under
+The source Reader identity is managed by the standalone
+`Configure o11y PBS Copy Access (Dev)` workflow. It is a separate stable
+user/token pair; primary backup setup remains independently runnable and does
+not depend on this optional credential. Its token fields are additive under
 `secret/services/pbs` (`o11y_copy_reader_*`) and never replace or share the
 PVE `DatastoreBackup` token. Its only grants are the built-in
 `DatastoreReader` role on `/datastore/o11y` for both user and token with
 propagation disabled. Unknown, broader, or partially persisted state refuses;
 the generated token is persisted and read back before its ACL is granted.
+
+The same standalone workflow manages a separate destination copy-manager
+identity. It is never reused by PVE or the primary Reader. It receives only
+`Datastore.Audit` plus `Datastore.Backup` on `/datastore/o11y`, `RemoteAdmin` on `/remote` only for
+remote creation, `RemoteAdmin` on `/remote/<declared remote>` for that remote's
+configuration, and `RemoteSyncOperator` on its exact `/o11y` remote datastore
+path. Every grant is non-propagating; it receives no `Datastore.Prune`. API
+requests use the shared same-connection certificate-pinning helper, fixed
+paths/methods, and bounded JSON responses. Secret request bodies remain in
+protected Ansible memory and never enter argv or intermediary files. PBS
+management writes use its native form encoding. `pbs_svc` and `pbs_copy_svc`
+are independent pre-existing guests; this workflow refuses when either is
+missing and provisions neither.
 
 ## Implementation order
 
