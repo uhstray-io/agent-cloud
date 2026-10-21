@@ -5,10 +5,11 @@ import os
 import shutil
 import subprocess
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/bao-merge-keys.yml"
@@ -27,7 +28,7 @@ class _Vault:
     def handler(self):
         vault = self
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(DrainingHandler):
             def log_message(self, *_args):
                 pass
 
