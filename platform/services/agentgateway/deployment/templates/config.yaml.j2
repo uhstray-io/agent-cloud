@@ -273,6 +273,7 @@ frontendPolicies:
         add:
           service: '"agentgateway"'
           identity: apiKey.name
+          signal: '"access-log"'
           # OTLP has its own field overrides; keep the same-name replacement explicit.
           http.path: request.path
 {% endif %}
