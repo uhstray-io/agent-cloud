@@ -22,7 +22,7 @@
 
 - name: Configure the PBS service
   hosts: pbs_svc
-  gather_facts: true
+  gather_facts: false
   become: true
   vars:
     _pbs_vmid: "{{ vm_vmid | default('') | string }}"
@@ -39,6 +39,17 @@
     _pbs_keyring_sha256: 136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45
 
   tasks:
+    - name: Resolve the bootstrap sudo password before privileged tasks
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Gather PBS guest facts after sudo resolution
+      ansible.builtin.setup:
+      tags: [verify]
+
     - name: Refuse launch-time PBS identity and repository overrides
       ansible.builtin.assert:
         that: _pbs_forgeries | length == 0
@@ -188,7 +199,7 @@
 
 - name: Verify existing PBS service state without reconciling it
   hosts: pbs_svc
-  gather_facts: true
+  gather_facts: false
   become: true
   tags: [verify]
   vars:
@@ -202,6 +213,17 @@
     _pbs_gc_schedule: daily
     _pbs_repository_channel: "{{ pbs_repository_channel | default('') }}"
   tasks:
+    - name: Resolve the bootstrap sudo password before privileged verification
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Gather PBS guest facts after sudo resolution
+      ansible.builtin.setup:
+      tags: [verify]
+
     - name: Require the declared PBS and repository contract for verification
       ansible.builtin.assert:
         that:

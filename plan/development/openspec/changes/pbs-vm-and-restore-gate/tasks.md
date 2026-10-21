@@ -21,6 +21,11 @@
 
 ## 4. Configure PBS and backup access
 
+The bounded Dev publication and bootstrap sequence is in
+[`implementation/dev-bootstrap-publication-runbook.md`](implementation/dev-bootstrap-publication-runbook.md).
+Its prerequisites are not accepted yet; the live acceptance tasks below remain
+open.
+
 - [ ] 4.1 Add supported Debian PBS package, TLS, service, datastore, and maintenance configuration through Semaphore with OpenBao-sourced secrets and scoped `no_log`; read back guest mount and PBS health.
   - [x] 4.1a Source workflow: reviewed service head `4b4ef07c7bee21adee14ec55900de56ba5a76d28` is integrated by merge `72f7a24b`; the exact-SHA Dev catalog entry, serial/UUID mount checks, datastore containment checks, repository gate, and read-only verify path are documented in `plan/development/05-observability.md`.
   - [ ] 4.1b Live acceptance: publish/read back the catalog, configure only the declared PBS guest, then verify mount UUID, PBS health, datastore and maintenance state. Enterprise requires an already active subscription; no-subscription requires explicit inventory acceptance. No PBS service or repository subscription has been validated live.

@@ -180,6 +180,13 @@
     _controller_helper: "{{ playbook_dir }}/files/prepare_pbs_guest_disk.py"
     _helper: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
   tasks:
+    - name: Resolve the bootstrap sudo password before privileged disk preparation
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Refuse launch-time identity or filesystem overrides
       ansible.builtin.assert:
         that: _pbs_forgeries | length == 0
@@ -295,7 +302,7 @@
       check_mode: false
       failed_when: false
       no_log: true
-      delegate_to: "{{ 'localhost' if ansible_check_mode else omit }}"
+      delegate_to: "{{ ('localhost' if ansible_check_mode else inventory_hostname) | default(inventory_hostname) }}"
       become: "{{ not ansible_check_mode }}"
 
     - name: Require successful unique guest-disk identity validation

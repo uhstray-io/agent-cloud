@@ -5,7 +5,9 @@
 - name: Create the passwordless PBS backup realm user when the full identity is absent
   ansible.builtin.command:
     argv: [proxmox-backup-manager, user, create, o11y-backup@pbs, --enable, "1", --expire, "0", --comment, "PVE o11y backup client"]
-  when: _pbs_backup_identity_action == 'create'
+  when:
+    - not ansible_check_mode
+    - _pbs_backup_identity_action == 'create'
   changed_when: true
   no_log: true
 
@@ -24,7 +26,9 @@
       - --comment
       - "PVE o11y backup client"
   register: _pbs_generated_token
-  when: _pbs_backup_identity_action == 'create'
+  when:
+    - not ansible_check_mode
+    - _pbs_backup_identity_action == 'create'
   changed_when: true
   no_log: true
 
@@ -217,7 +221,9 @@
       - "0"
       - --digest
       - "{{ _pbs_acl_file_user.stat.checksum }}"
-  when: "'o11y-backup@pbs' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+  when:
+    - not ansible_check_mode
+    - "'o11y-backup@pbs' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
   changed_when: true
   no_log: true
 
@@ -254,7 +260,9 @@
       - "0"
       - --digest
       - "{{ _pbs_acl_file_token.stat.checksum }}"
-  when: "'o11y-backup@pbs!pve-o11y' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+  when:
+    - not ansible_check_mode
+    - "'o11y-backup@pbs!pve-o11y' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
   changed_when: true
   no_log: true
 

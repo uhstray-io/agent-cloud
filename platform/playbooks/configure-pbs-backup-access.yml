@@ -43,6 +43,13 @@
   become: true
   tags: [verify]
   tasks:
+    - name: Resolve the bootstrap sudo password before read-only PBS verification
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Read the installed PBS server package version
       ansible.builtin.command:
         argv: [dpkg-query, -W, "-f=${Version}", proxmox-backup-server]
@@ -543,6 +550,13 @@
   gather_facts: false
   become: true
   tasks:
+    - name: Resolve the bootstrap sudo password before PBS identity changes
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Configure the PBS identity only outside check mode
       ansible.builtin.include_tasks: tasks/configure-pbs-backup-identity.yml
       vars:
@@ -556,7 +570,15 @@
   connection: local
   gather_facts: false
   become: false
+  vars:
+    _pve_token_id: "{{ hostvars['localhost']._pve_token_id | default('') }}"
   tasks:
+    - name: Require the stored PVE token id before any PVE request
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: "The Proxmox API token ID from OpenBao is required before PVE requests."
+        quiet: true
+
     - name: Build the exact PVE storage form from OpenBao-owned PBS token material
       ansible.builtin.set_fact:
         _pve_pbs_storage_form:
@@ -579,7 +601,7 @@
         url: "{{ item.url }}"
         method: GET
         headers:
-          Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
         validate_certs: true
         follow_redirects: none
         unredirected_headers: [Authorization]
@@ -608,7 +630,7 @@
         url: "{{ hostvars['localhost']._pve_host }}/api2/json/storage/{{ pbs_storage_id | urlencode }}"
         method: GET
         headers:
-          Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
         validate_certs: true
         follow_redirects: none
         unredirected_headers: [Authorization]
@@ -663,7 +685,7 @@
         url: "{{ hostvars['localhost']._pve_host }}/api2/json/storage"
         method: POST
         headers:
-          Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
         validate_certs: true
         body_format: form-urlencoded
         body: "{{ _pve_pbs_storage_form }}"
@@ -683,7 +705,7 @@
         url: "{{ item.url }}"
         method: GET
         headers:
-          Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
         validate_certs: true
         follow_redirects: none
         unredirected_headers: [Authorization]

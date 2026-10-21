@@ -30,6 +30,10 @@ from prepare_pbs_guest_disk import (  # noqa: E402
 SERIAL = "ac-pbs-data-1234"
 MOUNT = "/srv/pbs-data"
 SIZE = 549755813888
+EXPECTED_SELECTOR_DELEGATE = (
+    "{{ ('localhost' if ansible_check_mode else inventory_hostname) "
+    "| default(inventory_hostname) }}"
+)
 
 
 def disk(**changes):
@@ -262,7 +266,7 @@ def test_selector_task_sequence_preserves_result_in_normal_and_check_mode(
         task for task in tasks if task.get("name") == "Save selected disk state without displaying raw device inventory"
     )
     assert selector["register"] == "_disk_selection"
-    assert selector["delegate_to"] == "{{ 'localhost' if ansible_check_mode else omit }}"
+    assert selector["delegate_to"] == EXPECTED_SELECTOR_DELEGATE
     assert selector["become"] == "{{ not ansible_check_mode }}"
 
     installed_helper = tmp_path / "guest-installed-helper.py"
@@ -416,7 +420,7 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert "--ensure-datastore-path" in datastore["ansible.builtin.command"]["argv"]
     assert "ansible.builtin.file" not in datastore
     assert not any("ansible.builtin.script" in task for task in tasks)
-    assert select["delegate_to"] == "{{ 'localhost' if ansible_check_mode else omit }}"
+    assert select["delegate_to"] == EXPECTED_SELECTOR_DELEGATE
     assert "_helper" in str(select["ansible.builtin.command"]["argv"])
 
 

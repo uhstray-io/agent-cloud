@@ -1,0 +1,124 @@
+# PBS Dev publication and bootstrap runbook
+
+This runbook records the reviewed source workflow and its live acceptance
+sequence. Source readiness does not establish that the PBS VM, disk, service,
+identity, or storage exists.
+
+## Current blockers
+
+- PR #726 is still open at the time of this runbook draft. Its CI failure fixes,
+  final-head checks, and merge to `dev` must complete before the playbooks are
+  available from the Dev repository.
+- Private site-config PR #110 is approval-blocked. This blocks target allocation
+  and guest configuration until the PBS inventory declaration is approved,
+  merged, synchronized, and read back. It does not block publishing the Dev
+  catalog entries. Do not substitute launch-time identity values or
+  public-repository inventory.
+- OpenSpec tasks 1.3 and 2.3 remain open: VMID/address authority and the exact
+  Debian 13 cloud-init template/provisioning result have not been accepted.
+  If the supported Debian template is unavailable, task 2.1 requires a separate
+  reviewed template-publication workflow first.
+- Task 4.1 requires an explicit private repository channel. The enterprise
+  bootstrap path requires a PBS CLI and an already active subscription; safe
+  subscription-key provisioning remains a separate dependency. The
+  no-subscription path is allowed only with explicit private
+  `pbs_accept_no_subscription_risk: true` acceptance and is not an implicit
+  production default.
+- The seven-day capacity/retention gate remains blocked by
+  `source_series_ambiguous`. That does not prove capacity, authorize VM growth,
+  or authorize retention changes. Task 4.4's second-PBS destination remains a
+  planning candidate only.
+
+## Preconditions before allocation or guest configuration
+
+1. Confirm PR #726 is merged to `dev`, all required final-head checks are green,
+   and record the exact 40-character Dev commit SHA. Use that SHA as the sole
+   survey value `expected_repository_sha` for each catalog task. Do not pass
+   private target identity, endpoints, credentials, or repository acceptance
+   through surveys or extra vars.
+2. Confirm the private declaration has been approved and read back from
+   site-config. It must identify exactly one PBS guest, the authorized node and
+   VMID, Debian 13 template, static guest network declaration, selected OS
+   storage, the 512-GiB PBS data disk declaration, and the VMID-derived disk
+   serial contract `ac-pbs-data-<vm_vmid>`. Resolve IP and VMID through the
+   existing NetBox/IPAM and pfSense checks; preserve the required physical-origin
+   attestation for the selected Proxmox storage.
+3. Confirm the declared repository channel and its prerequisite before task
+   launch. Do not add a subscription key through argv, Semaphore survey, or a
+   new credential path. Enterprise cannot be treated as ready until the
+   guest-side supported mechanism proves an active subscription.
+4. Confirm the existing PBS/OpenBao/PVE services and their approved credentials
+   are available through the existing Semaphore environment. This source does
+   not create root passwords or bootstrap credentials outside OpenBao.
+
+## Dev catalog publication
+
+After source merge and final-head CI:
+
+1. Use the existing Semaphore `setup-templates.yml` workflow to reconcile
+   `platform/semaphore/templates.yml`; do not edit the Semaphore API directly.
+2. Read the Dev catalog back and confirm these entries target repository
+   `agent-cloud dev`, use the expected playbook paths, and expose only the
+   required `expected_repository_sha` survey field:
+   - `Attach PBS Data Disk (Dev)` — `attach-pbs-data-disk.yml`
+   - `Prepare PBS Guest Data Disk (Dev)` — `prepare-pbs-guest-data-disk.yml`
+   - `Configure PBS Service (Dev)` — `configure-pbs.yml`
+   - `Configure PBS Backup Access (Dev)` — `configure-pbs-backup-access.yml`
+   - `Preflight o11y Restore Target (Dev)` — `preflight-o11y-restore-target.yml`
+3. Record the Dev task IDs and readback evidence in the OpenSpec and
+   `plan/development/05-observability.md`. Catalog publication alone does not
+   establish live acceptance of a VM, disk, credential, ACL, PVE storage,
+   backup, or restore.
+
+## Ordered bootstrap sequence
+
+Run each step only after its preceding live acceptance receipt is reviewed.
+Use the same recorded Dev SHA for each exact-checkout guard.
+
+1. Run the existing reviewed Semaphore VM provisioner for only the declared PBS
+   guest. Verify the Proxmox task result, exact VM config, template, node,
+   network identity, and guest readiness. Refuse conflicts; do not allocate a
+   different VMID or address ad hoc.
+2. Run `Attach PBS Data Disk (Dev)`. It rechecks the declared VM and thick-LVM
+   source before attaching only the 512-GiB guest disk with
+   `ac-pbs-data-<vm_vmid>` serial. Verify task/config readback before continuing.
+3. Run `Prepare PBS Guest Data Disk (Dev)` only after attachment readback. It
+   must prove the serial-selected whole guest disk, create ext4 only when the
+   disk is proven blank, mount by UUID at `/srv/pbs-data`, and validate the
+   datastore child path without following symlinks. Run its read-only verify
+   path afterward and retain the second-run data-preservation receipt.
+4. Run `Configure PBS Service (Dev)` only after the guest filesystem receipt.
+   Verify repository/subscription gate, package/service health, UUID mount,
+   datastore path, maintenance state, garbage-collection policy, and verify job.
+   Keep this step on the declared guest; it creates no Linux root password or
+   PBS API token.
+5. Run `Configure PBS Backup Access (Dev)` only after the service is accepted.
+   It owns the scoped OpenBao/PBS/PVE identity, ACL, and storage registration
+   lifecycle. Verify the token identity, datastore-scoped backup-only grants,
+   effective permissions, PVE storage readback, and unchanged existing backup
+   jobs. Do not move the existing backup job here.
+6. Treat first backup and artifact verification as task 4.3, a separate open
+   acceptance step. Keep restore preflight separate until a private disconnected
+   target and one exact artifact are declared; the preflight is GET-only and
+   does not reserve or create a VM.
+
+Each command or API result must be recorded as a sanitized receipt with Dev
+commit, Semaphore task ID, changed/readback state, and the relevant OpenSpec
+acceptance item. A source check, catalog entry, check mode, or `--tags verify`
+run does not establish the corresponding live acceptance evidence.
+
+## Stop conditions
+
+Stop before allocation, package, identity, ACL, storage, backup, or restore
+writes when the private declaration or exact repository SHA is missing; the
+Dev catalog does not match the five reviewed entries; the PBS guest, VMID,
+address, template, disk serial, selected storage, or physical origin is
+ambiguous; repository/subscription acceptance is absent; the mount UUID or
+datastore containment check differs; an existing identity, ACL, storage or
+backup job conflicts; or the service/readback is unhealthy. Preserve existing
+data and destinations for investigation. Do not bypass a refusal with direct
+Proxmox/PBS API calls, manual guest commands, or alternate credentials.
+
+The protected-copy candidate (task 4.4), isolated restore (task 5.2), capacity
+forecast, retention changes, and VM growth have separate acceptance evidence;
+successful bootstrap or backup-access configuration does not satisfy them.

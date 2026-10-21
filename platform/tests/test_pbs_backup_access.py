@@ -530,9 +530,14 @@ class PlaybookBoundaryTests(TestCase):
         task_names = [task.get("name", "") for play in plays if isinstance(play, dict)
                       for task in play.get("tasks", [])]
         self.assertIn("Hand off the protected OpenBao endpoint to later PBS guest tasks", task_names)
-        guest_play = next(play for play in plays if play.get("hosts") == "pbs_svc"
-                          and any("ansible.builtin.include_tasks" in task for task in play.get("tasks", [])))
-        include = next(task for task in guest_play["tasks"] if "ansible.builtin.include_tasks" in task)
+        guest_play = next(
+            play for play in plays
+            if play.get("hosts") == "pbs_svc"
+            and any(task.get("ansible.builtin.include_tasks") == "tasks/configure-pbs-backup-identity.yml"
+                    for task in play.get("tasks", []))
+        )
+        include = next(task for task in guest_play["tasks"]
+                       if task.get("ansible.builtin.include_tasks") == "tasks/configure-pbs-backup-identity.yml")
         self.assertEqual(include["vars"]["_pbs_backup_fingerprint"], "{{ _pbs_fingerprint }}")
         self.assertIn("hostvars['localhost']._pbs_identity_action", include["vars"]["_pbs_backup_identity_action"])
         delegated = [task for task in identity_tasks
