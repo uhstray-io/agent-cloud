@@ -613,7 +613,7 @@ def test_unavailable_public_identity_sources_are_unverified_without_labels(monke
         {"steps": [{"id": "provision-vm"}, {"id": "provision-vm"}]},
     ],
 )
-def test_malformed_workflow_registry_is_unverified_without_echoing_forged_step(monkeypatch, registry):
+def test_malformed_workflow_registry_is_unverified_without_returning_unknown_step(monkeypatch, registry):
     payload = _payload(
         "service-conformance",
         panel_titles=["Latest step status by service"],
@@ -1564,19 +1564,43 @@ def test_playbook_passes_canonical_controller_registry_to_receiver_evaluator(rec
 
 
 @needs_ansible
-def test_playbook_refuses_extra_var_registry_and_step_override_before_query(receiver):
-    for internal_name in ("_vdd_workflow_registry", "_vdd_workflow_steps"):
-        forged = json.dumps({internal_name: {"steps": [{"id": "forged-step"}]}})
-        proc = _run(
-            receiver,
-            "-e",
-            "dashboard_uid=service-conformance",
-            "-e",
-            forged,
-        )
-        assert proc.returncode != 0
-        assert f"Refusing to run: {internal_name} set from outside the playbook" in proc.stdout
-        assert receiver["loki"].requests == []
+@pytest.mark.parametrize(
+    "forge",
+    forgeries.templated_forgeries(
+        "_vdd_workflow_registry", {"steps": []}, {"steps": [{"id": "forged-step"}]}
+    ),
+)
+def test_playbook_refuses_extra_var_registry_override_before_query(receiver, forge, tmp_path):
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=service-conformance",
+        "-e",
+        forge(tmp_path),
+    )
+    assert proc.returncode != 0
+    assert "Refusing to run: _vdd_workflow_registry set from outside the playbook" in proc.stdout
+    assert receiver["loki"].requests == []
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "forge",
+    forgeries.templated_forgeries(
+        "_vdd_workflow_steps", [], [{"id": "forged-step"}]
+    ),
+)
+def test_playbook_refuses_extra_var_step_override_before_query(receiver, forge, tmp_path):
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=service-conformance",
+        "-e",
+        forge(tmp_path),
+    )
+    assert proc.returncode != 0
+    assert "Refusing to run: _vdd_workflow_steps set from outside the playbook" in proc.stdout
+    assert receiver["loki"].requests == []
 
 
 @needs_ansible
