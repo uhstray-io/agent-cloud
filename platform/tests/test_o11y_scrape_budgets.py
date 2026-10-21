@@ -97,6 +97,20 @@ def _apply_alloy_prometheus_relabel_rules(labels, rules):
     labels = labels.copy()
     for rule in rules:
         action = rule.get("action", "replace")
+        supported_fields = {
+            "labeldrop": {"action", "regex"},
+            "replace": {
+                "action", "source_labels", "regex", "replacement", "target_label", "separator"
+            },
+        }.get(action)
+        if supported_fields is None:
+            raise AssertionError(f"unexpected relabel action in bounded_labels: {action}")
+        unsupported_fields = set(rule) - supported_fields
+        if unsupported_fields:
+            raise AssertionError(
+                f"unsupported relabel rule fields for {action}: {sorted(unsupported_fields)}"
+            )
+
         if action == "labeldrop":
             pattern = re.compile(rule["regex"])
             labels = {name: value for name, value in labels.items() if not pattern.fullmatch(name)}
@@ -112,9 +126,31 @@ def _apply_alloy_prometheus_relabel_rules(labels, rules):
                     rule.get("replacement", "$1"),
                 )
                 labels[rule["target_label"]] = replacement
-        else:
-            raise AssertionError(f"unexpected relabel action in bounded_labels: {action}")
     return labels
+
+
+def test_alloy_relabel_evaluator_rejects_unsupported_fields():
+    rule = {
+        "action": "replace",
+        "source_labels": [],
+        "regex": "(.*)",
+        "replacement": "inventory-cluster",
+        "target_label": "cluster",
+        "unexpected": "ignored",
+    }
+    with pytest.raises(AssertionError, match="unsupported relabel rule fields for replace"):
+        _apply_alloy_prometheus_relabel_rules({}, [rule])
+
+
+def test_alloy_relabel_evaluator_rejects_unsupported_actions():
+    rule = {
+        "action": "hashmod",
+        "source_labels": ["cluster"],
+        "modulus": 2,
+        "target_label": "cluster_hash",
+    }
+    with pytest.raises(AssertionError, match="unexpected relabel action in bounded_labels: hashmod"):
+        _apply_alloy_prometheus_relabel_rules({"cluster": "inventory-cluster"}, [rule])
 
 
 def test_alloy_compose_environment_forwards_bounded_scrape_budgets_without_secrets():
