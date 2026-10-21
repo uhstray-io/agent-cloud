@@ -59,11 +59,14 @@ Diagnostics count returned source series, fixed allowlisted label variation, ser
 
 ### Follow-on: canonical scrape-label variation (2026-10-20)
 
-The latest read-only Dev receipt (task 7721) still refuses two historical source series:
-one series appears at the latest evaluation, one evaluation overlaps, no sampled source
-events overlap, all five existing allowlisted label-variation checks are false, and one
-unrecognized label key is present. This does not establish why Prometheus returned two
-series. The receiver-host scrape declares the static `target_id` label in
+The read-only survey task 7721 on reviewed Dev `fad68aea3330230afc1908c4523b14f030df8150`
+matched receiver revision `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`
+(`revision_matches=true`) and returned
+`status=insufficient`, `reason=source_series_ambiguous`. It reported two historical source
+series, one at the latest evaluation, one overlapping evaluation, no overlapping source
+events, all five existing allowlisted label-variation checks false, and one unrecognized
+label key. This does not establish why Prometheus returned two series. The receiver-host
+scrape declares the static `target_id` label in
 `platform/services/o11y/deployment/templates/prometheus.yml.j2:58-61`, while the capacity
 emitter's timestamp metric has no intrinsic labels
 (`platform/services/o11y/deployment/capacity/collect-o11y-capacity.py:52`). Add only
