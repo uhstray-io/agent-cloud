@@ -25,7 +25,8 @@ or used, and no restore has been attempted.
 The coordination and reserved-target guard source is developed separately in
 `plan/development/O11Y-RESTORE-COORDINATION.md`. Its local worktree includes
 the exact PBS feature source head `e149fe641cf9f2a9034969dc9b3c2daf51032b09`
-by normal merge while PR #726 remains pending its required checks and merge.
+and verified Dev merge commit `c4eee56be4860702df537d40b71d8d85ad229a33`
+by normal merge after PR #726 completed its required checks and merged.
 The source guard protects the declared target VMID clusterwide and refuses
 ambiguous OpenBao state before managed writers proceed. It cannot establish
 that the injected Semaphore role has the required effective permissions or

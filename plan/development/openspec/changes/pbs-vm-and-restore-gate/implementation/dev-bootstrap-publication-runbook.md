@@ -4,16 +4,14 @@ This runbook records the reviewed source workflow and its live acceptance
 sequence. Source readiness does not establish that the PBS VM, disk, service,
 identity, or storage exists.
 
-## Current blockers
+## Source integration status and current blockers
 
-- PR #726 is still open at the time of this runbook draft. Its CI failure fixes,
-  final-head checks, and merge to `dev` must complete before the playbooks are
-  available from the Dev repository.
-- The source-only restore coordination worktree has merged exact Dev
-  `6605942ea7218989d10ab03376c4dc15908cadb3` and PBS feature head
-  `e149fe641cf9f2a9034969dc9b3c2daf51032b09` through normal local merges for
-  integration. This does not bypass PR #726 checks, publish the source, or
-  authorize a restore. No PBS files were copied between branches.
+- PR #726 merged to `dev` at verified merge commit
+  `c4eee56be4860702df537d40b71d8d85ad229a33`, containing reviewed PBS source
+  head `e149fe641cf9f2a9034969dc9b3c2daf51032b09`. The source-only restore
+  coordination worktree normally merged that exact Dev commit; no PBS files
+  were copied between branches. This does not publish this worktree's source,
+  verify the effective Semaphore role, or authorize a restore.
 - Private site-config PR #110 is approval-blocked. This blocks target allocation
   and guest configuration until the PBS inventory declaration is approved,
   merged, synchronized, and read back. It does not block publishing the Dev

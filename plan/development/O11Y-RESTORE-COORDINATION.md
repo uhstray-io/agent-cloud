@@ -1,8 +1,9 @@
 # O11Y Restore Coordination
 
-**Date:** 2026-10-21  
-**Status:** ACTIVE  
-**Context:** This plan defines source-only coordination and reserved-target guards for the PBS isolated-restore workflow in OpenSpec `pbs-vm-and-restore-gate`, task 5.2. PR #726 (reviewed PBS source head `e149fe64`) remains pending CI and merge. Its exact head and latest Dev `6605942e` were merged normally into this worktree for source integration; the PBS files were not copied. No source merge, PR, publication, policy application, or live operation is implied by these local merges.
+**Date:** 2026-10-21
+
+**Status:** ACTIVE
+**Context:** This plan defines source-only coordination and reserved-target guards for the PBS isolated-restore workflow in OpenSpec `pbs-vm-and-restore-gate`, task 5.2. PR #726 merged to Dev at verified merge commit `c4eee56be4860702df537d40b71d8d85ad229a33` with reviewed PBS source head `e149fe641cf9f2a9034969dc9b3c2daf51032b09`. This worktree normally merged that exact Dev commit; PBS files were not copied. This source integration does not imply policy publication, effective-role verification, or live operation.
 
 ## Problem
 
@@ -116,7 +117,7 @@ Acceptance requires the helper to reject malformed and stale transitions, the in
 - Existing Proxmox task status / exit-status pattern: [snapshot-vm.yml](../../platform/playbooks/snapshot-vm.yml)
 - Existing node-bound UPID validation pattern: [reconcile_proxmox_backup_job.py](../../platform/playbooks/files/reconcile_proxmox_backup_job.py)
 - [Observability development plan](05-observability.md)
-- PBS VM and restore gate OpenSpec change `pbs-vm-and-restore-gate` — currently pending PR #726; this branch does not contain the change yet.
+- PBS VM and restore gate OpenSpec change `pbs-vm-and-restore-gate` — PBS source merged to Dev through PR #726 at `c4eee56`; restore workflow acceptance remains open.
 - [Repository operating instructions](../../AGENTS.md)
 
 ## Revision History
