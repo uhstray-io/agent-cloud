@@ -74,10 +74,15 @@
             or (groups[target_service]
                 | map('extract', hostvars, 'o11y_host_metrics_identity_enabled')
                 | map('default', false) | select('sameas', true) | list | length) == 0
+          - >-
+            'inventory_hostname' not in ('' | extra_var_names)
+            or (groups[target_service]
+                | map('extract', hostvars, 'o11y_host_metrics_identity_enabled')
+                | map('default', false) | select('sameas', true) | list | length) == 0
         fail_msg: >-
           Host-metrics identity is controlled by reviewed inventory declarations; do not pass
           estate_coverage_inventory or o11y_host_metrics_identity_enabled as launch-time extra
-          vars, or service_name when identity binding is enabled.
+          vars, or service_name or inventory_hostname when identity binding is enabled.
 
     # The guard and the work read the SAME target_service, so one override moves both; the
     # guard only proves the group is populated (as in verify-service-persistence.yml).

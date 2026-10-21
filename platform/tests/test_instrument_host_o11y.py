@@ -406,19 +406,23 @@ def test_opted_in_named_metric_requires_all_exact_returned_identity_labels(estat
 
 
 @needs_ansible
-@pytest.mark.parametrize("name,value", [
-    ("estate_coverage_inventory", "{}"),
-    ("o11y_host_metrics_identity_enabled", "false"),
-    ("service_name", "other"),
+@pytest.mark.parametrize("name,value,identity_reason", [
+    ("estate_coverage_inventory", "{}", "estate_coverage_inventory"),
+    ("o11y_host_metrics_identity_enabled", "false", "o11y_host_metrics_identity_enabled"),
+    ("service_name", "other", "service_name"),
+    ("inventory_hostname", "alpha", "inventory_hostname"),
 ])
-def test_identity_inventory_cannot_be_overridden_at_launch(estate, name, value):
+def test_identity_inventory_cannot_be_overridden_at_launch(estate, name, value, identity_reason):
     proc = _run(estate, "-e", f"{name}={value}", identity_enabled=True,
                 coverage=_coverage_targets(estate))
     assert proc.returncode != 0
-    assert "do not pass estate_coverage_inventory or o11y_host_metrics_identity_enabled" in proc.stdout
+    assert identity_reason in proc.stdout
+    assert "Host-metrics identity is controlled by reviewed inventory declarations" in proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
     assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
     assert not estate["fragment"].exists()
+    assert estate["prometheus"].reloads == 0
 
 
 @needs_ansible

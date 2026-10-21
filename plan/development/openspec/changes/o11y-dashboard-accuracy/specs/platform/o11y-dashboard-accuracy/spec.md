@@ -127,6 +127,7 @@ The observation SHALL report fixed numeric counts for unknown label shapes, unre
 - **THEN** the report splits unknown rows into fixed label-shape, identity, sample, and duplicate counters while retaining the total and `unverified` status
 - **AND** the report never echoes unknown labels or sample values
 - **AND** each returned failure pair includes a numeric completion age in seconds or null, with known and unknown age counts
+- **AND** the verifier joins age only from one unambiguous non-hidden target matching the exact panel, reference, datasource UID and type, expression, and query mode
 - **AND** missing, duplicate, malformed, non-finite, boolean, negative, and explicit unknown ages are null and counted as unknown
 - **AND** when the completion-age panel is not selected, the verifier makes no age query, reports `completion_age_status: not_selected`, emits null ages, and counts each returned pair as age-unknown
 - **AND** age evidence does not alter the main workflow observation status or assert application health

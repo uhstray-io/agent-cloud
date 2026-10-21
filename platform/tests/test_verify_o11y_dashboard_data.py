@@ -524,6 +524,65 @@ def test_selected_latest_status_joins_only_exact_completion_age_panel(monkeypatc
     assert failure["failed_pairs_with_unknown_completion_age"] == 0
 
 
+@pytest.mark.parametrize("ambiguity", ["wrong_uid", "wrong_type", "duplicate"])
+def test_completion_age_ignores_mixed_or_ambiguous_targets_after_exact_target_error(
+    monkeypatch, tmp_path, ambiguity
+):
+    dashboard = json.loads((DASHBOARDS / "service-conformance.json").read_text())
+    age_panel = next(
+        panel for panel in dashboard["panels"]
+        if panel.get("title") == "Latest workflow completion age by service and step"
+    )
+    exact_target = age_panel["targets"][0]
+    other_target = json.loads(json.dumps(exact_target))
+    if ambiguity == "wrong_uid":
+        other_target["datasource"]["uid"] = "other-loki"
+    elif ambiguity == "wrong_type":
+        other_target["datasource"] = {"type": "prometheus", "uid": "prometheus"}
+    age_panel["targets"] = [exact_target, other_target]
+
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {
+        "resultType": "vector",
+        "result": [{
+            "metric": {"service": "netbox", "step": "provision-vm"},
+            "value": [1700000000, "42"],
+        }],
+    }
+    age_queries = 0
+
+    def query(_base, _backend, _mode, expr, _end, _lookback, _step):
+        nonlocal age_queries
+        if "completed_at_seconds" in expr:
+            age_queries += 1
+            return {"error": "target-specific query failure"} if age_queries == 1 else {"data": age_data}
+        return {"data": status_data}
+
+    original_allowlists = vdd._workflow_identity_allowlists
+    monkeypatch.setattr(
+        vdd, "_workflow_identity_allowlists",
+        lambda _dashboards_dir, steps: original_allowlists(str(DASHBOARDS), steps),
+    )
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+        dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+    ), now=1700000000)
+
+    observation = next(
+        panel for panel in report["panels"] if panel["title"] == "Latest step status by service"
+    )["observation"]
+    assert report["status"] == "fail"
+    assert age_queries == 2
+    assert observation["completion_age_status"] == "unverified"
+    assert observation["failed_steps"] == [{
+        "service": "netbox", "step": "provision-vm", "completion_age_seconds": None,
+    }]
+    assert observation["failed_pairs_with_known_completion_age"] == 0
+    assert observation["failed_pairs_with_unknown_completion_age"] == 1
+
+
 @pytest.mark.parametrize(
     "age_rows",
     [

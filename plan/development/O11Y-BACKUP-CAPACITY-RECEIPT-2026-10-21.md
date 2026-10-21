@@ -53,7 +53,7 @@ graph TD
 2. Task 7737, `Survey PBS VM Census (Dev)`, completed successfully at the same controller revision.
 3. Task 7738, `Survey o11y Seven-Day Capacity History (Dev)`, read back that controller revision and receiver revision `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; it refused the unchanged gate with `source_series_ambiguous`.
 4. Task 7742, `Reconcile o11y Backup Job (Dev)` with `inspect_only=true`, completed successfully at the same controller revision. Its source performs GET requests in inspect-only mode and ends the play before the sole PUT path.
-5. Sanitized receipts are stored outside the repository at `/private/tmp/o11y-backup-readiness-latest-receipt.json` and `/private/tmp/o11y-capacity-latest-receipt.json`, both mode `0600`.
+5. Sanitized receipts are stored outside the public repository in mode-`0600` temporary files; this public receipt does not record their host-specific paths or contents.
 
 **Acceptance criteria:**
 

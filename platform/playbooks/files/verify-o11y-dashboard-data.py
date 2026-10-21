@@ -268,6 +268,25 @@ def datasource_type(target: dict[str, Any], panel: dict[str, Any]) -> str:
     return kind.lower()
 
 
+def _observation_target_matches(
+    expected: dict[str, Any], panel: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    source = target.get("datasource") if "datasource" in target else panel.get("datasource")
+    return (
+        isinstance(source, dict)
+        and source.get("type") == expected["datasource"]
+        and source.get("uid") == expected["datasource_uid"]
+        and str(target.get("refId", "")) == expected["ref"]
+        and str(target.get("expr") or "").strip() == expected["expr"]
+        and (
+            str(target.get("queryType", "")).lower() == "instant" and not target.get("range")
+            if expected["datasource"] == "loki"
+            else bool(target.get("instant")) and not target.get("range")
+        )
+        and not target.get("hide")
+    )
+
+
 def _observation_contract(
     dashboard: dict[str, Any], panel: dict[str, Any], targets: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -276,31 +295,20 @@ def _observation_contract(
     if expected is None:
         return None
 
-    def has_expected_source(target: dict[str, Any]) -> bool:
-        source = (
-            target.get("datasource")
-            if "datasource" in target
-            else panel.get("datasource")
-        )
-        return (
-            isinstance(source, dict)
-            and source.get("type") == expected["datasource"]
-            and source.get("uid") == expected["datasource_uid"]
-        )
-
-    exact = any(
-        str(target.get("refId", "")) == expected["ref"]
-        and has_expected_source(target)
+    matching_targets = [
+        index for index, target in enumerate(targets)
+        if _observation_target_matches(expected, panel, target)
+    ]
+    same_ref_and_query = [
+        target for target in targets
+        if not target.get("hide")
+        and str(target.get("refId", "")) == expected["ref"]
         and str(target.get("expr") or "").strip() == expected["expr"]
-        and (
-            str(target.get("queryType", "")).lower() == "instant" and not target.get("range")
-            if expected["datasource"] == "loki"
-            else bool(target.get("instant")) and not target.get("range")
-        )
-        and not target.get("hide")
-        for target in targets
-    )
+    ]
+    exact = len(matching_targets) == 1 and len(same_ref_and_query) == 1
     contract = {"name": expected["name"], "verified": exact}
+    if exact:
+        contract["_target_index"] = matching_targets[0]
     for key in ("window_seconds", "scope"):
         if key in expected:
             contract[key] = expected[key]
@@ -953,7 +961,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                     observation[key] = contract[key]
             if not contract["verified"]:
                 observation["reason"] = "contract_mismatch"
-        for target in entry["targets"]:
+        for target_index, target in enumerate(entry["targets"]):
             if "expr" not in target:
                 targets.append({k: target[k] for k in ("ref", "datasource", "status")})
                 continue
@@ -969,6 +977,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                 observe_target = bool(
                     observation
                     and contract["verified"]
+                    and contract.get("_target_index") == target_index
                     and observation_contract
                     and target["ref"] == observation_contract["ref"]
                     and target["datasource"] == observation_contract["datasource"]
