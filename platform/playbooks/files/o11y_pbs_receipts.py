@@ -14,6 +14,7 @@ SCHEMA_VERSION = 1
 ENVELOPE_KEYS = {
     "schema_version",
     "contract",
+    "receipt_fingerprint",
     "status",
     "reason",
     "public_sha",
@@ -29,12 +30,15 @@ ENVELOPE_KEYS = {
 }
 CONTRACTS = {
     "o11y-pbs-backup/v1": {
+        "playbook": "platform/playbooks/backup-o11y-to-pbs.yml",
         "roles": {"primary": "pve_backup", "verification": "primary_pbs_verify", "destination": "not_applicable"},
         "evidence": {
-            "backup_task_id", "backup_upid", "snapshot", "source_vmid", "source_node", "artifact_fingerprint", "playbook"
+            "backup_task_id", "backup_upid", "snapshot", "source_vmid", "source_node",
+            "artifact_fingerprint", "playbook",
         },
     },
     "o11y-pbs-verify/v1": {
+        "playbook": "platform/playbooks/verify-o11y-pbs-artifact.yml",
         "roles": {"primary": "pve_backup", "verification": "primary_pbs_verify", "destination": "not_applicable"},
         "evidence": {
             "backup_task_id", "backup_upid", "verification_upid", "verification_status", "snapshot",
@@ -42,6 +46,7 @@ CONTRACTS = {
         },
     },
     "o11y-pbs-copy-sync/v1": {
+        "playbook": "platform/playbooks/sync-o11y-protected-pbs-copy.yml",
         "roles": {"primary": "pve_backup", "verification": "primary_pbs_verify", "destination": "destination_pbs_pull"},
         "evidence": {
             "backup_task_id", "verify_task_id", "backup_upid", "verification_upid", "sync_upid",
@@ -49,7 +54,12 @@ CONTRACTS = {
         },
     },
     "o11y-pbs-copy-ready/v1": {
-        "roles": {"primary": "pve_backup", "verification": "primary_pbs_verify", "destination": "destination_pbs_readback"},
+        "playbook": "platform/playbooks/verify-o11y-protected-pbs-copy.yml",
+        "roles": {
+            "primary": "pve_backup",
+            "verification": "primary_pbs_verify",
+            "destination": "destination_pbs_readback",
+        },
         "evidence": {
             "sync_task_id", "snapshot", "artifact_fingerprint", "readback_status", "acl_separation",
             "pull_direction", "deletion_isolation", "maintenance_isolation", "playbook",
@@ -58,7 +68,10 @@ CONTRACTS = {
 }
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 REVISION = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
-UPID = re.compile(r"UPID:[A-Za-z0-9_.-]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[A-Za-z0-9_-]+:[A-Za-z0-9_.-]*:[A-Za-z0-9_.@-]*:?\Z")
+UPID = re.compile(
+    r"UPID:[A-Za-z0-9_.-]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:"
+    r"[A-Za-z0-9_-]+:[A-Za-z0-9_.-]*:[A-Za-z0-9_.@-]*:?\Z"
+)
 SAFE_REASONS = {
     "invalid_input", "inventory_unavailable", "inventory_mismatch", "task_missing", "task_not_successful",
     "task_binding_mismatch", "receipt_missing", "receipt_ambiguous", "receipt_stale", "output_invalid",
@@ -73,6 +86,22 @@ FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\.(?:fidx|didx|blob)\Z"
 CHECKSUM = re.compile(r"[0-9a-f]{64}\Z")
 MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_OUTPUT_ROWS = 5000
+RESTORE_RECEIPT_KEYS = {
+    "type", "receipt_fingerprint", "bindings", "restore_upid", "target_state", "pending_action",
+    "completed_actions", "coordination_record", "coordination_version", "artifact_config",
+    "checker_sha256", "checker_receipt_fingerprint", "guest_execution_pid", "data_checks",
+    "isolation_config_sha256",
+}
+CUSTOM_RECEIPTS = {"restore_receipt/v3": RESTORE_RECEIPT_KEYS}
+CUSTOM_LAUNCH_KEYS = {
+    "restore_receipt/v3": {
+        frozenset({
+            "expected_repository_sha", "backup_task_id", "pbs_verify_task_id",
+            "copy_sync_task_id", "copy_ready_task_id",
+        }),
+        frozenset({"expected_repository_sha", "restore_task_id", "expected_receipt_sha"}),
+    }
+}
 
 
 class Refusal(ValueError):
@@ -96,6 +125,21 @@ def _sha(value: object) -> bool:
     return isinstance(value, str) and SHA256.fullmatch(value) is not None
 
 
+def receipt_fingerprint(receipt: Mapping[str, object]) -> str:
+    """Hash the complete receipt body without its self-referential fingerprint."""
+    body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def seal_receipt(receipt: Mapping[str, object]) -> dict[str, object]:
+    """Return a copy carrying the canonical fingerprint consumed by validators."""
+    _require(isinstance(receipt, Mapping) and "receipt_fingerprint" not in receipt, "invalid_input")
+    result = dict(receipt)
+    result["receipt_fingerprint"] = receipt_fingerprint(result)
+    return result
+
+
 def _duplicate_rejecting_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -115,7 +159,11 @@ def parse_manifest(data: str | bytes) -> dict[str, object]:
     _require(isinstance(raw, dict) and set(raw) <= MANIFEST_KEYS, "artifact_invalid")
     _require({"backup-type", "backup-id", "backup-time", "files"} <= set(raw), "artifact_invalid")
     _require(isinstance(raw["backup-type"], str) and raw["backup-type"] in BACKUP_TYPES, "artifact_invalid")
-    _require(isinstance(raw["backup-id"], str) and re.fullmatch(r"[A-Za-z0-9_.@-]{1,128}", raw["backup-id"]), "artifact_invalid")
+    _require(
+        isinstance(raw["backup-id"], str)
+        and re.fullmatch(r"[A-Za-z0-9_.@-]{1,128}", raw["backup-id"]),
+        "artifact_invalid",
+    )
     _require(type(raw["backup-time"]) is int and raw["backup-time"] > 0, "artifact_invalid")
     _require(isinstance(raw["files"], list) and bool(raw["files"]), "artifact_invalid")
     files = []
@@ -180,7 +228,7 @@ def clean_refusal(contract: str, public_sha: str, private_sha: str, reason: str)
     """Return a closed, content-free refusal envelope for a known workflow."""
     _require(contract in CONTRACTS and _revision(public_sha) and _revision(private_sha), "invalid_input")
     safe_reason = reason if reason in SAFE_REASONS else "invalid_input"
-    return {
+    return seal_receipt({
         "schema_version": SCHEMA_VERSION,
         "contract": contract,
         "status": "refused",
@@ -195,7 +243,7 @@ def clean_refusal(contract: str, public_sha: str, private_sha: str, reason: str)
         "observed_end": None,
         "role_context": dict(CONTRACTS[contract]["roles"]),
         "evidence": {},
-    }
+    })
 
 
 def _parse_time(value: object) -> datetime:
@@ -242,12 +290,14 @@ def validate_receipt(
     _require(receipt["schema_version"] == SCHEMA_VERSION and type(receipt["schema_version"]) is int, "invalid_input")
     _require(receipt["contract"] == contract and receipt["status"] == "complete" and receipt["reason"] == "none", "task_binding_mismatch")
     _require(receipt["public_sha"] == public_sha and receipt["private_sha"] == private_sha, "task_binding_mismatch")
-    _require(receipt["inventory_provenance"] == "verified", "inventory_unavailable")
+    _require(receipt["inventory_provenance"] == "exact_bytes_match", "inventory_unavailable")
     _require(_sha(receipt["inventory_fingerprint"]) and _sha(receipt["source_fingerprint"]), "inventory_unavailable")
     artifact = receipt["artifact_fingerprint"]
     _require(_sha(artifact), "artifact_invalid")
     if expected_artifact_fingerprint is not None:
         _require(_sha(expected_artifact_fingerprint) and artifact == expected_artifact_fingerprint, "artifact_mismatch")
+    _require(_sha(receipt["receipt_fingerprint"]), "invalid_input")
+    _require(receipt_fingerprint(receipt) == receipt["receipt_fingerprint"], "invalid_input")
     started, ended = _parse_time(receipt["observed_start"]), _parse_time(receipt["observed_end"])
     current = (now or datetime.now(UTC)).astimezone(UTC)
     _require(started <= ended <= current + timedelta(minutes=5), "invalid_input")
@@ -256,6 +306,7 @@ def validate_receipt(
     _require(receipt["role_context"] == contract_schema["roles"], "task_binding_mismatch")
     evidence = receipt["evidence"]
     _require(isinstance(evidence, dict) and set(evidence) == contract_schema["evidence"], "invalid_input")
+    _require(evidence.get("playbook") == contract_schema["playbook"], "task_binding_mismatch")
     _require(evidence.get("artifact_fingerprint") == artifact, "artifact_mismatch")
     if "snapshot" in evidence:
         _require(_validate_snapshot(evidence["snapshot"]), "artifact_invalid")
@@ -322,32 +373,41 @@ def _objects(text: str):
                 start = None
 
 
-def _extract_receipt(output: str, contract: str) -> dict[str, object] | None:
+def _extract_receipt(output: str, selector: str, expected: str, expected_keys: set[str]) -> dict[str, object] | None:
     candidates = [
         value for value in _objects(re.sub(r"\x1b\[[0-9;]*m", "", output))
-        if isinstance(value, dict) and set(value) == ENVELOPE_KEYS and value.get("contract") == contract
+        if isinstance(value, dict) and set(value) == expected_keys and value.get(selector) == expected
     ]
     if len(candidates) > 1:
         raise Refusal("receipt_ambiguous")
     return candidates[0] if candidates else None
 
 
-def validate_completed_task(
+def validate_completed_output(
     task: object,
     output_rows: object,
     *,
-    contract: str,
     public_sha: str,
-    private_sha: str,
-    playbook: str,
     expected_project_id: int,
+    expected_launch: Mapping[str, object],
+    selector: str,
+    expected_selector: str,
+    expected_receipt_keys: set[str],
+    allowed_launch_keys: set[str],
     expected_task_id: int | None = None,
-    expected_launch: Mapping[str, object] | None = None,
+    expected_template_id: int | None = None,
     now: datetime | None = None,
-    expected_artifact_fingerprint: str | None = None,
 ) -> dict[str, object]:
-    """Bind one fresh receipt to authenticated Semaphore completed-task metadata."""
-    _require(isinstance(task, dict) and contract in CONTRACTS, "invalid_input")
+    """Authenticate task metadata and reconstruct one exact receipt from its ordered output rows."""
+    _require(isinstance(task, dict) and selector in {"contract", "type"}, "invalid_input")
+    _require(expected_receipt_keys in (ENVELOPE_KEYS, RESTORE_RECEIPT_KEYS), "invalid_input")
+    _require(expected_selector in CONTRACTS or expected_selector in CUSTOM_RECEIPTS, "invalid_input")
+    _require(_revision(public_sha), "invalid_input")
+    if selector == "contract":
+        _require(allowed_launch_keys == {"expected_repository_sha", "site_config_base_sha"}, "invalid_input")
+    else:
+        _require(frozenset(allowed_launch_keys) in CUSTOM_LAUNCH_KEYS[expected_selector], "invalid_input")
+        _require(expected_receipt_keys == CUSTOM_RECEIPTS[expected_selector], "invalid_input")
     task_id, project_id = task.get("id"), task.get("project_id")
     _require(_positive_id(task_id) and type(project_id) is int and project_id == expected_project_id, "task_binding_mismatch")
     _require(expected_task_id is None or task_id == expected_task_id, "task_binding_mismatch")
@@ -358,7 +418,8 @@ def validate_completed_task(
     )
     current = (now or datetime.now(UTC)).astimezone(UTC)
     _require(created <= task_start < task_end <= current, "task_binding_mismatch")
-    _require(isinstance(task.get("template_id"), int) and task["template_id"] > 0, "task_binding_mismatch")
+    _require(type(task.get("template_id")) is int and task["template_id"] > 0, "task_binding_mismatch")
+    _require(expected_template_id is None or task["template_id"] == expected_template_id, "task_binding_mismatch")
     launch = task.get("environment")
     if isinstance(launch, str):
         try:
@@ -366,12 +427,9 @@ def validate_completed_task(
         except (json.JSONDecodeError, Refusal):
             raise Refusal("task_binding_mismatch") from None
     _require(isinstance(launch, dict), "task_binding_mismatch")
-    safe_launch_keys = {"expected_repository_sha", "site_config_base_sha"}
-    _require(set(launch) <= safe_launch_keys, "task_binding_mismatch")
-    if expected_launch is not None:
-        _require(isinstance(expected_launch, Mapping) and launch == dict(expected_launch), "task_binding_mismatch")
-    else:
-        _require(launch.get("expected_repository_sha") == public_sha, "task_binding_mismatch")
+    _require(set(launch) <= allowed_launch_keys, "task_binding_mismatch")
+    _require(isinstance(expected_launch, Mapping) and launch == dict(expected_launch), "task_binding_mismatch")
+    _require(launch.get("expected_repository_sha") == public_sha, "task_binding_mismatch")
     params = task.get("params")
     if isinstance(params, str):
         try:
@@ -380,14 +438,13 @@ def validate_completed_task(
             raise Refusal("task_binding_mismatch") from None
     _require(params in (None, {"diff": False, "dry_run": False}), "task_binding_mismatch")
     _require(task.get("playbook") == "", "task_binding_mismatch")
-    _require(isinstance(playbook, str) and playbook.startswith("platform/playbooks/"), "task_binding_mismatch")
     _require(isinstance(output_rows, list) and 1 <= len(output_rows) <= MAX_OUTPUT_ROWS, "output_invalid")
     chunks = []
     used = 0
     previous_id = 0
     zero_id_rows = None
     previous_time = None
-    receipt_timestamps = []
+    row_timestamps = []
     for row in output_rows:
         _require(
             isinstance(row, dict)
@@ -411,24 +468,26 @@ def validate_completed_task(
         _require(created <= stamp <= task_end and stamp <= current, "output_time_invalid")
         _require(previous_time is None or stamp >= previous_time, "output_time_invalid")
         previous_time = stamp
+        row_timestamps.append(stamp)
         output = row["output"]
         used += len(output.encode("utf-8"))
         _require(used <= MAX_OUTPUT_BYTES, "output_too_large")
         chunks.append(output)
-        if "schema_version" in output:
-            receipt_timestamps.append(stamp)
     joined = "\n".join(chunks)
     _require(len(joined.encode("utf-8")) <= MAX_OUTPUT_BYTES, "output_too_large")
-    _require(receipt_timestamps and min(receipt_timestamps) >= task_start, "output_time_invalid")
-    receipt = _extract_receipt(joined, contract)
+    _require(row_timestamps and min(row_timestamps) >= task_start, "output_time_invalid")
+    receipt = _extract_receipt(joined, selector, expected_selector, expected_receipt_keys)
     _require(receipt is not None, "receipt_missing")
-    receipt = validate_receipt(
-        receipt, contract=contract, public_sha=public_sha, private_sha=private_sha,
-        now=now, expected_artifact_fingerprint=expected_artifact_fingerprint,
-    )
-    _require(_parse_time(receipt["observed_start"]) >= task_start and _parse_time(receipt["observed_end"]) <= task_end,
-             "task_binding_mismatch")
-    _require(receipt["evidence"].get("playbook") == playbook, "task_binding_mismatch")
+    _require(_sha(receipt.get("receipt_fingerprint")), "receipt_missing")
+    _require(receipt_fingerprint(receipt) == receipt["receipt_fingerprint"], "receipt_missing")
+    if selector == "contract":
+        _require(
+            _parse_time(receipt["observed_start"]) >= task_start
+            and _parse_time(receipt["observed_end"]) <= task_end,
+            "task_binding_mismatch",
+        )
+    else:
+        _require(receipt.get("type") == "restore_receipt/v3", "receipt_missing")
     task_metadata = {
         "id": task_id,
         "project_id": project_id,
@@ -441,6 +500,48 @@ def validate_completed_task(
         "launch": {key: launch[key] for key in sorted(launch)},
     }
     return {"receipt": receipt, "task_metadata": task_metadata}
+
+
+def validate_completed_task(
+    task: object,
+    output_rows: object,
+    *,
+    contract: str,
+    public_sha: str,
+    private_sha: str,
+    playbook: str,
+    expected_project_id: int,
+    expected_task_id: int | None = None,
+    expected_launch: Mapping[str, object] | None = None,
+    now: datetime | None = None,
+    expected_artifact_fingerprint: str | None = None,
+) -> dict[str, object]:
+    """Bind one fresh shared-envelope receipt to authenticated Semaphore task metadata."""
+    _require(contract in CONTRACTS and playbook == CONTRACTS[contract]["playbook"], "invalid_input")
+    result = validate_completed_output(
+        task,
+        output_rows,
+        public_sha=public_sha,
+        expected_project_id=expected_project_id,
+        expected_launch=expected_launch or {},
+        selector="contract",
+        expected_selector=contract,
+        expected_receipt_keys=ENVELOPE_KEYS,
+        allowed_launch_keys={"expected_repository_sha", "site_config_base_sha"},
+        expected_task_id=expected_task_id,
+        now=now,
+    )
+    receipt = validate_receipt(
+        result["receipt"],
+        contract=contract,
+        public_sha=public_sha,
+        private_sha=private_sha,
+        now=now,
+        expected_artifact_fingerprint=expected_artifact_fingerprint,
+    )
+    _require(receipt["evidence"].get("playbook") == playbook, "task_binding_mismatch")
+    result["receipt"] = receipt
+    return result
 
 
 def main() -> int:

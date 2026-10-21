@@ -36,14 +36,14 @@ def manifest() -> dict[str, object]:
 
 def backup_receipt() -> dict[str, object]:
     digest = pbs.artifact_fingerprint(manifest())
-    return {
+    return pbs.seal_receipt({
         "schema_version": 1,
         "contract": "o11y-pbs-backup/v1",
         "status": "complete",
         "reason": "none",
         "public_sha": PUBLIC,
         "private_sha": PRIVATE,
-        "inventory_provenance": "verified",
+        "inventory_provenance": "exact_bytes_match",
         "inventory_fingerprint": "3" * 64,
         "source_fingerprint": "4" * 64,
         "artifact_fingerprint": digest,
@@ -59,7 +59,7 @@ def backup_receipt() -> dict[str, object]:
             "artifact_fingerprint": digest,
             "playbook": BACKUP_PLAYBOOK,
         },
-    }
+    })
 
 
 def test_artifact_fingerprint_is_stable_and_excludes_mutable_fields() -> None:
@@ -99,15 +99,28 @@ def test_receipt_requires_exact_contract_and_recent_completed_evidence() -> None
     assert pbs.validate_receipt(
         receipt, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
     ) == receipt
-    stale = dict(receipt, observed_start="2026-10-20T14:00:00Z", observed_end="2026-10-20T15:00:00Z")
+    stale_body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
+    stale_body.update(observed_start="2026-10-20T14:00:00Z", observed_end="2026-10-20T15:00:00Z")
+    stale = pbs.seal_receipt(stale_body)
     with pytest.raises(pbs.Refusal, match="receipt_stale"):
         pbs.validate_receipt(
             stale, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
         )
-    forged = dict(receipt, role_context={"primary": "pve_backup", "verification": "destination_pbs_pull", "destination": "not_applicable"})
+    forged_body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
+    forged_body["role_context"] = {
+        "primary": "pve_backup",
+        "verification": "destination_pbs_pull",
+        "destination": "not_applicable",
+    }
+    forged = pbs.seal_receipt(forged_body)
     with pytest.raises(pbs.Refusal, match="task_binding_mismatch"):
         pbs.validate_receipt(
             forged, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+        )
+    tampered = dict(receipt, status="refused")
+    with pytest.raises(pbs.Refusal, match="task_binding_mismatch"):
+        pbs.validate_receipt(
+            tampered, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
         )
 
 
@@ -156,5 +169,64 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
             private_sha=PRIVATE,
             playbook=BACKUP_PLAYBOOK,
             expected_project_id=1,
+            expected_task_id=10,
+            expected_launch={"expected_repository_sha": PUBLIC},
             now=NOW,
         )
+
+
+def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch() -> None:
+    receipt = pbs.seal_receipt({
+        key: ("restore_receipt/v3" if key == "type" else "verified")
+        for key in pbs.RESTORE_RECEIPT_KEYS - {"receipt_fingerprint"}
+    })
+    task = {
+        "id": 14,
+        "project_id": 1,
+        "template_id": 56,
+        "commit_hash": PUBLIC,
+        "status": "success",
+        "created": "2026-10-21T14:59:00Z",
+        "start": "2026-10-21T15:00:00Z",
+        "end": "2026-10-21T15:30:00Z",
+        "environment": {
+            "expected_repository_sha": PUBLIC,
+            "backup_task_id": 10,
+            "pbs_verify_task_id": 11,
+            "copy_sync_task_id": 12,
+            "copy_ready_task_id": 13,
+        },
+        "playbook": "",
+        "params": {"diff": False, "dry_run": False},
+    }
+    lines = json.dumps(receipt, indent=2).splitlines()
+    midpoint = len(lines) // 2
+    rows = [
+        {"id": 3, "task_id": 14, "stage_id": None, "time": "2026-10-21T15:20:00Z", "output": "\n".join(lines[:midpoint])},
+        {"id": 4, "task_id": 14, "stage_id": None, "time": "2026-10-21T15:20:01Z", "output": "\n".join(lines[midpoint:])},
+    ]
+    result = pbs.validate_completed_output(
+        task,
+        rows,
+        public_sha=PUBLIC,
+        expected_project_id=1,
+        expected_launch={
+            "expected_repository_sha": PUBLIC,
+            "backup_task_id": 10,
+            "pbs_verify_task_id": 11,
+            "copy_sync_task_id": 12,
+            "copy_ready_task_id": 13,
+        },
+        selector="type",
+        expected_selector="restore_receipt/v3",
+        expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
+        allowed_launch_keys={
+            "expected_repository_sha",
+            "backup_task_id",
+            "pbs_verify_task_id",
+            "copy_sync_task_id",
+            "copy_ready_task_id",
+        },
+        now=NOW,
+    )
+    assert result["receipt"] == receipt
