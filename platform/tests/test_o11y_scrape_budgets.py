@@ -107,7 +107,8 @@ def _apply_alloy_prometheus_relabel_rules(labels, rules):
             match = re.fullmatch(rule.get("regex", "(.*)"), source)
             if match:
                 replacement = re.sub(
-                    r"\$(\d+)", lambda group: match.group(int(group.group(1))) or "",
+                    r"\$(\d+)",
+                    lambda group, match=match: match.group(int(group.group(1))) or "",
                     rule.get("replacement", "$1"),
                 )
                 labels[rule["target_label"]] = replacement
