@@ -71,7 +71,7 @@ become proposals that pass guardrails before automation executes them.
 |---|---|
 | Layout | Dispatch (work-board home) chosen over Ask (request-first) and Atlas (map-first); Ask's dashboard and Atlas's scope tree were folded in |
 | Tenant | Shown and switched in exactly one place, the sidebar brand block; every page is scoped to the selected tenant |
-| Work | Lanes: Awaiting approval, Queued, Running, Blocked / paused, Failed, Done (collapsed by default); filters by asset, group or business domain; red badges for stuck work |
+| Work | Sidebar entry "Active Work". Lanes: Awaiting approval, Queued, Running, Blocked (paused items keep a Paused label), Failed, Done (collapsed by default; denied items land here); filters by asset, group or business domain; red badges for stuck work |
 | Domains | Tiles above Work are business domains (Products, Professional Services, Automation, Administration, IT), not org/site |
 | Chat | The Work composer asks about current work; "New request" is a secondary mode. The Topology composer is aimed at the selection |
 | Plans | Execution and plans are vertical steppers; every step names its owning role |
@@ -80,6 +80,10 @@ become proposals that pass guardrails before automation executes them.
 | AI Gateway | "Agents" page renamed AI Gateway; production gateway (→ vLLM on spark-pair) and development gateway (local-dev → LM Studio) |
 | LLM access | Stays its own page; key requests pick target scopes (gateway groups) then agents; default 250,000,000 tokens/hour; user identity comes from Access |
 | Policy | Proposing a change drafts a plan and creates a work item that needs approval |
+| Proposals | The Dashboard lists proposals awaiting approval; each expands to review the plan, comment, edit the plan (OPA re-checks), approve or deny |
+| Services | "Ask about services" chat; "Request a service": an approved catalog service into the current scope, or a new service through the onboarding checklist |
+| Profile | Fields Authentik provides over OIDC are locked ("Managed by Authentik"); display name, avatar, pronouns, timezone, theme, notifications and default scope are editable |
+| Settings | Platform admins get Tenant settings and Organization settings above their account; saving creates a proposal (configuration is code); Organization settings owns the service → business-domain mapping |
 | Sites | site-hq, site-edge, DigitalOcean NYC1 and Cloudflare (edge only) |
 
 ## Evidence on Hand

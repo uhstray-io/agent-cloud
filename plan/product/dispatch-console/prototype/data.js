@@ -140,6 +140,18 @@ window.AC = (() => {
         { name: "Add client identity research-team to inventory", wf: "site-config PR (inventory)", st: "wait" },
         { name: "Re-render gateway config + key hash", wf: "Deploy agentgateway", st: "todo" },
         { name: "Hand off key to requester", wf: "Back Up Credentials to site-config", st: "todo" } ] },
+    { key: "AC-1190", title: "Rotate the Postiz signing secret", state: "proposed", st: "warn",
+      scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "postiz", agent: "skynet", by: "ari", via: "Natural language", age: "9m",
+      ask: "Rotate the Postiz signing secret; it was shared in a support ticket.",
+      opa: { decision: "allow", rule: "Credential rotation through a declared deploy", cond: "Needs Admin approval: a new signing secret ends every session and invalidates every API key" },
+      steps: [["Parse request", "done"], ["Plan (skynet)", "done"], ["Policy (OPA)", "done"], ["Approval", "wait"], ["Rotate and redeploy", "todo"], ["Verify", "todo"]],
+      tasks: [{ name: "Generate and store a new signing secret, redeploy", wf: "Deploy Postiz", st: "todo" }, { name: "Re-capture the API key after sign-in", wf: "Store Postiz API Key", st: "todo" }] },
+    { key: "AC-1191", title: "Move agentgateway to the next pinned release", state: "proposed", st: "warn",
+      scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "agentgateway", agent: "skynet", by: "priya", via: "Form", age: "34m",
+      ask: "Bump agentgateway to the next pinned release in tonight's window.",
+      opa: { decision: "allow", rule: "Image bump of a declared service", cond: "Production: runs in the change window after Admin approval" },
+      steps: [["Plan (skynet)", "done"], ["Policy (OPA)", "done"], ["Approval", "wait"], ["Deploy", "todo"], ["Verify", "todo"]],
+      tasks: [{ name: "Render config and redeploy with the new pin", wf: "Deploy agentgateway", st: "todo" }] },
     { key: "AC-1184", title: "Restore Postiz search node", state: "running", st: "run",
       scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "postiz", agent: "skynet", by: "you", via: "Fix from alert", age: "11m", sem: 6214, pct: 62,
       ask: "Postiz is red. Fix it.",
@@ -260,6 +272,18 @@ window.AC = (() => {
     { wf: "site-config validate", check: "inventory schema", ref: "site-config · PR #81", st: "ok", age: "6h", runner: "gh-runner-02" },
   ];
 
+  // approved services that can be requested into a scope; deploy templates are the real Semaphore template names (AGENTS.md)
+  const catalog = [
+    { id: "tududi", name: "tududi", what: "To-do and task tracking", template: "Deploy tududi" },
+    { id: "honcho", name: "honcho", what: "Team memory API", template: "Deploy honcho" },
+    { id: "postiz", name: "Postiz", what: "Social publishing", template: "Deploy Postiz" },
+    { id: "n8n", name: "n8n", what: "Workflow automation", template: "Deploy n8n" },
+    { id: "openhands", name: "OpenHands", what: "Agent canvas", template: "Deploy OpenHands" },
+    { id: "netbox", name: "NetBox", what: "Inventory and IPAM", template: "Deploy NetBox" },
+    { id: "agentgateway", name: "agentgateway", what: "Inference edge gateway", template: "Deploy agentgateway" },
+    { id: "gha", name: "GitHub runner", what: "Self-hosted CI runner", template: "Deploy GitHub Runner" },
+  ];
+
   // network per site, as NetBox would hold it: ingress path, then segments and what is attached.
   // Components are agent-cloud's real ones (Cloudflare edge, pfSense gateway, Caddy); segment names and VLAN IDs are examples.
   const networks = {
@@ -323,5 +347,5 @@ window.AC = (() => {
   };
 
   const svc = (id) => services.find((s) => s.id === id);
-  return { domains, networks, deliveries, agentGroups, tenants, services, edges, agents, people, work, users, roleMap, secrets, approles, policies, llmClients, runs, vms, capacity, telemetry, series, svc };
+  return { catalog, domains, networks, deliveries, agentGroups, tenants, services, edges, agents, people, work, users, roleMap, secrets, approles, policies, llmClients, runs, vms, capacity, telemetry, series, svc };
 })();

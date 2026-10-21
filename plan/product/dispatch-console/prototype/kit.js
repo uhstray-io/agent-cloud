@@ -10,8 +10,8 @@ window.K = (() => {
     run: ["loader-circle", "Running"], idle: ["circle-dashed", "Idle"],
   };
   const st = (s, label, pill) => `<span class="st ${s}${pill ? " pill" : ""}">${ic(ST[s][0], s === "run" ? "spin" : "")}${esc(label ?? ST[s][1])}</span>`;
-  const stateLabel = { proposed: "Awaiting approval", queued: "Queued", running: "Running", paused: "Paused", blocked: "Blocked by policy", done: "Done", failed: "Failed" };
-  const stateSt = { proposed: "warn", queued: "idle", running: "run", paused: "warn", blocked: "crit", done: "ok", failed: "crit" };
+  const stateLabel = { proposed: "Awaiting approval", queued: "Queued", running: "Running", paused: "Paused", blocked: "Blocked by policy", done: "Done", failed: "Failed", denied: "Denied" };
+  const stateSt = { proposed: "warn", queued: "idle", running: "run", paused: "warn", blocked: "crit", done: "ok", failed: "crit", denied: "crit" };
 
   const agent = (id) => { const a = D.agents[id]; return `<span class="agent"><span class="av" style="background:${a.color}">${ic(a.icon)}</span>${esc(a.name)}</span>`; };
   const person = (id) => { const p = D.people[id]; if (!p) return agent(id); return `<span class="agent"><span class="av human" style="background:${p.color}">${p.initials}</span>${esc(p.name)}</span>`; };
@@ -67,7 +67,7 @@ window.K = (() => {
   const stepCls = { done: "done", run: "run", fail: "fail", wait: "wait", todo: "" };
   const steps = (w) => `<div class="steps" aria-hidden="true">${w.steps.map((s) => `<i class="${stepCls[s[1]]}"></i>`).join("")}</div>`;
   const strip = (w, sel) => {
-    const bar = { proposed: "warn", queued: "", running: "run", paused: "warn", blocked: "crit", done: "ok", failed: "crit" }[w.state];
+    const bar = { proposed: "warn", queued: "", running: "run", paused: "warn", blocked: "crit", done: "ok", failed: "crit", denied: "crit" }[w.state];
     return `<article class="strip" role="button" tabindex="0" data-key="${w.key}" aria-selected="${!!sel}">
       <div class="strip-bar ${bar}"></div>
       <div class="strip-b">
@@ -396,14 +396,14 @@ window.K = (() => {
   document.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches?.("[data-svc-row]")) openService(e.target.dataset.svcRow); });
 
   // ---------- request dashboard (Ask's home; also Dispatch's Dashboard) ----------
-  const DASH = { live: D.work.find((w) => w.key === "AC-1187"), target: null };
+  const DASH = { target: null };
   function dashHtml() {
     const sc = curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"];
     const attention = [...tenantServices().filter((s) => s.st !== "ok").map((s) => ({ name: s.name, st: s.st, why: s.why, kind: s.kind, verify: `Service:${s.id}`, fix: `${s.name} is ${s.st === "crit" ? "down" : "degraded"}: ${s.why}. Fix it.` })),
       ...(!opts.tenantInSidebar || curTenant().name === "Kestrel Robotics" ? [{ name: "pve-k2", st: "crit", verify: "Node:pve-k2", why: "Node unreachable for 4m (corosync)", kind: opts.tenantInSidebar ? "Proxmox host" : "Proxmox host · Kestrel Robotics", fix: "pve-k2 is unreachable. Diagnose and fence it if needed." }] : [])]
       .sort((a, b) => (b.st === "crit") - (a.st === "crit"));
     const running = D.work.filter((w) => w.state === "running" && inTenant(w));
-    const recent = D.work.filter((w) => w.ask && w.key !== DASH.live?.key && inTenant(w)).concat(D.work.filter((w) => ["done", "blocked"].includes(w.state) && !w.ask && inTenant(w))).slice(0, 4);
+    const recent = D.work.filter((w) => w.ask && w.state !== "proposed" && inTenant(w)).concat(D.work.filter((w) => ["done", "blocked"].includes(w.state) && !w.ask && inTenant(w))).slice(0, 4);
     return `<div class="dash-home" data-dash>
     <div class="dash-col">
       ${comp("K.composer", "Request composer (natural language)", `<form class="card composer" id="ask">
@@ -420,7 +420,7 @@ window.K = (() => {
         <div class="chips">${["Give the research team an LLM key, 200k tokens an hour", "Add 2 cores to the NetBox VM", "Invite dana@kestrel.example as a developer on site-k1 dev", "Deny egress for gh-runner-02 except GitHub"].map((c) => `<button type="button" class="chip">${esc(c)}</button>`).join("")}</div>
         <div class="flowline">${ic("info")}<b>You ask</b>${ic("arrow-right")}<b>skynet plans</b>${ic("arrow-right")}<b>OPA checks</b>${ic("arrow-right")}<b>you approve</b>${ic("arrow-right")}<b>Semaphore runs it</b></div>
       </form>`)}
-      ${comp("K.live-proposal", "Live proposal with 5-step pipeline", `<div class="card card-b" id="proposal">${DASH.live ? proposal(DASH.live) : `<div class="empty">${ic("sparkles", "i-lg")}<b>No open proposals</b>Ask for something above and the plan appears here before anything runs.</div>`}</div>`)}
+      ${proposalQueue()}
       ${comp("K.recent-requests", "Recent requests, each with its work item", `<div class="card"><div class="card-h"><h3>Recent requests</h3><a href="#work" class="btn sm ghost">All work ${ic("arrow-right")}</a></div>
         <ul class="list thread">${recent.map((w) => `<li>${w.ask ? `<div class="quote"><span class="av human" style="background:${D.people[w.by].color}" title="${esc(D.people[w.by].name)}">${D.people[w.by].initials}</span><span>“${esc(w.ask)}”</span></div>` : ""}${strip(w)}</li>`).join("")}</ul></div>`)}
     </div>
@@ -432,36 +432,58 @@ window.K = (() => {
     </div></div>`;
   }
   const rerenderDash = () => { const d = document.querySelector("[data-dash]"); if (d) { d.outerHTML = dashHtml(); after(document.getElementById("view") ?? document); } };
-  // steps light up in order: done ones tick through "running", then the pipeline rests on its first non-done step
-  function animateProposal(w) {
-    const target = w.steps.map((s) => s[1]), box = document.getElementById("proposal"); if (!box) return;
-    let k = 0;
-    const render = () => { box.innerHTML = proposal(w); after(box); };
-    const tick = () => {
-      if (k < target.length && target[k] === "done") { w.steps.forEach((s, j) => (s[1] = j < k ? target[j] : j === k ? "run" : "todo")); render(); k++; setTimeout(tick, 380); }
-      else { w.steps.forEach((s, j) => (s[1] = target[j])); render(); }
-    };
-    tick();
+  // ---- proposals awaiting approval: expand one to review, comment, deny, edit the plan or approve ----
+  const PQ = { open: new Set(), editing: null };
+  function proposalQueue() {
+    const ps = D.work.filter((w) => w.state === "proposed" && inTenant(w));
+    return comp("K.proposal-queue", "Proposals awaiting approval (expand to review)", `<div class="card"><div class="card-h"><h3>Proposals awaiting approval</h3><span class="faint num" style="font-size:12px">${ps.length}</span></div>
+      ${ps.length ? `<ul class="list pq">${ps.map(pqRow).join("")}</ul>` : `<div class="empty">${ic("sparkles", "i-lg")}<b>Nothing waiting on approval</b>Ask for something above; the plan lands here before anything runs.</div>`}</div>`);
   }
+  function pqRow(w) {
+    const open = PQ.open.has(w.key), editing = PQ.editing === w.key;
+    return `<li class="pq-row${open ? " open" : ""}"><button type="button" class="pq-head" data-pq-toggle="${w.key}" aria-expanded="${open}">
+        <span class="strip-key">${w.key}</span><span class="grow"><b>${esc(w.title)}</b><span class="faint">${esc(scopeText(w.scope))} · ${esc(D.people[w.by]?.name ?? w.by)} · ${w.age}${w.age === "now" ? "" : " ago"}</span></span>
+        ${w.opa.decision === "deny" ? st("crit", "OPA denied") : st("ok", "OPA allowed")}${ic("chevron-down", "vchev")}</button>
+      ${open ? `<div class="pq-body">
+        ${w.ask ? `<p class="muted" style="margin:0">“${esc(w.ask)}”</p>` : ""}${policyBox(w.opa)}
+        ${editing ? `<ol class="pq-edit">${w.steps.map((x, i) => `<li><span class="grow">${esc(x[0])} <span class="faint">· ${esc(x[3] ?? roleFor(x[0], w))}</span></span>${x[1] === "todo" ? `<button type="button" class="btn sm ghost" data-pq-rm="${w.key}:${i}" aria-label="Remove step ${esc(x[0])}">${ic("x")}Remove</button>` : `<span class="faint" style="font-size:12px">${x[1] === "done" ? "done" : "in progress"}</span>`}</li>`).join("")}</ol>
+          <div class="row wrap"><input class="input grow" id="pq-add-${w.key}" placeholder="Add a step, e.g. “Back up the database first”" style="min-width:200px"><button type="button" class="btn sm" data-pq-addstep="${w.key}">${ic("plus")}Add step</button></div>`
+          : vsteps(w, "plan")}
+        <div class="pq-comments">${(w.comments ?? []).map((c) => `<div class="quote"><span class="av human" style="background:${D.people[c.who]?.color ?? "#6b7480"}">${D.people[c.who]?.initials ?? "?"}</span><span>${esc(c.text)} <span class="faint">· ${c.at}</span></span></div>`).join("")}
+          <div class="row wrap"><input class="input grow" id="pq-c-${w.key}" placeholder="Comment on this proposal" style="min-width:200px"><button type="button" class="btn sm" data-pq-comment="${w.key}">${ic("message-square-text")}Comment</button></div></div>
+        <div class="row wrap">${editing ? `<button type="button" class="btn primary" data-pq-save="${w.key}">${ic("check")}Save plan (OPA re-checks)</button><button type="button" class="btn ghost" data-pq-cancel="${w.key}">Cancel</button>`
+          : `<button type="button" class="btn primary" data-pq-approve="${w.key}">${ic("check")}Approve</button><button type="button" class="btn" data-pq-editplan="${w.key}">${ic("pencil")}Edit plan</button><button type="button" class="btn danger" data-pq-deny="${w.key}">${ic("thumbs-down")}Deny</button>`}</div>
+      </div>` : ""}</li>`;
+  }
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-pq-toggle],[data-pq-approve],[data-pq-deny],[data-pq-editplan],[data-pq-save],[data-pq-cancel],[data-pq-rm],[data-pq-addstep],[data-pq-comment]"); if (!t) return;
+    e.stopPropagation();
+    const ds = t.dataset, key = ds.pqToggle ?? ds.pqApprove ?? ds.pqDeny ?? ds.pqEditplan ?? ds.pqSave ?? ds.pqCancel ?? ds.pqAddstep ?? ds.pqComment ?? ds.pqRm.split(":")[0], w = D.work.find((x) => x.key === key);
+    if (!w) return;
+    if (ds.pqToggle) { if (PQ.open.has(key)) PQ.open.delete(key); else PQ.open.add(key); }
+    if (ds.pqApprove) { w.state = "queued"; w.steps.forEach((x) => x[1] === "wait" && (x[1] = "done")); PQ.open.delete(key); toast(`${key} approved. It moves to Queued.`); window.onWorkChanged?.(); }
+    if (ds.pqDeny) { w.state = "denied"; w.why = "Denied by You"; (w.comments ??= []).push({ who: "you", text: "Denied.", at: "now" }); PQ.open.delete(key); toast(`${key} denied. Nothing ran.`, "thumbs-down"); window.onWorkChanged?.(); }
+    if (ds.pqEditplan) PQ.editing = key;
+    if (ds.pqCancel) PQ.editing = null;
+    if (ds.pqSave) { PQ.editing = null; (w.comments ??= []).push({ who: "you", text: "Edited the plan. OPA re-checked it: allowed.", at: "now" }); toast(`${key}: plan saved; OPA re-checked it.`); }
+    if (ds.pqRm) { const i = +ds.pqRm.split(":")[1]; if (w.steps[i]?.[1] === "todo") w.steps.splice(i, 1); }
+    if (ds.pqAddstep) { const v = document.getElementById(`pq-add-${key}`)?.value.trim(); if (v) w.steps.splice(Math.max(0, w.steps.length - 1), 0, [v, "todo"]); }
+    if (ds.pqComment) { const v = document.getElementById(`pq-c-${key}`)?.value.trim(); if (v) (w.comments ??= []).push({ who: "you", text: v, at: "now" }); }
+    rerenderDash();
+  }, true);
   function dashSubmit(text) {
     if (!text.trim()) { toast("Describe what you want changed first.", "info"); return; }
-    DASH.live = parse(text, curScope);
-    const t = document.getElementById("askText"); if (t) t.value = text;
-    animateProposal(DASH.live);
-    document.querySelector('[data-cid="K.live-proposal"]')?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const w = parse(text, curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"]);
+    D.work.unshift(w); PQ.open.add(w.key); rerenderDash(); window.onWorkChanged?.();
+    toast(`${w.key} drafted. Review it under Proposals awaiting approval.`, "sparkles");
+    document.querySelector('[data-cid="K.proposal-queue"]')?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
   // the dashboard owns its own controls; capture phase so page-level handlers never double-handle them
   document.addEventListener("click", (e) => {
     if (!e.target.closest("[data-dash]")) return;
-    const chip = e.target.closest(".chip"), fix = e.target.closest("[data-dash-fix]"), a = e.target.closest("#proposal [data-act]");
+    const chip = e.target.closest(".chip"), fix = e.target.closest("[data-dash-fix]");
     if (chip) { e.stopPropagation(); dashSubmit(chip.textContent); return; }
     if (fix) { e.stopPropagation(); dashSubmit(fix.dataset.dashFix); return; }
-    if (a && DASH.live && a.dataset.key === DASH.live.key) {
-      e.stopPropagation();
-      const w = DASH.live, act = a.dataset.act;
-      if (act === "approve") { w.state = "queued"; w.steps.forEach((x) => x[1] === "wait" && (x[1] = "done")); if (!D.work.includes(w)) D.work.unshift(w); DASH.live = null; rerenderDash(); window.onWorkChanged?.(); toast(`${w.key} approved and queued. skynet picks it up next.`); }
-      if (act === "discard") { DASH.live = null; rerenderDash(); toast("Proposal discarded. Nothing ran.", "x"); }
-    }
   }, true);
   document.addEventListener("submit", (e) => { if (e.target.id === "ask" && e.target.closest("[data-dash]")) { e.preventDefault(); e.stopPropagation(); dashSubmit(document.getElementById("askText").value); } }, true);
   document.addEventListener("keydown", (e) => { if (e.target.id === "askText" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); dashSubmit(e.target.value); } });
@@ -666,6 +688,160 @@ window.K = (() => {
 
   // ---------- shared secondary views ----------
   const V = {};
+
+  // ---------- Services: ask about services + request a service ----------
+  const SVC = { qa: null };
+  const svcByMention = (q) => tenantServices().find((x) => q.toLowerCase().includes(x.name.toLowerCase()));
+  function svcChips() {
+    const sick = tenantServices().filter((x) => x.st !== "ok");
+    const first = sick.find((x) => x.st === "crit") ?? sick[0];
+    return [...(first ? [`Why is ${first.name} ${first.st === "crit" ? "down" : "degraded"}?`, `What depends on ${first.name}?`, `Restart ${first.name} safely`] : []), "Which services are unhealthy?"];
+  }
+  function answerSvc(q) {
+    const t = q.toLowerCase(), x = svcByMention(q), all = tenantServices();
+    if (x && /restart|redeploy|upgrade|rotate|fix|deploy|scale/.test(t)) return { action: true };
+    if (x && /depend|uses|calls|integrat/.test(t)) {
+      const ins = D.edges.filter((e) => e[1] === x.id), outs = D.edges.filter((e) => e[0] === x.id);
+      return { q, title: `${x.name}: ${ins.length} depend on it, it uses ${outs.length}`, lines: [...ins.map((e) => `${D.svc(e[0]).name} → ${x.name}: ${e[3]}`), ...outs.map((e) => `${x.name} → ${D.svc(e[1]).name}: ${e[3]}`)], items: [x] };
+    }
+    if (x) { const ws = D.work.filter((w) => w.target === x.id && inTenant(w) && w.state !== "done");
+      return { q, title: `${x.name} is ${ST[x.st][1].toLowerCase()}`, lines: [x.why ? `Why: ${x.why}.` : "No health issue recorded.", `Runs on ${x.host} (${x.where}).`, ws.length ? `Work on it: ${ws.map((w) => `${w.key} ${stateLabel[w.state].toLowerCase()}`).join(", ")}.` : "No open work on it."], items: [x] }; }
+    if (/unhealthy|down|degraded|red|broken|which/.test(t)) { const sick = all.filter((s2) => s2.st !== "ok"); return { q, title: `${sick.length} unhealthy`, lines: sick.map((s2) => `${s2.name}: ${ST[s2.st][1].toLowerCase()}, ${s2.why}.`), items: sick }; }
+    return { q, title: `${all.length} services in this scope`, lines: [`${all.filter((s2) => s2.st === "ok").length} healthy, ${all.filter((s2) => s2.st === "warn").length} degraded, ${all.filter((s2) => s2.st === "crit").length} down.`, "Ask about a service by name: why it is red, what depends on it, or ask to restart it safely."], items: [] };
+  }
+  const svcComposer = () => comp("K.services-ask", "Ask about services", `<form class="card qchat" id="svcask">
+      <div class="qchat-h"><span class="av" style="background:#2448b8">${ic("bot")}</span><b>Ask about services</b><span class="faint">Why something is red, what depends on it, or ask for a safe change. Changes become proposals for approval.</span></div>
+      <div class="composer-box"><textarea id="svcText" rows="2" placeholder="Ask about agent-cloud services in ${esc(scopeText(curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"]))}…" aria-label="Ask about services"></textarea>
+        <div class="composer-foot"><span class="tag">${ic("crosshair")}${esc(curScope[2] ?? "site-hq")} · ${esc(curScope[3] ?? "prod")}</span><span class="grow"></span><span class="faint" style="font-size:12px">Enter to send</span><button class="btn primary sm" type="submit">${ic("message-circle-question")}Ask</button></div></div>
+      <div class="chips">${svcChips().map((c) => `<button type="button" class="chip" data-svcchip>${esc(c)}</button>`).join("")}</div>
+      ${SVC.qa ? `<div class="qanswer" role="status"><div class="row"><span class="faint grow" style="font-size:12px">“${esc(SVC.qa.q)}”</span><button type="button" class="iconbtn" data-svcclear aria-label="Dismiss answer" style="width:24px;height:24px">${ic("x")}</button></div><b>${esc(SVC.qa.title)}</b>${SVC.qa.lines.length ? `<ul>${SVC.qa.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}${SVC.qa.items.length ? `<div class="row wrap" style="gap:6px">${SVC.qa.items.map((x) => `<button type="button" class="btn sm ghost" data-svc-row="${x.id}">${ic(x.icon)}${esc(x.name)}</button>`).join("")}</div>` : ""}<span class="faint" style="font-size:11.5px">Answered from the service inventory (example data). In the console, skynet answers from live state.</span></div>` : ""}
+    </form>`, "", "div");
+  function svcSubmit(text) {
+    if (!text.trim()) { toast("Type a question about services first.", "info"); return; }
+    const a = answerSvc(text);
+    if (a.action) { const x = svcByMention(text), w = parse(text, curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"]); w.target = x.id; w.title = `${text.length > 52 ? text.slice(0, 50) + "…" : text}`; SVC.qa = null; newProposal(w); return; }
+    SVC.qa = a; const box = document.querySelector('[data-cid="K.services-ask"]'); if (box) { box.outerHTML = svcComposer(); after(document.getElementById("view") ?? document); }
+  }
+  document.addEventListener("submit", (e) => { if (e.target.id === "svcask") { e.preventDefault(); e.stopPropagation(); svcSubmit(document.getElementById("svcText").value); } }, true);
+  document.addEventListener("keydown", (e) => { if (e.target.id === "svcText" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); svcSubmit(e.target.value); } });
+
+  // request a service: an approved catalog service into this scope, or a new service through onboarding
+  let reqTab = "existing";
+  function reqSvcHtml() {
+    const here = new Set(tenantServices().map((x) => x.id)), t = curTenant();
+    const sites = t.orgs.flatMap((o) => o.sites.map((s2) => s2.name));
+    return `<div class="stack"><div class="seg" role="group" aria-label="Request type"><button type="button" data-reqtab="existing" aria-pressed="${reqTab === "existing"}">Approved service</button><button type="button" data-reqtab="new" aria-pressed="${reqTab === "new"}">New service</button></div>
+      ${reqTab === "existing" ? `<p class="faint" style="margin:0;font-size:12.5px">Deploys an approved agent-cloud service into ${esc(curScope[2] ?? "site-hq")} · ${esc(curScope[3] ?? "prod")}. It becomes a proposal: OPA checks it, an Admin approves, Semaphore runs the service's own deploy template.</p>
+        <ul class="list res-conn">${D.catalog.map((c) => `<li><div class="row" style="padding:9px 0;gap:10px"><span class="grow"><b>${esc(c.name)}</b><span class="faint" style="display:block;font-size:12px">${esc(c.what)} · <span class="mono">${esc(c.template)}</span></span></span>${here.has(c.id) ? `<span class="tag">${ic("circle-check")}Running here</span>` : ""}<button type="button" class="btn sm" data-reqsvc-item="${c.id}">${ic("package-plus")}Request</button></div></li>`).join("")}</ul>`
+      : `<p class="faint" style="margin:0;font-size:12.5px">A service agent-cloud does not run yet goes through onboarding (plan/architecture/02): a plan, inventory, a deploy playbook, secrets in OpenBao, a Semaphore template and an SSH key. This opens a review item; nothing deploys from here.</p>
+        <label><span class="label">Service name</span><input class="input" id="ns-name" placeholder="e.g. wiki"></label>
+        <label><span class="label">What it does and who uses it</span><textarea class="input" id="ns-what" rows="3" style="height:auto;padding:8px 10px" placeholder="Internal documentation wiki for the platform team"></textarea></label>
+        <div class="row wrap" style="gap:10px"><label class="grow"><span class="label">Owner group</span><select class="input" id="ns-owner">${[...new Set(D.users.map((u) => u.group))].map((g) => `<option>${esc(g)}</option>`).join("")}</select></label>
+          <label class="grow"><span class="label">Site</span><select class="input" id="ns-site">${sites.map((x) => `<option ${x === curScope[2] ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></label></div>
+        <button type="button" class="btn primary" data-reqsvc-new>${ic("send-horizontal")}Submit onboarding request</button>`}</div>`;
+  }
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-reqsvc]")) { reqTab = "existing"; drawer("Request a service", reqSvcHtml()); return; }
+    const tb = e.target.closest("[data-reqtab]"); if (tb) { reqTab = tb.dataset.reqtab; const d = document.querySelector(".drawer .drawer-b"); if (d) { d.innerHTML = reqSvcHtml(); after(d); } return; }
+    const sc = curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"];
+    const item = e.target.closest("[data-reqsvc-item]");
+    if (item) { const c = D.catalog.find((x) => x.id === item.dataset.reqsvcItem); document.querySelector(".drawer")?.remove();
+      newProposal({ key: `AC-${seq++}`, title: `Deploy ${c.name} to ${sc[2]} · ${sc[3]}`, state: "proposed", st: "warn", agent: "skynet", by: "you", via: "Service request", age: "now", ask: `Deploy the approved ${c.name} service into ${sc[2]} · ${sc[3]}.`, scope: sc.slice(), target: D.svc(c.id) ? c.id : c.name,
+        opa: { decision: "allow", rule: "Approved catalog service", cond: "A new placement needs Admin approval" },
+        steps: [["Parse request", "done"], ["Plan (skynet)", "done"], ["Policy (OPA)", "done"], ["Approval", "wait"], ["Check inventory and address", "todo"], ["Provision", "todo"], ["Deploy", "todo"], ["Verify", "todo"]],
+        tasks: [{ name: "Declared spec and address claims", wf: "Lookup Service Inventory", st: "todo" }, { name: "Address is free", wf: "Validate Address Free", st: "todo" }, { name: "VM from the declared spec", wf: "Provision VM", st: "todo" }, { name: "Service deploy", wf: c.template, st: "todo" }] }); return; }
+    if (e.target.closest("[data-reqsvc-new]")) {
+      const name = document.getElementById("ns-name").value.trim(); if (!name) { toast("Give the service a name first.", "info"); return; }
+      const what = document.getElementById("ns-what").value.trim(), owner = document.getElementById("ns-owner").value, site = document.getElementById("ns-site").value; document.querySelector(".drawer")?.remove();
+      newProposal({ key: `AC-${seq++}`, title: `Onboard new service: ${name}`, state: "proposed", st: "warn", agent: "skynet", by: "you", via: "New service request", age: "now", ask: `${what || "New service"} (owner ${owner}, site ${site}).`, scope: [sc[0], sc[1], site, sc[3]], target: name,
+        opa: { decision: "allow", rule: "New services follow the onboarding checklist", cond: "Needs review before any plan or deploy is written" },
+        steps: [["Parse request", "done"], ["Draft onboarding plan", "done"], ["Review", "wait"], ["Plan document and inventory", "todo"], ["Deploy playbook and secrets", "todo"], ["Semaphore template and SSH key", "todo"], ["Route and verify", "todo"]],
+        tasks: [{ name: "Implementation plan in plan/development", wf: "PR: plan document", st: "todo" }, { name: `deploy-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.yml with manage-secrets.yml`, wf: "PR: deploy playbook", st: "todo" }, { name: "Per-service SSH key", wf: "Generate Service SSH Key", st: "todo" }, { name: "Route through Caddy", wf: "Manage Caddy Sites", st: "todo" }] });
+    }
+  });
+
+  // ---------- profile and settings ----------
+  const isPlatformAdmin = () => D.users.find((u) => u.who === "you")?.group === "platform-admins";
+  const PF = { photo: null, color: null };
+  const AV_COLORS = ["#15191e", "#2448b8", "#2f7a55", "#8a3f7a", "#8a4b14", "#4f4fb0"];
+  const avatarHtml = (big) => { const me = D.people.you; return me.photo ? `<img class="av-img${big ? " big" : ""}" src="${esc(me.photo)}" alt="">` : `<span class="av human${big ? " big" : ""}" style="background:${me.color}">${esc(me.initials)}</span>`; };
+  const lockRow = (label, value, note) => `<div class="pf-lock"><span class="label">${label}</span><span class="grow mono">${esc(value)}</span><span class="tag" title="Provided by Authentik over OIDC">${ic("lock")}Managed by Authentik</span>${note ? `<span class="faint" style="flex-basis:100%;font-size:12px">${note}</span>` : ""}</div>`;
+  V.profile = () => { const me = D.users.find((u) => u.who === "you"), p = D.people.you, sc = curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"];
+    return `<div class="view">${head("Your profile", "user-round", "Your account comes from Authentik over OIDC. What Authentik owns is locked here; change it in Authentik. Everything else is yours to set.", authority("Authentik (OIDC claims)", "fingerprint"))}
+    ${comp("K.profile-oidc", "Profile: fields managed by the identity provider", `<div class="card card-b stack"><h3>Account</h3>
+      ${lockRow("Legal name", "Platform Operator (example)")}${lockRow("Email", me.email)}${lockRow("Username", me.uid)}${lockRow("Groups", me.group)}${lockRow("Sign-in and MFA", "Password + MFA", "Change these in Authentik.")}
+      <div class="row"><button type="button" class="btn sm" data-res-link="Authentik account">${ic("external-link")}Edit in Authentik</button><span class="faint" style="font-size:12px">A local (non-OIDC) account would have every field editable here.</span></div></div>`)}
+    ${comp("K.profile-prefs", "Profile: your editable preferences", `<form class="card card-b stack" id="profile-form"><h3>Preferences</h3>
+      <div class="row wrap" style="gap:16px;align-items:flex-start"><div class="stack" style="gap:8px;align-items:center"><span id="pf-avatar">${avatarHtml(true)}</span>
+          <label class="btn sm" for="pf-photo">${ic("image-up")}Upload photo</label><input type="file" id="pf-photo" accept="image/*" hidden>
+          <div class="row" style="gap:4px" role="group" aria-label="Avatar colour">${AV_COLORS.map((c) => `<button type="button" class="swatch" data-pf-color="${c}" style="background:${c}" aria-label="Colour ${c}" aria-pressed="${p.color === c}"></button>`).join("")}</div>
+          ${p.photo ? `<button type="button" class="btn sm ghost" data-pf-clearphoto>Use initials</button>` : ""}</div>
+        <div class="stack grow" style="min-width:240px">
+          <label><span class="label">Display name</span><input class="input" id="pf-name" value="${esc(p.display ?? "Operator")}"></label>
+          <div class="row wrap" style="gap:10px"><label class="grow"><span class="label">Pronouns</span><input class="input" id="pf-pronouns" value="${esc(p.pronouns ?? "")}" placeholder="optional"></label>
+            <label class="grow"><span class="label">Timezone</span><select class="input" id="pf-tz">${["America/New_York", "America/Chicago", "America/Los_Angeles", "UTC", "Europe/London"].map((z) => `<option ${z === (p.tz ?? "America/New_York") ? "selected" : ""}>${z}</option>`).join("")}</select></label></div>
+          <div><span class="label">Theme</span><div class="seg" role="group" aria-label="Theme">${["system", "light", "dark"].map((m) => `<button type="button" data-pf-theme="${m}" aria-pressed="${(document.documentElement.dataset.theme ?? "system") === m}">${m[0].toUpperCase() + m.slice(1)}</button>`).join("")}</div></div>
+          <fieldset class="pf-notify"><legend class="label">Notify me when</legend>${[["approval", "a proposal needs my approval", true], ["failed", "my work fails or is blocked", true], ["digest", "a daily summary is ready", false]].map(([id, l, on]) => `<label><input type="checkbox" id="pf-n-${id}" ${on ? "checked" : ""}> ${l}</label>`).join("")}</fieldset>
+          <div class="row wrap" style="gap:10px"><label class="grow"><span class="label">Default site</span><select class="input" id="pf-site">${curTenant().orgs.flatMap((o) => o.sites.map((s2) => s2.name)).map((x) => `<option ${x === sc[2] ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></label>
+            <label class="grow"><span class="label">Default environment</span><select class="input" id="pf-env">${["prod", "dev", "local"].map((x) => `<option ${x === sc[3] ? "selected" : ""}>${x}</option>`).join("")}</select></label></div>
+          <div class="row"><button type="submit" class="btn primary">${ic("check")}Save preferences</button></div>
+        </div></div></form>`)}</div>`; };
+  document.addEventListener("change", (e) => {
+    if (e.target.id !== "pf-photo" || !e.target.files?.[0]) return;
+    const r = new FileReader(); r.onload = () => { D.people.you.photo = r.result; const box = document.getElementById("pf-avatar"); if (box) box.innerHTML = avatarHtml(true); window.onWorkChanged?.(); }; r.readAsDataURL(e.target.files[0]);
+  });
+  document.addEventListener("click", (e) => {
+    const c = e.target.closest("[data-pf-color]"); if (c) { D.people.you.color = c.dataset.pfColor; D.people.you.photo = null; dispatchEvent(new HashChangeEvent("hashchange")); return; }
+    if (e.target.closest("[data-pf-clearphoto]")) { D.people.you.photo = null; dispatchEvent(new HashChangeEvent("hashchange")); return; }
+    const th = e.target.closest("[data-pf-theme]"); if (th) { const m = th.dataset.pfTheme; if (m === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = m; th.parentElement.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b === th)); }
+  });
+  document.addEventListener("submit", (e) => {
+    if (e.target.id !== "profile-form") return; e.preventDefault(); e.stopPropagation();
+    const p = D.people.you, name = document.getElementById("pf-name").value.trim() || "Operator";
+    p.display = name; p.initials = name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase(); p.pronouns = document.getElementById("pf-pronouns").value.trim(); p.tz = document.getElementById("pf-tz").value;
+    toast("Preferences saved. Account fields stay with Authentik."); window.onWorkChanged?.();
+  }, true);
+
+  const adminOnly = (what) => `<div class="view">${head(what, "lock", "Only platform admins can open this page.", authority("Authentik groups", "fingerprint"))}<div class="empty">${ic("lock", "i-lg")}<b>You don't have access</b>Ask a platform admin.</div></div>`;
+  V.tenantSettings = () => { if (!isPlatformAdmin()) return adminOnly("Tenant settings"); const t = curTenant();
+    return `<div class="view">${head(`Tenant settings · ${t.name}`, "building", "Applies to the tenant chosen in the sidebar. Saving creates a proposal: tenant configuration is code, so changes land as a reviewed change, not a direct edit.", authority("site-config inventory + Authentik", "fingerprint"))}
+    ${comp("K.tenant-settings", "Tenant settings", `<form class="card card-b stack" id="tenant-form">
+      <div class="row wrap" style="gap:10px"><label class="grow"><span class="label">Tenant name</span><input class="input" id="ts-name" value="${esc(t.name)}"></label>
+        <label class="grow"><span class="label">Authentik tenant group</span><input class="input mono" value="tenant-${esc(t.id)}" readonly title="Example group name"></label></div>
+      <div class="row wrap" style="gap:10px"><label class="grow"><span class="label">Default LLM budget (tokens / hour)</span><input class="input num" id="ts-budget" value="250,000,000"></label>
+        <label class="grow"><span class="label">Iteration length</span><select class="input" id="ts-iter"><option>1 week</option><option selected>2 weeks</option><option>3 weeks</option></select></label>
+        <label class="grow"><span class="label">Production approvals</span><select class="input" id="ts-approve"><option>One Admin</option><option>Two Admins</option><option>Admin + change window</option></select></label></div>
+      <h3>Organizations</h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Organization</th><th>Sites</th><th></th></tr></thead><tbody>${t.orgs.map((o) => `<tr><td><b>${esc(o.name)}</b></td><td>${o.sites.map((s2) => `<span class="tag">${esc(s2.name)}</span>`).join(" ")}</td><td><button type="button" class="btn sm ghost" data-goto-orgsettings="${esc(o.name)}">Settings</button></td></tr>`).join("")}</tbody></table></div>
+      <div class="row wrap"><button type="button" class="btn sm" data-settings-add="organization">${ic("plus")}Add organization</button><button type="button" class="btn sm" data-settings-add="site">${ic("plus")}Add site</button><span class="grow"></span><button type="submit" class="btn primary">${ic("send-horizontal")}Propose changes</button></div></form>`)}</div>`; };
+  V.orgSettings = () => { if (!isPlatformAdmin() && D.users.find((u) => u.who === "you")?.level !== "Maintainer") return adminOnly("Organization settings");
+    const t = curTenant(), o = t.orgs.find((x) => x.name === curScope[1]) ?? t.orgs[0];
+    return `<div class="view">${head(`Organization settings · ${o.name}`, "settings-2", "Applies to the organization chosen in the scope bar. Saving creates a proposal for review.", authority("site-config inventory + NetBox tags", "network"))}
+    ${comp("K.org-settings", "Organization settings", `<form class="card card-b stack" id="org-form">
+      <div class="row wrap" style="gap:10px"><label class="grow"><span class="label">Organization name</span><input class="input" id="os-name" value="${esc(o.name)}"></label>
+        <label class="grow"><span class="label">Approvers</span><select class="input" id="os-approvers">${[...new Set(D.users.map((u) => u.group))].map((g) => `<option>${esc(g)}</option>`).join("")}</select></label>
+        <label class="grow"><span class="label">Default site</span><select class="input" id="os-site">${o.sites.map((s2) => `<option>${esc(s2.name)}</option>`).join("")}</select></label></div>
+      <h3>Business domains</h3><p class="faint" style="margin:0;font-size:12.5px">Which domain each service serves. This drives the domain tiles on Active Work. Stored as service inventory tags.</p>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Service</th><th>Business domain</th></tr></thead><tbody>${tenantServices().map((x) => `<tr><td>${ic(x.icon)} ${esc(x.name)}</td><td><select class="input" data-os-domain="${x.id}" style="height:30px">${D.domains.map(([d]) => `<option ${d === x.domain ? "selected" : ""}>${d}</option>`).join("")}</select></td></tr>`).join("") || `<tr><td colspan="2" class="faint">No services in this organization</td></tr>`}</tbody></table></div>
+      <div class="row wrap"><a class="btn sm" href="#access">${ic("users")}Members and roles</a><span class="grow"></span><button type="submit" class="btn primary">${ic("send-horizontal")}Propose changes</button></div></form>`)}</div>`; };
+  document.addEventListener("click", (e) => {
+    const og = e.target.closest("[data-goto-orgsettings]"); if (og) { location.hash = "orgsettings"; return; }
+    const add = e.target.closest("[data-settings-add]"); if (!add) return;
+    const what = add.dataset.settingsAdd, sc = curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"];
+    newProposal({ key: `AC-${seq++}`, title: `Add ${what} to ${curTenant().name}`, state: "proposed", st: "warn", agent: "skynet", by: "you", via: "Tenant settings", age: "now", ask: `Add a new ${what}.`, scope: sc.slice(), target: what,
+      opa: { decision: "allow", rule: "Tenant structure change as code", cond: "Platform admin approval" },
+      steps: [["Draft change", "done"], ["Policy (OPA)", "done"], ["Approval", "wait"], ["Inventory change", "todo"], ["Apply groups", "todo"]],
+      tasks: [{ name: `${what} in tenant inventory`, wf: "site-config PR (inventory)", st: "todo" }, { name: "Groups and bindings", wf: "Deploy Authentik (blueprints)", st: "todo" }] });
+  });
+  document.addEventListener("submit", (e) => {
+    if (e.target.id !== "tenant-form" && e.target.id !== "org-form") return; e.preventDefault(); e.stopPropagation();
+    const tenant = e.target.id === "tenant-form", sc = curScope.length ? curScope : ["Uhstray.io", "Platform", "site-hq", "prod"];
+    const changed = tenant ? [] : [...document.querySelectorAll("[data-os-domain]")].filter((sel) => sel.value !== D.svc(sel.dataset.osDomain)?.domain).map((sel) => `${D.svc(sel.dataset.osDomain).name} → ${sel.value}`);
+    newProposal({ key: `AC-${seq++}`, title: tenant ? `Tenant settings change: ${curTenant().name}` : `Organization settings change: ${sc[1]}${changed.length ? ` (${changed.length} domain ${changed.length === 1 ? "tag" : "tags"})` : ""}`, state: "proposed", st: "warn", agent: "skynet", by: "you", via: tenant ? "Tenant settings" : "Organization settings", age: "now",
+      ask: changed.length ? `Retag services: ${changed.join(", ")}.` : "Update settings.", scope: sc.slice(), target: tenant ? curTenant().name : sc[1],
+      opa: { decision: "allow", rule: "Settings change as code", cond: tenant ? "Platform admin approval" : "Organization admin approval" },
+      steps: [["Draft change", "done"], ["Policy (OPA)", "done"], ["Approval", "wait"], ["Apply as code", "todo"]],
+      tasks: [{ name: tenant ? "Tenant defaults and structure" : "Organization settings and service domain tags", wf: "site-config PR (inventory)", st: "todo" }] });
+  }, true);
   V.work = () => {
     const lanes = [["proposed", "Awaiting approval"], ["queued", "Queued"], ["running", "Running"], ["blocked", "Blocked"], ["failed", "Failed"], ["done", "Done"]];
     return `<div class="view">${head("Work", "list-todo", "Every request, job and schedule across your scope. Select one to see the agent, its tasks and the Semaphore workflows behind them.", authority("skynet + Semaphore", "workflow"))}
@@ -673,7 +849,7 @@ window.K = (() => {
   };
   V.topology = () => `<div class="view">${head("Topology", "waypoints", "Services by layer of the guardrails model, joined by how they integrate. Select a service to trace what it depends on and what depends on it.", authority("NetBox + service inventory", "network"))}
     ${comp("K.topology", "Dependency map (4-layer)", `<div class="card"><div class="card-h"><h3>site-hq · prod</h3>${legend()}</div><div class="card-b">${topology()}</div></div>`)}</div>`;
-  V.services = () => `<div class="view">${head("Services", "boxes", "Everything agent-cloud deploys in this scope. Red and amber rows say why.", authority("Semaphore conformance → NetBox", "workflow"))}${siteBanner()}
+  V.services = () => `<div class="view">${head("Services", "boxes", "Everything agent-cloud deploys in this scope. Red and amber rows say why.", authority("Semaphore conformance → NetBox", "workflow"), `<button type="button" class="btn primary" data-reqsvc>${ic("package-plus")}Request a service</button>`)}${svcComposer()}${siteBanner()}
     ${comp("K.service-table", "Service table with reasons", `<div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Service</th><th>Layer</th><th>Status</th><th>Host</th><th>Integrations</th><th></th></tr></thead><tbody>${tenantServices().length ? "" : `<tr><td colspan="6"><div class="empty">${ic("boxes", "i-lg")}<b>No services recorded for this tenant</b>The example data only places services under the first tenant.</div></td></tr>`}${tenantServices().map((s) => `<tr class="svc-row" data-svc-row="${s.id}" tabindex="0" title="Open ${esc(s.name)} details"><td><span class="row">${ic(s.icon)}<b>${esc(s.name)}</b>${ic("chevron-right", "faint")}</span><span class="faint" style="font-size:12px">${esc(s.kind)}</span></td><td>${LANES.find((l) => l[0] === s.layer)[1]}</td><td>${st(s.st)}${s.why ? `<div class="faint" style="font-size:12px">${esc(s.why)}</div>` : ""}</td><td>${hostCell(s)}</td><td class="num">${D.edges.filter((e) => e[0] === s.id || e[1] === s.id).length}</td><td><button class="btn sm" data-act="queue-svc" data-svc="${s.id}">${ic("plus")}Queue work</button></td></tr>`).join("")}</tbody></table></div>`)}</div>`;
   // capacity rolls up node → cluster → site, so every level answers "where can this work land?"
   let computeLevel = "node";
@@ -914,5 +1090,5 @@ window.K = (() => {
     ${comp("K.telemetry-rollup", "Telemetry rollup by tenant / org / site / cluster", `<div class="stack"><div class="row wrap"><span class="label">Level</span><div class="seg" role="group" aria-label="Telemetry level">${telLevels().map(([id, l]) => `<button type="button" data-tlevel="${id}" aria-pressed="${id === telLevel}">${l}</button>`).join("")}</div><span class="faint grow" style="font-size:12px">${telLevel === "tenant" ? "All tenants" : opts.tenantInSidebar ? "This tenant" : `Showing ${esc(curScope[0] ?? D.tenants[0].name)}`} · no service-level panels by design</span></div>
       <div id="tel-body">${telBody()}</div>${grafanaNote}</div>`)}</div>`;
 
-  return { currentRole, domainOfWork, networkMap, roleView, roleLoad, roleTile, roleMember, verifyPlan, vsteps, advance, workMatches, scopeBanner, infraMap, resourcePanel, openResource, inTenant, tenantServices, opts, scopeText, grafanaLinks, proposePolicy, dash, telItems, computeBody, findHost, serviceDetail, openService, hostCell, D, esc, ic, st, agent, person, scope, strip, drill, proposal, parse, spark, grafanaNote, topology, legend, bindTopology, hier, roll, rollup, comp, initPicks, paintPicks, picksDrawer, toast, icons, drawer, after, NAV, V, stateLabel, stateSt, policyBox };
+  return { PQ, pqRow, answerSvc, reqSvcHtml, avatarHtml, isPlatformAdmin, currentRole, domainOfWork, networkMap, roleView, roleLoad, roleTile, roleMember, verifyPlan, vsteps, advance, workMatches, scopeBanner, infraMap, resourcePanel, openResource, inTenant, tenantServices, opts, scopeText, grafanaLinks, proposePolicy, dash, telItems, computeBody, findHost, serviceDetail, openService, hostCell, D, esc, ic, st, agent, person, scope, strip, drill, proposal, parse, spark, grafanaNote, topology, legend, bindTopology, hier, roll, rollup, comp, initPicks, paintPicks, picksDrawer, toast, icons, drawer, after, NAV, V, stateLabel, stateSt, policyBox };
 })();

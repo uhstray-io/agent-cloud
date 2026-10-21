@@ -44,7 +44,7 @@ through review comments. The product brief, design system and prototype are save
 | D6 | **Per-asset telemetry lives in Grafana.** The console draws tenant / org / site / cluster rollups only and deep-links to Grafana for any single service, node, host or VM | Embedding panels | Grafana is the telemetry authority; duplicating panels drifts |
 | D7 | **skynet roles** are `infra-agent`, `security-agent`, `service-agent`, `o11y-agent` (plan 15 D7); `net-agent` is planned; NetClaw and NemoClaw are not used | Showing legacy agents | Matches the OPA identities and the step registry |
 | D8 | **Authentik OIDC for login; RBAC from Authentik groups**, enforced in the API, never only in the UI | Console-local users | PRINCIPLES.md identity model; plan 12 |
-| D9 | **Read models come from the authorities**: work from skynet and Semaphore; step status from NetBox custom fields written by Collect Service Conformance; inventory from NetBox and Proxmox; rollups from Prometheus and Loki | A console-owned database of record | One authority per concern (plan 03); the console caches, it does not own |
+| D9 | **Read models come from the authorities**: work from skynet and Semaphore; step status from NetBox custom fields written by Collect Service Conformance; inventory from NetBox and Proxmox; rollups from Prometheus and Loki | A console-owned database of record | One authority per concern (plan 03); the console caches, it does not own. The single exception is each user's own UI preferences (profile), which no other authority holds |
 | D10 | **The prototype is the visual reference, not code to port.** Tokens and components carry over; JavaScript does not | Porting the prototype | The prototype's data and logic are illustrative |
 
 ### Open decisions (owner: Joseph A. Wisneski IV)
@@ -55,7 +55,7 @@ through review comments. The product brief, design system and prototype are save
 | O2 | Where the code lives: a new repository, or `platform/services/console/` here | Decide before Phase 1; the deployment (`deploy-console.yml`, templates) lives in this repo either way |
 | O3 | skynet API contract for plans, work state, role assignment and Q&A | Agree with the skynet repository (the plan-15 graph already holds the state) |
 | O4 | Live updates: server-sent events, WebSocket or polling | Phase 2; default to SSE from the API service |
-| O5 | Source of the business-domain mapping (Products, Professional Services, Automation, Administration, IT) | Likely a NetBox tag or custom field on services |
+| O5 | Where business-domain tags are stored (Products, Professional Services, Automation, Administration, IT) | Edited in Organization settings; storage (NetBox tag vs inventory field) decided in Phase 3 |
 | O6 | The real developer agents and workflows on the development gateway | Operator to list; prototype entries are examples |
 
 ## Design Principles
@@ -100,7 +100,10 @@ flowchart LR
 |---|---|---|---|
 | Work | skynet, Semaphore | Work items, steps, owning role, receipts, logs | New work, approve, pause/resume, retry |
 | Scope & inventory | NetBox, Proxmox | Tenant → org → site → cluster → host, services, placement, network segments | Assess resource, verify health |
-| Identity & access | Authentik | People, groups, scoped roles | Add user, role change (blueprint deploy) |
+| Identity & access | Authentik | People, groups, scoped roles; the signed-in user's OIDC claims (locked on the profile) | Add user, role change (blueprint deploy) |
+| Profile & preferences | Console API (preferences store) | Display name, avatar, pronouns, timezone, theme, notifications, default scope | — (the user's own preferences; the one thing the console stores itself) |
+| Tenant & org settings | site-config inventory, Authentik, NetBox tags | Tenant defaults, organizations, sites, approvers, business-domain tags | Settings change (proposal → PR) |
+| Service catalog | Semaphore templates, service inventory | Approved services and their deploy templates | Service request (approved → deploy template; new → onboarding review) |
 | Secrets | OpenBao | Paths, field counts, rotation age, readers | Rotation (Semaphore template) |
 | Policy | OPA (Rego in Git) | Packages, decisions, denies | Policy change (plan → PR → deploy) |
 | AI gateway | agentgateway | Groups, clients, budgets, models | Key request (inventory change + `Deploy agentgateway`) |
@@ -121,6 +124,10 @@ flowchart LR
 | POST | `/v1/assessments` · `/v1/verifications` | Read-only assess (rightsizing) / verify health plans |
 | GET | `/v1/telemetry/rollups?level=…` | Rollups; per-asset requests return a Grafana link instead |
 | GET | `/v1/access` · `/v1/secrets` · `/v1/policies` · `/v1/gateway` · `/v1/delivery` | Governance and delivery read models |
+| GET | `/v1/proposals?state=awaiting` · POST `/v1/proposals/{key}/comments` · PUT `/v1/proposals/{key}/plan` · POST `/approve` · `/deny` | Proposal queue: review, comment, edit plan (OPA re-checks), decide |
+| GET · PUT | `/v1/me` | The caller's profile: OIDC claims read-only, preferences writable |
+| GET | `/v1/tenants/{t}/settings` · `/v1/orgs/{o}/settings` | Settings read models; changes go through `POST /v1/proposals` |
+| GET | `/v1/catalog` · POST `/v1/service-requests` | Approved services; request one into a scope, or a new one for onboarding |
 | GET | `/v1/events` | Server-sent events for work and status changes |
 
 ## Implementation Phases
@@ -138,8 +145,9 @@ history; OpenSpec change validates (`openspec validate --all --store agent-cloud
 
 - Console API with health, OIDC session (Authentik client; secret owned under
   `secret/services/authentik`, shared-read per the AGENTS.md pattern), tenant list and scope tree.
-- SPA shell: sidebar (tenant switcher, nav, agent roles), scope bar, empty states, tokens from
-  `DESIGN.md`.
+- SPA shell: sidebar (tenant switcher, nav, agent roles, admin settings entries, account →
+  profile), scope bar, empty states, tokens from `DESIGN.md`.
+- Profile page: OIDC claims locked, preferences stored by the console API.
 - Onboard as a service per `plan/architecture/02-service-onboarding.md`: `deploy-console.yml`
   using `place-monorepo.yml` → `manage-secrets.yml` → `deploy.sh` → verify; `manage-approle.yml`
   for its own scoped AppRole; route through `Manage Caddy Sites`; Semaphore template in
@@ -166,8 +174,9 @@ from console-local data.
 
 ### Phase 4 — Proposals
 
-- Work and Topology composers, "Ask about current work" answers from skynet, new requests,
-  Assess resource, Verify health, approve / pause / resume / retry, all OPA-gated.
+- Work, Topology and Services composers, "Ask about current work" answers from skynet, new
+  requests, the Dashboard proposal queue (review, comment, edit plan, approve, deny), Assess
+  resource, Verify health, approve / pause / resume / retry, all OPA-gated.
 
 **Acceptance:** a request produces a plan with no side effects until approval; an OPA deny is
 shown with its rule; an approved plan runs only named Semaphore templates.
@@ -176,7 +185,8 @@ shown with its rule; an approved plan runs only named Semaphore templates.
 
 - Access (scoped roles, add user via blueprint), Secrets (metadata only, rotation), Policy
   (propose → PR → deploy), LLM access (scopes → agents keys, admin access requests), AI
-  Gateway (production and development groups, role pages).
+  Gateway (production and development groups, role pages), Tenant and Organization settings
+  (proposals; business-domain tags), Request a service (catalog and onboarding).
 
 **Acceptance:** no secret value is ever returned by the API (tested); every change creates a
 work item; role pages list only that role's work.
@@ -268,3 +278,4 @@ The 22 requirements from the 2026-10-20 brief, mapped to where the design meets 
 | Date | Change |
 |---|---|
 | 2026-10-20 | Initial plan from the design session; Dispatch layout chosen; decisions D1–D10, open O1–O6 |
+| 2026-10-21 | Added profile, tenant/org settings, proposal queue, services ask and service requests from final review comments; O5 answered: Organization settings owns business-domain tags |

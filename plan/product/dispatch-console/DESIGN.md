@@ -88,6 +88,10 @@ Every component in the prototype carries a stable id, shown as a dashed tag in r
 | `K.provision-key` | LLM key request: scopes → agents, identity from Access, admin access |
 | `K.delivery` | CI/CD delivery context: review, checks, promotion path |
 | `K.policy-propose` | Policy change: draft plan → work item needing approval |
+| `K.proposal-queue` | Proposals awaiting approval: expandable rows to review, comment, edit plan, approve, deny |
+| `K.services-ask` | "Ask about services" composer with inline answers |
+| `K.profile-oidc` / `K.profile-prefs` | Profile: locked identity-provider fields; editable preferences and avatar |
+| `K.tenant-settings` / `K.org-settings` | Admin settings; saving creates a proposal; org settings own business-domain tags |
 | `K.role-view` | One skynet role and only its workloads |
 
 ## Layout grammar

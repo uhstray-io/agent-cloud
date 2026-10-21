@@ -94,7 +94,7 @@ flowchart LR
 
 | Area | Pages | Authority behind it |
 |---|---|---|
-| Sidebar | Tenant switcher, Dashboard, Work (with red badges), Agent roles | Authentik (tenant membership), skynet |
+| Sidebar | Tenant switcher, Dashboard (proposal queue), Active Work (with red badges), Agent roles, Settings (platform admins), account → Profile | Authentik (tenant membership, claims), skynet |
 | Infrastructure | Topology (compute, network, data flows), Services, Compute, Telemetry | NetBox, Proxmox, Prometheus / Loki → Grafana |
 | Governance | Access, Secrets, Policy | Authentik, OpenBao (metadata), OPA |
 | Automation | AI Gateway, LLM access, CI/CD | agentgateway, GitHub |
@@ -114,6 +114,10 @@ not belong in the console.
 | Change what agents may do | Policy → **Propose a change** → drafted plan → approve | Rego change + test on a branch, `opa test`, replay, PR review, deploy |
 | Add a person | Access → one-row form → approve | Authentik blueprint deploy (plan 12) |
 | Ship a change | CI/CD → delivery context: review, checks, promotion stage | GitHub; `main` required checks from `.github/rulesets/protect-main.json` |
+| Review what agents propose | Dashboard → Proposals awaiting approval → expand → comment, edit plan, approve or deny | OPA re-checks an edited plan; approval moves it to Queued; a denial runs nothing |
+| Get a service | Services → **Request a service** → approved catalog service, or a new service | Approved: inventory lookup, address check, Provision VM, the service's deploy template. New: onboarding review (`plan/architecture/02`) |
+| Change tenant or org configuration | Sidebar → Tenant / Organization settings (platform admins) → propose | Inventory PR and Authentik blueprints; business-domain tags drive the Active Work tiles |
+| Personalise | Account → Profile | Preferences stored by the console; identity fields stay in Authentik (locked) |
 
 ### Visual system
 

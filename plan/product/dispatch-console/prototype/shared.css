@@ -479,3 +479,36 @@ button.net-hop { cursor: pointer; } button.net-hop:hover { border-color: var(--a
 .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-weak); color: var(--fg); }
 .chip svg.lucide { width: 13px; height: 13px; vertical-align: -2px; margin-right: 3px; color: var(--accent); }
 .chip:disabled { opacity: .5; cursor: not-allowed; }
+
+/* chat composers (Work, Topology, Services) and inline answers */
+.qchat { padding: 14px 16px; display: grid; gap: 10px; }
+.qchat-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qchat-h b { font-size: 14px; }
+.qchat-h .faint { font-size: 12px; }
+.qchat .composer-box textarea { min-height: 52px; font-size: 15px; padding: 12px 14px 4px; }
+.qanswer { display: grid; gap: 6px; padding: 12px 14px; border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--line); font-size: 13px; }
+.qanswer ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+
+/* proposal queue: expandable review rows */
+.pq-row { border-top: 1px solid var(--line); }
+.pq-row:first-child { border-top: 0; }
+.pq-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; border: 0; background: none; text-align: left; cursor: pointer; }
+.pq-head:hover { background: var(--surface); }
+.pq-head .grow { display: grid; min-width: 0; }
+.pq-head .grow b { font-size: 13.5px; }
+.pq-head .grow .faint { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pq-row.open .pq-head .vchev { transform: rotate(180deg); }
+.pq-body { display: grid; gap: 12px; padding: 4px 14px 14px; }
+.pq-edit { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.pq-edit li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.pq-comments { display: grid; gap: 8px; }
+
+/* profile */
+.pf-lock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.pf-lock .label { width: 120px; flex: none; }
+.pf-lock .grow { color: var(--fg2); }
+.av.big, .av-img.big { width: 72px; height: 72px; font-size: 22px; }
+.av-img { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; flex: none; }
+.swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--raised); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; }
+.swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
+.pf-notify { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; font-size: 13px; }

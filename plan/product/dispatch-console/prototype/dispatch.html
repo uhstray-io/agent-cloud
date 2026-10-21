@@ -39,14 +39,6 @@ FORM: Prototype C of 3, chosen 2026-10-20 and refined through 30+ review comment
   .site.warn::before { background: var(--warn); } .site.crit::before { background: var(--crit); }
   .site:hover { border-color: var(--line-strong); }
   .site b { font-size: 13px; } .site small { font-size: 11.5px; color: var(--fg3); }
-  /* chat composer: reads as a conversation with agent-cloud, not a search field */
-  .qchat { padding: 14px 16px; display: grid; gap: 10px; }
-  .qchat-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .qchat-h b { font-size: 14px; }
-  .qchat-h .faint { font-size: 12px; }
-  .qanswer { display: grid; gap: 6px; padding: 12px 14px; border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--line); font-size: 13px; }
-  .qanswer ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
-  .qchat .composer-box textarea { min-height: 52px; font-size: 15px; padding: 12px 14px 4px; }
   .board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; gap: 10px; align-items: start; }
   .board.done-open { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .lane-collapsed { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 46px; padding: 10px 4px; cursor: pointer; color: var(--fg2); font: inherit; }
@@ -121,7 +113,7 @@ let SCOPE = ["Uhstray.io", "Platform", "site-hq", "prod"];
 let selKey = "AC-1184";
 let drillOpen = true; // the details panel; it also folds away whenever nothing is selected
 // the request dashboard from prototype A lives here too, beside the board
-const NAVX = [...K.NAV, ["dashboard", "Dashboard", "layout-dashboard"], ["agentrole", "Agent role", "bot"]];
+const NAVX = [...K.NAV, ["dashboard", "Dashboard", "layout-dashboard"], ["agentrole", "Agent role", "bot"], ["profile", "Profile", "user-round"], ["tenantsettings", "Tenant settings", "building"], ["orgsettings", "Organization settings", "settings-2"]];
 let cur = "home";
 let selRole = "service-agent"; // the skynet role shown on the agent-role page
 window.onWorkChanged = () => side(cur);
@@ -151,9 +143,9 @@ window.onQueueHere = (label, node) => {
   if ((location.hash || "#home") !== "#home") location.hash = "home";
   setTimeout(() => { route(); const q = document.getElementById("quickText"); q.focus(); }, 30);
 };
-const LANES = [["proposed", "Awaiting approval", "hourglass"], ["queued", "Queued", "list-todo"], ["running", "Running", "loader-circle"], ["blocked", "Blocked / paused", "shield-alert"], ["failed", "Failed", "octagon-x"], ["done", "Done", "circle-check"]];
+const LANES = [["proposed", "Awaiting approval", "hourglass"], ["queued", "Queued", "list-todo"], ["running", "Running", "loader-circle"], ["blocked", "Blocked", "shield-alert"], ["failed", "Failed", "octagon-x"], ["done", "Done", "circle-check"]];
 const STUCK = ["blocked", "failed", "paused"];
-const laneOf = (w) => (w.state === "paused" ? "blocked" : w.state);
+const laneOf = (w) => (w.state === "paused" ? "blocked" : w.state === "denied" ? "done" : w.state);
 let doneOpen = false; // Done stays collapsed until asked for
 
 function side(cur) {
@@ -169,11 +161,14 @@ function side(cur) {
       const n = id === "home" ? `<span class="n" title="${counts.work} open work items">${counts.work}</span>${counts.stuck ? `<span class="n crit" title="${counts.stuck} blocked, failed or paused: ${esc(stuck.map((w) => w.key).join(", "))}">${counts.stuck}</span>` : ""}`
         : id === "services" && counts.services ? `<span class="n crit" title="${counts.services} down">${counts.services}</span>`
         : id === "compute" && counts.compute ? `<span class="n crit" title="Down: ${esc(computeTip)}">${counts.compute}</span>` : "";
-      return `<a href="#${id}" ${id === cur ? 'aria-current="page"' : ""}>${ic(id === "home" ? "list-todo" : icon)}${id === "home" ? "Work" : label}${n}</a>`; }).join("")).join("") +
+      return `<a href="#${id}" ${id === cur ? 'aria-current="page"' : ""}>${ic(id === "home" ? "list-todo" : icon)}${id === "home" ? "Active Work" : label}${n}</a>`; }).join("")).join("") +
     // skynet roles: pick one to see only the work it owns or takes part in
     `<div class="grp">Agent roles</div>` + D.agentGroups[0].members.filter((m) => m.dynamic).map((m) => { const L = K.roleLoad(m.name);
       return `<a href="#agentrole" class="role-link" data-role="${m.name}" ${cur === "agentrole" && selRole === m.name ? 'aria-current="page"' : ""}>${K.roleTile(m)}<span class="grow" style="display:grid;min-width:0"><span>${m.name}</span><small class="faint" style="font-weight:500">${m.domain}</small></span>${m.planned ? `<span class="n" title="Not live yet">planned</span>` : L.now.length ? `<span class="n" title="${L.now.length} assigned now">${L.now.length}</span>` : ""}</a>`; }).join("") +
-    `<span style="flex:1"></span><a href="#access" title="Signed in via Authentik · platform-admins"><span class="av human" style="background:#15191e">JW</span><span>You<br><small class="faint" style="font-weight:500">via Authentik</small></span></a>`;
+    `<span style="flex:1"></span>` +
+    // settings above the account row: platform admins get tenant + organization settings
+    (K.isPlatformAdmin() ? `<div class="grp">Settings</div><a href="#tenantsettings" ${cur === "tenantsettings" ? 'aria-current="page"' : ""}>${ic("building")}Tenant settings</a><a href="#orgsettings" ${cur === "orgsettings" ? 'aria-current="page"' : ""}>${ic("settings-2")}Organization settings</a>` : "") +
+    `<a href="#profile" class="me-link" ${cur === "profile" ? 'aria-current="page"' : ""} title="Your profile · signed in via Authentik">${K.avatarHtml()}<span>${esc(D.people.you.display ?? "You")}<br><small class="faint" style="font-weight:500">via Authentik</small></span></a>`;
 }
 
 // business domains, not org/site (the scope bar already picks those): health of the domain's services + its open and stuck work in scope
@@ -332,7 +327,7 @@ function route() {
   cur = v; side(v);
   document.getElementById("scope").outerHTML = `<div id="scope" class="scope">${K.scope(SCOPE)}</div>`;
   const view = document.getElementById("view");
-  view.innerHTML = v === "home" ? home() : v === "dashboard" ? K.dash.html() : v === "topology" ? topoView() : v === "agentrole" ? K.roleView(selRole) : K.V[v]();
+  view.innerHTML = v === "home" ? home() : v === "dashboard" ? K.dash.html() : v === "topology" ? topoView() : v === "agentrole" ? K.roleView(selRole) : v === "profile" ? K.V.profile() : v === "tenantsettings" ? K.V.tenantSettings() : v === "orgsettings" ? K.V.orgSettings() : K.V[v]();
   if (v === "topology") K.bindTopology(view, (sid) => { if (sid) { topoSelect(`Service: ${D.svc(sid).name}`, sid); K.openService(sid); } });
   K.after(view);
 }
