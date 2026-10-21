@@ -55,8 +55,13 @@ identity, or storage exists.
 
 After source merge and final-head CI:
 
-1. Use the existing Semaphore `setup-templates.yml` workflow to reconcile
-   `platform/semaphore/templates.yml`; do not edit the Semaphore API directly.
+1. Use the existing **Publish Semaphore Template Surveys (Dev)** entry point
+   (`platform/playbooks/publish-semaphore-templates.yml`) with the exact five
+   `(Dev)` names below. It updates only selected declared surveys. If an entry
+   is absent, create one at a time with `semaphore_allow_scoped_create=true`
+   and verified project, inventory, and environment bindings from an existing
+   Dev template; otherwise leave the create flag false. Do not run full-catalog
+   `setup-templates.yml` or edit the Semaphore API directly.
 2. Read the Dev catalog back and confirm these entries target repository
    `agent-cloud dev`, use the expected playbook paths, and expose only the
    required `expected_repository_sha` survey field:

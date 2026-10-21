@@ -125,6 +125,18 @@ def _token_id_sources(play):
     return found
 
 
+def _localhost_token_id_fact_sources(play):
+    """Return only a localhost set_fact handoff, never play vars or another host."""
+    if play.get("hosts") != "localhost":
+        return []
+    found = []
+    for task in playbook_yaml.tasks(play.get("tasks")):
+        facts = task.get("ansible.builtin.set_fact") or {}
+        if "_pve_token_id" in facts:
+            found.append(str(facts["_pve_token_id"]))
+    return found
+
+
 def _token_id_comes_from_store(play, prior_plays):
     sources = _token_id_sources(play)
     stored = r"_pve\.token_id|_pve_data\.token_id|_pve_bao_read\.json\.data\.data\.token_id"
@@ -135,7 +147,7 @@ def _token_id_comes_from_store(play, prior_plays):
         for source in sources
     )
     return handed_off and any(
-        any(re.search(stored, source) for source in _token_id_sources(candidate))
+        any(re.search(stored, source) for source in _localhost_token_id_fact_sources(candidate))
         for candidate in prior_plays
     )
 
@@ -146,7 +158,7 @@ def test_each_pve_play_reads_its_token_id_from_the_store_itself(name):
     # validation play, then defaulted its own to empty and refused on the Semaphore path.
     plays = list(_plays_with_pve_header(PLAYBOOKS / name))
     for index, play in enumerate(plays):
-        assert _token_id_comes_from_store(play, plays[:index + 1]), (
+        assert _token_id_comes_from_store(play, plays[:index]), (
             f"{name}: play {play.get('name')!r} does not read the stored token id itself")
 
 
@@ -159,9 +171,20 @@ def test_token_id_source_rejects_environment_fallback_self_reference_and_unprove
     for play in direct_fallbacks:
         assert not _token_id_comes_from_store(play, [play])
 
-    stored = {"vars": {"_pve_token_id": "{{ _pve_bao_read.json.data.data.token_id }}"}}
     handoff = {"vars": {"_pve_token_id": "{{ hostvars['localhost']._pve_token_id | default('') }}"}}
-    assert _token_id_comes_from_store(handoff, [stored, handoff])
+    localhost_fact = {
+        "hosts": "localhost",
+        "tasks": [{"ansible.builtin.set_fact": {"_pve_token_id": "{{ _pve_bao_read.json.data.data.token_id }}"}}],
+    }
+    assert _token_id_comes_from_store(handoff, [localhost_fact])
+    assert not _token_id_comes_from_store(handoff, [{
+        "hosts": "pve_node",
+        "tasks": [{"ansible.builtin.set_fact": {"_pve_token_id": "{{ _pve_bao_read.json.data.data.token_id }}"}}],
+    }])
+    assert not _token_id_comes_from_store(handoff, [{
+        "hosts": "localhost",
+        "vars": {"_pve_token_id": "{{ _pve_bao_read.json.data.data.token_id }}"},
+    }])
 
 
 def test_every_private_name_in_module_defaults_is_a_play_var():
