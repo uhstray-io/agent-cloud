@@ -31,7 +31,7 @@ scrape_configs:
           host: {{ target.host | to_json }}
           cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
           environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
-{% if target.identity_bound %}
+{% if target.identity_bound | default(false) %}
           target_id: {{ target.target_id | to_json }}
           metrics_scope: host
 {% endif %}

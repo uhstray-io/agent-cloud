@@ -139,7 +139,8 @@ def estate(tmp_path):
 
 
 def _inventory(
-    estate, binds=None, host_vars=None, receiver_vars="", identity_enabled=None, coverage=None, ports=None
+    estate, binds=None, host_vars=None, receiver_vars="", identity_enabled=None, coverage=None, ports=None,
+    host_coverage=None,
 ) -> Path:
     tmp = estate["tmp"]
     lines = ["[demo_svc]"]
@@ -170,14 +171,22 @@ def _inventory(
     ]
     inventory = tmp / "inventory.ini"
     inventory.write_text("\n".join(lines) + "\n")
+    for host, host_inventory in (host_coverage or {}).items():
+        host_vars_dir = tmp / "host_vars"
+        host_vars_dir.mkdir(exist_ok=True)
+        (host_vars_dir / f"{host}.yml").write_text(yaml.safe_dump(
+            {"estate_coverage_inventory": host_inventory}, sort_keys=False
+        ))
     return inventory
 
 
 def _run(
     estate, *extra, binds=None, host_vars=None, path_prefix=None, receiver_vars="",
-    identity_enabled=None, coverage=None, ports=None
+    identity_enabled=None, coverage=None, ports=None, host_coverage=None
 ) -> subprocess.CompletedProcess:
-    inventory = _inventory(estate, binds, host_vars, receiver_vars, identity_enabled, coverage, ports)
+    inventory = _inventory(
+        estate, binds, host_vars, receiver_vars, identity_enabled, coverage, ports, host_coverage
+    )
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     if path_prefix:
@@ -272,6 +281,19 @@ def test_apply_declares_and_proves_then_rerun_changes_nothing(estate, identity_e
 
 
 @needs_ansible
+@pytest.mark.parametrize("identity_enabled", [None, False])
+def test_legacy_service_name_launch_override_remains_supported(estate, identity_enabled):
+    proc = _run(estate, "-e", "service_name=legacy-demo", identity_enabled=identity_enabled)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    labels = [
+        target["labels"]
+        for target in yaml.safe_load(estate["fragment"].read_text())["scrape_configs"][0]["static_configs"]
+    ]
+    assert [row["service"] for row in labels] == ["legacy-demo/host", "legacy-demo/host"]
+    assert all("target_id" not in row and "metrics_scope" not in row for row in labels)
+
+
+@needs_ansible
 def test_opt_in_binds_exact_declared_ids_and_host_metric_labels(estate):
     coverage = _coverage_targets(estate)
     proc = _run(estate, identity_enabled=True, coverage=coverage)
@@ -292,6 +314,29 @@ def test_opt_in_binds_exact_declared_ids_and_host_metric_labels(estate):
     assert again.returncode == 0, again.stdout[-4000:]
     assert _changed(again) == {"alpha": 0, "beta": 0, "receiver": 0, "localhost": 0}
     assert estate["prometheus"].reloads == 1
+
+
+@needs_ansible
+def test_opted_in_hosts_refuse_divergent_inventory_revisions_and_duplicate_ids_before_mutation(estate):
+    host_coverage = {}
+    for host in ("alpha", "beta"):
+        inventory = _coverage_targets(estate, hosts=(host,))
+        inventory["targets"][0]["target_id"] = "service:shared"
+        inventory["targets"][0]["signals"]["metrics"]["selector"] = (
+            'node_cpu_seconds_total{target_id="service:shared"}'
+        )
+        inventory["revision"] = hashlib.sha256(json.dumps(
+            {"targets": inventory["targets"]}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()).hexdigest()
+        host_coverage[host] = inventory
+
+    proc = _run(estate, identity_enabled=True, host_coverage=host_coverage)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "same reviewed estate inventory revision" in proc.stdout, proc.stdout[-4000:]
+    assert not estate["fragment"].exists()
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
+    assert estate["prometheus"].reloads == 0
 
 
 @needs_ansible
@@ -370,7 +415,7 @@ def test_identity_inventory_cannot_be_overridden_at_launch(estate, name, value):
     proc = _run(estate, "-e", f"{name}={value}", identity_enabled=True,
                 coverage=_coverage_targets(estate))
     assert proc.returncode != 0
-    assert "do not pass estate_coverage_inventory, o11y_host_metrics_identity_enabled, or service_name" in proc.stdout
+    assert "do not pass estate_coverage_inventory or o11y_host_metrics_identity_enabled" in proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
     assert _engine_calls(estate, "alpha") == []
     assert not estate["fragment"].exists()

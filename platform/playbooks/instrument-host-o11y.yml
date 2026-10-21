@@ -69,11 +69,15 @@
         that:
           - "'estate_coverage_inventory' not in ('' | extra_var_names)"
           - "'o11y_host_metrics_identity_enabled' not in ('' | extra_var_names)"
-          - "'service_name' not in ('' | extra_var_names)"
+          - >-
+            'service_name' not in ('' | extra_var_names)
+            or (groups[target_service]
+                | map('extract', hostvars, 'o11y_host_metrics_identity_enabled')
+                | map('default', false) | select('sameas', true) | list | length) == 0
         fail_msg: >-
           Host-metrics identity is controlled by reviewed inventory declarations; do not pass
-          estate_coverage_inventory, o11y_host_metrics_identity_enabled, or service_name as
-          launch-time extra vars.
+          estate_coverage_inventory or o11y_host_metrics_identity_enabled as launch-time extra
+          vars, or service_name when identity binding is enabled.
 
     # The guard and the work read the SAME target_service, so one override moves both; the
     # guard only proves the group is populated (as in verify-service-persistence.yml).
@@ -119,6 +123,31 @@
          | selectattr('inventory_host', 'defined')
          | selectattr('inventory_host', 'equalto', inventory_hostname)
          | list }}
+    _ih_group_identity_inventory_revisions: >-
+      {%- set revisions = [] -%}
+      {%- for host in groups[target_service] -%}
+      {%- set inventory = hostvars[host].estate_coverage_inventory | default({}) -%}
+      {%- set revision = inventory.get('revision', '') if inventory is mapping else '' -%}
+      {%- set _ = revisions.append(revision) -%}
+      {%- endfor -%}
+      {{ revisions }}
+    _ih_group_resolved_target_ids: >-
+      {%- set target_ids = [] -%}
+      {%- for host in groups[target_service] -%}
+      {%- set hostvars_for_target = hostvars[host] -%}
+      {%- set inventory = hostvars_for_target.estate_coverage_inventory | default({}) -%}
+      {%- set targets = inventory.get('targets', []) if inventory is mapping else [] -%}
+      {%- set service_identity = hostvars_for_target.service_name | default(target_service | regex_replace('_svc$', '')) -%}
+      {%- for target in targets if target is mapping -%}
+      {%- if target.get('lifecycle') == 'deployed'
+            and target.get('inventory_host') == host
+            and target.get('service_identity') == service_identity
+            and target.get('target_id') is string -%}
+      {%- set _ = target_ids.append(target.target_id) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ target_ids }}
   tasks:
     - name: "Require the identity switch to be a boolean and consistent across the group"
       ansible.builtin.assert:
@@ -178,6 +207,19 @@
           Host-metrics identity refused for {{ inventory_hostname }}: expected one deployed,
           schema-valid target with the exact service identity and inventory host, plus unique
           exporter endpoints across the selected group.
+      when: _ih_identity_enabled | bool
+
+    - name: "Require one shared estate revision and unique group identities"
+      ansible.builtin.assert:
+        that:
+          - _ih_group_identity_inventory_revisions | unique | list | length == 1
+          - _ih_group_identity_inventory_revisions | first | string | length > 0
+          - _ih_group_resolved_target_ids | length == (groups[target_service] | length)
+          - _ih_group_resolved_target_ids | unique | list | length == _ih_group_resolved_target_ids | length
+        fail_msg: >-
+          Host-metrics identity refused: every opted-in host must resolve from the same reviewed
+          estate inventory revision to one unique declared target ID.
+      run_once: true
       when: _ih_identity_enabled | bool
 
     - name: "Carry only the matched declared identity to the exporter and receiver plays"
