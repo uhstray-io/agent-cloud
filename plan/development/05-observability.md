@@ -1878,6 +1878,31 @@ regression plans representative metrics and log panels without variable
 overrides; this checks query interpolation only, not backend availability or
 Grafana rendering.
 
+## 2026-10-20 conformance failure specificity
+
+Read-only Dev-bound dashboard observations 7727 and 7728 used controller
+revision `fad68aea3330230afc1908c4523b14f030df8150` and receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. The Overview observation returned
+data for four queried panels. The conformance query-data check passed four
+panels and classified current workflow failures as present, the inventory
+marker as fresh, and 36 workflow completion-age series as known. These are
+query observations, not proof that the dashboard rendered in a browser, and
+the failure count does not identify which service and step failed.
+
+The bounded verifier now reads only the exact provisioned "Latest step status
+by service" query, validates service names against public component directories
+and step names against the workflow registry, and emits at most 50 sorted
+service/step pairs plus categorical unknown and truncation counts. It discards
+all other Loki labels and sample values. The query's 45-minute `last_over_time`
+reduction represents current recorded state: a newer pass or skip replaces an
+older failure. A full 1000-task history window remains marked
+`history_incomplete`; retained state may have no task ID or completion time.
+The source change has not yet run through Dev-bound Semaphore. The historical
+failed-task panel remains outside this readback because its query returns log
+bodies. Keep workflow task 7.5 open until the changed verifier is read back,
+NetBox writes and the single-writer gate have evidence, and the rendered matrix
+is checked.
+
 Read-only production Semaphore tasks 6594, 6599, 6600, and 6603 reported:
 SMART category `passed` for the selected disk, with no serial-to-chassis
 comparison; six non-PBS artifact candidates across three active
