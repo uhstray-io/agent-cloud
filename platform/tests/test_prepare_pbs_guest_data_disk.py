@@ -5,12 +5,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from jinja2.nativetypes import NativeEnvironment
 import pytest
 import yaml
 
@@ -235,30 +235,44 @@ def test_ensure_cli_rechecks_mount_tree_after_creating_datastore(monkeypatch, ca
     assert list(datastore.iterdir()) == []
 
 
-@pytest.mark.parametrize("guest_helper_state", ["absent", "outdated"])
-def test_check_mode_selector_runs_checked_out_controller_helper_not_guest_copy(
-    guest_helper_state, tmp_path
+@pytest.mark.parametrize(("check_mode", "guest_helper_state"), [
+    (False, "current"),
+    (True, "absent"),
+    (True, "outdated"),
+])
+def test_selector_task_sequence_preserves_result_in_normal_and_check_mode(
+    check_mode, guest_helper_state, tmp_path
 ):
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        pytest.skip("needs ansible-playbook")
     playbook_path = ROOT / "platform/playbooks/prepare-pbs-guest-data-disk.yml"
     playbook = yaml.safe_load(playbook_path.read_text())[4]
     tasks = playbook["tasks"]
-    check_selector = next(
-        task for task in tasks if task.get("name", "").startswith("Select the unique disk with the reviewed controller")
+    selector = next(
+        task for task in tasks if task.get("name") == "Select the unique disk carrying the declared Proxmox serial"
     )
-    selector = check_selector["ansible.builtin.command"]
-    assert check_selector["delegate_to"] == "localhost"
-    assert check_selector["become"] is False
-    assert check_selector["when"] == "ansible_check_mode"
+    assert_task = next(
+        task for task in tasks if task.get("name") == "Require successful unique guest-disk identity validation"
+    )
+    set_fact_task = next(
+        task for task in tasks if task.get("name") == "Save selected disk state without displaying raw device inventory"
+    )
+    assert selector["register"] == "_disk_selection"
+    assert selector["delegate_to"] == "{{ 'localhost' if ansible_check_mode else omit }}"
+    assert selector["become"] == "{{ not ansible_check_mode }}"
 
     installed_helper = tmp_path / "guest-installed-helper.py"
     previous_bytes = None
-    if guest_helper_state == "outdated":
+    source_helper = ROOT / "platform/playbooks/files/prepare_pbs_guest_disk.py"
+    if guest_helper_state == "current":
+        installed_helper.write_bytes(source_helper.read_bytes())
+    elif guest_helper_state == "outdated":
         previous_bytes = b"stale helper must not be executed"
         installed_helper.write_bytes(previous_bytes)
     assert (guest_helper_state == "absent") is (not installed_helper.exists())
 
-    source_helper = ROOT / "platform/playbooks/files/prepare_pbs_guest_disk.py"
-    context = {
+    vars = {
         "_controller_helper": str(source_helper),
         "_helper": str(installed_helper),
         "_expected_serial": SERIAL,
@@ -266,28 +280,41 @@ def test_check_mode_selector_runs_checked_out_controller_helper_not_guest_copy(
         "_mountpoint": MOUNT,
         "_lsblk": {"stdout": json.dumps(document(disk()))},
     }
-    env = NativeEnvironment()
-    argv = [str(env.from_string(arg).render(**context)) for arg in selector["argv"]]
-    stdin = env.from_string(selector["stdin"]).render(**context)
-    normal_selector = next(
-        task for task in tasks if task.get("name") == "Select the unique disk carrying the declared Proxmox serial"
-    )
-    assert "{{ _helper }}" in str(normal_selector["ansible.builtin.command"]["argv"])
-    assert Path(argv[1]) == source_helper
-    assert Path(argv[1]) != installed_helper
+    # Preserve the real selector task's command, delegation, and register behavior while
+    # omitting only its production privilege escalation in this synthetic local harness.
+    harness_selector = {**selector}
+    harness_selector.pop("become")
+    test_play = [{
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "vars": vars,
+        "tasks": [harness_selector, assert_task, set_fact_task, {
+            "name": "Verify the selected disk result",
+            "ansible.builtin.assert": {
+                "that": "_pbs_disk == {'device': '/dev/vdb', 'state': 'blank'}",
+                "quiet": True,
+            },
+        }],
+    }]
+    test_play_path = tmp_path / "selector-sequence.yml"
+    test_play_path.write_text(yaml.safe_dump(test_play))
+    command = [ansible_playbook, "-i", "localhost,", "-c", "local", str(test_play_path)]
+    if check_mode:
+        command.insert(1, "--check")
+    env = {
+        **os.environ,
+        "ANSIBLE_LOCAL_TEMP": str(tmp_path / "ansible-tmp"),
+        "ANSIBLE_NOCOLOR": "1",
+        "ANSIBLE_STDOUT_CALLBACK": "default",
+    }
+    completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True,
+                               check=False, timeout=60)
 
-    completed = subprocess.run(
-        [sys.executable, *argv[1:]],
-        input=stdin,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert completed.returncode == 0
-    assert json.loads(completed.stdout) == {"device": "/dev/vdb", "state": "blank"}
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     if previous_bytes is not None:
         assert installed_helper.read_bytes() == previous_bytes
+    assert "Verify the selected disk result" in completed.stdout
 
 
 def test_cli_emits_only_selected_device_and_state_or_sanitized_refusal(monkeypatch, capsys):
@@ -345,7 +372,9 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert lsblk["no_log"] is True
     assert select["ansible.builtin.command"]["stdin"] == "{{ _lsblk.stdout }}"
     assert select["no_log"] is True
-    assert "{{ _helper }}" in str(select["ansible.builtin.command"]["argv"])
+    assert "{{ _controller_helper if ansible_check_mode else _helper }}" in str(
+        select["ansible.builtin.command"]["argv"]
+    )
     assert names.index("Select the unique disk carrying the declared Proxmox serial") < names.index(
         "Refuse signatures on the new disk before formatting"
     ) < names.index("Create ext4 on the proven blank guest virtual disk")
@@ -369,7 +398,7 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert "--ensure-datastore-path" in datastore["ansible.builtin.command"]["argv"]
     assert "ansible.builtin.file" not in datastore
     assert not any("ansible.builtin.script" in task for task in tasks)
-    assert "_controller_helper" not in str(select["ansible.builtin.command"]["argv"])
+    assert select["delegate_to"] == "{{ 'localhost' if ansible_check_mode else omit }}"
     assert "_helper" in str(select["ansible.builtin.command"]["argv"])
 
 
