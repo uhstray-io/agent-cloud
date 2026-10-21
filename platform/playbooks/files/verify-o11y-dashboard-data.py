@@ -115,6 +115,7 @@ OBSERVATION_CONTRACTS = {
     ("service-overview", "Scrape target health"): {
         "name": "scrape_health",
         "datasource": "prometheus",
+        "datasource_uid": "prometheus",
         "ref": "A",
         "mode": "instant",
         "expr": 'min by (service) (up{service=~"$service"})',
@@ -122,6 +123,7 @@ OBSERVATION_CONTRACTS = {
     ("service-conformance", "Latest inventory marker age"): {
         "name": "inventory_marker_freshness",
         "datasource": "loki",
+        "datasource_uid": "loki",
         "ref": "A",
         "mode": "instant",
         "expr": (
@@ -135,6 +137,7 @@ OBSERVATION_CONTRACTS = {
     ("service-conformance", "Current failed step states"): {
         "name": "current_workflow_failures",
         "datasource": "loki",
+        "datasource_uid": "loki",
         "ref": "A",
         "mode": "instant",
         "expr": (
@@ -149,6 +152,7 @@ OBSERVATION_CONTRACTS = {
     ("service-conformance", "Latest workflow completion age by service and step"): {
         "name": "workflow_completion_age",
         "datasource": "loki",
+        "datasource_uid": "loki",
         "ref": "A",
         "mode": "instant",
         "expr": (
@@ -246,14 +250,28 @@ def datasource_type(target: dict[str, Any], panel: dict[str, Any]) -> str:
 
 
 def _observation_contract(
-    dashboard: dict[str, Any], title: str, targets: list[dict[str, Any]]
+    dashboard: dict[str, Any], panel: dict[str, Any], targets: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
+    title = str(panel.get("title", ""))
     expected = OBSERVATION_CONTRACTS.get((str(dashboard.get("uid", "")), title))
     if expected is None:
         return None
+
+    def has_expected_source(target: dict[str, Any]) -> bool:
+        source = (
+            target.get("datasource")
+            if "datasource" in target
+            else panel.get("datasource")
+        )
+        return (
+            isinstance(source, dict)
+            and source.get("type") == expected["datasource"]
+            and source.get("uid") == expected["datasource_uid"]
+        )
+
     exact = any(
         str(target.get("refId", "")) == expected["ref"]
-        and datasource_type(target, {"title": title}) == expected["datasource"]
+        and has_expected_source(target)
         and str(target.get("expr") or "").strip() == expected["expr"]
         and (
             str(target.get("queryType", "")).lower() == "instant" and not target.get("range")
@@ -487,7 +505,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "lookback": panel_lookback,
             "step": panel_step,
             "targets": [],
-            "observation": _observation_contract(dashboard, str(panel.get("title", "")), targets),
+            "observation": _observation_contract(dashboard, panel, targets),
         }
         for target in targets:
             kind = datasource_type(target, panel)

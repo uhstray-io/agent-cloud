@@ -462,6 +462,101 @@ def test_known_title_with_changed_query_is_unverified(monkeypatch, tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    "source_drift",
+    [
+        {"location": "target", "field": "uid", "value": "different-backend"},
+        {"location": "panel", "field": "uid", "value": "different-backend"},
+        {"location": "panel", "field": "type", "value": "loki"},
+    ],
+)
+def test_known_query_with_datasource_identity_drift_is_unverified(
+    monkeypatch, tmp_path, source_drift
+):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Scrape target health")
+    target = panel["targets"][0]
+    if source_drift["location"] == "target":
+        target["datasource"] = {"type": "prometheus", "uid": "prometheus"}
+        target["datasource"][source_drift["field"]] = source_drift["value"]
+    else:
+        # The provisioned target inherits the panel source; mutate that source.
+        panel["datasource"][source_drift["field"]] = source_drift["value"]
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
+def test_provisioned_datasource_identity_verifies_known_observation(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch,
+        "service-overview",
+        "Scrape target health",
+        _numeric_vector([1]),
+    )
+    assert panel["observation"] == {"name": "scrape_health", "status": "healthy"}
+
+
+def test_known_query_without_an_explicit_datasource_identity_is_unverified(
+    monkeypatch, tmp_path
+):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Scrape target health")
+    panel.pop("datasource")
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
+@pytest.mark.parametrize("target_datasource", [{}, None, {"type": "prometheus"}])
+def test_ambiguous_target_datasource_does_not_fall_back_to_panel_identity(
+    monkeypatch, tmp_path, target_datasource
+):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Scrape target health")
+    panel["targets"][0]["datasource"] = target_datasource
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
 @pytest.mark.parametrize("time_from", ["1h30m", "0m", "7d;up", "-45m", "45M"])
 def test_malformed_panel_time_from_is_refused(tmp_path, time_from):
     dashboard = _synthetic("up")
