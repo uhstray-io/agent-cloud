@@ -245,7 +245,9 @@ def test_openbao_uses_matching_inventory_url_and_guards_transport_before_lookup(
     survey_tasks = yaml.safe_load(
         (ROOT / "platform/playbooks/tasks/o11y-pbs-physical-storage-survey.yml").read_text()
     )
-    survey_guard = next(task for task in survey_tasks if task.get("name") == "Refuse public cleartext OpenBao transport")
+    survey_guard = next(
+        task for task in survey_tasks if task.get("name") == "Refuse public cleartext OpenBao transport"
+    )
     assert survey_guard["ansible.builtin.include_tasks"] == "assert-bao-transport.yml"
     assert (ROOT / "platform/playbooks/tasks/assert-bao-transport.yml").is_file()
     assert tasks[lookup_index].get("no_log") is True

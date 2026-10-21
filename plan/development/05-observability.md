@@ -2088,3 +2088,44 @@ virtual disk. Check mode performs reads only. The workflow has passed local
 focused tests and syntax checks; it has not been reviewed, merged, published to
 Semaphore, or run against Proxmox. The private inventory and template gates
 still precede any live attachment.
+
+### PBS guest filesystem and service source integration (2026-10-20)
+
+The reviewed guest filesystem head `05acf2269081cf9e273fb77c0a5d1ffbd66ad280`
+and service head `4b4ef07c7bee21adee14ec55900de56ba5a76d28` are integrated by
+merge commits after PR #715's exact head, retaining its transport-test and
+visible-token assertions. The guest workflow identifies the one 512-GiB whole
+virtual disk by the Proxmox serial `ac-pbs-data-<vm_vmid>` (at most 18 ASCII bytes for the
+six-digit VMID), formats only a proven blank disk as ext4, and mounts it by
+UUID at `/srv/pbs-data` with `noatime`. Service configuration independently
+re-proves serial, size, UUID, mount, and fstab state before package or datastore
+writes. It verifies the installed shared helper against the exact reviewed
+checkout, then uses its no-follow containment checks to require the datastore
+as a real direct child on the pinned filesystem and reject symlinks and nested
+mounts, including for registered datastores. The helper and disk contract are
+source dependencies; no receipt or marker is treated as proof.
+
+Two Dev-only Semaphore catalog definitions are now present in source. Each
+targets the `agent-cloud dev` repository, requires only
+`expected_repository_sha`, and names the matching guest or service playbook.
+The service's Proxmox repository channel remains an explicit private-inventory
+choice: enterprise needs an already-active subscription before changes, while
+no-subscription requires explicit operator acceptance and is not an automatic
+fallback. Safe enterprise subscription-key provisioning remains a separate
+dependency. Task 4.1 creates no Linux root password or PBS API token; the
+datastore-scoped PVE identity and OpenBao token lifecycle belongs to task 4.2.
+
+Source validation in the integration checkout: 277 focused tests passed; the
+three guest task-sequence cases that start Ansible could not start Ansible 14's
+local RPC server in the sandbox, including after moving pytest temporary files
+to `/private/tmp`. Both PBS playbooks passed Ansible syntax checks (with the
+expected absent-private-inventory `pbs_svc` warning). Ruff passed. Full
+`ansible-lint platform/playbooks/ platform/semaphore/` passed with zero fatal
+failures and three existing unrelated Jinja-spacing warnings; YAML lint exited
+0 with existing line-length warnings. Strict OpenSpec validation from the local
+`plan/development/openspec` root reports this change valid. These are source-only
+results. The Dev
+Semaphore entries have not been published or read back, and no template VM,
+PBS VM, data disk, filesystem, mount, or PBS service has been observed live.
+OpenSpec tasks 3.2, 3.3, and 4.1 remain open pending their separate guarded
+Dev-bound readback and execution evidence.

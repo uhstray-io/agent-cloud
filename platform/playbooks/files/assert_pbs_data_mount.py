@@ -14,8 +14,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Callable
-
+from collections.abc import Callable
 
 MOUNTPOINT = "/srv/pbs-data"
 

@@ -51,8 +51,9 @@ This local privileged Ansible CLI path does not need a PBS API credential or
 subscription key for the no-subscription channel. Enterprise subscription
 state must already be active and available to APT on the guest. The subscription
 status read can contain credential fields and is `no_log`; only a sanitized
-status is reported. The datastore-scoped PVE backup identity and its OpenBao
-secret are task 4.2, not created here. Task 4.1 does not create unused secrets.
+status is reported. Task 4.1 does not generate or set a Linux root password,
+PBS API token, or any other unused secret. The datastore-scoped PVE backup
+identity and its OpenBao secret are task 4.2, not created here.
 
 ## Source checks
 

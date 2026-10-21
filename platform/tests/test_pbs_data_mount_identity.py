@@ -2,11 +2,10 @@
 
 import importlib.util
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
-
 
 HELPER = Path(__file__).parents[1] / "playbooks/files/assert_pbs_data_mount.py"
 SPEC = importlib.util.spec_from_file_location("pbs_mount_identity", HELPER)

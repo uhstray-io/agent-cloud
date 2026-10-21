@@ -1,15 +1,14 @@
 """Fail-closed contracts for the Semaphore PBS service bootstrap."""
 
-from pathlib import Path
 import importlib.util
 import json
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 import yaml
 from jinja2 import Environment
-
 
 ROOT = Path(__file__).parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/configure-pbs.yml"
@@ -54,6 +53,22 @@ def test_repository_channel_has_no_default_and_no_subscription_requires_acceptan
     assert "pbs_accept_no_subscription_risk" in text.split("_pbs_private_names:", 1)[1].split("_pbs_forgeries:", 1)[0]
 
 
+def test_pbs_guest_and_service_templates_are_dev_bound_and_only_take_reviewed_sha():
+    templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    expected = {
+        "Prepare PBS Guest Data Disk (Dev)": "platform/playbooks/prepare-pbs-guest-data-disk.yml",
+        "Configure PBS Service (Dev)": "platform/playbooks/configure-pbs.yml",
+    }
+    for name, playbook in expected.items():
+        matches = [template for template in templates if template["name"] == name]
+        assert len(matches) == 1
+        template = matches[0]
+        assert template["playbook"] == playbook
+        assert template["repository"] == "agent-cloud dev"
+        assert [field["name"] for field in template["survey_vars"]] == ["expected_repository_sha"]
+        assert template["survey_vars"][0]["required"] is True
+
+
 def test_enterprise_subscription_read_is_private_and_only_boolean_escapes():
     tasks = host_tasks()
     raw = next(task for task in tasks if "_pbs_subscription_raw" in str(task))
@@ -72,14 +87,20 @@ def test_service_path_never_schedules_pruning_or_removes_backups():
 
 def test_unclaimed_datastore_scan_includes_directories_and_symlinks():
     tasks = yaml.safe_load(DATASTORE_TASKS.read_text())
-    scan = next(task["ansible.builtin.find"] for task in tasks if "Check existing unclaimed datastore directory contents" in task["name"])
+    scan = next(
+        task["ansible.builtin.find"]
+        for task in tasks
+        if "Check existing unclaimed datastore directory contents" in task["name"]
+    )
     assert scan["file_type"] == "any"
     assert scan["recurse"] is False
 
 
 def test_check_mode_skips_missing_object_readbacks_and_reports_planned_create():
     tasks = yaml.safe_load(DATASTORE_TASKS.read_text())
-    datastore_readback = next(task for task in tasks if "Read back datastore and verification job configuration" in task["name"])
+    datastore_readback = next(
+        task for task in tasks if "Read back datastore and verification job configuration" in task["name"]
+    )
     job_readback = next(task for task in tasks if "Read back verification job configuration" in task["name"])
     assert "not ansible_check_mode" in str(datastore_readback["when"])
     assert "or _pbs_datastores" in str(datastore_readback["when"])
@@ -124,7 +145,9 @@ def test_reconcile_conditions_skip_fresh_objects_and_apply_existing_drift():
     verify_existing_drift = {
         **verify_absent,
         "_pbs_verify_job_list": [{"id": "weekly-o11y"}],
-        "_pbs_verify_job_current": {"stdout": json.dumps({"schedule": "daily", "ignore-verified": False, "outdated-after": 30})},
+        "_pbs_verify_job_current": {
+            "stdout": json.dumps({"schedule": "daily", "ignore-verified": False, "outdated-after": 30})
+        },
     }
 
     assert not _evaluate_when(datastore_update["when"], datastore_absent)
@@ -136,7 +159,11 @@ def test_reconcile_conditions_skip_fresh_objects_and_apply_existing_drift():
 @pytest.mark.parametrize("entry_kind", ["populated_directory", "symlink"])
 def test_ansible_find_any_detects_unsafe_datastore_entries(tmp_path, entry_kind):
     tasks = yaml.safe_load(DATASTORE_TASKS.read_text())
-    scan = next(task["ansible.builtin.find"] for task in tasks if "Check existing unclaimed datastore directory contents" in task["name"])
+    scan = next(
+        task["ansible.builtin.find"]
+        for task in tasks
+        if "Check existing unclaimed datastore directory contents" in task["name"]
+    )
     datastore = tmp_path / "datastore"
     datastore.mkdir()
     if entry_kind == "populated_directory":
