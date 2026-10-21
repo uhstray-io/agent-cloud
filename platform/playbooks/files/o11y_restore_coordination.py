@@ -258,7 +258,7 @@ def _owner_nonce(record: dict[str, Any]) -> str:
 def _validate_saved_upid(record: dict[str, Any], target_ref: dict[str, Any]) -> None:
     if record["upid"] is None:
         return
-    operation = "qmdelete" if record["phase"] in {"cleanup_active", "cleaned"} else "qmrestore"
+    operation = "qmdestroy" if record["phase"] in {"cleanup_active", "cleaned"} else "qmrestore"
     _require(_upid_matches(record["upid"], target_ref, operation), "evidence_invalid")
 
 
@@ -471,7 +471,7 @@ def plan_transition(snapshot: dict[str, Any] | None, version: int, request: obje
                 "phase_transition_invalid",
             )
             _require(request["evidence"] is None, "invalid_input")
-            _require(_upid_matches(request["upid"], target_ref, "qmdelete"), "evidence_invalid")
+            _require(_upid_matches(request["upid"], target_ref, "qmdestroy"), "evidence_invalid")
             record["upid"] = request["upid"]
         elif transition == "cleaned":
             _require(

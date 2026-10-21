@@ -23,7 +23,7 @@ DECLARATION = {
     "private_inventory_sha": "b" * 64,
 }
 RESTORE_UPID = "UPID:pve:00000001:00000002:00000003:qmrestore:102:root@pam:"
-DELETE_UPID = "UPID:pve:00000004:00000005:00000006:qmdelete:102:root@pam:"
+DELETE_UPID = "UPID:pve:00000004:00000005:00000006:qmdestroy:102:root@pam:"
 _AUTO = object()
 
 
@@ -486,6 +486,14 @@ def test_cleanup_upid_must_be_the_exact_delete_operation():
             snapshot,
             5,
             request("record_cleanup_upid", snapshot=snapshot, upid=RESTORE_UPID),
+        )
+
+    wrong_delete_alias = DELETE_UPID.replace(":qmdestroy:", ":qmdelete:")
+    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
+        coordination.plan_transition(
+            snapshot,
+            5,
+            request("record_cleanup_upid", snapshot=snapshot, upid=wrong_delete_alias),
         )
 
 
