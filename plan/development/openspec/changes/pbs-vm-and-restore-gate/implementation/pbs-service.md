@@ -19,9 +19,18 @@ Before package or datastore changes, the play re-derives the expected
 `ac-pbs-data-<vm_vmid>` serial from `lsblk`, then checks that the same whole-disk
 ext4 UUID is mounted at `/srv/pbs-data` with `noatime` and that fstab names
 `UUID=<uuid>` with the same option at that exact mountpoint. It repeats the
-proof immediately before datastore writes.
+proof immediately before datastore writes. It also compares the installed
+guest disk helper's SHA-256 with the helper in the exact reviewed checkout,
+then invokes its read-only containment validation before any datastore-path
+inspection or write. This refuses a symlinked or redirected datastore path,
+an existing path on another device, and nested mounts beneath the data mount;
+it applies to both unregistered and already registered datastores.
 The helper emits only the device path, filesystem UUID, mountpoint, and type.
-An unclaimed non-empty datastore directory is preserved and causes a refusal.
+An unclaimed datastore directory is inspected with `file_type: any`, so direct
+child directories and symlinks count as content; it is preserved and causes a
+refusal. Check mode reads back existing datastore/job objects and reports
+planned creates for absent ones without attempting to show objects that do not
+exist yet.
 
 The play installs `proxmox-backup-server` from the selected official Trixie
 repository after installing the archive keyring using Proxmox's published

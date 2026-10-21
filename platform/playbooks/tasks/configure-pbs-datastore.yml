@@ -65,12 +65,45 @@
     quiet: true
   when: _pbs_datastore_current is not skipped
 
-- name: Re-prove the data mount immediately before datastore writes
+- name: Hash the checked-out guest path helper from the reviewed repository
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/files/prepare_pbs_guest_disk.py"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  run_once: true
+  register: _pbs_guest_path_helper_source
+  changed_when: false
+  check_mode: false
+
+- name: Read back the installed guest path helper checksum
+  ansible.builtin.stat:
+    path: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: _pbs_guest_path_helper_installed
+  changed_when: false
+  check_mode: false
+
+- name: Require the installed guest helper to match the reviewed source bytes
+  ansible.builtin.assert:
+    that:
+      - _pbs_guest_path_helper_source.stat.isreg | default(false)
+      - not (_pbs_guest_path_helper_source.stat.islnk | default(false))
+      - _pbs_guest_path_helper_installed.stat.isreg | default(false)
+      - not (_pbs_guest_path_helper_installed.stat.islnk | default(false))
+      - _pbs_guest_path_helper_installed.stat.checksum == _pbs_guest_path_helper_source.stat.checksum
+    fail_msg: "The installed PBS guest path helper is missing, not a regular file, or differs from the reviewed source."
+    quiet: true
+
+- name: Re-prove the data mount immediately before datastore path validation
   ansible.builtin.script:
     cmd: "{{ playbook_dir }}/files/assert_pbs_data_mount.py --vmid {{ _pbs_vmid | quote }}"
   register: _pbs_mount_before_datastore
   changed_when: false
-  when: not ansible_check_mode
+  check_mode: false
 
 - name: Require the pre-write mount UUID to match the initial proof
   ansible.builtin.assert:
@@ -80,6 +113,27 @@
     fail_msg: "The PBS data mount changed during configuration; no datastore change is allowed."
     quiet: true
   when: _pbs_mount_before_datastore is not skipped
+
+- name: Prove datastore path containment on the pinned data filesystem
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
+      - --validate-datastore-path
+      - --mountpoint
+      - "{{ (_pbs_mount_before_datastore.stdout | from_json).target }}"
+      - --datastore-path
+      - "{{ _pbs_datastore_path }}"
+  register: _pbs_datastore_path_containment
+  changed_when: false
+  check_mode: false
+
+- name: Require the guest helper to validate the datastore path
+  ansible.builtin.assert:
+    that:
+      - (_pbs_datastore_path_containment.stdout | from_json).datastore_path == 'validated'
+    fail_msg: "The PBS datastore path is not a real direct child of the pinned data mount."
+    quiet: true
 
 - name: Inspect the datastore path before creating it
   ansible.builtin.stat:
@@ -92,6 +146,7 @@
     paths: "{{ _pbs_datastore_path }}"
     recurse: false
     hidden: true
+    file_type: any
   register: _pbs_datastore_path_contents
   when:
     - _pbs_datastores | selectattr('name', 'equalto', _pbs_datastore) | list | length == 0
@@ -146,7 +201,6 @@
       - "true"
   when:
     - not ansible_check_mode
-    - _pbs_datastores | selectattr('name', 'equalto', _pbs_datastore) | list | length == 1
     - >-
       (_pbs_datastore_current.stdout | from_json).get('gc-schedule', '') != _pbs_gc_schedule
       or (_pbs_datastore_current.stdout | from_json).get('verify-new', false) | string | lower != 'true'
@@ -223,7 +277,6 @@
       - "7"
   when:
     - not ansible_check_mode
-    - _pbs_verify_job_list | selectattr('id', 'equalto', _pbs_verify_job) | list | length == 1
     - >-
       (_pbs_verify_job_current.stdout | from_json).get('schedule', '') != _pbs_verify_schedule
       or (_pbs_verify_job_current.stdout | from_json).get('ignore-verified', false) | string | lower != 'true'
@@ -236,6 +289,10 @@
   register: _pbs_datastore_readback
   changed_when: false
   check_mode: false
+  when:
+    - >-
+      not ansible_check_mode
+      or _pbs_datastores | selectattr('name', 'equalto', _pbs_datastore) | list | length == 1
 
 - name: Read back verification job configuration
   ansible.builtin.command:
@@ -243,6 +300,10 @@
   register: _pbs_verify_job_readback
   changed_when: false
   check_mode: false
+  when:
+    - >-
+      not ansible_check_mode
+      or _pbs_verify_job_list | selectattr('id', 'equalto', _pbs_verify_job) | list | length == 1
 
 - name: Require the final datastore configuration
   ansible.builtin.assert:
@@ -258,6 +319,20 @@
     fail_msg: "PBS datastore readback does not match the declared path and maintenance policy."
     quiet: true
   when: not ansible_check_mode
+
+- name: Report datastore creation planned in check mode
+  ansible.builtin.debug:
+    msg: "Datastore {{ _pbs_datastore }} would be created at {{ _pbs_datastore_path }}."
+  when:
+    - ansible_check_mode
+    - _pbs_datastores | selectattr('name', 'equalto', _pbs_datastore) | list | length == 0
+
+- name: Report verification job creation planned in check mode
+  ansible.builtin.debug:
+    msg: "Verification job {{ _pbs_verify_job }} would be created."
+  when:
+    - ansible_check_mode
+    - _pbs_verify_job_list | selectattr('id', 'equalto', _pbs_verify_job) | list | length == 0
 
 - name: Report PBS health and fixed datastore identity
   ansible.builtin.debug:
