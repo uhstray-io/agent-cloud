@@ -3,8 +3,9 @@
 
 Read-only: it reads the dashboard JSON the receiver's Grafana provisions from, and sends
 query and query_range requests to the receiver's Prometheus and Loki APIs. It prints one
-JSON report on stdout carrying panel titles, target status and counts only: no label value,
-log line, query expression or sample value leaves this script.
+JSON report on stdout carrying panel titles, target status and counts plus exact-contract
+categorical observations: no label value, log line, query expression, provenance identifier or
+sample value leaves this script.
 
 Input (stdin, JSON):
   dashboards_dir   directory Grafana's file provider loads (config/grafana/dashboards)
@@ -108,6 +109,58 @@ QUERY_TIMEOUT = 30
 LOKI_RESULT_LIMIT = 100
 # The Prometheus HTTP API's errorType values (prometheus web/api/v1/api.go).
 ERROR_TYPES = {"timeout", "canceled", "execution", "bad_data", "internal", "unavailable", "not_found", "not_acceptable"}
+# These categorical observations are deliberately tied to the complete provisioned query
+# contract. A title match alone only permits an `unverified` observation.
+OBSERVATION_CONTRACTS = {
+    ("service-overview", "Scrape target health"): {
+        "name": "scrape_health",
+        "datasource": "prometheus",
+        "ref": "A",
+        "mode": "instant",
+        "expr": 'min by (service) (up{service=~"$service"})',
+    },
+    ("service-conformance", "Latest inventory marker age"): {
+        "name": "inventory_marker_freshness",
+        "datasource": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "expr": (
+            'min(last_over_time({job="agent-cloud-conformance", step="none", '
+            'status=~"^(no_history|has_history|history_incomplete)$"} | json | '
+            'inventory_code=~"^(0|1|2)$" | marker_time_seconds=~"^[0-9]+$" | '
+            '__error__="" | label_format age_seconds=`{{sub (unixEpoch now) '
+            '.marker_time_seconds}}` | unwrap age_seconds | __error__="" [45m]))'
+        ),
+    },
+    ("service-conformance", "Current failed step states"): {
+        "name": "current_workflow_failures",
+        "datasource": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "expr": (
+            'sum(last_over_time({job="agent-cloud-conformance", step!="none"} | '
+            'json state_code | unwrap state_code | __error__="" [45m]) by (service, step) '
+            '== bool 0) or (sum(last_over_time({job="agent-cloud-conformance", step="none", '
+            'status=~"^(no_history|has_history|history_incomplete)$"} | json | '
+            'inventory_code=~"^(0|1|2)$" | marker_time_seconds=~"^[0-9]+$" | '
+            '__error__="" | unwrap inventory_code | __error__="" [45m]) by (service) * 0))'
+        ),
+    },
+    ("service-conformance", "Latest workflow completion age by service and step"): {
+        "name": "workflow_completion_age",
+        "datasource": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "expr": (
+            'last_over_time({job="agent-cloud-conformance", step!="none"} | '
+            'json completed_at_seconds | drop status | label_format age_seconds=`{{if eq '
+            '(.completed_at_seconds | default "unknown") "unknown"}}-1{{else}}{{sub '
+            '(unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | '
+            '__error__="" [45m]) by (service, step)'
+        ),
+    },
+}
+INVENTORY_MARKER_STALE_SECONDS = 1800
 # Characters an override may never carry, wherever it lands.
 OVERRIDE_FORBIDDEN = re.compile(r'["{}()\\\r\n]')
 # A value substituted outside a string literal: a duration or a number, nothing else.
@@ -190,6 +243,80 @@ def datasource_type(target: dict[str, Any], panel: dict[str, Any]) -> str:
     if kind.startswith("$"):
         raise Refused(f"panel {panel.get('title')!r} takes its datasource from a variable")
     return kind.lower()
+
+
+def _observation_contract(
+    dashboard: dict[str, Any], title: str, targets: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    expected = OBSERVATION_CONTRACTS.get((str(dashboard.get("uid", "")), title))
+    if expected is None:
+        return None
+    exact = any(
+        str(target.get("refId", "")) == expected["ref"]
+        and datasource_type(target, {"title": title}) == expected["datasource"]
+        and str(target.get("expr") or "").strip() == expected["expr"]
+        and (
+            str(target.get("queryType", "")).lower() == "instant" and not target.get("range")
+            if expected["datasource"] == "loki"
+            else bool(target.get("instant")) and not target.get("range")
+        )
+        and not target.get("hide")
+        for target in targets
+    )
+    return {"name": expected["name"], "verified": exact}
+
+
+def _observation_values(data: dict[str, Any]) -> list[float] | None:
+    """Read finite numeric samples without retaining labels, timestamps, or source values."""
+    kind, result = data.get("resultType"), data.get("result")
+    if kind == "scalar":
+        sample_values = [result]
+    elif kind == "vector" and isinstance(result, list):
+        sample_values = [series.get("value") for series in result if isinstance(series, dict)]
+        if len(sample_values) != len(result):
+            return None
+    else:
+        return None
+    values = []
+    for sample in sample_values:
+        if not _finite(sample):
+            return None
+        try:
+            value = float(sample[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        values.append(value)
+    return values
+
+
+def _categorical_observation(name: str, data: dict[str, Any]) -> str:
+    values = _observation_values(data)
+    if values is None:
+        return "unverified"
+    if not values:
+        return {
+            "scrape_health": "no_metrics",
+            "inventory_marker_freshness": "no_data",
+            "current_workflow_failures": "no_data",
+            "workflow_completion_age": "no_data",
+        }[name]
+    if name == "scrape_health":
+        if any(value not in (0.0, 1.0) for value in values):
+            return "unverified"
+        return "unhealthy" if 0.0 in values else "healthy"
+    if name == "inventory_marker_freshness":
+        if any(value < 0 for value in values):
+            return "unverified"
+        return "stale" if any(value > INVENTORY_MARKER_STALE_SECONDS for value in values) else "fresh"
+    if name == "current_workflow_failures":
+        if any(value < 0 for value in values):
+            return "unverified"
+        return "present" if any(value > 0 for value in values) else "none"
+    if name == "workflow_completion_age":
+        if any(value < 0 and value != -1 for value in values):
+            return "unverified"
+        return "unknown" if -1 in values else "known"
+    return "unverified"
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -360,6 +487,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "lookback": panel_lookback,
             "step": panel_step,
             "targets": [],
+            "observation": _observation_contract(dashboard, str(panel.get("title", "")), targets),
         }
         for target in targets:
             kind = datasource_type(target, panel)
@@ -394,7 +522,13 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                         f"panel {entry['title']!r} target {ref!r} uses an unsupported instant log stream query"
                     )
             entry["targets"].append(
-                {"ref": ref, "datasource": kind, "modes": modes, "expr": interpolate(expr, values, builtins)}
+                {
+                    "ref": ref,
+                    "datasource": kind,
+                    "modes": modes,
+                    "expr": interpolate(expr, values, builtins),
+                    "source_expr": expr,
+                }
             )
         planned.append(entry)
     if not any(t.get("expr") for p in planned for t in p["targets"]):
@@ -506,6 +640,12 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
     panels = []
     for entry in planned["panels"]:
         targets = []
+        contract = entry.get("observation")
+        observation = None
+        if contract:
+            observation = {"name": contract["name"], "status": "unverified"}
+            if not contract["verified"]:
+                observation["reason"] = "contract_mismatch"
         for target in entry["targets"]:
             if "expr" not in target:
                 targets.append({k: target[k] for k in ("ref", "datasource", "status")})
@@ -516,8 +656,22 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                     entry["lookback"], entry["step"],
                 )
                 row = {"ref": target["ref"], "mode": mode}
+                observation_contract = OBSERVATION_CONTRACTS.get(
+                    (str(planned["dashboard"].get("uid", "")), entry["title"])
+                )
+                observe_target = bool(
+                    observation
+                    and contract["verified"]
+                    and observation_contract
+                    and target["ref"] == observation_contract["ref"]
+                    and target["datasource"] == observation_contract["datasource"]
+                    and target.get("source_expr") == observation_contract["expr"]
+                    and mode == observation_contract["mode"]
+                )
                 if "error" in answer:
                     row.update(status="error", error=answer["error"])
+                    if observe_target:
+                        observation["reason"] = "query_error"
                 else:
                     series, with_values = _count(answer["data"])
                     row.update(
@@ -525,6 +679,9 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                         series=series,
                         series_with_values=with_values,
                     )
+                    if observe_target:
+                        observation["status"] = _categorical_observation(contract["name"], answer["data"])
+                        observation.pop("reason", None)
                 targets.append(row)
         queried = [t for t in targets if t["status"] in ("data", "empty", "error")]
         if not queried:
@@ -537,12 +694,15 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
             status = "expected_empty"
         else:
             status = "empty" if all(t["status"] == "empty" for t in queried) else "partial"
-        panels.append({
+        panel_report = {
             "title": entry["title"],
             "status": status,
             "lookback_seconds": entry["lookback"],
             "targets": targets,
-        })
+        }
+        if observation is not None:
+            panel_report["observation"] = observation
+        panels.append(panel_report)
 
     verified = [p for p in panels if p["status"] != "skipped"]
     failing = [p["title"] for p in verified if p["status"] not in ("pass", "expected_empty")]

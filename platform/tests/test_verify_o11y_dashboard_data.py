@@ -340,6 +340,128 @@ def test_real_time_from_panels_query_their_own_range(loki):
     assert [form["end"] for _, form in loki.requests] == ["1700000000.000", "1700000000.000"]
 
 
+def _numeric_vector(values):
+    return {
+        "resultType": "vector",
+        "result": [
+            {"metric": {"service": "sanitized-test-service"}, "value": [1700000000, str(value)]}
+            for value in values
+        ],
+    }
+
+
+def _observe_dashboard(monkeypatch, uid, title, data):
+    seen = []
+
+    def query(base, backend, mode, expr, end, lookback, step):
+        seen.append((backend, mode, expr))
+        if data == "query_error":
+            return {"error": "execution"}
+        return {"data": data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(uid, panel_titles=[title]), now=1700000000)
+    assert report["status"] in ("pass", "fail")
+    assert len(seen) == 1
+    assert "sanitized-test-service" not in json.dumps(report)
+    return report["panels"][0]
+
+
+@pytest.mark.parametrize(("value", "observation"), [(1, "healthy"), (0, "unhealthy")])
+def test_known_scrape_health_observation_does_not_change_query_validity(monkeypatch, value, observation):
+    panel = _observe_dashboard(
+        monkeypatch, "service-overview", "Scrape target health", _numeric_vector([value])
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "scrape_health", "status": observation}
+
+
+def test_known_scrape_health_distinguishes_absent_from_zero(monkeypatch):
+    panel = _observe_dashboard(monkeypatch, "service-overview", "Scrape target health", _numeric_vector([]))
+    assert panel["status"] == "empty"
+    assert panel["observation"] == {"name": "scrape_health", "status": "no_metrics"}
+
+
+@pytest.mark.parametrize(("age", "observation"), [(1799, "fresh"), (1800, "fresh"), (1801, "stale")])
+def test_inventory_marker_freshness_uses_the_provisioned_boundary(monkeypatch, age, observation):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Latest inventory marker age", _numeric_vector([age])
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "inventory_marker_freshness", "status": observation}
+
+
+def test_inventory_marker_absence_is_not_zero_age(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Latest inventory marker age", _numeric_vector([])
+    )
+    assert panel["status"] == "empty"
+    assert panel["observation"] == {"name": "inventory_marker_freshness", "status": "no_data"}
+
+
+@pytest.mark.parametrize(("values", "observation"), [([0], "none"), ([1], "present")])
+def test_current_workflow_failure_observation_preserves_zero_and_failure(monkeypatch, values, observation):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Current failed step states", _numeric_vector(values)
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "current_workflow_failures", "status": observation}
+
+
+def test_current_workflow_failure_absence_differs_from_zero(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Current failed step states", _numeric_vector([])
+    )
+    assert panel["status"] == "empty"
+    assert panel["observation"] == {"name": "current_workflow_failures", "status": "no_data"}
+
+
+@pytest.mark.parametrize(("age", "observation"), [(42, "known"), (-1, "unknown")])
+def test_completion_age_observation_uses_the_provisioned_unknown_mapping(monkeypatch, age, observation):
+    panel = _observe_dashboard(
+        monkeypatch,
+        "service-conformance",
+        "Latest workflow completion age by service and step",
+        _numeric_vector([age]),
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "workflow_completion_age", "status": observation}
+
+
+def test_known_observation_query_error_stays_a_query_failure_without_backend_text(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch, "service-overview", "Scrape target health", "query_error"
+    )
+    assert panel["status"] == "error"
+    assert panel["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "query_error",
+    }
+    assert "error" not in panel["observation"]
+
+
+def test_known_title_with_changed_query_is_unverified(monkeypatch, tmp_path):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    dashboard["panels"] = [p for p in dashboard["panels"] if p.get("title") == "Scrape target health"]
+    dashboard["panels"][0]["targets"][0]["expr"] += " + 0"
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
 @pytest.mark.parametrize("time_from", ["1h30m", "0m", "7d;up", "-45m", "45M"])
 def test_malformed_panel_time_from_is_refused(tmp_path, time_from):
     dashboard = _synthetic("up")
