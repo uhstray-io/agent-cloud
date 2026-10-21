@@ -139,6 +139,37 @@ _agw_mcp_problems: >-
     {%- endfor -%}
   {%- endif -%}
   {{ out }}
+# The skynet orchestration route (agentgateway task 3.3, render half): a `/skynet/` path on the `default`
+# gateway, admitted only to the declared route identities by a strict key policy (the caller's key is the
+# gate), with backendAuth swapping that key for skynet's own token before the request reaches skynet. What is
+# wrong with the declaration, one sentence per problem, empty when nothing is and always empty while
+# `agw_skynet_route_enabled` is false. The deploy refuses a non-empty list before anything is rendered or
+# restarted. Route identities are declared gateway identities (agw_identities), never an internal one, and a
+# name listed twice is refused. The backend is host:port only: the route is one fixed upstream, not a path an
+# inventory can aim anywhere else. Names and the backend address only; no token value is ever part of a message.
+_agw_skynet_route_problems: >-
+  {%- set out = [] -%}
+  {%- if agw_skynet_route_enabled | default(false) | bool -%}
+    {%- set backend = (agw_skynet_backend | default('', true)) | string -%}
+    {%- if not (backend is match('^[A-Za-z0-9.-]+:[0-9]{1,5}$'))
+           and out.append('agw_skynet_backend must be host:port (the skynet API the route proxies to), not "' ~ backend ~ '"') -%}{%- endif -%}
+    {%- set ids = agw_skynet_route_identities | default([]) -%}
+    {%- if ids is string or ids is mapping or ids is not sequence -%}
+      {%- if out.append('agw_skynet_route_identities must be a list of identity names') -%}{%- endif -%}
+    {%- elif ids | length == 0 -%}
+      {%- if out.append('agw_skynet_route_identities must name at least one identity: an enabled route with no identity admits nobody') -%}{%- endif -%}
+    {%- else -%}
+      {%- for i in ids -%}
+        {%- if i in _agw_internal_identities
+               and out.append('agw_skynet_route_identities names "' ~ i ~ '", an internal identity that is never admitted to the skynet route') -%}{%- endif -%}
+        {%- if i not in agw_identities and i not in _agw_internal_identities
+               and out.append('agw_skynet_route_identities names "' ~ i ~ '", which is not a declared gateway identity') -%}{%- endif -%}
+        {%- if (ids[:loop.index0] | select('equalto', i) | list | length) > 0
+               and out.append('agw_skynet_route_identities names "' ~ i ~ '" more than once') -%}{%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+  {%- endif -%}
+  {{ out }}
 # A native LIST, built in a statement block whose only output is the list itself (no
 # community.general, which is not a declared dependency). Text-built JSON broke on ansible-core
 # 2.19+ (PR 213; MISTAKES 10.16).
