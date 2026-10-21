@@ -162,7 +162,10 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
         "created": "2026-10-21T14:59:00Z",
         "start": "2026-10-21T15:00:00Z",
         "end": "2026-10-21T15:30:00Z",
-        "environment": json.dumps({"expected_repository_sha": PUBLIC}),
+        "environment": json.dumps({
+            "expected_repository_sha": PUBLIC,
+            "site_config_base_sha": PRIVATE,
+        }),
         "playbook": "",
         "params": {"diff": False, "dry_run": False},
     }
@@ -182,7 +185,7 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
         playbook=BACKUP_PLAYBOOK,
         expected_project_id=1,
         expected_task_id=10,
-        expected_launch={"expected_repository_sha": PUBLIC},
+        expected_launch={"expected_repository_sha": PUBLIC, "site_config_base_sha": PRIVATE},
         now=NOW,
     )
     assert result["receipt"] == receipt
@@ -197,9 +200,83 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
             playbook=BACKUP_PLAYBOOK,
             expected_project_id=1,
             expected_task_id=10,
-            expected_launch={"expected_repository_sha": PUBLIC},
+            expected_launch={"expected_repository_sha": PUBLIC, "site_config_base_sha": PRIVATE},
             now=NOW,
         )
+
+
+def test_verification_receipt_must_bind_its_authenticated_backup_task_selector() -> None:
+    digest = pbs.artifact_fingerprint(manifest())
+    evidence = {
+        "backup_task_id": 10,
+        "backup_upid": UPID,
+        "verification_upid": UPID,
+        "verification_status": "OK",
+        "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
+        "source_vmid": "120",
+        "artifact_fingerprint": digest,
+        "playbook": "platform/playbooks/verify-o11y-pbs-artifact.yml",
+    }
+    receipt = pbs.completed_receipt(
+        contract="o11y-pbs-verify/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        inventory_fingerprint="3" * 64,
+        source_fingerprint_value="4" * 64,
+        artifact=digest,
+        observed_start="2026-10-21T15:00:00Z",
+        observed_end="2026-10-21T15:30:00Z",
+        evidence=evidence,
+        now=NOW,
+    )
+    task = {
+        "id": 11,
+        "project_id": 1,
+        "template_id": 55,
+        "commit_hash": PUBLIC,
+        "status": "success",
+        "created": "2026-10-21T14:59:00Z",
+        "start": "2026-10-21T15:00:00Z",
+        "end": "2026-10-21T15:30:00Z",
+        "environment": {
+            "expected_repository_sha": PUBLIC,
+            "site_config_base_sha": PRIVATE,
+            "backup_task_id": 10,
+        },
+        "playbook": "",
+        "params": {"diff": False, "dry_run": False},
+    }
+    output = json.dumps(receipt, indent=2)
+    rows = [{"id": 8, "task_id": 11, "stage_id": None,
+             "time": "2026-10-21T15:20:00Z", "output": output}]
+    arguments = {
+        "contract": "o11y-pbs-verify/v1",
+        "public_sha": PUBLIC,
+        "private_sha": PRIVATE,
+        "playbook": "platform/playbooks/verify-o11y-pbs-artifact.yml",
+        "expected_project_id": 1,
+        "expected_launch": task["environment"],
+        "expected_task_id": 11,
+        "now": NOW,
+    }
+    assert pbs.validate_completed_task(task, rows, **arguments)["receipt"] == receipt
+
+    forged_evidence = dict(evidence, backup_task_id=9)
+    forged_receipt = pbs.completed_receipt(
+        contract="o11y-pbs-verify/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        inventory_fingerprint="3" * 64,
+        source_fingerprint_value="4" * 64,
+        artifact=digest,
+        observed_start="2026-10-21T15:00:00Z",
+        observed_end="2026-10-21T15:30:00Z",
+        evidence=forged_evidence,
+        now=NOW,
+    )
+    forged_rows = [{**rows[0], "output": json.dumps(forged_receipt, indent=2)}]
+    with pytest.raises(pbs.Refusal, match="task_binding_mismatch"):
+        pbs.validate_completed_task(task, forged_rows, **arguments)
 
 
 def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch() -> None:

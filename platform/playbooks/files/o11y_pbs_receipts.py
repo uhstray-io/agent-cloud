@@ -71,6 +71,25 @@ CONTRACTS = {
         },
     },
 }
+CONTRACT_LAUNCH_KEYS = {
+    "o11y-pbs-backup/v1": {"expected_repository_sha", "site_config_base_sha"},
+    "o11y-pbs-verify/v1": {
+        "expected_repository_sha", "site_config_base_sha", "backup_task_id",
+    },
+    "o11y-pbs-copy-sync/v1": {
+        "expected_repository_sha", "site_config_base_sha", "backup_task_id", "verify_task_id",
+    },
+    "o11y-pbs-copy-ready/v1": {
+        "expected_repository_sha", "site_config_base_sha", "backup_task_id", "verify_task_id", "sync_task_id",
+    },
+}
+CHAIN_LAUNCH_EVIDENCE = {
+    "o11y-pbs-verify/v1": {"backup_task_id": "backup_task_id"},
+    "o11y-pbs-copy-sync/v1": {
+        "backup_task_id": "backup_task_id", "verify_task_id": "verify_task_id",
+    },
+    "o11y-pbs-copy-ready/v1": {"sync_task_id": "sync_task_id"},
+}
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 REVISION = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 UPID = re.compile(
@@ -548,7 +567,7 @@ def validate_completed_output(
     _require(expected_selector in CONTRACTS or expected_selector in CUSTOM_RECEIPTS, "invalid_input")
     _require(_revision(public_sha), "invalid_input")
     if selector == "contract":
-        _require(allowed_launch_keys == {"expected_repository_sha", "site_config_base_sha"}, "invalid_input")
+        _require(allowed_launch_keys == CONTRACT_LAUNCH_KEYS.get(expected_selector), "invalid_input")
     else:
         _require(frozenset(allowed_launch_keys) in CUSTOM_LAUNCH_KEYS[expected_selector], "invalid_input")
         _require(expected_receipt_keys == CUSTOM_RECEIPTS[expected_selector], "invalid_input")
@@ -579,6 +598,10 @@ def validate_completed_output(
     _require(set(launch) <= allowed_launch_keys, "task_binding_mismatch")
     _require(isinstance(expected_launch, Mapping) and launch == dict(expected_launch), "task_binding_mismatch")
     _require(launch.get("expected_repository_sha") == public_sha, "task_binding_mismatch")
+    if selector == "contract":
+        _require(set(launch) == allowed_launch_keys, "task_binding_mismatch")
+        for key in allowed_launch_keys - {"expected_repository_sha", "site_config_base_sha"}:
+            _require(_positive_id(launch.get(key)), "task_binding_mismatch")
     params = task.get("params")
     if isinstance(params, str):
         try:
@@ -683,7 +706,7 @@ def validate_completed_task(
         selector="contract",
         expected_selector=contract,
         expected_receipt_keys=ENVELOPE_KEYS,
-        allowed_launch_keys={"expected_repository_sha", "site_config_base_sha"},
+        allowed_launch_keys=CONTRACT_LAUNCH_KEYS[contract],
         expected_task_id=expected_task_id,
         now=now,
     )
@@ -696,6 +719,10 @@ def validate_completed_task(
         expected_artifact_fingerprint=expected_artifact_fingerprint,
     )
     _require(receipt["evidence"].get("playbook") == playbook, "task_binding_mismatch")
+    launch = result["task_metadata"]["launch"]
+    evidence = receipt["evidence"]
+    for launch_key, evidence_key in CHAIN_LAUNCH_EVIDENCE.get(contract, {}).items():
+        _require(launch.get(launch_key) == evidence.get(evidence_key), "task_binding_mismatch")
     result["receipt"] = receipt
     return result
 

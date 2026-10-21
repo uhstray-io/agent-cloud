@@ -29,6 +29,13 @@ carry that ID as a fixed selector into the next workflow. No task ID is
 discovered by guessing from a template/commit pair or self-declared by the
 playbook.
 
+For canonical artifact hashing, the pinned PBS Reader uses the fixed
+`admin/datastore/o11y/download-decoded` route with the exact snapshot type, ID,
+and time and `file-name=index.json.blob`. PBS performs DataBlob decoding; the
+producer's duplicate-key rejecting parser validates the decoded official
+manifest and returns only the normalized digest. The raw response stays in
+the no-log parser call and never enters a receipt or visible task output.
+
 The inventory provenance workflow compares the exact regular
 `inventory/production.yml` Git blob at the caller-pinned private revision to the
 sole current static Ansible inventory source's complete bytes. It verifies the

@@ -10,8 +10,14 @@ import json
 import re
 import ssl
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from o11y_pbs_receipts import artifact_fingerprint, parse_manifest
 
 USER_ID = "o11y-backup@pbs"
 TOKEN_ID = "o11y-backup@pbs!pve-o11y"
@@ -32,6 +38,7 @@ COPY_MANAGER_ACL_ROLE_PATHS = {
 }
 SUPPORTED_VERSION = (4, 2, 8, 1)
 MAX_API_RESPONSE_BYTES = 1024 * 1024
+MAX_MANIFEST_BLOB_BYTES = 1024 * 1024
 COPY_API_OPERATIONS = {
     "remote-read": ("GET", "remote-item"),
     "remote-create": ("POST", "remote-collection"),
@@ -696,6 +703,61 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
         connection.close()
 
 
+def read_snapshot_manifest(*, url: str, expected_host: str, fingerprint: str,
+                           auth_id: str, secret: str, backup_id: str,
+                           backup_time: int) -> dict[str, Any]:
+    """Read exactly one manifest over a same-connection pinned PBS reader session."""
+    _require(auth_id == COPY_READER_TOKEN_ID,
+             "PBS manifest read must use the independent source Reader identity.")
+    _require(isinstance(backup_id, str) and re.fullmatch(r"[1-9][0-9]{0,8}", backup_id) is not None
+             and type(backup_time) is int and backup_time > 0,
+             "PBS manifest snapshot selector is malformed.")
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port or 8007
+    except ValueError:
+        raise Refusal("PBS manifest endpoint has an unsupported URL schema.") from None
+    _require(isinstance(expected_host, str)
+             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", expected_host) is not None,
+             "PBS manifest expected host is malformed.")
+    _require(parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password
+             and parsed.path in ("", "/") and not parsed.query and not parsed.fragment
+             and parsed.hostname.lower() == expected_host.lower(),
+             "PBS manifest endpoint does not match its fixed HTTPS host.")
+    query = urlencode({
+        "store": DATASTORE,
+        "backup-type": "vm",
+        "backup-id": backup_id,
+        "backup-time": str(backup_time),
+        "file-name": "index.json.blob",
+    })
+    path = f"/api2/json/admin/datastore/{DATASTORE}/download-decoded?{query}"
+    connection = _PinnedHTTPSConnection(parsed.hostname, port, fingerprint)
+    try:
+        connection.connect()
+        connection.request(
+            "GET",
+            path,
+            headers={"Authorization": f"PBSAPIToken {auth_id}:{secret}",
+                     "Accept": "application/octet-stream"},
+        )
+        response = connection.getresponse()
+        manifest_bytes = response.read(MAX_MANIFEST_BLOB_BYTES + 1)
+        _require(not (300 <= response.status < 400), "PBS manifest endpoint refused a redirect.")
+        _require(response.status == 200 and len(manifest_bytes) <= MAX_MANIFEST_BLOB_BYTES,
+                 "PBS manifest download returned an unsupported status or size.")
+        manifest = parse_manifest(manifest_bytes)
+        _require(manifest["backup_type"] == "vm" and manifest["backup_id"] == backup_id
+                 and manifest["backup_time"] == backup_time,
+                 "PBS manifest does not match the requested snapshot identity.")
+        return {
+            "snapshot": {"backup_type": "vm", "backup_id": backup_id, "backup_time": backup_time},
+            "artifact_fingerprint": artifact_fingerprint(manifest),
+        }
+    finally:
+        connection.close()
+
+
 def _read() -> Any:
     try:
         return json.load(sys.stdin)
@@ -721,6 +783,7 @@ def main() -> int:
             "certificate",
             "probe",
             "copy-api-request",
+            "snapshot-manifest",
         ),
     )
     args = parser.parse_args()
@@ -799,6 +862,16 @@ def main() -> int:
                     expected_host=payload.get("expected_host", ""),
                     payload=payload.get("request"),
                 )}
+            elif args.action == "snapshot-manifest":
+                result = read_snapshot_manifest(
+                    url=payload.get("url", ""),
+                    expected_host=payload.get("expected_host", ""),
+                    fingerprint=payload.get("fingerprint", ""),
+                    auth_id=payload.get("auth_id", ""),
+                    secret=payload.get("secret", ""),
+                    backup_id=payload.get("backup_id", ""),
+                    backup_time=payload.get("backup_time"),
+                )
             else:
                 result = authenticate_token(
                     url=payload.get("url", ""),

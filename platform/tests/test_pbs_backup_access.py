@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase, main
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 
@@ -202,6 +203,130 @@ class CopyApiRequestTests(TestCase):
         )
         with self.assertRaises(pbs.Refusal):
             pbs._copy_api_request_shape({"operation": "sync-run", "sync_job_id": "bad/id"})
+
+    def test_manifest_download_is_pinned_exactly_bounded_and_returns_only_digest(self):
+        manifest = {
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": 1792594800,
+            "files": [{
+                "filename": "qemu-server.conf.blob",
+                "crypt-mode": "none",
+                "size": 19,
+                "csum": "2" * 64,
+            }],
+        }
+        content = json.dumps(manifest, separators=(",", ":")).encode()
+        blob = content
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return blob
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.paths = []
+                self.connected = False
+
+            def connect(self):
+                self.connected = True
+
+            def request(self, method, path, **kwargs):
+                assert self.connected
+                self.paths.append((method, path, kwargs))
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        connection = PinnedConnection()
+        with patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection):
+            result = pbs.read_snapshot_manifest(
+                url="https://pbs-primary.internal",
+                expected_host="pbs-primary.internal",
+                fingerprint="a" * 64,
+                auth_id=pbs.COPY_READER_TOKEN_ID,
+                secret="protected-reader-secret",
+                backup_id="120",
+                backup_time=1792594800,
+            )
+        self.assertTrue(connection.connected)
+        self.assertEqual(result["artifact_fingerprint"], pbs.artifact_fingerprint(manifest))
+        self.assertEqual(set(result), {"snapshot", "artifact_fingerprint"})
+        self.assertEqual(len(connection.paths), 1)
+        method, path, kwargs = connection.paths[0]
+        self.assertEqual(method, "GET")
+        self.assertTrue(path.startswith("/api2/json/admin/datastore/o11y/download-decoded?"))
+        self.assertEqual(parse_qs(urlsplit(path).query), {
+            "store": ["o11y"],
+            "backup-type": ["vm"],
+            "backup-id": ["120"],
+            "backup-time": ["1792594800"],
+            "file-name": ["index.json.blob"],
+        })
+        self.assertNotIn("protected-reader-secret", path)
+        self.assertIn("PBSAPIToken", kwargs["headers"]["Authorization"])
+
+    def test_manifest_download_refuses_wrong_identity_bad_crc_and_wrong_reader(self):
+        manifest = {
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": 1792594800,
+            "files": [{
+                "filename": "qemu-server.conf.blob",
+                "crypt-mode": "none",
+                "size": 19,
+                "csum": "2" * 64,
+            }],
+        }
+        content = json.dumps(manifest, separators=(",", ":")).encode()
+        blob = content
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return blob
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def connect(self):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        for backup_id, backup_time, auth_id in (
+            ("121", 1792594800, pbs.COPY_READER_TOKEN_ID),
+            ("120", 1792594801, pbs.COPY_READER_TOKEN_ID),
+            ("120", 1792594800, pbs.COPY_MANAGER_TOKEN_ID),
+        ):
+            with (
+                self.subTest(backup_id=backup_id, backup_time=backup_time, auth_id=auth_id),
+                patch.object(pbs, "_PinnedHTTPSConnection", PinnedConnection),
+                self.assertRaises(pbs.Refusal),
+            ):
+                pbs.read_snapshot_manifest(
+                    url="https://pbs-primary.internal",
+                    expected_host="pbs-primary.internal",
+                    fingerprint="a" * 64,
+                    auth_id=auth_id,
+                    secret="protected-reader-secret",
+                    backup_id=backup_id,
+                    backup_time=backup_time,
+                )
 
     def test_endpoint_rejects_paths_queries_and_credential_bearing_urls(self):
         for url in (
