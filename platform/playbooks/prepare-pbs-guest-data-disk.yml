@@ -12,6 +12,7 @@
       - platform/playbooks/files/prepare_pbs_guest_disk.py
       - platform/playbooks/attach-pbs-data-disk.yml
       - platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml
+      - platform/playbooks/tasks/read-pbs-guest-disk-inventory.yml
 
 - name: Require the private PBS declaration and exact Dev revision
   hosts: localhost
@@ -273,18 +274,8 @@
         quiet: true
       when: not ansible_check_mode
 
-    - name: Read guest block-device identities and filesystem metadata
-      ansible.builtin.command:
-        argv:
-          - lsblk
-          - --json
-          - --bytes
-          - --output
-          - NAME,TYPE,SERIAL,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,PARTUUID,PKNAME
-      register: _lsblk
-      changed_when: false
-      check_mode: false
-      no_log: true
+    - name: Capture guest block-device inventory with the canonical helper schema
+      ansible.builtin.include_tasks: tasks/read-pbs-guest-disk-inventory.yml
 
     - name: Select the unique disk carrying the declared Proxmox serial
       ansible.builtin.command:
@@ -297,7 +288,7 @@
           - "{{ _expected_bytes }}"
           - --mountpoint
           - "{{ _mountpoint }}"
-        stdin: "{{ _lsblk.stdout }}"
+        stdin: "{{ _pbs_lsblk_inventory.stdout }}"
         stdin_add_newline: true
       register: _disk_selection
       changed_when: false
@@ -589,17 +580,11 @@
         fail_msg: "The installed PBS guest disk helper is missing or is not a regular file."
         quiet: true
 
-    - name: Read guest block-device identity without exposing device inventory
-      ansible.builtin.command:
-        argv:
-          - lsblk
-          - --json
-          - --output
-          - PATH,TYPE,SIZE,SERIAL,FSTYPE,UUID,MOUNTPOINTS
-      register: _pbs_verify_lsblk
-      changed_when: false
-      check_mode: false
-      no_log: true
+    - name: Capture guest block-device inventory with the canonical helper schema
+      ansible.builtin.include_tasks:
+        file: tasks/read-pbs-guest-disk-inventory.yml
+        apply:
+          tags: [verify]
 
     - name: Require the serial-pinned disk to be an existing formatted disk
       ansible.builtin.command:
@@ -612,7 +597,7 @@
           - "{{ _expected_bytes }}"
           - --mountpoint
           - "{{ _mountpoint }}"
-        stdin: "{{ _pbs_verify_lsblk.stdout }}"
+        stdin: "{{ _pbs_lsblk_inventory.stdout }}"
       register: _pbs_verify_disk
       changed_when: false
       check_mode: false

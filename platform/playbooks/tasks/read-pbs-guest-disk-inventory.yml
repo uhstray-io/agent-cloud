@@ -1,0 +1,13 @@
+---
+- name: Read guest block-device identities and filesystem metadata
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - --bytes
+      - --output
+      - NAME,TYPE,SERIAL,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,PARTUUID,PKNAME
+  register: _pbs_lsblk_inventory
+  changed_when: false
+  check_mode: false
+  no_log: true

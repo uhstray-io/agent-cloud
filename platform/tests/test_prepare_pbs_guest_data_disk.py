@@ -281,7 +281,7 @@ def test_selector_task_sequence_preserves_result_in_normal_and_check_mode(
         "_expected_serial": SERIAL,
         "_expected_bytes": SIZE,
         "_mountpoint": MOUNT,
-        "_lsblk": {"stdout": json.dumps(document(disk()))},
+        "_pbs_lsblk_inventory": {"stdout": json.dumps(document(disk()))},
     }
     # Preserve the real selector task's command, delegation, and register behavior while
     # omitting only its production privilege escalation in this synthetic local harness.
@@ -344,6 +344,7 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
         "platform/playbooks/files/prepare_pbs_guest_disk.py",
         "platform/playbooks/attach-pbs-data-disk.yml",
         "platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml",
+        "platform/playbooks/tasks/read-pbs-guest-disk-inventory.yml",
     ]
     pve_play = next(
         play for play in plays
@@ -374,10 +375,20 @@ def test_workflow_checks_unique_identity_and_blank_signatures_before_any_mkfs():
     assert "_guest_helper_stat.stat.checksum == _controller_helper_stat.stat.checksum" in installed_digest[
         "ansible.builtin.assert"]["that"]
     assert guest_play["vars"]["_helper"] == "/usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py"
-    lsblk = next(task for task in tasks if task["name"].startswith("Read guest block-device"))
+    lsblk_include = next(
+        task for task in tasks if task["name"].startswith("Capture guest block-device inventory")
+    )
+    lsblk_task = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/read-pbs-guest-disk-inventory.yml").read_text()
+    )[0]
     select = next(task for task in tasks if task["name"].startswith("Select the unique disk"))
-    assert lsblk["no_log"] is True
-    assert select["ansible.builtin.command"]["stdin"] == "{{ _lsblk.stdout }}"
+    assert lsblk_include["ansible.builtin.include_tasks"] == "tasks/read-pbs-guest-disk-inventory.yml"
+    assert lsblk_task["ansible.builtin.command"]["argv"] == [
+        "lsblk", "--json", "--bytes", "--output",
+        "NAME,TYPE,SERIAL,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,PARTUUID,PKNAME",
+    ]
+    assert lsblk_task["no_log"] is True
+    assert select["ansible.builtin.command"]["stdin"] == "{{ _pbs_lsblk_inventory.stdout }}"
     assert select["no_log"] is True
     assert "{{ _controller_helper if ansible_check_mode else _helper }}" in str(
         select["ansible.builtin.command"]["argv"]
@@ -424,6 +435,65 @@ def test_verify_tag_has_read_only_guest_path_and_required_prerequisites():
     )
     assert any("serial-pinned disk" in task["name"] for task in verify["tasks"])
     assert any("UUID mount and fstab" in task["name"] for task in verify["tasks"])
+    inventory = next(task for task in verify["tasks"] if task["name"].startswith("Capture guest block-device"))
+    assert inventory["ansible.builtin.include_tasks"]["file"] == "tasks/read-pbs-guest-disk-inventory.yml"
+    assert inventory["ansible.builtin.include_tasks"]["apply"]["tags"] == ["verify"]
+    selector = next(task for task in verify["tasks"] if task["name"].startswith("Require the serial-pinned disk"))
+    assert selector["ansible.builtin.command"]["stdin"] == "{{ _pbs_lsblk_inventory.stdout }}"
+
+
+def test_verify_yaml_capture_argv_hands_canonical_inventory_to_real_helper(tmp_path):
+    plays = yaml.safe_load((ROOT / "platform/playbooks/prepare-pbs-guest-data-disk.yml").read_text())
+    verify = next(play for play in plays if play.get("name") == "Verify the mounted PBS data disk without changing it")
+    inventory_include = next(task for task in verify["tasks"] if task["name"].startswith("Capture guest block-device"))
+    inventory_task = yaml.safe_load(
+        (ROOT / "platform/playbooks" / inventory_include["ansible.builtin.include_tasks"]["file"]).read_text()
+    )[0]
+    capture_argv = inventory_task["ansible.builtin.command"]["argv"]
+    assert capture_argv == [
+        "lsblk", "--json", "--bytes", "--output",
+        "NAME,TYPE,SERIAL,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,PARTUUID,PKNAME",
+    ]
+
+    selector = next(task for task in verify["tasks"] if "--expected-serial" in str(task))
+    context = {
+        "_helper": str(ROOT / "platform/playbooks/files/prepare_pbs_guest_disk.py"),
+        "_expected_serial": SERIAL,
+        "_expected_bytes": SIZE,
+        "_mountpoint": MOUNT,
+    }
+    from jinja2 import Environment
+
+    render = Environment().from_string
+    helper_argv = [render(str(arg)).render(context) for arg in selector["ansible.builtin.command"]["argv"]]
+    assert helper_argv[0] == "python3"
+    assert helper_argv[1] == context["_helper"]
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_lsblk = bin_dir / "lsblk"
+    fake_lsblk.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "columns = sys.argv[sys.argv.index('--output') + 1].split(',')\n"
+        "values = {'NAME': 'vdb', 'TYPE': 'disk', 'SERIAL': 'ac-pbs-data-1234',\n"
+        "          'SIZE': 549755813888, 'FSTYPE': 'ext4', 'LABEL': 'pbs-data',\n"
+        "          'UUID': '7fe9b535-121c-46d7-93be-65563cd5fcac',\n"
+        "          'MOUNTPOINTS': ['/srv/pbs-data'], 'PARTUUID': None, 'PKNAME': None}\n"
+        "print(json.dumps({'blockdevices': [{k.lower(): values[k] for k in columns}]}))\n"
+    )
+    fake_lsblk.chmod(0o755)
+    captured = subprocess.run(
+        capture_argv, capture_output=True, text=True,
+        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+        check=False,
+    )
+    assert captured.returncode == 0, captured.stderr
+    selected = subprocess.run(
+        helper_argv, input=captured.stdout, capture_output=True, text=True, check=False,
+    )
+    assert selected.returncode == 0, selected.stderr
+    assert json.loads(selected.stdout) == {"device": "/dev/vdb", "state": "existing"}
 
 
 def test_attachment_config_carries_stable_proxmox_serial_and_requires_it_on_reruns():

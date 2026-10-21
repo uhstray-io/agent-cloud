@@ -196,6 +196,7 @@
     _pbs_mountpoint: /srv/pbs-data
     _pbs_datastore: o11y
     _pbs_datastore_path: /srv/pbs-data/datastore
+    _pbs_datastore_helper: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
     _pbs_verify_job: o11y-weekly
     _pbs_verify_schedule: "Sun 03:00"
     _pbs_gc_schedule: daily
@@ -234,7 +235,7 @@
 
     - name: Read the installed datastore helper checksum
       ansible.builtin.stat:
-        path: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
+        path: "{{ _pbs_datastore_helper }}"
         follow: false
         checksum_algorithm: sha256
       register: _pbs_verify_helper_installed
@@ -295,6 +296,27 @@
           - (_pbs_verify_mount.stdout | from_json).fstype == 'ext4'
           - (_pbs_verify_mount.stdout | from_json).uuid | length > 0
         fail_msg: "PBS service verification could not prove the declared UUID-backed ext4 mount."
+        quiet: true
+
+    - name: Validate datastore containment with the checksum-verified helper
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _pbs_datastore_helper }}"
+          - --validate-datastore-path
+          - --mountpoint
+          - "{{ _pbs_mountpoint }}"
+          - --datastore-path
+          - "{{ _pbs_datastore_path }}"
+      register: _pbs_verify_datastore_path
+      changed_when: false
+      check_mode: false
+      become: true
+
+    - name: Require a contained datastore path on the PBS data filesystem
+      ansible.builtin.assert:
+        that: (_pbs_verify_datastore_path.stdout | from_json).datastore_path == 'validated'
+        fail_msg: "PBS datastore path is not safely contained by the verified data filesystem."
         quiet: true
 
     - name: Check PBS API health without changing service state

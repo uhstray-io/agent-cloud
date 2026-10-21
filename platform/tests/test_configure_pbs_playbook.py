@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -15,6 +16,11 @@ from jinja2 import Environment
 ROOT = Path(__file__).parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/configure-pbs.yml"
 DATASTORE_TASKS = ROOT / "platform/playbooks/tasks/configure-pbs-datastore.yml"
+GUEST_HELPER = ROOT / "platform/playbooks/files/prepare_pbs_guest_disk.py"
+_guest_helper_spec = importlib.util.spec_from_file_location("pbs_guest_helper_for_verify_test", GUEST_HELPER)
+assert _guest_helper_spec is not None and _guest_helper_spec.loader is not None
+guest_helper = importlib.util.module_from_spec(_guest_helper_spec)
+_guest_helper_spec.loader.exec_module(guest_helper)
 
 
 def host_tasks(path=PLAYBOOK):
@@ -124,6 +130,32 @@ def test_verify_tag_is_read_only_and_requires_existing_mount_service_and_datasto
     assert any("api2/json/version" in str(task) for task in tasks)
     assert any(task.get("name") == "Read existing PBS datastore state" for task in tasks)
     assert any(task.get("name") == "Read existing PBS verification job state" for task in tasks)
+    containment = next(
+        task for task in tasks if task.get("name") == "Validate datastore containment with the checksum-verified helper"
+    )
+    assert verify["vars"]["_pbs_datastore_helper"] == "/usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py"
+    installed_helper = next(
+        task for task in tasks if task.get("name") == "Read the installed datastore helper checksum"
+    )
+    assert installed_helper["ansible.builtin.stat"]["path"] == "{{ _pbs_datastore_helper }}"
+    assert "--validate-datastore-path" in containment["ansible.builtin.command"]["argv"]
+    assert containment["ansible.builtin.command"]["argv"][1] == "{{ _pbs_datastore_helper }}"
+    assert containment["become"] is True
+    assert containment["changed_when"] is False and containment["check_mode"] is False
+    helper_checksum = next(
+        task for task in tasks
+        if task.get("name") == "Require the installed datastore helper to match the reviewed source"
+    )
+    mount_identity = next(
+        task for task in tasks if task.get("name") == "Require the verified UUID mount contract"
+    )
+    datastore_read = next(task for task in tasks if task.get("name") == "Read existing PBS datastore state")
+    datastore_acceptance = next(
+        task for task in tasks if task.get("name") == "Require the exact datastore path and maintenance state"
+    )
+    assert tasks.index(helper_checksum) < tasks.index(containment)
+    assert tasks.index(mount_identity) < tasks.index(containment)
+    assert tasks.index(containment) < tasks.index(datastore_read) < tasks.index(datastore_acceptance)
     assert not any(
         module in str(verify)
         for module in (
@@ -131,6 +163,86 @@ def test_verify_tag_is_read_only_and_requires_existing_mount_service_and_datasto
             "ansible.builtin.service", "datastore, create", "verify-job, create", "bao-merge-keys",
         )
     )
+
+
+@pytest.mark.parametrize("layout", ["contained", "symlink", "foreign_filesystem", "nested_mount"])
+def test_verify_yaml_invokes_readonly_helper_and_refuses_unsafe_datastore_path(layout, tmp_path, monkeypatch, capsys):
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    verify = next(
+        play for play in plays if play.get("name") == "Verify existing PBS service state without reconciling it"
+    )
+    task = next(
+        task for task in verify["tasks"]
+        if task.get("name") == "Validate datastore containment with the checksum-verified helper"
+    )
+    mountpoint = tmp_path / "pbs-data"
+    mountpoint.mkdir()
+    datastore = mountpoint / "datastore"
+    datastore.mkdir()
+    payload = datastore / "existing-index"
+    payload.write_text("preserve")
+    if layout == "symlink":
+        payload.unlink()
+        datastore.rmdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "protected").write_text("leave unchanged")
+        datastore.symlink_to(outside, target_is_directory=True)
+
+    from jinja2 import Environment
+
+    render = Environment().from_string
+    context = {
+        "_pbs_datastore_helper": str(GUEST_HELPER),
+        "_pbs_mountpoint": str(mountpoint),
+        "_pbs_datastore_path": str(datastore),
+    }
+    argv = [render(str(arg)).render(context) for arg in task["ansible.builtin.command"]["argv"]]
+    assert argv == [
+        "python3", str(GUEST_HELPER), "--validate-datastore-path", "--mountpoint",
+        str(mountpoint), "--datastore-path", str(datastore),
+    ]
+    assert task["become"] is True and task["changed_when"] is False
+
+    nested_target = str(datastore / "child")
+    mount_tree = {"filesystems": [{"target": str(mountpoint), "children": (
+        [{"target": nested_target, "children": []}] if layout == "nested_mount" else []
+    )}]}
+
+    def fake_findmnt(command, **kwargs):
+        assert command == ["findmnt", "--json", "--submounts", "--target", str(mountpoint), "--output", "TARGET"]
+        return SimpleNamespace(returncode=0, stdout=json.dumps(mount_tree), stderr="")
+
+    monkeypatch.setattr(guest_helper.subprocess, "run", fake_findmnt)
+    if layout == "foreign_filesystem":
+        original_lstat = guest_helper.os.lstat
+
+        def foreign_datastore_lstat(path, *args, **kwargs):
+            result = original_lstat(path, *args, **kwargs)
+            if os.fspath(path) == str(datastore):
+                return SimpleNamespace(st_mode=result.st_mode, st_dev=result.st_dev + 1)
+            return result
+
+        monkeypatch.setattr(guest_helper.os, "lstat", foreign_datastore_lstat)
+
+    monkeypatch.setattr(sys, "argv", argv[1:])
+    result = guest_helper.main()
+    captured = capsys.readouterr()
+    assert (result == 0) is (layout == "contained"), captured.err
+    if layout == "contained":
+        assert json.loads(captured.out) == {"datastore_path": "validated", "created": False}
+        assert payload.read_text() == "preserve"
+    else:
+        assert "refused:" in captured.err
+        if layout != "symlink":
+            assert payload.read_text() == "preserve"
+        if layout == "symlink":
+            assert (tmp_path / "outside" / "protected").read_text() == "leave unchanged"
+        if layout == "nested_mount":
+            assert "nested mount" in captured.err
+        if layout == "foreign_filesystem":
+            assert "not on the selected filesystem" in captured.err
+    assert not any("create" in str(candidate).lower() for candidate in verify["tasks"] if candidate is not task)
 
 
 @pytest.mark.parametrize(("relative_path", "selected", "excluded"), [
