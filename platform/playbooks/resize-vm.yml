@@ -188,8 +188,9 @@
               - _bao_url | length > 0
             fail_msg: >-
               Pass -e target_service=<name> (with an entry in proxmox/vm-specs.yml),
-              or -e target_vmid=<id> -e target_node=<node>. openbao_addr (or
-              OPENBAO_ADDR) + AppRole creds must also be set.
+              or -e target_vmid=<id> -e target_node=<node>. The guard also requires private
+              inventory with exactly one openbao_svc.service_url matching openbao_addr,
+              plus protected BAO_ROLE_ID / BAO_SECRET_ID environment credentials.
 
         - name: "Require at least one dimension to converge"
           ansible.builtin.assert:

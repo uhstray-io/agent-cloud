@@ -75,8 +75,10 @@
           ansible.builtin.assert:
             that: (_pve_operator_secret | length > 0) or (_bao_url | length > 0)
             fail_msg: >-
-              Set openbao_addr (Semaphore) or pass pve_token_secret / PVE_TOKEN_SECRET
-              with pve_host and pve_token_id (operator).
+              Require private inventory with exactly one openbao_svc.service_url matching
+              openbao_addr and protected BAO_ROLE_ID / BAO_SECRET_ID environment credentials
+              for the restore-target guard. For Proxmox credentials, use the OpenBao record
+              or provide a protected pve_token_secret / PVE_TOKEN_SECRET.
 
         # The AppRole secret_id and the Proxmox token cross this connection.
         - name: "Refuse a cleartext OpenBao endpoint"

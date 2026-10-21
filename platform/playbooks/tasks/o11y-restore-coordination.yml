@@ -30,6 +30,15 @@
   ansible.builtin.uri:
     url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/metadata/coordination/o11y-restore-target"
     method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
     follow_redirects: none
     unredirected_headers: [X-Vault-Token]
     headers:
@@ -45,6 +54,15 @@
   ansible.builtin.uri:
     url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
     method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
     follow_redirects: none
     unredirected_headers: [X-Vault-Token]
     headers:
@@ -95,6 +113,15 @@
   ansible.builtin.uri:
     url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
     method: POST
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
     follow_redirects: none
     unredirected_headers: [X-Vault-Token]
     headers:
@@ -127,6 +154,15 @@
   ansible.builtin.uri:
     url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/metadata/coordination/o11y-restore-target"
     method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
     follow_redirects: none
     unredirected_headers: [X-Vault-Token]
     headers:
@@ -145,6 +181,15 @@
   ansible.builtin.uri:
     url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
     method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
     follow_redirects: none
     unredirected_headers: [X-Vault-Token]
     headers:

@@ -347,6 +347,12 @@ task = SimpleNamespace(_parent=parent, module_defaults=[{
         "validate_certs": False,
         "use_netrc": True,
         "use_proxy": True,
+        "ca_path": "/tmp/inherited-ca.pem",
+        "client_cert": "/tmp/inherited-client.crt",
+        "client_key": "/tmp/inherited-client.key",
+        "url_username": "inherited-user",
+        "url_password": "inherited-password",
+        "force_basic_auth": True,
     }
 }])
 cases = json.loads(__import__('sys').stdin.read())
@@ -357,6 +363,15 @@ print(json.dumps([
 """
     guard_tasks = yaml.safe_load((PLAYBOOKS / "tasks" / "guard-o11y-restore-target.yml").read_text())
     requests = [task["ansible.builtin.uri"] for task in guard_tasks if "ansible.builtin.uri" in task]
+    coordination_tasks = yaml.safe_load(
+        (PLAYBOOKS / "tasks" / "o11y-restore-coordination.yml").read_text()
+    )
+    requests.extend(
+        task["ansible.builtin.uri"]
+        for task in coordination_tasks
+        if "ansible.builtin.uri" in task
+    )
+    assert len(requests) == 8
     env = {**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path), "ANSIBLE_REMOTE_TEMP": str(tmp_path)}
     proc = subprocess.run(
         [ansible_python(), "-c", script],
@@ -370,6 +385,11 @@ print(json.dumps([
     assert merged[0]["headers"] == {}
     assert merged[1]["headers"] == {"X-Vault-Token": "{{ _o11y_rt_login.json.auth.client_token }}"}
     assert merged[2]["headers"] == {"X-Vault-Token": "{{ _o11y_rt_login.json.auth.client_token }}"}
+    assert all(
+        request["headers"]
+        == {"X-Vault-Token": "{{ _o11y_restore_coordination_bao_token }}"}
+        for request in merged[3:]
+    )
     assert all(request["validate_certs"] is True for request in merged)
     assert all(request["use_netrc"] is False for request in merged)
     assert all(request["use_proxy"] is False for request in merged)
