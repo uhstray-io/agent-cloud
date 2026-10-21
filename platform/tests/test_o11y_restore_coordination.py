@@ -292,6 +292,18 @@ def test_stale_expected_version_cannot_be_used_for_a_competing_transition():
         coordination.plan_transition(snapshot, 1, stale)
 
 
+def test_expected_snapshot_and_kv_version_require_strict_integer_types():
+    snapshot = planned_reservation()
+    malformed_record = {**snapshot, "generation": True}
+    malformed_snapshot_request = request("start_restore", snapshot=snapshot, expected_record=malformed_record)
+    with pytest.raises(coordination.Refusal, match="record_shape_invalid"):
+        coordination.plan_transition(snapshot, 1, malformed_snapshot_request)
+
+    malformed_version_request = request("start_restore", snapshot=snapshot, expected_version=True)
+    with pytest.raises(coordination.Refusal, match="expected_version_mismatch"):
+        coordination.plan_transition(snapshot, 1, malformed_version_request)
+
+
 def test_transition_refuses_a_newer_observed_version_instead_of_adopting_it():
     snapshot = planned_reservation()
 
