@@ -225,10 +225,11 @@ def test_openbao_uses_matching_inventory_url_and_guards_transport_before_lookup(
     include_path = next(
         task["ansible.builtin.include_tasks"]
         for task in tasks
-        if task.get("ansible.builtin.include_tasks", "").startswith("{{ playbook_dir }}")
+        if task.get("ansible.builtin.include_tasks") == "assert-bao-transport.yml"
     )
-    assert include_path == "{{ playbook_dir }}/tasks/assert-bao-transport.yml"
-    resolved_guard = Path(include_path.replace("{{ playbook_dir }}", str(PLAYBOOK.parent)))
+    assert include_path == "assert-bao-transport.yml"
+    survey_tasks = ROOT / "platform/playbooks/tasks/o11y-pbs-physical-storage-survey.yml"
+    resolved_guard = survey_tasks.parent / include_path
     assert resolved_guard.is_file()
     assert tasks[lookup_index].get("no_log") is True
     assert tasks[derive_index].get("no_log") is True
