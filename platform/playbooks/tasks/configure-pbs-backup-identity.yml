@@ -5,7 +5,7 @@
 - name: Create the passwordless PBS backup realm user when the full identity is absent
   ansible.builtin.command:
     argv: [proxmox-backup-manager, user, create, o11y-backup@pbs, --enable, "1", --expire, "0", --comment, "PVE o11y backup client"]
-  when: _pbs_identity_action == 'create'
+  when: _pbs_backup_identity_action == 'create'
   changed_when: true
   no_log: true
 
@@ -24,7 +24,7 @@
       - --comment
       - "PVE o11y backup client"
   register: _pbs_generated_token
-  when: _pbs_identity_action == 'create'
+  when: _pbs_backup_identity_action == 'create'
   changed_when: true
   no_log: true
 
@@ -35,21 +35,21 @@
     _pbs_token_record: >-
       {{ {'user': 'o11y-backup@pbs', 'token_id': 'o11y-backup@pbs!pve-o11y',
           'secret': (_pbs_generated_token.stdout | from_json).value,
-          'datastore': 'o11y', 'fingerprint': hostvars['localhost']._pbs_fingerprint} }}
-  when: _pbs_identity_action == 'create'
+          'datastore': 'o11y', 'fingerprint': _pbs_backup_fingerprint} }}
+  when: _pbs_backup_identity_action == 'create'
   no_log: true
 
 - name: Reuse the OpenBao-owned PBS token on the existing identity state
   ansible.builtin.set_fact:
     _pbs_token_secret: "{{ hostvars['localhost']._pbs_saved_token_record.secret }}"
     _pbs_token_record: "{{ hostvars['localhost']._pbs_saved_token_record }}"
-  when: _pbs_identity_action == 'reuse'
+  when: _pbs_backup_identity_action == 'reuse'
   no_log: true
 
 - name: Persist the newly minted token with guarded OpenBao CAS before granting PBS ACLs
   ansible.builtin.include_tasks: bao-merge-keys.yml
   vars:
-    _bm_url: "{{ hostvars['localhost']._bao_url }}"
+    _bm_url: "{{ _pbs_backup_bao_url }}"
     _bm_token: "{{ hostvars['localhost']._bao_token }}"
     _bm_path: services/pbs
     _bm_data:
@@ -57,16 +57,20 @@
       o11y_backup_token_id: o11y-backup@pbs!pve-o11y
       o11y_backup_token_secret: "{{ _pbs_token_secret }}"
       o11y_backup_datastore: o11y
-      o11y_backup_fingerprint: "{{ hostvars['localhost']._pbs_fingerprint }}"
-    # An empty guarded set proves these PBS fields were absent in the read that
-    # selected the create path. On a path that exists, the shared task uses a
-    # version-CAS write; CAS=0 protects path creation and refuses a create race.
-    _bm_guard_values: {}
-  when: _pbs_identity_action == 'create'
+      o11y_backup_fingerprint: "{{ _pbs_backup_fingerprint }}"
+      # Each field selected as absent by the PBS identity preflight must still
+      # be absent in bao-merge-keys' own fresh read before the token is written.
+      _bm_guard_absent_keys:
+        - o11y_backup_user
+        - o11y_backup_token_id
+        - o11y_backup_token_secret
+        - o11y_backup_datastore
+        - o11y_backup_fingerprint
+  when: _pbs_backup_identity_action == 'create'
 
 - name: Read back the authoritative PBS token record from OpenBao
   ansible.builtin.uri:
-    url: "{{ hostvars['localhost']._bao_url }}/v1/secret/data/services/pbs"
+    url: "{{ _pbs_backup_bao_url }}/v1/secret/data/services/pbs"
     method: GET
     follow_redirects: none
     unredirected_headers: [X-Vault-Token]
@@ -74,6 +78,7 @@
       X-Vault-Token: "{{ hostvars['localhost']._bao_token }}"
     status_code: 200
   delegate_to: localhost
+  become: false
   register: _pbs_token_readback
   no_log: true
   check_mode: false
@@ -84,7 +89,7 @@
       - _pbs_token_readback.json.data.data.o11y_backup_user == 'o11y-backup@pbs'
       - _pbs_token_readback.json.data.data.o11y_backup_token_id == 'o11y-backup@pbs!pve-o11y'
       - _pbs_token_readback.json.data.data.o11y_backup_datastore == 'o11y'
-      - _pbs_token_readback.json.data.data.o11y_backup_fingerprint == hostvars['localhost']._pbs_fingerprint
+      - _pbs_token_readback.json.data.data.o11y_backup_fingerprint == _pbs_backup_fingerprint
       - _pbs_token_readback.json.data.data.o11y_backup_token_secret == _pbs_token_secret
     fail_msg: "OpenBao readback does not match the stable PBS backup identity; no ACL is granted."
     quiet: true
@@ -95,10 +100,11 @@
     argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", probe]
     stdin: >-
       {{ {'url': hostvars['localhost']._pbs_api_url,
-          'fingerprint': hostvars['localhost']._pbs_fingerprint,
+          'fingerprint': _pbs_backup_fingerprint,
           'auth_id': 'o11y-backup@pbs!pve-o11y',
           'secret': _pbs_token_secret} | to_json }}
   delegate_to: localhost
+  become: false
   register: _pbs_auth_probe
   changed_when: false
   failed_when: false
@@ -143,6 +149,8 @@
           'secret_record': _pbs_token_record,
           'authenticated': true} | to_json }}
   register: _pbs_identity_readback
+  delegate_to: localhost
+  become: false
   failed_when: false
   changed_when: false
   check_mode: false
@@ -156,6 +164,8 @@
           'token_permissions': _pbs_access_data.token_permissions,
           'acl_rows': _pbs_access_data.acls} | to_json }}
   register: _pbs_acl_plan
+  delegate_to: localhost
+  become: false
   failed_when: false
   changed_when: false
   check_mode: false
@@ -274,6 +284,8 @@
           'token_permissions': _pbs_final_access_data.token_permissions,
           'acl_rows': _pbs_final_access_data.acls} | to_json }}
   register: _pbs_final_permission_check
+  delegate_to: localhost
+  become: false
   failed_when: false
   changed_when: false
   check_mode: false

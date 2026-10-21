@@ -51,6 +51,8 @@
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", version]
         stdin: "{{ {'package': _pbs_package_version.stdout | trim} | to_json }}"
+      delegate_to: localhost
+      become: false
       register: _pbs_version_check
       failed_when: false
       changed_when: false
@@ -75,6 +77,8 @@
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", certificate]
         stdin: "{{ {'openssl_fingerprint': _pbs_guest_certificate.stdout} | to_json }}"
+      delegate_to: localhost
+      become: false
       register: _pbs_guest_certificate_check
       failed_when: false
       changed_when: false
@@ -183,6 +187,10 @@
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Hand off the protected OpenBao endpoint to later PBS guest tasks
+      ansible.builtin.set_fact:
+        _pbs_bao_url: "{{ _bao_url }}"
 
     - name: Authenticate to OpenBao from the controller
       ansible.builtin.uri:
@@ -336,7 +344,7 @@
     - name: Require an HTTPS Proxmox API endpoint and complete token
       ansible.builtin.assert:
         that:
-          - _pve_host is match('^https://')
+          - _pve_host is match('^https://[^/]+$')
           - _pve_token_id | length > 0
           - _pve_token_secret | length > 0
         fail_msg: "Proxmox API credentials from OpenBao are incomplete or do not use HTTPS."
@@ -348,6 +356,9 @@
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        validate_certs: true
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         status_code: 200
       loop:
         - {key: nodes, url: "{{ _pve_host }}/api2/json/nodes"}
@@ -372,13 +383,63 @@
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        validate_certs: true
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         status_code: [200, 404]
       register: _pve_managed_storage_read
       check_mode: false
       no_log: true
       when: _pve_snapshot.storage_rows | selectattr('storage', 'equalto', pbs_storage_id) | list | length == 1
 
-    - name: Plan exact idempotent PBS storage registration without changing PVE
+    - name: Validate target configuration before any credentialed storage access
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", preflight]
+        stdin: >-
+          {{ {'storage_id': pbs_storage_id,
+              'rows': _pve_snapshot.storage_rows,
+              'current': (_pve_managed_storage_read.json.data
+                if _pve_managed_storage_read is not skipped and _pve_managed_storage_read.status == 200 else none),
+              'expected': {'type': 'pbs', 'server': pbs_api_host, 'port': 8007,
+                'datastore': 'o11y', 'username': 'o11y-backup@pbs!pve-o11y',
+                'password': (_pbs_saved_token_record.secret if _pbs_saved_token_record else 'preflight-only'),
+                'fingerprint': (_pbs_saved_token_record.fingerprint if _pbs_saved_token_record else _pbs_guest_fingerprint),
+                'content': 'backup', 'nodes': pbs_storage_nodes, 'prune-backups': 'keep-all=1'},
+              'jobs_before': _pve_snapshot.backup_jobs,
+              'nodes_before': _pve_snapshot.nodes} | to_json }}
+      register: _pve_storage_plan
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Refuse mismatched PVE configuration before contacting any configured PBS endpoint
+      ansible.builtin.assert:
+        that: _pve_storage_plan.rc == 0
+        fail_msg: "Existing PVE storage differs from the declared PBS registration; no configured PBS credential was exercised."
+        quiet: true
+
+    - name: Read PBS backup content through the exact registered PVE storage on each declared node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item | urlencode }}/storage/{{ pbs_storage_id | urlencode }}/content?content=backup"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        validate_certs: true
+        status_code: 200
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        return_content: true
+      loop: "{{ pbs_storage_nodes | sort }}"
+      loop_control:
+        label: "PVE PBS storage access probe"
+      register: _pve_existing_access_reads
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: (_pve_storage_plan.stdout | from_json).action == 'verify_access'
+
+    - name: Plan exact idempotent PBS storage registration with PVE-retained credential evidence
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", plan]
         stdin: >-
@@ -392,7 +453,16 @@
                 'fingerprint': (_pbs_saved_token_record.fingerprint if _pbs_saved_token_record else _pbs_guest_fingerprint),
                 'content': 'backup', 'nodes': pbs_storage_nodes, 'prune-backups': 'keep-all=1'},
               'jobs_before': _pve_snapshot.backup_jobs,
-              'nodes_before': _pve_snapshot.nodes} | to_json }}
+              'nodes_before': _pve_snapshot.nodes,
+              'api_base': _pve_host,
+              'access_proofs': [
+                {% for result in _pve_existing_access_reads.results | default([]) %}
+                {{ {'node': result.item, 'url': result.url | default(''),
+                    'status': result.status | default(0),
+                    'data': result.json.data | default(none)} | to_json }}
+                {% if not loop.last %},{% endif %}
+                {% endfor %}
+              ]} | to_json }}
       register: _pve_storage_plan
       failed_when: false
       changed_when: false
@@ -427,6 +497,12 @@
           - "PBS identity action: {{ _pbs_identity_action }}"
           - "PVE PBS storage action: {{ _pbs_storage_action }}"
           - "Existing PVE backup jobs and storage configuration were read and remain unchanged."
+          - "PVE-retained PBS credential access is not executed in check mode; runtime verification remains pending."
+      when: ansible_check_mode
+
+    - name: Keep the runtime access acceptance gate closed in check mode
+      ansible.builtin.set_fact:
+        _pbs_runtime_access_verified: false
       when: ansible_check_mode
 
 - name: Configure the stable PBS backup identity and exact ACLs
@@ -436,6 +512,10 @@
   tasks:
     - name: Configure the PBS identity only outside check mode
       ansible.builtin.include_tasks: tasks/configure-pbs-backup-identity.yml
+      vars:
+        _pbs_backup_identity_action: "{{ hostvars['localhost']._pbs_identity_action }}"
+        _pbs_backup_fingerprint: "{{ _pbs_fingerprint }}"
+        _pbs_backup_bao_url: "{{ hostvars['localhost']._pbs_bao_url }}"
       when: not ansible_check_mode
 
 - name: Register the PBS storage in PVE after the PBS ACL readback passes
@@ -469,6 +549,9 @@
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+        validate_certs: true
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         status_code: 200
       loop:
         - {key: nodes, url: "{{ hostvars['localhost']._pve_host }}/api2/json/nodes"}
@@ -495,6 +578,9 @@
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+        validate_certs: true
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         status_code: [200, 404]
       register: _pve_before_write_target
       check_mode: false
@@ -513,7 +599,16 @@
               'jobs_before': hostvars['localhost']._pve_backup_jobs_before,
               'jobs_now': _pve_before_write.backup_jobs,
               'nodes_before': hostvars['localhost']._pve_nodes_before,
-              'nodes_now': _pve_before_write.nodes} | to_json }}
+              'nodes_now': _pve_before_write.nodes,
+              'api_base': hostvars['localhost']._pve_host,
+              'access_proofs': [
+                {% for result in _pve_existing_access_reads.results | default([]) %}
+                {{ {'node': result.item, 'url': result.url | default(''),
+                    'status': result.status | default(0),
+                    'data': result.json.data | default(none)} | to_json }}
+                {% if not loop.last %},{% endif %}
+                {% endfor %}
+              ]} | to_json }}
       register: _pve_prewrite_validation
       failed_when: false
       changed_when: false
@@ -545,6 +640,7 @@
         method: POST
         headers:
           Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+        validate_certs: true
         body_format: form-urlencoded
         body: "{{ _pve_pbs_storage_form }}"
         status_code: [200, 400]
@@ -564,6 +660,9 @@
         method: GET
         headers:
           Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+        validate_certs: true
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         status_code: "{{ item.codes | default([200]) }}"
       loop:
         - {key: nodes, url: "{{ hostvars['localhost']._pve_host }}/api2/json/nodes"}
@@ -587,19 +686,49 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Probe PVE PBS storage content through every declared node after readback
+      ansible.builtin.uri:
+        url: "{{ hostvars['localhost']._pve_host }}/api2/json/nodes/{{ item | urlencode }}/storage/{{ pbs_storage_id | urlencode }}/content?content=backup"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ hostvars['localhost']._pve_token_id }}={{ hostvars['localhost']._pve_token_secret }}"
+        validate_certs: true
+        status_code: 200
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        return_content: true
+      loop: "{{ pbs_storage_nodes | sort }}"
+      loop_control:
+        label: "PVE PBS storage access verification"
+      register: _pve_final_access_reads
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
     - name: Verify exact PBS registration, every prior storage row, nodes, and backup jobs
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", plan]
         stdin: >-
           {{ {'storage_id': pbs_storage_id,
-              'rows': hostvars['localhost']._pve_storage_rows_before,
+          'rows': _pve_final_snapshot.storage_rows,
+          'original_rows': hostvars['localhost']._pve_storage_rows_before,
               'rows_after': _pve_final_snapshot.storage_rows,
               'current': _pve_final_snapshot.target,
               'expected': dict(hostvars['localhost']._pve_pbs_storage_form),
               'jobs_before': hostvars['localhost']._pve_backup_jobs_before,
               'jobs_after': _pve_final_snapshot.backup_jobs,
               'nodes_before': hostvars['localhost']._pve_nodes_before,
-              'nodes_after': _pve_final_snapshot.nodes} | to_json }}
+              'nodes_after': _pve_final_snapshot.nodes,
+              'api_base': hostvars['localhost']._pve_host,
+              'access_proofs': [
+                {% for result in _pve_final_access_reads.results | default([]) %}
+                {{ {'node': result.item, 'url': result.url | default(''),
+                    'status': result.status | default(0),
+                    'data': result.json.data | default(none)} | to_json }}
+                {% if not loop.last %},{% endif %}
+                {% endfor %}
+              ]} | to_json }}
       register: _pve_final_validation
       failed_when: false
       changed_when: false
@@ -612,6 +741,11 @@
         that: _pve_final_validation.rc == 0
         fail_msg: "PVE final readback differs from the exact PBS storage declaration or changed prior storage/jobs."
         quiet: true
+      when: not ansible_check_mode
+
+    - name: Open the runtime access gate only after authenticated PVE backend proof and exact readback
+      ansible.builtin.set_fact:
+        _pbs_runtime_access_verified: true
       when: not ansible_check_mode
 
     - name: Report the verified PBS access configuration

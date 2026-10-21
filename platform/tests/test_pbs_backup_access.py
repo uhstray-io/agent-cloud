@@ -51,6 +51,15 @@ def existing_storage(password="**********"):
     return result
 
 
+def access_proof(node="node-a", storage="pbs-o11y", data=None):
+    return {
+        "node": node,
+        "url": f"https://pve.internal.test/api2/json/nodes/{node}/storage/{storage}/content?content=backup",
+        "status": 200,
+        "data": [] if data is None else data,
+    }
+
+
 class IdentityStateTests(TestCase):
     def setUp(self):
         self.user = {"userid": pbs.USER_ID, "enable": 1, "expire": 0}
@@ -202,6 +211,8 @@ class PveStorageTests(TestCase):
             expected=expected_storage(),
             jobs_before=jobs,
             jobs_after=jobs,
+            api_base="https://pve.internal.test",
+            access_proofs=[access_proof()],
         )
         self.assertEqual(existing["action"], "noop")
 
@@ -239,14 +250,82 @@ class PveStorageTests(TestCase):
                 jobs_before=[], nodes_before=[{"node": "node-b"}],
             )
 
-    def test_exact_concurrent_storage_create_is_accepted_after_full_readback(self):
+    def test_redacted_password_requires_live_exact_node_storage_response(self):
+        rows = [{"storage": "pbs-o11y", "type": "pbs"}]
+        base = dict(storage_id="pbs-o11y", rows=rows, current=existing_storage(),
+                    expected=expected_storage(), jobs_before=[], api_base="https://pve.internal.test")
+        with self.assertRaisesRegex(pve.Refusal, "has not been verified"):
+            pve.plan_storage(**base)
+        self.assertEqual(
+            pve.plan_storage(**base, access_proofs=[access_proof()])["action"], "noop"
+        )
+
+    def test_access_proof_rejects_wrong_path_node_duplicates_and_bad_schema(self):
+        base = dict(storage_id="pbs-o11y", rows=[{"storage": "pbs-o11y"}],
+                    current=existing_storage(), expected=expected_storage(), jobs_before=[],
+                    api_base="https://pve.internal.test")
+        for proof in (
+            dict(access_proof(), url="https://other.test/api2/json/nodes/node-a/storage/pbs-o11y/content?content=backup"),
+            dict(access_proof(), status=302),
+            dict(access_proof(), data={"error": "not a list"}),
+            access_proof(node="node-b"),
+            access_proof(data=["malformed"]),
+        ):
+            with self.subTest(proof=proof), self.assertRaises(pve.Refusal):
+                pve.plan_storage(**base, access_proofs=[proof])
+        with self.assertRaisesRegex(pve.Refusal, "duplicate node"):
+            pve.plan_storage(**base, access_proofs=[access_proof(), access_proof()])
+
+    def test_preflight_validates_nonsecret_config_before_any_access_probe(self):
+        target = existing_storage()
+        self.assertEqual(
+            pve.preflight_storage(storage_id="pbs-o11y", rows=[{"storage": "pbs-o11y"}],
+                                  current=target, expected=expected_storage())["action"],
+            "verify_access",
+        )
+        with self.assertRaisesRegex(pve.Refusal, "differs from the declared"):
+            pve.preflight_storage(storage_id="pbs-o11y", rows=[{"storage": "pbs-o11y"}],
+                                  current=dict(target, server="other.internal"), expected=expected_storage())
+
+    def test_final_readback_uses_final_target_rows_and_original_unrelated_rows(self):
+        before = [{"storage": "old", "type": "dir", "path": "/backup"}]
+        final = before + [{"storage": "pbs-o11y", "type": "pbs"}]
+        result = pve.plan_storage(
+            storage_id="pbs-o11y", rows=final, original_rows=before, rows_after=final,
+            current=existing_storage(), expected=expected_storage(), jobs_before=[], jobs_after=[],
+            nodes_before=[{"node": "node-a"}], nodes_after=[{"node": "node-a"}],
+            api_base="https://pve.internal.test", access_proofs=[access_proof()],
+        )
+        self.assertEqual(result["action"], "noop")
+        changed = [{"storage": "old", "type": "dir", "path": "/changed"}] + final[1:]
+        with self.assertRaisesRegex(pve.Refusal, "existing PVE storage configuration changed"):
+            pve.plan_storage(
+                storage_id="pbs-o11y", rows=changed, original_rows=before, rows_after=changed,
+                current=existing_storage(), expected=expected_storage(), jobs_before=[], jobs_after=[],
+                nodes_before=[{"node": "node-a"}], nodes_after=[{"node": "node-a"}],
+                api_base="https://pve.internal.test", access_proofs=[access_proof()],
+            )
+
+    def test_concurrent_storage_create_is_not_accepted_without_prior_pve_access_proof(self):
+        old_rows = [{"storage": "existing", "type": "dir", "path": "/mnt/backups"}]
+        rows_now = old_rows + [{"storage": "pbs-o11y", "type": "pbs"}]
+        with self.assertRaisesRegex(pve.Refusal, "has not been verified"):
+            pve.validate_prewrite_snapshot(
+                storage_id="pbs-o11y", rows_before=old_rows, rows_now=rows_now,
+                current=existing_storage(), expected=expected_storage(),
+                jobs_before=[], jobs_now=[], nodes_before=[{"node": "node-a"}],
+                nodes_now=[{"node": "node-a"}],
+            )
+
+    def test_prewrite_existing_target_reuses_authenticated_access_evidence(self):
         old_rows = [{"storage": "existing", "type": "dir", "path": "/mnt/backups"}]
         rows_now = old_rows + [{"storage": "pbs-o11y", "type": "pbs"}]
         result = pve.validate_prewrite_snapshot(
-            storage_id="pbs-o11y", rows_before=old_rows, rows_now=rows_now,
+            storage_id="pbs-o11y", rows_before=rows_now, rows_now=rows_now,
             current=existing_storage(), expected=expected_storage(),
             jobs_before=[], jobs_now=[], nodes_before=[{"node": "node-a"}],
-            nodes_now=[{"node": "node-a"}],
+            nodes_now=[{"node": "node-a"}], api_base="https://pve.internal.test",
+            access_proofs=[access_proof()],
         )
         self.assertEqual(result["action"], "noop")
 
@@ -275,8 +354,47 @@ class PlaybookBoundaryTests(TestCase):
         self.assertIn("when: not ansible_check_mode", playbook)
         self.assertIn("method: POST", playbook)
         self.assertIn("- not ansible_check_mode", playbook)
+        self.assertIn("not executed in check mode", playbook)
         self.assertIn("include_tasks: bao-merge-keys.yml", identity_task)
-        self.assertIn("_bm_guard_values: {}", identity_task)
+
+    def test_real_playbook_handoffs_validators_and_guards_all_pve_auth_requests(self):
+        import yaml
+
+        playbook_path = ROOT / "playbooks" / "configure-pbs-backup-access.yml"
+        identity_path = ROOT / "playbooks" / "tasks" / "configure-pbs-backup-identity.yml"
+        plays = yaml.safe_load(playbook_path.read_text())
+        identity_tasks = yaml.safe_load(identity_path.read_text())
+        task_names = [task.get("name", "") for play in plays if isinstance(play, dict)
+                      for task in play.get("tasks", [])]
+        self.assertIn("Hand off the protected OpenBao endpoint to later PBS guest tasks", task_names)
+        guest_play = next(play for play in plays if play.get("hosts") == "pbs_svc"
+                          and any("ansible.builtin.include_tasks" in task for task in play.get("tasks", [])))
+        include = next(task for task in guest_play["tasks"] if "ansible.builtin.include_tasks" in task)
+        self.assertEqual(include["vars"]["_pbs_backup_fingerprint"], "{{ _pbs_fingerprint }}")
+        self.assertIn("hostvars['localhost']._pbs_identity_action", include["vars"]["_pbs_backup_identity_action"])
+        delegated = [task for task in identity_tasks
+                     if task.get("ansible.builtin.command", {}).get("argv", [None])[0] == "python3"]
+        self.assertTrue(delegated)
+        self.assertTrue(all(task.get("delegate_to") == "localhost" and task.get("become") is False
+                            for task in delegated))
+
+        guest_validator_play = next(play for play in plays if play.get("hosts") == "pbs_svc"
+                                    and any(task.get("ansible.builtin.command", {}).get("argv", [None])[0] == "python3"
+                                            for task in play.get("tasks", [])))
+        guest_validators = [task for task in guest_validator_play["tasks"]
+                            if task.get("ansible.builtin.command", {}).get("argv", [None])[0] == "python3"]
+        self.assertTrue(guest_validators)
+        self.assertTrue(all(task.get("delegate_to") == "localhost" and task.get("become") is False
+                            for task in guest_validators))
+
+        uri_tasks = [task["ansible.builtin.uri"] for play in plays if isinstance(play, dict)
+                     for task in play.get("tasks", []) if "ansible.builtin.uri" in task]
+        pve_auth = [task for task in uri_tasks if "Authorization" in task.get("headers", {})]
+        self.assertTrue(pve_auth)
+        self.assertTrue(all(task.get("follow_redirects") == "none"
+                            and task.get("unredirected_headers") == ["Authorization"]
+                            and task.get("validate_certs", True) is True
+                            for task in pve_auth))
 
     def test_openbao_guarded_write_precedes_any_pbs_acl_grant(self):
         identity_task = (ROOT / "playbooks" / "tasks" / "configure-pbs-backup-identity.yml").read_text()
