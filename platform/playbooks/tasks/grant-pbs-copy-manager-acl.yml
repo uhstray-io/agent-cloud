@@ -5,8 +5,9 @@
       - acl
       - update
       - "{{ _pbs_manager_acl_grant.path }}"
-      - "{{ _pbs_manager_acl_grant.auth_id }}"
       - "{{ _pbs_manager_acl_grant.role }}"
+      - --auth-id
+      - "{{ _pbs_manager_acl_grant.auth_id }}"
       - --propagate
       - "0"
   register: _pbs_manager_acl_write

@@ -767,6 +767,22 @@ class CopyReaderIdentityTests(TestCase):
         self.assertLess(task_text.index("file: bao-merge-keys.yml"), task_text.index("Grant only the exact remote"))
         self.assertIn("--propagate", grant_text)
         self.assertIn("_pbs_manager_acl_grant.path", grant_text)
+        grant = yaml.safe_load(grant_text)[0]["ansible.builtin.command"]["argv"]
+        self.assertEqual(
+            grant[0:4],
+            [
+                "proxmox-backup-manager",
+                "acl",
+                "update",
+                "{{ _pbs_manager_acl_grant.path }}",
+            ],
+        )
+        self.assertEqual(grant[4:7], [
+            "{{ _pbs_manager_acl_grant.role }}",
+            "--auth-id",
+            "{{ _pbs_manager_acl_grant.auth_id }}",
+        ])
+        self.assertEqual(grant[7:], ["--propagate", "0"])
         self.assertNotIn("Datastore.Prune", task_text)
         self.assertNotIn("proxmox-backup-manager remote", task_text)
         copy_text = (ROOT / "playbooks" / "configure-o11y-pbs-copy-access.yml").read_text()
