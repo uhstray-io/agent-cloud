@@ -158,6 +158,6 @@ Each item below is unverified as of 2026-10-23. Each one is owned by a Phase 0 s
 - Whether the GitHub webhook verifies its own signature (spike 0.16, risk 7).
 - The external identifier field in Plane's work-item API (spike 0.14).
 - The Plane webhook digest encoding and the `X-Plane-Delivery` header (spike 0.15).
-- The Discord rules this change relies on: the 3-second window for answering an interaction, the HTTP interaction callback, the privileged `MESSAGE_CONTENT` intent, and close code 4014 for an intent that is not enabled. They are cited from `https://docs.discord.com/developers/interactions/receiving-and-responding` and `https://docs.discord.com/developers/events/gateway`. They were not fetched again while this design was edited.
+- The Discord rules this change relies on: the 3-second window for answering an interaction, the HTTP interaction callback, the privileged `MESSAGE_CONTENT` intent, and close code 4014 for an intent that is not enabled. They are cited from `https://docs.discord.com/developers/interactions/receiving-and-responding` and `https://docs.discord.com/developers/events/gateway`. Both pages were fetched on 2026-10-24 and state these rules; the live bot behaviour is still proven in Phase 6.
 - A restore procedure for tududi (risk 10).
 - The Forge image workflow. The approved plan says it is built to GHCR by a workflow like `.github/workflows/build-honcho.yml`. That file exists, but its contents were not reviewed for this change.
