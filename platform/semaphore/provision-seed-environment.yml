@@ -8,7 +8,7 @@
 # environment gets its own encrypted copy of the controller AppRole, so staged
 # secret inputs never sit in the environment every other template shares.
 #
-# `seed_replace_auth=true` deletes the two AppRole inputs and creates them again from
+# `seed_replace_auth=true` overwrites the two AppRole inputs in place with the values from
 # OpenBao. Use it only after Semaphore's encryption key changed, when those inputs exist
 # but cannot be decrypted (MISTAKES 3.16). A normal run leaves it false: existing inputs
 # are kept, never rotated, and only missing ones are created.
@@ -193,20 +193,28 @@
 
     - name: "Prepare encrypted authentication inputs in memory"
       ansible.builtin.set_fact:
-        # Replace mode deletes the two inputs the target holds, by id. The guard above has
-        # already refused any other shape (seed_environment_problems: exactly two or none).
-        # Creates happen when replacing, or when the target holds none.
+        # Replace mode overwrites the two inputs the target holds IN PLACE, by id. Semaphore
+        # (v2.19.11, api/projects/environment.go) applies the operations one by one with no
+        # rollback, so delete-then-create could stop between the two and leave a lone half
+        # that the guard above refuses on every later run. An update re-encrypts the new
+        # value without reading the old one, keeps the id, and a failed update leaves the
+        # pair whole for a retry. Semaphore ignores an update with an empty value; the
+        # AppRole login above has already refused empty credentials.
+        # The guard has already refused any other shape (exactly two, each once, or none).
+        # Creates happen only when the target holds none.
         _auth_operations: >-
-          {{ ([{'id': _auth_present[0].id, 'name': _auth_present[0].name, 'type': 'env', 'operation': 'delete'},
-               {'id': _auth_present[1].id, 'name': _auth_present[1].name, 'type': 'env', 'operation': 'delete'}]
+          {{ ([{'id': (_auth_present | selectattr('name', 'equalto', 'BAO_ROLE_ID') | first).id,
+                'name': 'BAO_ROLE_ID', 'type': 'env', 'operation': 'update', 'secret': _role_value},
+               {'id': (_auth_present | selectattr('name', 'equalto', 'BAO_SECRET_ID') | first).id,
+                'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'update', 'secret': _secret_value}]
               if _replace_auth and _auth_present | length == 2 else [])
-             + ([{'name': 'BAO_ROLE_ID', 'type': 'env', 'operation': 'create',
-                  'secret': bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))},
-                 {'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'create',
-                  'secret': bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))}]
-                if _replace_auth or _auth_present | length == 0 else []) }}
+             + ([{'name': 'BAO_ROLE_ID', 'type': 'env', 'operation': 'create', 'secret': _role_value},
+                 {'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'create', 'secret': _secret_value}]
+                if _auth_present | length == 0 else []) }}
       vars:
         _auth_present: "{{ _target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
+        _role_value: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+        _secret_value: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
       no_log: true
 
     - name: "Re-read dedicated environment before credential mutation"
@@ -259,19 +267,18 @@
       no_log: true
       check_mode: false
 
-    - name: "Verify preserved inputs and new authentication identities"
+    - name: "Verify preserved inputs and authentication identities"
       ansible.builtin.assert:
         that:
           - >-
             _after.json | combine({'secrets': [], 'json': '{}'}) ==
             _target.json | combine({'secrets': [], 'json': '{}'})
           - (_after.json.json | default('{}', true) | from_json) == {}
-          # Every input the replace did not delete must survive unchanged.
-          - _target.json.get('secrets', []) | rejectattr('id', 'in', _replaced_ids) | difference(_after.json.get('secrets', [])) | length == 0
-          # Operations net out: the target's count, plus creates, minus deletes.
-          - (_after.json.get('secrets', []) | length) == (_target.json.get('secrets', []) | length) + (_created | length) - (_replaced_ids | length)
-          # A replacement is a new identity: no deleted input's id may still be present.
-          - _auth | map(attribute='id') | list | intersect(_replaced_ids) | length == 0
+          # Every input the target held survives with the same id, name and type; an
+          # in-place replacement changes only the encrypted value, which is never read back.
+          - _target.json.get('secrets', []) | difference(_after.json.get('secrets', [])) | length == 0
+          # Operations net out: the target's count plus creates.
+          - (_after.json.get('secrets', []) | length) == (_target.json.get('secrets', []) | length) + (_created | length)
           - _auth | length == 2
           - _auth | map(attribute='name') | unique | list | length == 2
           - _auth | rejectattr('type', 'equalto', 'env') | list | length == 0
@@ -281,7 +288,6 @@
         fail_msg: "Authentication metadata readback differs; binding was not changed."
       vars:
         _auth: "{{ _after.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
-        _replaced_ids: "{{ _auth_operations | selectattr('operation', 'equalto', 'delete') | map(attribute='id') | list }}"
         _created: "{{ _auth_operations | selectattr('operation', 'equalto', 'create') | list }}"
       no_log: true
       when: not ansible_check_mode

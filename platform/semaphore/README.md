@@ -301,8 +301,8 @@ the AppRole inputs.
 
 If a task launch fails with `cannot decrypt access key, perhaps encryption key was changed`,
 Semaphore's encryption key changed under existing inputs. Run **Provision Seed Environment**
-for that seed template with `seed_replace_auth=true`: it deletes the two AppRole inputs and
-creates them again from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
+for that seed template with `seed_replace_auth=true`: it overwrites the two AppRole inputs in
+place from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
 
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
    with `seed_template` set to the declared base name, plus the verified

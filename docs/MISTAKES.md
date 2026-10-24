@@ -2450,8 +2450,8 @@ did not.
 
 **The rule.** Data and the key that decrypts it share one lifetime: persist them together, and
 move an existing key before anything that can destroy where it lives. Inputs already orphaned are
-recovered by `Provision Seed Environment` with `seed_replace_auth=true`, which deletes the two
-undecryptable AppRole inputs and creates them again from OpenBao. The API removal used on
+recovered by `Provision Seed Environment` with `seed_replace_auth=true`, which overwrites the
+two undecryptable AppRole inputs in place from OpenBao. The API removal used on
 2026-10-24 was a one-time stopgap from before that flag existed; with the key persisted, neither
 should be needed again.
 

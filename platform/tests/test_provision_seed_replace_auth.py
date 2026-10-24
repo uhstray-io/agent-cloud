@@ -2,7 +2,7 @@
 
 The provisioner's own tasks are read from platform/semaphore/provision-seed-environment.yml
 and run by ansible-playbook against synthetic environments. The filters they use are
-Ansible's (combine, difference, intersect, from_json), so a copy of the expressions in
+Ansible's (combine, difference, selectattr, from_json), so a copy of the expressions in
 Python would test the copy, not the provisioner.
 """
 
@@ -26,7 +26,7 @@ def _task(name):
 
 
 PREPARE = _task("Prepare encrypted authentication inputs in memory")
-VERIFY = _task("Verify preserved inputs and new authentication identities")
+VERIFY = _task("Verify preserved inputs and authentication identities")
 
 ENVIRONMENT = {"id": 501, "name": "Seed inputs (Dev)", "json": "{}", "env": "{}"}
 OTHER = {"id": 10, "name": "OTHER_INPUT", "type": "env"}
@@ -34,8 +34,8 @@ ROLE = {"id": 70, "name": "BAO_ROLE_ID", "type": "env"}
 SECRET = {"id": 71, "name": "BAO_SECRET_ID", "type": "env"}
 NEW_ROLE = {"id": 800, "name": "BAO_ROLE_ID", "type": "env"}
 NEW_SECRET = {"id": 801, "name": "BAO_SECRET_ID", "type": "env"}
-DELETE_ROLE = {"id": 70, "name": "BAO_ROLE_ID", "type": "env", "operation": "delete"}
-DELETE_SECRET = {"id": 71, "name": "BAO_SECRET_ID", "type": "env", "operation": "delete"}
+UPDATE_ROLE = {"id": 70, "name": "BAO_ROLE_ID", "type": "env", "operation": "update", "secret": "fixture-role"}
+UPDATE_SECRET = {"id": 71, "name": "BAO_SECRET_ID", "type": "env", "operation": "update", "secret": "fixture-secret"}
 CREATE_ROLE = {"name": "BAO_ROLE_ID", "type": "env", "operation": "create", "secret": "fixture-role"}
 CREATE_SECRET = {"name": "BAO_SECRET_ID", "type": "env", "operation": "create", "secret": "fixture-secret"}
 
@@ -119,12 +119,19 @@ def test_default_run_refuses_when_an_existing_input_vanishes(tmp_path):
     assert rc != 0 and not verified
 
 
-def test_replace_deletes_exactly_the_held_inputs_then_creates(tmp_path):
-    assert _run(tmp_path, target=[OTHER, ROLE, SECRET], after=[OTHER, NEW_ROLE, NEW_SECRET], replace="true") == (
+def test_replace_overwrites_the_held_inputs_in_place(tmp_path):
+    # In place, by id: Semaphore applies operations without rollback, so delete-then-create
+    # could leave a lone half that every later run refuses.
+    assert _run(tmp_path, target=[OTHER, ROLE, SECRET], after=[OTHER, ROLE, SECRET], replace="true") == (
         0,
-        [DELETE_ROLE, DELETE_SECRET, CREATE_ROLE, CREATE_SECRET],
+        [UPDATE_ROLE, UPDATE_SECRET],
         True,
     )
+
+
+def test_replace_pairs_each_value_with_its_input_whatever_the_order(tmp_path):
+    rc, prepared, _ = _run(tmp_path, target=[SECRET, OTHER, ROLE], after=[SECRET, OTHER, ROLE], replace="true")
+    assert rc == 0 and prepared == [UPDATE_ROLE, UPDATE_SECRET]
 
 
 def test_replace_without_held_inputs_only_creates(tmp_path):
@@ -135,16 +142,19 @@ def test_replace_without_held_inputs_only_creates(tmp_path):
     )
 
 
-def test_replace_refuses_when_a_replaced_input_id_survives(tmp_path):
+def test_replace_refuses_when_an_input_changes_identity(tmp_path):
     rc, _, verified = _run(tmp_path, target=[OTHER, ROLE, SECRET], after=[OTHER, ROLE, NEW_SECRET], replace="true")
+    assert rc != 0 and not verified
+
+
+def test_replace_refuses_when_an_input_vanishes(tmp_path):
+    rc, _, verified = _run(tmp_path, target=[OTHER, ROLE, SECRET], after=[OTHER, ROLE], replace="true")
     assert rc != 0 and not verified
 
 
 def test_replace_refuses_when_an_unrelated_input_vanishes(tmp_path):
     other_new = {"id": 900, "name": "NEW_OTHER", "type": "env"}
-    rc, _, verified = _run(
-        tmp_path, target=[OTHER, ROLE, SECRET], after=[other_new, NEW_ROLE, NEW_SECRET], replace="true"
-    )
+    rc, _, verified = _run(tmp_path, target=[OTHER, ROLE, SECRET], after=[other_new, ROLE, SECRET], replace="true")
     assert rc != 0 and not verified
 
 
