@@ -51,15 +51,17 @@ observed-digest content union and verified readback, and task 7131 confirmed
 idempotence. Task 7132 then found active import candidates. All ran at reviewed
 Dev `a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`. Template publication
 still requires the separate PBS host declaration and inventory readback.
-The Dev-bound Semaphore template itself was created through the reviewed
-single-template publisher: task 7155 passed check mode, and task 7156 verified
-the resulting playbook and Dev bindings. This publishes only the automation
-entry; no Proxmox template or PBS VM exists yet.
-The guest-disk attachment implementation is prepared on a separate public
-branch. Its missing-disk path reuses the pinned read-only survey and preflight
-before one digest-protected Proxmox VM-config update; an exact-disk rerun checks
-the declared guest and disk without requiring headroom for a second allocation.
-Review, Dev merge, Semaphore publication, and live validation remain pending.
+The PBS workflow source is merged to Dev by PR #726 at
+`c4eee56be4860702df537d40b71d8d85ad229a33`, including the serial-aware guest
+disk attachment contract. Dev catalog readback confirms all five reviewed task
+definitions have the expected repository, playbook, inventory, environment,
+and sole `expected_repository_sha` field. Four publication task runs succeeded
+at `c4eee`; a fifth invocation at reviewed PR #727 merge `391a4f7` stopped
+after creating the Proxmox template. The independent catalog readback confirms
+definitions only; it does not establish success of all five invocations or
+accept the created template's configuration and provenance. Review and source
+publication are complete, while private inventory/IP prerequisites and live
+template, VM, disk, guest, and service acceptance remain open.
 
 Production Semaphore task 7106 refused before any Proxmox request because the
 workflow required HTTPS for the inventory OpenBao URL. The shared transport
@@ -117,6 +119,37 @@ plus the separate seven-day capacity gate. The source-only restore-target
 preflight requires a private exact-artifact declaration; it reserves no VMID
 and does not establish allocation authority or ACL census visibility.
 
+### Reserved restore target and coordination foundation
+
+Every cooperating managed PVE writer must authenticate the fixed OpenBao
+coordination record before preparatory or PVE writes and refuse the declared
+restore-target VMID clusterwide, including when the record is absent or in its
+terminal `cleaned` phase. The declaration is private inventory data. Its
+fingerprint is SHA-256 over sorted compact UTF-8 JSON of exactly the normalized
+fields `vmid`, `node`, `storage_id`, `network_mode`, and `headroom_percent`;
+node/VMID identity and the selected backup artifact have separate fingerprints.
+Booleans, malformed values, and noncanonical representations are rejected.
+
+The guard reads the fixed KV v2 metadata and data paths through the exact
+`service_url` on the sole private `openbao_svc` inventory host and authenticates
+with the protected Semaphore environment's `BAO_ROLE_ID` and `BAO_SECRET_ID`.
+It does not use a launch-supplied public URL or lowercase credential extra var.
+The environment binding and Semaphore launch/edit permissions remain part of
+the trusted boundary; source guards cannot defeat a privileged launcher. Both
+exact reads must prove true 404 absence before an undeclared record can be
+treated as absent. Unauthorized, malformed, tombstoned, unavailable, mismatched,
+or declaration-removed-with-record state refuses before side effects.
+
+The guard is GET-only; the separate coordination writer may need metadata
+`read` and data `create`/`read`/`update` capabilities. A source policy does not
+establish the actual injected role's capabilities. Policy publication/readback
+and effective-role verification are activation gates. All assigned managed
+QEMU writers, including legacy direct PVE-token operator modes, fail closed if
+Bao coordination cannot authenticate. This cooperative boundary does not
+cover privileged users or unmanaged code. Target absence, restore success,
+cleanup proof, and task-output authenticity remain future workflow
+responsibilities and cannot be inferred from these guards.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.
@@ -124,6 +157,8 @@ and does not establish allocation authority or ACL census visibility.
 - **Concurrent storage growth** → re-evaluate VG/PV/disk capacity immediately before allocation and refuse on mismatch or less than 30% residual headroom. A preflight receipt is not a reservation.
 - **NetBox assignment identity** → provisioning accepts only the exact unassigned address reservation. An active assignment has no proven Proxmox VMID mapping in the current API response, so reruns refuse before writes if discovery activates it. Add a reviewed identity mapping before relying on provisioning to reconcile an active record.
 - **Semaphore environment identity** → the candidate survey receives OpenBao connection fields from its declared Semaphore environment. Its runtime guard must accept those fields while proving the endpoint equals the single private OpenBao inventory declaration and refusing a launch-supplied `service_url`; otherwise it refuses before a Proxmox query. Launch-time placement overrides remain forbidden.
+- **Restore-target claim visibility and role scope** → cooperating writers check only the fixed Bao record and exact private declaration. The read policy addition is narrow source; verify the actual role binding and effective capabilities before activation. A missing declaration plus two exact-path 404s permits ordinary unrelated VMIDs, while any ambiguous record state refuses.
+- **Other PVE writers** → a reserved-target guarantee exists only when every cooperating writer is guarded and old tasks/template variants are drained. All assigned managed QEMU mutators, including direct PVE-token modes, must use the guard. Privileged unmanaged writers remain outside this boundary.
 - **Template or guest disk ambiguity** → refuse provisioning or formatting until the Debian template and exact blank guest disk are verified. Existing mismatched VMs/disks are preserved.
 - **Incomplete backup protection** → PBS backup-only ACLs stop the routine client from deleting backups but do not stop PBS administrators or a host compromise. An independent protected-copy mechanism and isolated restore remain separate retention gates.
 

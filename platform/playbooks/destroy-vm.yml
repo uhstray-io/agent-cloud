@@ -27,6 +27,11 @@
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: "Pre-flight"
   ansible.builtin.import_playbook: preflight-target-group.yml
@@ -44,9 +49,11 @@
       headers:
         Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
   vars:
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
     _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
       'secret/data/services/proxmox',
       url=_bao_url, auth_method='approle',
@@ -115,6 +122,12 @@
           {{ _vmid }} on {{ _node }}). A destructive template must be told which VM,
           in its own launch, every time.
 
+    - name: "Guard declared VMID before any destroy workflow side effect"
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+      tags: [always]
+
     - name: "Find the live VM by vmid"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
@@ -143,6 +156,12 @@
         fail_msg: >-
           vmid {{ _vmid }} is '{{ _live.name | default('?') }}' on '{{ _live.node | default('?') }}',
           not '{{ _name }}' on '{{ _node }}'. Refusing — this is somebody else's VM.
+
+    - name: "Refresh reserved-target guard before stop"
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+      tags: [always]
 
     - name: "Stop the VM if it is running (immediate stop; the VM is being destroyed)"
       ansible.builtin.uri:
@@ -189,6 +208,12 @@
              | selectattr('active', 'defined') | selectattr('active', 'equalto', 1)
              | selectattr('content', 'defined') | selectattr('content', 'search', 'images')
              | map(attribute='storage') | list }}
+
+    - name: "Refresh reserved-target guard before VM deletion"
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+      tags: [always]
 
     - name: "Destroy the VM (purge backup/replication/HA references)"
       ansible.builtin.uri:
@@ -255,6 +280,12 @@
         _orphans: >-
           {{ _leftovers.results | map(attribute='json') | map(attribute='data')
              | flatten | map(attribute='volid') | list }}
+
+    - name: "Refresh reserved-target guard before VMID-derived volume cleanup"
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+      tags: [always]
 
     - name: "Free every leftover volume (the unreferenced-disk scan, done resiliently)"
       ansible.builtin.uri:

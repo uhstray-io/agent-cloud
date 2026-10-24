@@ -1,0 +1,194 @@
+# Read-only clusterwide VMID guard. The caller must include this before any
+# preparatory or PVE write and refresh it before each separate write group.
+# Never pass URL, declaration, candidate, or token values from extra vars.
+
+- name: "Restore target guard: preflight protected inputs before authentication"
+  ansible.builtin.include_tasks: preflight-o11y-restore-target.yml
+  tags: [always]
+
+- name: "Restore target guard: derive the fixed private endpoint and declaration"
+  tags: [always]
+  ansible.builtin.set_fact:
+    _o11y_rt_bao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _o11y_rt_bao_host: "{{ (groups['openbao_svc'] | default([]) | first) | default('') }}"
+    _o11y_rt_bao_url: "{{ hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '' }}"
+    _o11y_rt_target_hosts: "{{ groups['o11y_restore_target_svc'] | default([]) }}"
+    _o11y_rt_source_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_rt_source_host: "{{ (groups['o11y_svc'] | default([]) | first) | default('') }}"
+    _o11y_rt_source_vmid: "{{ hostvars[(groups['o11y_svc'] | default([]) | first)].vm_vmid | default('') if (groups['o11y_svc'] | default([]) | length == 1) else '' }}"
+    _o11y_rt_source_node: "{{ hostvars[(groups['o11y_svc'] | default([]) | first)].vm_node | default('') if (groups['o11y_svc'] | default([]) | length == 1) else '' }}"
+    _o11y_rt_declaration: >-
+      {{ {
+        'vmid': hostvars[(groups['o11y_restore_target_svc'] | default([]) | first)].o11y_restore_target_vmid,
+        'node': hostvars[(groups['o11y_restore_target_svc'] | default([]) | first)].o11y_restore_target_node,
+        'storage_id': hostvars[(groups['o11y_restore_target_svc'] | default([]) | first)].o11y_restore_target_storage_id,
+        'network_mode': hostvars[(groups['o11y_restore_target_svc'] | default([]) | first)].o11y_restore_target_network_mode,
+        'headroom_percent': hostvars[(groups['o11y_restore_target_svc'] | default([]) | first)].o11y_restore_target_headroom_percent
+      } if (groups['o11y_restore_target_svc'] | default([]) | length == 1) else none }}
+  no_log: true
+
+- name: "Restore target guard: refuse launch supplied protected inputs"
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - >-
+        (['openbao_addr', 'service_url', 'bao_role_id', 'bao_secret_id',
+          'o11y_restore_target_vmid', 'o11y_restore_target_node',
+          'o11y_restore_target_storage_id', 'o11y_restore_target_network_mode',
+          'o11y_restore_target_headroom_percent'] | intersect('' | extra_var_names) | length) == 0
+    fail_msg: "Restore-target guard refused launch-supplied endpoint, credential, or private declaration values."
+    quiet: true
+
+- name: "Restore target guard: require one trusted private inventory declaration"
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - _o11y_rt_bao_hosts | length == 1
+      - _o11y_rt_bao_url is string and _o11y_rt_bao_url | length > 0
+      - _o11y_rt_bao_url is match('^https?://[^/?#]+(?::[0-9]{1,5})?$')
+      - _o11y_rt_target_hosts | length in [0, 1]
+      - openbao_addr | default('') == _o11y_rt_bao_url
+      - _o11y_rt_target_hosts | length == 0 or _o11y_rt_source_hosts | length == 1
+      - _o11y_rt_target_hosts | length == 0 or _o11y_rt_target_hosts[0] != _o11y_rt_source_host
+      - _o11y_rt_target_hosts | length == 0 or _o11y_rt_source_vmid | string is match('^[1-9][0-9]{0,8}$')
+      - _o11y_rt_target_hosts | length == 0 or _o11y_rt_source_node is match('^[A-Za-z0-9._-]{1,64}$')
+      - _o11y_rt_target_hosts | length == 0 or _o11y_rt_source_vmid | string != _o11y_rt_declaration.vmid | string
+      - _o11y_rt_target_hosts | length == 0 or _o11y_rt_source_node != _o11y_rt_declaration.node
+      - _o11y_rt_target_hosts | length == 0 or _o11y_rt_declaration.network_mode == 'disconnected'
+      - lookup('env', 'BAO_ROLE_ID') | length > 0
+      - lookup('env', 'BAO_SECRET_ID') | length > 0
+    fail_msg: "Restore-target guard requires the private OpenBao declaration, protected Semaphore credentials, and at most one distinct target declaration."
+    quiet: true
+
+- name: "Restore target guard: refuse public cleartext OpenBao transport"
+  tags: [always]
+  ansible.builtin.include_tasks: assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ _o11y_rt_bao_url }}"
+
+- name: "Restore target guard: authenticate with protected Semaphore AppRole"
+  tags: [always]
+  ansible.builtin.uri:
+    url: "{{ _o11y_rt_bao_url }}/v1/auth/approle/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+      secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
+    headers: {}
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    status_code: [200]
+  register: _o11y_rt_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "Restore target guard: require authenticated OpenBao token"
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - _o11y_rt_login.status | default(0) == 200
+      - _o11y_rt_login.json.auth.client_token | default('') | length > 0
+    fail_msg: "Restore-target guard could not authenticate to the fixed OpenBao endpoint."
+    quiet: true
+
+- name: "Restore target guard: read fixed coordination metadata"
+  tags: [always]
+  ansible.builtin.uri:
+    url: "{{ _o11y_rt_bao_url }}/v1/secret/metadata/coordination/o11y-restore-target"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _o11y_rt_login.json.auth.client_token }}"
+    unredirected_headers: [X-Vault-Token]
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    status_code: [200, 404]
+  register: _o11y_rt_metadata
+  delegate_to: localhost
+  become: false
+  no_log: true
+  failed_when: false
+  check_mode: false
+
+- name: "Restore target guard: read fixed coordination data"
+  tags: [always]
+  ansible.builtin.uri:
+    url: "{{ _o11y_rt_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _o11y_rt_login.json.auth.client_token }}"
+    unredirected_headers: [X-Vault-Token]
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    status_code: [200, 404]
+  register: _o11y_rt_secret
+  delegate_to: localhost
+  become: false
+  no_log: true
+  failed_when: false
+  check_mode: false
+
+- name: "Restore target guard: validate status, declaration, and candidate VMIDs"
+  tags: [always]
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/guard_o11y_restore_target.py"
+    stdin: >-
+      {{ {
+        'mode': 'guard',
+        'metadata_status': _o11y_rt_metadata.status | default(0),
+        'metadata': _o11y_rt_metadata.json.data | default(none),
+        'data_status': _o11y_rt_secret.status | default(0),
+        'secret': _o11y_rt_secret.json | default(none),
+        'declaration': _o11y_rt_declaration,
+        'candidates': _o11y_restore_target_guard_candidates
+      } | to_json }}
+  register: _o11y_rt_check
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Restore target guard: require safe coordination status"
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - _o11y_rt_check.rc | default(1) == 0
+    fail_msg: "Restore-target guard refused an unavailable, malformed, mismatched, or reserved VMID state."
+    quiet: true
+
+- name: "Restore target guard: report fixed safe outcome"
+  tags: [always]
+  ansible.builtin.debug:
+    msg: "Restore-target coordination check passed for the requested VMID set."
