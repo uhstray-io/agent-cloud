@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
+import shutil
 import sys
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "playbooks" / "files"))
 sys.path.insert(0, str(Path(__file__).parent))
+import harness_sandbox  # noqa: E402
 import o11y_isolated_restore as restore  # noqa: E402
 import o11y_pbs_receipts as pbs_receipts  # noqa: E402
 import playbook_yaml  # noqa: E402
+import seed_harness  # noqa: E402
 
 PUBLIC_SHA = "a" * 40
 PRIVATE_SHA = "b" * 40
@@ -285,6 +292,7 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
         {"exited": True, "exitcode": 1, "out-data": '{"status":"verified"}'},
         {"exited": False, "exitcode": 0, "out-data": '{"status":"verified"}'},
         {"exited": True, "exitcode": 0, "out-truncated": True, "out-data": '{"status":"verified"}'},
+        {"exited": True, "exitcode": 0, "out-truncated": 0.0, "out-data": '{"status":"verified"}'},
         {"exited": True, "exitcode": 0, "out-data": "eyJzdGF0dXMiOiJ2ZXJpZmllZCJ9"},
         {"exited": True, "exitcode": 0, "out-data": "[]"},
     ],
@@ -306,29 +314,161 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
     tasks = list(playbook_yaml.tasks(playbook_yaml.load(path)))
     by_name = {task.get("name"): task for task in tasks if task.get("name")}
 
-    chain = by_name["Validate all authenticated predecessor links and the closed private selector"]
-    assert "'mode': 'prerequisite_chain', 'payload': _restore_chain_input" in chain["ansible.builtin.command"]["stdin"]
+    vmid = 120
+    source_node = "source-node"
+    destination_storage = "copy-pbs"
+    backup_time = 1_790_640_000
+    volid = "copy-pbs:backup/vm/120/2026-09-29T00:00:00Z"
+    selector = {
+        "volid": volid,
+        "backend": "pbs",
+        "format": "pbs-vm",
+        "creation_time_epoch": backup_time,
+        "size_bytes": 300,
+    }
+    candidate = {"vmid": vmid, "volid": volid, "format": "pbs-vm", "size": 300, "ctime": backup_time}
+    chain_input = _chain_fixture()
+    variables = {
+        "ansible_connection": "local",
+        "ansible_python_interpreter": sys.executable,
+        "_restore_chain_input": chain_input,
+        "_restore_manifest_raw": {
+            "stdout": json.dumps({"artifact_fingerprint": chain_input["artifact_fingerprint"]}),
+        },
+        "_restore_source_vmid": str(vmid),
+        "_restore_source_node": source_node,
+        "_restore_vms": {"json": {"data": [{"type": "qemu", "vmid": vmid, "node": source_node}]}},
+        "_restore_copy_storage_id": destination_storage,
+        "_restore_copy_content": {"status": 200, "json": {"data": [candidate]}},
+        "_restore_selector": selector,
+        "_restore_source_config": {
+            "status": 200,
+            "json": {"data": {"scsi0": "copy-pbs:vm-120-disk-0,size=20G"}},
+        },
+        "_restore_target_preflight": {
+            "restore_disk_count": 1,
+            "layout": {"disk_count": 99},
+            "selected_candidate": {"backend_class": "pbs"},
+        },
+        "_restore_artifact_admission": {"rc": 0, "stdout": '{"disk_count":1}'},
+        "_restore_guest_exec_status": {
+            "json": {
+                "data": {
+                    "exited": True,
+                    "exitcode": 0,
+                    "out-data": json.dumps({
+                        "schema_version": 1,
+                        "status": "verified",
+                        "reason": "restored_historical_data_verified",
+                        "volume_count": 5,
+                        "backend_count": 4,
+                        "grafana_integrity": "ok",
+                    }, separators=(",", ":")),
+                },
+            },
+        },
+        "_restore_pve_host": "http://127.0.0.1",
+        "_restore_target_node": "isolated-node",
+        "_restore_target_vmid": 910001,
+        "_restore_pve_token_id": "synthetic@pve!restore",
+        "_restore_pve_token": "synthetic-pve-token",
+        "_restore_checker_expectations": {"synthetic": "fixture"},
+    }
+    expected_checker_source = (
+        Path(__file__).parents[1] / "playbooks/files/inspect_o11y_restored_guest.py"
+    ).read_text().rstrip()
+    expected_checker_sha = hashlib.sha256(expected_checker_source.encode()).hexdigest()
+    checker_program = by_name["Send checker source and fixed expectations only through QGA input-data"]
+    qga_body = checker_program["ansible.builtin.uri"]["body"]
+    expected_command = qga_body["command"][2]
 
-    artifact = by_name["Bind one fresh destination candidate to the private selector"]
-    artifact_input = artifact["ansible.builtin.command"]["stdin"]
-    assert "'vmid': _restore_source_vmid | string" in artifact_input
-    assert "'node': _restore_source_node" in artifact_input
+    class SyntheticPve(seed_harness.FakeBao):
+        observed = []
 
-    disk_assertion = by_name["Require complete included disks, safe config, and live isolation preflight"]
-    disk_clauses = disk_assertion["ansible.builtin.assert"]["that"]
-    assert any("_restore_target_preflight.restore_disk_count" in clause for clause in disk_clauses)
+        def do_POST(self):
+            raw = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+            fields = parse_qs(raw, keep_blank_values=True)
+            command = fields.get("command", [])
+            body = fields.get("input-data", [])
+            accepted = (
+                self.path == "/api2/json/nodes/isolated-node/qemu/910001/agent/exec"
+                and self.headers.get("Authorization") == "PVEAPIToken=synthetic@pve!restore=synthetic-pve-token"
+                and set(fields) == {"command", "input-data"}
+                and len(command) == 4
+                and command[:3] == ["/usr/bin/python3", "-c", expected_command]
+                and len(body) == 1
+            )
+            if accepted:
+                try:
+                    input_data = json.loads(body[0])
+                    source = base64.b64decode(input_data["source"], validate=True).decode()
+                    accepted = (
+                        source == expected_checker_source
+                        and hashlib.sha256(source.encode()).hexdigest() == command[3] == expected_checker_sha
+                        and input_data["expectations"] == variables["_restore_checker_expectations"]
+                    )
+                except (KeyError, ValueError, UnicodeError, json.JSONDecodeError):
+                    accepted = False
+            type(self).observed.append(
+                {"path": self.path, "auth": self.headers.get("Authorization"), "fields": fields}
+            )
+            self.reply({"data": {"pid": 1234}} if accepted else {"errors": ["invalid QGA form"]},
+                       status=200 if accepted else 400)
 
-    submit = by_name["Send checker source and fixed expectations only through QGA input-data"]
-    submit = submit["ansible.builtin.uri"]
-    assert submit["body"]["command"][0] == "/usr/bin/python3"
-    assert "arg" not in submit["body"]
-    assert "capture-output" not in submit["body"]
-    assert "input-data" in submit["body"]
+    task_names = (
+        "Validate all authenticated predecessor links and the closed private selector",
+        "Require the authenticated task chain and fixed 24-hour freshness",
+        "Bind one fresh destination candidate to the private selector",
+        "Require one fresh protected candidate and read online node/storage state",
+        "Require complete included disks, safe config, and live isolation preflight",
+        "Build and pin the reviewable QGA checker input bytes",
+        "Send checker source and fixed expectations only through QGA input-data",
+        "Require the actual QGA process ID before polling",
+        "Validate decoded QGA status and parse bounded checker receipt",
+        "Require valid successful QGA checker output",
+        "Retain the bounded content-free guest verification receipt",
+        "Require the exact five-volume and historical backend proof",
+    )
+    selected_tasks = [by_name[name] for name in task_names]
 
-    parse = by_name["Validate decoded QGA status and parse bounded checker receipt"]["ansible.builtin.command"]
-    assert "'mode': 'qga_exec_status'" in parse["stdin"]
-    receipt = by_name["Retain the bounded content-free guest verification receipt"]["ansible.builtin.set_fact"]
-    assert "b64decode" not in receipt["_restore_guest_receipt"]
+    with tempfile.TemporaryDirectory(prefix="o11y-restore-adapters-") as scratch:
+        tmp_path = Path(scratch)
+        helper_dir = tmp_path / "files"
+        helper_dir.mkdir()
+        for helper in (
+            "o11y_isolated_restore.py",
+            "o11y_restore_coordination.py",
+            "o11y_pbs_receipts.py",
+            "inspect_o11y_backup_artifact.py",
+            "inspect_o11y_restored_guest.py",
+        ):
+            shutil.copyfile(Path(__file__).parents[1] / "playbooks/files" / helper, helper_dir / helper)
+        play = [{"name": "Exercise selected restore adapters", "hosts": "localhost", "gather_facts": False,
+                 "connection": "local", "vars": variables, "tasks": selected_tasks}]
+        play_path = tmp_path / "adapter.yml"
+        SyntheticPve.observed.clear()
+        with seed_harness.serve(SyntheticPve) as address:
+            variables["_restore_pve_host"] = address
+            play_path.write_text(yaml.safe_dump(play, sort_keys=False))
+            result = harness_sandbox.run(
+                ["ansible-playbook", "-i", "localhost,", str(play_path)],
+                tmp_path,
+                cwd=playbook_yaml.REPO,
+                env=harness_sandbox.env_for(tmp_path),
+            )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(SyntheticPve.observed) == 1
+    request = SyntheticPve.observed[0]
+    assert request["path"] == "/api2/json/nodes/isolated-node/qemu/910001/agent/exec"
+    assert request["auth"] == "PVEAPIToken=synthetic@pve!restore=synthetic-pve-token"
+    assert request["fields"]["command"] == ["/usr/bin/python3", "-c", expected_command, expected_checker_sha]
+    assert set(request["fields"]) == {"command", "input-data"}
+    input_data = json.loads(request["fields"]["input-data"][0])
+    checker_source = base64.b64decode(input_data["source"]).decode()
+    assert checker_source == expected_checker_source
+    assert hashlib.sha256(checker_source.encode()).hexdigest() == expected_checker_sha
+    assert input_data["expectations"] == variables["_restore_checker_expectations"]
 
 
 def test_reviewed_restore_and_cleanup_payloads_pin_receipt_dependency():

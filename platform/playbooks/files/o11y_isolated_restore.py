@@ -308,7 +308,7 @@ def parse_guest_exec_status(value: object) -> dict:
     exited = value.get("exited")
     require(exited is True or (type(exited) is int and exited == 1), "guest_exec_output_invalid")
     require(type(value.get("exitcode")) is int and value["exitcode"] == 0, "guest_exec_output_invalid")
-    require(value.get("out-truncated", 0) in (False, 0), "guest_exec_output_invalid")
+    require(value.get("out-truncated", False) is False, "guest_exec_output_invalid")
     output = value.get("out-data")
     require(isinstance(output, str), "guest_exec_output_invalid")
     try:
