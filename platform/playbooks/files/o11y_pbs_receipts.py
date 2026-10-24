@@ -91,6 +91,7 @@ CHAIN_LAUNCH_EVIDENCE = {
     "o11y-pbs-copy-ready/v1": {"sync_task_id": "sync_task_id"},
 }
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 REVISION = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 UPID = re.compile(
     r"UPID:[A-Za-z0-9_.-]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:"
@@ -119,11 +120,14 @@ RESTORE_RECEIPT_KEYS = {
 CUSTOM_RECEIPTS = {"restore_receipt/v3": RESTORE_RECEIPT_KEYS}
 CUSTOM_LAUNCH_KEYS = {
     "restore_receipt/v3": {
-        frozenset({
-            "expected_repository_sha", "backup_task_id", "pbs_verify_task_id",
-            "copy_sync_task_id", "copy_ready_task_id",
+        "platform/playbooks/restore-o11y-isolated.yml": frozenset({
+            "expected_repository_sha", "site_config_base_sha", "backup_task_id",
+            "pbs_verify_task_id", "copy_sync_task_id", "copy_ready_task_id",
         }),
-        frozenset({"expected_repository_sha", "restore_task_id", "expected_receipt_sha"}),
+        "platform/playbooks/cleanup-o11y-isolated-restore.yml": frozenset({
+            "expected_repository_sha", "site_config_base_sha", "restore_task_id",
+            "expected_restore_repository_sha",
+        }),
     }
 }
 
@@ -143,6 +147,10 @@ def _require(condition: bool, reason: str) -> None:
 
 def _revision(value: object) -> bool:
     return isinstance(value, str) and REVISION.fullmatch(value) is not None
+
+
+def _git_sha(value: object) -> bool:
+    return isinstance(value, str) and GIT_SHA.fullmatch(value) is not None
 
 
 def _sha(value: object) -> bool:
@@ -558,6 +566,7 @@ def validate_completed_output(
     *,
     public_sha: str,
     expected_project_id: int,
+    expected_playbook: str,
     expected_launch: Mapping[str, object],
     selector: str,
     expected_selector: str,
@@ -573,9 +582,11 @@ def validate_completed_output(
     _require(expected_selector in CONTRACTS or expected_selector in CUSTOM_RECEIPTS, "invalid_input")
     _require(_revision(public_sha), "invalid_input")
     if selector == "contract":
+        _require(expected_playbook == CONTRACTS[expected_selector]["playbook"], "invalid_input")
         _require(allowed_launch_keys == CONTRACT_LAUNCH_KEYS.get(expected_selector), "invalid_input")
     else:
-        _require(frozenset(allowed_launch_keys) in CUSTOM_LAUNCH_KEYS[expected_selector], "invalid_input")
+        mode_keys = CUSTOM_LAUNCH_KEYS[expected_selector].get(expected_playbook)
+        _require(mode_keys is not None and frozenset(allowed_launch_keys) == mode_keys, "invalid_input")
         _require(expected_receipt_keys == CUSTOM_RECEIPTS[expected_selector], "invalid_input")
     task_id, project_id = task.get("id"), task.get("project_id")
     _require(
@@ -606,7 +617,15 @@ def validate_completed_output(
     _require(launch.get("expected_repository_sha") == public_sha, "task_binding_mismatch")
     if selector == "contract":
         _require(set(launch) == allowed_launch_keys, "task_binding_mismatch")
+        _require(_git_sha(launch.get("site_config_base_sha")), "task_binding_mismatch")
         for key in allowed_launch_keys - {"expected_repository_sha", "site_config_base_sha"}:
+            _require(_positive_id(launch.get(key)), "task_binding_mismatch")
+    else:
+        _require(set(launch) == allowed_launch_keys, "task_binding_mismatch")
+        _require(_git_sha(launch.get("site_config_base_sha")), "task_binding_mismatch")
+        if "expected_restore_repository_sha" in allowed_launch_keys:
+            _require(_git_sha(launch["expected_restore_repository_sha"]), "task_binding_mismatch")
+        for key in (key for key in allowed_launch_keys if key.endswith("_task_id")):
             _require(_positive_id(launch.get(key)), "task_binding_mismatch")
     params = task.get("params")
     if isinstance(params, str):
@@ -673,6 +692,14 @@ def validate_completed_output(
         )
     else:
         _require(receipt.get("type") == "restore_receipt/v3", "receipt_missing")
+        if expected_playbook == "platform/playbooks/restore-o11y-isolated.yml":
+            bindings = receipt.get("bindings")
+            _require(
+                isinstance(bindings, dict)
+                and bindings.get("public_sha") == launch["expected_repository_sha"]
+                and bindings.get("private_inventory_sha") == launch["site_config_base_sha"],
+                "task_binding_mismatch",
+            )
     task_metadata = {
         "id": task_id,
         "project_id": project_id,
@@ -708,6 +735,7 @@ def validate_completed_task(
         output_rows,
         public_sha=public_sha,
         expected_project_id=expected_project_id,
+        expected_playbook=playbook,
         expected_launch=expected_launch or {},
         selector="contract",
         expected_selector=contract,
@@ -726,6 +754,7 @@ def validate_completed_task(
     )
     _require(receipt["evidence"].get("playbook") == playbook, "task_binding_mismatch")
     launch = result["task_metadata"]["launch"]
+    _require(launch.get("site_config_base_sha") == private_sha, "task_binding_mismatch")
     evidence = receipt["evidence"]
     for launch_key, evidence_key in CHAIN_LAUNCH_EVIDENCE.get(contract, {}).items():
         _require(launch.get(launch_key) == evidence.get(evidence_key), "task_binding_mismatch")
