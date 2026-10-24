@@ -385,14 +385,14 @@
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
         stdin: >-
-          {{ {'mode': 'target_config',
+          {{ {'mode': 'cleanup_target_config',
               'config': {'status': (_cleanup_target_read.results | selectattr('item.name', 'equalto', 'config') | first).status,
                          'data': (_cleanup_target_read.results | selectattr('item.name', 'equalto', 'config') | first).json.data},
               'target_vmid': _cleanup_target_ref.vmid | int,
               'marker': 'o11y-restore:' ~ _cleanup_record.declaration_fingerprint,
-              'isolated': true,
               'expected_disk_keys': (_cleanup_receipt.artifact_config.disks | map(attribute='device') | list),
-              'storage_id': _cleanup_target_declaration.storage_id} | to_json }}
+              'storage_id': _cleanup_target_declaration.storage_id,
+              'expected_config_sha256': _cleanup_receipt.isolation_config_sha256} | to_json }}
         stdin_add_newline: false
       register: _cleanup_config_validated
       changed_when: false

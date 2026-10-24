@@ -143,6 +143,25 @@ pins; side-effecting provenance tasks are stubbed. The regression, cleanup
 pin-independence test, and recursive-task-var guard passed together (3 tests).
 These follow-up checks do not replace CI on the corrected head.
 
+The next review found that cleanup's target-config adapter lacked the source
+cloud-init expectation required by the shared target validator and therefore
+refused every real cleanup. Cleanup now has a separate closed
+`cleanup_target_config` operation: it first matches the canonical full current
+configuration digest to `isolation_config_sha256` from the authenticated restore
+receipt, then derives auxiliary presence from those exact bound bytes and runs
+the existing target ownership, disk, storage, and isolation checks. The restore
+`target_config` contract and v3 receipt remain unchanged. A local Ansible
+regression runs the real restore receipt builder and selected cleanup tasks;
+backed and explicit `none,media=cdrom` auxiliary cases reach only a synthetic
+delete-gate sentinel, while post-receipt changes and wrong hash, auxiliary,
+disk, marker, target, or journal cases stop before it. The full restore
+coordination module passed (18 tests), the adjacent target-config cohort passed
+(3 tests), Ruff and both playbook syntax checks passed, and targeted Ansible lint
+exited 0 with its existing complexity warning. CI run `40081723791` was green
+on the pre-review `7a66e13` head; this review correction requires a new final-head
+CI run. These checks remain source-only and do not establish live cleanup or
+restore acceptance.
+
 Strict branch-history TruffleHog scans from base `391a4f7c` used
 `--no-verification --fail --fail-on-scan-errors --no-update` and reported zero
 verified or unverified findings. TruffleHog logged that sandbox policy blocked

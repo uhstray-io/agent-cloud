@@ -371,6 +371,79 @@ def test_isolated_target_keeps_target_auxiliary_but_has_no_source_cloud_init_met
         )
 
 
+def test_cleanup_target_config_requires_bound_digest_before_auxiliary_validation():
+    def config(ide2=None, **updates):
+        data = {
+            "vmid": 910001,
+            "digest": "a" * 40,
+            "onboot": 0,
+            "description": "o11y-restore:abc",
+            "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+        }
+        if ide2 is not None:
+            data["ide2"] = ide2
+        data.update(updates)
+        return {"status": 200, "data": data}
+
+    def fingerprint(candidate):
+        return hashlib.sha256(json.dumps(candidate["data"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    for candidate, expected_present in (
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom"), True),
+        (config("none,media=cdrom"), False),
+        (config(), False),
+    ):
+        result = restore.validate_cleanup_target_config(
+            candidate,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            expected_config_sha256=fingerprint(candidate),
+        )
+        assert result["cloud_init_present"] is expected_present
+
+    valid = config("target-lvm:vm-910001-cloudinit,media=cdrom")
+    with pytest.raises(restore.Refusal, match="target_config_invalid"):
+        restore.validate_cleanup_target_config(
+            valid,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            expected_config_sha256="f" * 64,
+        )
+
+    tampered = copy.deepcopy(valid)
+    tampered["data"]["ide2"] = "target-lvm:vm-910002-cloudinit,media=cdrom"
+    with pytest.raises(restore.Refusal, match="target_config_invalid"):
+        restore.validate_cleanup_target_config(
+            tampered,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            expected_config_sha256=fingerprint(valid),
+        )
+
+    for unsafe, expected_disk_keys in (
+        (config("other-lvm:vm-910001-cloudinit,media=cdrom"), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", scsi0="other-lvm:vm-910001-disk-0,size=20G"), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", description="o11y-restore:other"), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", vmid=910002), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", scsi1="target-lvm:vm-910001-disk-1,size=20G"), ["scsi0"]),
+    ):
+        with pytest.raises(restore.Refusal, match="target_config_invalid"):
+            restore.validate_cleanup_target_config(
+                unsafe,
+                target_vmid=910001,
+                marker="o11y-restore:abc",
+                expected_disk_keys=expected_disk_keys,
+                storage_id="target-lvm",
+                expected_config_sha256=fingerprint(unsafe),
+            )
+
+
 @pytest.mark.parametrize(
     "line, reason",
     [

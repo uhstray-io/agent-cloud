@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "playbooks" / "files"))
+sys.path.insert(0, str(Path(__file__).parent))
+import harness_sandbox  # noqa: E402
 import o11y_pbs_receipts as pbs_receipts  # noqa: E402
 import o11y_restore_coordination as coordination  # noqa: E402
+import playbook_yaml  # noqa: E402
 
 TARGET = {"node": "restore-node", "vmid": 910001}
 DECLARATION = {
@@ -163,7 +170,7 @@ def action(snapshot, version, name, handle_type, handle, index):
     return snapshot, version
 
 
-def completed_restore():
+def active_restore():
     record, version = reserve()
     # The initial restore intent is the only transition allowed from reserved.
     record, version = action(record, version, "restore", "upid", RESTORE_UPID, 1)
@@ -174,6 +181,11 @@ def completed_restore():
         ("stop", "upid", STOP_UPID, 5),
     ):
         record, version = action(record, version, name, kind, handle, marker)
+    return record, version
+
+
+def completed_restore():
+    record, version = active_restore()
     data_checks = {
         "schema_version": 1,
         "status": "verified",
@@ -330,6 +342,215 @@ def test_restore_receipt_builder_seals_both_fingerprints_from_stopped_journal():
     assert receipt["coordination_record"]["journal"][-1] == nested[-1]
     restored, _ = apply(record, version, "awaiting_receipt", evidence=receipt)
     assert restored["receipt_fingerprint"] == receipt["receipt_fingerprint"]
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_real_restore_receipt_builder_gates_cleanup_on_hash_bound_target_config(tmp_path):
+    repo = playbook_yaml.REPO
+    playbooks = repo / "platform/playbooks"
+    restore_tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / "restore-o11y-isolated.yml")))
+    cleanup_tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / "cleanup-o11y-isolated-restore.yml")))
+    receipt_task = copy.deepcopy(
+        next(
+            task
+            for task in restore_tasks
+            if task.get("name") == "Build the private identity-bearing v3 restore receipt"
+        )
+    )
+    receipt_guard = copy.deepcopy(
+        next(
+            task
+            for task in restore_tasks
+            if task.get("name") == "Require the full stopped journal to seal one closed private receipt"
+        )
+    )
+    cleanup_target = copy.deepcopy(
+        next(
+            task
+            for task in cleanup_tasks
+            if task.get("name") == "Validate stopped isolated target configuration and exact source disks"
+        )
+    )
+    cleanup_guard = copy.deepcopy(
+        next(
+            task
+            for task in cleanup_tasks
+            if task.get("name") == "Require stopped target and unchanged isolation fingerprint before CAS transfer"
+        )
+    )
+    receipt_task["ansible.builtin.command"]["argv"][1] = str(playbooks / "files/o11y_restore_coordination.py")
+    cleanup_target["ansible.builtin.command"]["argv"][1] = str(playbooks / "files/o11y_isolated_restore.py")
+
+    artifact_config = {
+        "config_sha256": "a" * 64,
+        "disk_count": 1,
+        "disks": [{"device": "scsi0", "size_bytes": 20 * 1024**3}],
+        "nic_count": 1,
+        "nic_keys": ["net0"],
+        "config_keys_sha256": "b" * 64,
+    }
+    checker_sha = "c" * 64
+    data_checks = {
+        "schema_version": 1,
+        "status": "verified",
+        "reason": "restored_historical_data_verified",
+        "volume_count": 5,
+        "volume_bindings_sha256": "4" * 64,
+        "container_bindings_sha256": "5" * 64,
+        "backend_count": 4,
+        "grafana_integrity": "ok",
+        "grafana_migrations": 3,
+        "grafana_database_sha256": "6" * 64,
+        "backends": {
+            name: {
+                "expectation": "present",
+                "historical_records": 1,
+                "evidence_sha256": "7" * 64,
+                "readback_sha256": "8" * 64,
+            }
+            for name in ("prometheus", "loki", "tempo", "pyroscope")
+        },
+        "receipt_fingerprint": "9" * 64,
+    }
+
+    def config(ide2: str | None = "target-lvm:vm-910001-cloudinit,media=cdrom", **changes):
+        data = {
+            "vmid": 910001,
+            "digest": "a" * 40,
+            "onboot": 0,
+            "description": f"o11y-restore:{DECLARATION['declaration_fingerprint']}",
+            "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+        }
+        if ide2 is not None:
+            data["ide2"] = ide2
+        data.update(changes)
+        return {"status": 200, "data": data}
+
+    def fingerprint(candidate):
+        return hashlib.sha256(json.dumps(candidate["data"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    base_config = config()
+    cases = [
+        ("backed auxiliary", base_config, base_config, None, False, False),
+        ("explicit empty auxiliary", config("none,media=cdrom"), config("none,media=cdrom"), None, False, False),
+        (
+            "config changed after receipt",
+            base_config,
+            config("target-lvm:vm-910002-cloudinit,media=cdrom"),
+            None,
+            False,
+            True,
+        ),
+        ("wrong receipt hash", base_config, base_config, "f" * 64, False, True),
+        (
+            "wrong target auxiliary",
+            config("target-lvm:vm-910002-cloudinit,media=cdrom"),
+            config("target-lvm:vm-910002-cloudinit,media=cdrom"),
+            None,
+            False,
+            True,
+        ),
+        (
+            "wrong included disk store",
+            config(scsi0="other-lvm:vm-910001-disk-0,size=20G"),
+            config(scsi0="other-lvm:vm-910001-disk-0,size=20G"),
+            None,
+            False,
+            True,
+        ),
+        (
+            "unexpected disk",
+            config(scsi1="target-lvm:vm-910001-disk-1,size=20G"),
+            config(scsi1="target-lvm:vm-910001-disk-1,size=20G"),
+            None,
+            False,
+            True,
+        ),
+        (
+            "wrong target ownership marker",
+            config(description="o11y-restore:wrong"),
+            config(description="o11y-restore:wrong"),
+            None,
+            False,
+            True,
+        ),
+        ("incomplete lifecycle journal", base_config, base_config, None, True, True),
+    ]
+
+    for index, (label, sealed_config, current_config, expected_hash, wrong_journal, should_refuse) in enumerate(cases):
+        record, version = active_restore()
+        if wrong_journal:
+            record["journal"] = record["journal"][:-1]
+        bound_hash = expected_hash or fingerprint(sealed_config)
+        variables = {
+            "_o11y_rc_plan": {"record": record, "expected_version": version},
+            "_restore_artifact_layout": artifact_config,
+            "_restore_checker_sha": checker_sha,
+            "_restore_guest_receipt": data_checks,
+            "_restore_guest_exec_submit": {"json": {"data": {"pid": 44}}},
+            "_restore_isolated_config_sha256": bound_hash,
+            "_cleanup_target_read": {
+                "results": [
+                    {"item": {"name": "config"}, "status": 200, "json": {"data": current_config["data"]}},
+                    {"item": {"name": "status"}, "status": 200, "json": {"data": {"status": "stopped"}}},
+                ]
+            },
+            "_cleanup_target_ref": {"vmid": 910001, "node": TARGET["node"]},
+            "_cleanup_target_declaration": {"storage_id": "target-lvm"},
+        }
+        tasks = [
+            receipt_task,
+            receipt_guard,
+            {
+                "name": "Pass only the sealed receipt to the actual cleanup task",
+                "ansible.builtin.set_fact": {
+                    "_cleanup_receipt": "{{ _restore_sealed_receipt_raw.stdout | from_json }}",
+                    "_cleanup_record": "{{ (_restore_sealed_receipt_raw.stdout | from_json).coordination_record }}",
+                },
+            },
+            cleanup_target,
+            {
+                "name": "Report only cleanup validator status",
+                "ansible.builtin.debug": {"msg": "cleanup_target_config_rc={{ _cleanup_config_validated.rc }}"},
+            },
+            cleanup_guard,
+            {"name": "Synthetic deletion gate sentinel", "ansible.builtin.debug": {"msg": "DELETE_GATE_REACHED"}},
+        ]
+        play = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables, "tasks": tasks}]
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        inventory = case_dir / "inventory.ini"
+        inventory.write_text("localhost ansible_connection=local\n")
+        harness = case_dir / "receipt-to-cleanup.yml"
+        harness.write_text(yaml.safe_dump(play))
+        result = harness_sandbox.run(
+            ["ansible-playbook", "-i", str(inventory), str(harness)],
+            case_dir,
+            cwd=repo,
+            env=harness_sandbox.env_for(case_dir),
+        )
+        if should_refuse:
+            assert result.returncode != 0, label
+            assert "DELETE_GATE_REACHED" not in result.stdout, label
+        else:
+            assert result.returncode == 0, f"{label}: {result.stdout}\n{result.stderr}"
+            assert "cleanup_target_config_rc=0" in result.stdout, label
+            assert "DELETE_GATE_REACHED" in result.stdout, label
+
+    cleanup_positions = {
+        task.get("name"): index
+        for index, task in enumerate(cleanup_tasks)
+        if task.get("name") in {
+            "Require stopped target and unchanged isolation fingerprint before CAS transfer",
+            "Transfer ownership and persist delete intent with exact journal CAS",
+            "Delete only the authenticated disconnected target",
+        }
+    }
+    assert (
+        cleanup_positions["Require stopped target and unchanged isolation fingerprint before CAS transfer"]
+        < cleanup_positions["Transfer ownership and persist delete intent with exact journal CAS"]
+        < cleanup_positions["Delete only the authenticated disconnected target"]
+    )
 
 
 def test_new_reservation_is_version_cas_zero_and_record_readback_is_exact():

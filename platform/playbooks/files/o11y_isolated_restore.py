@@ -317,7 +317,11 @@ def exact_artifact_cloud_init(value: object, *, source_vmid: int) -> dict:
     }
 
 
-def validate_target_config(
+def _target_config_fingerprint(data: dict) -> str:
+    return sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _validate_target_config(
     value: object,
     *,
     target_vmid: int,
@@ -325,26 +329,17 @@ def validate_target_config(
     isolated: bool,
     expected_disk_keys: list[str],
     storage_id: str,
-    cloud_init_expectation: object,
+    cloud_init_present: bool,
+    source_field_fingerprint: str | None,
 ) -> dict:
-    """Validate read-back configuration and absence of host/network escape paths."""
+    """Apply the common ownership, disk, auxiliary, and isolation checks."""
     require(
         isinstance(value, dict) and value.get("status") == 200 and isinstance(value.get("data"), dict),
         "target_config_invalid",
     )
     require(type(isolated) is bool, "target_config_invalid")
+    require(type(cloud_init_present) is bool, "target_config_invalid")
     data = value["data"]
-    require(
-        isinstance(cloud_init_expectation, dict)
-        and set(cloud_init_expectation) == {"present", "field_fingerprint", "scrub_keys"}
-        and type(cloud_init_expectation.get("present")) is bool
-        and isinstance(cloud_init_expectation.get("field_fingerprint"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", cloud_init_expectation["field_fingerprint"]) is not None
-        and isinstance(cloud_init_expectation.get("scrub_keys"), list)
-        and all(key in CLOUD_INIT_SCRUB_FIELDS for key in cloud_init_expectation["scrub_keys"])
-        and len(cloud_init_expectation["scrub_keys"]) == len(set(cloud_init_expectation["scrub_keys"])),
-        "target_config_invalid",
-    )
     if isolated:
         require(isinstance(marker, str) and 1 <= len(marker.encode("utf-8")) <= 128, "target_config_invalid")
         require(data.get("onboot") in (0, "0", False, None), "target_config_invalid")
@@ -366,10 +361,10 @@ def validate_target_config(
     require(included_disk_keys == sorted(expected_disk_keys), "target_config_invalid")
     for key in included_disk_keys:
         require(isinstance(data[key], str) and data[key].startswith(storage_id + ":"), "target_config_invalid")
-    if cloud_init_expectation["present"]:
+    if cloud_init_present:
         require("ide2" in data and isinstance(data["ide2"], str), "target_config_invalid")
     require(
-        target_auxiliary(data.get("ide2"), target_vmid, storage_id, cloud_init_expectation["present"]),
+        target_auxiliary(data.get("ide2"), target_vmid, storage_id, cloud_init_present),
         "target_config_invalid",
     )
     cloud_values = {key: data[key] for key in sorted(CLOUD_INIT_FIELDS) if key in data}
@@ -377,7 +372,7 @@ def validate_target_config(
     if isolated:
         require(not cloud_values, "target_config_invalid")
     else:
-        require(cloud_fingerprint == cloud_init_expectation["field_fingerprint"], "target_config_invalid")
+        require(cloud_fingerprint == source_field_fingerprint, "target_config_invalid")
     for key in data:
         if key == "digest":
             require(
@@ -403,12 +398,84 @@ def validate_target_config(
         if isolated and (key.startswith("net") and key[3:].isdigit() or key in CLOUD_INIT_FIELDS):
             raise Refusal("target_config_invalid")
     return {
-        "config_sha256": sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()),
+        "config_sha256": _target_config_fingerprint(data),
         "disk_count": sum(bool(DISK.fullmatch(key)) and key != "ide2" for key in data),
         "disk_keys_sha256": sha256("\n".join(disk_keys).encode()),
         "nic_count": sum(key.startswith("net") and key[3:].isdigit() for key in data),
-        "cloud_init_present": cloud_init_expectation["present"],
+        "cloud_init_present": cloud_init_present,
     }
+
+
+def validate_target_config(
+    value: object,
+    *,
+    target_vmid: int,
+    marker: str | None,
+    isolated: bool,
+    expected_disk_keys: list[str],
+    storage_id: str,
+    cloud_init_expectation: object,
+) -> dict:
+    """Validate target state against the authenticated source cloud-init expectation."""
+    require(
+        isinstance(cloud_init_expectation, dict)
+        and set(cloud_init_expectation) == {"present", "field_fingerprint", "scrub_keys"}
+        and type(cloud_init_expectation.get("present")) is bool
+        and isinstance(cloud_init_expectation.get("field_fingerprint"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", cloud_init_expectation["field_fingerprint"]) is not None
+        and isinstance(cloud_init_expectation.get("scrub_keys"), list)
+        and all(key in CLOUD_INIT_SCRUB_FIELDS for key in cloud_init_expectation["scrub_keys"])
+        and len(cloud_init_expectation["scrub_keys"]) == len(set(cloud_init_expectation["scrub_keys"])),
+        "target_config_invalid",
+    )
+    return _validate_target_config(
+        value,
+        target_vmid=target_vmid,
+        marker=marker,
+        isolated=isolated,
+        expected_disk_keys=expected_disk_keys,
+        storage_id=storage_id,
+        cloud_init_present=cloud_init_expectation["present"],
+        source_field_fingerprint=cloud_init_expectation["field_fingerprint"],
+    )
+
+
+def validate_cleanup_target_config(
+    value: object,
+    *,
+    target_vmid: int,
+    marker: str,
+    expected_disk_keys: list[str],
+    storage_id: str,
+    expected_config_sha256: str,
+) -> dict:
+    """Bind cleanup to the receipt's exact isolated config before deriving ide2 state."""
+    require(
+        isinstance(value, dict) and value.get("status") == 200 and isinstance(value.get("data"), dict),
+        "target_config_invalid",
+    )
+    data = value["data"]
+    require(
+        isinstance(expected_config_sha256, str) and re.fullmatch(r"[0-9a-f]{64}", expected_config_sha256),
+        "target_config_invalid",
+    )
+    config_fingerprint = _target_config_fingerprint(data)
+    require(config_fingerprint == expected_config_sha256, "target_config_invalid")
+
+    # The matched digest is from the authenticated restore receipt. Only now can ide2 in
+    # those exact bytes determine whether the isolated target owns a regenerated auxiliary.
+    ide2 = data.get("ide2")
+    cloud_init_present = ide2 is not None and ide2 != "none,media=cdrom"
+    return _validate_target_config(
+        value,
+        target_vmid=target_vmid,
+        marker=marker,
+        isolated=True,
+        expected_disk_keys=expected_disk_keys,
+        storage_id=storage_id,
+        cloud_init_present=cloud_init_present,
+        source_field_fingerprint=None,
+    )
 
 
 def parse_guest_exec_status(value: object) -> dict:
@@ -752,6 +819,28 @@ def _main() -> int:
                 expected_disk_keys=payload.get("expected_disk_keys"),
                 storage_id=payload.get("storage_id"),
                 cloud_init_expectation=payload.get("cloud_init_expectation"),
+            )
+        elif mode == "cleanup_target_config":
+            require(
+                set(payload)
+                == {
+                    "mode",
+                    "config",
+                    "target_vmid",
+                    "marker",
+                    "expected_disk_keys",
+                    "storage_id",
+                    "expected_config_sha256",
+                },
+                "invalid_input",
+            )
+            result = validate_cleanup_target_config(
+                payload.get("config"),
+                target_vmid=payload.get("target_vmid"),
+                marker=payload.get("marker"),
+                expected_disk_keys=payload.get("expected_disk_keys"),
+                storage_id=payload.get("storage_id"),
+                expected_config_sha256=payload.get("expected_config_sha256"),
             )
         elif mode == "qga_exec_status":
             require(set(payload) == {"mode", "status"}, "invalid_input")
