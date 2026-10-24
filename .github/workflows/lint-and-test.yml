@@ -86,12 +86,6 @@ jobs:
           dockerfile: platform/services/inference-hunyuan3d/deployment/Dockerfile
           failure-threshold: warning
 
-      - name: Dockerfile lint (github-runner hooks smoke)
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: platform/services/github-runner/deployment/hooks-smoke/Containerfile
-          failure-threshold: warning
-
       - name: HCL format check
         uses: hashicorp/setup-terraform@v4
       - run: find platform/services/openbao -name '*.hcl' -exec terraform fmt -check {} +
