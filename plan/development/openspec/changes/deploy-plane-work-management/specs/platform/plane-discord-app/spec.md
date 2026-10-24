@@ -39,9 +39,9 @@ The webhook receiver SHALL verify each delivery before it acts on the delivery. 
 - **WHEN** the webhook secret is regenerated in Plane, the new value is stored, and the app is redeployed
 - **THEN** a delivery signed with the old secret is refused from the moment the new secret is generated
 
-### Requirement: Each delivery is posted at most once
+### Requirement: Each delivery is posted once and never lost to a failed post
 
-Before it posts a verified delivery, the app MUST atomically claim the event's identity, the identifier Plane keeps unchanged across retries of one event (the payload's event id or the `X-Plane-Delivery` header, whichever spike 0.15 shows is stable), in a persistent store on the app's own volume. The claim SHALL be a unique-key insert. A delivery identity that has been claimed MUST NOT be posted again, so that retries and concurrent deliveries cannot produce duplicate posts.
+The app keys each delivery on the event's identity, the identifier Plane keeps unchanged across retries of one event (the payload's event id or the `X-Plane-Delivery` header, whichever spike 0.15 shows is stable), in a persistent store on the app's own volume. Before posting, it MUST take a `pending` lease on that identity with a unique-key insert that records the lease time. It MUST mark the identity `posted` only after Discord accepts the post. When the post fails or times out, it MUST release the lease and answer Plane with an error status, so that Plane's own retry delivers the event again. A delivery whose identity is `posted` MUST NOT be posted again. A delivery that meets an unexpired `pending` lease is answered with an error status and is not posted, so concurrent deliveries post once. A `pending` lease older than the lease period, left by a process that stopped, is treated as released. Delivery is therefore at least once up to Plane's retry limit, and a duplicate post is possible only when Discord accepted a post whose acknowledgement was lost.
 
 #### Scenario: Redelivered event is not posted twice
 
@@ -52,6 +52,11 @@ Before it posts a verified delivery, the app MUST atomically claim the event's i
 
 - **WHEN** two deliveries that carry the same delivery identity arrive at the same time
 - **THEN** exactly one of them is posted to Discord
+
+#### Scenario: Failed post is retried
+
+- **WHEN** the Discord post for a verified delivery fails
+- **THEN** the app releases the lease and answers Plane with an error status, and Plane's retry of the same event is posted
 
 ### Requirement: Slash commands are received over the Gateway and answered over HTTP
 
