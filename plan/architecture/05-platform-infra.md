@@ -349,6 +349,49 @@ The pointer in plan 06 that this record promised was added on 2026-10-04
 this date. The section heading and the Status paragraph are left as written, so the diff stays
 append-only.
 
+## MCP endpoint and the one admin list (PROPOSED 2026-10-15, awaiting operator confirmation)
+
+Status: **Proposed.** Becomes Accepted only when the operator confirms this text, by an appended
+line as for the inference-gateway record above; until then it binds nothing. The implementer does
+not mark it Accepted. Author: Joseph A. Wisneski IV <stray@uhstray.io>.
+
+**Decision.** Three linked decisions from OpenSpec change `agentgateway-mcp`:
+
+1. **MCP is served on its own hostname, `mcp.<zone>`, and authenticated by the gateway's own key
+   check.** Caddy proxies the exact path `/mcp` there (every other path is a 404) over the same mutual-TLS
+   upstream transport as the operator-UI host; Cloudflare declares the record, a managed-challenge skip for
+   `/mcp` only and its own rate-limit rule in `platform/infra/cloudflare`, applied by
+   `apply-cloudflare-tofu.yml`. The inference hostname's allowlist is not changed.
+2. **One declared admin list is the authority for who is an administrator.** `platform_admins`, declared in
+   site-config, renders the Authentik `platform-admins` accounts and derives one personal gateway identity per
+   entry (gated by `agw_admin_identities_enabled`). The fixed Authentik admin blocks are gone; MCP is admitted
+   for these personal identities only, never for a service client in `agw_clients`.
+3. **Retirement is a declared list.** An account is deleted by naming its username in
+   `platform_retired_accounts` and running Deploy Authentik, not by deleting a blueprint or an account by hand;
+   a retired administrator's gateway key is then revoked with `Manage agentgateway Client Key`.
+
+**Alternatives rejected.**
+
+1. *`/mcp` on the inference host.* Rejected: it widens an allowlist that exists because the upstream leaves
+   control routes unauthenticated, and couples MCP traffic to the inference rate limit and challenge skip.
+2. *LAN-only.* Rejected: the premise is workstation harnesses reaching the gateway from outside the LAN, as
+   inference clients already do through the public edge.
+3. *MCP under the admin-UI host.* Rejected: that host sits under Cloudflare's managed challenge, which the
+   inference skip rule does not extend to, and it exists for a browser login a machine client cannot complete.
+4. *Keeping two lists (the fixed Authentik admin blocks and the gateway's `agw_clients`) and documenting the
+   sync.* Rejected: it was the prior state and it already produced a second admin with a UI login and no API
+   key.
+5. *A shared key held by the operator for MCP.* Rejected: one leak rotates for everyone, and no identity or
+   budget is per person.
+
+**Consequences.** MCP spend through the chat tool is bounded by one internal identity's budget
+(`mcp-self`), not by each admin's own. An observation from production on 2026-10-15: `/mcp` on the inference
+hostname answers 403 with `cf-mitigated: challenge` before reaching Caddy (the skip rule covers `/v1/*` and
+`/health` only), stricter than the 404 Caddy gives; the MCP hostname's keyless `/mcp` is 401 with no challenge.
+Deliberation, findings and the phased plan: `plan/development/openspec/changes/agentgateway-mcp`
+(`design.md` D1 and D3). Operator procedures: `platform/services/agentgateway/context/architecture.md`,
+"Operator operations".
+
 ## Internal DNS naming (decided 2026-09-28)
 
 Status: **Proposed (decisions by Joe 2026-09-28).** Joe decided the scheme and the

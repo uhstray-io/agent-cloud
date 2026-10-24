@@ -193,4 +193,4 @@
           after the write — do not trust a later run against it.
         success_msg: >-
           Record {{ _match.id }} ('{{ _name }}') matches {{ inventory_source }}
-          ({{ _content | length }} bytes).
+          ({{ _content | length }} characters).

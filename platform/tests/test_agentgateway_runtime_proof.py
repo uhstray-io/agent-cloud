@@ -36,8 +36,8 @@ RENDERED_CONFIG = (
     "    add:\n"
     "      identity: apiKey.name\n"
     "  tracing:\n"
-    "    randomSampling: 0.05\n"
-    "    clientSampling: 0.05\n"
+    "    randomSampling: 0.1\n"
+    "    clientSampling: false\n"
 )
 
 
@@ -874,7 +874,8 @@ def test_rendered_config_inspector_emits_only_pinned_image_sampling_revision_and
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "pass"
     assert report["image"] == "cr.agentgateway.dev/agentgateway:v1.5.0"
-    assert report["random_sampling"] == report["client_sampling"] == 0.05
+    assert report["random_sampling"] == 0.1
+    assert report["client_sampling"] is False
     assert report["checkout_revision"] == "a" * 40
     assert "do-not-print-this" not in json.dumps(report)
     assert "config.yaml" not in json.dumps(report)
@@ -908,6 +909,9 @@ def test_rendered_config_inspector_rejects_sampling_or_image_drift(tmp_path, cap
         ("randomSampling", "0"),
         ("randomSampling", "0.2"),
         ("randomSampling", "true"),
+        ("clientSampling", "true"),
+        ("clientSampling", "0.05"),
+        ("clientSampling", "0.1"),
         ("clientSampling", "0.2"),
         ("clientSampling", "0.03"),
     ],
@@ -917,7 +921,8 @@ def test_rendered_config_inspector_rejects_invalid_sampling_values(tmp_path, cap
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
-    config.write_text(RENDERED_CONFIG.replace(f"{field}: 0.05", f"{field}: {value}"))
+    safe_value = "0.1" if field == "randomSampling" else "false"
+    config.write_text(RENDERED_CONFIG.replace(f"{field}: {safe_value}", f"{field}: {value}"))
     import sys
     from unittest.mock import patch
 
@@ -928,26 +933,26 @@ def test_rendered_config_inspector_rejects_invalid_sampling_values(tmp_path, cap
     assert "do-not-print-this" not in json.dumps(report)
 
 
-def test_rendered_config_inspector_accepts_inclusive_sampling_limit(tmp_path, capsys):
+def test_rendered_config_inspector_accepts_inclusive_random_sampling_limit(tmp_path, capsys):
     helper = _load_helper()
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
-    config.write_text(
-        RENDERED_CONFIG.replace("randomSampling: 0.05", "randomSampling: 0.1").replace(
-            "clientSampling: 0.05", "clientSampling: 0.1"
-        )
-    )
+    config.write_text(RENDERED_CONFIG)
     from unittest.mock import patch
 
     with patch.object(sys, "stdin", open_json_input(env, config)):
         assert helper.main() == 0
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "pass"
-    assert report["random_sampling"] == report["client_sampling"] == 0.1
+    assert report["random_sampling"] == 0.1
+    assert report["client_sampling"] is False
 
 
-def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsys):
+@pytest.mark.parametrize(("sampling", "expected_random_sampling"), [(None, 0.1), (0.05, 0.05)])
+def test_actual_config_template_render_passes_sampling_inspector(
+    tmp_path, capsys, sampling, expected_random_sampling
+):
     env = Environment(trim_blocks=True, lstrip_blocks=True)
     env.filters.update(
         bool=bool,
@@ -956,12 +961,12 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
         hash=lambda value, algorithm="sha256": hashlib.new(algorithm, str(value).encode()).hexdigest(),
         to_json=lambda value: json.dumps(value),
     )
-    rendered = env.from_string(CONFIG_TEMPLATE.read_text()).render(
+    template_vars = dict(
         agw_ui_enabled=False,
         agw_listener_tls=False,
         internal_leaves=[],
         agw_otlp_host="alloy.example:4317",
-        agw_trace_sampling=0.05,
+        agw_otlp_traces=True,
         agw_clients=["test-client"],
         agw_client_policies={},
         agw_plaintext_keys=False,
@@ -971,6 +976,9 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
         agw_models=[{"name": "test-model"}],
         agw_upstream_base_url="https://model.example/v1",
     )
+    if sampling is not None:
+        template_vars["agw_trace_sampling"] = sampling
+    rendered = env.from_string(CONFIG_TEMPLATE.read_text()).render(**template_vars)
     yaml.safe_load(rendered)
     env_file = tmp_path / ".env"
     config = tmp_path / "config.yaml"
@@ -984,7 +992,8 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
         assert helper.main() == 0
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "pass"
-    assert report["random_sampling"] == report["client_sampling"] == 0.05
+    assert report["random_sampling"] == expected_random_sampling
+    assert report["client_sampling"] is False
     assert "test-only-client-key" not in json.dumps(report)
     assert "test-only-upstream-key" not in json.dumps(report)
 
@@ -1059,14 +1068,14 @@ def test_rendered_config_inspector_accepts_disabled_client_sampling(tmp_path, ca
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
-    config.write_text(RENDERED_CONFIG.replace("clientSampling: 0.05", "clientSampling: false"))
+    config.write_text(RENDERED_CONFIG)
     import sys
     from unittest.mock import patch
 
     with patch.object(sys, "stdin", open_json_input(env, config)):
         assert helper.main() == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["random_sampling"] == 0.05
+    assert report["random_sampling"] == 0.1
     assert report["client_sampling"] is False
 
 

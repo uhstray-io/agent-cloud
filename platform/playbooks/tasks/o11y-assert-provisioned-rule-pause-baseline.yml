@@ -1,0 +1,35 @@
+---
+- name: Read the deployed provisioned alert rules
+  ansible.builtin.slurp:
+    src: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
+  register: _o11y_alert_baseline_file
+  no_log: true
+
+- name: Parse the provisioned and live o11y rule baselines
+  ansible.builtin.set_fact:
+    _o11y_baseline_rules: >-
+      {{ (_o11y_alert_baseline_file.content | b64decode | from_yaml)['groups'] |
+         map(attribute='rules') | flatten |
+         selectattr('uid', 'match', '^o11y_') | list }}
+    _o11y_live_rules: >-
+      {{ o11y_live_alert_rules_json | from_json |
+         selectattr('uid', 'match', '^o11y_') | list }}
+  no_log: true
+
+- name: Refuse any o11y alert rule drift from the provisioned pause baseline
+  ansible.builtin.assert:
+    that:
+      - _o11y_baseline_rules | length > 0
+      - _o11y_baseline_uids | length == _o11y_baseline_uids | unique | list | length
+      - _o11y_live_uids | length == _o11y_live_uids | unique | list | length
+      - _o11y_baseline_uids | sort == _o11y_live_uids | sort
+      - _o11y_baseline_rules | selectattr('isPaused', 'defined') | list | length == _o11y_baseline_rules | length
+      - _o11y_live_rules | selectattr('isPaused', 'defined') | list | length == _o11y_live_rules | length
+      - _o11y_baseline_rules | selectattr('isPaused', 'boolean') | list | length == _o11y_baseline_rules | length
+      - _o11y_live_rules | selectattr('isPaused', 'boolean') | list | length == _o11y_live_rules | length
+      - (_o11y_baseline_rules | sort(attribute='uid') | map(attribute='isPaused') | list) == (_o11y_live_rules | sort(attribute='uid') | map(attribute='isPaused') | list)
+    fail_msg: "The live o11y rule UID or pause state differs from the deployed provisioned baseline; no alert state was changed."
+  no_log: true
+  vars:
+    _o11y_baseline_uids: "{{ _o11y_baseline_rules | map(attribute='uid') | list }}"
+    _o11y_live_uids: "{{ _o11y_live_rules | map(attribute='uid') | list }}"

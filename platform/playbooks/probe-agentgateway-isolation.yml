@@ -89,15 +89,21 @@
     # Never burst an identity that has a real budget: the probe spends it down on purpose.
     _budget_cap: 1000
     _burst_budget: "{{ ((agw_client_policies | default({}))[_burst] | default({})).tokens_per_hour | default('', true) }}"
-    # Order-preserving, as the conformance run and the deploy verify pick their model.
+    # Order-preserving, as the conformance run and the deploy verify pick their model. OpenRouter
+    # models (agentgateway-openrouter) are never picked: the burst sends real requests and
+    # OpenRouter is billed per token.
     _burst_models: >-
       {{ ((agw_client_policies | default({}))[_burst] | default({})).allowed_models
          | default(agw_models | default([]) | map(attribute='name') | list)
-         | select('in', agw_models | default([]) | map(attribute='name') | list) | list }}
+         | select('in', agw_models | default([]) | map(attribute='name') | list)
+         | reject('in', _openrouter_names) | list }}
     _control_models: >-
       {{ ((agw_client_policies | default({}))[_control] | default({})).allowed_models
          | default(agw_models | default([]) | map(attribute='name') | list)
-         | select('in', agw_models | default([]) | map(attribute='name') | list) | list }}
+         | select('in', agw_models | default([]) | map(attribute='name') | list)
+         | reject('in', _openrouter_names) | list }}
+    _openrouter_names: >-
+      {{ agw_models | default([]) | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list }}
     _attempts_max: 5
 
   tasks:

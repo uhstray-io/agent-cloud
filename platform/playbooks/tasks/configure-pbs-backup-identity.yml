@@ -1,0 +1,309 @@
+---
+# Establish one stable passwordless PBS user/token pair, persist its token before
+# granting access, then reconcile and verify only DatastoreBackup on /datastore/o11y.
+
+- name: Create the passwordless PBS backup realm user when the full identity is absent
+  ansible.builtin.command:
+    argv: [proxmox-backup-manager, user, create, o11y-backup@pbs, --enable, "1", --expire, "0", --comment, "PVE o11y backup client"]
+  when:
+    - not ansible_check_mode
+    - _pbs_backup_identity_action == 'create'
+  changed_when: true
+  no_log: true
+
+- name: Mint the stable PBS token without ACLs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - generate-token
+      - o11y-backup@pbs
+      - pve-o11y
+      - --enable
+      - "1"
+      - --expire
+      - "0"
+      - --comment
+      - "PVE o11y backup client"
+  register: _pbs_generated_token
+  when:
+    - not ansible_check_mode
+    - _pbs_backup_identity_action == 'create'
+  changed_when: true
+  no_log: true
+
+- name: Keep only the newly generated token fields in protected task state
+  ansible.builtin.set_fact:
+    _pbs_token_generated: "{{ _pbs_generated_token.stdout | from_json }}"
+    _pbs_token_secret: "{{ (_pbs_generated_token.stdout | from_json).value }}"
+    _pbs_token_record: >-
+      {{ {'user': 'o11y-backup@pbs', 'token_id': 'o11y-backup@pbs!pve-o11y',
+          'secret': (_pbs_generated_token.stdout | from_json).value,
+          'datastore': 'o11y', 'fingerprint': _pbs_backup_fingerprint} }}
+  when: _pbs_backup_identity_action == 'create'
+  no_log: true
+
+- name: Reuse the OpenBao-owned PBS token on the existing identity state
+  ansible.builtin.set_fact:
+    _pbs_token_secret: "{{ hostvars['localhost']._pbs_saved_token_record.secret }}"
+    _pbs_token_record: "{{ hostvars['localhost']._pbs_saved_token_record }}"
+  when: _pbs_backup_identity_action == 'reuse'
+  no_log: true
+
+- name: Persist the newly minted token with guarded OpenBao CAS before granting PBS ACLs
+  ansible.builtin.include_tasks:
+    file: bao-merge-keys.yml
+    apply:
+      become: false
+  vars:
+    _bm_url: "{{ _pbs_backup_bao_url }}"
+    _bm_token: "{{ hostvars['localhost']._bao_token }}"
+    _bm_path: services/pbs
+    _bm_data:
+      o11y_backup_user: o11y-backup@pbs
+      o11y_backup_token_id: o11y-backup@pbs!pve-o11y
+      o11y_backup_token_secret: "{{ _pbs_token_secret }}"
+      o11y_backup_datastore: o11y
+      o11y_backup_fingerprint: "{{ _pbs_backup_fingerprint }}"
+    # Each field selected as absent by the PBS identity preflight must still
+    # be absent in bao-merge-keys' own fresh read before the token is written.
+    _bm_guard_absent_keys:
+      - o11y_backup_user
+      - o11y_backup_token_id
+      - o11y_backup_token_secret
+      - o11y_backup_datastore
+      - o11y_backup_fingerprint
+  when: _pbs_backup_identity_action == 'create'
+
+- name: Read back the authoritative PBS token record from OpenBao
+  ansible.builtin.uri:
+    url: "{{ _pbs_backup_bao_url }}/v1/secret/data/services/pbs"
+    method: GET
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ hostvars['localhost']._bao_token }}"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  register: _pbs_token_readback
+  no_log: true
+  check_mode: false
+
+- name: Require OpenBao to hold the exact stable PBS credential fields
+  ansible.builtin.assert:
+    that:
+      - _pbs_token_readback.json.data.data.o11y_backup_user == 'o11y-backup@pbs'
+      - _pbs_token_readback.json.data.data.o11y_backup_token_id == 'o11y-backup@pbs!pve-o11y'
+      - _pbs_token_readback.json.data.data.o11y_backup_datastore == 'o11y'
+      - _pbs_token_readback.json.data.data.o11y_backup_fingerprint == _pbs_backup_fingerprint
+      - _pbs_token_readback.json.data.data.o11y_backup_token_secret == _pbs_token_secret
+    fail_msg: "OpenBao readback does not match the stable PBS backup identity; no ACL is granted."
+    quiet: true
+  no_log: true
+
+- name: Prove PBS token authentication after validating the TLS fingerprint on the same connection
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", probe]
+    stdin: >-
+      {{ {'url': hostvars['localhost']._pbs_api_url,
+          'fingerprint': _pbs_backup_fingerprint,
+          'auth_id': 'o11y-backup@pbs!pve-o11y',
+          'secret': _pbs_token_secret} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: _pbs_auth_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the pinned PBS token authentication probe
+  ansible.builtin.assert:
+    that: _pbs_auth_probe.rc == 0
+    fail_msg: "The stored PBS token failed certificate-pinned authentication."
+    quiet: true
+
+- name: Read current PBS users, tokens, ACLs, and effective permissions after credential persistence
+  ansible.builtin.command:
+    argv: "{{ item.argv }}"
+  loop:
+    - {key: users, argv: [proxmox-backup-manager, user, list, --output-format, json]}
+    - {key: tokens, argv: [proxmox-backup-manager, user, list-tokens, o11y-backup@pbs, --output-format, json]}
+    - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
+    - {key: user_permissions, argv: [proxmox-backup-manager, user, permissions, o11y-backup@pbs, --output-format, json]}
+    - {key: token_permissions, argv: [proxmox-backup-manager, user, permissions, "o11y-backup@pbs!pve-o11y", --output-format, json]}
+  loop_control:
+    label: "PBS {{ item.key }} readback"
+  register: _pbs_access_reads
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Assemble protected PBS identity and permission readbacks
+  ansible.builtin.set_fact:
+    _pbs_access_data: >-
+      {{ dict(_pbs_access_reads.results | map(attribute='item.key')
+        | zip(_pbs_access_reads.results | map(attribute='stdout') | map('from_json'))) }}
+  no_log: true
+
+- name: Require the persisted stable user and token to be enabled and non-expiring
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", identity]
+    stdin: >-
+      {{ {'users': _pbs_access_data.users,
+          'tokens': _pbs_access_data.tokens,
+          'secret_record': _pbs_token_record,
+          'authenticated': true} | to_json }}
+  register: _pbs_identity_readback
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate all existing PBS grants and plan only missing exact ACL entries
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", acl-plan]
+    stdin: >-
+      {{ {'user_permissions': _pbs_access_data.user_permissions,
+          'token_permissions': _pbs_access_data.token_permissions,
+          'acl_rows': _pbs_access_data.acls} | to_json }}
+  register: _pbs_acl_plan
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse unsupported current PBS ACLs or effective permission schema
+  ansible.builtin.assert:
+    that:
+      - _pbs_acl_plan.rc == 0
+      - _pbs_identity_readback.rc == 0
+    fail_msg: >-
+      PBS backup identity or effective permissions do not match the supported
+      backup-only contract; no ACL was changed.
+    quiet: true
+
+- name: Read ACL configuration digest before the user ACL write
+  ansible.builtin.stat:
+    path: /etc/proxmox-backup/acl.cfg
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: _pbs_acl_file_user
+  changed_when: false
+  when: "'o11y-backup@pbs' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+
+- name: Require regular PBS ACL configuration before a digest-guarded grant
+  ansible.builtin.assert:
+    that:
+      - _pbs_acl_file_user.stat.isreg | default(false)
+      - not (_pbs_acl_file_user.stat.islnk | default(false))
+    fail_msg: "PBS ACL configuration is absent or is not a regular file; no unguarded grant is allowed."
+    quiet: true
+  when: "'o11y-backup@pbs' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+
+- name: Grant only the non-propagating DatastoreBackup role to the PBS user
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - acl
+      - update
+      - /datastore/o11y
+      - DatastoreBackup
+      - --auth-id
+      - o11y-backup@pbs
+      - --propagate
+      - "0"
+      - --digest
+      - "{{ _pbs_acl_file_user.stat.checksum }}"
+  when:
+    - not ansible_check_mode
+    - "'o11y-backup@pbs' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+  changed_when: true
+  no_log: true
+
+- name: Read ACL configuration digest before the token ACL write
+  ansible.builtin.stat:
+    path: /etc/proxmox-backup/acl.cfg
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: _pbs_acl_file_token
+  changed_when: false
+  when: "'o11y-backup@pbs!pve-o11y' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+
+- name: Require regular PBS ACL configuration before the token digest-guarded grant
+  ansible.builtin.assert:
+    that:
+      - _pbs_acl_file_token.stat.isreg | default(false)
+      - not (_pbs_acl_file_token.stat.islnk | default(false))
+    fail_msg: "PBS ACL configuration is absent or is not a regular file; no unguarded grant is allowed."
+    quiet: true
+  when: "'o11y-backup@pbs!pve-o11y' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+
+- name: Grant only the non-propagating DatastoreBackup role to the PBS token
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - acl
+      - update
+      - /datastore/o11y
+      - DatastoreBackup
+      - --auth-id
+      - o11y-backup@pbs!pve-o11y
+      - --propagate
+      - "0"
+      - --digest
+      - "{{ _pbs_acl_file_token.stat.checksum }}"
+  when:
+    - not ansible_check_mode
+    - "'o11y-backup@pbs!pve-o11y' in ((_pbs_acl_plan.stdout | from_json).missing_auth_ids)"
+  changed_when: true
+  no_log: true
+
+- name: Read back both PBS effective permission sets and the complete ACL list
+  ansible.builtin.command:
+    argv: "{{ item.argv }}"
+  loop:
+    - {key: user_permissions, argv: [proxmox-backup-manager, user, permissions, o11y-backup@pbs, --output-format, json]}
+    - {key: token_permissions, argv: [proxmox-backup-manager, user, permissions, "o11y-backup@pbs!pve-o11y", --output-format, json]}
+    - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
+  loop_control:
+    label: "PBS {{ item.key }} final readback"
+  register: _pbs_final_access_reads
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Assemble protected final PBS ACL readbacks
+  ansible.builtin.set_fact:
+    _pbs_final_access_data: >-
+      {{ dict(_pbs_final_access_reads.results | map(attribute='item.key')
+        | zip(_pbs_final_access_reads.results | map(attribute='stdout') | map('from_json'))) }}
+  no_log: true
+
+- name: Verify the user and token effective permission intersection is backup-only
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", permissions]
+    stdin: >-
+      {{ {'user_permissions': _pbs_final_access_data.user_permissions,
+          'token_permissions': _pbs_final_access_data.token_permissions,
+          'acl_rows': _pbs_final_access_data.acls} | to_json }}
+  register: _pbs_final_permission_check
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require final PBS backup-only effective permissions
+  ansible.builtin.assert:
+    that: _pbs_final_permission_check.rc == 0
+    fail_msg: "PBS effective permission readback is not exactly DatastoreBackup on /datastore/o11y with propagation disabled."
+    quiet: true

@@ -1,0 +1,450 @@
+---
+# Re-query one accepted historical sample around a restart of Pyroscope only.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed operation source
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/restart-o11y-pyroscope-durability.yml
+      - platform/playbooks/files/restart-o11y-pyroscope-durability.py
+      - platform/playbooks/files/validate-o11y-profile-acceptance-task.py
+      - platform/playbooks/files/o11y-profile-pilot-operation.py
+      - platform/services/o11y/deployment/templates/config.alloy.j2
+
+- name: Verify the exact prior acceptance task before contacting the receiver
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _durability_internal_names:
+      - _durability_internal_names
+      - _durability_forgeries
+      - _durability_task_id
+      - _durability_controller_sha
+      - _durability_bao_auth
+      - _durability_semaphore_secret
+      - _durability_semaphore
+      - _durability_task
+      - _durability_acceptance_output
+      - _durability_template
+      - _durability_repository
+      - _durability_acceptance_raw
+      - _durability_acceptance
+      - estate_coverage_semaphore_project_id
+    _durability_forgeries: "{{ _durability_internal_names | intersect('' | extra_var_names) }}"
+    _durability_task_id: "{{ o11y_profile_acceptance_task_id | default('') | string }}"
+  tasks:
+    - name: Validate the reviewed revisions and task binding input
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_acceptance_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - _durability_task_id is match('^[1-9][0-9]*$')
+          - estate_coverage_semaphore_project_id is integer
+          - estate_coverage_semaphore_project_id is not boolean
+          - estate_coverage_semaphore_project_id > 0
+          - _durability_forgeries | length == 0
+        fail_msg: "Pyroscope durability proof refused: a reviewed revision or acceptance task binding is invalid."
+        quiet: true
+
+    - name: Verify the exact controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _durability_controller_sha
+      changed_when: false
+      check_mode: false
+
+    - name: Require the reviewed controller revision
+      ansible.builtin.assert:
+        that: _durability_controller_sha.stdout == expected_repository_sha
+        fail_msg: "Pyroscope durability proof refused: controller source differs from the reviewed revision."
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+          secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _durability_bao_auth
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read Semaphore API credentials from OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}/v1/secret/data/services/semaphore"
+        headers:
+          X-Vault-Token: "{{ _durability_bao_auth.json.auth.client_token | default('') }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _durability_semaphore_secret
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Retain Semaphore API credentials in memory
+      ansible.builtin.set_fact:
+        _durability_semaphore: "{{ _durability_semaphore_secret.json.data.data | default({}) }}"
+      no_log: true
+
+    - name: Require Semaphore API credentials without revealing them
+      ansible.builtin.assert:
+        that:
+          - _durability_semaphore.url | default('') | length > 0
+          - _durability_semaphore.api_token | default('') | length > 0
+          - _durability_bao_auth.json.auth.client_token | default('') | length > 0
+        fail_msg: "Pyroscope durability proof refused: Semaphore API credentials are unavailable from OpenBao."
+        quiet: true
+      no_log: true
+
+    - name: Refuse cleartext Semaphore transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _durability_semaphore.url }}"
+        _assert_url_label: Semaphore
+
+    - name: Read the declared acceptance task
+      ansible.builtin.uri:
+        url: "{{ _durability_semaphore.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _durability_task_id }}"
+        headers:
+          Authorization: "Bearer {{ _durability_semaphore.api_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _durability_task
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a numeric template binding from the task record
+      ansible.builtin.assert:
+        that:
+          - _durability_task.json.id | default(0) | int == _durability_task_id | int
+          - _durability_task.json.template_id | default(0) | int > 0
+        fail_msg: "Pyroscope durability proof refused: acceptance task identity is unavailable."
+        quiet: true
+      no_log: true
+
+    - name: Read the acceptance task output
+      ansible.builtin.uri:
+        url: "{{ _durability_semaphore.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _durability_task_id }}/output"
+        headers:
+          Authorization: "Bearer {{ _durability_semaphore.api_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _durability_acceptance_output
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the acceptance template binding
+      ansible.builtin.uri:
+        url: "{{ _durability_semaphore.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/templates/{{ _durability_task.json.template_id }}"
+        headers:
+          Authorization: "Bearer {{ _durability_semaphore.api_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _durability_template
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the acceptance template repository binding
+      ansible.builtin.uri:
+        url: "{{ _durability_semaphore.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/repositories/{{ _durability_template.json.repository_id }}"
+        headers:
+          Authorization: "Bearer {{ _durability_semaphore.api_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _durability_repository
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Validate the fixed successful acceptance receipt and bounded task window
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/validate-o11y-profile-acceptance-task.py"]
+        stdin: >-
+          {{ {'task_id': _durability_task_id | int,
+              'project_id': estate_coverage_semaphore_project_id,
+              'expected_acceptance_sha': expected_acceptance_sha,
+              'expected_receiver_sha': expected_receiver_sha,
+              'task': _durability_task.json | default({}),
+              'output': _durability_acceptance_output.json | default([]),
+              'template': _durability_template.json | default({}),
+              'repository': _durability_repository.json | default({})} | to_json }}
+        stdin_add_newline: false
+      register: _durability_acceptance_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Parse the sanitized acceptance-window receipt
+      ansible.builtin.set_fact:
+        _durability_acceptance: "{{ _durability_acceptance_raw.stdout | default('{}', true) | from_json }}"
+      no_log: true
+
+    - name: Require the exact prior successful acceptance receipt
+      ansible.builtin.assert:
+        that:
+          - _durability_acceptance.schema_version | default(0) == 1
+          - _durability_acceptance.status | default('') == 'verified'
+          - _durability_acceptance.reason | default('') == 'acceptance_task_receipt_verified'
+          - _durability_acceptance.task_id | default(0) | int == _durability_task_id | int
+          - _durability_acceptance.receiver_sha | default('') == expected_receiver_sha
+        fail_msg: "Pyroscope durability proof refused: prior acceptance task or exact-revision receipt is invalid."
+        quiet: true
+      no_log: true
+
+- name: Restart only Pyroscope and query the historical pilot window
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars_files:
+    - vars/o11y-metric-labels.yml
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _durability_monorepo: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _durability_deploy_dir: "{{ _durability_monorepo }}/{{ monorepo_deploy_path }}"
+    _durability_internal_names:
+      - _durability_internal_names
+      - _durability_forgeries
+      - _durability_hosts
+      - ansible_python_interpreter
+      - ansible_connection
+      - ansible_host
+      - ansible_user
+      - ansible_port
+      - ansible_become
+      - become
+      - ansible_become_user
+      - become_user
+      - ansible_become_method
+      - become_method
+      - ansible_remote_tmp
+      - o11y_alloy_profile_pilot_enabled
+      - local_mode
+      - podman_rootful
+      - container_engine
+      - local_monorepo_dir
+      - monorepo_deploy_path
+      - _durability_monorepo
+      - _durability_deploy_dir
+      - _durability_receiver_sha
+      - _durability_workspace
+      - _durability_disabled_config
+      - _durability_operation_raw
+      - _durability_receipt_json
+      - _durability_receipt
+    _durability_hosts: "{{ groups.get('o11y_svc', []) }}"
+    _durability_forgeries: "{{ _durability_internal_names | intersect('' | extra_var_names) }}"
+  tasks:
+    - name: Refuse an enabled profile config or an ambiguous receiver scope
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - _durability_forgeries | length == 0
+          - _durability_hosts | length == 1
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - container_engine | default('') == 'podman'
+          - not (local_mode | default(false) | bool)
+          - not (podman_rootful | default(false) | bool)
+          - monorepo_deploy_path | default('') == 'platform/services/o11y/deployment'
+          - not (o11y_alloy_profile_pilot_enabled | default(false) | bool)
+        fail_msg: "Pyroscope durability proof refused: profile config is enabled or receiver scope is ambiguous."
+        quiet: true
+
+    - name: Verify the deployed receiver revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _durability_monorepo }}"
+      register: _durability_receiver_sha
+      changed_when: false
+      check_mode: false
+
+    - name: Require the reviewed receiver revision
+      ansible.builtin.assert:
+        that: _durability_receiver_sha.stdout == expected_receiver_sha
+        fail_msg: "Pyroscope durability proof refused: deployed receiver revision differs from the accepted revision."
+        quiet: true
+
+    - name: Require tmpfs for the bounded operation
+      ansible.builtin.import_tasks: tasks/require-tmpfs-remote-tmp.yml
+
+    - name: Allocate a private tmpfs workspace
+      ansible.builtin.tempfile:
+        state: directory
+        path: /dev/shm/ansible-tmp
+        prefix: o11y-profile-restart-
+      register: _durability_workspace
+
+    - name: Render the disabled Alloy config and stage the restart verifier
+      block:
+        - name: Render the disabled profile candidate
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+            dest: "{{ _durability_workspace.path }}/disabled.alloy"
+            mode: "0600"
+          vars:
+            o11y_alloy_profile_pilot_enabled: false
+          no_log: true
+
+        - name: Read the rendered disabled config into memory
+          ansible.builtin.slurp:
+            src: "{{ _durability_workspace.path }}/disabled.alloy"
+          register: _durability_disabled_config
+          no_log: true
+
+        - name: Copy the fixed restart verifier into tmpfs
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/restart-o11y-pyroscope-durability.py"
+            dest: "{{ _durability_workspace.path }}/restart.py"
+            mode: "0700"
+
+        - name: Copy the reviewed pilot operation helper beside the verifier
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/o11y-profile-pilot-operation.py"
+            dest: "{{ _durability_workspace.path }}/o11y-profile-pilot-operation.py"
+            mode: "0700"
+
+        - name: Compare the same historical CPU sample before and after restarting Pyroscope
+          ansible.builtin.command:
+            argv: [python3, "{{ _durability_workspace.path }}/restart.py"]
+            stdin: >-
+              {{ {'config_path': _durability_deploy_dir ~ '/config/config.alloy',
+                  'receiver_sha': expected_receiver_sha,
+                  'disabled': (_durability_disabled_config.content | b64decode),
+                  'acceptance': hostvars['localhost']._durability_acceptance} | to_json }}
+            stdin_add_newline: false
+          register: _durability_operation_raw
+          changed_when: >-
+            _durability_operation_raw.rc == 0 and
+            (_durability_operation_raw.stdout | from_json).restarted == 'completed'
+          failed_when: false
+          when: not ansible_check_mode
+          no_log: true
+
+        - name: Validate the fixed durability receipt JSON
+          ansible.builtin.command:
+            argv: [python3, -c, "import json,sys; json.load(sys.stdin)"]
+            stdin: "{{ _durability_operation_raw.stdout | default('', true) }}"
+            stdin_add_newline: false
+          register: _durability_receipt_json
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Emit a fixed failure when the restart verifier receipt is unavailable
+          ansible.builtin.debug:
+            msg:
+              schema_version: 1
+              status: unavailable
+              reason: operation_failed
+              service: o11y/alloy
+              restarted: unverified
+          changed_when: false
+          when: _durability_operation_raw.rc != 0 or _durability_receipt_json.rc != 0
+
+        - name: Parse the fixed sanitized durability receipt
+          ansible.builtin.set_fact:
+            _durability_receipt: "{{ _durability_operation_raw.stdout | from_json }}"
+          no_log: true
+
+        - name: Require the closed durability receipt schema
+          ansible.builtin.assert:
+            that:
+              - >-
+                _durability_receipt.keys() | sort ==
+                ['acceptance_sha', 'acceptance_task_id', 'container_identity', 'profile_type',
+                'query_after', 'query_before', 'ready', 'reason', 'receiver_sha', 'restarted',
+                'sample_fingerprint_sha256', 'schema_version', 'service', 'status',
+                'volume_metadata', 'window_end', 'window_start']
+              - _durability_receipt.schema_version == 1
+              - _durability_receipt.service == 'o11y/alloy'
+              - _durability_receipt.profile_type == 'CPU'
+              - _durability_receipt.status in ['verified', 'unavailable']
+              - _durability_receipt.reason in
+                ['invalid_input', 'config_not_disabled', 'baseline_ambiguous', 'receiver_unavailable',
+                'profile_not_queryable_before_restart', 'restart_failed', 'pyroscope_not_ready',
+                'container_identity_changed', 'container_metadata_changed', 'volume_metadata_changed',
+                'profile_not_queryable_after_restart', 'sample_changed', 'operation_failed',
+                'prior_sample_queryable_after_pyroscope_restart']
+              - _durability_receipt.receiver_sha == expected_receiver_sha
+              - _durability_receipt.acceptance_task_id | int == hostvars['localhost']._durability_acceptance.task_id | int
+              - >-
+                _durability_receipt.sample_fingerprint_sha256 | default('') == '' or
+                _durability_receipt.sample_fingerprint_sha256 is match('^[0-9a-f]{64}$')
+            fail_msg: "Pyroscope durability proof returned an invalid fixed receipt; raw output is suppressed."
+            quiet: true
+          no_log: true
+
+        - name: Report the bounded Pyroscope restart durability receipt
+          ansible.builtin.debug:
+            msg: "{{ _durability_receipt | to_json }}"
+          changed_when: false
+
+        - name: Require prior sample persistence across the Pyroscope restart
+          ansible.builtin.assert:
+            that:
+              - _durability_receipt.status == 'verified'
+              - _durability_receipt.reason == 'prior_sample_queryable_after_pyroscope_restart'
+              - _durability_receipt.query_before == 'observed'
+              - _durability_receipt.restarted == 'completed'
+              - _durability_receipt.ready == 'observed'
+              - _durability_receipt.query_after == 'observed'
+              - _durability_receipt.container_identity == 'preserved'
+              - _durability_receipt.volume_metadata == 'preserved'
+            fail_msg: >-
+              Pyroscope durability proof unavailable ({{ _durability_receipt.reason }});
+              task output and profile data are suppressed.
+            quiet: true
+
+      always:
+        - name: Remove the bounded operation workspace
+          ansible.builtin.file:
+            path: "{{ _durability_workspace.path }}"
+            state: absent
+          no_log: true
+          when: _durability_workspace.path is defined

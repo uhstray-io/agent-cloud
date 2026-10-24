@@ -231,6 +231,71 @@
           repository-authored code; granting it host administration defeats every other
           control here. Remove the sudoers entry before deploying.
 
+    # ── arm64 image builds: user-mode qemu ─────────────────────────────────
+    # Multi-arch image builds on these hosts run arm64 binaries through qemu's user-mode
+    # emulator, registered with the kernel's binfmt_misc. Unconditional: the pool builds
+    # images for every listed repository, so every host needs the handler.
+    #
+    # Ubuntu 24.04 (noble) qemu-user-static ships /usr/lib/binfmt.d/qemu-aarch64.conf and no
+    # /usr/share/binfmts entries, so systemd-binfmt.service registers the handler and
+    # binfmt-support is not needed. "At boot, systemd-binfmt.service reads configuration
+    # files from the above directories to register in the kernel"
+    # (https://www.freedesktop.org/software/systemd/man/latest/binfmt.d.html).
+    # Whether the package's postinst also registers at install time is unverified; the
+    # conditional restart below covers both cases.
+    - name: "Install user-mode qemu for arm64 binaries"
+      ansible.builtin.apt:
+        name: qemu-user-static
+        state: present
+      register: _qemu_pkg
+
+    - name: "Read the arm64 binfmt handler's state before registering it"
+      # Read-only probe: check_mode false, so a dry run reads the kernel's real state. The
+      # status file's first line is `enabled` or `disabled`
+      # (https://www.kernel.org/doc/html/latest/admin-guide/binfmt-misc.html). An absent
+      # handler makes the command fail, with empty stdout.
+      ansible.builtin.command: cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+      register: _qemu_binfmt_before
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Register the arm64 binfmt handler now, not only at the next boot"
+      # restarted, not started: a oneshot unit that already ran at boot is active, and
+      # started does nothing to it. Gated on the handler not being enabled, so a converged
+      # host is not touched.
+      ansible.builtin.systemd_service:
+        name: systemd-binfmt.service
+        state: restarted
+      register: _qemu_restart
+      when: (_qemu_binfmt_before.stdout_lines | default([]) | first | default('')) != 'enabled'
+
+    - name: "Read the arm64 binfmt handler's state after registering it"
+      ansible.builtin.command: cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+      register: _qemu_binfmt
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Require the arm64 binfmt handler to be registered and enabled"
+      # The first line is compared exactly: a substring match would also pass a handler
+      # whose flags or interpreter line happens to contain the word. Under --check the assert
+      # is skipped only when the install or the restart would have changed the host, because
+      # then the handler cannot exist yet. The interpreter and flags lines are printed on
+      # success, so the first real run records the flags the package registered with.
+      ansible.builtin.assert:
+        that:
+          - (_qemu_binfmt.stdout_lines | default([]) | first | default('')) == 'enabled'
+        fail_msg: >-
+          The arm64 binfmt handler is not enabled: /proc/sys/fs/binfmt_misc/qemu-aarch64
+          reports "{{ _qemu_binfmt.stdout_lines | default([]) | first | default('absent') }}".
+          This runner cannot build linux/arm64 images. Check that binfmt_misc is mounted and
+          that systemd-binfmt.service loaded /usr/lib/binfmt.d/qemu-aarch64.conf.
+        success_msg: >-
+          arm64 binfmt handler enabled:
+          {{ _qemu_binfmt.stdout_lines | select('match', '^(interpreter|flags)') | join('; ') }}
+      when: not (ansible_check_mode and ((_qemu_pkg.changed | default(false)) or (_qemu_restart.changed | default(false))))
+
     # ── setuid surface a job can reach ─────────────────────────────────────
     # The runner unit cannot set no_new_privs (rootless podman needs the setuid
     # newuidmap/newgidmap; see actions-runner.service.j2), so every setuid or setgid

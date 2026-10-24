@@ -29,7 +29,7 @@
       and separate: root `CLAUDE.md` still lists OpenHands as deployed at `canvas.uhstray.io`,
       and the Caddy route for canvas is still declared and live; removing the route, the
       inventory entries and those docs is its own step.
-- [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
+- [x] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
       `observability-estate` (DHCP refusal task 1342, reservation 1347, provisioned by 1353,
@@ -51,6 +51,17 @@
       the operator merges site-config #63 (the o11y SSH keypair backup; site-config main has
       no `secrets/ssh/o11y` entry), then Verify Host Access (Dev) and Harden SSH (Dev) run on
       `o11y_svc`. Not ticked.
+      2026-10-15 (task output read from production Semaphore by the lead): done. The operator approved
+      the merge, and site-config #63 merged as fb0367f1 after a pr-reviewer round: the public key
+      derived from the private file matches the committed one. Verify Host Access (Dev) task 6063 on
+      `o11y_svc` returned PENDING-OPERATOR: key-only login from the runner with password and
+      keyboard-interactive refused, and escalation works.
+      The operator half was proven from the lead's workstation (not a Semaphore task): a key-only
+      login with the site-config backup key, as the deploy account, with password authentication off.
+      Harden SSH (Dev) dry run 6066, then real run 6069, both `failed=0`. Its own checks passed: key
+      auth still works, and password auth is confirmed off. Re-checked afterwards from the
+      workstation: the key login works, and a password attempt is refused with
+      `Permission denied (publickey)`.
 - [x] 0.4 Validation gate: `openspec validate inference-telemetry-production --store
       agent-cloud` passes; the VM answers SSH via the distributed key; proves nothing in
       the spec yet and unblocks section 1
@@ -105,7 +116,7 @@
       defaults are `O11Y_PROM_RETENTION` 15d (`templates/env.j2:26`) and `O11Y_LOKI_RETENTION`
       7d (`templates/env.j2:29`), and compose reads both (`compose.yml:43`, `compose.yml:67`).
       The Loki and Grafana VM-address binds rest on site-config #24/#36, not re-read here.
-- [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
+- [x] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
       no data) and `/api/datasources/uid/*/health` (Grafana validates the watcher's
@@ -126,6 +137,11 @@
       Grafana's Authentik sign-in on 2026-10-09 (recorded in `estate-wide-observability-instrumentation`
       tasks.md 1.1). The other half, the operator confirming direct Authentik sign-in, is outstanding
       (O11Y-GRAFANA-AUTH-INCIDENT.md stays PROPOSED). Manual receipt only. Not ticked.
+      2026-10-14 23:23 EDT (reported by the operator; manual receipt, no Semaphore task): direct
+      Grafana sign-in works. The incident's phase 3 acceptance is now fully met: Grafana's
+      Authentik sign-in (2026-10-09) and direct sign-in (2026-10-14). The root cause was never
+      identified and no automated OAuth validation is claimed. Ticked; the incident record is
+      RESOLVED (O11Y-GRAFANA-AUTH-INCIDENT.md).
 - [x] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661

@@ -1,0 +1,95 @@
+---
+# Read-only history gate. A ready receipt supplies observations for a later,
+# separate forecast review; it does not authorize retention or sizing changes.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed controller checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision and a production survey
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+        fail_msg: "Seven-day history surveys require the exact reviewed Dev revision and a production run."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Controller checkout has uncommitted files; no capacity history receipt was issued."
+
+- name: Survey seven-day receiver capacity history
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: Require one production rootless Podman receiver on the reviewed revision
+      ansible.builtin.assert:
+        that:
+          - _engine == 'podman'
+          - not (podman_rootful | default(false) | bool)
+          - not (local_mode | default(false) | bool)
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "The capacity history survey requires one production rootless Podman receiver."
+
+    - name: Read the deployed receiver revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _receiver_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed receiver revision
+      ansible.builtin.assert:
+        that: _receiver_revision.stdout == expected_receiver_sha
+        fail_msg: "The production receiver differs from the explicitly reviewed revision."
+
+    - name: Read bounded Prometheus capacity history
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/files/survey-o11y-seven-day-capacity.py"
+      register: _capacity_history
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require seven days of fresh source and receiver-host observations
+      ansible.builtin.assert:
+        that:
+          - _capacity_history.rc == 0
+          - (_capacity_history.stdout | from_json).status == 'ready_for_separate_forecast_review'
+        fail_msg: >-
+          Seven-day capacity history is unavailable or incomplete. Sanitized result:
+          {{ _capacity_history.stdout | trim }}

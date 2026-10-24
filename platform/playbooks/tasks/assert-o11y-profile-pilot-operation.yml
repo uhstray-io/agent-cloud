@@ -1,0 +1,11 @@
+---
+- name: Refuse profile pilot activation through broad o11y operations
+  ansible.builtin.assert:
+    that:
+      - o11y_alloy_profile_pilot_enabled is not defined or o11y_alloy_profile_pilot_enabled is sameas false
+      - o11y_profile_pilot_operation is not defined
+    fail_msg: >-
+      Alloy profiling remains disabled until a Dev-bound Alloy-only operation
+      verifies private inventory provenance and the config, privacy, and resource gates.
+      Candidate validation and receipt IDs do not authorize activation.
+    quiet: true

@@ -69,6 +69,18 @@ without exposing mount paths. Seven-day history, per-backend growth, and the
 30%/25%/CPU-p95 forecast still gate retention or VM changes. Remote metric
 sources continue to require source-scoped firewall proof.
 
+In production, `deploy-o11y.yml` installs a daily rootless-Podman sampler that reuses the
+fail-closed named-volume inspector and atomically publishes five fixed backend
+byte gauges plus their source timestamp through node-exporter textfiles. The
+production textfile collector remains enabled independently of the optional inference
+probe; local mode skips the systemd sampler and enables the collector overlay only for the
+probe. `Survey o11y Seven-Day Capacity History (Dev)` uses five-minute evaluations over
+eight days, bounded to 2 MB and 20 seconds per query, and requires at least 2017 receiver-host
+CPU, memory, and rootfs points spanning seven days. CPU p95 is the p95 of five-minute means.
+The survey also requires at least eight distinct source timestamps spanning seven days and all
+five backend series at those source evaluations. It provides observed history only; forecast
+review and any capacity change remain separate gates.
+
 ## Files
 
 | File | Role |
@@ -83,6 +95,8 @@ sources continue to require source-scoped firewall proof.
 | `platform/playbooks/recover-o11y-active-alert-drill.yml` | separate idempotent recovery after an interrupted active delivery drill |
 | `platform/playbooks/verify-o11y-production-budgets.yml` | read-only retention, sample-limit, and active-series receipt |
 | `platform/playbooks/files/inspect-o11y-volume-capacity.py` | read-only exact container-volume mount resolution and sanitized backing-filesystem/stored-byte receipt |
+| `deployment/capacity/` | daily atomic stored-byte textfile sampler, shared collector overlay, and systemd units |
+| `platform/playbooks/survey-o11y-seven-day-capacity.yml` | exact-revision, read-only seven-day history readiness survey |
 
 `deployment/.env` is rendered per-deploy and gitignored.
 Semaphore's production inventory is a static copy of the private site-config

@@ -325,6 +325,7 @@ assert any(task['name'] == 'Require Discord message-history access before the pr
 wait = next(t for t in tasks if t['name'] == "Wait for Grafana's service-down rule to fire for the probe")
 rescue = next(t for t in tasks if t['name'] == 'Require the onboarding verifier to refuse the named endpoint')['rescue'][0]
 env = Environment(undefined=StrictUndefined)
+env.filters['bool'] = bool
 env.filters['from_json'] = json.loads
 env.filters['to_json'] = json.dumps
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
@@ -364,13 +365,56 @@ for webhook_id, body, expected in [('123', marker, True),
     assert bool(received(_discord_messages={'json': messages},
                          _webhook_id='123', _delivery_marker=marker)) is expected
 assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt from the owned webhook')['ansible.builtin.assert']['fail_msg']
+
+grouped_wait = env.compile_expression(receipt['until'])
+grouped_alerts = {'data': {'alerts': [
+    {'labels': {'alertname': 'Service metrics endpoint down', 'grafana_folder': 'agent-cloud',
+                'service': 'pilot', 'cluster': 'c',
+                'environment': 'prod', 'instance': '127.0.0.1:65534'}, 'state': 'Alerting'},
+    {'labels': {'alertname': 'Service metrics endpoint down', 'grafana_folder': 'agent-cloud',
+                'service': 'pilot', 'cluster': 'c',
+                'environment': 'prod', 'instance': '127.0.0.1:65535'}, 'state': 'firing'},
+]}}
+grouped_firing = json.loads(json.dumps(grouped_alerts))
+for alert in grouped_firing['data']['alerts']:
+    alert['labels']['alertname'] = 'Unrelated rule'
+grouped_until = env.compile_expression(wait['until'])
+grouped_facts = {'_firing_alerts': {'rc': 0, 'stdout': json.dumps(grouped_alerts)},
+                 '_service_down_rule': {'stdout': json.dumps({'title': 'Service metrics endpoint down'})},
+                 'o11y_grouped_probe': True, 'expected_service': 'pilot', '_drill_cluster': 'c',
+                 '_drill_environment': 'prod', '_probe_expected_instances': ['127.0.0.1:65534', '127.0.0.1:65535']}
+assert grouped_until(**grouped_facts)
+grouped_facts['_firing_alerts']['stdout'] = json.dumps(grouped_firing)
+assert not grouped_until(**grouped_facts)
+
+grouped_marker = 'o11y-delivery-status=firing service=o11y-fault-probe-new'
+grouped_content = (grouped_marker + '\n' + grouped_marker + '\n**Firing**\nLabels:\n'
+    ' - instance = 127.0.0.1:65534\n - instance = 127.0.0.1:65535\n'
+    'Annotations:\n - dashboard_url = https://grafana.test/d/service-overview?var-service=o11y-fault-probe-new')
+grouped_facts = {'_discord_messages': {'json': [{'webhook_id': '123', 'content': grouped_content}]},
+                 '_webhook_id': '123', '_delivery_marker': grouped_marker, 'o11y_grouped_probe': True,
+                 'expected_service': 'o11y-fault-probe-new',
+                 '_probe_expected_instances': ['127.0.0.1:65534', '127.0.0.1:65535']}
+assert grouped_wait(**grouped_facts)
+for bad in (grouped_content.replace(grouped_marker, grouped_marker + '-other', 1),
+            grouped_content.replace('127.0.0.1:65534', '127.0.0.1:655340'),
+            grouped_content.replace('127.0.0.1:65535', '127.0.0.1:655350'),
+            grouped_content.replace('var-service=o11y-fault-probe-new', 'var-service=o11y-fault-probe-new-other')):
+    grouped_facts['_discord_messages']['json'][0]['content'] = bad
+    assert not grouped_wait(**grouped_facts), bad
+grouped_facts['_discord_messages']['json'] = [
+    {'webhook_id': '123', 'content': grouped_marker},
+    {'webhook_id': '123', 'content': grouped_content.replace(grouped_marker + '\n', '', 2)},
+]
+assert not grouped_wait(**grouped_facts)
 PY
 }
 
 @test "o11y: visible Discord receipt assertion emits counts only" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  local playbook="$BATS_TEST_TMPDIR/discord-count-only.yml"
-  python3 - "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$playbook" <<'PY'
+  local valid_playbook="$BATS_TEST_TMPDIR/discord-valid.yml"
+  local invalid_playbook="$BATS_TEST_TMPDIR/discord-invalid.yml"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$valid_playbook" "$invalid_playbook" <<'PY'
 import pathlib
 import sys
 import yaml
@@ -387,17 +431,26 @@ while pending:
         pending[0:0] = task.get(key, [])
 summary = next(task for task in tasks if task.get("name") == "Count the matching Discord receipt without retaining its content")
 assertion = next(task for task in tasks if task.get("name") == "Require a readable firing receipt from the owned webhook")
-play = [{
+marker = "o11y-delivery-status=firing service=o11y-fault-probe-new"
+content = "\n".join([
+    marker, marker, "**Firing**", "Labels:", " - instance = 127.0.0.1:65534",
+    " - instance = 127.0.0.1:65535", "Annotations:",
+    " - dashboard_url = https://grafana.test/d/service-overview?var-service=o11y-fault-probe-new",
+])
+def write_play(path, body, failed):
+    play = [{
     "hosts": "localhost",
     "gather_facts": False,
-    "vars": {"drill_expect_alert": True},
+    "vars": {"drill_expect_alert": True, "o11y_grouped_probe": True,
+             "_delivery_marker": marker, "expected_service": "o11y-fault-probe-new",
+             "_probe_expected_instances": ["127.0.0.1:65534", "127.0.0.1:65535"]},
     "tasks": [
         {
             "name": "seed synthetic protected Discord response",
             "ansible.builtin.set_fact": {
                 "_discord_messages": {
-                    "failed": True,
-                    "json": [{"webhook_id": "synthetic-webhook", "content": "SYNTHETIC_CONTENT_SECRET"}],
+                    "failed": failed,
+                    "json": [{"webhook_id": "synthetic-webhook", "content": body}],
                     "request": {"headers": {"Authorization": "Bot SYNTHETIC_TOKEN_SECRET"}},
                 },
                 "_webhook_id": "synthetic-webhook",
@@ -407,15 +460,20 @@ play = [{
         summary,
         assertion,
     ],
-}]
-pathlib.Path(sys.argv[2]).write_text(yaml.safe_dump(play), encoding="utf-8")
+    }]
+    pathlib.Path(path).write_text(yaml.safe_dump(play), encoding="utf-8")
+write_play(sys.argv[2], content, False)
+write_play(sys.argv[3], marker, False)
 PY
   mkdir -p "$BATS_TEST_TMPDIR/ansible-local"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
-    ansible-playbook -i localhost, "$playbook"
+  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
+    ansible-playbook -i localhost, "$valid_playbook"
+  [ "$status" -eq 0 ]
+  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
+    ansible-playbook -i localhost, "$invalid_playbook"
   [ "$status" -ne 0 ]
-  assert_contains "$output" "Discord firing receipt absent after the wait: webhook messages=1, readable messages=1"
-  refute_contains "$output" "SYNTHETIC_CONTENT_SECRET"
+  assert_contains "$output" "Discord firing receipt was incomplete after the wait: webhook messages=1, readable messages=1, owned messages=1"
+  refute_contains "$output" "o11y-delivery-status=firing service=o11y-fault-probe-new"
   refute_contains "$output" "SYNTHETIC_TOKEN_SECRET"
 }
 
@@ -891,7 +949,7 @@ assert job['job_name'] == 'agentgateway'
 assert job['metrics_path'] == '/metrics'
 assert job['static_configs'] == [{
     'targets': ['gateway.example.test:19002'],
-    'labels': {'service': 'agentgateway', 'component': 'gateway', 'cluster': 'test-cluster', 'environment': 'prod'},
+    'labels': {'target_id': 'service:agentgateway', 'service': 'agentgateway', 'component': 'gateway', 'cluster': 'test-cluster', 'environment': 'prod'},
 }]
 assert job['metric_relabel_configs'][0]['regex'] == policy
 PY
@@ -949,6 +1007,10 @@ for enabled in (False, True):
         assert disk_rule['noDataState'] == 'Alerting'
         if rendered_targets:
             assert rules[2]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
+            assert rules[2]['title'] == 'Missing telemetry for caddy-reverse-proxy/caddy at caddy:2021'
+            assert rules[2]['annotations']['summary'] == (
+                'Expected metrics have disappeared for caddy-reverse-proxy/caddy at caddy:2021.'
+            )
             assert rules[2]['labels']['service'] == 'caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['owner'] == 'platform-operations'
             assert rules[2]['for'] == '2m'
@@ -960,7 +1022,8 @@ for enabled in (False, True):
         if enabled:
             for rule in rules:
                 settings = rule['notification_settings']
-                assert settings['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+                expected_group_by = ['service', 'environment', 'cluster', 'alertname']
+                assert settings['group_by'] == expected_group_by
                 assert settings['group_wait'] == '30s'
                 assert settings['group_interval'] == '5m'
                 assert settings['repeat_interval'] == '4h'
@@ -991,6 +1054,103 @@ canary_rules = yaml.safe_load(template.render(local_mode=True, o11y_alerts_enabl
 assert canary_rules[0]['data'][0]['model']['expr'] == f'up{{service="{canary}"}}'
 assert canary_rules[0]['isPaused'] is False
 assert all(rule['isPaused'] is True and 'notification_settings' not in rule for rule in canary_rules[1:])
+related_targets = [
+    targets[0],
+    {**targets[0], 'uid': 'o11y_missing_caddy_secondary', 'instance': 'caddy-backup:2021'},
+]
+related_render = template.render(
+    o11y_expected_metrics_targets=related_targets,
+    o11y_expected_metrics_targets_reviewed=True,
+    o11y_cluster='test-cluster', o11y_environment='prod',
+    o11y_expected_metrics_targets_mode='legacy',
+    local_mode=False, o11y_alerts_enabled=True,
+)
+related_rules = yaml.safe_load(related_render)['groups'][0]['rules']
+target_rules = [rule for rule in related_rules if rule['uid'].startswith('o11y_missing_caddy')]
+assert len(target_rules) == 2
+assert len({rule['title'] for rule in target_rules}) == 2
+assert all(' at ' in rule['title'] for rule in target_rules)
+assert len({rule['labels']['instance'] for rule in target_rules}) == 2
+assert all(rule['labels']['service'] == 'caddy-reverse-proxy/caddy' for rule in target_rules)
+assert all(rule['labels']['environment'] == 'prod' for rule in target_rules)
+assert all(rule['labels']['cluster'] == 'test-cluster' for rule in target_rules)
+assert all(
+    rule['notification_settings']['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+    for rule in target_rules
+)
+assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule in target_rules)
+PY
+}
+
+@test "o11y: agentgateway trace silence rule requires traffic, zero spans, and every activation guard" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+def rule(**values):
+    document = yaml.safe_load(template.render(**values))
+    matches = [item for group in document['groups'] for item in group['rules']
+               if item['uid'] == 'agentgateway_trace_silent']
+    assert len(matches) == 1
+    return matches[0]
+
+expression = (
+    'sum(increase(agentgateway_requests_total{job="agentgateway"}[30m])) >= 100 and on() '
+    'sum(rate(tempo_distributor_spans_received_total{job="tempo"}[30m])) == 0'
+)
+base = {
+    'local_mode': False,
+    'o11y_environment': 'prod',
+    'o11y_alerts_enabled': True,
+    'o11y_tempo_gateway_exclusive_sender_reviewed': True,
+    'groups': {'agentgateway_svc': ['gateway-prod']},
+    'hostvars': {'gateway-prod': {'agw_otlp_traces': True}},
+}
+active = rule(**base)
+assert active['data'][0]['model']['expr'] == expression
+assert active['data'][0]['relativeTimeRange'] == {'from': 1800, 'to': 0}
+assert active['noDataState'] == 'OK'
+assert active['isPaused'] is False
+assert active['notification_settings']['receiver'] == 'agent-cloud-ops'
+assert active['notification_settings']['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+
+# The query's conjunction must require both sides: under-threshold traffic never
+# fires even with zero spans; positive span rate never fires at any traffic volume.
+for requests, spans_per_second, fires in (
+    (0, 0, False), (99, 0, False), (100, 0, True), (1000, 0, True),
+    (100, 0.01, False), (1000, 1, False),
+):
+    assert (requests >= 100 and spans_per_second == 0) is fires
+
+for denied in (
+    {'o11y_alerts_enabled': False},
+    {'local_mode': True},
+    {'o11y_environment': 'dev'},
+    {'o11y_alert_canary_service': 'o11y-fault-probe-aaaaaaaaaaaa'},
+    {'groups': {'agentgateway_svc': []}, 'hostvars': {}},
+    {'groups': {'agentgateway_svc': ['gateway-prod', 'gateway-staging']},
+     'hostvars': {'gateway-prod': {'agw_otlp_traces': True},
+                  'gateway-staging': {'agw_otlp_traces': True}}},
+    {'hostvars': {'gateway-prod': {'agw_otlp_traces': False}}},
+    {'hostvars': {'gateway-prod': {}}},
+    {'o11y_tempo_gateway_exclusive_sender_reviewed': False},
+    {'o11y_tempo_gateway_exclusive_sender_reviewed': None},
+):
+    rendered = rule(**(base | denied))
+    assert rendered['isPaused'] is True, denied
+    assert 'notification_settings' not in rendered, denied
+
+defaults = rule()
+assert defaults['isPaused'] is True
+assert 'notification_settings' not in defaults
 PY
 }
 
@@ -1261,7 +1421,7 @@ alert_template = open(sys.argv[2], encoding='utf-8').read()
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
 block = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana alert provisioning after every real deploy')
 assert block['when'] == 'not ansible_check_mode'
-assert block['no_log'] is True
+assert not block.get('no_log', False)
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['to_json'] = json.dumps
@@ -1272,12 +1432,16 @@ tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
 set_check = by_name['Require the live rule set to equal the provisioned rules']
-field_check = by_name["Require each live rule's pause and routing to equal the provisioned rule's"]
+field_check = by_name["Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's"]
+settings_check = by_name["Require each live rule's notification settings to equal the provisioned rule's"]
+live_rules = by_name['Read live o11y alert rules']
 slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
-assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check)
-assert slurp['register'] == '_provisioned_rules_file' and block['no_log'] is True
+assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check) < tasks.index(settings_check)
+assert slurp['register'] == '_provisioned_rules_file' and not block.get('no_log', False)
+assert live_rules['no_log'] is True and folders['no_log'] is True
+assert 'no_log' not in field_check and 'no_log' not in settings_check
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
@@ -1288,12 +1452,22 @@ env.filters['flatten'] = lambda value: [item for sub in value for item in sub]
 env.tests['in'] = lambda value, seq: value in seq
 compile_value = lambda value: env.compile_expression(value.strip().removeprefix('{{').removesuffix('}}').strip())
 set_checks = [env.compile_expression(expr) for expr in set_check['ansible.builtin.assert']['that']]
-field_exprs = [env.compile_expression(expr) for expr in field_check['ansible.builtin.assert']['that']]
-fields = field_check['loop']
+direct_exprs = [env.compile_expression(expr) for expr in field_check['ansible.builtin.assert']['that']]
+field_exprs = [env.compile_expression(expr) for expr in settings_check['ansible.builtin.assert']['that']]
+fields = settings_check['loop']
 assert {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'} == set(fields)
 
 def live_of(doc, folder_uid='f1'):
-    return [dict(rule, folderUID=folder_uid, ruleGroup=group['name']) for group in doc['groups'] for rule in group['rules']]
+    return [
+        dict(
+            rule,
+            labels={key: value.replace('$$', '$') if isinstance(value, str) else value
+                    for key, value in rule.get('labels', {}).items()},
+            folderUID=folder_uid,
+            ruleGroup=group['name'],
+        )
+        for group in doc['groups'] for rule in group['rules']
+    ]
 
 def verify_rules(rules, provisioned, live_folders=({'uid': 'f1', 'title': 'agent-cloud'},)):
     names = {'_active_rules': {'stdout': json.dumps(rules)},
@@ -1305,7 +1479,9 @@ def verify_rules(rules, provisioned, live_folders=({'uid': 'f1', 'title': 'agent
         names[key] = compile_value(expr)(**names)
     if not all(bool(check(**names)) for check in set_checks):
         return False
-    for key, expr in field_check['vars'].items():
+    if not all(bool(check(**names)) for check in direct_exprs):
+        return False
+    for key, expr in settings_check['vars'].items():
         names[key] = compile_value(expr)(**names)
     return all(bool(check(item=item, **names)) for item in fields for check in field_exprs)
 
@@ -1325,6 +1501,10 @@ assert next(rule for rule in local_live if rule['uid'] == 'o11y_receiver_root_di
 assert verify_rules(local_live, local_doc)
 assert verify_rules(prod_live, prod_doc)
 assert verify_rules(inf_live, inf_doc)
+assert any(rule.get('labels', {}).get('service') == '{{ $$labels.job }}'
+           for group in prod_doc['groups'] for rule in group['rules'])
+assert any(rule.get('labels', {}).get('service') == '{{ $labels.job }}'
+           for rule in prod_live)
 # Out of scope: another folder, or an unprovisioned group in this folder.
 assert verify_rules(inf_live + [dict(inf_live[0], uid='unrelated', folderUID='f2')], inf_doc,
                     ({'uid': 'f1', 'title': 'agent-cloud'}, {'uid': 'f2', 'title': 'other'}))
@@ -1339,6 +1519,9 @@ assert not verify_rules(swap(lambda r: {k: v for k, v in r.items() if k != 'noti
 assert not verify_rules(swap(ns(group_by=['instance'])), inf_doc)
 assert not verify_rules(swap(ns(receiver='other')), inf_doc)
 assert not verify_rules(swap(ns(mute_time_intervals=['maintenance'])), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, labels=r['labels'] | {'owner': 'unexpected'})), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, annotations=r['annotations'] | {'dashboard_url': '/unexpected'})), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, **{'for': '45s'})), inf_doc)
 # Routing values come from the file, not a parallel list: rendered 45s vs live 30s fails,
 # and a file that says 45s passes when live says 45s.
 wait45 = {**inf_doc, 'groups': [dict(g, rules=[dict(r, notification_settings=r['notification_settings'] | {'group_wait': '45s'})
@@ -1691,6 +1874,7 @@ alloy = env.from_string(alloy_template).render(
     _o11y_forbidden_metric_label_names_regex=r'(?i)(request|user|client|session|trace|email|api[_-]?key)',
 )
 assert 'pyroscope.scrape' not in alloy
+assert 'pyroscope.write' not in alloy
 profiled_alloy = env.from_string(alloy_template).render(
     o11y_cluster='test-cluster',
     _o11y_forbidden_metric_label_names_regex=r'(?i)(request|user|client|session|trace|email|api[_-]?key)',
@@ -1698,9 +1882,52 @@ profiled_alloy = env.from_string(alloy_template).render(
     o11y_gateway_span_logs_enabled=True,
 )
 assert 'pyroscope.scrape "alloy_self_profile"' in profiled_alloy
-assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y"' in profiled_alloy
-assert 'scrape_interval = "60s"' in profiled_alloy
 assert 'pyroscope.write.private.receiver' in profiled_alloy
+assert profiled_alloy.count('pyroscope.scrape "') == 1
+expected_profile_producer = '''pyroscope.scrape "alloy_self_profile" {
+  job_name = "o11y/alloy"
+  targets = [
+    { "__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y" },
+  ]
+  scrape_interval = "60s"
+  scrape_timeout = "10s"
+  delta_profiling_duration = "5s"
+  follow_redirects = false
+  proxy_from_environment = false
+  forward_to = [pyroscope.write.private.receiver]
+
+  profiling_config {
+    profile.process_cpu {
+      enabled = true
+    }
+    profile.memory {
+      enabled = false
+    }
+    profile.block {
+      enabled = false
+    }
+    profile.goroutine {
+      enabled = false
+    }
+    profile.mutex {
+      enabled = false
+    }
+    profile.fgprof {
+      enabled = false
+    }
+    profile.godeltaprof_memory {
+      enabled = false
+    }
+    profile.godeltaprof_mutex {
+      enabled = false
+    }
+    profile.godeltaprof_block {
+      enabled = false
+    }
+  }
+}'''
+assert expected_profile_producer in profiled_alloy
+assert 'profile.custom' not in profiled_alloy
 profiled_gateway_limiter = profiled_alloy.split('otelcol.processor.memory_limiter "gateway" {', 1)[1].split('\n}\n', 1)[0]
 assert 'otelcol.connector.spanlogs.gateway.input' in profiled_gateway_limiter
 assert 'otelcol.receiver.otlp "traces"' in alloy
@@ -1821,6 +2048,7 @@ PY
   python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-active-alert-delivery.yml" \
     "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" \
     "$REPO_ROOT/platform/playbooks/tasks/o11y-recover-active-alert-drill.yml" \
+    "$REPO_ROOT/platform/playbooks/tasks/o11y-assert-provisioned-rule-pause-baseline.yml" \
     "$REPO_ROOT/platform/playbooks/recover-o11y-active-alert-drill.yml" \
     "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
     "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
@@ -1828,24 +2056,41 @@ import sys
 import yaml
 
 # Each playbook's [0] imports the extra-var guard.
-drill, probe, recover, recovery, deploy, catalog = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:])]
+drill, probe, recover, pause_baseline, recovery, deploy, catalog = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:])]
 assert drill[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 tasks = drill[2]['tasks']
 names = [task['name'] for task in tasks]
 assert names.index('Require exactly one active service-down rule') < names.index('Verify Discord receipt credentials and history access')
+assert names.index('Require the provisioned alert pause baseline before the drill') < names.index('Atomically claim the active-drill interruption marker')
 assert names.index('Verify Discord receipt credentials and history access') < names.index('Atomically claim the active-drill interruption marker')
 flight = next(task for task in tasks if 'block' in task)
+assert names.index('Require the provisioned alert pause baseline before the drill') < tasks.index(flight)
+assert names.index('Atomically claim the active-drill interruption marker') < tasks.index(flight)
 target = flight['block'][0]
 assert target['ansible.builtin.copy']['dest'].endswith('/config/scrape.d/o11y-prod-alert-drill.yml')
 assert 'o11y-production-active-alert-drill' in target['ansible.builtin.copy']['content']
+assert '127.0.0.1:65534' in target['ansible.builtin.copy']['content']
 assert '127.0.0.1:65535' in target['ansible.builtin.copy']['content']
 assert 'service: "{{ _probe }}"' in target['ansible.builtin.copy']['content']
+assert 'cluster: "{{ _drill_cluster }}"' in target['ansible.builtin.copy']['content']
+assert 'environment: "{{ _drill_environment }}"' in target['ansible.builtin.copy']['content']
 assert flight['block'][-1]['ansible.builtin.include_tasks'] == 'tasks/o11y-alert-probe.yml'
 assert flight['block'][-1]['vars']['drill_expect_alert'] is True
+assert flight['block'][-1]['vars']['o11y_probe_expected_instances'] == ['127.0.0.1:65534', '127.0.0.1:65535']
+assert flight['block'][-1]['vars']['o11y_grouped_probe'] is True
 assert flight['always'][0]['ansible.builtin.include_tasks'] == 'tasks/o11y-recover-active-alert-drill.yml'
 recover_names = [task['name'] for task in recover]
-for before in ('Require the drill scrape job to be absent', 'Require every o11y alert rule to remain active', 'Require the production Discord contact point to remain present once'):
+for before in ('Require the drill scrape job to be absent', 'Require the provisioned alert pause baseline after recovery', 'Require the production Discord contact point to remain present once'):
     assert recover_names.index(before) < recover_names.index('Clear the active-drill marker after recovery checks pass')
+assert recover_names.index('Read all production o11y alert rules after drill recovery') < recover_names.index('Require the provisioned alert pause baseline after recovery')
+assert 'Require all provisioned o11y rules to remain active' not in names
+assert 'Require every o11y alert rule to remain active' not in recover_names
+assert pause_baseline[0]['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
+assert all(task.get('no_log') is True for task in pause_baseline)
+assert any('unique' in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
+assert any("selectattr('isPaused', 'defined')" in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
+assert any("selectattr('isPaused', 'boolean')" in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
+assert any('sort(attribute=\'uid\')' in check and 'isPaused' in check for check in pause_baseline[-1]['ansible.builtin.assert']['that'])
 assert recovery[-1]['tasks'][-2]['ansible.builtin.include_tasks'] == 'tasks/o11y-recover-active-alert-drill.yml'
 normal = next(p for p in deploy if p.get('name') == 'Phase 1: Place repo + manage o11y secrets')['tasks']
 normal_names = [task['name'] for task in normal]
@@ -1881,9 +2126,34 @@ assert 'Trace rollout is blocked' in gate[1]['ansible.builtin.assert']['fail_msg
 o11y_tasks = next(play for play in receiver if 'manage o11y secrets' in play.get('name', ''))['tasks']
 gateway_tasks = next(play for play in gateway if 'manage agentgateway secrets' in play.get('name', ''))['tasks']
 receiver_gate = next(task for task in o11y_tasks if task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml')
-assert 'agw_otlp_host' in receiver_gate['when']
+assert 'agw_otlp_traces' in receiver_gate['when']
+assert 'agw_otlp_host' not in receiver_gate['when']
 assert 'o11y_trace_rollout_enabled' in receiver_gate['when']
 assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-o11y-trace-rollout.yml' for task in gateway_tasks)
+
+from jinja2 import Environment
+condition = Environment()
+condition.filters['bool'] = bool
+gate_when = receiver_gate['when']
+if isinstance(gate_when, list):
+    gate_when = ' and '.join('(' + item + ')' for item in gate_when)
+
+def gate_runs(traces):
+    values = {
+        'local_mode': False,
+        'o11y_trace_rollout_enabled': False,
+        'o11y_trace_derived_metrics_enabled': False,
+        'groups': {'agentgateway_svc': ['gateway']},
+        'hostvars': {'gateway': {'agw_otlp_host': 'receiver.test:4317', 'agw_otlp_traces': traces}},
+    }
+    result = condition.from_string('{{ (' + gate_when + ') }}').render(**values)
+    return result.lower() == 'true'
+
+assert not gate_runs(False)  # An OTLP address for logs does not activate the trace rollout gate.
+assert gate_runs(True)
+
+private_bind = next(task for task in o11y_tasks if task.get('name') == 'Require a private declared OTLP bind when agentgateway tracing is enabled')
+assert any('agw_otlp_host' in item for item in private_bind['when'])
 PY
 }
 
@@ -2080,7 +2350,7 @@ for label in ('request_id', 'user_id', 'client_id', 'session_id', 'trace_id', 'e
               'http_request_id', 'x_user_id', 'user_email', 'request_path', 'http_url',
               'client_ip_address', 'gen_ai_prompt', 'url_path'):
     assert forbidden.fullmatch(label), label
-for label in ('service', 'cluster', 'environment', 'component', 'identity', 'status', 'model_name',
+for label in ('service', 'target_id', 'cluster', 'environment', 'component', 'identity', 'status', 'model_name',
               'gen_ai_request_model', 'gen_ai_token_type', 'gpu', 'device', 'node'):
     assert not forbidden.fullmatch(label), label
 repo = deploy.parents[3]
@@ -2109,20 +2379,26 @@ assert all('{service=~"$service"}' in query or 'service=~"$service"' in query fo
 assert all('$log_service' in query for query in loki_queries)
 assert all('container=' not in query for query in metric_queries)
 log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Log volume by source')
-assert len(log_rate['targets']) == 5
+assert len(log_rate['targets']) == 6
 assert 'container=~".+"' in log_rate['targets'][0]['expr']
 assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][0]['expr']
 assert 'signal="container"' in log_rate['targets'][1]['expr']
 assert 'signal="access-log"' in log_rate['targets'][2]['expr']
 assert 'signal="span"' in log_rate['targets'][3]['expr']
 assert 'job="agent-cloud-conformance"' in log_rate['targets'][4]['expr']
+assert 'service=~"$log_service"' in log_rate['targets'][5]['expr']
+assert 'container!~".+"' in log_rate['targets'][5]['expr']
+assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][5]['expr']
+assert 'job!="agent-cloud-conformance"' in log_rate['targets'][5]['expr']
+assert 'Unclassified' in log_rate['targets'][5]['legendFormat']
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
 alloy = env.from_string(alloy_template).render(
-    o11y_cluster='test-cluster', _o11y_forbidden_metric_label_names_regex=policy,
+    o11y_cluster='test-cluster', local_mode=True,
+    _o11y_forbidden_metric_label_names_regex=policy,
 )
 assert 'target_label  = "service"' in alloy
 assert '__meta_docker_container_label_com_docker_compose_service' in alloy
@@ -2162,13 +2438,17 @@ PY
 }
 
 @test "o11y: receiver-host readback compares exact root size with bounded free-space tolerance" {
-  python3 - "$REPO_ROOT/platform/playbooks/files/verify-o11y-receiver-host-metrics.py" <<'PY'
+  python3 - "$REPO_ROOT/platform/playbooks/files/verify-o11y-receiver-host-metrics.py" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
 import subprocess
 import sys
 
 script = sys.argv[1]
-labels = {'job': 'receiver-host', 'service': 'o11y/receiver-host', 'cluster': 'test', 'environment': 'prod'}
+playbook = open(sys.argv[2], encoding='utf-8').read()
+assert 'target_id%3D%22service%3Ao11y%22' in playbook
+labels = {'job': 'receiver-host', 'service': 'o11y/receiver-host', 'target_id': 'service:o11y',
+          'cluster': 'test', 'environment': 'prod'}
 metrics = []
 for name, value, extra in (
     ('node_cpu_seconds_total', '12', {'mode': 'idle'}),
@@ -2189,6 +2469,23 @@ def run(series, guest_df='Size Avail\n10000000000 5000000000'):
 
 valid = run(metrics)
 assert valid.returncode == 0, valid.stdout
+# An overlapping legacy series without target_id is stale and must not affect cardinality.
+legacy = [{**item, 'metric': {key: value for key, value in item['metric'].items()
+                              if key != 'target_id'}} for item in metrics]
+assert run(metrics + legacy).returncode == 0
+# Missing and wrong target identities are excluded, leaving the required metrics absent.
+missing_target = [{**item, 'metric': {key: value for key, value in item['metric'].items()
+                                     if key != 'target_id'}} for item in metrics]
+assert json.loads(run(missing_target).stdout)['reason'] == 'required_metric_missing'
+wrong_target = [{**item, 'metric': {**item['metric'], 'target_id': 'service:other'}}
+                for item in metrics]
+assert json.loads(run(wrong_target).stdout)['reason'] == 'required_metric_missing'
+# Selected-target cardinality and forbidden-label checks remain fail-closed.
+duplicate_selected = metrics + [dict(metrics[1])]
+assert json.loads(run(duplicate_selected).stdout)['reason'] == 'required_metric_ambiguous'
+forbidden_selected = [dict(item) for item in metrics]
+forbidden_selected[1] = {**metrics[1], 'metric': {**metrics[1]['metric'], 'device': 'private'}}
+assert json.loads(run(forbidden_selected).stdout)['reason'] == 'forbidden_label_present'
 # A 90 MiB scrape/write race is tolerated on a 10 GB filesystem.
 within_tolerance = [dict(item) for item in metrics]
 within_tolerance[-1] = {**metrics[-1], 'value': [1, '4900000000']}
@@ -2589,8 +2886,9 @@ def seconds(value):
 
 
 def own(groups):
-    # The Loki-backed platform groups render regardless of the scrape; tested below.
-    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca')]
+    # The Loki-backed platform groups and the always-provisioned trace rule render
+    # regardless of the DGX scrape; tested separately.
+    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca', 'agentgateway-traces')]
 
 
 for scrape in (False, True):
@@ -2694,7 +2992,7 @@ assert 'deleteRules' not in enabled, enabled.get('deleteRules')
 for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(local_mode=True)):
     disabled = yaml.safe_load(template.render(**values))
     assert [group['name'] for group in disabled['groups']
-            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry'], values
+            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry', 'agentgateway-traces'], values
     assert all(not rule['uid'].startswith('inference_')
                for group in disabled['groups'] for rule in group['rules']), values
     assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(created), disabled['deleteRules']
@@ -2771,7 +3069,7 @@ def loki_rules(doc):
 
 
 default = render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[])
-assert [group['name'] for group in default['groups']] == ['service-telemetry', 'scheduled-jobs', 'internal-ca']
+assert [group['name'] for group in default['groups']] == ['service-telemetry', 'agentgateway-traces', 'scheduled-jobs', 'internal-ca']
 assert all(group['interval'] == '5m' for group in default['groups'] if group['name'] in LOKI_GROUPS)
 rules = loki_rules(default)
 assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expiring',
@@ -2900,7 +3198,17 @@ assert grafana_interpolate('{{ $labels.job }}') == '{{ .job }}'
 assert grafana_interpolate('{{ $$labels.job }}') == '{{ $labels.job }}'
 for values in (dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape_enabled=True),
                dict(local_mode=True, o11y_alerts_enabled=True),
-               dict(local_mode=False, o11y_scheduled_jobs=[{'job': 'a', 'max_silence_hours': 1}])):
+               dict(local_mode=False, o11y_scheduled_jobs=[{'job': 'a', 'max_silence_hours': 1}]),
+               dict(local_mode=False, o11y_alerts_enabled=True,
+                    o11y_expected_metrics_targets_reviewed=True,
+                    o11y_expected_metrics_targets=[{'uid': 'o11y_missing_api', 'job': 'api',
+                      'instance': 'api:9100', 'service': 'api/service', 'environment': 'prod',
+                      'cluster': 'prod-west'}],
+                    _o11y_expected_target_mode='grouped',
+                    _o11y_expected_target_groups=[{'uid': 'o11y_missing_g' + 'a' * 26,
+                      'service': 'api/service', 'environment': 'prod', 'cluster': 'prod-west',
+                      'expr': 'absent_over_time(up{job="api",instance="api:9100",service="api/service",'
+                              'cluster="prod-west",environment="prod"}[5m])'}])):
     doc = yaml.safe_load(template.render(**values))
     for rule in (rule for group in doc['groups'] for rule in group['rules']):
         for key, value in rule['labels'].items():
@@ -2909,6 +3217,18 @@ for values in (dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape
 silent = next(rule for group in yaml.safe_load(template.render(local_mode=False))['groups']
               for rule in group['rules'] if rule['uid'] == 'o11y_scheduled_job_silent')
 assert grafana_interpolate(silent['labels']['service']) == '{{ $labels.job }}'
+grouped = next(rule for group in yaml.safe_load(template.render(
+    local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets_reviewed=True,
+    o11y_expected_metrics_targets=[{'uid': 'o11y_missing_api', 'job': 'api', 'instance': 'api:9100',
+      'service': 'api/service', 'environment': 'prod', 'cluster': 'prod-west'}],
+    _o11y_expected_target_mode='grouped',
+    _o11y_expected_target_groups=[{'uid': 'o11y_missing_g' + 'a' * 26, 'service': 'api/service',
+      'environment': 'prod', 'cluster': 'prod-west',
+      'expr': 'absent_over_time(up{job="api",instance="api:9100",service="api/service",'
+              'cluster="prod-west",environment="prod"}[5m])'}],
+))['groups'] for rule in group['rules'] if rule['uid'].startswith('o11y_missing_g'))
+assert grafana_interpolate(grouped['labels']['job']) == '{{ $labels.job }}'
+assert grafana_interpolate(grouped['labels']['instance']) == '{{ $labels.instance }}'
 PY
 }
 

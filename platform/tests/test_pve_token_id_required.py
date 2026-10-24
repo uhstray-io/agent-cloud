@@ -25,15 +25,23 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
 # Every play that builds a PVEAPIToken header, and the variable that carries its token id there.
 TOKEN_ID_VAR = {
+    "attach-pbs-data-disk.yml": "_pve_token_id",
+    "configure-pbs-backup-access.yml": "_pve_token_id",
     "destroy-vm.yml": "_pve_token_id",
+    "enable-o11y-pbs-import-content.yml": "_pve_token_id",
     "provision-template.yml": "_pve_token_id",
     "provision-vm.yml": "_pve_token_id",
+    "provision-pbs-debian-template.yml": "_pve_token_id",
+    "prepare-pbs-guest-data-disk.yml": "_pve_token_id",
+    "preflight-o11y-restore-target.yml": "_pve_token_id",
     "proxmox-validate.yml": "_pve_token_id",
     "reconcile-o11y-backup-job.yml": "_pve_token_id",
     "resize-vm.yml": "_pve_token_id",
     "snapshot-vm.yml": "_pve_tid",
     "survey-o11y-backup-artifact.yml": "_pve_token_id",
     "survey-o11y-backup-readiness.yml": "_pve_token_id",
+    "survey-pbs-vm-census.yml": "_pve_token_id",
+    "survey-pbs-provisioning-candidates.yml": "_pve_token_id",
     "survey-o11y-pbs-physical-storage.yml": "_pve_token_id",
     "validate-address-free.yml": "_pve.token_id",
 }
@@ -42,10 +50,23 @@ TOKEN_ID_VAR = {
 LITERAL_TOKEN_ID = re.compile(r"['\"][A-Za-z0-9._-]+@(pve|pam)![A-Za-z0-9._-]+['\"]")
 
 
+def _expand_import_tasks(play, base):
+    tasks = []
+    for task in play.get("tasks", []):
+        tasks.append(task)
+        imported = task.get("ansible.builtin.import_tasks")
+        if imported and (base / imported).is_file():
+            tasks.extend(_expand_import_tasks({"tasks": playbook_yaml.load(base / imported)}, base))
+    return tasks
+
+
 def _plays_with_pve_header(path):
     for play in playbook_yaml.load(path) or []:
-        if isinstance(play, dict) and any("PVEAPIToken" in s for s in playbook_yaml.strings(play)):
-            yield play
+        if isinstance(play, dict):
+            play = copy.deepcopy(play)
+            play["tasks"] = _expand_import_tasks(play, PLAYBOOKS)
+            if any("PVEAPIToken" in s for s in playbook_yaml.strings(play)):
+                yield play
 
 
 def _token_asserts(play, var):
@@ -53,6 +74,17 @@ def _token_asserts(play, var):
             if "ansible.builtin.assert" in t
             and any(f"{var}" in s and "length > 0" in s
                     for s in playbook_yaml.strings(t["ansible.builtin.assert"].get("that")))]
+
+
+def _uses_pve_token_header(play, uri_args):
+    """Resolve one level of play vars so indirect headers remain covered."""
+    text = " ".join(playbook_yaml.strings(uri_args))
+    if "PVEAPIToken" in text:
+        return True
+    return any(
+        name in text and "PVEAPIToken" in " ".join(playbook_yaml.strings(value))
+        for name, value in (play.get("vars") or {}).items()
+    )
 
 
 def test_the_table_covers_every_play_that_sends_a_pve_token():
@@ -73,7 +105,12 @@ def test_each_pve_play_refuses_an_empty_token_id_before_its_first_request(name):
         ordered = list(playbook_yaml.tasks(play.get("tasks")))
         guards = _token_asserts(play, var)
         assert guards, f"{name}: play {play.get('name')!r} sends a PVE token without refusing an empty {var}"
-        first_request = next(i for i, t in enumerate(ordered) if "ansible.builtin.uri" in t)
+        uri_defaults = (play.get("module_defaults") or {}).get("ansible.builtin.uri", {})
+        first_request = next(
+            i for i, task in enumerate(ordered)
+            if "ansible.builtin.uri" in task
+            and _uses_pve_token_header(play, {**uri_defaults, **task["ansible.builtin.uri"]})
+        )
         assert ordered.index(guards[0]) < first_request, f"{name}: the token id guard runs after a request"
 
 
@@ -88,14 +125,66 @@ def _token_id_sources(play):
     return found
 
 
+def _localhost_token_id_fact_sources(play):
+    """Return only a localhost set_fact handoff, never play vars or another host."""
+    if play.get("hosts") != "localhost":
+        return []
+    found = []
+    for task in playbook_yaml.tasks(play.get("tasks")):
+        facts = task.get("ansible.builtin.set_fact") or {}
+        if "_pve_token_id" in facts:
+            found.append(str(facts["_pve_token_id"]))
+    return found
+
+
+def _token_id_comes_from_store(play, prior_plays):
+    sources = _token_id_sources(play)
+    stored = r"_pve\.token_id|_pve_data\.token_id|_pve_bao_read\.json\.data\.data\.token_id"
+    if any(re.search(stored, source) for source in sources):
+        return True
+    handed_off = any(
+        re.search(r"hostvars\[['\"]localhost['\"]\]\._pve_token_id", source)
+        for source in sources
+    )
+    return handed_off and any(
+        any(re.search(stored, source) for source in _localhost_token_id_fact_sources(candidate))
+        for candidate in prior_plays
+    )
+
+
 @pytest.mark.parametrize("name", sorted(TOKEN_ID_VAR))
 def test_each_pve_play_reads_its_token_id_from_the_store_itself(name):
     # PR 462 review: the template play validated the stored token id in its imported
     # validation play, then defaulted its own to empty and refused on the Semaphore path.
-    for play in _plays_with_pve_header(PLAYBOOKS / name):
-        sources = _token_id_sources(play)
-        assert any(re.search(r"_pve(_data)?\.token_id", s) for s in sources), (
+    plays = list(_plays_with_pve_header(PLAYBOOKS / name))
+    for index, play in enumerate(plays):
+        assert _token_id_comes_from_store(play, plays[:index]), (
             f"{name}: play {play.get('name')!r} does not read the stored token id itself")
+
+
+def test_token_id_source_rejects_environment_fallback_self_reference_and_unproven_handoff():
+    direct_fallbacks = [
+        {"vars": {"_pve_token_id": "{{ lookup('env', 'PVE_TOKEN_ID') }}"}},
+        {"vars": {"_pve_token_id": "{{ _pve_token_id | default('') }}"}},
+        {"vars": {"_pve_token_id": "{{ hostvars['localhost']._pve_token_id | default('') }}"}},
+    ]
+    for play in direct_fallbacks:
+        assert not _token_id_comes_from_store(play, [play])
+
+    handoff = {"vars": {"_pve_token_id": "{{ hostvars['localhost']._pve_token_id | default('') }}"}}
+    localhost_fact = {
+        "hosts": "localhost",
+        "tasks": [{"ansible.builtin.set_fact": {"_pve_token_id": "{{ _pve_bao_read.json.data.data.token_id }}"}}],
+    }
+    assert _token_id_comes_from_store(handoff, [localhost_fact])
+    assert not _token_id_comes_from_store(handoff, [{
+        "hosts": "pve_node",
+        "tasks": [{"ansible.builtin.set_fact": {"_pve_token_id": "{{ _pve_bao_read.json.data.data.token_id }}"}}],
+    }])
+    assert not _token_id_comes_from_store(handoff, [{
+        "hosts": "localhost",
+        "vars": {"_pve_token_id": "{{ _pve_bao_read.json.data.data.token_id }}"},
+    }])
 
 
 def test_every_private_name_in_module_defaults_is_a_play_var():
@@ -120,6 +209,8 @@ def _run_guards(tmp_path, name, token_id):
     var = TOKEN_ID_VAR[name]
     guards = [copy.deepcopy(g) for play in _plays_with_pve_header(PLAYBOOKS / name)
               for g in _token_asserts(play, var)]
+    for guard in guards:
+        guard.pop("no_log", None)
     pve = {"url": "https://pve.test:8006", "api_token": "synthetic"}
     if token_id is not None:
         pve["token_id"] = token_id
@@ -127,6 +218,7 @@ def _run_guards(tmp_path, name, token_id):
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": {"_pve": pve, "_pve_token_id": token_id or "", "_pve_tid": token_id or "",
                  "_pve_host": pve["url"], "_pve_url": pve["url"], "_pve_secret": "synthetic",
+                 "_pve_token_secret": "synthetic",
                  "_pve_sec": "synthetic", "pve_vmid": 100, "pve_node": "node1"},
         "tasks": guards,
     }]

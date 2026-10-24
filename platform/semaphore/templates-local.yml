@@ -101,7 +101,7 @@ templates:
     playbook: platform/playbooks/deploy-honcho.yml
 
   # agentgateway - inference edge gateway (gateway + its own budget Postgres;
-  # fronts LM Studio on the Mac locally via host.containers.internal:1234).
+  # locally fronts the public edge as identity local-gateway, or the DGX on the LAN).
   - name: "Deploy agentgateway (Local)"
     playbook: platform/playbooks/deploy-agentgateway.yml
   - name: "Manage agentgateway Client Key (Local)"

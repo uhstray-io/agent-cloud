@@ -478,6 +478,13 @@
       keys were minted by Deploy agentgateway (Dev) task 5671; the operator's key and
       `client_jacob` are handed out (Back Up Credentials to site-config (Dev) tasks 5638 and
       5673). Not ticked: the rest of the first key set is not handed out.
+      2026-10-14/15 (task output read from production Semaphore by the lead): the admin identity
+      `wisward` is retired. Authentik retired it through `platform_retired_accounts` (PR #640
+      and site-config #90, merged 86ea5da6): Deploy Authentik (Dev) dry run 5711, real run 5713
+      ('OK absent wisward', 'VERIFY OK: 13 blueprints, 5 accounts present, 2 retired'), rerun
+      5714 changed=0. The gateway deploy 5718 dropped the identity, and Manage agentgateway
+      Client Key (Dev) revoke dry run 5721, real run 5722 recorded "revoke of identity 'wisward'
+      recorded in OpenBao". Not ticked: the rest of the first key set is not handed out.
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
       per hour, figures derived from the measured ceiling and written as comments.
       2026-09-17: v1.5.0 has no per-identity REQUEST bucket under `llm.policies` (`key`
@@ -691,6 +698,17 @@
       (it was 2026-10-28) and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it (task
       output read from production Semaphore by the lead). Earlier notes naming 2026-10-28 are
       left as written. Not ticked.
+      2026-10-16: the operator did NOT approve dgx-spark ADR-0018 (OpenBao as the only source of the vLLM
+      key, read by dgx-spark's deploy job). It stays Proposed. So the retirement on or after 2026-11-13
+      is the two-step rotation in dgx-spark#34's plan:
+      - dgx-spark writes the new value to its local key file and does one planned restart of both ranks,
+        in a window the operator names. The operator may choose a two-restart variant instead: both keys
+        in the first restart, the new key only in the second, which removes the 401 window
+        (dgx-spark design decision 6, task 5.1);
+      - dgx-spark hands the value to the operator out of band;
+      - the operator seeds `secret/services/agentgateway:vllm_api_key` with `Seed OpenBao Key`;
+      - the operator runs Deploy agentgateway (Dev), then Rollback Inference Route (Dev) in `restore` mode.
+      Not ticked.
 - [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
@@ -864,6 +882,27 @@
       base URL, once dgx-spark
       serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
       `--enable-ssl-refresh`)
+      2026-10-16: dgx-spark answered the handoff with dgx-spark#34 (merged 455129b5), change
+      `inference-upstream-tls-and-key-retirement`, ADR-0017. The operator APPROVED ADR-0017 the same day,
+      with agent-cloud's side held until the operator says go. The design:
+      - spark-1 becomes a certificates-only consumer host of agent-cloud's internal-CA issuance, under
+        its own unprivileged account. Its name and public key come from dgx-spark.
+      - vLLM serves `--ssl-certfile`/`--ssl-keyfile`/`--enable-ssl-refresh`: server-only first, mutual
+        TLS once every caller presents a leaf.
+      - The daily renewal job re-issues the leaf once less than a third of its 30-day lifetime is left.
+        vLLM serves the new leaf without a restart. Whether its refresher follows the symlink swap is
+        unproven until dgx-spark's drill (its decision 3, task 3.4); the fallback is a fixed-name copy.
+      agent-cloud's pieces, in order:
+      - `internal_leaves` for `vllm-server`, `vllm-lifecycle` and `agw-upstream`;
+      - a spark-1 inventory host in its own group;
+      - `distribute-ca-root.yml` placing `step-ca-bundle.crt` beside the spark-1 leaves (dgx-spark task
+        2.2 waits on it);
+      - renewal proof paths for a non-gateway server leaf (`vllm-server`) and for a client leaf with
+        reload `none` on a non-gateway host (`vllm-lifecycle`);
+      - this task's `https://` upstream with `tls`;
+      - Caddy `/health` and the o11y `dgx-spark-vllm` scrape over HTTPS;
+      - Rollback Inference Route `direct` mode gaining an HTTPS transport (a point from dgx-spark's review).
+      Not started; not ticked.
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
       gateway, proving scenario "A request without a client certificate is refused"; a
       throwaway client-profile leaf declared with a SAN on no allowlist entry (issued as in

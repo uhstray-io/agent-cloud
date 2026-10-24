@@ -39,6 +39,9 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
   tasks:
+    - name: Refuse an unverified profile pilot operation before o11y cleanup
+      ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
+
     - name: "Refuse a reset the launch did not name"
       ansible.builtin.include_tasks: tasks/assert-reset-confirmed.yml
 

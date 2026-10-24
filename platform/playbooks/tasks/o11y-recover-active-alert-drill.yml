@@ -93,18 +93,11 @@
   vars:
     o11y_live_expected_rules_json: "{{ _active_drill_rules.stdout }}"
 
-- name: Require every o11y alert rule to remain active
-  ansible.builtin.assert:
-    that:
-      - _recovered_rules | length > 0
-      - _recovered_non_target_rules | selectattr('isPaused', 'defined') | list | length == _recovered_non_target_rules | length
-      - _recovered_non_target_rules | selectattr('isPaused', 'equalto', false) | list | length == _recovered_non_target_rules | length
-      - _recovered_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
-    fail_msg: "An o11y rule is missing or paused after recovery; keep the marker and investigate."
+- name: Require the provisioned alert pause baseline after recovery
+  ansible.builtin.include_tasks: o11y-assert-provisioned-rule-pause-baseline.yml
   no_log: true
   vars:
-    _recovered_rules: "{{ _active_drill_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
-    _recovered_non_target_rules: "{{ _recovered_rules | rejectattr('uid', 'match', '^o11y_missing_') | list }}"
+    o11y_live_alert_rules_json: "{{ _active_drill_rules.stdout }}"
 
 - name: Read production contact points without displaying webhook settings
   ansible.builtin.command:

@@ -8,7 +8,7 @@ harness_sandbox. What is pinned:
   cannot be declared, and each refusal names the entry and runs before anything is rendered or restarted;
 - the shipped schema is read from the placed monorepo and reaches the render as compact JSON;
 - the deploy checks its own render: nothing MCP with the flag off, a strict key policy on any mcp block
-  (without it /mcp answers every request, spike 1.1), and exactly the client identities enrolled on it.
+  (without it /mcp answers every request, spike 1.1), and exactly the admin-derived identities enrolled on it.
 """
 
 import base64
@@ -39,7 +39,7 @@ HOLD_SCHEMA = "Hold each schema as compact JSON for the render"
 READ_RENDER = "Read the identity names and key-entry count the render wrote"
 CHECK_SURFACE = "Require the rendered MCP surface to match agw_mcp_enabled"
 CHECK_POLICY = "Require the rendered mcp block to carry its own strict key policy"
-CHECK_ENROL = "Require the mcp key policy to enrol exactly the client identities"
+CHECK_ENROL = "Require the mcp key policy to enrol exactly the admin-derived identities"
 RENDER = "Manage secrets and render env + config"
 
 

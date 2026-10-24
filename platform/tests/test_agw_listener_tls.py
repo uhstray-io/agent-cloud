@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 import harness_sandbox
+import jinja2
 import playbook_yaml
 import pytest
 import yaml
@@ -154,7 +155,9 @@ _ComposeLoader.add_multi_constructor("!", lambda loader, suffix, node: (
 def test_local_overlay_mounts_the_directory_not_the_single_bundle_file():
     svc = yaml.load((DEPLOY_DIR / "compose.local.yml").read_text(), Loader=_ComposeLoader)["services"]["agentgateway"]
     assert svc["volumes"] == ["./certs:/certs:ro"]
-    assert svc["environment"]["SSL_CERT_FILE"] == "/certs/step-ca-bundle.crt"
+    # SSL_CERT_FILE replaces the trust store, so the local gateway names the COMBINED bundle
+    # (step-ca root + public roots); the step-ca-only file stays for the other consumers.
+    assert svc["environment"]["SSL_CERT_FILE"] == "/certs/ca-bundle-combined.crt"
     assert svc["user"] == "${AGW_RUN_AS:-65532:65532}"
 
 
@@ -218,6 +221,22 @@ def test_the_deploy_resolves_the_probe_name_through_the_shared_step(tmp_path, ch
 def test_the_bundle_step_lets_the_shared_task_pick_the_ca_hosts_engine():
     step = next(t for t in PHASE1["tasks"] if t["name"] == "Distribute the step-ca trust bundle into ./certs")
     assert "_ca_engine" not in step["vars"]
+
+
+def test_only_the_local_gateway_builds_the_combined_bundle_that_its_ssl_cert_file_names():
+    # The local overlay's SSL_CERT_FILE replaces the trust store, so the combined bundle (step-ca
+    # root + the play host's public roots) is built only where that overlay is in use. Production
+    # sets no SSL_CERT_FILE and must not build it.
+    step = next(t for t in PHASE1["tasks"] if t["name"] == "Distribute the step-ca trust bundle into ./certs")
+    expr = step["vars"]["_ca_root_combined_dest"]
+    env = jinja2.Environment()
+    env.filters["bool"] = bool  # Ansible's bool filter, for the plain booleans rendered here
+    rendered = {
+        local: env.from_string(expr).render(_deploy_dir="/srv/agw", local_mode=local) for local in (True, False)
+    }
+    assert rendered == {True: "/srv/agw/certs/ca-bundle-combined.crt", False: ""}
+    overlay = yaml.load((DEPLOY_DIR / "compose.local.yml").read_text(), Loader=_ComposeLoader)
+    assert overlay["services"]["agentgateway"]["environment"]["SSL_CERT_FILE"] == "/certs/ca-bundle-combined.crt"
 
 
 def test_every_model_declares_completions_and_responses(tmp_path):

@@ -70,6 +70,14 @@ The bootstrap `akadmin` (`AUTHENTIK_BOOTSTRAP_*`) is not a blueprint user and is
 `platform_admins_exceptions` (names only, default empty) names `platform-admins` members that
 are deliberately NOT in the list. It exists for the drift guard below and nothing else.
 
+The gateway side: the same list is read by `deploy-agentgateway.yml`, gated by the inventory flag
+`agw_admin_identities_enabled` (default false), which derives one personal gateway identity per entry
+(`agw_identity`, else `username`). With the gate on, `platform_admins` must be declared at a scope the
+gateway host sees too; the shared default is built from per-user variables that exist only on the
+Authentik host. The declared list and the declared retired list (`platform_retired_accounts`) are in
+site-config; this repository holds placeholders. Variables:
+`platform/services/agentgateway/deployment/README.md`, "MCP and the declared admin list: variables".
+
 The list is validated before anything acts on it, by `platform/playbooks/tasks/validate-platform-admins.yml`
 (the deploy includes it before it reads the usernames): a lowercase slug key, a username, a name, an email
 unless a service account, no duplicate key or username, at most one service account, and no key whose
