@@ -12,8 +12,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "playbooks" / "files"))
+sys.path.insert(0, str(Path(__file__).parent))
 import o11y_isolated_restore as restore  # noqa: E402
 import o11y_pbs_receipts as pbs_receipts  # noqa: E402
+import playbook_yaml  # noqa: E402
 
 PUBLIC_SHA = "a" * 40
 PRIVATE_SHA = "b" * 40
@@ -40,7 +42,10 @@ def _chain_fixture(*, old_backup: bool = False):
     snapshots = {"backup_type": "vm", "backup_id": "120", "backup_time": backup_epoch}
     copy_store = "copy-store"
     copy_selector = {
-        "volid": f"{copy_store}:backup/vm/120/{datetime.fromtimestamp(backup_epoch, UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        "volid": (
+            f"{copy_store}:backup/vm/120/"
+            f"{datetime.fromtimestamp(backup_epoch, UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        ),
         "backend": "pbs",
         "format": "pbs-vm",
         "creation_time_epoch": backup_epoch,
@@ -138,15 +143,6 @@ def _chain_fixture(*, old_backup: bool = False):
             "playbook": "",
             "params": {"diff": False, "dry_run": False},
         }
-        output_rows = [
-            {
-                "id": 1000 + task_id,
-                "task_id": task_id,
-                "stage_id": None,
-                "time": (ended - timedelta(seconds=1)).isoformat().replace("+00:00", "Z"),
-                "output": json.dumps(body, indent=2),
-            }
-        ]
         task_proofs[contract] = {
             "task": {
                 "id": task_id,
@@ -310,6 +306,80 @@ def test_task_proof_adapter_delegates_only_the_authenticated_closed_fields(monke
         restore.verify_task_proof(forged)
 
 
+def test_restore_task_proof_selects_restore_contract_and_rejects_receipt_forgery(monkeypatch):
+    launch = {
+        "expected_repository_sha": PUBLIC_SHA,
+        "site_config_base_sha": PRIVATE_SHA,
+        "backup_task_id": 100,
+        "pbs_verify_task_id": 101,
+        "copy_sync_task_id": 102,
+        "copy_ready_task_id": 103,
+    }
+    nested = {"phase": "awaiting_receipt", "active_nonce": None, "pending": None, "restore_nonce": "n" * 64}
+    receipt = {
+        "type": "restore_receipt/v3",
+        "receipt_fingerprint": "c" * 64,
+        "bindings": {"public_sha": PUBLIC_SHA, "private_inventory_sha": PRIVATE_SHA},
+        "coordination_record": nested,
+        "coordination_version": 12,
+    }
+    task = {
+        "id": 104,
+        "project_id": PROJECT_ID,
+        "environment": launch,
+    }
+    rows = [{"id": 1, "task_id": 104}]
+    observed = {}
+
+    def validate(task_arg, output_rows, **kwargs):
+        observed.update(task=task_arg, output_rows=output_rows, **kwargs)
+        return {"receipt": copy.deepcopy(receipt), "task_metadata": {"id": 104}}
+
+    def validate_nested(evidence, prior_record, expected_version):
+        observed["coordination"] = (evidence, prior_record, expected_version)
+        return receipt["receipt_fingerprint"]
+
+    monkeypatch.setattr(restore, "validate_completed_output", validate)
+    monkeypatch.setattr(restore.restore_coordination, "_restore_receipt", validate_nested)
+    proof = {
+        "task": task,
+        "output_rows": rows,
+        "public_sha": PUBLIC_SHA,
+        "expected_project_id": PROJECT_ID,
+        "expected_task_id": 104,
+        "expected_template_id": 55,
+        "expected_launch": launch,
+        "selector": "type",
+        "expected_selector": "restore_receipt/v3",
+    }
+
+    result = restore.verify_restore_task_proof(proof)
+    assert result["receipt"] == receipt
+    assert observed["expected_playbook"] == "platform/playbooks/restore-o11y-isolated.yml"
+    assert observed["allowed_launch_keys"] == restore.RESTORE_TASK_LAUNCH_KEYS
+    assert observed["coordination"][1]["phase"] == "restore_active"
+    assert observed["coordination"][2] == 12
+
+    bad_receipt = copy.deepcopy(receipt)
+    bad_receipt["bindings"]["private_inventory_sha"] = "d" * 40
+    monkeypatch.setattr(
+        restore,
+        "validate_completed_output",
+        lambda *args, **kwargs: {"receipt": bad_receipt, "task_metadata": {"id": 104}},
+    )
+    with pytest.raises(restore.Refusal, match="restore_receipt_invalid"):
+        restore.verify_restore_task_proof(proof)
+
+    extra_launch = dict(launch, target_vmid=910001)
+    forged = dict(proof, expected_launch=extra_launch)
+    with pytest.raises(restore.Refusal, match="restore_receipt_invalid"):
+        restore.verify_restore_task_proof(forged)
+
+    caller_receipt = dict(proof, expected_receipt_fingerprint="c" * 64)
+    with pytest.raises(restore.Refusal, match="invalid_input"):
+        restore.verify_restore_task_proof(caller_receipt)
+
+
 def test_prerequisite_chain_authenticates_task_order_links_and_artifact():
     result = restore.verify_prerequisite_chain(_chain_fixture())
     assert result["status"] == "verified"
@@ -365,3 +435,79 @@ def test_cleanup_keeps_historical_and_current_private_inventory_pins_independent
     wrong_current_pin = dict(pins, current_provenance_private_sha="e" * 40)
     with pytest.raises(restore.Refusal, match="restore_receipt_invalid"):
         restore.verify_cleanup_inventory_pins(wrong_current_pin)
+
+
+def test_restore_and_cleanup_api_writes_follow_intent_handle_and_effect_order():
+    playbooks = Path(__file__).parents[1] / "playbooks"
+    restore_tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / "restore-o11y-isolated.yml")))
+    cleanup_tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / "cleanup-o11y-isolated-restore.yml")))
+
+    def position(tasks, name):
+        return next(i for i, task in enumerate(tasks) if task.get("name") == name)
+
+    restore_sequences = (
+        (
+            "Persist the restore intent through CAS",
+            "Submit exactly one stopped restore from the protected copy",
+            "Record the actual qmrestore UPID with CAS readback",
+            "Commit stopped restore effect before isolation may begin",
+            "POST",
+        ),
+        (
+            "Persist isolation intent before changing target configuration",
+            "Remove every target NIC, disable boot, and write only the ownership marker",
+            "Read back the full disconnected target configuration",
+            "Commit verified isolation effect through CAS readback",
+            "PUT",
+        ),
+        (
+            "Persist start intent through CAS before starting the target",
+            "Start only the isolated restore target",
+            "Record the actual qmstart UPID through CAS",
+            "Commit verified start effect before QGA execution",
+            "POST",
+        ),
+        (
+            "Persist guest execution intent before QGA",
+            "Send checker source and fixed expectations only through QGA input-data",
+            "Record QGA PID in the action journal",
+            "Commit successful guest proof to the action journal",
+            "POST",
+        ),
+        (
+            "Persist stop intent before stopping the temporary target",
+            "Stop only the exact isolated restore target",
+            "Record the actual qmstop UPID before polling",
+            "CAS complete stopped-target effect",
+            "POST",
+        ),
+    )
+    fake_proxmox_calls = []
+    for sequence in restore_sequences:
+        *names, expected_method = sequence
+        positions = [position(restore_tasks, name) for name in names]
+        assert positions == sorted(positions)
+        mutation = restore_tasks[positions[1]]
+        assert "ansible.builtin.uri" in mutation
+        request = mutation["ansible.builtin.uri"]
+        assert request["method"] == expected_method
+        assert "retries" not in mutation
+        fake_proxmox_calls.append((expected_method, names[1]))
+
+    assert len(fake_proxmox_calls) == 5
+
+    cleanup_sequence = (
+        "Transfer ownership and persist delete intent with exact journal CAS",
+        "Delete only the authenticated disconnected target",
+        "Record the actual qmdestroy UPID through exact CAS readback",
+        "Commit verified deletion effect through the action journal CAS",
+        "CAS the terminal cleaned record after exact readback",
+    )
+    cleanup_positions = [position(cleanup_tasks, name) for name in cleanup_sequence]
+    assert cleanup_positions == sorted(cleanup_positions)
+    delete = cleanup_tasks[cleanup_positions[1]]
+    assert delete["ansible.builtin.uri"]["method"] == "DELETE"
+    assert "retries" not in delete
+    fake_proxmox_calls.append(("DELETE", cleanup_sequence[1]))
+    assert fake_proxmox_calls[-1] == ("DELETE", "Delete only the authenticated disconnected target")
+    assert "expected_receipt_sha" not in (playbooks / "cleanup-o11y-isolated-restore.yml").read_text()

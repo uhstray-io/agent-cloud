@@ -2457,12 +2457,6 @@ templates:
         description: "Exact successful isolated restore task that printed the private receipt"
         type: integer
         required: true
-      - name: expected_receipt_sha
-        title: "Expected restore receipt fingerprint"
-        description: "Exact receipt fingerprint from the successful restore task; no target identity is accepted here"
-        type: string
-        required: true
-
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
     repository: agent-cloud dev

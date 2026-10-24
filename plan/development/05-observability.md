@@ -2250,3 +2250,27 @@ four playbooks passed syntax check. Ruff passed; full Ansible lint reported
 zero failures and three existing Jinja-spacing warnings; YAML lint exited 0
 with existing line-length warnings; strict OpenSpec validation passed. These
 are source checks only and do not close the live acceptance items above.
+
+### 2026-10-24 isolated restore and cleanup source
+
+The isolated restore executor and separately launched cleanup are implemented
+in the feature worktree described by
+[`isolated-restore-executor.md`](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor.md)
+and its [operator runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor-runbook.md).
+The source authenticates the four prerequisite task outputs in order, uses the
+shared fixed-mode receipt validator, validates the declared artifact/config
+before reserving, and journals restore, isolation, start, guest execution,
+stop, and cleanup writes. The guest checker runs only through QGA and emits a
+bounded private receipt. Cleanup derives that receipt from authenticated task
+output and proves the full journal/version and exact target state before
+deletion. Its current private pin is verified independently from the historical
+restore pin, allowing unrelated private inventory changes while requiring the
+declared target and artifact evidence to remain unchanged.
+
+This is source implementation only. The feature head has not passed independent
+review, final CI, Dev publication/catalog readback, private target declaration
+acceptance, effective OpenBao role verification, all-writer drain, protected
+copy restore while primary PBS is unavailable, or live restore/cleanup. Keep
+OpenSpec 5.2, the seven-day capacity forecast, and the separate 90d/45d/45d
+retention decision open; no live API, backup, restore, cleanup, or storage
+change was performed for this source work.

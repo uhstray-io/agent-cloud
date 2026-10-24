@@ -1,11 +1,11 @@
 # Isolated o11y restore executor source plan
 
-**Status:** source implementation plan  
-**Scope:** OpenSpec `pbs-vm-and-restore-gate`, task 5.2, bounded source child  
-**Base:** PR #728 source head `9aa8464dcd53be59503e890c01b4c312e6799c89`
+**Status:** source implementation complete; review, CI, publication, and live acceptance remain open
+**Scope:** OpenSpec `pbs-vm-and-restore-gate`, task 5.2, bounded source child
+**Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation and shared PBS receipt commits; local implementation checkpoints remain unpublished.
 
-This plan covers source implementation and focused local verification only. It does
-not close OpenSpec 5.2 or establish any Semaphore, OpenBao, Proxmox, private
+This record covers source implementation and focused local verification only. It
+does not close OpenSpec 5.2 or establish any Semaphore, OpenBao, Proxmox, private
 inventory, protected-copy, capacity, or live restore/cleanup acceptance.
 
 ## Goal and safety boundary
@@ -65,10 +65,21 @@ Proxmox mutation retains the VM and coordination record for operator review.
    forged/stale/duplicate task output, restore isolation and no-retry behavior,
    guest historical-data integrity, and owned-target-only cleanup.
 
+All five source steps are now implemented in the consumer worktree. The shared
+receipt validator's explicit playbook-mode API and exact restore/cleanup launch
+shapes are integrated from the producer's normal merge. The restore launch binds
+four separately authenticated prerequisite task IDs plus the public and private
+revision pins. Cleanup derives the receipt from the authenticated restore task
+output and accepts only four selectors; historical restore and current cleanup
+private pins are independently proven and need not be equal. Tests cover their
+allowed difference and rejection when either proof or target/declaration binding
+is invalid. The playbooks and catalog remain source-only until review, CI,
+publication, and private gates pass.
+
 ## Acceptance for this source child
 
-- Exact source identity and worktree are unchanged from the stated base except
-  for this worktree's owned files.
+- Source changes are limited to consumer-owned files plus the explicitly
+  integrated producer and foundation merge commits.
 - Focused tests exercise the production validators/checkers and prove refusal
   occurs before the first possible write for invalid inputs.
 - Source checks establish YAML/Python validity and OpenSpec structural validity.

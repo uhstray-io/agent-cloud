@@ -10,15 +10,16 @@ import sys
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
+import o11y_restore_coordination as restore_coordination
 from o11y_pbs_receipts import (
-    CONTRACTS,
     RESTORE_RECEIPT_KEYS,
-    Refusal as PBSRefusal,
     validate_completed_output,
     validate_completed_task,
     validate_receipt,
 )
-import o11y_restore_coordination as restore_coordination
+from o11y_pbs_receipts import (
+    Refusal as PBSRefusal,
+)
 
 VMID = re.compile(r"(?:0|[1-9][0-9]{0,8})\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
@@ -480,7 +481,6 @@ def verify_restore_task_proof(payload: object) -> dict:
         "expected_launch",
         "selector",
         "expected_selector",
-        "expected_receipt_fingerprint",
     }
     require(isinstance(payload, dict) and set(payload) == keys, "invalid_input")
     require(
@@ -494,7 +494,10 @@ def verify_restore_task_proof(payload: object) -> dict:
         and launch["expected_repository_sha"] == payload["public_sha"]
         and isinstance(launch["site_config_base_sha"], str)
         and re.fullmatch(r"[0-9a-f]{40}", launch["site_config_base_sha"])
-        and all(type(launch[key]) is int and launch[key] > 0 for key in RESTORE_TASK_LAUNCH_KEYS - {"expected_repository_sha"}),
+        and all(
+            type(launch[key]) is int and launch[key] > 0
+            for key in RESTORE_TASK_LAUNCH_KEYS - {"expected_repository_sha", "site_config_base_sha"}
+        ),
         "restore_receipt_invalid",
     )
     try:
@@ -515,7 +518,6 @@ def verify_restore_task_proof(payload: object) -> dict:
     except PBSRefusal as exc:
         raise Refusal(exc.reason) from None
     receipt = result["receipt"]
-    require(receipt["receipt_fingerprint"] == payload["expected_receipt_fingerprint"], "restore_receipt_invalid")
     require(
         receipt["bindings"]["public_sha"] == payload["public_sha"]
         and receipt["bindings"]["private_inventory_sha"] == launch["site_config_base_sha"],

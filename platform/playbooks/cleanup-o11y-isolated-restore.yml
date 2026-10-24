@@ -81,7 +81,7 @@
     _cleanup_forged_extra_names: "{{ _cleanup_prohibited_extra_names | intersect('' | extra_var_names) }}"
     _cleanup_coordination_path: "{{ _cleanup_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
   tasks:
-    - name: Require only the exact restore task and receipt fingerprint selectors
+    - name: Require only the exact restore task and repository selectors
       ansible.builtin.assert:
         that:
           - _cleanup_forged_extra_names | length == 0
@@ -89,14 +89,13 @@
           - expected_restore_repository_sha | default('') is match('^[0-9a-f]{40}$')
           - site_config_base_sha | default('') is match('^[0-9a-f]{40}$')
           - restore_task_id | default(0) | int > 0
-          - expected_receipt_sha | default('') is match('^[0-9a-f]{64}$')
           - _cleanup_sources | length == 1
           - _cleanup_targets | length == 1
           - hostvars[_cleanup_source].vm_vmid | string != _cleanup_target_ref.vmid | string
           - _cleanup_target_ref.node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
           - _cleanup_target_ref.vmid | string is match('^[1-9][0-9]{0,8}$')
           - _cleanup_bao_url is match('^https://')
-        fail_msg: "Cleanup requires one exact restore task ID, receipt fingerprint, reviewed checkout, and privately declared target."
+        fail_msg: "Cleanup requires one exact restore task ID, reviewed repository revisions, and privately declared target."
         quiet: true
 
     - name: Refuse unsafe OpenBao transport before credential access
@@ -233,8 +232,7 @@
               'expected_task_id': restore_task_id | int,
               'expected_template_id': _cleanup_task.json.template_id | int,
               'expected_launch': _cleanup_restore_launch,
-              'selector': 'type', 'expected_selector': 'restore_receipt/v3',
-              'expected_receipt_fingerprint': expected_receipt_sha}} | to_json }}
+              'selector': 'type', 'expected_selector': 'restore_receipt/v3'}} | to_json }}
         stdin_add_newline: false
       register: _cleanup_receipt_raw
       changed_when: false
@@ -315,7 +313,7 @@
           - (_cleanup_target_identity_raw.stdout | from_json).declaration_fingerprint == _cleanup_record.declaration_fingerprint
           - _cleanup_record.phase == 'awaiting_receipt'
           - _cleanup_record.pending is none
-          - _cleanup_record.receipt_fingerprint == expected_receipt_sha
+          - _cleanup_record.receipt_fingerprint == _cleanup_receipt.receipt_fingerprint
         fail_msg: "The current private target no longer matches the authenticated receipt."
         quiet: true
       no_log: true

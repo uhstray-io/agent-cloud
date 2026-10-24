@@ -1,10 +1,11 @@
 # Isolated o11y restore executor runbook
 
-This runbook describes source intent for OpenSpec 5.2. It is not activation or
-live acceptance evidence. Keep 5.2 open until the source has passed review and
-CI, the parent PBS task contracts exist, private declarations are accepted,
-OpenBao capabilities and writer coverage are verified, and a Dev-bound restore
-and separate cleanup have succeeded.
+The restore and cleanup entrypoints are implemented as source workflows for
+OpenSpec 5.2. This runbook is not activation or live acceptance evidence. Keep
+5.2 open until review and CI pass, the feature is published to Dev, private
+declarations are accepted, OpenBao capabilities and writer coverage are
+verified, protected-copy recovery passes with primary PBS unavailable, and a
+Dev-bound restore and separate cleanup succeed.
 
 ## Restore transaction
 
@@ -59,13 +60,18 @@ and separate cleanup have succeeded.
 
 ## Separate cleanup transaction
 
-Cleanup accepts only the prior successful restore task ID and expected restore
-receipt SHA as selectors. It re-fetches the task, complete output, template,
-repository and historical bindings using OpenBao-sourced Semaphore credentials
-and the pinned HTTPS endpoint. It then compares the full receipt's coordination
-record/version against fresh OpenBao state, verifies the same owned target is
-stopped with unchanged marker, disks, isolation and no pending mutation, and
-CAS-transfers ownership to a fresh cleanup nonce.
+Cleanup accepts exactly four selectors: the current cleanup code SHA, current
+private site-config SHA, successful restore task ID, and reviewed restore code
+SHA. It accepts no caller receipt, fingerprint, VMID, locator, nonce, or target
+binding. It re-fetches the task, complete output, template, and repository
+metadata using OpenBao-sourced Semaphore credentials and the pinned HTTPS
+endpoint. The authenticated historical task environment and receipt bind the
+restore's private pin and public SHA. Cleanup independently proves that the
+current runtime inventory bytes match its current private pin; the two private
+pins may differ when unrelated private changes occur. It then compares the full
+receipt coordination record/version against fresh OpenBao state, verifies the
+same owned target is stopped with unchanged marker, disks, isolation and no
+pending mutation, and CAS-transfers ownership to a fresh cleanup nonce.
 
 After a cleanup intent CAS, send only the exact target's `qmdestroy` request
 with an exact-UPID return. Require the task to stop with `exitstatus=OK`, then
@@ -78,9 +84,9 @@ delete, or source VM operation is allowed.
 
 ## Required source receipt contracts
 
-The upstream backup, PBS verification and protected-copy workflows must emit
-versioned receipts through the shared proof module before restore can run. The
-fixed order is backup, exact-snapshot PBS verification, destination-initiated
+The upstream backup, PBS verification and protected-copy workflows emit
+versioned receipts through the shared proof module. Restore authenticates them
+in this fixed order: backup, exact-snapshot PBS verification, destination-initiated
 protected-copy sync with `remove-vanished=false`, and independent destination
 readiness. Readiness leaves `final_acceptance=pending_isolated_restore`; the
 isolated restore must prove recovery while the primary PBS guest is unavailable.
@@ -99,4 +105,7 @@ the reviewed commit, checks its observed clone HEAD and remote tip, rejects
 inventory symlinks and non-static/multiple runtime sources, and removes the
 scratch clone in `always`. It does not invoke a push helper. Live activation
 remains blocked until those prerequisite workflows and source-side exact-byte
-inventory proof are implemented and accepted.
+inventory proof are reviewed, published, and accepted. Effective OpenBao role,
+writer-drain, protected-copy failover, target-placement and live
+restore/cleanup evidence also remain open. No live service was exercised as
+part of this source implementation.
