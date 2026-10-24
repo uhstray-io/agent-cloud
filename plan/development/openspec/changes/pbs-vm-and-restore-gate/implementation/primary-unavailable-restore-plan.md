@@ -75,6 +75,14 @@ single failed connection or operator attestation is insufficient.
 
 ### Closed writer census and exclusion decision
 
+The [B0-pinned source census](primary-outage-writer-census.md) identifies 21 core
+entrypoints: 20 mutation-capable and one read-only readiness entrypoint, plus
+source-defined GC, weekly verification, verify-new and unscheduled sync policies.
+It separately identifies ten conditional privileged-maintenance entrypoints as
+a trusted-admin scope decision, not implemented whole-platform fencing. This
+source evidence does not close 4.4c.1: private applicability, installed jobs,
+visibility, queued/running variants and effective exclusion remain unverified.
+
 Current `guard_o11y_restore_target.py::check_reserved_target` checks a fixed
 target reservation but permits unrelated VMIDs. A primary operation can race
 its GET-only check. The ordinary guard is therefore not an outage lock.

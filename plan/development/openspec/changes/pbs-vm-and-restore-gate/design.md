@@ -100,6 +100,12 @@ The implementation plan records the source evidence, alternatives, failure
 semantics and activation gates. Destination administrator, shared hypervisor
 and shared backing-storage trust remain unchanged.
 
+The [B0-pinned writer census](implementation/primary-outage-writer-census.md)
+records 21 core entrypoints (20 mutation-capable, one read-only) and current
+server job policies. Ten conditional privileged-maintenance entrypoints remain
+a separate trusted-admin boundary decision. No live census closure, global
+fencing, capability or outage proof follows from this source-only inventory.
+
 ### Implementation refinements from the read-only census
 
 The census found no template with proven Debian provenance. A second GET-only

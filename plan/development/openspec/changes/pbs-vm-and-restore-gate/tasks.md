@@ -42,6 +42,11 @@ The source-only [primary-unavailable acceptance plan](implementation/primary-una
 refines 4.4c. Its proposed schema, exclusion, observations and recovery are not
 implemented by the existing ordinary restore source. All new work remains open:
 
+The [writer census](implementation/primary-outage-writer-census.md), pinned to
+Dev `b0e7bee`, records 21 core source entrypoints and separately scoped conditional
+maintenance operations. Installed/private applicability and exclusion evidence
+remain unverified; this planning evidence does not complete 4.4c.1.
+
 - [ ] 4.4c.1 Close the assigned writer/job census and installed PVE/PBS API/visibility prerequisites; choose and document a proven exclusion mechanism, exact private authorities, effective capabilities and bounded maintenance/recovery window before enabling an outage task.
 - [ ] 4.4c.2 Implement separately reviewed subject-aware versioned outage/recovery journaling and writer exclusion, preserving ordinary schema-2/v3 semantics and legacy stopped-target-only cleanup; verify CAS races, busy refusals and unknown-outcome recovery without nonce adoption or blind mutation retries.
 - [ ] 4.4c.3 Implement a separate Dev-only acceptance entrypoint with graceful exact-primary shutdown, bounded stopped-state observations spanning destination restore and historical reads, verified primary recovery, and a closed versioned acceptance envelope. Add no-primary-overwrite, no-force-stop, observation-gap, failure/recovery, task-proof and cleanup-binding coverage.
