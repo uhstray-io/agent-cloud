@@ -2294,6 +2294,40 @@ templates:
     # PBS/OpenBao/PVE identity state comes from the declared private inventory
     # and OpenBao. No credential or target values are launch-time survey input.
 
+  - name: Configure o11y PBS Copy Access (Dev)
+    playbook: platform/playbooks/configure-o11y-pbs-copy-access.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the separate PBS copy identities"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+    # Source Reader, destination Manager and destination restore Reader are
+    # fixed in code; all secret material comes from OpenBao.
+
+  - name: Register o11y PBS Restore Storage (Dev)
+    playbook: platform/playbooks/register-o11y-pbs-restore-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for protected PBS restore storage registration"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+    # Static PVE placement is private inventory; PVE API and the dedicated PBS
+    # restore token are sourced from OpenBao. This workflow never uses Manager.
+
   - name: Preflight o11y Restore Target (Dev)
     playbook: platform/playbooks/preflight-o11y-restore-target.yml
     repository: agent-cloud dev

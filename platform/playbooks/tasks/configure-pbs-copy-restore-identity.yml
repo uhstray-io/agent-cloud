@@ -1,0 +1,242 @@
+# Establish a separate fixed destination restore identity. The credential is
+# persisted before either ACL is granted; no source or manager token is reused.
+
+- name: Create the passwordless PBS copy-restore-reader user when absent
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - create
+      - o11y-copy-restore@pbs
+      - --enable
+      - "1"
+      - --expire
+      - "0"
+      - --comment
+      - "PBS protected copy reader"
+  when:
+    - not ansible_check_mode
+    - _pbs_restore_reader_identity_action == 'create'
+  changed_when: true
+  no_log: true
+
+- name: Mint the stable PBS copy-restore-reader token without ACLs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - generate-token
+      - o11y-copy-restore@pbs
+      - pve-restore
+      - --enable
+      - "1"
+      - --expire
+      - "0"
+      - --comment
+      - "PBS protected copy reader"
+  register: _pbs_restore_reader_generated_token
+  when:
+    - not ansible_check_mode
+    - _pbs_restore_reader_identity_action == 'create'
+  changed_when: true
+  no_log: true
+
+- name: Keep the generated copy-restore-reader token only in protected task state
+  ansible.builtin.set_fact:
+    _pbs_restore_reader_token_secret: "{{ (_pbs_restore_reader_generated_token.stdout | from_json).value }}"
+    _pbs_restore_reader_token_record:
+      user: o11y-copy-restore@pbs
+      token_id: o11y-copy-restore@pbs!pve-restore
+      secret: "{{ (_pbs_restore_reader_generated_token.stdout | from_json).value }}"
+      datastore: o11y
+      fingerprint: "{{ _pbs_backup_fingerprint }}"
+  when: _pbs_restore_reader_identity_action == 'create'
+  no_log: true
+
+- name: Reuse the OpenBao-owned copy-restore-reader token on the existing identity state
+  ansible.builtin.set_fact:
+    _pbs_restore_reader_token_secret: "{{ hostvars['localhost']._pbs_restore_reader_saved_record.secret }}"
+    _pbs_restore_reader_token_record: "{{ hostvars['localhost']._pbs_restore_reader_saved_record }}"
+  when: _pbs_restore_reader_identity_action == 'reuse'
+  no_log: true
+
+- name: Persist the copy-restore-reader token with guarded OpenBao CAS before granting PBS ACLs
+  ansible.builtin.include_tasks:
+    file: bao-merge-keys.yml
+    apply:
+      become: false
+  vars:
+    _bm_url: "{{ _pbs_backup_bao_url }}"
+    _bm_token: "{{ hostvars['localhost']._bao_token }}"
+    _bm_path: services/pbs
+    _bm_data:
+      o11y_copy_restore_user: o11y-copy-restore@pbs
+      o11y_copy_restore_token_id: o11y-copy-restore@pbs!pve-restore
+      o11y_copy_restore_token_secret: "{{ _pbs_restore_reader_token_secret }}"
+      o11y_copy_restore_datastore: o11y
+      o11y_copy_restore_fingerprint: "{{ _pbs_backup_fingerprint }}"
+    _bm_guard_absent_keys:
+      - o11y_copy_restore_user
+      - o11y_copy_restore_token_id
+      - o11y_copy_restore_token_secret
+      - o11y_copy_restore_datastore
+      - o11y_copy_restore_fingerprint
+  when: _pbs_restore_reader_identity_action == 'create'
+
+- name: Read back the authoritative PBS copy-restore-reader credential from OpenBao
+  ansible.builtin.uri:
+    url: "{{ _pbs_backup_bao_url }}/v1/secret/data/services/pbs"
+    method: GET
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ hostvars['localhost']._bao_token }}"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  register: _pbs_restore_reader_token_readback
+  no_log: true
+  check_mode: false
+
+- name: Require the stable OpenBao destination restore Reader fields
+  ansible.builtin.assert:
+    that:
+      - _pbs_restore_reader_token_readback.json.data.data.o11y_copy_restore_user == 'o11y-copy-restore@pbs'
+      - _pbs_restore_reader_token_readback.json.data.data.o11y_copy_restore_token_id == 'o11y-copy-restore@pbs!pve-restore'
+      - _pbs_restore_reader_token_readback.json.data.data.o11y_copy_restore_datastore == 'o11y'
+      - _pbs_restore_reader_token_readback.json.data.data.o11y_copy_restore_fingerprint == _pbs_backup_fingerprint
+      - _pbs_restore_reader_token_readback.json.data.data.o11y_copy_restore_token_secret == _pbs_restore_reader_token_secret
+    fail_msg: "OpenBao does not hold the exact destination restore Reader credential fields."
+    quiet: true
+  no_log: true
+
+- name: Authenticate the persisted copy-restore-reader token over fingerprint-pinned TLS
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", probe]
+    stdin: >-
+      {{ {'url': hostvars['localhost']._pbs_restore_reader_api_url,
+          'fingerprint': _pbs_restore_reader_token_record.fingerprint,
+          'auth_id': 'o11y-copy-restore@pbs!pve-restore',
+          'secret': _pbs_restore_reader_token_secret} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: _pbs_restore_reader_auth_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the pinned copy-restore-reader token authentication probe
+  ansible.builtin.assert:
+    that: _pbs_restore_reader_auth_probe.rc == 0
+    fail_msg: "The stored PBS copy-restore-reader token failed certificate-pinned authentication."
+    quiet: true
+
+- name: Read current copy-restore-reader effective permissions and complete PBS ACL list
+  ansible.builtin.command:
+    argv: "{{ item.argv }}"
+  loop:
+    - key: user_permissions
+      argv: [proxmox-backup-manager, user, permissions, o11y-copy-restore@pbs, --output-format, json]
+    - key: token_permissions
+      argv: [proxmox-backup-manager, user, permissions, "o11y-copy-restore@pbs!pve-restore", --output-format, json]
+    - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
+  loop_control:
+    label: "PBS copy-restore-reader {{ item.key }}"
+  register: _pbs_restore_reader_access_reads
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Assemble protected copy-restore-reader permission readbacks
+  ansible.builtin.set_fact:
+    _pbs_restore_reader_access_data: >-
+      {{ dict(_pbs_restore_reader_access_reads.results | map(attribute='item.key')
+        | zip(_pbs_restore_reader_access_reads.results | map(attribute='stdout') | map('from_json'))) }}
+  no_log: true
+
+- name: Refuse unknown or overbroad copy-restore-reader grants before adding ACLs
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-reader-acl-plan]
+    stdin: >-
+      {{ {'user_permissions': _pbs_restore_reader_access_data.user_permissions,
+          'token_permissions': _pbs_restore_reader_access_data.token_permissions,
+          'acl_rows': _pbs_restore_reader_access_data.acls,
+          'profile': 'destination_restore'} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: _pbs_restore_reader_acl_plan
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the exact read-only reader role before ACL writes
+  ansible.builtin.assert:
+    that: _pbs_restore_reader_acl_plan.rc == 0
+    fail_msg: >-
+      PBS copy-restore-reader permissions are outside the exact non-propagating
+      DatastoreReader role on /datastore/o11y; no ACL was changed.
+    quiet: true
+  no_log: true
+
+- name: Retain only the validated destination restore Reader ACL additions
+  ansible.builtin.set_fact:
+    _pbs_restore_reader_missing_auth_ids: "{{ (_pbs_restore_reader_acl_plan.stdout | from_json).missing_auth_ids }}"
+  no_log: true
+
+- name: Grant only the non-propagating DatastoreReader role to missing identities
+  ansible.builtin.include_tasks:
+    file: grant-pbs-copy-restore-acl.yml
+  loop: "{{ _pbs_restore_reader_missing_auth_ids }}"
+  loop_control:
+    loop_var: _pbs_restore_reader_auth_id
+    label: "Grant exact copy-restore-reader access"
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Read final copy-restore-reader effective permissions and PBS ACL list
+  ansible.builtin.command:
+    argv: "{{ item.argv }}"
+  loop:
+    - key: user_permissions
+      argv: [proxmox-backup-manager, user, permissions, o11y-copy-restore@pbs, --output-format, json]
+    - key: token_permissions
+      argv: [proxmox-backup-manager, user, permissions, "o11y-copy-restore@pbs!pve-restore", --output-format, json]
+    - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
+  loop_control:
+    label: "PBS copy-restore-reader final {{ item.key }}"
+  register: _pbs_restore_reader_final_reads
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Assemble protected final copy-restore-reader readbacks
+  ansible.builtin.set_fact:
+    _pbs_restore_reader_final_data: >-
+      {{ dict(_pbs_restore_reader_final_reads.results | map(attribute='item.key')
+        | zip(_pbs_restore_reader_final_reads.results | map(attribute='stdout') | map('from_json'))) }}
+  no_log: true
+
+- name: Verify exact read-only copy-restore-reader permissions
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-reader-permissions]
+    stdin: >-
+      {{ {'user_permissions': _pbs_restore_reader_final_data.user_permissions,
+          'token_permissions': _pbs_restore_reader_final_data.token_permissions,
+          'acl_rows': _pbs_restore_reader_final_data.acls,
+          'profile': 'destination_restore'} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: _pbs_restore_reader_permissions_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require final PBS destination restore Reader grants to be read-only
+  ansible.builtin.assert:
+    that: _pbs_restore_reader_permissions_check.rc == 0
+    fail_msg: "PBS destination restore Reader grants do not match the exact read-only datastore role."
+    quiet: true
+  no_log: true

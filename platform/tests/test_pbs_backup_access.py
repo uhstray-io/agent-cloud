@@ -854,6 +854,41 @@ class CopyReaderIdentityTests(TestCase):
                     user_permissions=bad, token_permissions=self.reader_permissions, acl_rows=self.acls
                 )
 
+    def test_destination_restore_profile_is_fixed_and_cannot_select_identity_or_role(self):
+        profile = pbs.COPY_READER_PROFILES["destination_restore"]
+        user = {"userid": profile["user"], "enable": 1, "expire": 0}
+        token = {"tokenid": profile["token_id"], "enable": 1, "expire": 0}
+        saved = {"user": profile["user"], "token_id": profile["token_id"], "secret": "restore-secret",
+                 "datastore": "o11y", "fingerprint": "b" * 64}
+        self.assertEqual(
+            pbs.plan_copy_reader_identity(users=[], tokens=[], secret_record=None,
+                                          profile="destination_restore"),
+            {"action": "create", "user": profile["user"], "token_id": profile["token_id"]},
+        )
+        self.assertEqual(
+            pbs.plan_copy_reader_identity(users=[user], tokens=[token], secret_record=saved,
+                                          authenticated=True, profile="destination_restore")["action"],
+            "reuse",
+        )
+        restore_acls = [
+            {"ugid": identity, "path": pbs.DATASTORE_PATH, "roleid": pbs.COPY_READER_ROLE, "propagate": 0}
+            for identity in (profile["user"], profile["token_id"])
+        ]
+        self.assertTrue(pbs.validate_copy_reader_permissions(
+            user_permissions=self.reader_permissions, token_permissions=self.reader_permissions,
+            acl_rows=restore_acls, profile="destination_restore")["valid"])
+        with self.assertRaisesRegex(pbs.Refusal, "profile is not an approved"):
+            pbs.plan_copy_reader_identity(users=[], tokens=[], secret_record=None, profile="caller-selected")
+        for privileges in (
+            {"Datastore.Audit": False, "Datastore.Read": False, "Datastore.Verify": False,
+             "Datastore.Backup": False},
+            {"Datastore.Audit": True, "Datastore.Read": False, "Datastore.Verify": False},
+        ):
+            with self.subTest(privileges=privileges), self.assertRaises(pbs.Refusal):
+                pbs.validate_copy_reader_permissions(
+                    user_permissions=effective(privileges), token_permissions=self.reader_permissions,
+                    acl_rows=restore_acls, profile="destination_restore")
+
     def test_managed_reader_provisioning_is_separate_and_persists_before_acl(self):
         task_path = ROOT / "playbooks" / "tasks" / "configure-pbs-copy-reader-identity.yml"
         tasks = yaml.safe_load(task_path.read_text())
@@ -874,6 +909,78 @@ class CopyReaderIdentityTests(TestCase):
         for task in tasks:
             if "ansible.builtin.uri" in task and "X-Vault-Token" in task["ansible.builtin.uri"].get("headers", {}):
                 self.assertEqual(task.get("no_log"), True)
+
+    def test_destination_restore_identity_is_cas_persisted_before_exact_acl(self):
+        task_path = ROOT / "playbooks" / "tasks" / "configure-pbs-copy-restore-identity.yml"
+        text = task_path.read_text()
+        tasks = yaml.safe_load(text)
+        persist = text.index("file: bao-merge-keys.yml")
+        readback = text.index("Read back the authoritative PBS copy-restore-reader credential")
+        grant = text.index("Grant only the non-propagating DatastoreReader role")
+        self.assertLess(persist, readback)
+        self.assertLess(readback, grant)
+        self.assertIn("o11y-copy-restore@pbs!pve-restore", text)
+        self.assertIn("o11y_copy_restore_token_secret", text)
+        self.assertIn("'profile': 'destination_restore'", text)
+        self.assertNotIn("o11y_copy_manager_token_secret", text)
+        self.assertNotIn("o11y_copy_reader_token_secret", text)
+        grant_path = ROOT / "playbooks" / "tasks" / "grant-pbs-copy-restore-acl.yml"
+        grant_tasks = yaml.safe_load(grant_path.read_text())
+        command = next(task["ansible.builtin.command"]["argv"] for task in grant_tasks
+                       if "ansible.builtin.command" in task)
+        self.assertIn("DatastoreReader", command)
+        self.assertIn("/datastore/o11y", command)
+        for task in tasks:
+            if "ansible.builtin.uri" in task and "X-Vault-Token" in task["ansible.builtin.uri"].get("headers", {}):
+                self.assertIs(task.get("no_log"), True)
+
+    def test_copy_readiness_derives_locator_and_pve_uses_only_destination_reader(self):
+        path = ROOT / "playbooks" / "verify-o11y-protected-pbs-copy.yml"
+        text = path.read_text()
+        plays = yaml.safe_load(text)
+        guard = next(
+            play for play in plays
+            if play.get("name") == "Refuse missing chain selectors or caller-owned service identities"
+        )
+        names = guard["tasks"][0]["vars"]["_pbs_private_names"]
+        self.assertIn("o11y_protected_copy_artifact_selector", names)
+        self.assertIn("o11y_protected_copy_artifact_selector is not defined", text)
+        self.assertIn("'snapshot_time': _pbs_snapshot.backup_time | int", text)
+        self.assertNotIn("'selector': hostvars", text)
+        self.assertIn("normalized_restore_locator:", text)
+        self.assertIn("_pbs_copy_secret_record.o11y_copy_restore_token_id", text)
+        self.assertIn("_pbs_copy_secret_record.o11y_copy_restore_token_secret", text)
+        self.assertNotIn("data.username == _pbs_copy_secret_record.o11y_copy_manager_token_id", text)
+        identity = next(
+            task for play in plays for task in play.get("tasks", [])
+            if task.get("name") == "Build non-secret destination identity and storage configuration fingerprints"
+        )
+        serialized = str(identity)
+        self.assertIn("Datastore.Audit", serialized)
+        self.assertIn("Datastore.Read", serialized)
+        self.assertIn("Datastore.Verify", serialized)
+        self.assertIn("'propagate': false", serialized)
+
+    def test_restore_storage_registration_is_dev_bound_and_manager_free(self):
+        path = ROOT / "playbooks" / "register-o11y-pbs-restore-storage.yml"
+        text = path.read_text()
+        plays = yaml.safe_load(text)
+        self.assertIn("reconcile_pbs_pve_storage.py", text)
+        self.assertIn("o11y_copy_restore_token_secret", text)
+        self.assertIn("PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}", text)
+        self.assertIn("validate_certs: true", text)
+        self.assertIn("prewrite", text)
+        self.assertIn("/api2/json/cluster/backup", text)
+        self.assertIn("pbs_storage_nodes", text)
+        self.assertNotIn("o11y_copy_manager_token_secret", text)
+        self.assertNotIn("o11y_copy_manager_token_id", text)
+        self.assertTrue(any(play.get("name") == "Prove exact private inventory provenance before PVE access"
+                            for play in plays))
+        catalog = yaml.safe_load((ROOT / "semaphore" / "templates.yml").read_text())
+        templates = catalog["templates"] if isinstance(catalog, dict) else catalog
+        names = {row.get("name") for row in templates if isinstance(row, dict)}
+        self.assertIn("Configure o11y PBS Copy Access (Dev)", names)
+        self.assertIn("Register o11y PBS Restore Storage (Dev)", names)
 
     def test_source_reader_provisioning_is_independent_from_pve_backup_access(self):
         copy_access_path = ROOT / "playbooks" / "configure-o11y-pbs-copy-access.yml"

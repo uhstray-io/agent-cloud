@@ -29,6 +29,16 @@ carry that ID as a fixed selector into the next workflow. No task ID is
 discovered by guessing from a template/commit pair or self-declared by the
 playbook.
 
+Authority is split by the kind of fact: Git and the exact private inventory
+revision declare static placement (endpoints, datastore, PVE storage ID, and
+nodes); authenticated predecessor receipts identify the completed backup
+artifact; live API readbacks prove where that artifact currently appears and
+whether its contents are readable. The dynamic artifact locator is derived
+from the authenticated backup VMID/time and the declared destination storage
+ID. A per-snapshot private selector is neither required nor accepted; a legacy
+selector still present in inventory causes an explicit migration refusal.
+Private inventory bytes and SHA remain identical across the task chain.
+
 For canonical artifact hashing, the pinned PBS Reader uses the fixed
 `admin/datastore/o11y/download-decoded` route with the exact snapshot type, ID,
 and time and `file-name=index.json.blob`. PBS performs DataBlob decoding; the
@@ -54,7 +64,8 @@ propagation disabled. Unknown, broader, or partially persisted state refuses;
 the generated token is persisted and read back before its ACL is granted.
 
 The same standalone workflow manages a separate destination copy-manager
-identity. It is never reused by PVE or the primary Reader. It receives only
+identity. It is never reused by PVE, the source Reader, or the destination
+restore Reader. It receives only
 `Datastore.Audit` plus `Datastore.Backup` on `/datastore/o11y`, `RemoteAdmin` on `/remote` only for
 remote creation, `RemoteAdmin` on `/remote/<declared remote>` for that remote's
 configuration, and `RemoteSyncOperator` on its exact `/o11y` remote datastore
@@ -65,6 +76,19 @@ protected Ansible memory and never enter argv or intermediary files. PBS
 management writes use its native form encoding. `pbs_svc` and `pbs_copy_svc`
 are independent pre-existing guests; this workflow refuses when either is
 missing and provisions neither.
+
+The destination restore Reader is a fourth PBS identity with its own token
+fields under `secret/services/pbs`. Both its user and token receive only the
+built-in `DatastoreReader` role on `/datastore/o11y`, propagation disabled.
+The reviewed Proxmox role composition is `Datastore.Audit`, `Datastore.Read`,
+and `Datastore.Verify`: it can inspect/list the datastore, read arbitrary
+backup content, and verify snapshots, but grants no backup creation, prune,
+delete, or remote administration. The restore credential is persisted by
+OpenBao CAS and read back before ACL grants. A separate Dev-bound registration
+workflow reads PVE API authority from `secret/services/proxmox`, registers only
+the static declared storage, and puts only the destination restore token into
+PVE. It preserves existing storage rows and backup jobs and proves content
+access through every declared node.
 
 Credential creation and API access use separate paths. The management workflow
 runs `proxmox-backup-manager` only on the authenticated PBS guests to create the
@@ -95,9 +119,9 @@ peer certificate on that request.
    Semaphore helpers. Backup and verification bind to one actual UPID and exact
    snapshot; destination sync is destination-initiated, preserves existing
    snapshots, and disables vanished-item removal and pruning.
-4. Add four Semaphore catalog definition proposals as a new implementation
-   artifact for later consolidated integration; do not edit the shared catalog
-   file in this branch.
+4. Add the real Semaphore catalog declarations for Configure o11y PBS Copy
+   Access and Register o11y PBS Restore Storage; keep selectors and credentials
+   out of surveys.
 5. Add focused synthetic tests for malformed/mutated receipts and manifests,
    task/output linkage, chain ordering, private-inventory byte equality and
    cleanup, and refusal before non-read-only requests.
