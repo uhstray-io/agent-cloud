@@ -2250,3 +2250,133 @@ four playbooks passed syntax check. Ruff passed; full Ansible lint reported
 zero failures and three existing Jinja-spacing warnings; YAML lint exited 0
 with existing line-length warnings; strict OpenSpec validation passed. These
 are source checks only and do not close the live acceptance items above.
+
+### 2026-10-24 isolated restore and cleanup source
+
+The isolated restore executor and separately launched cleanup are implemented
+in the feature worktree described by
+[`isolated-restore-executor.md`](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor.md)
+and its [operator runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor-runbook.md).
+The source authenticates the four prerequisite task outputs in order and uses
+the copy-readiness receipt's closed `normalized_restore_locator` as the dynamic
+artifact location. Static source/copy/target hosts, nodes, and storage IDs stay
+in private inventory; a caller or legacy protected-copy selector is refused.
+Before using the copy, restore compares fresh destination PVE content and the
+PBS manifest to readiness, verifies the dedicated destination restore Reader
+identity and current PVE storage configuration fingerprints, then validates
+the exact artifact config before reservation. The Reader
+`o11y-copy-restore@pbs!pve-restore` is separate from the destination copy
+Manager and is the only PBS identity used by restore-side manifest reads. The
+artifact gate admits only the reviewed provisioner-shaped cloud-init config,
+the provisioner's exact `serial0: socket`, and canonical PVE
+`meta: creation-qemu=<version>,ctime=<epoch>`; arbitrary serial settings and
+unknown or malformed metadata are refused in artifact and target validation.
+Its regenerated target auxiliary is checked separately from included backup
+disks, and source cloud-init and NIC identity/network data is scrubbed before
+boot. The shared fixed-mode receipt validator and journal cover restore,
+isolation, start, guest execution, stop, and cleanup writes. The guest checker
+runs only through QGA and emits a bounded private receipt. Cleanup derives that
+receipt from authenticated task output and proves the full journal/version and
+exact target state before deletion. Its current private pin is verified
+independently from the historical restore pin, allowing unrelated private
+inventory changes while requiring the declared target and artifact evidence to
+remain unchanged.
+
+This is source implementation only. Independent component reviews of the PBS,
+restore, and capability scopes are complete; actionable findings were fixed and
+verified. Final combined-head CI and publication/readback for the integrated
+PBS/restore source remain pending. Scoped policy catalog publication task 8650
+created only `Apply Policy - Semaphore (Dev)` (template 351, repository 5,
+environment 2, inventory 2, `apply-policy-semaphore.yml`, no survey); the
+existing main-bound policy template 50 bindings were unchanged. No policy apply
+or effective-capability verification ran. Private target declaration, actual
+Reader and ACL readback, all-writer drain, protected-copy restore while primary
+PBS is unavailable, and live restore/cleanup remain open. Keep OpenSpec 5.2,
+the seven-day capacity forecast, and the separate 90d/45d/45d retention
+decision open; no live restore, cleanup, or storage change was performed for
+this source work.
+
+### 2026-10-24 limited observability and backup probes
+
+Sanitized task 8632 ran at controller `482a81c72cdf8b36e9f1245b7b07c3437b932cf3`
+with receiver revision `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. The dashboard
+probe reported five failed workflow steps; all five had unknown completion
+age. Three series/identities were unclassified, with no unknown label-shape or
+sample records. This is a limited dashboard observation, not proof that a
+restore or PBS workflow ran successfully.
+
+Sanitized backup inspection task 8634 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3`. It verified that the selected
+backup job is enabled and includes o11y, but found no successful backup within
+26 hours. The selected destination was reported low on free space. A separate
+node task log produced a `no_space` hint, but its task identity did not match
+the selected job, so that hint cannot be attributed to that job. No fresh PBS
+artifact or PBS-side verification was established.
+
+Sanitized task 8638 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3` with receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; its selected agentgateway scrape
+returned one series with values. This establishes scrape visibility only. It
+does not prove application health, service-level conformance, or fleet-wide
+coverage.
+
+Capacity refresh task 8623 had one source series and one series at the latest
+evaluation, no overlapping source events/evaluations, and no unknown label
+keys. It clears the earlier duplicate-source ambiguity for that read, but its
+source history is too short to provide a seven-day forecast or pass the
+capacity gate. The task used controller `391a4f7c168a51cf753d0a7cce202724a89b3b95`
+and expected receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`.
+
+None of these probes validates the private PBS placement, protected-copy
+failover with primary PBS unavailable, effective OpenBao role capabilities,
+writer drain, restore-target availability, or isolated restore/cleanup. They
+do not close OpenSpec 4.3, 4.4b/c, 5.1b, 5.2, 5.3, the seven-day forecast, or
+the separate 90d/45d/45d retention gate.
+
+Two later read-only observations further bound readiness. Service overview
+task 8645 used the same controller and receiver revisions. The Logvolume result
+was partial: 3 of 6 targets had data. Recent gateway access records were empty,
+so that verifier returned `ERROR`; recent container logs were expected to be
+empty. The absence of query errors is not proof of delivery or application
+health. The selected agentgateway scrape observation remains limited to its
+single series and roughly six-hour window.
+
+Configuration census task 8647 completed at controller commit
+`06ad8c32358518a1dc52181fde10439a8d431980`: 31 candidates, 9 declared
+targets, 31 unverified targets, 0 duplicate identities, and an inventory
+revision was present. Coverage was incomplete for 9 targets and unverified for
+22; signal states were incomplete for 3 and undeclared for 33; there were no
+missing template references. Its launch deliberately supplied no receipt task
+IDs, and it did not prove receiver coverage. This is a current configuration
+census, not evidence that telemetry is absent, applications are healthy, or
+fleet coverage is verified. All target receipt gates remain open.
+
+Scoped catalog publication task 8650 succeeded at Dev commit
+`06ad8c32358518a1dc52181fde10439a8d431980`. It created only the
+`Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
+5, environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
+survey fields. Existing main-bound policy template 50's bindings remained
+unchanged. The task published the policy-application mechanism only; no policy
+apply or effective-capability verification was run, so guarded-writer
+activation remains blocked.
+
+Capacity task 8658 at Dev commit `e68ca3de948914cb5ba820c92e12627277d468d6`
+ended with `source_history_too_short`: it evaluated 2,305 points (at least
+2,017 expected), saw 16 canonical source events (at least 8 expected), but the
+observed event span was 604,701 seconds, 99 seconds short of the 604,800-second
+window. The separate seven-day forecast gate remains open; elapsed time alone
+does not extend the observed source-event span.
+
+Conformance task 8659 at the same controller revision queried both exact
+service-conformance panels successfully over 24 hours. Categorical age data was
+available, but the identity join remained unverified: five failed pairs had
+unknown age, and the age-map diagnostics reported three registry-unknown rows.
+The map was rejected; per-pair missing/unavailable counters were zero. This is
+not application-health or delivery proof and does not close service conformance.
+
+These observations do not change the prior acceptance boundary: they do not
+prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
+effective role capabilities, writer drain, or isolated restore/cleanup. The
+capacity source ambiguity is cleared for the observed refresh only; its history
+remains too short for the separate seven-day forecast.

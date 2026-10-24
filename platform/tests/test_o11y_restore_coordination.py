@@ -1,757 +1,770 @@
-"""Regression tests for the source-only OpenBao restore coordination primitive."""
+"""Regression coverage for the versioned isolated-restore action journal."""
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
-import subprocess
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
-from jinja2 import Environment
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "playbooks" / "files"))
-
+sys.path.insert(0, str(Path(__file__).parent))
+import harness_sandbox  # noqa: E402
+import o11y_pbs_receipts as pbs_receipts  # noqa: E402
 import o11y_restore_coordination as coordination  # noqa: E402
+import playbook_yaml  # noqa: E402
 
+TARGET = {"node": "restore-node", "vmid": 910001}
 DECLARATION = {
     "declaration_fingerprint": "1" * 64,
-    "target_fingerprint": coordination.target_identity_fingerprint({"node": "pve", "vmid": 102}),
+    "target_fingerprint": coordination.target_identity_fingerprint(TARGET),
     "artifact_fingerprint": "3" * 64,
     "public_sha": "a" * 40,
     "private_inventory_sha": "b" * 64,
 }
-RESTORE_UPID = "UPID:pve:00000001:00000002:00000003:qmrestore:102:root@pam:"
-DELETE_UPID = "UPID:pve:00000004:00000005:00000006:qmdestroy:102:root@pam:"
-_AUTO = object()
+RESTORE_UPID = "UPID:restore-node:00000001:00000002:00000003:qmrestore:910001:root@pam:"
+START_UPID = "UPID:restore-node:00000004:00000005:00000006:qmstart:910001:root@pam:"
+STOP_UPID = "UPID:restore-node:00000007:00000008:00000009:qmstop:910001:root@pam:"
+DELETE_UPID = "UPID:restore-node:0000000a:0000000b:0000000c:qmdestroy:910001:root@pam:"
 
 
-def record_version(snapshot):
-    if snapshot["phase"] == "reserved":
-        return 1
-    if snapshot["phase"] == "restore_active":
-        return 2 if snapshot["upid"] is None else 3
-    if snapshot["phase"] == "awaiting_receipt":
-        return 4
-    if snapshot["phase"] == "cleanup_active":
-        return 5 if snapshot["upid"] is None else 6
-    if snapshot["phase"] == "cleaned":
-        return 7
-    raise AssertionError(f"unexpected test phase: {snapshot['phase']}")
-
-
-def owner_nonce(snapshot):
-    return snapshot["active_nonce"] if snapshot["phase"] in {"cleanup_active", "cleaned"} else snapshot["restore_nonce"]
-
-
-def request(
-    transition: str,
-    *,
-    snapshot=None,
-    nonce=_AUTO,
-    evidence=None,
-    upid=None,
-    expected_record=_AUTO,
-    expected_version=_AUTO,
-):
-    if expected_record is _AUTO:
-        expected_record = snapshot
-    if expected_version is _AUTO:
-        expected_version = record_version(snapshot) if snapshot is not None else 0
-    if nonce is _AUTO:
-        nonce = owner_nonce(snapshot) if snapshot is not None else None
-    return {
+def request(transition, snapshot=None, *, version=0, **changes):
+    values = {
         "transition": transition,
         "declaration": DECLARATION,
-        "target_ref": {"node": "pve", "vmid": 102},
-        "expected_record": expected_record,
-        "expected_version": expected_version,
-        "nonce": nonce,
-        "evidence": evidence,
-        "upid": upid,
+        "target_ref": TARGET,
+        "expected_record": copy.deepcopy(snapshot),
+        "expected_version": version,
+        "nonce": None if snapshot is None else snapshot["active_nonce"] or snapshot["restore_nonce"],
+        "evidence": None,
+        "action": None,
+        "request_fingerprint": None,
+        "handle_type": None,
+        "handle": None,
+        "effect_fingerprint": None,
     }
+    values.update(changes)
+    return values
 
 
-def planned_reservation():
-    plan = coordination.plan_transition(
-        None,
-        0,
-        request("reserve"),
+def apply(snapshot, version, transition, **changes):
+    planned = coordination.plan_transition(snapshot, version, request(transition, snapshot, version=version, **changes))
+    return planned["record"], planned["expected_version"]
+
+
+def reserve():
+    planned = coordination.plan_transition(None, 0, request("reserve"))
+    return planned["record"], 1
+
+
+def action(snapshot, version, name, handle_type, handle, index):
+    req_hash = str(index) * 64
+    snapshot, version = apply(
+        snapshot,
+        version,
+        "intent_restore" if name == "restore" else "intent_action",
+        action=name,
+        request_fingerprint=req_hash,
     )
-    return plan["record"]
+    snapshot, version = apply(
+        snapshot,
+        version,
+        "record_handle",
+        action=name,
+        request_fingerprint=req_hash,
+        handle_type=handle_type,
+        handle=handle,
+    )
+    isolated_config = "f" * 64
+    if name == "restore":
+        evidence = {
+            "type": "restore_effect/v2",
+            "action": name,
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "task_state": "stopped",
+            "exit_status": "OK",
+            "vm_state": "stopped",
+            "config_sha256": "1" * 64,
+        }
+        effect_hash = evidence["config_sha256"]
+    elif name == "isolate":
+        evidence = {
+            "type": "isolation_effect/v2",
+            "action": name,
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "status": 200,
+            "isolated": True,
+            "nic_count": 0,
+            "onboot": 0,
+            "config_sha256": isolated_config,
+        }
+        effect_hash = isolated_config
+    elif name == "start":
+        evidence = {
+            "type": "start_effect/v2",
+            "action": name,
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "task_state": "stopped",
+            "exit_status": "OK",
+            "vm_state": "running",
+            "isolated": True,
+            "config_sha256": isolated_config,
+        }
+        effect_hash = isolated_config
+    elif name == "guest_exec":
+        evidence = {
+            "type": "guest_effect/v2",
+            "action": name,
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "pid": handle,
+            "exit_code": 0,
+            "checker_status": "verified",
+            "checker_receipt_fingerprint": "5" * 64,
+            "output_sha256": "6" * 64,
+        }
+        effect_hash = evidence["checker_receipt_fingerprint"]
+    elif name == "stop":
+        evidence = {
+            "type": "stop_effect/v2",
+            "action": name,
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "task_state": "stopped",
+            "exit_status": "OK",
+            "vm_state": "stopped",
+            "isolated": True,
+            "config_sha256": isolated_config,
+        }
+        effect_hash = isolated_config
+    else:
+        evidence = {
+            "type": "delete_effect/v2",
+            "action": name,
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "task_state": "stopped",
+            "exit_status": "OK",
+            "task_output_sha256": "8" * 64,
+        }
+        effect_hash = evidence["task_output_sha256"]
+    snapshot, version = apply(
+        snapshot,
+        version,
+        "verify_effect",
+        action=name,
+        request_fingerprint=req_hash,
+        handle_type=handle_type,
+        handle=handle,
+        effect_fingerprint=effect_hash,
+        evidence=evidence,
+    )
+    return snapshot, version
 
 
-def start_restore(snapshot=None):
-    current = snapshot or planned_reservation()
-    return coordination.plan_transition(
-        current,
-        1,
-        request("start_restore", snapshot=current),
-    )["record"]
+def active_restore():
+    record, version = reserve()
+    # The initial restore intent is the only transition allowed from reserved.
+    record, version = action(record, version, "restore", "upid", RESTORE_UPID, 1)
+    for name, kind, handle, marker in (
+        ("isolate", "response_sha256", "2" * 64, 2),
+        ("start", "upid", START_UPID, 3),
+        ("guest_exec", "qga_pid", 44, 4),
+        ("stop", "upid", STOP_UPID, 5),
+    ):
+        record, version = action(record, version, name, kind, handle, marker)
+    return record, version
 
 
-def record_restore_upid(snapshot=None):
-    current = snapshot or start_restore()
-    return coordination.plan_transition(
-        current,
-        2,
-        request("record_restore_upid", snapshot=current, upid=RESTORE_UPID),
-    )["record"]
-
-
-def restore_evidence(snapshot=None):
-    current = snapshot or record_restore_upid()
-    return {
-        "type": "restore_receipt/v1",
-        "receipt_fingerprint": "5" * 64,
-        "bindings": {
-            "operation_id": current["operation_id"],
-            "target_fingerprint": current["target_fingerprint"],
-            "artifact_fingerprint": current["artifact_fingerprint"],
-            "restore_nonce": current["restore_nonce"],
-            "public_sha": current["public_sha"],
-            "private_inventory_sha": current["private_inventory_sha"],
+def completed_restore():
+    record, version = active_restore()
+    data_checks = {
+        "schema_version": 1,
+        "status": "verified",
+        "reason": "restored_historical_data_verified",
+        "volume_count": 5,
+        "volume_bindings_sha256": "4" * 64,
+        "container_bindings_sha256": "5" * 64,
+        "backend_count": 4,
+        "grafana_integrity": "ok",
+        "grafana_migrations": 3,
+        "grafana_database_sha256": "6" * 64,
+        "backends": {
+            name: {
+                "expectation": "present",
+                "historical_records": 1,
+                "evidence_sha256": "7" * 64,
+                "readback_sha256": "8" * 64,
+            }
+            for name in ("prometheus", "loki", "tempo", "pyroscope")
         },
-        "restore_upid": current["upid"],
+        "receipt_fingerprint": "9" * 64,
+    }
+    nested_record = copy.deepcopy(record)
+    nested_record.update(phase="awaiting_receipt", active_nonce=None)
+    evidence = {
+        "type": "restore_receipt/v3",
+        "bindings": {
+            key: record[key]
+            for key in (
+                "operation_id",
+                "target_fingerprint",
+                "artifact_fingerprint",
+                "restore_nonce",
+                "public_sha",
+                "private_inventory_sha",
+            )
+        },
+        "restore_upid": RESTORE_UPID,
         "target_state": "stopped",
         "pending_action": None,
+        "completed_actions": ["restore", "isolate", "start", "guest_exec", "stop"],
+        "coordination_record": nested_record,
+        "coordination_version": version + 1,
+        "artifact_config": {
+            "config_sha256": "a" * 64,
+            "disk_count": 1,
+            "disks": [{"device": "scsi0", "size_bytes": 20 * 1024**3}],
+            "nic_count": 1,
+            "nic_keys": ["net0"],
+            "config_keys_sha256": "b" * 64,
+        },
+        "checker_sha256": "c" * 64,
+        "checker_receipt_fingerprint": data_checks["receipt_fingerprint"],
+        "guest_execution_pid": 44,
+        "data_checks": data_checks,
+        "isolation_config_sha256": "d" * 64,
     }
+    evidence = pbs_receipts.seal_restore_receipt(evidence)
+    record, version = apply(record, version, "awaiting_receipt", evidence=evidence)
+    return record, version
 
 
-def authenticated_restore_task(snapshot=None):
-    current = snapshot or awaiting_receipt()
+def authenticated_task(record, version):
+    bindings = {
+        key: record[key]
+        for key in (
+            "operation_id",
+            "target_fingerprint",
+            "artifact_fingerprint",
+            "restore_nonce",
+            "public_sha",
+            "private_inventory_sha",
+        )
+    }
+    bindings["restore_upid"] = RESTORE_UPID
     return {
-        "type": "prior_restore_task_proof/v1",
-        "task_id": 4102,
+        "type": "prior_restore_task_proof/v2",
+        "task_id": 4182,
         "task_status": "success",
-        "output_fingerprint": "4" * 64,
-        "receipt_fingerprint": current["receipt_fingerprint"],
-        "bindings": {
-            "operation_id": current["operation_id"],
-            "target_fingerprint": current["target_fingerprint"],
-            "artifact_fingerprint": current["artifact_fingerprint"],
-            "restore_nonce": current["restore_nonce"],
-            "public_sha": current["public_sha"],
-            "private_inventory_sha": current["private_inventory_sha"],
-            "restore_upid": current["upid"],
-        },
-        "coordination_record": current,
-        "coordination_version": record_version(current),
+        "output_fingerprint": "7" * 64,
+        "receipt_fingerprint": record["receipt_fingerprint"],
+        "bindings": bindings,
+        "coordination_record": copy.deepcopy(record),
+        "coordination_version": version,
     }
 
 
-def awaiting_receipt(snapshot=None):
-    current = snapshot or record_restore_upid()
-    return coordination.plan_transition(
-        current,
-        3,
-        request("awaiting_receipt", snapshot=current, evidence=restore_evidence(current)),
-    )["record"]
+def test_every_lifecycle_write_has_intent_real_handle_and_verified_effect():
+    record, version = completed_restore()
+    assert record["schema_version"] == 2
+    assert record["phase"] == "awaiting_receipt"
+    assert record["restore_upid"] == RESTORE_UPID
+    assert [event["action"] for event in record["journal"]] == ["restore", "isolate", "start", "guest_exec", "stop"]
+    assert record["journal"][3]["handle_type"] == "qga_pid"
+    assert record["journal"][1]["handle_type"] == "response_sha256"
+    assert record["pending"] is None
+    assert version == 17
 
 
-def start_cleanup(snapshot=None):
-    current = snapshot or awaiting_receipt()
-    return coordination.plan_transition(
-        current,
-        4,
-        request("start_cleanup", snapshot=current, evidence=authenticated_restore_task(current)),
-    )["record"]
-
-
-def record_cleanup_upid(snapshot=None):
-    current = snapshot or start_cleanup()
-    return coordination.plan_transition(
-        current,
-        5,
-        request("record_cleanup_upid", snapshot=current, upid=DELETE_UPID),
-    )["record"]
-
-
-def cleanup_evidence(snapshot=None):
-    current = snapshot or record_cleanup_upid()
-    return {
-        "type": "pve_delete_verification/v1",
-        "bindings": {
-            "operation_id": current["operation_id"],
-            "target_fingerprint": current["target_fingerprint"],
-            "artifact_fingerprint": current["artifact_fingerprint"],
-            "restore_nonce": current["restore_nonce"],
-            "active_nonce": current["active_nonce"],
-            "prior_authenticated_task_id": current["prior_authenticated_task_id"],
-            "public_sha": current["public_sha"],
-            "private_inventory_sha": current["private_inventory_sha"],
+def test_restore_receipt_builder_seals_both_fingerprints_from_stopped_journal():
+    record, version = reserve()
+    for name, kind, handle, marker in (
+        ("restore", "upid", RESTORE_UPID, 1),
+        ("isolate", "response_sha256", "2" * 64, 2),
+        ("start", "upid", START_UPID, 3),
+        ("guest_exec", "qga_pid", 44, 4),
+        ("stop", "upid", STOP_UPID, 5),
+    ):
+        record, version = action(record, version, name, kind, handle, marker)
+    _final, _version = completed_restore()
+    nested = _final["journal"]
+    data_checks = {
+        "schema_version": 1,
+        "status": "verified",
+        "reason": "restored_historical_data_verified",
+        "volume_count": 5,
+        "volume_bindings_sha256": "4" * 64,
+        "container_bindings_sha256": "5" * 64,
+        "backend_count": 4,
+        "grafana_integrity": "ok",
+        "grafana_migrations": 3,
+        "grafana_database_sha256": "6" * 64,
+        "backends": {
+            name: {
+                "expectation": "present",
+                "historical_records": 1,
+                "evidence_sha256": "7" * 64,
+                "readback_sha256": "8" * 64,
+            }
+            for name in ("prometheus", "loki", "tempo", "pyroscope")
         },
-        "target_absence": {
-            "type": "pve_exact_vmid_absence/v1",
-            "node": "pve",
-            "vmid": 102,
-            "nextid_status": 200,
-            "nextid_echo": 102,
-            "node_config_status": 404,
-            "target_fingerprint": current["target_fingerprint"],
+        "receipt_fingerprint": "9" * 64,
+    }
+    receipt = coordination.build_restore_receipt(
+        record,
+        version,
+        {
+            "artifact_config": {
+                "config_sha256": "a" * 64,
+                "disk_count": 1,
+                "disks": [{"device": "scsi0", "size_bytes": 20 * 1024**3}],
+                "nic_count": 1,
+                "nic_keys": ["net0"],
+                "config_keys_sha256": "b" * 64,
+            },
+            "checker_sha256": "c" * 64,
+            "checker_receipt_fingerprint": data_checks["receipt_fingerprint"],
+            "guest_execution_pid": 44,
+            "data_checks": data_checks,
+            "isolation_config_sha256": "d" * 64,
         },
-        "delete_upid": current["upid"],
-        "task_state": "stopped",
-        "exit_status": "OK",
+    )
+    assert receipt["receipt_fingerprint"] == receipt["coordination_record"]["receipt_fingerprint"]
+    assert receipt["coordination_record"]["journal"][-1] == nested[-1]
+    restored, _ = apply(record, version, "awaiting_receipt", evidence=receipt)
+    assert restored["receipt_fingerprint"] == receipt["receipt_fingerprint"]
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_real_restore_receipt_builder_gates_cleanup_on_hash_bound_target_config(tmp_path):
+    repo = playbook_yaml.REPO
+    playbooks = repo / "platform/playbooks"
+    restore_tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / "restore-o11y-isolated.yml")))
+    cleanup_tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / "cleanup-o11y-isolated-restore.yml")))
+    receipt_task = copy.deepcopy(
+        next(
+            task
+            for task in restore_tasks
+            if task.get("name") == "Build the private identity-bearing v3 restore receipt"
+        )
+    )
+    receipt_guard = copy.deepcopy(
+        next(
+            task
+            for task in restore_tasks
+            if task.get("name") == "Require the full stopped journal to seal one closed private receipt"
+        )
+    )
+    cleanup_target = copy.deepcopy(
+        next(
+            task
+            for task in cleanup_tasks
+            if task.get("name") == "Validate stopped isolated target configuration and exact source disks"
+        )
+    )
+    cleanup_guard = copy.deepcopy(
+        next(
+            task
+            for task in cleanup_tasks
+            if task.get("name") == "Require stopped target and unchanged isolation fingerprint before CAS transfer"
+        )
+    )
+    receipt_task["ansible.builtin.command"]["argv"][1] = str(playbooks / "files/o11y_restore_coordination.py")
+    cleanup_target["ansible.builtin.command"]["argv"][1] = str(playbooks / "files/o11y_isolated_restore.py")
+
+    artifact_config = {
+        "config_sha256": "a" * 64,
+        "disk_count": 1,
+        "disks": [{"device": "scsi0", "size_bytes": 20 * 1024**3}],
+        "nic_count": 1,
+        "nic_keys": ["net0"],
+        "config_keys_sha256": "b" * 64,
+    }
+    checker_sha = "c" * 64
+    data_checks = {
+        "schema_version": 1,
+        "status": "verified",
+        "reason": "restored_historical_data_verified",
+        "volume_count": 5,
+        "volume_bindings_sha256": "4" * 64,
+        "container_bindings_sha256": "5" * 64,
+        "backend_count": 4,
+        "grafana_integrity": "ok",
+        "grafana_migrations": 3,
+        "grafana_database_sha256": "6" * 64,
+        "backends": {
+            name: {
+                "expectation": "present",
+                "historical_records": 1,
+                "evidence_sha256": "7" * 64,
+                "readback_sha256": "8" * 64,
+            }
+            for name in ("prometheus", "loki", "tempo", "pyroscope")
+        },
+        "receipt_fingerprint": "9" * 64,
     }
 
+    def config(ide2: str | None = "target-lvm:vm-910001-cloudinit,media=cdrom", **changes):
+        data = {
+            "vmid": 910001,
+            "digest": "a" * 40,
+            "onboot": 0,
+            "description": f"o11y-restore:{DECLARATION['declaration_fingerprint']}",
+            "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+        }
+        if ide2 is not None:
+            data["ide2"] = ide2
+        data.update(changes)
+        return {"status": 200, "data": data}
 
-def cleaned(snapshot=None):
-    current = snapshot or record_cleanup_upid()
-    return coordination.plan_transition(
-        current,
-        6,
-        request("cleaned", snapshot=current, evidence=cleanup_evidence(current)),
-    )["record"]
+    def fingerprint(candidate):
+        return hashlib.sha256(json.dumps(candidate["data"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-
-def kv_reads(record, version=1):
-    metadata = {
-        "current_version": version,
-        "versions": {str(version): {"created_time": "2026-10-21T12:00:00Z", "deletion_time": "", "destroyed": False}},
-    }
-    secret = {"data": {"data": record, "metadata": {"version": version}}}
-    return metadata, secret
-
-
-def invoke_rendered_plan_command(request_value, *, metadata_status=404, metadata=None, data_status=404, secret=None):
-    """Render the include's actual stdin expression and invoke its helper argv."""
-    task_path = Path(__file__).parents[1] / "playbooks" / "tasks" / "o11y-restore-coordination.yml"
-    tasks = yaml.safe_load(task_path.read_text())
-    plan_task = next(task for task in tasks if task["name"] == "Restore coordination: plan the strict transition")
-    command = plan_task["ansible.builtin.command"]
-    assert command["argv"] == ["python3", "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
-    environment = Environment()
-    environment.filters["to_json"] = lambda value: json.dumps(value, separators=(",", ":"))
-    rendered_stdin = environment.from_string(command["stdin"]).render(
-        _o11y_rc_metadata={"status": metadata_status, "json": {"data": metadata}},
-        _o11y_rc_secret={"status": data_status, "json": secret},
-        o11y_restore_coordination_request=request_value,
-    )
-    return subprocess.run(
-        [sys.executable, str(Path(coordination.__file__))],
-        input=rendered_stdin,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-
-def test_absent_path_reserves_once_with_cas_zero_and_exact_record_shape():
-    plan = coordination.plan_transition(None, 0, request("reserve"))
-
-    assert plan["result"] == "write"
-    assert plan["payload"] == {"data": plan["record"], "options": {"cas": 0}}
-    assert plan["record"]["phase"] == "reserved"
-    assert plan["record"]["generation"] == 1
-    assert coordination._nonce(plan["record"]["restore_nonce"])
-    assert set(plan["record"]) == coordination.RECORD_KEYS
-
-
-def test_restore_nonce_comes_from_one_token_hex_32_call_per_new_phase(monkeypatch):
-    calls = []
-    tokens = iter(["c" * 64, "d" * 64])
-
-    def fixed_token_hex(size):
-        calls.append(size)
-        return next(tokens)
-
-    monkeypatch.setattr(coordination.secrets, "token_hex", fixed_token_hex)
-    reserved = coordination.plan_transition(None, 0, request("reserve"))["record"]
-    assert calls == [32]
-
-    receipt = awaiting_receipt(record_restore_upid(start_restore(reserved)))
-    cleanup = coordination.plan_transition(
-        receipt,
-        4,
-        request("start_cleanup", snapshot=receipt, evidence=authenticated_restore_task(receipt)),
-    )["record"]
-    assert calls == [32, 32]
-    assert cleanup["active_nonce"] == "d" * 64
-
-
-def test_a_lost_reservation_response_cannot_turn_a_rerun_into_takeover():
-    # Model a successful CAS whose response was lost: the next invocation sees
-    # the stored reservation, and its attempted second reservation must stop.
-    snapshot = planned_reservation()
-
-    with pytest.raises(coordination.Refusal, match="expected_snapshot_mismatch"):
-        coordination.plan_transition(
-            snapshot,
-            1,
-            request("reserve", snapshot=snapshot, expected_record=None, expected_version=0, nonce=None),
-        )
-
-
-def test_stale_expected_version_cannot_be_used_for_a_competing_transition():
-    snapshot = planned_reservation()
-    stale = request("start_restore", snapshot=snapshot, expected_version=0)
-
-    with pytest.raises(coordination.Refusal, match="expected_version_mismatch"):
-        coordination.plan_transition(snapshot, 1, stale)
-
-
-def test_expected_snapshot_and_kv_version_require_strict_integer_types():
-    snapshot = planned_reservation()
-    malformed_record = {**snapshot, "generation": True}
-    malformed_snapshot_request = request("start_restore", snapshot=snapshot, expected_record=malformed_record)
-    with pytest.raises(coordination.Refusal, match="record_shape_invalid"):
-        coordination.plan_transition(snapshot, 1, malformed_snapshot_request)
-
-    malformed_version_request = request("start_restore", snapshot=snapshot, expected_version=True)
-    with pytest.raises(coordination.Refusal, match="expected_version_mismatch"):
-        coordination.plan_transition(snapshot, 1, malformed_version_request)
-
-
-def test_transition_refuses_a_newer_observed_version_instead_of_adopting_it():
-    snapshot = planned_reservation()
-
-    with pytest.raises(coordination.Refusal, match="expected_version_mismatch"):
-        coordination.plan_transition(snapshot, 8, request("start_restore", snapshot=snapshot))
-
-
-def test_fresh_get_cannot_be_adopted_as_expected_state_by_a_new_run():
-    stored = planned_reservation()
-    metadata, secret = kv_reads(stored)
-    fresh_record, fresh_version = coordination.read_snapshot(200, metadata, 200, secret)
-
-    attempt = request(
-        "start_restore",
-        snapshot=fresh_record,
-        expected_record=None,
-        expected_version=0,
-        nonce=None,
-    )
-    with pytest.raises(coordination.Refusal, match="expected_snapshot_mismatch"):
-        coordination.plan_transition(fresh_record, fresh_version, attempt)
-
-
-def test_reading_the_latest_record_does_not_supply_the_held_owner_nonce():
-    snapshot = awaiting_receipt()
-    metadata, secret = kv_reads(snapshot, version=record_version(snapshot))
-    fresh_record, fresh_version = coordination.read_snapshot(200, metadata, 200, secret)
-
-    with pytest.raises(coordination.Refusal, match="nonce_invalid"):
-        coordination.plan_transition(
-            fresh_record,
-            fresh_version,
-            request("start_cleanup", snapshot=fresh_record, nonce=None, evidence=authenticated_restore_task(snapshot)),
-        )
-
-
-def test_two_cleanup_claimants_cannot_take_over_after_the_cas_loser(monkeypatch):
-    awaiting = awaiting_receipt()
-    evidence = authenticated_restore_task(awaiting)
-    nonces = iter(["d" * 64, "e" * 64])
-    monkeypatch.setattr(coordination.secrets, "token_hex", lambda size: next(nonces))
-    owner_request = request("start_cleanup", snapshot=awaiting, evidence=evidence)
-
-    winner = coordination.plan_transition(awaiting, 4, owner_request)
-    loser = coordination.plan_transition(awaiting, 4, owner_request)
-    assert winner["payload"]["options"] == loser["payload"]["options"] == {"cas": 4}
-    assert winner["record"]["active_nonce"] != loser["record"]["active_nonce"]
-
-    metadata, secret = kv_reads(winner["record"], version=5)
-    with pytest.raises(coordination.Refusal, match="readback_mismatch"):
-        coordination.verify_readback(loser, 200, metadata, 200, secret)
-
-    with pytest.raises(coordination.Refusal, match="nonce_invalid"):
-        coordination.plan_transition(
-            winner["record"],
-            5,
-            request(
-                "record_cleanup_upid",
-                snapshot=winner["record"],
-                nonce=loser["record"]["active_nonce"],
-                upid=DELETE_UPID,
-            ),
-        )
-
-
-def test_each_later_transition_requires_the_held_nonce_after_a_fresh_read():
-    restore_active = start_restore()
-    restore_upid_record = record_restore_upid()
-    awaiting = awaiting_receipt()
-    cleanup_active = start_cleanup(awaiting)
-    cleanup_upid_record = record_cleanup_upid(cleanup_active)
-    attempts = [
-        (restore_active, "record_restore_upid", {"upid": RESTORE_UPID}),
-        (restore_upid_record, "awaiting_receipt", {"evidence": restore_evidence(restore_upid_record)}),
-        (awaiting, "start_cleanup", {"evidence": authenticated_restore_task(awaiting)}),
-        (cleanup_upid_record, "cleaned", {"evidence": cleanup_evidence(cleanup_upid_record)}),
+    base_config = config()
+    cases = [
+        ("backed auxiliary", base_config, base_config, None, False, False),
+        ("explicit empty auxiliary", config("none,media=cdrom"), config("none,media=cdrom"), None, False, False),
+        (
+            "config changed after receipt",
+            base_config,
+            config("target-lvm:vm-910002-cloudinit,media=cdrom"),
+            None,
+            False,
+            True,
+        ),
+        ("wrong receipt hash", base_config, base_config, "f" * 64, False, True),
+        (
+            "wrong target auxiliary",
+            config("target-lvm:vm-910002-cloudinit,media=cdrom"),
+            config("target-lvm:vm-910002-cloudinit,media=cdrom"),
+            None,
+            False,
+            True,
+        ),
+        (
+            "wrong included disk store",
+            config(scsi0="other-lvm:vm-910001-disk-0,size=20G"),
+            config(scsi0="other-lvm:vm-910001-disk-0,size=20G"),
+            None,
+            False,
+            True,
+        ),
+        (
+            "unexpected disk",
+            config(scsi1="target-lvm:vm-910001-disk-1,size=20G"),
+            config(scsi1="target-lvm:vm-910001-disk-1,size=20G"),
+            None,
+            False,
+            True,
+        ),
+        (
+            "wrong target ownership marker",
+            config(description="o11y-restore:wrong"),
+            config(description="o11y-restore:wrong"),
+            None,
+            False,
+            True,
+        ),
+        ("incomplete lifecycle journal", base_config, base_config, None, True, True),
     ]
 
-    for stored, transition, extra in attempts:
-        metadata, secret = kv_reads(stored, version=record_version(stored))
-        fresh_record, fresh_version = coordination.read_snapshot(200, metadata, 200, secret)
-        attempt = request(transition, snapshot=fresh_record, nonce=None, **extra)
-        with pytest.raises(coordination.Refusal, match="nonce_invalid"):
-            coordination.plan_transition(fresh_record, fresh_version, attempt)
-
-
-def test_metadata_and_kv_version_drift_refuse_before_planning_a_write():
-    snapshot = planned_reservation()
-    metadata, secret = kv_reads(snapshot, version=2)
-    secret["data"]["metadata"]["version"] = 1
-
-    with pytest.raises(coordination.Refusal, match="cas_version_invalid"):
-        coordination.read_snapshot(200, metadata, 200, secret)
-
-
-def test_deleted_metadata_and_metadata_only_records_are_never_absence():
-    tombstone = {"current_version": 1, "versions": {"1": {"deletion_time": "2026-10-21T12:00:00Z", "destroyed": False}}}
-    with pytest.raises(coordination.Refusal, match="metadata_tombstone"):
-        coordination.read_snapshot(200, tombstone, 404, None)
-
-    metadata, _secret = kv_reads(planned_reservation())
-    with pytest.raises(coordination.Refusal, match="data_missing"):
-        coordination.read_snapshot(200, metadata, 404, None)
-
-
-def test_wrong_target_or_inventory_owner_fingerprint_refuses():
-    snapshot = planned_reservation()
-    wrong_owner = {**DECLARATION, "private_inventory_sha": "f" * 64}
-
-    with pytest.raises(coordination.Refusal, match="record_binding_mismatch"):
-        coordination.plan_transition(
-            snapshot,
-            1,
-            {**request("start_restore", snapshot=snapshot), "declaration": wrong_owner},
+    for index, (label, sealed_config, current_config, expected_hash, wrong_journal, should_refuse) in enumerate(cases):
+        record, version = active_restore()
+        if wrong_journal:
+            record["journal"] = record["journal"][:-1]
+        bound_hash = expected_hash or fingerprint(sealed_config)
+        variables = {
+            "_o11y_rc_plan": {"record": record, "expected_version": version},
+            "_restore_artifact_layout": artifact_config,
+            "_restore_checker_sha": checker_sha,
+            "_restore_guest_receipt": data_checks,
+            "_restore_guest_exec_submit": {"json": {"data": {"pid": 44}}},
+            "_restore_isolated_config_sha256": bound_hash,
+            "_cleanup_target_read": {
+                "results": [
+                    {"item": {"name": "config"}, "status": 200, "json": {"data": current_config["data"]}},
+                    {"item": {"name": "status"}, "status": 200, "json": {"data": {"status": "stopped"}}},
+                ]
+            },
+            "_cleanup_target_ref": {"vmid": 910001, "node": TARGET["node"]},
+            "_cleanup_target_declaration": {"storage_id": "target-lvm"},
+        }
+        tasks = [
+            receipt_task,
+            receipt_guard,
+            {
+                "name": "Pass only the sealed receipt to the actual cleanup task",
+                "ansible.builtin.set_fact": {
+                    "_cleanup_receipt": "{{ _restore_sealed_receipt_raw.stdout | from_json }}",
+                    "_cleanup_record": "{{ (_restore_sealed_receipt_raw.stdout | from_json).coordination_record }}",
+                },
+            },
+            cleanup_target,
+            {
+                "name": "Report only cleanup validator status",
+                "ansible.builtin.debug": {"msg": "cleanup_target_config_rc={{ _cleanup_config_validated.rc }}"},
+            },
+            cleanup_guard,
+            {"name": "Synthetic deletion gate sentinel", "ansible.builtin.debug": {"msg": "DELETE_GATE_REACHED"}},
+        ]
+        play = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables, "tasks": tasks}]
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        inventory = case_dir / "inventory.ini"
+        inventory.write_text("localhost ansible_connection=local\n")
+        harness = case_dir / "receipt-to-cleanup.yml"
+        harness.write_text(yaml.safe_dump(play))
+        result = harness_sandbox.run(
+            ["ansible-playbook", "-i", str(inventory), str(harness)],
+            case_dir,
+            cwd=repo,
+            env=harness_sandbox.env_for(case_dir),
         )
+        if should_refuse:
+            assert result.returncode != 0, label
+            assert "DELETE_GATE_REACHED" not in result.stdout, label
+        else:
+            assert result.returncode == 0, f"{label}: {result.stdout}\n{result.stderr}"
+            assert "cleanup_target_config_rc=0" in result.stdout, label
+            assert "DELETE_GATE_REACHED" in result.stdout, label
+
+    cleanup_positions = {
+        task.get("name"): index
+        for index, task in enumerate(cleanup_tasks)
+        if task.get("name") in {
+            "Require stopped target and unchanged isolation fingerprint before CAS transfer",
+            "Transfer ownership and persist delete intent with exact journal CAS",
+            "Delete only the authenticated disconnected target",
+        }
+    }
+    assert (
+        cleanup_positions["Require stopped target and unchanged isolation fingerprint before CAS transfer"]
+        < cleanup_positions["Transfer ownership and persist delete intent with exact journal CAS"]
+        < cleanup_positions["Delete only the authenticated disconnected target"]
+    )
 
 
-def test_record_generation_is_fixed_and_cannot_be_reinterpreted():
-    snapshot = planned_reservation()
-    changed_generation = {**snapshot, "generation": 2}
-
-    with pytest.raises(coordination.Refusal, match="record_shape_invalid"):
-        coordination.validate_record(changed_generation)
-
-
-def test_unsupported_lifecycle_action_is_refused():
-    with pytest.raises(coordination.Refusal, match="invalid_input"):
-        coordination.plan_transition(None, 0, request("isolate_nic"))
-
-    record = planned_reservation()
-    with pytest.raises(coordination.Refusal, match="record_shape_invalid"):
-        coordination.validate_record({**record, "action": "start"})
-
-
-def test_restore_nonce_must_bind_receipt_and_cleanup_uses_a_fresh_nonce():
-    snapshot = record_restore_upid()
-    evidence = restore_evidence(snapshot)
-    evidence["bindings"]["restore_nonce"] = "e" * 64
-
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 3, request("awaiting_receipt", snapshot=snapshot, evidence=evidence))
-
-    receipt = awaiting_receipt()
-    cleanup = start_cleanup(receipt)
-    assert cleanup["active_nonce"] != receipt["restore_nonce"]
-    assert coordination._nonce(cleanup["active_nonce"])
-
-
-def test_pending_upid_or_missing_restore_action_refuses_receipt_transition():
-    snapshot = start_restore()
-
-    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
-        coordination.plan_transition(
-            snapshot, 2, request("awaiting_receipt", snapshot=snapshot, evidence=restore_evidence(snapshot))
-        )
-
-
-@pytest.mark.parametrize(
-    "upid",
-    [
-        DELETE_UPID,
-        "UPID:other-node:00000001:00000002:00000003:qmrestore:102:root@pam:",
-        "UPID:pve:00000001:00000002:00000003:qmrestore:103:root@pam:",
-    ],
-)
-def test_restore_upid_must_match_exact_target_node_vmid_and_operation(upid):
-    snapshot = start_restore()
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(
-            snapshot,
-            2,
-            request("record_restore_upid", snapshot=snapshot, upid=upid),
-        )
-
-
-def test_cleanup_upid_must_be_the_exact_delete_operation():
-    snapshot = start_cleanup()
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(
-            snapshot,
-            5,
-            request("record_cleanup_upid", snapshot=snapshot, upid=RESTORE_UPID),
-        )
-
-    wrong_delete_alias = DELETE_UPID.replace(":qmdestroy:", ":qmdelete:")
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(
-            snapshot,
-            5,
-            request("record_cleanup_upid", snapshot=snapshot, upid=wrong_delete_alias),
-        )
-
-
-def test_swapped_transient_target_ref_cannot_reuse_expected_record_and_nonce():
-    snapshot = start_restore()
-    req = request("record_restore_upid", snapshot=snapshot, upid=RESTORE_UPID)
-    req["target_ref"] = {"node": "other-node", "vmid": 102}
-
-    with pytest.raises(coordination.Refusal, match="record_binding_mismatch"):
-        coordination.plan_transition(snapshot, 2, req)
-
-
-def test_lost_restore_response_keeps_the_target_reserved_for_manual_reconciliation():
-    snapshot = start_restore()
-
-    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
-        coordination.plan_transition(snapshot, 2, request("start_restore", snapshot=snapshot))
-    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
-        coordination.plan_transition(
-            snapshot, 2, request("awaiting_receipt", snapshot=snapshot, evidence=restore_evidence(snapshot))
-        )
-
-
-def test_boolean_and_unbound_receipt_proofs_are_rejected():
-    snapshot = record_restore_upid()
-
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 3, request("awaiting_receipt", snapshot=snapshot, evidence=True))
-
-    evidence = restore_evidence(snapshot)
-    evidence["bindings"]["target_fingerprint"] = "0" * 64
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 3, request("awaiting_receipt", snapshot=snapshot, evidence=evidence))
-
-
-def test_generated_receipt_does_not_authorize_cleanup_without_prior_task_proof():
-    snapshot = awaiting_receipt()
-    assert snapshot["prior_authenticated_task_id"] is None
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(
-            snapshot,
-            4,
-            request("start_cleanup", snapshot=snapshot, evidence=restore_evidence(snapshot)),
-        )
-
-    proof = authenticated_restore_task(snapshot)
-    proof["task_status"] = "running"
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 4, request("start_cleanup", snapshot=snapshot, evidence=proof))
-
-    proof = authenticated_restore_task(snapshot)
-    proof["coordination_version"] -= 1
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 4, request("start_cleanup", snapshot=snapshot, evidence=proof))
-
-
-def test_lost_cleanup_upid_response_leaves_deletion_pending_and_uncleanable():
-    snapshot = start_cleanup()
-
-    with pytest.raises(coordination.Refusal, match="phase_transition_invalid"):
-        coordination.plan_transition(
-            snapshot, 5, request("cleaned", snapshot=snapshot, evidence=cleanup_evidence(snapshot))
-        )
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("nextid_echo", 103),
-        ("nextid_status", 400),
-        ("node", "other-node"),
-        ("node_config_status", 500),
-        ("node_config_status", 403),
-        ("target_fingerprint", "0" * 64),
-    ],
-)
-def test_cleaned_requires_authoritative_exact_vmid_absence(field, value):
-    snapshot = record_cleanup_upid()
-    evidence = cleanup_evidence(snapshot)
-    evidence["target_absence"][field] = value
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=evidence))
-
-
-def test_cleaned_does_not_accept_boolean_absence_or_wrong_delete_upid():
-    snapshot = record_cleanup_upid()
-    proof = cleanup_evidence(snapshot)
-    proof["target_absence"] = True
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=proof))
-
-    proof = cleanup_evidence(snapshot)
-    proof["delete_upid"] = RESTORE_UPID
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=proof))
-
-    proof = cleanup_evidence(snapshot)
-    proof["target_absence"]["vmid"] = True
-    proof["target_absence"]["nextid_echo"] = True
-    with pytest.raises(coordination.Refusal, match="evidence_invalid"):
-        coordination.plan_transition(snapshot, 6, request("cleaned", snapshot=snapshot, evidence=proof))
-
-
-def test_cleaned_rerun_is_idempotent_and_never_creates_a_new_generation():
-    snapshot = cleaned()
-    assert snapshot["prior_authenticated_task_id"] == 4102
-    assert snapshot["receipt_fingerprint"] == "5" * 64
-    plan = coordination.plan_transition(snapshot, 7, request("reserve", snapshot=snapshot))
-
-    assert plan == {"result": "unchanged", "record": snapshot, "version": 7}
-
-
-def test_exact_readback_requires_expected_record_and_version():
-    reserve = coordination.plan_transition(None, 0, request("reserve"))
-    expected = reserve["record"]
-    metadata, secret = kv_reads(expected, version=1)
-
-    assert coordination.verify_readback(reserve, 200, metadata, 200, secret) == {
+def test_new_reservation_is_version_cas_zero_and_record_readback_is_exact():
+    plan = coordination.plan_transition(None, 0, request("reserve"))
+    assert plan["payload"]["options"] == {"cas": 0}
+    assert plan["record"]["schema_version"] == 2
+    secret = {"data": {"data": plan["record"], "metadata": {"version": 1}}}
+    metadata = {"current_version": 1, "versions": {"1": {"deletion_time": "", "destroyed": False}}}
+    assert coordination.verify_readback(plan, 200, metadata, 200, secret) == {
         "result": "verified",
         "phase": "reserved",
         "version": 1,
     }
-    transition = coordination.plan_transition(expected, 1, request("start_restore", snapshot=expected))
-    drifted_metadata, drifted_secret = kv_reads(expected, version=2)
-    with pytest.raises(coordination.Refusal, match="readback_mismatch"):
-        coordination.verify_readback(transition, 200, drifted_metadata, 200, drifted_secret)
-
-
-def test_cli_refusals_never_echo_untrusted_payload_values():
-    secret_marker = "PRIVATE_TARGET_SENTINEL"
-    proc = subprocess.run(
-        [sys.executable, str(Path(coordination.__file__))],
-        input=json.dumps({"mode": "unknown", "private_value": secret_marker}),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert proc.returncode == 2
-    assert secret_marker not in proc.stdout
-    assert secret_marker not in proc.stderr
-    assert json.loads(proc.stdout) == {"result": "refused", "reason": "invalid_input"}
-
-
-def test_rendered_include_request_executes_real_helper_with_fixed_cas_payload():
-    proc = invoke_rendered_plan_command(request("reserve"))
-
-    assert proc.returncode == 0
-    result = json.loads(proc.stdout)
-    assert result["result"] == "write"
-    assert result["payload"]["options"] == {"cas": 0}
-    assert result["payload"]["data"]["phase"] == "reserved"
-    assert proc.stderr == ""
-
-
-def test_rendered_include_hands_protected_record_version_and_nonce_to_next_transition():
-    reserve_proc = invoke_rendered_plan_command(request("reserve"))
-    assert reserve_proc.returncode == 0
-    reservation = json.loads(reserve_proc.stdout)
-    held_record = reservation["record"]
-    held_version = reservation["expected_version"]
-    metadata, secret = kv_reads(held_record, version=held_version)
-
-    next_proc = invoke_rendered_plan_command(
-        request("start_restore", snapshot=held_record, expected_version=held_version),
-        metadata_status=200,
-        metadata=metadata,
-        data_status=200,
-        secret=secret,
-    )
-
-    assert next_proc.returncode == 0
-    transition = json.loads(next_proc.stdout)
-    assert transition["payload"]["options"] == {"cas": held_version}
-    assert transition["record"]["phase"] == "restore_active"
-    assert transition["record"]["active_nonce"] == held_record["restore_nonce"]
-
-
-def test_rendered_include_request_rejects_stale_expected_version():
-    snapshot = planned_reservation()
-    metadata, secret = kv_reads(snapshot)
-    stale_request = request("start_restore", snapshot=snapshot, expected_version=0)
-    proc = invoke_rendered_plan_command(
-        stale_request,
-        metadata_status=200,
-        metadata=metadata,
-        data_status=200,
-        secret=secret,
-    )
-
-    assert proc.returncode == 2
-    assert json.loads(proc.stdout) == {"result": "refused", "reason": "expected_version_mismatch"}
 
 
 @pytest.mark.parametrize(
-    ("input_text", "expected_reason"),
+    "bad",
     [
-        ('{"mode":"plan","request":{}}', "invalid_input"),
-        ("{", "invalid_input"),
+        lambda record: record.update(schema_version=1),
+        lambda record: record.update(active_nonce="0" * 64),
+        lambda record: record.update(pending={"action": "restore"}),
+        lambda record: record.update(journal=[{"action": "start"}]),
     ],
 )
-def test_helper_command_refuses_missing_status_or_malformed_json(input_text, expected_reason):
-    proc = subprocess.run(
-        [sys.executable, str(Path(coordination.__file__))],
-        input=input_text,
-        text=True,
-        capture_output=True,
-        check=False,
+def test_malformed_or_legacy_records_are_refused_without_implicit_migration(bad):
+    record, _ = reserve()
+    bad(record)
+    with pytest.raises(coordination.Refusal):
+        coordination.validate_record(record)
+
+
+def test_schema_one_snapshot_cannot_be_reserved_or_adopted():
+    legacy, version = reserve()
+    legacy["schema_version"] = 1
+    metadata = {"current_version": version, "versions": {str(version): {"deletion_time": "", "destroyed": False}}}
+    secret = {"data": {"data": legacy, "metadata": {"version": version}}}
+    with pytest.raises(coordination.Refusal):
+        coordination.read_snapshot(200, metadata, 200, secret)
+
+
+@pytest.mark.parametrize(
+    "bad_upid",
+    [
+        "UPID:other-node:00000001:00000002:00000003:qmrestore:910001:root@pam:",
+        "UPID:restore-node:00000001:00000002:00000003:qmrestore:910002:root@pam:",
+        "UPID:restore-node:00000001:00000002:00000003:qmdestroy:910001:root@pam:",
+        "UPID:restore-node:00000001:00000002:00000003:qmrestore:910001:root@pam:extra",
+    ],
+)
+def test_wrong_target_or_wrong_operation_handle_is_rejected_before_effect(bad_upid):
+    record, version = reserve()
+    intent = request("intent_restore", record, version=version, action="restore", request_fingerprint="1" * 64)
+    record = coordination.plan_transition(record, version, intent)["record"]
+    version += 1
+    handle_request = request(
+        "record_handle",
+        record,
+        version=version,
+        action="restore",
+        request_fingerprint="1" * 64,
+        handle_type="upid",
+        handle=bad_upid,
     )
-
-    assert proc.returncode == 2
-    assert json.loads(proc.stdout) == {"result": "refused", "reason": expected_reason}
-    assert proc.stderr == ""
+    with pytest.raises(coordination.Refusal):
+        coordination.plan_transition(record, version, handle_request)
 
 
-def test_ansible_include_enforces_path_argv_and_safe_logging_boundaries():
-    task_path = Path(__file__).parents[1] / "playbooks" / "tasks" / "o11y-restore-coordination.yml"
-    source = task_path.read_text()
-    parsed = yaml.safe_load(source)
-    tasks = {task["name"]: task for task in parsed}
-
-    assert isinstance(parsed, list) and parsed
-    assert "/v1/secret/data/coordination/o11y-restore-target" in source
-    assert "/v1/secret/metadata/coordination/o11y-restore-target" in source
-    command_tasks = [task for task in parsed if "ansible.builtin.command" in task]
-    assert len(command_tasks) == 2
-    for task in command_tasks:
-        command = task["ansible.builtin.command"]
-        assert command["argv"] == ["python3", "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
-        assert "cmd" not in command
-        assert task["no_log"] is True
-        assert task["failed_when"] is False
-    uri_tasks = [task for task in parsed if "ansible.builtin.uri" in task]
-    assert len(uri_tasks) == 5
-    assert all(task["no_log"] is True for task in uri_tasks)
-    assert all(task["ansible.builtin.uri"]["follow_redirects"] == "none" for task in uri_tasks)
-    assert tasks["Restore coordination: retain the validated plan in controller memory"]["no_log"] is True
-
-    safe_assertions = (
-        "Restore coordination: refuse an invalid or stale transition",
-        "Restore coordination: require CAS success",
-        "Restore coordination: require verified readback",
+def test_stale_snapshot_wrong_nonce_and_cross_target_cannot_advance():
+    record, version = reserve()
+    stale = copy.deepcopy(record)
+    advanced, next_version = apply(record, version, "intent_restore", action="restore", request_fingerprint="1" * 64)
+    with pytest.raises(coordination.Refusal):
+        coordination.plan_transition(
+            advanced,
+            next_version,
+            request(
+                "record_handle",
+                stale,
+                version=version,
+                action="restore",
+                request_fingerprint="1" * 64,
+                handle_type="upid",
+                handle=RESTORE_UPID,
+            ),
+        )
+    bad = request(
+        "intent_restore", record, version=version, nonce="f" * 64, action="restore", request_fingerprint="1" * 64
     )
-    for name in safe_assertions:
-        task = tasks[name]
-        assert "no_log" not in task
-        assert "{{" not in task["ansible.builtin.assert"]["fail_msg"]
-        condition_text = " ".join(task["ansible.builtin.assert"]["that"])
-        assert "stdout" not in condition_text and ".json" not in condition_text
+    with pytest.raises(coordination.Refusal):
+        coordination.plan_transition(record, version, bad)
+    other = {"node": "restore-node", "vmid": 910002}
+    cross = request(
+        "intent_restore", record, version=version, target_ref=other, action="restore", request_fingerprint="1" * 64
+    )
+    with pytest.raises(coordination.Refusal):
+        coordination.plan_transition(record, version, cross)
 
-    plan_assert = tasks[safe_assertions[0]]["ansible.builtin.assert"]["that"]
-    assert plan_assert == [
-        "_o11y_rc_plan_result is defined",
-        "_o11y_rc_plan_result.rc is defined",
-        "_o11y_rc_plan_result.rc == 0",
-    ]
-    assert "status_code: [200, 400, 412]" in source
-    assert "retries:" not in source
-    assert "until:" not in source
-    assert "ttl" not in source.lower()
-    assert "cas" in source.lower()
+
+def test_unknown_or_unverified_write_remains_pending_and_cannot_retry():
+    record, version = reserve()
+    record, version = apply(record, version, "intent_restore", action="restore", request_fingerprint="a" * 64)
+    assert record["pending"]["action"] == "restore"
+    with pytest.raises(coordination.Refusal):
+        apply(record, version, "intent_restore", action="restore", request_fingerprint="a" * 64)
+    with pytest.raises(coordination.Refusal):
+        apply(
+            record,
+            version,
+            "verify_effect",
+            action="restore",
+            request_fingerprint="a" * 64,
+            handle_type="upid",
+            handle=RESTORE_UPID,
+            effect_fingerprint="b" * 64,
+            evidence={
+                "action": "restore",
+                "handle_type": "upid",
+                "handle": RESTORE_UPID,
+                "status": "failed",
+                "effect_fingerprint": "b" * 64,
+            },
+        )
+
+
+def test_transition_order_prevents_start_or_guest_exec_before_isolation():
+    record, version = reserve()
+    record, version = apply(record, version, "intent_restore", action="restore", request_fingerprint="1" * 64)
+    with pytest.raises(coordination.Refusal):
+        apply(record, version, "intent_action", action="start", request_fingerprint="2" * 64)
+
+
+def test_cleanup_requires_exact_authenticated_completed_restore_record_and_version():
+    record, version = completed_restore()
+    proof = authenticated_task(record, version)
+    bad = copy.deepcopy(proof)
+    bad["task_status"] = "running"
+    with pytest.raises(coordination.Refusal):
+        apply(record, version, "start_cleanup", evidence=bad, request_fingerprint="8" * 64)
+    bad = copy.deepcopy(proof)
+    bad["coordination_version"] += 1
+    with pytest.raises(coordination.Refusal):
+        apply(record, version, "start_cleanup", evidence=bad, request_fingerprint="8" * 64)
+    cleanup, cleanup_version = apply(record, version, "start_cleanup", evidence=proof, request_fingerprint="8" * 64)
+    assert cleanup["phase"] == "cleanup_active"
+    assert cleanup["prior_authenticated_task_id"] == proof["task_id"]
+    assert cleanup["active_nonce"] != cleanup["restore_nonce"]
+    assert cleanup_version == version + 1
+
+
+def test_delete_must_be_owned_qmdestroy_and_exact_absence_before_cleaned():
+    record, version = completed_restore()
+    record, version = apply(
+        record, version, "start_cleanup", evidence=authenticated_task(record, version), request_fingerprint="8" * 64
+    )
+    record, version = apply(
+        record,
+        version,
+        "record_handle",
+        action="delete",
+        request_fingerprint="8" * 64,
+        handle_type="upid",
+        handle=DELETE_UPID,
+    )
+    effect = "9" * 64
+    record, version = apply(
+        record,
+        version,
+        "verify_effect",
+        action="delete",
+        request_fingerprint="8" * 64,
+        handle_type="upid",
+        handle=DELETE_UPID,
+        effect_fingerprint=effect,
+        evidence={
+            "type": "delete_effect/v2",
+            "action": "delete",
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "task_state": "stopped",
+            "exit_status": "OK",
+            "task_output_sha256": effect,
+        },
+    )
+    evidence = {
+        "type": "pve_delete_verification/v2",
+        "task_id": record["prior_authenticated_task_id"],
+        "delete_upid": DELETE_UPID,
+        "task_state": "stopped",
+        "exit_status": "OK",
+        "target_absence": {
+            "node": TARGET["node"],
+            "vmid": TARGET["vmid"],
+            "nextid_status": 200,
+            "nextid_echo": TARGET["vmid"],
+            "node_config_status": 404,
+            "target_fingerprint": DECLARATION["target_fingerprint"],
+        },
+        "bindings": {
+            key: record[key]
+            for key in (
+                "operation_id",
+                "target_fingerprint",
+                "artifact_fingerprint",
+                "restore_nonce",
+                "active_nonce",
+                "prior_authenticated_task_id",
+                "public_sha",
+                "private_inventory_sha",
+            )
+        },
+    }
+    cleaned, _ = apply(record, version, "cleaned", evidence=evidence)
+    assert cleaned["phase"] == "cleaned"
+    broken = copy.deepcopy(evidence)
+    broken["target_absence"]["node_config_status"] = 500
+    with pytest.raises(coordination.Refusal):
+        apply(record, version, "cleaned", evidence=broken)
