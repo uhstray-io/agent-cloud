@@ -100,6 +100,7 @@ and why.
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
 | 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
+| 3.16 | A local Semaphore container recreate minted a new encryption key while its database lived on; every encrypted environment input became undecryptable and the next seed failed | Live state | 1 | Bootstrap (config on the data volume + carry-forward before any recreate) + test (`test_local_semaphore_config_persistence.py`, mutation-checked) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -176,6 +177,7 @@ and why.
 | 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
 | 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
+| 10.28 | The seed address check read the inventory as YAML; local-dev registers INI, so every seed template had been unrunnable locally since the check landed and nobody had run one | Mechanism never exercised | 1 | Bootstrap registers `static-yaml` + test (`test_sync_local_o11y_alert_inventory.py`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -2452,6 +2454,38 @@ separate, wider rule for that reason.
 evidence, the service paths changed since the revision of the last successful real deploy, and
 the launcher refuses a real run with unproven changes unless an explicit acknowledgement
 variable is set. Related: 3.14, 10.26.
+
+### 3.16 A local Semaphore container recreate orphaned every encrypted environment input
+
+**Occurrences: 1** — 2026-10-24
+
+**What happened.** The workflow 3.8 live proof needed `Seed OpenBao Key (Dev)` on local
+Semaphore. Its dry run passed; the real launch returned HTTP 500 and the server logged
+`cannot decrypt access key, perhaps encryption key was changed` (task 6729, template 203). The
+seed environment's two encrypted AppRole inputs dated from the last green seed (task 1722,
+2026-09-25). The container's `/etc/semaphore/config.json` was dated 2026-10-12: the container had
+been recreated since, and the new one had minted a fresh `access_key_encryption`.
+
+**Root cause.** The image's entrypoint (`server-wrapper`, v2.19.11) runs `semaphore setup`, which
+writes a new random key, whenever `${SEMAPHORE_CONFIG_PATH}/config.json` is absent; the default
+path `/etc/semaphore` is the container layer. The bootstrap kept the database on the
+`local-semaphore-data` volume but the key in the layer, and its own recreate step (image, port,
+mount, label or OIDC change) removes the layer. The database survived; the key that decrypts it
+did not.
+
+**The rule.** Data and the key that decrypts it share one lifetime: persist them together, and
+move an existing key before anything that can destroy where it lives. Inputs already orphaned are
+recovered by `Provision Seed Environment` with `seed_replace_auth=true`, which overwrites the
+two undecryptable AppRole inputs in place from OpenBao. The API removal used on
+2026-10-24 was a one-time stopgap from before that flag existed; with the key persisted, neither
+should be needed again.
+
+**Enforced by.** `bootstrap-local-dev.yml` starts Semaphore with `SEMAPHORE_CONFIG_PATH` on the
+data volume and copies an older container's key there before the recreate step;
+`platform/tests/test_local_semaphore_config_persistence.py` (ordering + behaviour against a
+stubbed engine, mutation-checked). The replace path is `platform/tests/test_provision_seed_replace_auth.py`
+(the provisioner's own tasks run against synthetic environments, mutation-checked). Triage entry
+in `docs/LOCAL-DEV.md`.
 
 ## 4. Data handling
 
@@ -4926,6 +4960,30 @@ start it fails unless there is exactly one Listener, in the unit's cgroup, start
 `run.sh`. `test_service_github_runner.bats` holds the unit settings and the task order,
 and runs `deploy.sh procs` against a fabricated `/proc` of the state found on 2026-10-12
 (three Listeners, the serving one from boot with `NoNewPrivs` set, `run.sh` clean).
+
+### 10.28 The seed address check was never run against the local-dev inventory
+
+**Occurrences: 1** — 2026-10-24
+
+**What happened.** With 3.16 recovered, the seed's read-only access check (task 6734) failed in
+`tasks/assert-bao-addr-declared.yml`: `from_yaml ... did not find expected <document start>`. The
+check, added 2026-09-25, reads the run's inventory FILE with `from_yaml` and requires one literal
+`all.vars.openbao_addr`. Production registers `static-yaml`; the local bootstrap registered INI
+(`'type': 'static'`) with no `all.vars` at all. Seed OpenBao Key, Seed Postiz Secrets and Rotate
+Semaphore API Token had all been unrunnable on local Semaphore for a month, and nothing noticed
+because nobody had run one locally since.
+
+**Root cause.** The check's header states its assumption (a static-yaml inventory) and it held
+for production; local-dev diverged from the production inventory shape, and no test or run
+exercised the check against the local record.
+
+**The rule.** A guard that parses an environment's configuration is proven against every
+environment that runs it, not the one its author had in mind. Prefer removing the divergence
+(local registers the production shape) over teaching the guard a second format.
+
+**Enforced by.** `bootstrap-local-dev.yml` registers Ansible's own `--export` YAML of the local
+inventory as `static-yaml` with a literal `all.vars.openbao_addr`; the registration test in
+`test_sync_local_o11y_alert_inventory.py` fails if the type reverts (mutation-checked).
 
 ## 11. The largest one
 
