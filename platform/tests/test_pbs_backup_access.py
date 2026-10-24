@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ROOT / "playbooks" / "files"
@@ -495,6 +496,89 @@ class CopyApiRequestTests(TestCase):
         self.assertEqual(method, "GET")
         self.assertIn("/nodes/pbs-copy/tasks/UPID%3Apbs-copy%3A", path)
         self.assertTrue(kwargs["headers"]["Authorization"].startswith("PBSAPIToken "))
+
+    def test_stopped_failed_task_exits_real_poll_contract_without_leaking_status(self):
+        private_failure = "private-task-error-must-not-appear"
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return json.dumps({"data": {
+                    "status": "stopped",
+                    "exitstatus": private_failure,
+                }}).encode()
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.connected = False
+
+            def connect(self):
+                self.connected = True
+
+            def request(self, method, path, **_kwargs):
+                assert self.connected
+                assert method == "GET"
+                assert "/tasks/" in path
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        connection = PinnedConnection()
+        with patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection):
+            result = pbs.copy_api_request(
+                url="https://pbs-copy.internal.test",
+                fingerprint="b" * 64,
+                auth_id=pbs.COPY_MANAGER_TOKEN_ID,
+                secret="private-manager-secret",
+                expected_host="pbs-copy.internal.test",
+                payload={
+                    "operation": "task-status",
+                    "node": "pbs-copy",
+                    "upid": "UPID:pbs-copy:0000ABCD:00000001:5F000000:sync:job1:user@pbs:",
+                },
+            )
+
+        self.assertEqual(result, {"status": "stopped", "exitstatus": "failed"})
+        self.assertNotIn(private_failure, json.dumps(result))
+
+        environment = Environment()
+        environment.filters["from_json"] = json.loads
+        runtime_value = {
+            "rc": 0,
+            "stdout": json.dumps({"data": result}),
+        }
+        for playbook, poll_name, status_var, success_name in (
+            (
+                ROOT / "playbooks" / "verify-o11y-pbs-artifact.yml",
+                "Poll the exact PBS verification UPID through pinned TLS",
+                "_pbs_verification_status_raw",
+                "Require successful completion for the exact verification task",
+            ),
+            (
+                ROOT / "playbooks" / "sync-o11y-protected-pbs-copy.yml",
+                "Poll only the exact destination sync UPID",
+                "_pbs_sync_status_raw",
+                "Require successful completion of the exact sync UPID",
+            ),
+        ):
+            plays = yaml.safe_load(playbook.read_text())
+            tasks = [task for play in plays for task in play.get("tasks", [])]
+            poll = next(task for task in tasks if task.get("name") == poll_name)
+            success = next(task for task in tasks if task.get("name") == success_name)
+            variables = {status_var: runtime_value}
+            self.assertTrue(
+                environment.compile_expression(poll["until"])(**variables),
+                poll_name,
+            )
+            conditions = success["ansible.builtin.assert"]["that"]
+            self.assertFalse(
+                all(environment.compile_expression(condition)(**variables) for condition in conditions),
+                success_name,
+            )
 
     def test_task_status_rejects_unowned_identity_and_unknown_selector(self):
         for auth_id, payload in (

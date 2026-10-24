@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,6 +48,47 @@ def test_snapshot_selection_binds_one_new_pbs_snapshot_to_exact_operation_window
         "volid": created["volid"],
         "size_bytes": 1234,
     }
+
+
+def test_backup_window_epoch_commands_remain_correct_under_non_utc_timezone():
+    backup = Path(__file__).resolve().parents[1] / "playbooks" / "backup-o11y-to-pbs.yml"
+    plays = yaml.safe_load(backup.read_text())
+    tasks = [task for play in plays for task in play.get("tasks", [])]
+    epoch_tasks = [task for task in tasks if task.get("name", "").startswith(
+        "Read timezone-independent PVE operation "
+    )]
+    assert [task["name"] for task in epoch_tasks] == [
+        "Read timezone-independent PVE operation start epoch",
+        "Read timezone-independent PVE operation end epoch",
+    ]
+
+    environment = {**os.environ, "TZ": "Etc/GMT+8"}
+    for task in epoch_tasks:
+        assert task["changed_when"] is False
+        assert task["check_mode"] is False
+        result = subprocess.run(
+            task["ansible.builtin.command"]["argv"],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+        )
+        assert result.returncode == 0
+        observed_epoch = int(result.stdout.strip())
+        assert abs(observed_epoch - int(time.time())) <= 2
+
+        legacy = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from datetime import datetime; print(int(datetime.utcnow().strftime('%s')))"
+            ],
+            capture_output=True,
+            check=True,
+            env=environment,
+            text=True,
+        )
+        assert abs(observed_epoch - int(legacy.stdout.strip())) >= 7 * 60 * 60
 
 
 def test_snapshot_selection_refuses_ambiguous_or_stale_operation_output():

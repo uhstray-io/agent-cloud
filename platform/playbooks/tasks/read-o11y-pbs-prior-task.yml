@@ -7,10 +7,7 @@
 
 - name: Read Semaphore task API credentials from OpenBao
   ansible.builtin.set_fact:
-    _pbs_task_semaphore_secret: >-
-      {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore',
-        url=_pbs_task_bao_url, auth_method='approle', role_id=_pbs_task_bao_role_id,
-        secret_id=_pbs_task_bao_secret_id) }}
+    _pbs_task_semaphore_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore', url=_pbs_task_bao_url, auth_method='approle', role_id=_pbs_task_bao_role_id, secret_id=_pbs_task_bao_secret_id) }}"
   no_log: true
 
 - name: Require a private HTTPS Semaphore endpoint and API token

@@ -744,10 +744,12 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
             _require(isinstance(data, dict)
                      and data.get("status") in {"running", "stopped"},
                      "PBS task status returned an unsupported schema.")
+            exitstatus = data.get("exitstatus")
+            _require(exitstatus is None or isinstance(exitstatus, str),
+                     "PBS task status returned an unsupported schema.")
             if data["status"] == "stopped":
-                _require(data.get("exitstatus") == "OK",
-                         "PBS task did not finish successfully.")
-            return {"status": data["status"], "exitstatus": data.get("exitstatus")}
+                return {"status": "stopped", "exitstatus": "OK" if exitstatus == "OK" else "failed"}
+            return {"status": "running", "exitstatus": None}
         return decoded["data"]
     finally:
         connection.close()
