@@ -1,0 +1,321 @@
+---
+# Verify the exact artifact named by one authenticated completed backup task.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed source checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/verify-o11y-pbs-artifact.yml
+      - platform/playbooks/backup-o11y-to-pbs.yml
+      - platform/playbooks/tasks/read-o11y-pbs-prior-task.yml
+      - platform/playbooks/tasks/emit-o11y-pbs-receipt.yml
+      - platform/playbooks/tasks/o11y-pbs-inventory-provenance.yml
+      - platform/playbooks/files/o11y_pbs_receipts.py
+      - platform/playbooks/files/o11y_pbs_operations.py
+      - platform/playbooks/files/inspect_pbs_backup_access.py
+      - platform/playbooks/files/inspect_o11y_pbs_provenance.py
+      - platform/playbooks/tasks/site-config-clone.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/files/reviewed-checkout.py
+
+- name: Require one declared o11y VM and primary PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the primary PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_svc
+    preflight_group_expected: pbs_svc
+    _preflight_redact_hostnames: true
+
+- name: Read the actual primary PBS node identity
+  hosts: pbs_svc
+  gather_facts: true
+  become: false
+  tasks:
+    - name: Retain only the PBS API task node name
+      ansible.builtin.set_fact:
+        _o11y_pbs_api_node: "{{ ansible_facts.hostname }}"
+      no_log: true
+
+- name: Refuse unsafe chain selectors
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_o11y_host: "{{ groups['o11y_svc'][0] }}"
+    _pbs_primary_host: "{{ groups['pbs_svc'][0] }}"
+    _pbs_vmid: "{{ hostvars[_pbs_o11y_host].vm_vmid | default('') | string }}"
+    _pbs_node: "{{ hostvars[_pbs_o11y_host].vm_node | default('') | string }}"
+    _pbs_backup_task_id: "{{ backup_task_id | default(0) }}"
+  tasks:
+    - name: Reject caller values that replace protected service identity
+      ansible.builtin.assert:
+        that: _pbs_forged_names | length == 0
+        fail_msg: "PBS endpoints, OpenBao settings, source identity, and local mode are protected inventory inputs."
+        quiet: true
+      vars:
+        _pbs_private_names:
+          - pbs_api_host
+          - pbs_storage_id
+          - vm_vmid
+          - vm_node
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - local_mode
+        _pbs_forged_names: "{{ _pbs_private_names | intersect('' | extra_var_names) }}"
+
+    - name: Require the fixed reviewed revision and exact backup task ID
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - site_config_base_sha is match('^[0-9a-f]{40}$')
+          - backup_task_id is integer
+          - backup_task_id > 0
+          - _pbs_vmid is match('^[1-9][0-9]{0,8}$')
+          - _pbs_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+        fail_msg: "Verification requires one authenticated backup task ID, fixed source, and a real run."
+        quiet: true
+      no_log: true
+
+- name: Prove exact private and runtime inventory provenance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Compare the reviewed production inventory bytes
+      ansible.builtin.include_tasks: tasks/o11y-pbs-inventory-provenance.yml
+      vars:
+        _pbs_provenance_template_name: Verify o11y PBS Artifact (Dev)
+        _pbs_provenance_playbook: platform/playbooks/verify-o11y-pbs-artifact.yml
+
+- name: Authenticate the predecessor receipt before touching PBS
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+  tasks:
+    - name: Authenticate the exact backup task and receipt output
+      ansible.builtin.include_tasks: tasks/read-o11y-pbs-prior-task.yml
+      vars:
+        _pbs_task_id: "{{ backup_task_id | int }}"
+        _pbs_task_contract: o11y-pbs-backup/v1
+        _pbs_task_playbook: platform/playbooks/backup-o11y-to-pbs.yml
+        _pbs_task_bao_url: "{{ _bao_url }}"
+        _pbs_task_bao_role_id: "{{ _bao_role_id }}"
+        _pbs_task_bao_secret_id: "{{ _bao_secret_id }}"
+        _pbs_task_expected_launch:
+          expected_repository_sha: "{{ expected_repository_sha }}"
+          site_config_base_sha: "{{ site_config_base_sha }}"
+
+    - name: Require exact source identity and current inventory provenance
+      ansible.builtin.assert:
+        that:
+          - _pbs_task_validated.receipt.source_fingerprint is match('^[0-9a-f]{64}$')
+          - _pbs_task_validated.receipt.inventory_fingerprint == _pbs_inventory_provenance.inventory_fingerprint
+          - _pbs_task_validated.receipt.evidence.source_vmid == hostvars[groups['o11y_svc'][0]].vm_vmid | string
+          - _pbs_task_validated.receipt.evidence.source_node == hostvars[groups['o11y_svc'][0]].vm_node
+          - _pbs_task_validated.receipt.evidence.backup_upid is match('^UPID:')
+          - _pbs_task_validated.receipt.evidence.snapshot.backup_type == 'vm'
+          - _pbs_task_validated.receipt.evidence.snapshot.backup_id == hostvars[groups['o11y_svc'][0]].vm_vmid | string
+        fail_msg: "The authenticated backup receipt does not bind the current declared o11y source."
+        quiet: true
+      no_log: true
+
+- name: Verify and re-read only the authenticated backup snapshot
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_primary_host: "{{ groups['pbs_svc'][0] }}"
+    _pbs_reader_id: o11y-copy-reader@pbs!pbs-sync
+    _pbs_api_url: "https://{{ hostvars[_pbs_primary_host].pbs_api_host }}:8007"
+    _pbs_api_host: "{{ hostvars[_pbs_primary_host].pbs_api_host }}"
+    _pbs_api_node: "{{ hostvars[_pbs_primary_host]._o11y_pbs_api_node }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    _pbs_backup_receipt: "{{ hostvars['localhost']._pbs_task_validated.receipt }}"
+    _pbs_snapshot: "{{ _pbs_backup_receipt.evidence.snapshot }}"
+  tasks:
+    - name: Read the dedicated primary Reader secret from OpenBao
+      ansible.builtin.set_fact:
+        _pbs_reader_secret_record: >-
+          {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/pbs',
+            url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+      no_log: true
+
+    - name: Require the dedicated Reader token and pinned primary endpoint
+      ansible.builtin.assert:
+        that:
+          - _pbs_reader_secret_record.o11y_copy_reader_user == 'o11y-copy-reader@pbs'
+          - _pbs_reader_secret_record.o11y_copy_reader_token_id == _pbs_reader_id
+          - _pbs_reader_secret_record.o11y_copy_reader_datastore == 'o11y'
+          - _pbs_reader_secret_record.o11y_copy_reader_token_secret | length > 0
+          - _pbs_reader_secret_record.o11y_copy_reader_fingerprint | length == 64
+          - _pbs_api_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+        fail_msg: "The independent primary PBS Reader identity or task node is unavailable."
+        quiet: true
+      no_log: true
+
+    - name: Read the current PBS manifest and require the same stable artifact fingerprint
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", snapshot-manifest]
+        stdin: >-
+          {{ {'url': _pbs_api_url, 'expected_host': _pbs_api_host,
+              'fingerprint': _pbs_reader_secret_record.o11y_copy_reader_fingerprint,
+              'auth_id': _pbs_reader_id,
+              'secret': _pbs_reader_secret_record.o11y_copy_reader_token_secret,
+              'backup_id': _pbs_snapshot.backup_id,
+              'backup_time': _pbs_snapshot.backup_time} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_manifest_before
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require the current manifest to match the producer receipt
+      ansible.builtin.assert:
+        that:
+          - _pbs_manifest_before.rc == 0
+          - (_pbs_manifest_before.stdout | from_json).artifact_fingerprint == _pbs_backup_receipt.artifact_fingerprint
+        fail_msg: "The current primary PBS manifest no longer matches the authenticated backup receipt."
+        quiet: true
+      no_log: true
+
+    - name: Record the exact PBS verification start time
+      ansible.builtin.set_fact:
+        _pbs_verify_start: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+      no_log: true
+
+    - name: Start PBS verification for only the exact snapshot
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': _pbs_api_url, 'expected_host': _pbs_api_host,
+              'fingerprint': _pbs_reader_secret_record.o11y_copy_reader_fingerprint,
+              'auth_id': _pbs_reader_id,
+              'secret': _pbs_reader_secret_record.o11y_copy_reader_token_secret,
+              'request': {'operation': 'snapshot-verify', 'backup_type': 'vm',
+                'backup_id': _pbs_snapshot.backup_id,
+                'backup_time': _pbs_snapshot.backup_time | int}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_verify_start_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Retain only the exact PBS verification UPID
+      ansible.builtin.set_fact:
+        _pbs_verification_upid: "{{ (_pbs_verify_start_raw.stdout | from_json).data }}"
+      no_log: true
+
+    - name: Validate the PBS verification UPID shape
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_operations.py"]
+        stdin: "{{ {'operation': 'validate_upid', 'upid': _pbs_verification_upid} | to_json }}"
+        stdin_add_newline: false
+      register: _pbs_verify_upid_check
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require PBS verification to have started successfully
+      ansible.builtin.assert:
+        that: _pbs_verify_start_raw.rc == 0 and _pbs_verify_upid_check.rc == 0
+        fail_msg: "PBS refused verification for the authenticated artifact."
+        quiet: true
+      no_log: true
+
+    - name: Poll the exact PBS verification UPID through pinned TLS
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': _pbs_api_url, 'expected_host': _pbs_api_host,
+              'fingerprint': _pbs_reader_secret_record.o11y_copy_reader_fingerprint,
+              'auth_id': _pbs_reader_id,
+              'secret': _pbs_reader_secret_record.o11y_copy_reader_token_secret,
+              'request': {'operation': 'task-status', 'node': _pbs_api_node,
+                'upid': _pbs_verification_upid}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_verification_status_raw
+      changed_when: false
+      failed_when: false
+      until: >-
+        _pbs_verification_status_raw.rc == 0 and
+        (_pbs_verification_status_raw.stdout | from_json).data.status == 'stopped'
+      retries: 720
+      delay: 60
+      no_log: true
+
+    - name: Require successful completion for the exact verification task
+      ansible.builtin.assert:
+        that:
+          - _pbs_verification_status_raw.rc == 0
+          - (_pbs_verification_status_raw.stdout | from_json).data.status == 'stopped'
+          - (_pbs_verification_status_raw.stdout | from_json).data.exitstatus == 'OK'
+        fail_msg: "The exact PBS verification task did not complete successfully."
+        quiet: true
+      no_log: true
+
+    - name: Re-read the manifest after exact verification completion
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", snapshot-manifest]
+        stdin: >-
+          {{ {'url': _pbs_api_url, 'expected_host': _pbs_api_host,
+              'fingerprint': _pbs_reader_secret_record.o11y_copy_reader_fingerprint,
+              'auth_id': _pbs_reader_id,
+              'secret': _pbs_reader_secret_record.o11y_copy_reader_token_secret,
+              'backup_id': _pbs_snapshot.backup_id,
+              'backup_time': _pbs_snapshot.backup_time | int} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_manifest_after
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require verification did not change the bound artifact
+      ansible.builtin.assert:
+        that:
+          - _pbs_manifest_after.rc == 0
+          - (_pbs_manifest_after.stdout | from_json).artifact_fingerprint == _pbs_backup_receipt.artifact_fingerprint
+        fail_msg: "The primary PBS artifact fingerprint changed during verification."
+        quiet: true
+      no_log: true
+
+    - name: Emit the receipt binding the backup task to exact PBS verification
+      ansible.builtin.include_tasks: tasks/emit-o11y-pbs-receipt.yml
+      vars:
+        pbs_receipt_contract: o11y-pbs-verify/v1
+        pbs_receipt_public_sha: "{{ expected_repository_sha }}"
+        pbs_receipt_private_sha: "{{ site_config_base_sha }}"
+        pbs_receipt_inventory_fingerprint: "{{ hostvars['localhost']._pbs_inventory_provenance.inventory_fingerprint }}"
+        pbs_receipt_source_fingerprint: "{{ hostvars['localhost']._pbs_backup_receipt.source_fingerprint }}"
+        pbs_receipt_artifact_fingerprint: "{{ hostvars['localhost']._pbs_backup_receipt.artifact_fingerprint }}"
+        pbs_receipt_observed_start: "{{ _pbs_verify_start }}"
+        pbs_receipt_observed_end: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        pbs_receipt_evidence:
+          backup_task_id: "{{ hostvars['localhost']._pbs_task_validated.task_metadata.id }}"
+          backup_upid: "{{ _pbs_backup_receipt.evidence.backup_upid }}"
+          verification_upid: "{{ _pbs_verification_upid }}"
+          verification_status: OK
+          snapshot: "{{ _pbs_snapshot }}"
+          source_vmid: "{{ _pbs_backup_receipt.evidence.source_vmid }}"
+          artifact_fingerprint: "{{ _pbs_backup_receipt.artifact_fingerprint }}"
+          playbook: platform/playbooks/verify-o11y-pbs-artifact.yml

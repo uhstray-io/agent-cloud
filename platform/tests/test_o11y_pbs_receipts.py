@@ -51,7 +51,6 @@ def backup_receipt() -> dict[str, object]:
         "observed_end": "2026-10-21T15:30:00Z",
         "role_context": pbs.CONTRACTS["o11y-pbs-backup/v1"]["roles"],
         "evidence": {
-            "backup_task_id": 10,
             "backup_upid": UPID,
             "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
             "source_vmid": "120",
@@ -92,6 +91,34 @@ def test_manifest_rejects_noncanonical_or_ambiguous_fields(change) -> None:
 def test_manifest_parser_rejects_duplicate_json_keys() -> None:
     with pytest.raises(pbs.Refusal):
         pbs.parse_manifest('{"backup-type":"vm","backup-type":"vm"}')
+
+
+def test_source_fingerprint_binds_logical_vm_and_completed_receipt_is_closed() -> None:
+    digest = pbs.artifact_fingerprint(manifest())
+    logical = pbs.source_fingerprint("120", "pve1")
+    assert logical != pbs.source_fingerprint("121", "pve1")
+    receipt = pbs.completed_receipt(
+        contract="o11y-pbs-backup/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        inventory_fingerprint="3" * 64,
+        source_fingerprint_value=logical,
+        artifact=digest,
+        observed_start="2026-10-21T15:00:00Z",
+        observed_end="2026-10-21T15:30:00Z",
+        evidence={
+            "backup_upid": UPID,
+            "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
+            "source_vmid": "120",
+            "source_node": "pve1",
+            "artifact_fingerprint": digest,
+            "playbook": BACKUP_PLAYBOOK,
+        },
+        now=NOW,
+    )
+    assert pbs.validate_receipt(
+        receipt, contract="o11y-pbs-backup/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+    ) == receipt
 
 
 def test_receipt_requires_exact_contract_and_recent_completed_evidence() -> None:
@@ -135,7 +162,10 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
         "created": "2026-10-21T14:59:00Z",
         "start": "2026-10-21T15:00:00Z",
         "end": "2026-10-21T15:30:00Z",
-        "environment": json.dumps({"expected_repository_sha": PUBLIC}),
+        "environment": json.dumps({
+            "expected_repository_sha": PUBLIC,
+            "site_config_base_sha": PRIVATE,
+        }),
         "playbook": "",
         "params": {"diff": False, "dry_run": False},
     }
@@ -155,7 +185,7 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
         playbook=BACKUP_PLAYBOOK,
         expected_project_id=1,
         expected_task_id=10,
-        expected_launch={"expected_repository_sha": PUBLIC},
+        expected_launch={"expected_repository_sha": PUBLIC, "site_config_base_sha": PRIVATE},
         now=NOW,
     )
     assert result["receipt"] == receipt
@@ -170,9 +200,83 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
             playbook=BACKUP_PLAYBOOK,
             expected_project_id=1,
             expected_task_id=10,
-            expected_launch={"expected_repository_sha": PUBLIC},
+            expected_launch={"expected_repository_sha": PUBLIC, "site_config_base_sha": PRIVATE},
             now=NOW,
         )
+
+
+def test_verification_receipt_must_bind_its_authenticated_backup_task_selector() -> None:
+    digest = pbs.artifact_fingerprint(manifest())
+    evidence = {
+        "backup_task_id": 10,
+        "backup_upid": UPID,
+        "verification_upid": UPID,
+        "verification_status": "OK",
+        "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792598400},
+        "source_vmid": "120",
+        "artifact_fingerprint": digest,
+        "playbook": "platform/playbooks/verify-o11y-pbs-artifact.yml",
+    }
+    receipt = pbs.completed_receipt(
+        contract="o11y-pbs-verify/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        inventory_fingerprint="3" * 64,
+        source_fingerprint_value="4" * 64,
+        artifact=digest,
+        observed_start="2026-10-21T15:00:00Z",
+        observed_end="2026-10-21T15:30:00Z",
+        evidence=evidence,
+        now=NOW,
+    )
+    task = {
+        "id": 11,
+        "project_id": 1,
+        "template_id": 55,
+        "commit_hash": PUBLIC,
+        "status": "success",
+        "created": "2026-10-21T14:59:00Z",
+        "start": "2026-10-21T15:00:00Z",
+        "end": "2026-10-21T15:30:00Z",
+        "environment": {
+            "expected_repository_sha": PUBLIC,
+            "site_config_base_sha": PRIVATE,
+            "backup_task_id": 10,
+        },
+        "playbook": "",
+        "params": {"diff": False, "dry_run": False},
+    }
+    output = json.dumps(receipt, indent=2)
+    rows = [{"id": 8, "task_id": 11, "stage_id": None,
+             "time": "2026-10-21T15:20:00Z", "output": output}]
+    arguments = {
+        "contract": "o11y-pbs-verify/v1",
+        "public_sha": PUBLIC,
+        "private_sha": PRIVATE,
+        "playbook": "platform/playbooks/verify-o11y-pbs-artifact.yml",
+        "expected_project_id": 1,
+        "expected_launch": task["environment"],
+        "expected_task_id": 11,
+        "now": NOW,
+    }
+    assert pbs.validate_completed_task(task, rows, **arguments)["receipt"] == receipt
+
+    forged_evidence = dict(evidence, backup_task_id=9)
+    forged_receipt = pbs.completed_receipt(
+        contract="o11y-pbs-verify/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        inventory_fingerprint="3" * 64,
+        source_fingerprint_value="4" * 64,
+        artifact=digest,
+        observed_start="2026-10-21T15:00:00Z",
+        observed_end="2026-10-21T15:30:00Z",
+        evidence=forged_evidence,
+        now=NOW,
+    )
+    forged_rows = [{**rows[0], "output": json.dumps(forged_receipt, indent=2)}]
+    with pytest.raises(pbs.Refusal, match="task_binding_mismatch"):
+        pbs.validate_completed_task(task, forged_rows, **arguments)
 
 
 def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch() -> None:
@@ -204,8 +308,20 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
     lines = json.dumps(receipt, indent=2).splitlines()
     midpoint = len(lines) // 2
     rows = [
-        {"id": 3, "task_id": 14, "stage_id": None, "time": "2026-10-21T15:20:00Z", "output": "\n".join(lines[:midpoint])},
-        {"id": 4, "task_id": 14, "stage_id": None, "time": "2026-10-21T15:20:01Z", "output": "\n".join(lines[midpoint:])},
+        {
+            "id": 3,
+            "task_id": 14,
+            "stage_id": None,
+            "time": "2026-10-21T15:20:00Z",
+            "output": "\n".join(lines[:midpoint]),
+        },
+        {
+            "id": 4,
+            "task_id": 14,
+            "stage_id": None,
+            "time": "2026-10-21T15:20:01Z",
+            "output": "\n".join(lines[midpoint:]),
+        },
     ]
     result = pbs.validate_completed_output(
         task,
@@ -256,5 +372,61 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
                 "copy_sync_task_id",
                 "copy_ready_task_id",
             },
+            now=NOW,
+        )
+
+
+def test_copy_readiness_binds_exact_restore_locator_and_destination_fingerprints() -> None:
+    pbs_manifest = manifest()
+    pbs_manifest["backup-time"] = 1792594800
+    digest = pbs.artifact_fingerprint(pbs_manifest)
+    evidence = {
+        "sync_task_id": 12,
+        "snapshot": {"backup_type": "vm", "backup_id": "120", "backup_time": 1792594800},
+        "artifact_fingerprint": digest,
+        "readback_status": "readable",
+        "acl_separation": "verified",
+        "pull_direction": "destination_initiated",
+        "deletion_isolation": "verified",
+        "maintenance_isolation": "verified",
+        "playbook": "platform/playbooks/verify-o11y-protected-pbs-copy.yml",
+        "normalized_restore_locator": {
+            "storage_id": "o11y-protected",
+            "volid": "o11y-protected:backup/vm/120/2026-10-21T15:00:00Z",
+            "backend": "pbs",
+            "format": "pbs-vm",
+            "creation_time_epoch": 1792594800,
+            "size_bytes": 1024,
+        },
+        "destination_identity_fingerprint": "5" * 64,
+        "destination_storage_config_fingerprint": "6" * 64,
+    }
+    receipt = pbs.seal_receipt({
+        "schema_version": 1,
+        "contract": "o11y-pbs-copy-ready/v1",
+        "status": "ready",
+        "reason": "destination_copy_ready_for_isolated_restore",
+        "public_sha": PUBLIC,
+        "private_sha": PRIVATE,
+        "inventory_provenance": "exact_bytes_match",
+        "inventory_fingerprint": "3" * 64,
+        "source_fingerprint": "4" * 64,
+        "artifact_fingerprint": digest,
+        "observed_start": "2026-10-21T15:00:00Z",
+        "observed_end": "2026-10-21T15:30:00Z",
+        "role_context": pbs.CONTRACTS["o11y-pbs-copy-ready/v1"]["roles"],
+        "evidence": evidence,
+    })
+    assert pbs.validate_receipt(
+        receipt, contract="o11y-pbs-copy-ready/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
+    ) == receipt
+    bad_body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
+    bad_body["evidence"] = dict(evidence, normalized_restore_locator={"volid": "invented"})
+    with pytest.raises(pbs.Refusal, match="readback_incomplete"):
+        pbs.validate_receipt(
+            pbs.seal_receipt(bad_body),
+            contract="o11y-pbs-copy-ready/v1",
+            public_sha=PUBLIC,
+            private_sha=PRIVATE,
             now=NOW,
         )

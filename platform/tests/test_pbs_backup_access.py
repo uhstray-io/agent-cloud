@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase, main
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 
@@ -116,6 +117,467 @@ class IdentityStateTests(TestCase):
             pbs.plan_identity(users=[self.user], tokens=[self.token], secret_record=self.saved)
 
 
+class CopyApiRequestTests(TestCase):
+    def test_remote_creation_is_a_closed_post_with_secret_only_in_form_body(self):
+        method, path, body = pbs._copy_api_request_shape({
+            "operation": "remote-create",
+            "remote_id": "o11y-primary",
+            "source_host": "pbs-primary.internal",
+            "source_fingerprint": "a" * 64,
+            "body": {
+                "host": "pbs-primary.internal",
+                "auth-id": pbs.COPY_READER_TOKEN_ID,
+                "password": "reader-secret",
+                "fingerprint": "a" * 64,
+                "port": 8007,
+            },
+        })
+        self.assertEqual((method, path), ("POST", "/api2/json/config/remote"))
+        self.assertEqual(body["password"], "reader-secret")
+        self.assertNotIn("reader-secret", path)
+
+    def test_sync_creation_requires_verified_only_and_no_vanished_deletion(self):
+        payload = {
+            "operation": "sync-create",
+            "sync_job_id": "o11y-copy-sync",
+            "remote_id": "o11y-primary",
+            "body": {
+                "id": "o11y-copy-sync",
+                "store": "protected-copy",
+                "remote-store": "o11y",
+                "remote": "o11y-primary",
+                "owner": pbs.COPY_MANAGER_TOKEN_ID,
+                "remove-vanished": False,
+                "verified-only": True,
+                "sync-direction": "pull",
+            },
+        }
+        method, path, body = pbs._copy_api_request_shape(payload)
+        self.assertEqual((method, path), ("POST", "/api2/json/config/sync"))
+        self.assertEqual(body["remove-vanished"], "0")
+        self.assertEqual(body["verified-only"], "1")
+        unsafe = {**payload, "body": {**payload["body"], "remove-vanished": True}}
+        with self.assertRaisesRegex(pbs.Refusal, "may not remove vanished"):
+            pbs._copy_api_request_shape(unsafe)
+        unverified = {**payload, "body": {**payload["body"], "verified-only": False}}
+        with self.assertRaisesRegex(pbs.Refusal, "must require verified"):
+            pbs._copy_api_request_shape(unverified)
+
+    def test_arbitrary_paths_methods_and_unknown_config_fields_are_rejected(self):
+        for payload in (
+            {"operation": "delete-sync", "path": "/api2/json/config/sync/oops"},
+            {"operation": "sync-create", "path": "/api2/json/access/users", "body": {}},
+            {"operation": "sync-create", "body": {"id": "ok", "prune": True}},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(pbs.Refusal):
+                pbs._copy_api_request_shape(payload)
+
+    def test_snapshot_verification_binds_the_full_snapshot_selector(self):
+        method, path, body = pbs._copy_api_request_shape({
+            "operation": "snapshot-verify",
+            "backup_type": "vm",
+            "backup_id": "120",
+            "backup_time": 1792594800,
+        })
+        self.assertEqual((method, path), ("POST", "/api2/json/admin/datastore/o11y/verify"))
+        self.assertEqual(body, {
+            "store": "o11y",
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": "1792594800",
+            "ignore-verified": "0",
+        })
+        for payload in (
+            {"operation": "snapshot-verify", "backup_type": "ct", "backup_id": "120", "backup_time": 1},
+            {"operation": "snapshot-verify", "backup_type": "vm", "backup_id": "120", "backup_time": True},
+            {"operation": "snapshot-verify", "backup_type": "vm", "backup_id": "120", "backup_time": 1,
+             "store": "other"},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(pbs.Refusal):
+                pbs._copy_api_request_shape(payload)
+
+    def test_sync_run_is_one_fixed_async_job_route(self):
+        self.assertEqual(
+            pbs._copy_api_request_shape({"operation": "sync-run", "sync_job_id": "o11y-copy-sync"}),
+            ("POST", "/api2/json/admin/sync/o11y-copy-sync/run", None),
+        )
+        with self.assertRaises(pbs.Refusal):
+            pbs._copy_api_request_shape({"operation": "sync-run", "sync_job_id": "bad/id"})
+
+    def test_manifest_download_is_pinned_exactly_bounded_and_returns_only_digest(self):
+        manifest = {
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": 1792594800,
+            "files": [{
+                "filename": "qemu-server.conf.blob",
+                "crypt-mode": "none",
+                "size": 19,
+                "csum": "2" * 64,
+            }],
+        }
+        content = json.dumps(manifest, separators=(",", ":")).encode()
+        blob = content
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return blob
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.paths = []
+                self.connected = False
+
+            def connect(self):
+                self.connected = True
+
+            def request(self, method, path, **kwargs):
+                assert self.connected
+                self.paths.append((method, path, kwargs))
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        connection = PinnedConnection()
+        with patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection):
+            result = pbs.read_snapshot_manifest(
+                url="https://pbs-primary.internal",
+                expected_host="pbs-primary.internal",
+                fingerprint="a" * 64,
+                auth_id=pbs.COPY_READER_TOKEN_ID,
+                secret="protected-reader-secret",
+                backup_id="120",
+                backup_time=1792594800,
+            )
+        self.assertTrue(connection.connected)
+        self.assertEqual(result["artifact_fingerprint"], pbs.artifact_fingerprint(manifest))
+        self.assertEqual(set(result), {"snapshot", "artifact_fingerprint"})
+        self.assertEqual(len(connection.paths), 1)
+        method, path, kwargs = connection.paths[0]
+        self.assertEqual(method, "GET")
+        self.assertTrue(path.startswith("/api2/json/admin/datastore/o11y/download-decoded?"))
+        self.assertEqual(parse_qs(urlsplit(path).query), {
+            "store": ["o11y"],
+            "backup-type": ["vm"],
+            "backup-id": ["120"],
+            "backup-time": ["1792594800"],
+            "file-name": ["index.json.blob"],
+        })
+        self.assertNotIn("protected-reader-secret", path)
+        self.assertIn("PBSAPIToken", kwargs["headers"]["Authorization"])
+
+    def test_manifest_download_refuses_wrong_identity_bad_crc_and_wrong_reader(self):
+        manifest = {
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": 1792594800,
+            "files": [{
+                "filename": "qemu-server.conf.blob",
+                "crypt-mode": "none",
+                "size": 19,
+                "csum": "2" * 64,
+            }],
+        }
+        content = json.dumps(manifest, separators=(",", ":")).encode()
+        blob = content
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return blob
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def connect(self):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        for backup_id, backup_time, auth_id in (
+            ("121", 1792594800, pbs.COPY_READER_TOKEN_ID),
+            ("120", 1792594801, pbs.COPY_READER_TOKEN_ID),
+            ("120", 1792594800, pbs.COPY_MANAGER_TOKEN_ID),
+        ):
+            with (
+                self.subTest(backup_id=backup_id, backup_time=backup_time, auth_id=auth_id),
+                patch.object(pbs, "_PinnedHTTPSConnection", PinnedConnection),
+                self.assertRaises(pbs.Refusal),
+            ):
+                pbs.read_snapshot_manifest(
+                    url="https://pbs-primary.internal",
+                    expected_host="pbs-primary.internal",
+                    fingerprint="a" * 64,
+                    auth_id=auth_id,
+                    secret="protected-reader-secret",
+                    backup_id=backup_id,
+                    backup_time=backup_time,
+                )
+
+    def test_endpoint_rejects_paths_queries_and_credential_bearing_urls(self):
+        for url in (
+            "https://pbs.internal.test/api2/json",
+            "https://pbs.internal.test/?next=https://other.test",
+            "https://user@pbs.internal.test",
+        ):
+            with self.subTest(url=url), self.assertRaises(pbs.Refusal):
+                pbs.copy_api_request(
+                    url=url,
+                    fingerprint="a" * 64,
+                    auth_id="manager@pbs!copy-api",
+                    secret="secret",
+                    expected_host="pbs.internal.test",
+                    payload={"operation": "sync-list"},
+                )
+        with self.assertRaisesRegex(pbs.Refusal, "does not match the declared destination host"):
+            pbs.copy_api_request(
+                url="https://another-host.internal.test",
+                fingerprint="a" * 64,
+                auth_id="manager@pbs!copy-api",
+                secret="secret",
+                expected_host="pbs.internal.test",
+                payload={"operation": "sync-list"},
+            )
+
+    def test_tls_pin_must_succeed_before_credentials_are_sent(self):
+        class RefusingPin:
+            def __init__(self, *_args, **_kwargs):
+                self.request_called = False
+                self.closed = False
+
+            def connect(self):
+                raise pbs.Refusal("PBS TLS certificate fingerprint mismatch; no credential was sent.")
+
+            def request(self, *_args, **_kwargs):
+                self.request_called = True
+
+            def close(self):
+                self.closed = True
+
+        connection = RefusingPin()
+        with (
+            patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection),
+            self.assertRaisesRegex(pbs.Refusal, "no credential was sent"),
+        ):
+            pbs.copy_api_request(
+                url="https://pbs-copy.internal.test",
+                fingerprint="a" * 64,
+                auth_id="manager@pbs!copy-api",
+                secret="private-secret",
+                expected_host="pbs-copy.internal.test",
+                payload={"operation": "sync-list"},
+            )
+        self.assertFalse(connection.request_called)
+        self.assertTrue(connection.closed)
+
+    def test_redirect_is_refused_without_following_location(self):
+        class RedirectResponse:
+            status = 302
+
+            def read(self, _limit):
+                return b"redirect body"
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.paths = []
+
+            def connect(self):
+                return None
+
+            def request(self, method, path, **_kwargs):
+                self.paths.append((method, path))
+
+            def getresponse(self):
+                return RedirectResponse()
+
+            def close(self):
+                return None
+
+        connection = PinnedConnection()
+        with (
+            patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection),
+            self.assertRaisesRegex(pbs.Refusal, "refused a redirect"),
+        ):
+            pbs.copy_api_request(
+                url="https://pbs-copy.internal.test",
+                fingerprint="a" * 64,
+                auth_id="manager@pbs!copy-api",
+                secret="private-secret",
+                expected_host="pbs-copy.internal.test",
+                payload={"operation": "sync-list"},
+            )
+        self.assertEqual(connection.paths, [("GET", "/api2/json/config/sync")])
+
+    def test_exact_task_status_uses_pinned_manager_and_fixed_encoded_upid_path(self):
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return b'{"data":{"status":"stopped","exitstatus":"OK"}}'
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.connected = False
+                self.requests = []
+
+            def connect(self):
+                self.connected = True
+
+            def request(self, method, path, **kwargs):
+                assert self.connected
+                self.requests.append((method, path, kwargs))
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        connection = PinnedConnection()
+        with patch.object(pbs, "_PinnedHTTPSConnection", return_value=connection):
+            result = pbs.copy_api_request(
+                url="https://pbs-copy.internal.test",
+                fingerprint="b" * 64,
+                auth_id=pbs.COPY_MANAGER_TOKEN_ID,
+                secret="private-manager-secret",
+                expected_host="pbs-copy.internal.test",
+                payload={
+                    "operation": "task-status",
+                    "node": "pbs-copy",
+                    "upid": "UPID:pbs-copy:0000ABCD:00000001:5F000000:sync:job1:user@pbs:",
+                },
+            )
+        self.assertEqual(result, {"status": "stopped", "exitstatus": "OK"})
+        self.assertEqual(len(connection.requests), 1)
+        method, path, kwargs = connection.requests[0]
+        self.assertEqual(method, "GET")
+        self.assertIn("/nodes/pbs-copy/tasks/UPID%3Apbs-copy%3A", path)
+        self.assertTrue(kwargs["headers"]["Authorization"].startswith("PBSAPIToken "))
+
+    def test_task_status_rejects_unowned_identity_and_unknown_selector(self):
+        for auth_id, payload in (
+            (pbs.TOKEN_ID, {"operation": "task-status", "node": "pbs", "upid": "UPID:x"}),
+            (pbs.COPY_MANAGER_TOKEN_ID, {
+                "operation": "task-status", "node": "pbs", "upid": "UPID:x", "extra": "x",
+            }),
+        ):
+            with self.subTest(auth_id=auth_id), self.assertRaises(pbs.Refusal):
+                pbs.copy_api_request(
+                    url="https://pbs-copy.internal.test",
+                    fingerprint="b" * 64,
+                    auth_id=auth_id,
+                    secret="private-secret",
+                    expected_host="pbs-copy.internal.test",
+                    payload=payload,
+                )
+
+
+class CopyManagerIdentityTests(TestCase):
+    remote_id = "o11y-primary"
+
+    def setUp(self):
+        self.user = {"userid": pbs.COPY_MANAGER_USER_ID, "enable": 1, "expire": 0}
+        self.token = {"tokenid": pbs.COPY_MANAGER_TOKEN_ID, "enable": 1, "expire": 0}
+        self.record = {
+            "user": pbs.COPY_MANAGER_USER_ID,
+            "token_id": pbs.COPY_MANAGER_TOKEN_ID,
+            "secret": "private-manager-secret",
+            "datastore": "o11y",
+            "fingerprint": "b" * 64,
+        }
+        self.expected = {
+            "/remote": {"Remote.Audit": False, "Remote.Modify": False, "Remote.Read": False},
+            f"/remote/{self.remote_id}": {
+                "Remote.Audit": False, "Remote.Modify": False, "Remote.Read": False
+            },
+            f"/remote/{self.remote_id}/o11y": {"Remote.Audit": False, "Remote.Read": False},
+            "/datastore/o11y": {"Datastore.Audit": False, "Datastore.Backup": False},
+        }
+        self.acls = [
+            {"ugid": auth_id, "path": path, "roleid": role, "propagate": 0}
+            for auth_id in (pbs.COPY_MANAGER_USER_ID, pbs.COPY_MANAGER_TOKEN_ID)
+            for path, role in (
+                ("/remote", "RemoteAdmin"),
+                (f"/remote/{self.remote_id}", "RemoteAdmin"),
+                (f"/remote/{self.remote_id}/o11y", "RemoteSyncOperator"),
+                ("/datastore/o11y", "DatastoreAudit"),
+                ("/datastore/o11y", "DatastoreBackup"),
+            )
+        ]
+
+    def test_identity_requires_complete_stable_bao_owned_pair(self):
+        self.assertEqual(
+            pbs.plan_copy_manager_identity(users=[], tokens=[], secret_record=None)["action"],
+            "create",
+        )
+        self.assertEqual(
+            pbs.plan_copy_manager_identity(
+                users=[self.user], tokens=[self.token], secret_record=self.record, authenticated=True
+            )["action"],
+            "reuse",
+        )
+        with self.assertRaisesRegex(pbs.Refusal, "without its OpenBao copy"):
+            pbs.plan_copy_manager_identity(users=[self.user], tokens=[self.token], secret_record=None)
+        with self.assertRaisesRegex(pbs.Refusal, "not authenticated"):
+            pbs.plan_copy_manager_identity(
+                users=[self.user], tokens=[self.token], secret_record=self.record, authenticated=False
+            )
+
+    def test_manager_permissions_are_exact_and_delete_free(self):
+        self.assertTrue(pbs.validate_copy_manager_permissions(
+            user_permissions=self.expected,
+            token_permissions=self.expected,
+            acl_rows=self.acls,
+            remote_id=self.remote_id,
+        )["valid"])
+        with self.assertRaisesRegex(pbs.Refusal, "broad, propagated"):
+            unsafe = {**self.expected, "/remote": {
+                "Remote.Audit": True, "Remote.Modify": True, "Remote.Read": True
+            }}
+            pbs.plan_copy_manager_acl(
+                user_permissions=unsafe,
+                token_permissions=self.expected,
+                acl_rows=[],
+                remote_id=self.remote_id,
+            )
+        with self.assertRaisesRegex(pbs.Refusal, "missing, extra"):
+            pbs.validate_copy_manager_permissions(
+                user_permissions={**self.expected, "/datastore/other": {"Datastore.Backup": False}},
+                token_permissions=self.expected,
+                acl_rows=self.acls,
+                remote_id=self.remote_id,
+            )
+
+    def test_acl_plan_adds_only_missing_exact_grants(self):
+        result = pbs.plan_copy_manager_acl(
+            user_permissions={}, token_permissions={}, acl_rows=[], remote_id=self.remote_id
+        )
+        self.assertEqual(len(result["missing"]), 10)
+        self.assertEqual(
+            pbs.plan_copy_manager_acl(
+                user_permissions=self.expected,
+                token_permissions=self.expected,
+                acl_rows=self.acls,
+                remote_id=self.remote_id,
+            )["missing"],
+            [],
+        )
+
+
 class PermissionTests(TestCase):
     def setUp(self):
         self.acls = [
@@ -171,6 +633,163 @@ class PermissionTests(TestCase):
             bad = [dict(row, **change) for row in self.acls]
             with self.subTest(change=change), self.assertRaises(pbs.Refusal):
                 self.check(acls=bad)
+
+
+class CopyReaderIdentityTests(TestCase):
+    def setUp(self):
+        self.user = {"userid": pbs.COPY_READER_USER_ID, "enable": 1, "expire": 0}
+        self.token = {"tokenid": pbs.COPY_READER_TOKEN_ID, "enable": 1, "expire": 0}
+        self.saved = {
+            "user": pbs.COPY_READER_USER_ID,
+            "token_id": pbs.COPY_READER_TOKEN_ID,
+            "secret": "reader-secret",
+            "datastore": "o11y",
+            "fingerprint": "a" * 64,
+        }
+        self.reader_permissions = effective(
+            {"Datastore.Audit": False, "Datastore.Read": False, "Datastore.Verify": False}
+        )
+        self.acls = [
+            {"ugid": pbs.COPY_READER_USER_ID, "path": pbs.DATASTORE_PATH,
+             "roleid": pbs.COPY_READER_ROLE, "propagate": 0},
+            {"ugid": pbs.COPY_READER_TOKEN_ID, "path": pbs.DATASTORE_PATH,
+             "roleid": pbs.COPY_READER_ROLE, "propagate": 0},
+        ]
+
+    def test_reader_identity_is_separate_and_reuses_only_authenticated_complete_state(self):
+        self.assertEqual(
+            pbs.plan_copy_reader_identity(users=[], tokens=[], secret_record=None)["action"], "create"
+        )
+        self.assertEqual(
+            pbs.plan_copy_reader_identity(
+                users=[self.user], tokens=[self.token], secret_record=self.saved, authenticated=True
+            )["action"],
+            "reuse",
+        )
+        with self.assertRaisesRegex(pbs.Refusal, "without its OpenBao copy"):
+            pbs.plan_copy_reader_identity(users=[self.user], tokens=[self.token], secret_record=None)
+        with self.assertRaisesRegex(pbs.Refusal, "not authenticated"):
+            pbs.plan_copy_reader_identity(users=[self.user], tokens=[self.token], secret_record=self.saved)
+
+    def test_reader_acl_grants_only_nonpropagating_datastore_reader(self):
+        plan = pbs.plan_copy_reader_acl(
+            user_permissions=[], token_permissions=[], acl_rows=self.acls[:1]
+        )
+        self.assertEqual(plan["missing_auth_ids"], [pbs.COPY_READER_TOKEN_ID])
+        self.assertTrue(
+            pbs.validate_copy_reader_permissions(
+                user_permissions=self.reader_permissions,
+                token_permissions=self.reader_permissions,
+                acl_rows=self.acls,
+            )["valid"]
+        )
+        for bad in (
+            effective({"Datastore.Audit": False, "Datastore.Read": False,
+                       "Datastore.Verify": False, "Datastore.Prune": False}),
+            effective({"Datastore.Audit": True, "Datastore.Read": False,
+                       "Datastore.Verify": False}),
+        ):
+            with self.subTest(bad=bad), self.assertRaises(pbs.Refusal):
+                pbs.validate_copy_reader_permissions(
+                    user_permissions=bad, token_permissions=self.reader_permissions, acl_rows=self.acls
+                )
+
+    def test_managed_reader_provisioning_is_separate_and_persists_before_acl(self):
+        task_path = ROOT / "playbooks" / "tasks" / "configure-pbs-copy-reader-identity.yml"
+        tasks = yaml.safe_load(task_path.read_text())
+        text = task_path.read_text()
+        self.assertIn("DatastoreReader", text)
+        grant = yaml.safe_load((ROOT / "playbooks" / "tasks" / "grant-pbs-copy-reader-acl.yml").read_text())
+        argv = next(task["ansible.builtin.command"]["argv"] for task in grant if "ansible.builtin.command" in task)
+        self.assertIn("DatastoreReader", argv)
+        self.assertNotIn("DatastoreBackup", argv)
+        self.assertNotIn("DatastoreAdmin", argv)
+        self.assertIn("o11y_copy_reader_token_secret", text)
+        self.assertNotIn("o11y_backup_token_secret", text)
+        persist = text.index("file: bao-merge-keys.yml")
+        readback = text.index("Read back the authoritative PBS copy-reader credential")
+        grant = text.index("Grant only the non-propagating DatastoreReader role")
+        self.assertLess(persist, readback)
+        self.assertLess(readback, grant)
+        for task in tasks:
+            if "ansible.builtin.uri" in task and "X-Vault-Token" in task["ansible.builtin.uri"].get("headers", {}):
+                self.assertEqual(task.get("no_log"), True)
+
+    def test_source_reader_provisioning_is_independent_from_pve_backup_access(self):
+        copy_access_path = ROOT / "playbooks" / "configure-o11y-pbs-copy-access.yml"
+        copy_access = yaml.safe_load(copy_access_path.read_text())
+        primary_text = (ROOT / "playbooks" / "configure-pbs-backup-access.yml").read_text()
+        copy_text = copy_access_path.read_text()
+        self.assertNotIn("copy-reader", primary_text)
+        self.assertIn("require-reviewed-checkout.yml", copy_text)
+        self.assertIn("inspect_pbs_backup_access.py", copy_text)
+        self.assertIn("configure-pbs-copy-reader-identity.yml", copy_text)
+        self.assertNotIn("/api2/json/storage", copy_text)
+        self.assertNotIn("DatastoreBackup", copy_text)
+        override_guard = next(
+            play for play in copy_access
+            if play.get("name") == "Refuse caller overrides for private PBS and OpenBao selectors"
+        )
+        private_names = override_guard["tasks"][0]["vars"]["_pbs_reader_private_names"]
+        self.assertIn("pbs_api_host", private_names)
+        self.assertIn("bao_role_id", private_names)
+        self.assertIn("bao_secret_id", private_names)
+        provenance_index = next(
+            index for index, play in enumerate(copy_access)
+            if play.get("name") == "Prove exact reviewed private and runtime inventory provenance"
+        )
+        pbs_read_index = next(
+            index for index, play in enumerate(copy_access)
+            if play.get("name") == "Read primary PBS identity and certificate state"
+        )
+        self.assertLess(provenance_index, pbs_read_index)
+        review_gate = next(
+            play for play in copy_access
+            if play.get("name") == "Require the exact reviewed source checkout"
+        )
+        self.assertIn("platform/playbooks/configure-o11y-pbs-copy-access.yml",
+                      review_gate["vars"]["_reviewed_checkout_payload_paths"])
+        proposal_path = ROOT.parent / "plan" / "development" / "o11y-pbs-semaphore-catalog-proposals.yml"
+        proposals = yaml.safe_load(proposal_path.read_text())
+        self.assertIn(
+            "Configure o11y PBS Copy Access (Dev)",
+            [proposal["name"] for proposal in proposals["catalog_proposals"]],
+        )
+
+    def test_copy_manager_is_distinct_and_scoped_to_remote_and_copy_datastore(self):
+        identity_path = ROOT / "playbooks" / "tasks" / "configure-pbs-copy-manager-identity.yml"
+        grant_path = ROOT / "playbooks" / "tasks" / "grant-pbs-copy-manager-acl.yml"
+        task_text = identity_path.read_text()
+        grant_text = grant_path.read_text()
+        self.assertIn("o11y-copy-manager@pbs!copy-api", task_text)
+        self.assertIn("o11y_copy_manager_token_secret", task_text)
+        self.assertIn("file: bao-merge-keys.yml", task_text)
+        self.assertLess(task_text.index("file: bao-merge-keys.yml"), task_text.index("Grant only the exact remote"))
+        self.assertIn("--propagate", grant_text)
+        self.assertIn("_pbs_manager_acl_grant.path", grant_text)
+        grant = yaml.safe_load(grant_text)[0]["ansible.builtin.command"]["argv"]
+        self.assertEqual(
+            grant[0:4],
+            [
+                "proxmox-backup-manager",
+                "acl",
+                "update",
+                "{{ _pbs_manager_acl_grant.path }}",
+            ],
+        )
+        self.assertEqual(grant[4:7], [
+            "{{ _pbs_manager_acl_grant.role }}",
+            "--auth-id",
+            "{{ _pbs_manager_acl_grant.auth_id }}",
+        ])
+        self.assertEqual(grant[7:], ["--propagate", "0"])
+        self.assertNotIn("Datastore.Prune", task_text)
+        self.assertNotIn("proxmox-backup-manager remote", task_text)
+        copy_text = (ROOT / "playbooks" / "configure-o11y-pbs-copy-access.yml").read_text()
+        self.assertIn("hosts: pbs_copy_svc", copy_text)
+        self.assertIn("configure-pbs-copy-manager-identity.yml", copy_text)
+        primary_text = (ROOT / "playbooks" / "configure-pbs-backup-access.yml").read_text()
+        self.assertNotIn("copy-manager", primary_text)
 
 
 class PbsProbeTests(TestCase):

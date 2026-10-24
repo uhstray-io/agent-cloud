@@ -21,12 +21,67 @@ responses stay inside protected Semaphore task state. Receipts attest to
 controller/template/source-admin/protected-environment/launcher trust, not to
 cryptographic or immutable task history.
 
+Semaphore assigns a task ID only after the playbook exits, so the producer
+cannot truthfully include its own completed-task ID in its receipt. Receipt
+evidence records the operation UPID and artifact identity. Consumers bind that
+receipt to the authenticated completed-task ID returned by Semaphore, then
+carry that ID as a fixed selector into the next workflow. No task ID is
+discovered by guessing from a template/commit pair or self-declared by the
+playbook.
+
+For canonical artifact hashing, the pinned PBS Reader uses the fixed
+`admin/datastore/o11y/download-decoded` route with the exact snapshot type, ID,
+and time and `file-name=index.json.blob`. PBS performs DataBlob decoding; the
+producer's duplicate-key rejecting parser validates the decoded official
+manifest and returns only the normalized digest. The raw response stays in
+the no-log parser call and never enters a receipt or visible task output.
+
 The inventory provenance workflow compares the exact regular
 `inventory/production.yml` Git blob at the caller-pinned private revision to the
 sole current static Ansible inventory source's complete bytes. It verifies the
 remote branch tip, tree entry type, exact public Semaphore bindings, and a
 duplicate-safe static YAML parse, and returns hashes/categories only. Existing
 site-config clone and OpenBao transport helpers are reused.
+
+The source Reader identity is managed by the standalone
+`Configure o11y PBS Copy Access (Dev)` workflow. It is a separate stable
+user/token pair; primary backup setup remains independently runnable and does
+not depend on this optional credential. Its token fields are additive under
+`secret/services/pbs` (`o11y_copy_reader_*`) and never replace or share the
+PVE `DatastoreBackup` token. Its only grants are the built-in
+`DatastoreReader` role on `/datastore/o11y` for both user and token with
+propagation disabled. Unknown, broader, or partially persisted state refuses;
+the generated token is persisted and read back before its ACL is granted.
+
+The same standalone workflow manages a separate destination copy-manager
+identity. It is never reused by PVE or the primary Reader. It receives only
+`Datastore.Audit` plus `Datastore.Backup` on `/datastore/o11y`, `RemoteAdmin` on `/remote` only for
+remote creation, `RemoteAdmin` on `/remote/<declared remote>` for that remote's
+configuration, and `RemoteSyncOperator` on its exact `/o11y` remote datastore
+path. Every grant is non-propagating; it receives no `Datastore.Prune`. API
+requests use the shared same-connection certificate-pinning helper, fixed
+paths/methods, and bounded JSON responses. Secret request bodies remain in
+protected Ansible memory and never enter argv or intermediary files. PBS
+management writes use its native form encoding. `pbs_svc` and `pbs_copy_svc`
+are independent pre-existing guests; this workflow refuses when either is
+missing and provisions neither.
+
+Credential creation and API access use separate paths. The management workflow
+runs `proxmox-backup-manager` only on the authenticated PBS guests to create the
+fixed user/token objects and apply exact ACL entries. Token material is captured
+from stdout only inside `no_log` task state, merged into the existing
+`secret/services/pbs` record with CAS, read back, and then authenticated through
+the pinned HTTPS helper before ACL changes. Existing-but-unrecorded tokens,
+partial identities, or broader effective grants refuse without rotation. API
+configuration requests reuse that same-connection pinning transport; the
+certificate is checked before an auth header or secret body is sent.
+
+The primary PBS API contract is explicitly version-gated to the reviewed
+4.2.8-1 package. The helper uses the documented snapshot verification API and
+the PBS-decoded manifest download route, so DataBlob decompression remains
+inside PBS and only a strict normalized manifest digest leaves the protected
+request state. No transport disables verification without binding the exact
+peer certificate on that request.
 
 ## Implementation order
 
