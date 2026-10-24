@@ -61,7 +61,7 @@ def fixture_inspection(monkeypatch, tmp_path):
             return [
                 {
                     "Name": container,
-                    "State": {"Running": True},
+                    "State": {"Running": True, "Pid": 1000 + list(guest.VOLUMES).index(service)},
                     "Mounts": [{"Destination": destination, "Source": mounts[service], "RW": True}],
                     "NetworkSettings": {"Networks": {network: {"IPAddress": f"10.88.1.{len(mounts)}"}}},
                 }
@@ -99,6 +99,51 @@ def test_all_five_rootless_volumes_and_historical_backends_are_verified(monkeypa
     assert result["backend_count"] == 4
     assert result["grafana_integrity"] == "ok"
     assert all(item["historical_records"] == 4 for item in result["backends"].values())
+
+
+def test_historical_queries_use_only_loopback_inside_the_exact_container_namespace(monkeypatch):
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout=b'{"status":"success"}')
+
+    monkeypatch.setattr(guest.subprocess, "run", run)
+    assert guest._namespace_http(4321, "http://127.0.0.1:3200/api/search") == b'{"status":"success"}'
+    assert captured["command"][0:2] == ["/usr/bin/nsenter", "--net=/proc/4321/ns/net"]
+    assert captured["command"][-3:] == ["http://127.0.0.1:3200/api/search", "8", str(guest.MAX_HTTP_BYTES)]
+    assert captured["env"] == {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+
+
+def test_pyroscope_historical_read_uses_its_container_network_namespace_loopback(monkeypatch):
+    captured = {}
+
+    def read(pid, url, **kwargs):
+        captured.update(pid=pid, url=url, kwargs=kwargs)
+        return b"o11y.cpu 3\n"
+
+    monkeypatch.setattr(guest, "_namespace_http", read)
+    count, digest = guest._probe_count("pyroscope", 4321, 1_700_000_000)
+    assert count == 3
+    assert digest == hashlib.sha256(b"o11y.cpu 3\n").hexdigest()
+    assert captured["pid"] == 4321
+    assert captured["url"].startswith("http://127.0.0.1:4040/pyroscope/render?")
+
+
+def test_container_inspection_requires_a_real_running_process_pid(monkeypatch, tmp_path):
+    payload, _mounts = fixture_inspection(monkeypatch, tmp_path)
+    original = guest._json_command
+
+    def missing_pid(argv, user):
+        result = original(argv, user)
+        if argv[:2] == ["podman", "inspect"]:
+            result[0]["State"].pop("Pid")
+        return result
+
+    monkeypatch.setattr(guest, "_json_command", missing_pid)
+    with pytest.raises(guest.Refusal, match="container_state_invalid"):
+        guest.inspect(payload)
 
 
 def test_quiet_backend_requires_explicit_historical_expectation(monkeypatch, tmp_path):

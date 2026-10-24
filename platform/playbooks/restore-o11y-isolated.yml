@@ -1,0 +1,1560 @@
+---
+# Restore one fresh protected PBS artifact into the declared disconnected
+# target. Every mutation is journaled before the request and verified after it.
+
+- name: Refuse caller supplied internal state
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require one declared source, copy destination, and restore target
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the declared protected PBS destination
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_copy_svc
+    preflight_group_expected: pbs_copy_svc
+    _preflight_redact_hostnames: true
+
+- name: Require one declared disconnected restore target
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_restore_target_svc
+    preflight_group_expected: o11y_restore_target_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the exact reviewed restore implementation
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/restore-o11y-isolated.yml
+      - platform/playbooks/files/o11y_isolated_restore.py
+      - platform/playbooks/files/o11y_restore_coordination.py
+      - platform/playbooks/files/inspect_o11y_restore_target.py
+      - platform/playbooks/files/inspect_o11y_backup_artifact.py
+      - platform/playbooks/files/inspect_o11y_restored_guest.py
+      - platform/playbooks/files/validate-o11y-restore-task.py
+      - platform/playbooks/tasks/o11y-restore-coordination.yml
+      - platform/playbooks/tasks/read-o11y-pbs-prior-task.yml
+      - platform/playbooks/tasks/o11y-pbs-inventory-provenance.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+
+- name: Restore one authenticated protected copy on a disconnected target
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: true
+      follow_redirects: none
+      use_netrc: false
+      use_proxy: false
+  vars:
+    _restore_o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _restore_copy_hosts: "{{ groups['pbs_copy_svc'] | default([]) }}"
+    _restore_target_hosts: "{{ groups['o11y_restore_target_svc'] | default([]) }}"
+    _restore_o11y: "{{ _restore_o11y_hosts | first | default('') }}"
+    _restore_copy: "{{ _restore_copy_hosts | first | default('') }}"
+    _restore_target: "{{ _restore_target_hosts | first | default('') }}"
+    _restore_source_vmid: "{{ hostvars[_restore_o11y].vm_vmid | default('') if _restore_o11y else '' }}"
+    _restore_source_node: "{{ hostvars[_restore_o11y].vm_node | default('') if _restore_o11y else '' }}"
+    _restore_copy_api_host: "{{ hostvars[_restore_copy].pbs_api_host | default('') if _restore_copy else '' }}"
+    _restore_copy_storage_id: "{{ hostvars[_restore_copy].pbs_storage_id | default('') if _restore_copy else '' }}"
+    _restore_copy_storage_nodes: "{{ hostvars[_restore_copy].pbs_storage_nodes | default([]) if _restore_copy else [] }}"
+    _restore_selector: "{{ hostvars[_restore_o11y].o11y_protected_copy_artifact_selector | default(none) if _restore_o11y else none }}"
+    _restore_target_vmid: "{{ hostvars[_restore_target].o11y_restore_target_vmid | default('') if _restore_target else '' }}"
+    _restore_target_node: "{{ hostvars[_restore_target].o11y_restore_target_node | default('') if _restore_target else '' }}"
+    _restore_target_storage: "{{ hostvars[_restore_target].o11y_restore_target_storage_id | default('') if _restore_target else '' }}"
+    _restore_target_network: "{{ hostvars[_restore_target].o11y_restore_target_network_mode | default('') if _restore_target else '' }}"
+    _restore_target_headroom: "{{ hostvars[_restore_target].o11y_restore_target_headroom_percent | default(0) if _restore_target else 0 }}"
+    _restore_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _restore_bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _restore_bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    _restore_prohibited_extra_names:
+      - openbao_addr
+      - bao_role_id
+      - bao_secret_id
+      - proxmox_validate_certs
+      - vm_vmid
+      - vm_node
+      - pbs_api_host
+      - pbs_storage_id
+      - pbs_storage_nodes
+      - o11y_protected_copy_artifact_selector
+      - o11y_restore_target_vmid
+      - o11y_restore_target_node
+      - o11y_restore_target_storage_id
+      - o11y_restore_target_network_mode
+      - o11y_restore_target_headroom_percent
+      - o11y_restore_coordination_request
+      - _o11y_restore_coordination_bao_url
+      - _o11y_restore_coordination_bao_token
+      - _pbs_task_validated
+      - o11y_restore_manifest
+      - o11y_restore_receipt
+      - o11y_restore_target_ref
+    _restore_forged_extra_names: "{{ _restore_prohibited_extra_names | intersect('' | extra_var_names) }}"
+    _restore_expected_launch_base:
+      expected_repository_sha: "{{ expected_repository_sha | default('') }}"
+      site_config_base_sha: "{{ site_config_base_sha | default('') }}"
+    _restore_expected_task_ids:
+      o11y-pbs-backup/v1: "{{ backup_task_id | default(0) | int }}"
+      o11y-pbs-verify/v1: "{{ pbs_verify_task_id | default(0) | int }}"
+      o11y-pbs-copy-sync/v1: "{{ copy_sync_task_id | default(0) | int }}"
+      o11y-pbs-copy-ready/v1: "{{ copy_ready_task_id | default(0) | int }}"
+    _restore_coordination_path: "{{ _restore_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
+  tasks:
+    - name: Refuse forged identity, endpoint, or receipt values before authentication
+      ansible.builtin.assert:
+        that:
+          - _restore_forged_extra_names | length == 0
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - site_config_base_sha | default('') is match('^[0-9a-f]{40}$')
+          - _restore_expected_task_ids.values() | select('equalto', 0) | list | length == 0
+          - _restore_o11y_hosts | length == 1
+          - _restore_copy_hosts | length == 1
+          - _restore_target_hosts | length == 1
+          - _restore_o11y != _restore_target
+          - _restore_source_vmid | string is match('^[1-9][0-9]{0,8}$')
+          - _restore_source_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _restore_target_vmid | string is match('^[1-9][0-9]{0,8}$')
+          - _restore_target_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _restore_target_vmid | string != _restore_source_vmid | string
+          - _restore_target_storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _restore_target_network == 'disconnected'
+          - _restore_target_headroom | int >= 30
+          - _restore_target_headroom | int <= 90
+          - _restore_target_headroom | string is match('^[0-9]+$')
+          - _restore_copy_api_host is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+          - _restore_copy_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _restore_copy_storage_nodes is sequence and _restore_copy_storage_nodes is not string and _restore_copy_storage_nodes | length > 0
+          - _restore_selector is mapping
+        fail_msg: "Restore requires one exact reviewed checkout, one protected-copy task chain, and private source, copy, and disconnected-target declarations."
+        quiet: true
+
+    - name: Refuse unsafe OpenBao transport before any credential lookup
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _restore_bao_url }}"
+
+    - name: Prove exact current private inventory bytes and reviewed controller bindings
+      ansible.builtin.include_tasks: tasks/o11y-pbs-inventory-provenance.yml
+      vars:
+        _pbs_provenance_template_name: Restore o11y from Protected PBS Copy (Dev)
+        _pbs_provenance_playbook: platform/playbooks/restore-o11y-isolated.yml
+
+    - name: Authenticate the fixed OpenBao AppRole for protected coordination
+      ansible.builtin.uri:
+        url: "{{ _restore_bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _restore_bao_role_id }}"
+          secret_id: "{{ _restore_bao_secret_id }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _restore_bao_auth
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require an authenticated bounded OpenBao token
+      ansible.builtin.assert:
+        that:
+          - _restore_bao_auth.status | default(0) == 200
+          - _restore_bao_auth.json.auth.client_token | default('') | length > 0
+        fail_msg: "The fixed OpenBao AppRole could not authenticate the restore controller."
+        quiet: true
+      no_log: true
+
+    - name: Read OpenBao-backed Proxmox, PBS, and Semaphore credentials
+      ansible.builtin.set_fact:
+        _restore_pve_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
+        _restore_pbs_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/pbs', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
+        _restore_semaphore_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
+      no_log: true
+
+    - name: Retain fixed Proxmox and destination PBS connection fields
+      ansible.builtin.set_fact:
+        _restore_pve_host: "{{ _restore_pve_secret.url | default('') }}"
+        _restore_pve_token_id: "{{ _restore_pve_secret.token_id | default('') }}"
+        _restore_pve_token: "{{ _restore_pve_secret.api_token | default('') }}"
+        _restore_copy_token_id: "{{ _restore_pbs_secret.o11y_copy_manager_token_id | default('') }}"
+        _restore_copy_token: "{{ _restore_pbs_secret.o11y_copy_manager_token_secret | default('') }}"
+        _restore_copy_fingerprint: "{{ _restore_pbs_secret.o11y_copy_manager_fingerprint | default('') }}"
+        _restore_semaphore_project_id: "{{ estate_coverage_semaphore_project_id | default(0) | int }}"
+        _restore_copy_vm_storage_id: "{{ hostvars[_restore_copy].pbs_storage_id }}"
+      no_log: true
+
+    - name: Require complete protected endpoint credentials
+      ansible.builtin.assert:
+        that:
+          - _restore_pve_host is match('^https://')
+          - _restore_pve_token_id | length > 0
+          - _restore_pve_token | length > 0
+          - _restore_copy_token_id == 'o11y-copy-manager@pbs!copy-api'
+          - _restore_copy_token | length > 0
+          - _restore_copy_fingerprint | length == 64
+          - _restore_semaphore_secret.url is match('^https://[^/]+$')
+          - _restore_semaphore_secret.api_token | length > 0
+          - _restore_semaphore_project_id > 0
+          - _restore_copy_vm_storage_id == _restore_copy_storage_id
+        fail_msg: "Protected restore credentials or the declared copy endpoint are unavailable."
+        quiet: true
+      no_log: true
+
+    - name: Authenticate the exact ordered PBS workflow task chain
+      block:
+        - name: Authenticate the backup task
+          ansible.builtin.include_tasks: tasks/read-o11y-pbs-prior-task.yml
+          vars:
+            _pbs_task_bao_url: "{{ _restore_bao_url }}"
+            _pbs_task_bao_role_id: "{{ _restore_bao_role_id }}"
+            _pbs_task_bao_secret_id: "{{ _restore_bao_secret_id }}"
+            _pbs_task_id: "{{ backup_task_id | int }}"
+            _pbs_task_contract: o11y-pbs-backup/v1
+            _pbs_task_playbook: platform/playbooks/backup-o11y-to-pbs.yml
+            _pbs_task_expected_launch: "{{ _restore_expected_launch_base }}"
+
+        - name: Retain authenticated backup proof
+          ansible.builtin.set_fact:
+            _restore_task_proofs: "{{ (_restore_task_proofs | default({})) | combine({'o11y-pbs-backup/v1': {'task': _pbs_task_validated.task_metadata, 'receipt': _pbs_task_validated.receipt}}) }}"
+          no_log: true
+
+        - name: Authenticate the primary PBS verification task
+          ansible.builtin.include_tasks: tasks/read-o11y-pbs-prior-task.yml
+          vars:
+            _pbs_task_bao_url: "{{ _restore_bao_url }}"
+            _pbs_task_bao_role_id: "{{ _restore_bao_role_id }}"
+            _pbs_task_bao_secret_id: "{{ _restore_bao_secret_id }}"
+            _pbs_task_id: "{{ pbs_verify_task_id | int }}"
+            _pbs_task_contract: o11y-pbs-verify/v1
+            _pbs_task_playbook: platform/playbooks/verify-o11y-pbs-artifact.yml
+            _pbs_task_expected_launch: "{{ _restore_expected_launch_base | combine({'backup_task_id': backup_task_id | int}) }}"
+
+        - name: Retain authenticated verification proof
+          ansible.builtin.set_fact:
+            _restore_task_proofs: "{{ _restore_task_proofs | combine({'o11y-pbs-verify/v1': {'task': _pbs_task_validated.task_metadata, 'receipt': _pbs_task_validated.receipt}}) }}"
+          no_log: true
+
+        - name: Authenticate the destination initiated sync task
+          ansible.builtin.include_tasks: tasks/read-o11y-pbs-prior-task.yml
+          vars:
+            _pbs_task_bao_url: "{{ _restore_bao_url }}"
+            _pbs_task_bao_role_id: "{{ _restore_bao_role_id }}"
+            _pbs_task_bao_secret_id: "{{ _restore_bao_secret_id }}"
+            _pbs_task_id: "{{ copy_sync_task_id | int }}"
+            _pbs_task_contract: o11y-pbs-copy-sync/v1
+            _pbs_task_playbook: platform/playbooks/sync-o11y-protected-pbs-copy.yml
+            _pbs_task_expected_launch: "{{ _restore_expected_launch_base | combine({'backup_task_id': backup_task_id | int, 'verify_task_id': pbs_verify_task_id | int}) }}"
+
+        - name: Retain authenticated sync proof
+          ansible.builtin.set_fact:
+            _restore_task_proofs: "{{ _restore_task_proofs | combine({'o11y-pbs-copy-sync/v1': {'task': _pbs_task_validated.task_metadata, 'receipt': _pbs_task_validated.receipt}}) }}"
+          no_log: true
+
+        - name: Authenticate destination copy readiness
+          ansible.builtin.include_tasks: tasks/read-o11y-pbs-prior-task.yml
+          vars:
+            _pbs_task_bao_url: "{{ _restore_bao_url }}"
+            _pbs_task_bao_role_id: "{{ _restore_bao_role_id }}"
+            _pbs_task_bao_secret_id: "{{ _restore_bao_secret_id }}"
+            _pbs_task_id: "{{ copy_ready_task_id | int }}"
+            _pbs_task_contract: o11y-pbs-copy-ready/v1
+            _pbs_task_playbook: platform/playbooks/verify-o11y-protected-pbs-copy.yml
+            _pbs_task_expected_launch: "{{ _restore_expected_launch_base | combine({'backup_task_id': backup_task_id | int, 'verify_task_id': pbs_verify_task_id | int, 'sync_task_id': copy_sync_task_id | int}) }}"
+
+        - name: Retain authenticated readiness proof
+          ansible.builtin.set_fact:
+            _restore_task_proofs: "{{ _restore_task_proofs | combine({'o11y-pbs-copy-ready/v1': {'task': _pbs_task_validated.task_metadata, 'receipt': _pbs_task_validated.receipt}}) }}"
+          no_log: true
+    - name: Read the current destination PBS manifest over pinned TLS
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", snapshot-manifest]
+        stdin: >-
+          {{ {'url': 'https://' ~ _restore_copy_api_host ~ ':8007',
+              'expected_host': _restore_copy_api_host,
+              'fingerprint': _restore_copy_fingerprint,
+              'auth_id': _restore_copy_token_id,
+              'secret': _restore_copy_token,
+              'backup_id': _restore_selector.volid.split('/')[2],
+              'backup_time': _restore_selector.creation_time_epoch | int} | to_json }}
+        stdin_add_newline: false
+      register: _restore_manifest_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require current copy manifest to match the private locator fingerprint
+      ansible.builtin.assert:
+        that:
+          - _restore_manifest_raw.rc == 0
+          - (_restore_manifest_raw.stdout | from_json).artifact_fingerprint is match('^[0-9a-f]{64}$')
+          - (_restore_manifest_raw.stdout | from_json).snapshot.backup_type == 'vm'
+          - (_restore_manifest_raw.stdout | from_json).snapshot.backup_id == _restore_source_vmid | string
+          - (_restore_manifest_raw.stdout | from_json).snapshot.backup_time == _restore_selector.creation_time_epoch | int
+        fail_msg: "The protected destination cannot read the exact selected PBS manifest."
+        quiet: true
+      no_log: true
+
+    - name: Build the closed task proof input for the shared receipt validator
+      ansible.builtin.set_fact:
+        _restore_chain_input:
+          public_sha: "{{ expected_repository_sha }}"
+          private_sha: "{{ site_config_base_sha }}"
+          expected_project_id: "{{ _restore_semaphore_project_id }}"
+          expected_task_ids:
+            o11y-pbs-backup/v1: "{{ backup_task_id | int }}"
+            o11y-pbs-verify/v1: "{{ pbs_verify_task_id | int }}"
+            o11y-pbs-copy-sync/v1: "{{ copy_sync_task_id | int }}"
+            o11y-pbs-copy-ready/v1: "{{ copy_ready_task_id | int }}"
+          expected_launches:
+            o11y-pbs-backup/v1: "{{ _restore_expected_launch_base }}"
+            o11y-pbs-verify/v1: "{{ _restore_expected_launch_base | combine({'backup_task_id': backup_task_id | int}) }}"
+            o11y-pbs-copy-sync/v1: "{{ _restore_expected_launch_base | combine({'backup_task_id': backup_task_id | int, 'verify_task_id': pbs_verify_task_id | int}) }}"
+            o11y-pbs-copy-ready/v1: "{{ _restore_expected_launch_base | combine({'backup_task_id': backup_task_id | int, 'verify_task_id': pbs_verify_task_id | int, 'sync_task_id': copy_sync_task_id | int}) }}"
+          task_proofs: "{{ _restore_task_proofs }}"
+          artifact_fingerprint: "{{ (_restore_manifest_raw.stdout | from_json).artifact_fingerprint }}"
+          private_copy_selector: "{{ _restore_selector }}"
+          expected_copy_storage_id: "{{ _restore_copy_storage_id }}"
+      no_log: true
+
+    - name: Validate all authenticated predecessor links and the closed private selector
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: "{{ _restore_chain_input | to_json }}"
+        stdin_add_newline: false
+      register: _restore_chain_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the authenticated task chain and fixed 24-hour freshness
+      ansible.builtin.assert:
+        that:
+          - _restore_chain_raw.rc == 0
+          - (_restore_chain_raw.stdout | from_json).status == 'verified'
+          - (_restore_chain_raw.stdout | from_json).artifact_fingerprint == (_restore_manifest_raw.stdout | from_json).artifact_fingerprint
+        fail_msg: "The authenticated backup, PBS verification, copy, or readiness chain is stale, out of order, or bound to another artifact."
+        quiet: true
+      no_log: true
+
+    - name: Retain the validated chain and private artifact fingerprint
+      ansible.builtin.set_fact:
+        _restore_chain: "{{ _restore_chain_raw.stdout | from_json }}"
+        _restore_artifact_fingerprint: "{{ (_restore_chain_raw.stdout | from_json).artifact_fingerprint }}"
+      no_log: true
+
+    - name: Read exact Proxmox VM census and source configuration
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/cluster/resources?type=vm"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_vms
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read source guest configuration for included disk binding
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_source_node | urlencode }}/qemu/{{ _restore_source_vmid }}/config"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_source_config
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read exact destination PVE PBS registration
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/storage/{{ _restore_copy_storage_id | urlencode }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_copy_pve_storage
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the destination PVE storage to use the declared copy guest and datastore
+      ansible.builtin.assert:
+        that:
+          - _restore_copy_pve_storage.json.data.type == 'pbs'
+          - _restore_copy_pve_storage.json.data.server == _restore_copy_api_host
+          - _restore_copy_pve_storage.json.data.port | int == 8007
+          - _restore_copy_pve_storage.json.data.datastore == 'o11y'
+          - _restore_copy_pve_storage.json.data.content == 'backup'
+          - _restore_copy_pve_storage.json.data.nodes | default('') == _restore_copy_storage_nodes | join(',')
+          - _restore_copy_pve_storage.json.data.fingerprint | lower | replace(':', '') == _restore_copy_fingerprint | lower | replace(':', '')
+        fail_msg: "The PVE PBS registration does not point to the exact protected copy service, datastore, and declared nodes."
+        quiet: true
+      no_log: true
+
+    - name: Read current copy content from its exact PVE storage registration
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/storage/{{ _restore_copy_storage_id | urlencode }}/content?content=backup&vmid={{ _restore_source_vmid }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_copy_content
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read exact restore configuration from the destination locator
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/vzdump/extractconfig?volume={{ _restore_selector.volid | urlencode }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_artifact_config
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Bind one fresh destination candidate to the private selector
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_o11y_backup_artifact.py", inspect]
+        stdin: >-
+          {{ {'vmid': _restore_source_vmid | int,
+              'vms': _restore_vms.json.data,
+              'storages': [{'storage': _restore_copy_storage_id,
+                           'content': 'backup', 'active': 1, 'type': 'pbs'}],
+              'content_reads': [{'storage': _restore_copy_storage_id,
+                                 'status': _restore_copy_content.status,
+                                 'json': _restore_copy_content.json}],
+              'artifact_selector': _restore_selector,
+              'artifact_selector_defined': true,
+              'vm_config': {'status': _restore_source_config.status,
+                            'data': _restore_source_config.json.data}} | to_json }}
+        stdin_add_newline: false
+      register: _restore_candidate_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require one fresh protected candidate and read online node/storage state
+      ansible.builtin.assert:
+        that:
+          - _restore_candidate_raw.rc == 0
+          - (_restore_candidate_raw.stdout | from_json).selected_candidate_index is defined
+        fail_msg: "The current destination PVE content does not contain exactly the private protected-copy selector."
+        quiet: true
+      no_log: true
+
+    - name: Read Proxmox node status and target storage status
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/{{ item.path }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      loop:
+        - {name: nodes, path: nodes}
+        - {name: target-storage, path: "nodes/{{ _restore_target_node | urlencode }}/storage"}
+      loop_control:
+        label: "exact restore preflight GET"
+      register: _restore_capacity_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read exact target config and cluster VMID availability
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/{{ item.path }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: "{{ item.status }}"
+      loop:
+        - {name: target-config, path: "nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/config", status: [200, 404, 500]}
+        - {name: nextid, path: "cluster/nextid?vmid={{ _restore_target_vmid }}", status: [200, 400]}
+      loop_control:
+        label: "exact restore availability GET"
+      register: _restore_target_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Validate fresh copy config, VMID absence, target identity and headroom
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_o11y_restore_target.py", inspect]
+        stdin: >-
+          {{ {'source': {'vmid': _restore_source_vmid | string, 'node': _restore_source_node},
+              'target': {'vmid': _restore_target_vmid | int, 'node': _restore_target_node,
+                         'storage_id': _restore_target_storage, 'network_mode': _restore_target_network,
+                         'headroom_percent': _restore_target_headroom | int},
+              'artifact_selector': _restore_selector,
+              'artifact_receipt': _restore_candidate_raw.stdout | from_json,
+              'artifact_config': {'status': _restore_artifact_config.status,
+                                  'data': _restore_artifact_config.json.data | default(none)},
+              'vms': _restore_vms.json.data,
+              'target_config': {'status': (_restore_target_reads.results | selectattr('item.name', 'equalto', 'target-config') | first).status},
+              'target_nextid': {'status': (_restore_target_reads.results | selectattr('item.name', 'equalto', 'nextid') | first).status,
+                                'data': (_restore_target_reads.results | selectattr('item.name', 'equalto', 'nextid') | first).json.data | default(none)},
+              'nodes': (_restore_capacity_reads.results | selectattr('item.name', 'equalto', 'nodes') | first).json.data,
+              'storage_reads': [{'item': _restore_target_node,
+                                 'status': (_restore_capacity_reads.results | selectattr('item.name', 'equalto', 'target-storage') | first).status,
+                                 'data': (_restore_capacity_reads.results | selectattr('item.name', 'equalto', 'target-storage') | first).json.data}] } | to_json }}
+        stdin_add_newline: false
+      register: _restore_target_preflight_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the exact disconnected target preflight
+      ansible.builtin.assert:
+        that: _restore_target_preflight_raw.rc == 0
+        fail_msg: "Protected restore target preflight refused the exact copy, target, capacity, or VMID state."
+        quiet: true
+      no_log: true
+
+    - name: Retain target and artifact admission receipts in protected controller state
+      ansible.builtin.set_fact:
+        _restore_target_preflight: "{{ _restore_target_preflight_raw.stdout | from_json }}"
+        _restore_artifact_admission_raw: "{{ _restore_artifact_config.json.data }}"
+      no_log: true
+
+    - name: Validate complete restored artifact config before target reservation
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'artifact_config',
+              'config': {'status': _restore_artifact_config.status, 'data': _restore_artifact_config.json.data},
+              'source_vmid': _restore_source_vmid | int} | to_json }}
+        stdin_add_newline: false
+      register: _restore_artifact_admission
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require complete included disks, safe config, and live isolation preflight
+      ansible.builtin.assert:
+        that:
+          - _restore_artifact_admission.rc == 0
+          - (_restore_target_preflight.layout.disk_count | int) == ((_restore_artifact_admission.stdout | from_json).disk_count | int)
+          - (_restore_target_preflight.selected_candidate.backend_class | default('pbs')) == 'pbs'
+        fail_msg: "The protected artifact configuration contains unsupported restore directives or incomplete disk evidence."
+        quiet: true
+      no_log: true
+
+    - name: Retain admitted artifact disk set and target identity
+      ansible.builtin.set_fact:
+        _restore_artifact_layout: "{{ _restore_artifact_admission.stdout | from_json }}"
+        _restore_target_ref: {node: "{{ _restore_target_node }}", vmid: "{{ _restore_target_vmid | int }}"}
+        _restore_target_declaration:
+          vmid: "{{ _restore_target_vmid | int }}"
+          node: "{{ _restore_target_node }}"
+          storage_id: "{{ _restore_target_storage }}"
+          network_mode: disconnected
+          headroom_percent: "{{ _restore_target_headroom | int }}"
+      no_log: true
+
+    - name: Compute canonical target and declaration fingerprints
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: "{{ {'mode': 'target_identity', 'target': _restore_target_declaration} | to_json }}"
+        stdin_add_newline: false
+      register: _restore_target_identity_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the strict target fingerprint
+      ansible.builtin.assert:
+        that: _restore_target_identity_raw.rc == 0
+        fail_msg: "The private restore target declaration is malformed."
+        quiet: true
+      no_log: true
+
+    - name: Retain canonical operation declaration
+      ansible.builtin.set_fact:
+        _restore_target_identity: "{{ _restore_target_identity_raw.stdout | from_json }}"
+        _restore_declaration:
+          declaration_fingerprint: "{{ (_restore_target_identity_raw.stdout | from_json).declaration_fingerprint }}"
+          target_fingerprint: "{{ (_restore_target_identity_raw.stdout | from_json).target_fingerprint }}"
+          artifact_fingerprint: "{{ _restore_artifact_fingerprint }}"
+          public_sha: "{{ expected_repository_sha }}"
+          private_inventory_sha: "{{ site_config_base_sha }}"
+        _restore_marker: "o11y-restore:{{ (_restore_target_identity_raw.stdout | from_json).declaration_fingerprint }}"
+      no_log: true
+
+    - name: Reserve the declared target with the fixed OpenBao CAS journal
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: reserve
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: null
+          expected_version: 0
+          nonce: null
+          evidence: null
+          action: null
+          request_fingerprint: null
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Retain the exact reservation snapshot and fresh restore nonce
+      ansible.builtin.set_fact:
+        _restore_record: "{{ _o11y_rc_plan.record }}"
+        _restore_version: "{{ _o11y_rc_plan.expected_version | int }}"
+        _restore_owner_nonce: "{{ _o11y_rc_plan.record.restore_nonce }}"
+      no_log: true
+
+    - name: Journal the exact stopped restore intent before the Proxmox request
+      ansible.builtin.set_fact:
+        _restore_request_payload:
+          archive: "{{ _restore_selector.volid }}"
+          vmid: "{{ _restore_target_vmid | int }}"
+          storage: "{{ _restore_target_storage }}"
+          force: 0
+          start: 0
+          live-restore: 0
+          ha-managed: 0
+        _restore_request_fingerprint: "{{ {'archive': _restore_selector.volid, 'target_vmid': _restore_target_vmid | int, 'target_storage': _restore_target_storage, 'force': 0, 'start': 0, 'live_restore': 0, 'ha_managed': 0} | to_json(sort_keys=true) | hash('sha256') }}"
+      no_log: true
+
+    - name: Persist the restore intent through CAS
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: intent_restore
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _restore_record }}"
+          expected_version: "{{ _restore_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: restore
+          request_fingerprint: "{{ _restore_request_fingerprint }}"
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Submit exactly one stopped restore from the protected copy
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/qemu"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        body_format: form-urlencoded
+        body:
+          archive: "{{ _restore_selector.volid }}"
+          vmid: "{{ _restore_target_vmid | int }}"
+          storage: "{{ _restore_target_storage }}"
+          force: 0
+          start: 0
+          live-restore: 0
+          ha-managed: 0
+        status_code: [200]
+      register: _restore_submit
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require one returned restore UPID without retrying an uncertain request
+      ansible.builtin.assert:
+        that:
+          - _restore_submit.status | default(0) == 200
+          - _restore_submit.json.data is string
+          - _restore_submit.json.data is match('^UPID:')
+        fail_msg: "Proxmox restore response is unknown; retain the target and journal for operator review."
+        quiet: true
+      no_log: true
+
+    - name: Record the actual qmrestore UPID with CAS readback
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: record_handle
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: restore
+          request_fingerprint: "{{ _restore_request_fingerprint }}"
+          handle_type: upid
+          handle: "{{ _restore_submit.json.data }}"
+          effect_fingerprint: null
+
+    - name: Poll only the journaled qmrestore task to an authoritative stopped result
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/tasks/{{ _restore_submit.json.data | urlencode }}/status"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_task_status
+      until: _restore_task_status.json.data.status | default('') == 'stopped'
+      retries: 360
+      delay: 10
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read restored target state and configuration
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/{{ item.path }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      loop:
+        - {name: status, path: "nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/status/current"}
+        - {name: config, path: "nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/config"}
+      loop_control:
+        label: "restore completion readback"
+      register: _restore_initial_readback
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require successful restore UPID and stopped target before isolation
+      ansible.builtin.assert:
+        that:
+          - _restore_task_status.json.data.status == 'stopped'
+          - _restore_task_status.json.data.exitstatus == 'OK'
+          - (_restore_initial_readback.results | selectattr('item.name', 'equalto', 'status') | first).json.data.status == 'stopped'
+        fail_msg: "The restore task or stopped-state readback failed; preserve the owned target and journal."
+        quiet: true
+      no_log: true
+
+    - name: Validate restored disk layout and require no preexisting NIC or host escape
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'target_config',
+              'config': {'status': (_restore_initial_readback.results | selectattr('item.name', 'equalto', 'config') | first).status,
+                         'data': (_restore_initial_readback.results | selectattr('item.name', 'equalto', 'config') | first).json.data},
+              'target_vmid': _restore_target_vmid | int,
+              'marker': none,
+              'isolated': false,
+              'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
+              'storage_id': _restore_target_storage} | to_json }}
+      register: _restore_vm_admission_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require exact restored source disks and retain the private restore digest
+      ansible.builtin.assert:
+        that: _restore_vm_admission_raw.rc == 0
+        fail_msg: "The restored target has an unexpected disk, network, passthrough, or ownership configuration."
+        quiet: true
+      no_log: true
+
+    - name: Build the verified stopped-restore effect
+      ansible.builtin.set_fact:
+        _restore_restore_effect:
+          type: restore_effect/v2
+          action: restore
+          node: "{{ _restore_target_node }}"
+          vmid: "{{ _restore_target_vmid | int }}"
+          task_state: stopped
+          exit_status: OK
+          vm_state: stopped
+          config_sha256: "{{ (_restore_vm_admission_raw.stdout | from_json).config_sha256 }}"
+      no_log: true
+
+    - name: Fingerprint the exact restored config and verified UPID
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: "{{ {'mode': 'effect_fingerprint', 'action': 'restore', 'evidence': _restore_restore_effect, 'target': _restore_target_ref, 'record': _o11y_rc_plan.record} | to_json }}"
+        stdin_add_newline: false
+      register: _restore_restore_effect_fp_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Commit stopped restore effect before isolation may begin
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: verify_effect
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: "{{ _restore_restore_effect }}"
+          action: restore
+          request_fingerprint: "{{ _restore_request_fingerprint }}"
+          handle_type: upid
+          handle: "{{ _restore_submit.json.data }}"
+          effect_fingerprint: "{{ (_restore_restore_effect_fp_raw.stdout | from_json).effect_fingerprint }}"
+
+    - name: Retain the admitted restore config fingerprint
+      ansible.builtin.set_fact:
+        _restore_config_admission: "{{ _restore_vm_admission_raw.stdout | from_json }}"
+        _restore_current_record: "{{ _o11y_rc_plan.record }}"
+        _restore_action_request_fingerprint: "{{ {'target': _restore_target_ref, 'disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list), 'marker': _restore_marker} | to_json(sort_keys=true) | hash('sha256') }}"
+      no_log: true
+
+    - name: Persist isolation intent before changing target configuration
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: intent_action
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _restore_current_record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: isolate
+          request_fingerprint: "{{ _restore_action_request_fingerprint }}"
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Remove every target NIC, disable boot, and write only the ownership marker
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/config"
+        method: PUT
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        body_format: form-urlencoded
+        body:
+          delete: "{{ (_restore_artifact_layout.nic_keys | join(',')) if _restore_artifact_layout.nic_keys else omit }}"
+          onboot: 0
+          startup: ""
+          description: "{{ _restore_marker }}"
+        status_code: [200]
+      register: _restore_isolation_submit
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read back the full disconnected target configuration
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/config"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_isolated_config
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Validate stopped disconnected isolation readback
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'target_config',
+              'config': {'status': _restore_isolated_config.status, 'data': _restore_isolated_config.json.data},
+              'target_vmid': _restore_target_vmid | int,
+              'marker': _restore_marker,
+              'isolated': true,
+              'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
+              'storage_id': _restore_target_storage} | to_json }}
+      register: _restore_isolation_validated
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require exact no-NIC isolation and stopped state
+      ansible.builtin.assert:
+        that:
+          - _restore_isolation_submit.status | default(0) == 200
+          - _restore_isolation_validated.rc == 0
+          - (_restore_isolation_validated.stdout | from_json).nic_count == 0
+        fail_msg: "The disconnected isolation effect is unknown; do not start or retry the target."
+        quiet: true
+      no_log: true
+
+    - name: Build exact isolation effect evidence and journal fingerprint
+      ansible.builtin.set_fact:
+        _restore_isolation_effect:
+          type: isolation_effect/v2
+          action: isolate
+          node: "{{ _restore_target_node }}"
+          vmid: "{{ _restore_target_vmid | int }}"
+          status: "{{ _restore_isolation_submit.status | int }}"
+          isolated: true
+          nic_count: 0
+          onboot: 0
+          config_sha256: "{{ (_restore_isolation_validated.stdout | from_json).config_sha256 }}"
+      no_log: true
+
+    - name: Compute isolation effect fingerprint
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: "{{ {'mode': 'effect_fingerprint', 'action': 'isolate', 'evidence': _restore_isolation_effect, 'target': _restore_target_ref, 'record': _o11y_rc_plan.record} | to_json }}"
+        stdin_add_newline: false
+      register: _restore_isolation_effect_fp_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Commit verified isolation effect through CAS readback
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: record_handle
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: isolate
+          request_fingerprint: "{{ _restore_action_request_fingerprint }}"
+          handle_type: response_sha256
+          handle: "{{ (_restore_isolation_validated.stdout | from_json).config_sha256 }}"
+          effect_fingerprint: null
+
+    - name: Commit isolation effect after the exact response was recorded
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: verify_effect
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: "{{ _restore_isolation_effect }}"
+          action: isolate
+          request_fingerprint: "{{ _restore_action_request_fingerprint }}"
+          handle_type: response_sha256
+          handle: "{{ (_restore_isolation_validated.stdout | from_json).config_sha256 }}"
+          effect_fingerprint: "{{ (_restore_isolation_effect_fp_raw.stdout | from_json).effect_fingerprint }}"
+
+    - name: Journal target start intent before the only start operation
+      ansible.builtin.set_fact:
+        _restore_start_request_fingerprint: "{{ {'node': _restore_target_node, 'vmid': _restore_target_vmid | int, 'action': 'qmstart', 'isolated_config_sha256': (_restore_isolation_validated.stdout | from_json).config_sha256} | to_json(sort_keys=true) | hash('sha256') }}"
+        _restore_isolated_config_sha256: "{{ (_restore_isolation_validated.stdout | from_json).config_sha256 }}"
+      no_log: true
+
+    - name: Persist start intent through CAS before starting the target
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: intent_action
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: start
+          request_fingerprint: "{{ _restore_start_request_fingerprint }}"
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Start only the isolated restore target
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/status/start"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        body_format: form-urlencoded
+        body: {}
+        status_code: [200]
+      register: _restore_start_submit
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Record the actual qmstart UPID through CAS
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: record_handle
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: start
+          request_fingerprint: "{{ _restore_start_request_fingerprint }}"
+          handle_type: upid
+          handle: "{{ _restore_start_submit.json.data }}"
+          effect_fingerprint: null
+
+    - name: Poll the exact qmstart UPID until it completes
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/tasks/{{ _restore_start_submit.json.data | urlencode }}/status"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_start_task_status
+      until: _restore_start_task_status.json.data.status | default('') == 'stopped'
+      retries: 360
+      delay: 10
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read running target status and isolated config after qmstart
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/{{ item.path }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      loop:
+        - {name: status, path: "nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/status/current"}
+        - {name: config, path: "nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/config"}
+      loop_control:
+        label: "isolated start readback"
+      register: _restore_start_readback
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require successful start task and unchanged isolated config
+      ansible.builtin.assert:
+        that:
+          - _restore_start_task_status.json.data.exitstatus == 'OK'
+          - (_restore_start_readback.results | selectattr('item.name', 'equalto', 'status') | first).json.data.status == 'running'
+        fail_msg: "The isolated target start is unproven; retain the target and coordination record."
+        quiet: true
+      no_log: true
+
+    - name: Revalidate isolation configuration before any guest execution
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'target_config',
+              'config': {'status': 200, 'data': (_restore_start_readback.results | selectattr('item.name', 'equalto', 'config') | first).json.data},
+              'target_vmid': _restore_target_vmid | int, 'marker': _restore_marker,
+              'isolated': true,
+              'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
+              'storage_id': _restore_target_storage} | to_json }}
+      register: _restore_running_isolation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the running target still has no NIC or host backing
+      ansible.builtin.assert:
+        that:
+          - _restore_running_isolation.rc == 0
+          - (_restore_running_isolation.stdout | from_json).config_sha256 == _restore_isolated_config_sha256
+        fail_msg: "The running target isolation fingerprint changed; do not execute guest inspection."
+        quiet: true
+      no_log: true
+
+    - name: Build verified running-start effect
+      ansible.builtin.set_fact:
+        _restore_start_effect:
+          type: start_effect/v2
+          action: start
+          node: "{{ _restore_target_node }}"
+          vmid: "{{ _restore_target_vmid | int }}"
+          task_state: stopped
+          exit_status: OK
+          vm_state: running
+          isolated: true
+          config_sha256: "{{ (_restore_running_isolation.stdout | from_json).config_sha256 }}"
+      no_log: true
+
+    - name: Fingerprint the successful start and unchanged isolation config
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: "{{ {'mode': 'effect_fingerprint', 'action': 'start', 'evidence': _restore_start_effect, 'target': _restore_target_ref, 'record': _o11y_rc_plan.record} | to_json }}"
+        stdin_add_newline: false
+      register: _restore_start_effect_fp_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Commit verified start effect before QGA execution
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: verify_effect
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: "{{ _restore_start_effect }}"
+          action: start
+          request_fingerprint: "{{ _restore_start_request_fingerprint }}"
+          handle_type: upid
+          handle: "{{ _restore_start_submit.json.data }}"
+          effect_fingerprint: "{{ (_restore_start_effect_fp_raw.stdout | from_json).effect_fingerprint }}"
+
+    - name: Build and pin the reviewable QGA checker input bytes
+      ansible.builtin.set_fact:
+        _restore_checker_source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect_o11y_restored_guest.py') }}"
+        _restore_checker_sha: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect_o11y_restored_guest.py') | hash('sha256') }}"
+        _restore_backend_expectations: >-
+          {{ dict(['prometheus', 'loki', 'tempo', 'pyroscope'] | zip(['prometheus', 'loki', 'tempo', 'pyroscope']
+            | map('regex_replace', '.*', 'present')
+            | list)) }}
+      no_log: true
+
+    - name: Build closed historical expectations for the authenticated artifact timestamp
+      ansible.builtin.set_fact:
+        _restore_checker_expectations:
+          schema_version: 1
+          service_user: "{{ hostvars[_restore_o11y].service_user | default('svc_o11y') }}"
+          artifact_creation_time_epoch: "{{ _restore_selector.creation_time_epoch | int }}"
+          backend_expectations:
+            prometheus: {expectation: present, evidence_sha256: "{{ _restore_artifact_fingerprint }}"}
+            loki: {expectation: present, evidence_sha256: "{{ _restore_artifact_fingerprint }}"}
+            tempo: {expectation: present, evidence_sha256: "{{ _restore_artifact_fingerprint }}"}
+            pyroscope: {expectation: present, evidence_sha256: "{{ _restore_artifact_fingerprint }}"}
+      no_log: true
+
+    - name: Journal guest-exec intent before the QGA call
+      ansible.builtin.set_fact:
+        _restore_guest_request_fingerprint: "{{ {'action': 'qga_guest_exec', 'checker_sha256': _restore_checker_sha, 'expectations_sha256': (_restore_checker_expectations | to_json(sort_keys=true) | hash('sha256'))} | to_json(sort_keys=true) | hash('sha256') }}"
+      no_log: true
+
+    - name: Persist guest execution intent before QGA
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: intent_action
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: guest_exec
+          request_fingerprint: "{{ _restore_guest_request_fingerprint }}"
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Send checker source and fixed expectations only through QGA input-data
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/agent/exec"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        body_format: form-urlencoded
+        body:
+          command: /usr/bin/python3
+          arg:
+            - -c
+            - "import base64,hashlib,json,sys; x=json.load(sys.stdin); s=base64.b64decode(x['source']); h=hashlib.sha256(s).hexdigest(); assert h==sys.argv[1]; g={'__name__':'restore_checker'}; exec(compile(s,'inspect_o11y_restored_guest.py','exec'),g); print(json.dumps(g['inspect'](x['expectations']),sort_keys=True,separators=(',',':')))"
+            - "{{ _restore_checker_sha }}"
+          input-data: "{{ {'source': _restore_checker_source | b64encode, 'expectations': _restore_checker_expectations} | to_json }}"
+          capture-output: 1
+        status_code: [200]
+      register: _restore_guest_exec_submit
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the actual QGA process ID before polling
+      ansible.builtin.assert:
+        that:
+          - _restore_guest_exec_submit.status | default(0) == 200
+          - _restore_guest_exec_submit.json.data.pid is defined
+          - _restore_guest_exec_submit.json.data.pid | int > 1
+        fail_msg: "The QGA guest inspection handle is unknown; do not retry guest execution."
+        quiet: true
+      no_log: true
+
+    - name: Record QGA PID in the action journal
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: record_handle
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: guest_exec
+          request_fingerprint: "{{ _restore_guest_request_fingerprint }}"
+          handle_type: qga_pid
+          handle: "{{ _restore_guest_exec_submit.json.data.pid | int }}"
+          effect_fingerprint: null
+
+    - name: Poll only the exact QGA PID until its protected result is complete
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/agent/exec-status?pid={{ _restore_guest_exec_submit.json.data.pid | int }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_guest_exec_status
+      until: _restore_guest_exec_status.json.data.exited | default(false) | bool
+      retries: 120
+      delay: 5
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require successful QGA exit and bounded result bytes
+      ansible.builtin.assert:
+        that:
+          - _restore_guest_exec_status.json.data.exitcode | default(-1) | int == 0
+          - _restore_guest_exec_status.json.data['out-data'] is string
+          - _restore_guest_exec_status.json.data['out-data'] | length <= 2796204
+        fail_msg: "The QGA checker failed or returned an oversized result; preserve the isolated target."
+        quiet: true
+      no_log: true
+
+    - name: Decode only the bounded content-free guest verification receipt
+      ansible.builtin.set_fact:
+        _restore_guest_receipt: "{{ _restore_guest_exec_status.json.data['out-data'] | b64decode | from_json }}"
+        _restore_guest_output_sha: "{{ (_restore_guest_exec_status.json.data['out-data'] | b64decode) | hash('sha256') }}"
+      no_log: true
+
+    - name: Require the exact five-volume and historical backend proof
+      ansible.builtin.assert:
+        that:
+          - _restore_guest_receipt.schema_version == 1
+          - _restore_guest_receipt.status == 'verified'
+          - _restore_guest_receipt.reason == 'restored_historical_data_verified'
+          - _restore_guest_receipt.volume_count == 5
+          - _restore_guest_receipt.backend_count == 4
+          - _restore_guest_receipt.grafana_integrity == 'ok'
+        fail_msg: "Restored telemetry volumes or historical backend data were not proven."
+        quiet: true
+      no_log: true
+
+    - name: Build sanitized guest effect evidence
+      ansible.builtin.set_fact:
+        _restore_guest_effect:
+          type: guest_effect/v2
+          action: guest_exec
+          node: "{{ _restore_target_node }}"
+          vmid: "{{ _restore_target_vmid | int }}"
+          pid: "{{ _restore_guest_exec_submit.json.data.pid | int }}"
+          exit_code: "{{ _restore_guest_exec_status.json.data.exitcode | int }}"
+          checker_status: verified
+          checker_receipt_fingerprint: "{{ _restore_guest_receipt.receipt_fingerprint }}"
+          output_sha256: "{{ _restore_guest_output_sha }}"
+      no_log: true
+
+    - name: Compute exact guest effect fingerprint
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: "{{ {'mode': 'effect_fingerprint', 'action': 'guest_exec', 'evidence': _restore_guest_effect, 'target': _restore_target_ref, 'record': _o11y_rc_plan.record} | to_json }}"
+        stdin_add_newline: false
+      register: _restore_guest_effect_fp_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Commit successful guest proof to the action journal
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: verify_effect
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: "{{ _restore_guest_effect }}"
+          action: guest_exec
+          request_fingerprint: "{{ _restore_guest_request_fingerprint }}"
+          handle_type: qga_pid
+          handle: "{{ _restore_guest_exec_submit.json.data.pid | int }}"
+          effect_fingerprint: "{{ (_restore_guest_effect_fp_raw.stdout | from_json).effect_fingerprint }}"
+
+    - name: Journal stop intent before the exact target stop
+      ansible.builtin.set_fact:
+        _restore_stop_request_fingerprint: "{{ {'node': _restore_target_node, 'vmid': _restore_target_vmid | int, 'action': 'qmstop', 'isolation_config_sha256': _restore_isolated_config_sha256} | to_json(sort_keys=true) | hash('sha256') }}"
+      no_log: true
+
+    - name: Persist stop intent before stopping the temporary target
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: intent_action
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: stop
+          request_fingerprint: "{{ _restore_stop_request_fingerprint }}"
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Stop only the exact isolated restore target
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/status/stop"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        body_format: form-urlencoded
+        body: {}
+        status_code: [200]
+      register: _restore_stop_submit
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Record the actual qmstop UPID before polling
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: record_handle
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: null
+          action: stop
+          request_fingerprint: "{{ _restore_stop_request_fingerprint }}"
+          handle_type: upid
+          handle: "{{ _restore_stop_submit.json.data }}"
+          effect_fingerprint: null
+
+    - name: Poll the exact qmstop UPID until it completes
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/nodes/{{ _restore_target_node | urlencode }}/tasks/{{ _restore_stop_submit.json.data | urlencode }}/status"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _restore_stop_task_status
+      until: _restore_stop_task_status.json.data.status | default('') == 'stopped'
+      retries: 360
+      delay: 10
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read stopped target status and config after qmstop
+      ansible.builtin.uri:
+        url: "{{ _restore_pve_host }}/api2/json/{{ item.path }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _restore_pve_token_id }}={{ _restore_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      loop:
+        - {name: status, path: "nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/status/current"}
+        - {name: config, path: "nodes/{{ _restore_target_node | urlencode }}/qemu/{{ _restore_target_vmid }}/config"}
+      loop_control:
+        label: "isolated stopped-state readback"
+      register: _restore_stop_readback
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Validate exact stopped target config after QGA
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'target_config',
+              'config': {'status': (_restore_stop_readback.results | selectattr('item.name', 'equalto', 'config') | first).status,
+                         'data': (_restore_stop_readback.results | selectattr('item.name', 'equalto', 'config') | first).json.data},
+              'target_vmid': _restore_target_vmid | int, 'marker': _restore_marker,
+              'isolated': true,
+              'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
+              'storage_id': _restore_target_storage} | to_json }}
+      register: _restore_stopped_isolation_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require successful stop, stopped state, and unchanged isolation
+      ansible.builtin.assert:
+        that:
+          - _restore_stop_task_status.json.data.status == 'stopped'
+          - _restore_stop_task_status.json.data.exitstatus == 'OK'
+          - (_restore_stop_readback.results | selectattr('item.name', 'equalto', 'status') | first).json.data.status == 'stopped'
+          - _restore_stopped_isolation_raw.rc == 0
+          - (_restore_stopped_isolation_raw.stdout | from_json).config_sha256 == _restore_isolated_config_sha256
+        fail_msg: "The temporary target is not proven stopped and isolated; preserve it and its journal."
+        quiet: true
+      no_log: true
+
+    - name: Build and persist stop effect proof
+      ansible.builtin.set_fact:
+        _restore_stop_effect:
+          type: stop_effect/v2
+          action: stop
+          node: "{{ _restore_target_node }}"
+          vmid: "{{ _restore_target_vmid | int }}"
+          task_state: stopped
+          exit_status: OK
+          vm_state: stopped
+          isolated: true
+          config_sha256: "{{ (_restore_stopped_isolation_raw.stdout | from_json).config_sha256 }}"
+      no_log: true
+
+    - name: Fingerprint stop effect and commit it to the journal
+      block:
+        - name: Compute stop effect fingerprint
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+            stdin: "{{ {'mode': 'effect_fingerprint', 'action': 'stop', 'evidence': _restore_stop_effect, 'target': _restore_target_ref, 'record': _o11y_rc_plan.record} | to_json }}"
+            stdin_add_newline: false
+          register: _restore_stop_effect_fp_raw
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: CAS complete stopped-target effect
+          ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+          vars:
+            _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+            _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+            o11y_restore_coordination_request:
+              transition: verify_effect
+              declaration: "{{ _restore_declaration }}"
+              target_ref: "{{ _restore_target_ref }}"
+              expected_record: "{{ _o11y_rc_plan.record }}"
+              expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+              nonce: "{{ _restore_owner_nonce }}"
+              evidence: "{{ _restore_stop_effect }}"
+              action: stop
+              request_fingerprint: "{{ _restore_stop_request_fingerprint }}"
+              handle_type: upid
+              handle: "{{ _restore_stop_submit.json.data }}"
+              effect_fingerprint: "{{ (_restore_stop_effect_fp_raw.stdout | from_json).effect_fingerprint }}"
+      no_log: true
+
+    - name: Build the private identity-bearing v3 restore receipt
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: >-
+          {{ {'mode': 'build_restore_receipt',
+              'record': _o11y_rc_plan.record,
+              'version': _o11y_rc_plan.expected_version | int,
+              'fields': {'artifact_config': _restore_artifact_layout,
+                         'checker_sha256': _restore_checker_sha,
+                         'checker_receipt_fingerprint': _restore_guest_receipt.receipt_fingerprint,
+                         'guest_execution_pid': _restore_guest_exec_submit.json.data.pid | int,
+                         'data_checks': _restore_guest_receipt,
+                         'isolation_config_sha256': _restore_isolated_config_sha256}} | to_json }}
+        stdin_add_newline: false
+      register: _restore_sealed_receipt_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require the full stopped journal to seal one closed private receipt
+      ansible.builtin.assert:
+        that: _restore_sealed_receipt_raw.rc == 0
+        fail_msg: "The isolated restore receipt could not be sealed from the verified journal."
+        quiet: true
+      no_log: true
+
+    - name: Retain the exact sealed receipt
+      ansible.builtin.set_fact:
+        _restore_sealed_receipt: "{{ _restore_sealed_receipt_raw.stdout | from_json }}"
+      no_log: true
+
+    - name: CAS transition to awaiting receipt while retaining exact target ownership
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _restore_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _restore_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: awaiting_receipt
+          declaration: "{{ _restore_declaration }}"
+          target_ref: "{{ _restore_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _restore_owner_nonce }}"
+          evidence: "{{ _restore_sealed_receipt }}"
+          action: null
+          request_fingerprint: null
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Require exact readback of the awaiting-receipt version
+      ansible.builtin.assert:
+        that:
+          - _o11y_rc_plan.result == 'write'
+          - _o11y_rc_plan.record.phase == 'awaiting_receipt'
+          - _o11y_rc_plan.record.receipt_fingerprint == _restore_sealed_receipt.receipt_fingerprint
+        fail_msg: "The private receipt was not durably read back with the exact final coordination version."
+        quiet: true
+      no_log: true
+
+    - name: Print the protected receipt for separate authenticated cleanup
+      ansible.builtin.debug:
+        msg: "{{ _restore_sealed_receipt }}"
+
+    - name: Print only fixed public-safe verification categories
+      ansible.builtin.debug:
+        msg:
+          status: restored_isolated
+          volume_count: "{{ _restore_guest_receipt.volume_count }}"
+          backend_count: "{{ _restore_guest_receipt.backend_count }}"
+          grafana_integrity: "{{ _restore_guest_receipt.grafana_integrity }}"
+          artifact_fingerprint: "{{ _restore_artifact_fingerprint }}"
+          receipt_fingerprint: "{{ _restore_sealed_receipt.receipt_fingerprint }}"

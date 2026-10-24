@@ -38,9 +38,16 @@ def _chain_fixture(*, old_backup: bool = False):
     }
     artifact = pbs_receipts.artifact_fingerprint(manifest)
     snapshots = {"backup_type": "vm", "backup_id": "120", "backup_time": backup_epoch}
+    copy_store = "copy-store"
+    copy_selector = {
+        "volid": f"{copy_store}:backup/vm/120/{datetime.fromtimestamp(backup_epoch, UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        "backend": "pbs",
+        "format": "pbs-vm",
+        "creation_time_epoch": backup_epoch,
+        "size_bytes": 300,
+    }
     evidence = [
         {
-            "backup_task_id": 100,
             "backup_upid": BACKUP_UPID,
             "snapshot": snapshots,
             "source_vmid": "120",
@@ -80,22 +87,32 @@ def _chain_fixture(*, old_backup: bool = False):
             "pull_direction": "destination_initiated",
             "deletion_isolation": "verified",
             "maintenance_isolation": "verified",
+            "normalized_restore_locator": {**copy_selector, "storage_id": copy_store},
+            "destination_identity_fingerprint": "a" * 64,
+            "destination_storage_config_fingerprint": "b" * 64,
             "playbook": pbs_receipts.CONTRACTS[CONTRACTS[3]]["playbook"],
         },
     ]
     task_proofs = {}
     launches = {}
     task_ids = {}
-    for task_id, contract, items in zip((100, 101, 102, 103), CONTRACTS, evidence, strict=True):
+    chain_ids = (100, 101, 102, 103)
+    for index, (task_id, contract, items) in enumerate(zip(chain_ids, CONTRACTS, evidence, strict=True)):
         started = now - timedelta(minutes=20 - task_id % 10)
         ended = started + timedelta(minutes=3)
         launch = {"expected_repository_sha": PUBLIC_SHA, "site_config_base_sha": PRIVATE_SHA}
+        if index >= 1:
+            launch["backup_task_id"] = chain_ids[0]
+        if index >= 2:
+            launch["verify_task_id"] = chain_ids[1]
+        if index >= 3:
+            launch["sync_task_id"] = chain_ids[2]
         body = pbs_receipts.seal_receipt(
             {
                 "schema_version": 1,
                 "contract": contract,
-                "status": "complete",
-                "reason": "none",
+                "status": "ready" if contract == CONTRACTS[3] else "complete",
+                "reason": "destination_copy_ready_for_isolated_restore" if contract == CONTRACTS[3] else "none",
                 "public_sha": PUBLIC_SHA,
                 "private_sha": PRIVATE_SHA,
                 "inventory_provenance": "exact_bytes_match",
@@ -130,7 +147,20 @@ def _chain_fixture(*, old_backup: bool = False):
                 "output": json.dumps(body, indent=2),
             }
         ]
-        task_proofs[contract] = {"task": task, "output_rows": output_rows}
+        task_proofs[contract] = {
+            "task": {
+                "id": task_id,
+                "project_id": PROJECT_ID,
+                "template_id": task["template_id"],
+                "commit_hash": PUBLIC_SHA,
+                "status": "success",
+                "created": task["created"],
+                "start": task["start"],
+                "end": task["end"],
+                "launch": launch,
+            },
+            "receipt": body,
+        }
         launches[contract] = launch
         task_ids[contract] = task_id
     return {
@@ -140,7 +170,9 @@ def _chain_fixture(*, old_backup: bool = False):
         "expected_task_ids": task_ids,
         "expected_launches": launches,
         "task_proofs": task_proofs,
-        "manifest": json.dumps(manifest),
+        "artifact_fingerprint": artifact,
+        "private_copy_selector": copy_selector,
+        "expected_copy_storage_id": copy_store,
     }
 
 
@@ -212,6 +244,18 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
         )["nic_count"]
         == 0
     )
+    restored = copy.deepcopy(good)
+    restored["data"]["description"] = "source snapshot description"
+    restored["data"]["onboot"] = 1
+    restored["data"]["startup"] = "order=1"
+    assert restore.validate_target_config(
+        restored,
+        target_vmid=910001,
+        marker=None,
+        isolated=False,
+        expected_disk_keys=["scsi0"],
+        storage_id="local",
+    )["nic_count"] == 0
     for key, value in (
         ("net0", "virtio=aa,bridge=vmbr0"),
         ("hostpci0", "0000:02:00.0"),
@@ -275,9 +319,7 @@ def test_prerequisite_chain_authenticates_task_order_links_and_artifact():
 
 def test_prerequisite_chain_rejects_link_forgery_duplicate_tasks_and_stale_artifact():
     broken_link = _chain_fixture()
-    broken_link["task_proofs"][CONTRACTS[2]]["output_rows"][0]["output"] = broken_link[
-        "task_proofs"
-    ][CONTRACTS[2]]["output_rows"][0]["output"].replace('"verify_task_id": 101', '"verify_task_id": 999')
+    broken_link["task_proofs"][CONTRACTS[2]]["receipt"]["evidence"]["verify_task_id"] = 999
     with pytest.raises(restore.Refusal):
         restore.verify_prerequisite_chain(broken_link)
 
@@ -287,5 +329,39 @@ def test_prerequisite_chain_rejects_link_forgery_duplicate_tasks_and_stale_artif
         restore.verify_prerequisite_chain(repeated_task)
 
     stale = _chain_fixture(old_backup=True)
-    with pytest.raises(pbs_receipts.Refusal, match="receipt_stale"):
+    with pytest.raises(restore.Refusal, match="artifact_stale"):
         restore.verify_prerequisite_chain(stale)
+
+
+def test_prerequisite_chain_requires_the_private_copy_selector_and_storage():
+    mismatch = _chain_fixture()
+    mismatch["private_copy_selector"] = dict(mismatch["private_copy_selector"], size_bytes=301)
+    with pytest.raises(restore.Refusal, match="task_chain_invalid"):
+        restore.verify_prerequisite_chain(mismatch)
+    undeclared_store = _chain_fixture()
+    undeclared_store["expected_copy_storage_id"] = "other-store"
+    with pytest.raises(restore.Refusal, match="task_chain_invalid"):
+        restore.verify_prerequisite_chain(undeclared_store)
+
+
+def test_cleanup_keeps_historical_and_current_private_inventory_pins_independent():
+    pins = {
+        "restore_launch_private_sha": "a" * 40,
+        "restore_receipt_private_sha": "a" * 40,
+        "current_private_sha": "b" * 40,
+        "current_provenance_private_sha": "b" * 40,
+        "current_inventory_provenance": "exact_bytes_match",
+        "current_inventory_fingerprint": "c" * 64,
+    }
+    result = restore.verify_cleanup_inventory_pins(pins)
+    assert result["status"] == "verified"
+    assert result["historical_private_sha"] == "a" * 40
+    assert result["current_private_sha"] == "b" * 40
+    assert result["pins_are_independent"] is True
+
+    wrong_restore_pin = dict(pins, restore_receipt_private_sha="d" * 40)
+    with pytest.raises(restore.Refusal, match="restore_receipt_invalid"):
+        restore.verify_cleanup_inventory_pins(wrong_restore_pin)
+    wrong_current_pin = dict(pins, current_provenance_private_sha="e" * 40)
+    with pytest.raises(restore.Refusal, match="restore_receipt_invalid"):
+        restore.verify_cleanup_inventory_pins(wrong_current_pin)

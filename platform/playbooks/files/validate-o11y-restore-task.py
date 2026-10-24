@@ -11,15 +11,19 @@ from __future__ import annotations
 import json
 import sys
 
-from o11y_isolated_restore import Refusal, verify_task_proof
+from o11y_isolated_restore import Refusal, verify_restore_task_proof, verify_task_proof
 
 MAX_INPUT_BYTES = 2 * 1024 * 1024
 
 
 def validate(payload: object) -> dict:
-    if not isinstance(payload, dict) or set(payload) != {"proof"}:
+    if not isinstance(payload, dict):
         raise Refusal("invalid_input")
-    return verify_task_proof(payload["proof"])
+    if set(payload) == {"proof"}:
+        return verify_task_proof(payload["proof"])
+    if set(payload) == {"restore_proof"}:
+        return verify_restore_task_proof(payload["restore_proof"])
+    raise Refusal("invalid_input")
 
 
 def main() -> int:

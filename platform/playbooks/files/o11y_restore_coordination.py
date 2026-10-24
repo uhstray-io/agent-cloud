@@ -1063,6 +1063,14 @@ def _main() -> int:
                 ),
                 payload.get("request"),
             )
+        elif payload.get("mode") == "inspect":
+            _require(set(payload) == {"mode", "metadata_status", "metadata", "data_status", "secret"}, "invalid_input")
+            record, version = read_snapshot(
+                payload.get("metadata_status"), payload.get("metadata"),
+                payload.get("data_status"), payload.get("secret"),
+            )
+            _require(record is not None, "data_missing")
+            result = {"record": record, "version": version}
         elif payload.get("mode") == "readback":
             result = verify_readback(
                 payload.get("plan"),
@@ -1074,6 +1082,22 @@ def _main() -> int:
         elif payload.get("mode") == "build_restore_receipt":
             _require(set(payload) == {"mode", "record", "version", "fields"}, "invalid_input")
             result = build_restore_receipt(payload.get("record"), payload.get("version"), payload.get("fields"))
+        elif payload.get("mode") == "target_identity":
+            _require(set(payload) == {"mode", "target"}, "invalid_input")
+            target = payload["target"]
+            target_ref = {"node": target.get("node"), "vmid": target.get("vmid")}
+            result = {
+                "declaration_fingerprint": declaration_fingerprint(target),
+                "target_fingerprint": target_identity_fingerprint(_target_ref(target_ref)),
+            }
+        elif payload.get("mode") == "effect_fingerprint":
+            _require(set(payload) == {"mode", "action", "evidence", "target", "record"}, "invalid_input")
+            result = {
+                "effect_fingerprint": _action_effect_fingerprint(
+                    payload["action"], payload["evidence"], _target_ref(payload["target"]),
+                    validate_record(payload["record"]),
+                )
+            }
         else:
             raise Refusal("invalid_input")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))

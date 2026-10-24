@@ -17,7 +17,6 @@ import re
 import sqlite3
 import subprocess
 import sys
-import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
@@ -177,23 +176,43 @@ def _safe_path(path: object, *, root: Path, owner_uid: int) -> Path:
     return candidate
 
 
-def _get_json(url: str) -> object:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+def _namespace_http(pid: int, url: str, *, timeout: int = 8, max_bytes: int = MAX_HTTP_BYTES) -> bytes:
+    _require(type(pid) is int and pid > 1, "backend_unavailable")
+    _require(isinstance(url, str) and url.startswith("http://127.0.0.1:"), "backend_unavailable")
+    script = (
+        "import sys,urllib.request;"
+        "r=urllib.request.urlopen(urllib.request.Request(sys.argv[1],headers={'Accept':'application/json'},method='GET'),timeout=int(sys.argv[2]));"
+        "d=r.read(int(sys.argv[3])+1);sys.stdout.buffer.write(d)"
+    )
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            body = response.read(MAX_HTTP_BYTES + 1)
-    except (OSError, urllib.error.URLError, TimeoutError):
+        result = subprocess.run(
+            ["/usr/bin/nsenter", f"--net=/proc/{pid}/ns/net", "--", "/usr/bin/python3", "-c", script,
+             url, str(timeout), str(max_bytes)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout + 2,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired, TimeoutError):
         raise Refusal("backend_unavailable") from None
-    _require(len(body) <= MAX_HTTP_BYTES, "backend_response_invalid")
-    return _json_bytes(body)
+    _require(result.returncode == 0, "backend_unavailable")
+    body = result.stdout
+    _require(len(body) <= max_bytes, "backend_response_invalid")
+    return body
 
 
-def _probe_count(name: str, address: str, epoch: int) -> tuple[int, str]:
+def _get_json(pid: int, url: str) -> object:
+    return _json_bytes(_namespace_http(pid, url))
+
+
+def _probe_count(name: str, pid: int, epoch: int) -> tuple[int, str]:
     end = epoch
     start = max(1, end - WINDOW_SECONDS)
     if name == "prometheus":
         query = f'sum(count_over_time({{__name__!=""}}[24h] @ {end}))'
-        data = _get_json(f"http://{address}:9090/api/v1/query?{urllib.parse.urlencode({'query': query})}")
+        data = _get_json(pid, f"http://127.0.0.1:9090/api/v1/query?{urllib.parse.urlencode({'query': query})}")
         _require(
             isinstance(data, dict) and data.get("status") == "success" and isinstance(data.get("data"), dict),
             "backend_response_invalid",
@@ -205,7 +224,8 @@ def _probe_count(name: str, address: str, epoch: int) -> tuple[int, str]:
     if name == "loki":
         query = f' sum(count_over_time({{job=~".+"}}[24h] @ {end})) '
         data = _get_json(
-            f"http://{address}:3100/loki/api/v1/query?{urllib.parse.urlencode({'query': query, 'time': str(end)})}"
+            pid,
+            f"http://127.0.0.1:3100/loki/api/v1/query?{urllib.parse.urlencode({'query': query, 'time': str(end)})}"
         )
         _require(
             isinstance(data, dict) and data.get("status") == "success" and isinstance(data.get("data"), dict),
@@ -218,7 +238,7 @@ def _probe_count(name: str, address: str, epoch: int) -> tuple[int, str]:
     if name == "tempo":
         parameters = {"start": str(start), "end": str(end), "limit": "10"}
         query_string = urllib.parse.urlencode(parameters)
-        data = _get_json(f"http://{address}:3200/api/search?{query_string}")
+        data = _get_json(pid, f"http://127.0.0.1:3200/api/search?{query_string}")
         traces = data.get("traces") if isinstance(data, dict) else None
         _require(isinstance(traces, list) and len(traces) <= 10, "backend_response_invalid")
         summary = {
@@ -239,13 +259,8 @@ def _probe_count(name: str, address: str, epoch: int) -> tuple[int, str]:
             "until": str(end),
             "format": "folded",
         }
-        url = f"http://{address}:4040/pyroscope/render?{urllib.parse.urlencode(parameters)}"
-        request = urllib.request.Request(url, headers={"Accept": "text/plain"}, method="GET")
-        try:
-            with urllib.request.urlopen(request, timeout=8) as response:
-                body = response.read(MAX_HTTP_BYTES + 1)
-        except (OSError, urllib.error.URLError, TimeoutError):
-            raise Refusal("backend_unavailable") from None
+        url = f"http://127.0.0.1:4040/pyroscope/render?{urllib.parse.urlencode(parameters)}"
+        body = _namespace_http(pid, url, max_bytes=MAX_HTTP_BYTES)
         _require(len(body) <= MAX_HTTP_BYTES, "backend_response_invalid")
         lines = [line for line in body.splitlines() if line.strip()]
         count = 0
@@ -341,6 +356,7 @@ def inspect(payload: object) -> dict:
     _require(root.is_absolute() and root != Path("/"), "invalid_input")
     volumes = {}
     containers = {}
+    container_pids = {}
     volume_evidence = []
     container_evidence = []
     for service, (volume, container, destination, _port) in VOLUMES.items():
@@ -387,8 +403,12 @@ def inspect(payload: object) -> dict:
             "container_state_invalid",
         )
         inspected = raw_container[0]
+        container_pid = inspected.get("State", {}).get("Pid")
         _require(
-            inspected.get("Name", "").lstrip("/") == container and inspected.get("State", {}).get("Running") is True,
+            inspected.get("Name", "").lstrip("/") == container
+            and inspected.get("State", {}).get("Running") is True
+            and type(container_pid) is int
+            and container_pid > 1,
             "container_state_invalid",
         )
         mounts = inspected.get("Mounts")
@@ -426,6 +446,7 @@ def inspect(payload: object) -> dict:
             ip.version == 4 and ip.is_private and not ip.is_loopback and not ip.is_link_local, "container_state_invalid"
         )
         containers[service] = str(ip)
+        container_pids[service] = container_pid
         container_evidence.append(
             {
                 "service": service,
@@ -438,7 +459,7 @@ def inspect(payload: object) -> dict:
     database_count, database_fingerprint = _sqlite_integrity(volumes["grafana"], owner_uid=account.pw_uid)
     backends = {}
     for name in sorted(BACKENDS):
-        count, proof = _probe_count(name, containers[name], epoch)
+        count, proof = _probe_count(name, container_pids[name], epoch)
         mode = normalized[name]["expectation"]
         _require((count > 0 if mode == "present" else count == 0), "historical_data_missing")
         backends[name] = {
