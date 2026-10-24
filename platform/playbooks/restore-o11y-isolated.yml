@@ -1463,6 +1463,7 @@
       no_log: true
 
     - name: Fingerprint stop effect and commit it to the journal
+      no_log: true
       block:
         - name: Compute stop effect fingerprint
           ansible.builtin.command:
@@ -1492,7 +1493,6 @@
               handle_type: upid
               handle: "{{ _restore_stop_submit.json.data }}"
               effect_fingerprint: "{{ (_restore_stop_effect_fp_raw.stdout | from_json).effect_fingerprint }}"
-      no_log: true
 
     - name: Build the private identity-bearing v3 restore receipt
       ansible.builtin.command:
