@@ -30,7 +30,9 @@
       X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
     body_format: json
     body:
-      policy: "{{ lookup('file', _policy_file) }}"
+      # Preserve the reviewed policy bytes, including its trailing newline, so
+      # a subsequent exact readback comparison sees what this task published.
+      policy: "{{ lookup('file', _policy_file, rstrip=false) }}"
     status_code: [200, 204]
   delegate_to: localhost
   when: not ansible_check_mode
