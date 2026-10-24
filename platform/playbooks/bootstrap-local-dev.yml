@@ -717,6 +717,31 @@
       # A write (sudo mkdir + chmod 1777 on the VM): skipped under --check.
       when: not ansible_check_mode
 
+    # config.json holds Semaphore's access_key_encryption: the key for every encrypted environment
+    # input in its database. A container created before SEMAPHORE_CONFIG_PATH kept it in the
+    # container layer, and the recreate below removes that layer. The copy onto the data volume
+    # must therefore happen BEFORE the recreate. Output is a status word; the key is never printed.
+    - name: "Carry an existing Semaphore encryption key onto the data volume"
+      ansible.builtin.shell: |
+        if ! podman container exists {{ _sem_name }}; then
+          echo absent
+          exit 0
+        fi
+        if [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _sem_name }})" != "running" ]; then
+          podman start {{ _sem_name }} >/dev/null
+          echo started
+        fi
+        podman exec {{ _sem_name }} sh -c '
+          t=/var/lib/semaphore/config/config.json
+          if [ -f "$t" ]; then echo present
+          elif [ -f /etc/semaphore/config.json ]; then
+            mkdir -p /var/lib/semaphore/config && cp /etc/semaphore/config.json "$t" && chmod 600 "$t" && echo carried
+          else echo none; fi'
+      register: _sem_key_carry
+      changed_when: "'carried' in _sem_key_carry.stdout_lines or 'started' in _sem_key_carry.stdout_lines"
+      failed_when: "_sem_key_carry.rc != 0 or (_sem_key_carry.stdout_lines | last | default('')) not in ['absent', 'present', 'carried']"
+      when: not ansible_check_mode
+
     - name: "Recreate Semaphore if a required mount, label=disable, the host port or the image differs"
       ansible.builtin.shell: |
         set -o pipefail
@@ -784,6 +809,10 @@
       changed_when: "_sem_recreate.stdout | trim == 'recreated'"
       when: not ansible_check_mode
 
+    # config.json holds the key that decrypts the database's encrypted environment inputs. Pointing
+    # SEMAPHORE_CONFIG_PATH at the data volume keeps it beside the database it encrypts, so a recreate
+    # keeps the same key. Before this, a recreate minted a new key and orphaned every seeded input
+    # (2026-10-24 incident). The carry task above the recreate moves an older container's key here.
     - name: "Start local Semaphore"
       ansible.builtin.shell: |
         if ! podman container exists {{ _sem_name }}; then
@@ -797,6 +826,7 @@
             --security-opt label=disable \
             {{ _sem_oidc_flags }} \
             -e SEMAPHORE_DB_DIALECT=sqlite \
+            -e SEMAPHORE_CONFIG_PATH=/var/lib/semaphore/config \
             -e SEMAPHORE_ADMIN={{ _sem_admin }} \
             -e SEMAPHORE_ADMIN_PASSWORD={{ _sem_admin_password }} \
             -e SEMAPHORE_ADMIN_NAME="Local Admin" \
