@@ -41,13 +41,27 @@
   changed_when: true
   no_log: true
 
+- name: Parse the generated copy restore Reader token using its documented result envelope
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", parse-generated-token]
+    stdin: >-
+      {{ {'stdout': _pbs_restore_reader_generated_token.stdout,
+          'expected_token_id': 'o11y-copy-restore@pbs!pve-restore'} | to_json }}
+  register: _pbs_restore_reader_generated_token_parsed
+  when: _pbs_restore_reader_identity_action == 'create'
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  no_log: true
+
 - name: Keep the generated copy-restore-reader token only in protected task state
   ansible.builtin.set_fact:
-    _pbs_restore_reader_token_secret: "{{ (_pbs_restore_reader_generated_token.stdout | from_json).value }}"
+    _pbs_restore_reader_token_secret: "{{ (_pbs_restore_reader_generated_token_parsed.stdout | from_json).value }}"
     _pbs_restore_reader_token_record:
       user: o11y-copy-restore@pbs
       token_id: o11y-copy-restore@pbs!pve-restore
-      secret: "{{ (_pbs_restore_reader_generated_token.stdout | from_json).value }}"
+      secret: "{{ (_pbs_restore_reader_generated_token_parsed.stdout | from_json).value }}"
       datastore: o11y
       fingerprint: "{{ _pbs_backup_fingerprint }}"
   when: _pbs_restore_reader_identity_action == 'create'

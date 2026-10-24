@@ -42,13 +42,27 @@
   changed_when: true
   no_log: true
 
+- name: Parse the generated copy manager token using its documented result envelope
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", parse-generated-token]
+    stdin: >-
+      {{ {'stdout': _pbs_manager_generated_token.stdout,
+          'expected_token_id': 'o11y-copy-manager@pbs!copy-api'} | to_json }}
+  register: _pbs_manager_generated_token_parsed
+  when: _pbs_manager_identity_action == 'create'
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  no_log: true
+
 - name: Retain the generated manager token only in protected task state
   ansible.builtin.set_fact:
-    _pbs_manager_token_secret: "{{ (_pbs_manager_generated_token.stdout | from_json).value }}"
+    _pbs_manager_token_secret: "{{ (_pbs_manager_generated_token_parsed.stdout | from_json).value }}"
     _pbs_manager_token_record:
       user: o11y-copy-manager@pbs
       token_id: o11y-copy-manager@pbs!copy-api
-      secret: "{{ (_pbs_manager_generated_token.stdout | from_json).value }}"
+      secret: "{{ (_pbs_manager_generated_token_parsed.stdout | from_json).value }}"
       datastore: o11y
       fingerprint: "{{ _pbs_manager_certificate_fingerprint }}"
   when: _pbs_manager_identity_action == 'create'
