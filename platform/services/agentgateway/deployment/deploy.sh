@@ -147,12 +147,13 @@ step_decide() {
   info "Step 3: Comparing the rendered inputs with the running gateway..."
   WANT_DIGEST=$(inputs_digest)
   RECREATE_REASON=""
+  RECREATE_REASON_CODE=""
   local running have names name ref image_now image_run
   running=$(_inspect '{{.State.Running}}') || running=""
-  if [ -z "$running" ]; then RECREATE_REASON="no gateway container"; return 0; fi
-  if [ "$running" != "true" ]; then RECREATE_REASON="gateway container not running"; return 0; fi
+  if [ -z "$running" ]; then RECREATE_REASON="no gateway container"; RECREATE_REASON_CODE="gateway-state-unavailable"; return 0; fi
+  if [ "$running" != "true" ]; then RECREATE_REASON="gateway container not running"; RECREATE_REASON_CODE="gateway-not-running"; return 0; fi
   have=$(_inspect "{{ index .Config.Labels \"${INPUTS_LABEL}\" }}") || have=""
-  if [ "$have" != "$WANT_DIGEST" ]; then RECREATE_REASON="inputs changed"; return 0; fi
+  if [ "$have" != "$WANT_DIGEST" ]; then RECREATE_REASON="inputs changed"; RECREATE_REASON_CODE="inputs-not-matched"; return 0; fi
   # A re-pulled tag moves to a new image without changing any input file, for EVERY service:
   # agentgateway-db runs a mutable tag too, so comparing only the gateway would leave the db on
   # the old image and report unchanged. `up -d --force-recreate` recreates the whole project.
@@ -161,7 +162,7 @@ step_decide() {
   # did not match, and an empty comparison is not a match.
   case $'\n'"${names}"$'\n' in
     *$'\n'agentgateway$'\n'*) ;;
-    *) RECREATE_REASON="project containers not listed"; return 0 ;;
+    *) RECREATE_REASON="project containers not listed"; RECREATE_REASON_CODE="project-enumeration-unavailable"; return 0 ;;
   esac
   while IFS= read -r name; do
     [ -n "$name" ] || continue
@@ -169,12 +170,12 @@ step_decide() {
     image_run=$($CONTAINER_ENGINE inspect --format '{{.Image}}' "$name" 2>/dev/null) || image_run=""
     image_now=$($CONTAINER_ENGINE image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || image_now=""
     if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then
-      RECREATE_REASON="image changed: ${name}"; return 0
+      RECREATE_REASON="image changed: ${name}"; RECREATE_REASON_CODE="image-not-matched"; return 0
     fi
   done <<< "$names"
   # Matching inputs on a gateway that does not answer readiness is not converged: a run whose
   # recreate never became ready left the new label behind.
-  if ! _ready_once; then RECREATE_REASON="readiness not answering"; return 0; fi
+  if ! _ready_once; then RECREATE_REASON="readiness not answering"; RECREATE_REASON_CODE="readiness-unproven"; return 0; fi
   info "  running gateway matches the rendered inputs and image."
 }
 
@@ -243,6 +244,11 @@ main() {
   step_verify_rendered
   if [ "$VERIFY_ONLY" = true ]; then
     step_decide
+    if [ -n "$RECREATE_REASON_CODE" ]; then
+      echo "runtime-inputs-reason: ${RECREATE_REASON_CODE}"
+    else
+      echo "runtime-inputs-reason: matched"
+    fi
     if [ -n "$RECREATE_REASON" ]; then
       echo "runtime-inputs-result: refused"
       error "The running gateway does not match the current rendered inputs (${RECREATE_REASON})."
