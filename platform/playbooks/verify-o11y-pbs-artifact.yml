@@ -306,8 +306,8 @@
         pbs_receipt_public_sha: "{{ expected_repository_sha }}"
         pbs_receipt_private_sha: "{{ site_config_base_sha }}"
         pbs_receipt_inventory_fingerprint: "{{ hostvars['localhost']._pbs_inventory_provenance.inventory_fingerprint }}"
-        pbs_receipt_source_fingerprint: "{{ hostvars['localhost']._pbs_backup_receipt.source_fingerprint }}"
-        pbs_receipt_artifact_fingerprint: "{{ hostvars['localhost']._pbs_backup_receipt.artifact_fingerprint }}"
+        pbs_receipt_source_fingerprint: "{{ _pbs_backup_receipt.source_fingerprint }}"
+        pbs_receipt_artifact_fingerprint: "{{ _pbs_backup_receipt.artifact_fingerprint }}"
         pbs_receipt_observed_start: "{{ _pbs_verify_start }}"
         pbs_receipt_observed_end: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
         pbs_receipt_evidence:

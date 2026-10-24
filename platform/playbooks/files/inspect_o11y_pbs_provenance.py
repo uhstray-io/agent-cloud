@@ -107,6 +107,8 @@ def evaluate(payload: object) -> dict[str, object]:
             raise Refusal("invalid_input")
         if payload.get("private_tip_sha") != private_sha:
             raise Refusal("branch_tip_mismatch")
+        if type(payload.get("inventory_source_count")) is not int or payload["inventory_source_count"] != 1:
+            raise Refusal("inventory_source_unknown")
         if not TREE_ENTRY.fullmatch(payload.get("private_tree_entry", "")):
             raise Refusal("inventory_source_unknown")
         project_id, repository_id = payload.get("project_id"), payload.get("repository_id")

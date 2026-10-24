@@ -56,8 +56,8 @@
 
 - name: Reuse the OpenBao-owned copy-reader token on the existing identity state
   ansible.builtin.set_fact:
-    _pbs_reader_token_secret: "{{ hostvars['localhost']._pbs_saved_reader_token_record.secret }}"
-    _pbs_reader_token_record: "{{ hostvars['localhost']._pbs_saved_reader_token_record }}"
+    _pbs_reader_token_secret: "{{ hostvars['localhost']._pbs_reader_saved_record.secret }}"
+    _pbs_reader_token_record: "{{ hostvars['localhost']._pbs_reader_saved_record }}"
   when: _pbs_reader_identity_action == 'reuse'
   no_log: true
 

@@ -34,7 +34,11 @@ COPY_MANAGER_ACL_ROLE_PATHS = {
     "remote-root": ("RemoteAdmin", 0),
     "remote-item": ("RemoteAdmin", 0),
     "remote-datastore": ("RemoteSyncOperator", 0),
-    "destination-datastore": (("DatastoreAudit", 0), ("DatastoreBackup", 0)),
+    "destination-datastore": (
+        ("DatastoreAudit", 0),
+        ("DatastoreBackup", 0),
+        ("DatastoreReader", 0),
+    ),
 }
 SUPPORTED_VERSION = (4, 2, 8, 1)
 MAX_API_RESPONSE_BYTES = 1024 * 1024
@@ -381,7 +385,12 @@ def validate_copy_manager_permissions(
         "/remote": {"Remote.Audit": False, "Remote.Modify": False, "Remote.Read": False},
         f"/remote/{remote}": {"Remote.Audit": False, "Remote.Modify": False, "Remote.Read": False},
         f"/remote/{remote}/{DATASTORE}": {"Remote.Audit": False, "Remote.Read": False},
-        DATASTORE_PATH: {"Datastore.Audit": False, "Datastore.Backup": False},
+        DATASTORE_PATH: {
+            "Datastore.Audit": False,
+            "Datastore.Backup": False,
+            "Datastore.Read": False,
+            "Datastore.Verify": False,
+        },
     }
     for label, value in (("user", user_permissions), ("token", token_permissions)):
         actual = _copy_manager_permission_map(value, f"copy-manager {label}")
@@ -393,8 +402,7 @@ def validate_copy_manager_permissions(
         ("/remote", *COPY_MANAGER_ACL_ROLE_PATHS["remote-root"]),
         (f"/remote/{remote}", *COPY_MANAGER_ACL_ROLE_PATHS["remote-item"]),
         (f"/remote/{remote}/{DATASTORE}", *COPY_MANAGER_ACL_ROLE_PATHS["remote-datastore"]),
-        (DATASTORE_PATH, *COPY_MANAGER_ACL_ROLE_PATHS["destination-datastore"][0]),
-        (DATASTORE_PATH, *COPY_MANAGER_ACL_ROLE_PATHS["destination-datastore"][1]),
+        *((DATASTORE_PATH, *grant) for grant in COPY_MANAGER_ACL_ROLE_PATHS["destination-datastore"]),
     ]
     expected_rows = {
         (auth_id, path, role, propagate)
@@ -421,7 +429,12 @@ def plan_copy_manager_acl(
         "/remote": {"Remote.Audit": False, "Remote.Modify": False, "Remote.Read": False},
         f"/remote/{remote}": {"Remote.Audit": False, "Remote.Modify": False, "Remote.Read": False},
         f"/remote/{remote}/{DATASTORE}": {"Remote.Audit": False, "Remote.Read": False},
-        DATASTORE_PATH: {"Datastore.Audit": False, "Datastore.Backup": False},
+        DATASTORE_PATH: {
+            "Datastore.Audit": False,
+            "Datastore.Backup": False,
+            "Datastore.Read": False,
+            "Datastore.Verify": False,
+        },
     }
     for label, value in (("user", user_permissions), ("token", token_permissions)):
         actual = _copy_manager_permission_map(value, f"copy-manager {label}")
@@ -437,8 +450,7 @@ def plan_copy_manager_acl(
         ("/remote", *COPY_MANAGER_ACL_ROLE_PATHS["remote-root"]),
         (f"/remote/{remote}", *COPY_MANAGER_ACL_ROLE_PATHS["remote-item"]),
         (f"/remote/{remote}/{DATASTORE}", *COPY_MANAGER_ACL_ROLE_PATHS["remote-datastore"]),
-        (DATASTORE_PATH, *COPY_MANAGER_ACL_ROLE_PATHS["destination-datastore"][0]),
-        (DATASTORE_PATH, *COPY_MANAGER_ACL_ROLE_PATHS["destination-datastore"][1]),
+        *((DATASTORE_PATH, *grant) for grant in COPY_MANAGER_ACL_ROLE_PATHS["destination-datastore"]),
     ]
     expected_rows = {
         (auth_id, path, role, propagate)
@@ -570,6 +582,7 @@ def _copy_api_request_shape(payload: Any) -> tuple[str, str, dict[str, str] | No
         if operation == "remote-update":
             allowed_payload_keys.update({"source_host", "source_fingerprint"})
         if operation == "sync-update":
+            remote_id = _safe_api_identifier(payload.get("remote_id"), "remote name")
             allowed_payload_keys.add("remote_id")
         path = f"/api2/json/config/{'remote' if path_kind == 'remote-item' else 'sync'}/{identifier}"
     else:
@@ -744,8 +757,8 @@ def read_snapshot_manifest(*, url: str, expected_host: str, fingerprint: str,
                            auth_id: str, secret: str, backup_id: str,
                            backup_time: int, include_files: bool = False) -> dict[str, Any]:
     """Read exactly one manifest over a same-connection pinned PBS reader session."""
-    _require(auth_id == COPY_READER_TOKEN_ID,
-             "PBS manifest read must use the independent source Reader identity.")
+    _require(auth_id in {COPY_READER_TOKEN_ID, COPY_MANAGER_TOKEN_ID},
+             "PBS manifest read requires a dedicated source Reader or destination manager identity.")
     _require(isinstance(backup_id, str) and re.fullmatch(r"[1-9][0-9]{0,8}", backup_id) is not None
              and type(backup_time) is int and backup_time > 0,
              "PBS manifest snapshot selector is malformed.")

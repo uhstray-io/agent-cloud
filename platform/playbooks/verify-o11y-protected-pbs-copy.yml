@@ -288,9 +288,9 @@
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-manager-permissions]
         stdin: >-
-          {{ {'user_permissions': hostvars[_pbs_copy_host]._pbs_copy_acl_data.user_permissions,
-              'token_permissions': hostvars[_pbs_copy_host]._pbs_copy_acl_data.token_permissions,
-              'acl_rows': hostvars[_pbs_copy_host]._pbs_copy_acl_data.acl_rows,
+          {{ {'user_permissions': hostvars['localhost']._pbs_copy_acl_data.user_permissions,
+              'token_permissions': hostvars['localhost']._pbs_copy_acl_data.token_permissions,
+              'acl_rows': hostvars['localhost']._pbs_copy_acl_data.acl_rows,
               'remote_id': _pbs_remote} | to_json }}
         stdin_add_newline: false
       register: _pbs_copy_acl_validation
@@ -453,7 +453,7 @@
           {{ {'api_host': _pbs_copy_api_host,
               'token_id': _pbs_copy_secret_record.o11y_copy_manager_token_id,
               'certificate_fingerprint': _pbs_copy_secret_record.o11y_copy_manager_fingerprint | lower | replace(':', ''),
-              'roles': ['DatastoreAudit', 'DatastoreBackup', 'RemoteAdmin', 'RemoteSyncOperator'],
+              'roles': ['DatastoreAudit', 'DatastoreBackup', 'DatastoreReader', 'RemoteAdmin', 'RemoteSyncOperator'],
               'prune': false} | to_json | hash('sha256') }}
         _pbs_destination_storage_fingerprint: >-
           {{ {'storage_id': _pbs_copy_store,

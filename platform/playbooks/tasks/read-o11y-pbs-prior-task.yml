@@ -85,7 +85,9 @@
   ansible.builtin.assert:
     that:
       - _pbs_task_validation_raw.rc == 0
-      - (_pbs_task_validation_raw.stdout | from_json).receipt.status == 'complete'
+      - >-
+        (_pbs_task_validation_raw.stdout | from_json).receipt.status ==
+        ('ready' if _pbs_task_contract == 'o11y-pbs-copy-ready/v1' else 'complete')
       - (_pbs_task_validation_raw.stdout | from_json).task_metadata.id == _pbs_task_id | int
     fail_msg: "The declared PBS predecessor task has no fresh, exact completed receipt."
     quiet: true

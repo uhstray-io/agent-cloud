@@ -19,7 +19,8 @@
           - estate_coverage_semaphore_repository_id is integer
           - estate_coverage_semaphore_repository_id is not boolean
           - estate_coverage_semaphore_repository_id > 0
-          - ansible_inventory_sources | select('file') | list | length == 1
+          - ansible_inventory_sources | length == 1
+          - ansible_inventory_sources[0] is file
         fail_msg: "PBS provenance requires one reviewed production inventory source and fixed private selectors."
         quiet: true
 
@@ -190,6 +191,7 @@
             stdin: >-
               {{ {'public_sha': expected_repository_sha,
                   'private_sha': site_config_base_sha,
+                  'inventory_source_count': ansible_inventory_sources | length,
                   'private_tip_sha': (_pbs_prov_private_tip.stdout.split()[0]
                     if _pbs_prov_private_tip.rc == 0
                     and _pbs_prov_private_tip.stdout.splitlines() | length == 1
@@ -198,7 +200,7 @@
                     else ''),
                   'private_tree_entry': (_pbs_prov_tree.stdout | trim if _pbs_prov_tree.rc == 0 else ''),
                   'private_inventory': _pbs_prov_private_inventory.stdout | default(''),
-                  'runtime_inventory': query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list)) | first,
+                  'runtime_inventory': query('ansible.builtin.file', ansible_inventory_sources[0], rstrip=false) | first,
                   'project_id': estate_coverage_semaphore_project_id,
                   'repository_id': estate_coverage_semaphore_repository_id,
                   'template_name': _pbs_provenance_template_name,

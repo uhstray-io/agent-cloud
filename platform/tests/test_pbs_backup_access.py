@@ -163,6 +163,22 @@ class CopyApiRequestTests(TestCase):
         with self.assertRaisesRegex(pbs.Refusal, "must require verified"):
             pbs._copy_api_request_shape(unverified)
 
+    def test_sync_update_binds_existing_remote_without_unbound_state(self):
+        method, path, body = pbs._copy_api_request_shape({
+            "operation": "sync-update",
+            "sync_job_id": "o11y-copy-sync",
+            "remote_id": "o11y-primary",
+            "body": {
+                "remote": "o11y-primary",
+                "remote-store": "o11y",
+                "owner": pbs.COPY_MANAGER_TOKEN_ID,
+                "remove-vanished": False,
+                "verified-only": True,
+            },
+        })
+        self.assertEqual((method, path), ("PUT", "/api2/json/config/sync/o11y-copy-sync"))
+        self.assertEqual(body["remote"], "o11y-primary")
+
     def test_arbitrary_paths_methods_and_unknown_config_fields_are_rejected(self):
         for payload in (
             {"operation": "delete-sync", "path": "/api2/json/config/sync/oops"},
@@ -311,7 +327,7 @@ class CopyApiRequestTests(TestCase):
         for backup_id, backup_time, auth_id in (
             ("121", 1792594800, pbs.COPY_READER_TOKEN_ID),
             ("120", 1792594801, pbs.COPY_READER_TOKEN_ID),
-            ("120", 1792594800, pbs.COPY_MANAGER_TOKEN_ID),
+            ("120", 1792594800, pbs.TOKEN_ID),
         ):
             with (
                 self.subTest(backup_id=backup_id, backup_time=backup_time, auth_id=auth_id),
@@ -327,6 +343,18 @@ class CopyApiRequestTests(TestCase):
                     backup_id=backup_id,
                     backup_time=backup_time,
                 )
+
+        with patch.object(pbs, "_PinnedHTTPSConnection", PinnedConnection):
+            result = pbs.read_snapshot_manifest(
+                url="https://pbs-copy.internal.test",
+                expected_host="pbs-copy.internal.test",
+                fingerprint="b" * 64,
+                auth_id=pbs.COPY_MANAGER_TOKEN_ID,
+                secret="protected-manager-secret",
+                backup_id="120",
+                backup_time=1792594800,
+            )
+        self.assertEqual(result["artifact_fingerprint"], pbs.artifact_fingerprint(manifest))
 
     def test_endpoint_rejects_paths_queries_and_credential_bearing_urls(self):
         for url in (
@@ -505,7 +533,12 @@ class CopyManagerIdentityTests(TestCase):
                 "Remote.Audit": False, "Remote.Modify": False, "Remote.Read": False
             },
             f"/remote/{self.remote_id}/o11y": {"Remote.Audit": False, "Remote.Read": False},
-            "/datastore/o11y": {"Datastore.Audit": False, "Datastore.Backup": False},
+            "/datastore/o11y": {
+                "Datastore.Audit": False,
+                "Datastore.Backup": False,
+                "Datastore.Read": False,
+                "Datastore.Verify": False,
+            },
         }
         self.acls = [
             {"ugid": auth_id, "path": path, "roleid": role, "propagate": 0}
@@ -516,6 +549,7 @@ class CopyManagerIdentityTests(TestCase):
                 (f"/remote/{self.remote_id}/o11y", "RemoteSyncOperator"),
                 ("/datastore/o11y", "DatastoreAudit"),
                 ("/datastore/o11y", "DatastoreBackup"),
+                ("/datastore/o11y", "DatastoreReader"),
             )
         ]
 
@@ -566,7 +600,7 @@ class CopyManagerIdentityTests(TestCase):
         result = pbs.plan_copy_manager_acl(
             user_permissions={}, token_permissions={}, acl_rows=[], remote_id=self.remote_id
         )
-        self.assertEqual(len(result["missing"]), 10)
+        self.assertEqual(len(result["missing"]), 12)
         self.assertEqual(
             pbs.plan_copy_manager_acl(
                 user_permissions=self.expected,
@@ -576,6 +610,48 @@ class CopyManagerIdentityTests(TestCase):
             )["missing"],
             [],
         )
+
+    def test_existing_manager_gets_only_the_scoped_manifest_read_grant(self):
+        old_permissions = {
+            **self.expected,
+            "/datastore/o11y": {"Datastore.Audit": False, "Datastore.Backup": False},
+        }
+        old_acls = [row for row in self.acls if row["roleid"] != "DatastoreReader"]
+        result = pbs.plan_copy_manager_acl(
+            user_permissions=old_permissions,
+            token_permissions=old_permissions,
+            acl_rows=old_acls,
+            remote_id=self.remote_id,
+        )
+        self.assertEqual(
+            result["missing"],
+            [
+                {"auth_id": pbs.COPY_MANAGER_USER_ID, "path": pbs.DATASTORE_PATH, "role": "DatastoreReader"},
+                {"auth_id": pbs.COPY_MANAGER_TOKEN_ID, "path": pbs.DATASTORE_PATH, "role": "DatastoreReader"},
+            ],
+        )
+
+    def test_manager_read_grant_rejects_parent_scope_or_delete_privileges(self):
+        for unsafe in (
+            {**self.expected, "/datastore": {"Datastore.Read": False}},
+            {
+                **self.expected,
+                "/datastore/o11y": {
+                    "Datastore.Audit": False,
+                    "Datastore.Backup": False,
+                    "Datastore.Read": False,
+                    "Datastore.Verify": False,
+                    "Datastore.Prune": False,
+                },
+            },
+        ):
+            with self.subTest(unsafe=unsafe), self.assertRaises(pbs.Refusal):
+                pbs.plan_copy_manager_acl(
+                    user_permissions=unsafe,
+                    token_permissions=self.expected,
+                    acl_rows=self.acls,
+                    remote_id=self.remote_id,
+                )
 
 
 class PermissionTests(TestCase):
@@ -784,6 +860,8 @@ class CopyReaderIdentityTests(TestCase):
         ])
         self.assertEqual(grant[7:], ["--propagate", "0"])
         self.assertNotIn("Datastore.Prune", task_text)
+        self.assertIn("DatastoreReader", task_text)
+        self.assertIn("/datastore/o11y", task_text)
         self.assertNotIn("proxmox-backup-manager remote", task_text)
         copy_text = (ROOT / "playbooks" / "configure-o11y-pbs-copy-access.yml").read_text()
         self.assertIn("hosts: pbs_copy_svc", copy_text)

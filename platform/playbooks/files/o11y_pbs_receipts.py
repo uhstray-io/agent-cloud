@@ -542,8 +542,15 @@ def _objects(text: str):
                     value = json.loads(text[start:index + 1], object_pairs_hook=_unique_object)
                     yield value
                     if isinstance(value, dict):
-                        for nested in value.values():
-                            if isinstance(nested, str):
+                        # These are the two concrete output wrappers used by the
+                        # fixed producers: set_stats and Ansible debug. Do not
+                        # recursively search arbitrary mappings that may contain
+                        # unrelated or caller-controlled nested objects.
+                        for key in ("o11y_pbs_receipt", "msg"):
+                            nested = value.get(key)
+                            if isinstance(nested, Mapping):
+                                yield nested
+                            elif isinstance(nested, str):
                                 yield from _objects(nested)
                 except (json.JSONDecodeError, UnicodeError, Refusal):
                     pass

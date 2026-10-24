@@ -24,12 +24,15 @@ def payload() -> dict[str, object]:
         "private_tree_entry": f"100644 blob {'c' * 40}\tinventory/production.yml",
         "private_inventory": INVENTORY,
         "runtime_inventory": INVENTORY,
+        "inventory_source_count": 1,
         "project_id": 1,
         "repository_id": 2,
         "template_name": "Backup o11y to PBS (Dev)",
         "playbook": "platform/playbooks/backup-o11y-to-pbs.yml",
         "semaphore_statuses": [200, 200, 200],
-        "inventories": [{"id": 3, "project_id": 1, "name": "production", "type": "static-yaml", "inventory": INVENTORY}],
+        "inventories": [
+            {"id": 3, "project_id": 1, "name": "production", "type": "static-yaml", "inventory": INVENTORY}
+        ],
         "templates": [{
             "id": 4,
             "project_id": 1,
@@ -58,10 +61,19 @@ def test_exact_reviewed_bytes_and_current_config_return_only_hashes() -> None:
     assert INVENTORY not in str(result)
 
 
+def test_provenance_task_requires_one_total_source_and_preserves_file_bytes() -> None:
+    task_path = Path(__file__).resolve().parents[1] / "playbooks/tasks/o11y-pbs-inventory-provenance.yml"
+    task = task_path.read_text()
+    assert "ansible_inventory_sources | length == 1" in task
+    assert "ansible_inventory_sources[0] is file" in task
+    assert "query('ansible.builtin.file', ansible_inventory_sources[0], rstrip=false)" in task
+
+
 @pytest.mark.parametrize(
     ("update", "reason", "status"),
     [
         (lambda value: value.update(private_tip_sha="d" * 40), "branch_tip_mismatch", "unavailable"),
+        (lambda value: value.update(inventory_source_count=2), "inventory_source_unknown", "unavailable"),
         (
             lambda value: value.update(
                 private_tree_entry="120000 blob " + "c" * 40 + "\tinventory/production.yml"
