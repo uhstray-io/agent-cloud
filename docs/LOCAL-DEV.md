@@ -180,7 +180,10 @@ policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-loc
   `bootstrap-local-dev.yml` generates (`_inv_ini`), not `platform/inventory/local-dev.yml`,
   so `stop_extra_containers` for `netbox-local` is declared in both. An
   existing local Semaphore picks it up when `make local-bootstrap` re-runs its
-  "Create or update local inventory" step.
+  "Create or update local inventory" step. That step registers Ansible's `--export`
+  YAML of the rendered INI as a `static-yaml` record with a literal
+  `all.vars.openbao_addr`, because the seed templates' address check reads that
+  address from the inventory file.
 
 **Stopping the foundation.** `make local-service-down` cannot stop the genesis foundation:
 the local Semaphore cannot stop itself, and the foundation is genesis-managed, not

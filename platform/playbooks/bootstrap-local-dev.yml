@@ -1115,7 +1115,7 @@
     - name: "Refuse to erase a previously synced local alert destination"
       ansible.builtin.assert:
         that:
-          - _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*=')
+          - _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*[=:]')
         fail_msg: "Existing local alert destination lacks its private projection; rerun the reviewed sync"
         quiet: true
       vars:
@@ -1127,10 +1127,10 @@
       ansible.builtin.assert:
         that:
           - >-
-            _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*=')
+            _existing_o11y_inventory is not search('(?m)^[ \t]*o11y_alert_discord_(guild|channel)_id[ \t]*[=:]')
             or
-            (_existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_guild_id[ \t]*=[ \t]*' ~ _o11y_projection.o11y_alert_discord_guild_id ~ '[ \t]*$')
-             and _existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_channel_id[ \t]*=[ \t]*' ~ _o11y_projection.o11y_alert_discord_channel_id ~ '[ \t]*$'))
+            (_existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_guild_id[ \t]*[=:][ \t]*' ~ _o11y_projection.o11y_alert_discord_guild_id ~ '[ \t]*$')
+             and _existing_o11y_inventory is search('(?m)^[ \t]*o11y_alert_discord_channel_id[ \t]*[=:][ \t]*' ~ _o11y_projection.o11y_alert_discord_channel_id ~ '[ \t]*$'))
         fail_msg: "Stored local alert destination differs from its private projection; rerun the reviewed sync"
         quiet: true
       vars:
@@ -1139,25 +1139,19 @@
         _o11y_projection: "{{ _o11y_projection_raw.content | b64decode | from_json }}"
       when: _o11y_projection_stat.stat.exists
 
-    - name: "Create or update local inventory"
-      ansible.builtin.uri:
-        url: >-
-          {{ _sem_url }}/api/project/{{ _pid }}/inventory{{
-            '/' ~ (_invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first)
-            if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else '' }}
-        method: "{{ 'PUT' if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else 'POST' }}"
-        headers: *sem_hdr
-        body_format: json
-        body: "{{ _inv_body | to_json }}"
-        status_code: [200, 201, 204]
+    - name: "Write the local inventory INI source"
+      ansible.builtin.copy:
+        content: "{{ _inv_ini }}"
+        dest: "{{ _state_dir }}/local-inventory.ini"
+        mode: "0600"
       vars:
-        _existing_inv: "{{ _invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | list }}"
         # Single source for the local zone (mirrors dev_zone in the inventory
         # all.vars); baked into the static INI below so every hostname derives
         # from one value. Defaults to the RFC 6761 reserved agent-cloud.test.
         _dev_zone: "{{ dev_zone | default('agent-cloud.test') }}"
+        # Semaphore gets the static-yaml form below (prod shape; seed address check reads all.vars.openbao_addr from the file).
         # Mirrors platform/inventory/local-dev.yml.example, expressed as the
-        # static INI Semaphore stores; openbao_addr uses the container-network
+        # static INI this task writes; openbao_addr uses the container-network
         # address because tasks execute inside the Semaphore container.
         # ansible_user must be DEFINED even for local connections: playbook
         # defaults like  local_monorepo_dir | default('/home/' ~ ansible_user)
@@ -1483,12 +1477,37 @@
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
+      when: not ansible_check_mode
+
+    - name: "Convert the local inventory to the static-yaml shape prod uses"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", "-m", "ansible.cli.inventory", "-i", "{{ _state_dir }}/local-inventory.ini", "--list", "--yaml", "--export"]
+      register: _inv_export
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: "Create or update local inventory"
+      ansible.builtin.uri:
+        url: >-
+          {{ _sem_url }}/api/project/{{ _pid }}/inventory{{
+            '/' ~ (_invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first)
+            if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else '' }}
+        method: "{{ 'PUT' if (_invs.json | selectattr('name', 'equalto', 'local') | list | length > 0) else 'POST' }}"
+        headers: *sem_hdr
+        body_format: json
+        body: "{{ _inv_body | to_json }}"
+        status_code: [200, 201, 204]
+      vars:
+        _existing_inv: "{{ _invs.json | selectattr('name', 'equalto', 'local') | map(attribute='id') | list }}"
+        # Semaphore stores the static-yaml form prod uses: Ansible's own --export of the INI
+        # above, with the literal OpenBao address hoisted to all.vars for the seed address check.
+        _inv_yaml: "{{ (_inv_export.stdout | from_yaml) | combine({'all': {'vars': {'openbao_addr': _bao_url_net}}}, recursive=True) | to_nice_yaml(indent=2, sort_keys=False) }}"
         _inv_body: >-
           {{ {'name': 'local',
               'project_id': (_pid | int),
-              'type': 'static',
+              'type': 'static-yaml',
               'ssh_key_id': (_keys2.json | selectattr('name', 'equalto', 'none') | map(attribute='id') | first | int),
-              'inventory': _inv_ini}
+              'inventory': _inv_yaml}
              | combine({'id': (_existing_inv | first | int)} if (_existing_inv | length > 0) else {}) }}
       changed_when: true
       when: not ansible_check_mode
