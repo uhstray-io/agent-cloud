@@ -71,6 +71,29 @@ in the journaled isolation update before boot. Unsupported auxiliary formats
 and arbitrary CD-ROMs are refused before target mutation. Installed PVE
 behavior remains a live compatibility gate.
 
+### Proposed primary-unavailable acceptance child
+
+Task 4.4c requires evidence the ordinary schema-2 journal and
+`restore_receipt/v3` do not provide. The proposed
+[primary-unavailable restore plan](implementation/primary-unavailable-restore-plan.md)
+adds a separate Dev-bound acceptance transaction: gracefully shut down only the
+declared primary PBS guest, observe it stopped across destination restoration
+and historical data reads, then verify its recovery. This is planning only;
+no outage, API capability, private authority, writer exclusion, new schema or
+receipt is implemented or live-accepted by this amendment. Ordinary restore
+keeps its target-only contract and cannot close the unavailable-primary gate.
+
+The proposed child requires subject-aware versioned journaling for primary
+power actions and recovery, bounded observations, and exclusion of the closed
+assigned writer/job census. Current GET-only target guards do not provide
+that exclusion. CAS participant admission is the proposed default; a smaller
+declarative Semaphore maintenance gate is acceptable only if exact entrypoint
+exclusion, running/queued task drain and scheduled-job exclusion can all be
+proved. Neither mechanism may assume that a preflight read is a reservation.
+The implementation plan records the source evidence, alternatives, failure
+semantics and activation gates. Destination administrator, shared hypervisor
+and shared backing-storage trust remain unchanged.
+
 ### Implementation refinements from the read-only census
 
 The census found no template with proven Debian provenance. A second GET-only

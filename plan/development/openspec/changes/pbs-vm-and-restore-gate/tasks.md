@@ -38,6 +38,15 @@ open.
   - [ ] 4.4b Obtain GET-only capacity/placement evidence and verify installed PBS sync schema before declaring the second target. Keep the separate seven-day growth/retention forecast gate.
   - [ ] 4.4c Implement the protected destination workflow and verify destination-side protection plus an isolated restore while the primary PBS guest is unavailable; document that destination PBS/hypervisor admin and shared backing storage remain trusted failure domains. As of 2026-10-24, the restore entrypoint reads the declared protected copy but has no primary-unavailable control or outage evidence in its v3 receipt. A restore run alone cannot satisfy this task; it remains open.
 
+The source-only [primary-unavailable acceptance plan](implementation/primary-unavailable-restore-plan.md)
+refines 4.4c. Its proposed schema, exclusion, observations and recovery are not
+implemented by the existing ordinary restore source. All new work remains open:
+
+- [ ] 4.4c.1 Close the assigned writer/job census and installed PVE/PBS API/visibility prerequisites; choose and document a proven exclusion mechanism, exact private authorities, effective capabilities and bounded maintenance/recovery window before enabling an outage task.
+- [ ] 4.4c.2 Implement separately reviewed subject-aware versioned outage/recovery journaling and writer exclusion, preserving ordinary schema-2/v3 semantics and legacy stopped-target-only cleanup; verify CAS races, busy refusals and unknown-outcome recovery without nonce adoption or blind mutation retries.
+- [ ] 4.4c.3 Implement a separate Dev-only acceptance entrypoint with graceful exact-primary shutdown, bounded stopped-state observations spanning destination restore and historical reads, verified primary recovery, and a closed versioned acceptance envelope. Add no-primary-overwrite, no-force-stop, observation-gap, failure/recovery, task-proof and cleanup-binding coverage.
+- [ ] 4.4c.4 Validation gate: after independent review, final-head CI, Dev merge and publication/readback, verify the spec scenarios **Primary outage spans protected destination recovery**, **Busy state or writer exclusion is unproven**, **Outage or recovery evidence is uncertain**, and **Ordinary restore succeeds without outage evidence**. Record authenticated private task/receipt evidence, recovered primary and separate stopped-target cleanup; source checks alone do not close 4.4c.
+
 ## 5. Prove isolated restore and preserve growth gates
 
 - [ ] 5.1 Declare and preflight a distinct restore target with sufficient capacity and no conflicting VM or network identity.

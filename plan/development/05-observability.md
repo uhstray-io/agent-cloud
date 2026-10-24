@@ -2296,6 +2296,12 @@ the seven-day capacity forecast, and the separate 90d/45d/45d retention
 decision open; no live restore, cleanup, or storage change was performed for
 this source work.
 
+The PBS change's proposed
+[primary-unavailable acceptance child](openspec/changes/pbs-vm-and-restore-gate/implementation/primary-unavailable-restore-plan.md)
+defines the missing outage, writer exclusion, observation and recovery proof.
+It is planning only: ordinary schema-2/v3 restore evidence cannot close 4.4c,
+and no primary outage, new privileges or runtime acceptance follows from it.
+
 ### 2026-10-24 limited observability and backup probes
 
 Sanitized task 8632 ran at controller `482a81c72cdf8b36e9f1245b7b07c3437b932cf3`

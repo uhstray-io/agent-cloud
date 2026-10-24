@@ -68,6 +68,25 @@ The system SHALL configure a backup credential that cannot prune or delete exist
 - **WHEN** the delete task, target config, or exact VMID absence cannot be authoritatively verified
 - **THEN** cleanup refuses to mark the record cleaned and preserves the record; arbitrary API errors or filtered list absence are not proof
 
+### Requirement: Protected restore while primary PBS is unavailable
+The system SHALL accept the unavailable-primary component of the protected-copy gate only through a separate Dev-bound transaction that proves the declared primary PBS guest stopped before and throughout destination restoration and restored historical data reads, then verifies primary service recovery. This proposed capability SHALL preserve the ordinary target-only restore contract; a schema-2 journal or `restore_receipt/v3` alone SHALL NOT satisfy it. It SHALL preserve live o11y, primary and destination PBS data, and the independent retention and capacity gates.
+
+#### Scenario: Primary outage spans protected destination recovery
+- **WHEN** authenticated prerequisite receipts, exact private inventory provenance, installed API compatibility, effective capabilities, sufficient task visibility, maintenance window and assigned-writer exclusion have been verified
+- **THEN** the transaction journals a graceful exact-primary shutdown without force-stop, requires authoritative stopped readback and bounded observations spanning fresh destination reads, restore and historical guest checks, verifies primary restart and service recovery, and emits a versioned acceptance receipt binding those proofs and the stopped isolated target
+
+#### Scenario: Busy state or writer exclusion is unproven
+- **WHEN** a relevant backup, sync, verification, maintenance or VM mutation is active or queued, task visibility is incomplete, or the closed assigned writer/job census cannot be excluded
+- **THEN** the transaction refuses before primary shutdown; a GET-only guard, filtered empty task list or elapsed maintenance window is not exclusion evidence
+
+#### Scenario: Outage or recovery evidence is uncertain
+- **WHEN** a primary power response, subject binding, CAS readback, observation interval or recovery readback is missing, ambiguous or inconsistent
+- **THEN** the transaction does not emit successful acceptance, retains the target and durable journal, and uses only an explicitly permitted journaled recovery transition; it does not blindly retry a mutation, adopt a nonce, force-stop or delete a service guest
+
+#### Scenario: Ordinary restore succeeds without outage evidence
+- **WHEN** an ordinary restore succeeds with its existing schema-2 journal and v3 receipt
+- **THEN** it remains ordinary isolated-restore evidence and the unavailable-primary protected-copy gate remains open
+
 ### Requirement: Retention gate remains independent
 The system SHALL keep Prometheus, Loki, and Tempo at 15d, 7d, and 168h until an immutable or equivalent protected local copy, a successful isolated restore, and the separate seven-day capacity gate are all verified. A PBS protected flag or backup-only token alone SHALL NOT satisfy immutable-copy evidence.
 
