@@ -172,7 +172,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the eight refusals are present as named assert tasks, all before the repo is placed" {
+@test "skynet: the nine refusals are present as named assert tasks, all before the repo is placed" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -184,7 +184,7 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 7 ]
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 8 ]
   assert_grep -qx 'Require a usable Semaphore token before rendering skynet.s env' <<<"$refusals"
   # Every refusal sits before the monorepo is placed, so a refused run changes nothing.
   assert_precedes "$PLAYBOOK" 'Refuse skynet_image unless' 'tasks/place-monorepo\.yml'
@@ -216,8 +216,8 @@ tasks = [
     if "ansible.builtin.assert" in t
     and (t["name"].startswith("Refuse ") or t["name"].startswith("Require a usable Semaphore token"))
 ]
-if len(tasks) != 8:
-    sys.exit(f"expected 8 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 9:
+    sys.exit(f"expected 9 refusal asserts in Phase 1, found {len(tasks)}")
 play = [{"name": "extracted refusals", "hosts": "localhost", "connection": "local",
          "gather_facts": False, "tasks": tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
@@ -230,6 +230,7 @@ base = {
     "skynet_semaphore_catalog": "local",
     "skynet_semaphore_project": 1,
     "_skynet_semaphore_token": "present",
+    "skynet_model": "test-model",
     "local_mode": True,
 }
 with open(f"{out}/base.json", "w", encoding="utf-8") as fh:
@@ -296,6 +297,32 @@ accepted() {
   [ "$status" -ne 0 ]
   run accepted skynet_semaphore_project '"7"'
   [ "$status" -eq 0 ]
+}
+
+@test "skynet: an empty, blank or undefined skynet_model is refused; a declared one is accepted" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  run accepted skynet_model '""'
+  [ "$status" -ne 0 ]
+  run accepted skynet_model '"   "'
+  [ "$status" -ne 0 ]
+  run accepted skynet_model '"test-model"'
+  [ "$status" -eq 0 ]
+  # Undefined: the baseline without the key, so no extra var supplies a value.
+  python3 - "$BATS_TEST_TMPDIR/base.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    base = json.load(fh)
+del base["skynet_model"]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(base, fh)
+PY
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Declare skynet_model'
 }
 
 @test "skynet: an empty Semaphore token refuses before any write" {

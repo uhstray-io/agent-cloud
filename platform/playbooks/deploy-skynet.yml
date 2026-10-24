@@ -123,6 +123,12 @@
           Semaphore (a positive whole number, not a name or a boolean). Set it in the
           inventory and re-run.
 
+    - name: "Refuse an empty skynet_model"
+      ansible.builtin.assert:
+        that:
+          - (skynet_model | default('', true) | string | trim | length) > 0
+        fail_msg: "Declare skynet_model (the model skynet's graph requests through the gateway) in inventory."
+
     # LOCAL-DEV STOPGAP: skynet's Semaphore client needs an API token. This is the operator's
     # token (secret/services/semaphore:api_token), read so the local skynet can call the local
     # Semaphore. The refusal below keeps it out of every other environment. Follow-up: verify the

@@ -30,16 +30,18 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 |---|---|
 | `secret/services/skynet:db_password` | `SKYNET_DB_PASSWORD` (compose hands it to both containers) |
 | `secret/services/skynet:api_token` | `SKYNET_API_TOKEN` |
-| `secret/services/semaphore:api_token`, read by the playbook as the fact `skynet_semaphore_token` | `SKYNET_SEMAPHORE_TOKEN` |
-| shared read `secret/services/agentgateway:client_<role>` (`secrets['client_<role>']`) | `SKYNET_GATEWAY_KEY_<ROLE>`, written only when non-empty |
+| `secret/services/semaphore:api_token`, read by the playbook as the fact `_skynet_semaphore_token` | `SKYNET_SEMAPHORE_TOKEN` |
+| shared read `secret/services/agentgateway:client_<role>` (`secrets['client_<role>']`) | `SKYNET_GATEWAY_KEY_<ROLE>`, omitted when the key exists but is empty. A missing key stops the deploy (the shared read is all-or-nothing) |
 | inventory `skynet_gateway_url`, `skynet_model`, `skynet_opa_url`, `skynet_semaphore_url`, `skynet_semaphore_project`, `skynet_semaphore_catalog`, `skynet_image` | the matching `SKYNET_*` variables |
 
 - The six roles are `infra-agent`, `security-agent`, `o11y-agent`, `service-agent`,
-  `network-agent` and `skynet-eval`. A missing role key fails that role's model calls closed.
+  `network-agent` and `skynet-eval`. The shared read is all-or-nothing: a missing role key stops the
+  deploy in manage-secrets. An absent `SKYNET_GATEWAY_KEY_<ROLE>` line fails that role's model calls
+  closed in skynet.
 - The Semaphore token is deliberately NOT shared-read under the name `api_token`. That name
   is skynet's own bearer, and a shared key of the same name would shadow it.
-- **Stopgap:** the Semaphore token is the operator's token. A scoped Semaphore role for skynet
-  is **unverified** and is a follow-up.
+- **Stopgap:** the Semaphore token is the operator's token, refused outside local_mode
+  (deploy-skynet.yml). A scoped Semaphore role for skynet is **unverified** and is a follow-up.
 - `skynet_image` has no default. Nothing in this directory names a registry.
 
 ## Image
@@ -47,10 +49,9 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 The image ref comes from the inventory (`skynet_image`), pinned by digest. It is not built on
 the VM.
 
-**Open:** skynet's `.github/workflows/ci.yml` at `origin/main` (29ecab5) runs the tests against a
-podman Postgres and has no registry push step. `deploy/tier2/docker-compose.yml` builds
-`localhost/skynet-tier2:latest` locally. No publisher for a GHCR image exists in that repository
-at that commit, so a pinned digest has nothing to pin yet.
+skynet publishes the image from its `.github/workflows/publish-tier2.yml` (merged 45fd869, skynet
+PR #10) to GHCR as `ghcr.io/uhstray-io/skynet-tier2`. The inventory pins that digest in
+`skynet_image`.
 
 ## Trust (local-dev only)
 
@@ -70,9 +71,6 @@ The base `compose.yml` never sets `SSL_CERT_FILE`.
 - Local-dev: `compose.local.yml` attaches `skynet` to the `local-dev` network (created by
   `platform/playbooks/bootstrap-local-dev.yml`). The local gateway reaches it there by container
   name as `skynet:8080`.
-- **Open:** `platform/inventory/local-dev.yml.example` sets `agw_skynet_backend` to
-  `host.containers.internal:18556`, a host port this stack does not publish. Over `local-dev` the
-  backend would be `skynet:8080`. That value belongs to the gateway route, not this directory.
 
 ## Conventions
 
