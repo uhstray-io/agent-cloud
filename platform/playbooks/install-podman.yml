@@ -190,6 +190,10 @@
         install_recommends: false
         allow_downgrade: true
         update_cache: true
+      # Under --check the repository task writes no key or source, so a fresh host has no
+      # candidate for this version. Ignore that failure in check mode only; a real run
+      # still fails when the client cannot be installed.
+      ignore_errors: "{{ ansible_check_mode }}"
       when: _docker_api_client
 
     - name: "Read which package owns /usr/bin/docker, its version, and any Docker engine"
