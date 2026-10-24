@@ -1801,6 +1801,12 @@ templates:
         type: string
         default_value: dev
         required: true
+      - name: seed_replace_auth
+        title: "Replace existing AppRole inputs"
+        description: "true only after Semaphore's encryption key changed (inputs present but undecryptable)"
+        type: string
+        default_value: "false"
+        required: false
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml

@@ -1174,6 +1174,8 @@
         content: "{{ _inv_ini }}"
         dest: "{{ _state_dir }}/local-inventory.ini"
         mode: "0600"
+      # Keeps the rendered inventory out of the output of a run started with --diff.
+      diff: false
       vars:
         # Single source for the local zone (mirrors dev_zone in the inventory
         # all.vars); baked into the static INI below so every hostname derives
