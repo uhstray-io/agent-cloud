@@ -18,9 +18,9 @@ sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
 
 RECORD = {"all": {"children": {
-    "o11y_svc": {"hosts": {"o11y-local": {"ansible_host": "127.0.0.1"}},
+    "o11y_svc": {"hosts": {"o11y-local": {"ansible_host": "localhost"}},
                  "vars": {"service_name": "o11y", "local_mode": True}},
-    "other_svc": {"hosts": {"other-local": {"ansible_host": "127.0.0.1"}}},
+    "other_svc": {"hosts": {"other-local": {"ansible_host": "localhost"}}},
 }}}
 CURRENT = yaml.safe_dump(RECORD, sort_keys=False)
 VALUES = {"o11y_alert_discord_guild_id": "1" * 18,

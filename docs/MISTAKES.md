@@ -2449,14 +2449,18 @@ mount, label or OIDC change) removes the layer. The database survived; the key t
 did not.
 
 **The rule.** Data and the key that decrypts it share one lifetime: persist them together, and
-move an existing key before anything that can destroy where it lives. The recovery used here
-(removing the two undecryptable inputs through the API, then re-running `Provision Seed
-Environment`) was a scoped local stopgap; with the key persisted it must not be needed again.
+move an existing key before anything that can destroy where it lives. Inputs already orphaned are
+recovered by `Provision Seed Environment` with `seed_replace_auth=true`, which deletes the two
+undecryptable AppRole inputs and creates them again from OpenBao. The API removal used on
+2026-10-24 was a one-time stopgap from before that flag existed; with the key persisted, neither
+should be needed again.
 
 **Enforced by.** `bootstrap-local-dev.yml` starts Semaphore with `SEMAPHORE_CONFIG_PATH` on the
 data volume and copies an older container's key there before the recreate step;
 `platform/tests/test_local_semaphore_config_persistence.py` (ordering + behaviour against a
-stubbed engine, mutation-checked). Triage entry in `docs/LOCAL-DEV.md`.
+stubbed engine, mutation-checked). The replace path is `platform/tests/test_provision_seed_replace_auth.py`
+(the provisioner's own tasks run against synthetic environments, mutation-checked). Triage entry
+in `docs/LOCAL-DEV.md`.
 
 ## 4. Data handling
 
