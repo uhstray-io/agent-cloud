@@ -2267,13 +2267,15 @@ deletion. Its current private pin is verified independently from the historical
 restore pin, allowing unrelated private inventory changes while requiring the
 declared target and artifact evidence to remain unchanged.
 
-This is source implementation only. The feature head has not passed independent
-review, final CI, Dev publication/catalog readback, private target declaration
-acceptance, effective OpenBao role verification, all-writer drain, protected
-copy restore while primary PBS is unavailable, or live restore/cleanup. Keep
-OpenSpec 5.2, the seven-day capacity forecast, and the separate 90d/45d/45d
-retention decision open; no live API, backup, restore, cleanup, or storage
-change was performed for this source work.
+This is source implementation only. Independent reviews of the full PBS/restore
+and capability source scopes are complete, and actionable findings were fixed
+and verified. Final combined-head CI remains pending, followed by Dev
+publication/catalog readback, private target declaration acceptance, effective
+OpenBao role verification, all-writer drain, protected-copy restore while
+primary PBS is unavailable, and live restore/cleanup. Keep OpenSpec 5.2, the seven-day
+capacity forecast, and the separate 90d/45d/45d retention decision open; no
+live API, backup, restore, cleanup, or storage change was performed for this
+source work.
 
 ### 2026-10-24 limited observability and backup probes
 
@@ -2312,3 +2314,36 @@ failover with primary PBS unavailable, effective OpenBao role capabilities,
 writer drain, restore-target availability, or isolated restore/cleanup. They
 do not close OpenSpec 4.3, 4.4b/c, 5.1b, 5.2, 5.3, the seven-day forecast, or
 the separate 90d/45d/45d retention gate.
+
+Two later read-only observations further bound readiness. Service overview
+task 8645 used the same controller and receiver revisions. The Logvolume result
+was partial: 3 of 6 targets had data. Recent gateway access records were empty,
+so that verifier returned `ERROR`; recent container logs were expected to be
+empty. The absence of query errors is not proof of delivery or application
+health. The selected agentgateway scrape observation remains limited to its
+single series and roughly six-hour window.
+
+Configuration census task 8647 completed at controller commit
+`06ad8c32358518a1dc52181fde10439a8d431980`: 31 candidates, 9 declared
+targets, 31 unverified targets, 0 duplicate identities, and an inventory
+revision was present. Coverage was incomplete for 9 targets and unverified for
+22; signal states were incomplete for 3 and undeclared for 33; there were no
+missing template references. Its launch deliberately supplied no receipt task
+IDs, and it did not prove receiver coverage. This is a current configuration
+census, not evidence that telemetry is absent, applications are healthy, or
+fleet coverage is verified. All target receipt gates remain open.
+
+Scoped catalog publication task 8650 succeeded at Dev commit
+`06ad8c32358518a1dc52181fde10439a8d431980`. It created only the
+`Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
+5, environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
+survey fields. Existing main-bound policy template 50's bindings remained
+unchanged. The task published the policy-application mechanism only; no policy
+apply or effective-capability verification was run, so guarded-writer
+activation remains blocked.
+
+These observations do not change the prior acceptance boundary: they do not
+prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
+effective role capabilities, writer drain, or isolated restore/cleanup. The
+capacity source ambiguity is cleared for the observed refresh only; its history
+remains too short for the separate seven-day forecast.

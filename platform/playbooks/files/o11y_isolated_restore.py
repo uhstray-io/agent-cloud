@@ -53,6 +53,8 @@ ALLOWED_CONFIG_KEYS = {
     "vmgenid",
     "watchdog",
 }
+PVE_CONFIG_DIGEST = re.compile(r"[0-9a-f]{40}\Z")
+MAX_QGA_OUTPUT_BYTES = 2 * 1024 * 1024
 SIZE = re.compile(r"(?:^|,)size=([0-9]+(?:\.[0-9]+)?)([KMGT])(?:$|,)", re.I)
 MULTIPLIERS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 DISK = re.compile(r"(?:ide|sata|scsi|virtio|efidisk|tpmstate)[0-9]+\Z")
@@ -132,6 +134,7 @@ SAFE_REASONS = {
     "task_chain_invalid",
     "artifact_stale",
     "restore_receipt_invalid",
+    "guest_exec_output_invalid",
 }
 PREREQUISITE_CONTRACTS = (
     "o11y-pbs-backup/v1",
@@ -274,6 +277,12 @@ def validate_target_config(
     for key in disk_keys:
         require(isinstance(data[key], str) and data[key].startswith(storage_id + ":"), "target_config_invalid")
     for key in data:
+        if key == "digest":
+            require(
+                isinstance(data[key], str) and PVE_CONFIG_DIGEST.fullmatch(data[key]) is not None,
+                "target_config_invalid",
+            )
+            continue
         require(
             key in ALLOWED_CONFIG_KEYS or DISK.fullmatch(key) or re.fullmatch(r"net[0-9]+", key) is not None,
             "target_config_invalid",
@@ -291,6 +300,25 @@ def validate_target_config(
         "disk_keys_sha256": sha256("\n".join(disk_keys).encode()),
         "nic_count": sum(key.startswith("net") and key[3:].isdigit() for key in data),
     }
+
+
+def parse_guest_exec_status(value: object) -> dict:
+    """Validate PVE's decoded exec-status response and parse the checker's JSON stdout."""
+    require(isinstance(value, dict), "guest_exec_output_invalid")
+    exited = value.get("exited")
+    require(exited is True or (type(exited) is int and exited == 1), "guest_exec_output_invalid")
+    require(type(value.get("exitcode")) is int and value["exitcode"] == 0, "guest_exec_output_invalid")
+    require(value.get("out-truncated", False) is False, "guest_exec_output_invalid")
+    output = value.get("out-data")
+    require(isinstance(output, str), "guest_exec_output_invalid")
+    try:
+        encoded = output.encode("utf-8")
+        require(0 < len(encoded) <= MAX_QGA_OUTPUT_BYTES, "guest_exec_output_invalid")
+        receipt = json.loads(output)
+    except (UnicodeError, ValueError):
+        raise Refusal("guest_exec_output_invalid") from None
+    require(isinstance(receipt, dict), "guest_exec_output_invalid")
+    return {"receipt": receipt, "output_sha256": sha256(encoded)}
 
 
 def verify_task_proof(payload: object) -> dict:
@@ -605,6 +633,9 @@ def _main() -> int:
                 expected_disk_keys=payload.get("expected_disk_keys"),
                 storage_id=payload.get("storage_id"),
             )
+        elif mode == "qga_exec_status":
+            require(set(payload) == {"mode", "status"}, "invalid_input")
+            result = parse_guest_exec_status(payload.get("status"))
         elif mode == "task_proof":
             result = verify_task_proof(payload.get("payload"))
         elif mode == "prerequisite_chain":

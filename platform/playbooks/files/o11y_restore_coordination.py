@@ -15,8 +15,6 @@ import secrets
 import sys
 from typing import Any
 
-from o11y_pbs_receipts import restore_receipt_fingerprint, seal_restore_receipt
-
 SCHEMA_VERSION = 2
 RECORD_KEYS = {
     "schema_version",
@@ -625,6 +623,8 @@ def _restore_receipt(evidence: object, record: dict[str, Any], expected_version:
     candidate = dict(evidence)
     candidate["coordination_record"] = dict(final_record)
     candidate["receipt_fingerprint"] = None
+    from o11y_pbs_receipts import restore_receipt_fingerprint
+
     fingerprint = restore_receipt_fingerprint(candidate)
     final_record["receipt_fingerprint"] = fingerprint
     candidate["coordination_record"] = final_record
@@ -1043,6 +1043,8 @@ def build_restore_receipt(record: object, version: object, fields: object) -> di
         "coordination_version": version + 1,
         **fields,
     }
+    from o11y_pbs_receipts import seal_restore_receipt
+
     sealed = seal_restore_receipt(candidate)
     _restore_receipt(sealed, record, version + 1)
     return sealed

@@ -1,8 +1,8 @@
 # Isolated o11y restore executor source plan
 
-**Status:** source implementation complete; review, CI, publication, and live acceptance remain open
+**Status:** source implementation complete; final combined-head CI, publication, and live acceptance remain open
 **Scope:** OpenSpec `pbs-vm-and-restore-gate`, task 5.2, bounded source child
-**Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation and shared PBS receipt commits; local implementation checkpoints remain unpublished.
+**Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation, shared PBS receipt, capability, and `dev` commits. Its current Dev history includes PR #728 merge `06ad8c32358518a1dc52181fde10439a8d431980` and PR #733 merge `e68ca3de948914cb5ba820c92e12627277d468d6` (reviewed PR #733 head `32d5d49e5b01d7c0e5811738aef7f4cbd93ddf17`). Both are now normally merged into the consumer feature branch. The corrected feature head remains unpublished pending final checks.
 
 This record covers source implementation and focused local verification only. It
 does not close OpenSpec 5.2 or establish any Semaphore, OpenBao, Proxmox, private
@@ -73,8 +73,36 @@ revision pins. Cleanup derives the receipt from the authenticated restore task
 output and accepts only four selectors; historical restore and current cleanup
 private pins are independently proven and need not be equal. Tests cover their
 allowed difference and rejection when either proof or target/declaration binding
-is invalid. The playbooks and catalog remain source-only until review, CI,
-publication, and private gates pass.
+is invalid. Independent reviews covered the full PBS/restore and capability
+source scopes; actionable findings were addressed and verified. Final
+combined-head CI remains pending. The playbooks and catalog remain source-only
+until CI, publication, and private acceptance prerequisites pass.
+
+## Pre-publication verification follow-up
+
+An earlier 420-case focused helper suite did not exercise all cross-cutting
+playbook-discovery contracts. Before publication, the bounded cohort therefore
+also includes the full `platform/tests/test_check_mode_contract.py`,
+`platform/tests/test_extra_var_refusal_tests.py`,
+`platform/tests/test_pve_token_id_required.py`, and
+`platform/tests/test_o11y_restore_target_guard.py`, plus the full
+`ansible-lint platform/playbooks/ platform/semaphore/` command. These checks
+found missing explicit check-mode handling on read probes and mutation guards,
+new PVE-token playbooks absent from the
+coverage table, and an old-schema fixture inconsistent with the strict schema-2
+record. The fixes preserve the production guards and broaden exact coverage;
+they do not relax the tests. The local check-mode run before producer-branch
+integration exposed six producer-owned failures. After the approved producer
+and Dev merges, the complete check-mode module passed (367 tests). The restore
+target-guard, extra-var refusal, and PVE-token modules passed together (113
+tests). Ruff passed for the three changed Python test modules. Full Ansible
+lint exited 0 with four warnings (three Jinja-formatting warnings and the
+restore play's task-count warning); syntax checks passed for all six affected
+entrypoints, with expected host-pattern warnings on PBS inventory patterns.
+Strict OpenSpec status showed all four planning artifacts complete and
+validation passed. The earlier PR CI run remains failed on its old head; these
+local source checks do not replace CI on the corrected head or establish
+runtime acceptance.
 
 ## Acceptance for this source child
 

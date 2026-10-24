@@ -184,6 +184,16 @@ OBSERVATION_CONTRACTS = {
     },
 }
 INVENTORY_MARKER_STALE_SECONDS = 1800
+COMPLETION_AGE_DIAGNOSTIC_COUNTERS = (
+    "registry_unavailable_count",
+    "invalid_result_shape_count",
+    "invalid_label_shape_count",
+    "unknown_identity_count",
+    "duplicate_pair_count",
+    "age_rows_with_unavailable_value_count",
+    "failed_pairs_missing_age_row_count",
+    "failed_pairs_with_unavailable_age_value_count",
+)
 # Characters an override may never carry, wherever it lands.
 OVERRIDE_FORBIDDEN = re.compile(r'["{}()\\\r\n]')
 # A value substituted outside a string literal: a duration or a number, nothing else.
@@ -451,53 +461,77 @@ def _completion_age_seconds(sample: Any) -> float | None:
 
 def _completion_age_map(
     data: Any, dashboards_dir: str, workflow_steps: Any
-) -> dict[tuple[str, str], float | None] | None:
-    """Read only exact public service/step age rows; malformed identities invalidate the join."""
+) -> tuple[dict[tuple[str, str], float | None] | None, dict[str, int]]:
+    """Read exact public age rows and return fixed rejection counts without labels."""
+    diagnostics = dict.fromkeys(COMPLETION_AGE_DIAGNOSTIC_COUNTERS, 0)
     allowlists = _workflow_identity_allowlists(dashboards_dir, workflow_steps)
-    if allowlists is None or not isinstance(data, dict):
-        return None
+    if allowlists is None:
+        diagnostics["registry_unavailable_count"] = 1
+        return None, diagnostics
+    if not isinstance(data, dict):
+        diagnostics["invalid_result_shape_count"] = 1
+        return None, diagnostics
     services, steps = allowlists
     result = data.get("result")
     if data.get("resultType") != "vector" or not isinstance(result, list):
-        return None
+        diagnostics["invalid_result_shape_count"] = 1
+        return None, diagnostics
     ages: dict[tuple[str, str], float | None] = {}
+    rejected = False
     for series in result:
         metric = series.get("metric") if isinstance(series, dict) else None
         if not isinstance(metric, dict) or set(metric) != {"service", "step"}:
-            return None
-        service, step = metric.get("service"), metric.get("step")
-        if (
-            not isinstance(service, str)
-            or not isinstance(step, str)
-            or service not in services
-            or step not in steps
-        ):
-            return None
-        key = (service, step)
-        if key in ages:
-            # A duplicate is ambiguous even if one row carried a plausible age.
-            ages[key] = None
+            diagnostics["invalid_label_shape_count"] += 1
+            rejected = True
             continue
+        service, step = metric.get("service"), metric.get("step")
+        if not isinstance(service, str) or not isinstance(step, str):
+            diagnostics["invalid_label_shape_count"] += 1
+            rejected = True
+            continue
+        if service not in services or step not in steps:
+            diagnostics["unknown_identity_count"] += 1
+            rejected = True
+            continue
+        key = (service, step)
         sample = series.get("value")
         age = _completion_age_seconds(sample)
+        if age is None:
+            diagnostics["age_rows_with_unavailable_value_count"] += 1
+        if key in ages:
+            # A duplicate is ambiguous even if one row carried a plausible age.
+            diagnostics["duplicate_pair_count"] += 1
+            ages[key] = None
+            continue
         ages[key] = age
-    return ages
+    return (None if rejected else ages), diagnostics
 
 
 def _attach_completion_ages(
     observation: dict[str, Any], age_status: str,
     age_map: dict[tuple[str, str], float | None] | None,
+    diagnostics: dict[str, int],
 ) -> None:
     """Join strict numeric ages to returned public pairs without changing failure status."""
     pairs = observation.get("failed_steps", [])
     known = 0
     for pair in pairs:
-        age = age_map.get((pair["service"], pair["step"])) if age_map is not None else None
+        key = (pair["service"], pair["step"])
+        if age_map is None:
+            age = None
+        elif key not in age_map:
+            diagnostics["failed_pairs_missing_age_row_count"] += 1
+            age = None
+        else:
+            age = age_map[key]
+            if age is None:
+                diagnostics["failed_pairs_with_unavailable_age_value_count"] += 1
         pair["completion_age_seconds"] = age
         known += int(age is not None)
     observation["completion_age_status"] = age_status
     observation["failed_pairs_with_known_completion_age"] = known
     observation["failed_pairs_with_unknown_completion_age"] = len(pairs) - known
+    observation["completion_age_diagnostics"] = diagnostics
 
 
 def _failed_step_observation(
@@ -1043,7 +1077,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
         ):
             failed_step_observation.setdefault(key, 0 if key != "failed_steps" else [])
         if age_contract_selected and age_contract_verified and completion_age_data is not None:
-            age_map = _completion_age_map(
+            age_map, age_diagnostics = _completion_age_map(
                 completion_age_data,
                 str(payload.get("dashboards_dir", "")),
                 payload.get("_vdd_workflow_steps"),
@@ -1053,10 +1087,12 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                 failed_step_observation,
                 age_status,
                 age_map if age_status in ("observed", "no_data") else None,
+                age_diagnostics,
             )
         else:
             age_status = "unverified" if age_contract_selected else "not_selected"
-            _attach_completion_ages(failed_step_observation, age_status, None)
+            age_diagnostics = dict.fromkeys(COMPLETION_AGE_DIAGNOSTIC_COUNTERS, 0)
+            _attach_completion_ages(failed_step_observation, age_status, None, age_diagnostics)
 
     verified = [p for p in panels if p["status"] != "skipped"]
     failing = [p["title"] for p in verified if p["status"] not in ("pass", "expected_empty")]

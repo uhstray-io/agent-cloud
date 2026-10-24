@@ -31,28 +31,72 @@ TARGET_REF = {"node": DECLARATION["node"], "vmid": DECLARATION["vmid"]}
 
 
 def _record():
-    declaration = {
+    coordination_declaration = {
         "declaration_fingerprint": coordination.declaration_fingerprint(DECLARATION),
         "target_fingerprint": coordination.target_identity_fingerprint(TARGET_REF),
         "artifact_fingerprint": "c" * 64,
         "public_sha": "a" * 40,
         "private_inventory_sha": "b" * 64,
     }
-    record = {
-        **declaration,
-        "schema_version": 1,
-        "operation_id": "0" * 64,
-        "generation": 1,
-        "phase": "reserved",
-        "restore_nonce": "d" * 64,
-        "active_nonce": None,
+    request = {
+        "transition": "reserve",
+        "declaration": coordination_declaration,
+        "target_ref": TARGET_REF,
+        "expected_record": None,
+        "expected_version": 0,
+        "nonce": None,
+        "evidence": None,
         "action": None,
-        "upid": None,
-        "receipt_fingerprint": None,
-        "prior_authenticated_task_id": None,
+        "request_fingerprint": None,
+        "handle_type": None,
+        "handle": None,
+        "effect_fingerprint": None,
     }
+    return coordination.plan_transition(None, 0, request)["record"]
+
+
+def _cleaned_record():
+    record = _record()
+    upids = {
+        "restore": "UPID:pve-node:1:2:3:qmrestore:410:root@pam:",
+        "start": "UPID:pve-node:4:5:6:qmstart:410:root@pam:",
+        "stop": "UPID:pve-node:7:8:9:qmstop:410:root@pam:",
+        "delete": "UPID:pve-node:a:b:c:qmdestroy:410:root@pam:",
+    }
+    actions = ("restore", "isolate", "start", "guest_exec", "stop", "delete")
+    record.update(
+        phase="cleaned",
+        active_nonce="e" * 64,
+        restore_upid=upids["restore"],
+        receipt_fingerprint="f" * 64,
+        prior_authenticated_task_id=77,
+        journal=[
+            {
+                "action": action,
+                "request_fingerprint": str(index) * 64,
+                "handle_type": {
+                    "restore": "upid",
+                    "isolate": "response_sha256",
+                    "start": "upid",
+                    "guest_exec": "qga_pid",
+                    "stop": "upid",
+                    "delete": "upid",
+                }[action],
+                "handle": {
+                    "restore": upids["restore"],
+                    "isolate": "a" * 64,
+                    "start": upids["start"],
+                    "guest_exec": 44,
+                    "stop": upids["stop"],
+                    "delete": upids["delete"],
+                }[action],
+                "effect_fingerprint": "abcdef"[index - 1] * 64,
+            }
+            for index, action in enumerate(actions, start=1)
+        ],
+    )
     record["operation_id"] = coordination.operation_identity(record)
-    return record
+    return coordination.validate_record(record)
 
 
 def _snapshot(record):
@@ -75,20 +119,18 @@ def test_missing_record_only_blocks_declared_target_and_keeps_other_vmids_usable
 
 
 def test_valid_record_keeps_target_reserved_even_after_cleaned_phase():
-    record = _record()
-    record.update(
-        phase="cleaned",
-        active_nonce="e" * 64,
-        action=None,
-        upid="UPID:pve-node:1:2:3:qmdestroy:410:root@pam:",
-        receipt_fingerprint="f" * 64,
-        prior_authenticated_task_id=77,
-    )
-    record["operation_id"] = coordination.operation_identity(record)
+    record = _cleaned_record()
     args = _snapshot(record)
     assert guard.check_reserved_target(*args, DECLARATION, [411])["result"] == "allowed"
     with pytest.raises(coordination.Refusal):
         guard.check_reserved_target(*args, DECLARATION, [410])
+
+
+def test_legacy_schema_record_is_not_adopted_by_reserved_target_guard():
+    record = _record()
+    record["schema_version"] = 1
+    with pytest.raises(coordination.Refusal, match="record_shape_invalid"):
+        guard.check_reserved_target(*_snapshot(record), DECLARATION, [411])
 
 
 def test_changed_declaration_removed_target_or_untrusted_status_refuses():
