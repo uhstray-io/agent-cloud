@@ -31,12 +31,12 @@ The production deployment SHALL run the Commercial edition on the Pro plan, beca
 
 ### Requirement: Plane deploys as a composable service
 
-The Plane service SHALL deploy through Semaphore playbooks, with `deploy.sh` limited to container lifecycle. Every container SHALL use the `always` restart policy. Only the reverse proxy SHALL publish a port to the host. The health check MUST probe the API path rather than the root path. A redeployment MUST NOT regenerate the secrets that the service keeps across redeploys.
+The Plane service SHALL deploy through Semaphore playbooks, with `deploy.sh` limited to container lifecycle. Long-lived containers SHALL use the `always` restart policy. The one-shot migrator SHALL use the `no` restart policy and carry the label `agent-cloud.one-shot: "true"`. Only the reverse proxy SHALL publish a port to the host. The health check MUST probe the API path rather than the root path. A redeployment MUST NOT regenerate the secrets that the service keeps across redeploys.
 
 #### Scenario: Local deployment is reachable over TLS
 
 - **WHEN** the local deploy playbook completes through local Semaphore
-- **THEN** `https://plane.agent-cloud.test` loads over TLS, and the workflow collector records the `service-deploy` result as pass
+- **THEN** `https://plane.agent-cloud.test` loads over TLS. A successful run records no `service-deploy` result, so none is required here.
 
 #### Scenario: Health is probed on the API path, not the root
 
@@ -83,12 +83,17 @@ The service SHALL provide a backup playbook and a restore playbook for its datab
 
 ### Requirement: Edge and firewall admit only what is declared
 
-The public hostnames SHALL route through the central reverse proxy. The Cloudflare challenge skip SHALL apply to the GitHub webhook path only, and MUST NOT apply to any other path of the service. The host firewall SHALL deny inbound traffic except from the reverse proxy. Standard output SHALL reach the observability stack through Alloy.
+The public hostnames SHALL route through the central reverse proxy. The Cloudflare challenge skip SHALL apply to the GitHub webhook path only, and only when the webhook signature check of Phase 0 spike 0.16 has passed. It MUST NOT apply to any other path of the service. The host firewall SHALL deny inbound traffic except from the reverse proxy. Standard output SHALL reach the observability stack through Alloy.
 
 #### Scenario: Only the GitHub webhook path skips the challenge
 
 - **WHEN** a request reaches a path of the Plane hostname other than the GitHub webhook path
 - **THEN** the challenge skip does not apply to that request
+
+#### Scenario: Challenge skip is absent when the webhook check fails
+
+- **WHEN** spike 0.16 has not shown that Plane verifies the GitHub webhook signature
+- **THEN** no challenge skip exists for the webhook path, and the authenticated boundary recorded in the design document applies instead
 
 #### Scenario: Host firewall denies inbound except from the reverse proxy
 
@@ -100,9 +105,18 @@ The public hostnames SHALL route through the central reverse proxy. The Cloudfla
 - **WHEN** the observability verification runs for the Plane service
 - **THEN** the service's logs are visible in the observability stack
 
+### Requirement: The GitHub webhook authenticates its sender before any sync
+
+Plane SHALL verify each GitHub webhook delivery against the configured webhook secret, using the `X-Hub-Signature-256` header, before it acts on the delivery. A delivery that does not verify MUST be refused. Before the challenge skip is added for the webhook path, Phase 0 spike 0.16 MUST have shown this verification working.
+
+#### Scenario: Forged GitHub delivery is rejected
+
+- **WHEN** a delivery arrives at the GitHub webhook path with no valid `X-Hub-Signature-256` header
+- **THEN** Plane refuses it, and it creates or changes no work item
+
 ### Requirement: Single sign-on through the platform identity provider
 
-Interactive users SHALL sign in to Plane through the Authentik OIDC client. The registered redirect URI MUST be strict, and it MUST be `https://<host>/auth/oidc/callback/` for the service's public host. The requested scopes MUST be openid, email and profile. The client secret SHALL be shared from the identity provider through a shared read, and MUST NOT be copied into a second store.
+Interactive users SHALL sign in to Plane through the Authentik OIDC client. Self sign-up SHALL be turned off, so that only invited members can join, before the OIDC settings are applied. The registered redirect URI MUST be strict, and it MUST be `https://<host>/auth/oidc/callback/` for the service's public host. The requested scopes MUST be openid, email and profile. The client secret SHALL be shared from the identity provider through a shared read, and MUST NOT be copied into a second store.
 
 #### Scenario: Member signs in through Authentik
 
@@ -119,9 +133,14 @@ Interactive users SHALL sign in to Plane through the Authentik OIDC client. The 
 - **WHEN** the service reads its OIDC client secret
 - **THEN** it reads the value from the identity provider's shared store, and the value is not written into the Plane secret path
 
+#### Scenario: Invitation-only sign-up is in force before OIDC is enabled
+
+- **WHEN** the OIDC settings are applied for the first time
+- **THEN** self sign-up is already turned off, so an account can be created only for an invited member
+
 ### Requirement: Plane roles follow identity-provider groups
 
-Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Owner role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply.
+Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Owner role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
 
 #### Scenario: Administrator receives Owner
 
@@ -148,6 +167,11 @@ Plane roles SHALL follow Authentik group membership under decision D3. Members o
 - **WHEN** the reconcile playbook runs without `apply=true`
 - **THEN** it reports the changes it would make, and it makes none
 
+#### Scenario: Reconcile schedule starts after a successful apply
+
+- **WHEN** the reconcile schedule is registered in Semaphore
+- **THEN** an apply run of the reconcile playbook has already succeeded
+
 ### Requirement: GitHub integration syncs issues and pull requests
 
 The GitHub integration SHALL use the GitHub App named Plane. Issues and pull requests SHALL sync between GitHub and Plane. The trigger label `plane` SHALL move an issue from GitHub to Plane, and the trigger label `github` SHALL move it from Plane to GitHub. A pull request that names a work item key, such as `[KEY-123]`, MUST link to that work item. The tududi sync MUST be switched off before the Plane sync is enabled, so that the two bidirectional syncs never run at the same time on the same repository.
@@ -155,7 +179,7 @@ The GitHub integration SHALL use the GitHub App named Plane. Issues and pull req
 #### Scenario: tududi sync is switched off before Plane sync starts
 
 - **WHEN** the Plane GitHub integration is enabled for a repository
-- **THEN** the tududi sync for that repository has already been switched off, and its refresher schedule has been removed
+- **THEN** the tududi sync for that repository has already been switched off, and the refresher schedules of both the production and the local templates have been removed
 
 #### Scenario: Labelled issue appears in Plane
 
@@ -222,17 +246,22 @@ The Plane MCP server SHALL run in OAuth mode behind the reverse proxy. A harness
 
 ### Requirement: tududi retires in a fixed order
 
-The tududi retirement SHALL run only after the gates for the earlier phases pass. Open tasks MUST migrate into Plane under the label `migrated-from-tududi`, and a task that is already present MUST be skipped. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse to run without its confirmation value.
+The tududi retirement SHALL run only after the gates for the earlier phases pass. Open tasks MUST migrate into Plane under the label `migrated-from-tududi`, each carrying its tududi task id as a stable identity. Before every create, the migration MUST query Plane for that identity, so that a rerun after a partial failure never creates a duplicate. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
 
 #### Scenario: Open tasks migrate under a marker label
 
 - **WHEN** the one-time migration runs
-- **THEN** each open tududi task exists in Plane under the label `migrated-from-tududi`, and a task already present in Plane is not created a second time
+- **THEN** each open tududi task exists in Plane under the label `migrated-from-tududi`, carrying its tududi task id
+
+#### Scenario: Migration rerun creates no duplicates
+
+- **WHEN** the migration is run again after a partial failure
+- **THEN** the items already migrated are skipped, and no item is created a second time
 
 #### Scenario: Teardown refuses without confirmation
 
-- **WHEN** the tududi teardown is launched without its confirmation value
-- **THEN** it stops before any destructive step, and it changes nothing
+- **WHEN** the tududi teardown is launched with a confirmation value that is absent or does not equal the VM id
+- **THEN** its preflight refuses before any backup or destructive step, and it changes nothing
 
 #### Scenario: Sync app is uninstalled after the refresher is gone
 

@@ -4,7 +4,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 tududi was the team's work tracker. Joe retired it on 2026-10-23, and Plane replaces it as an agent-cloud platform service. Plane has to connect four things that today are not linked: GitHub issues and pull requests, each repository's OpenSpec changes, the work cards the team uses, and the harnesses and bots that act on them.
 
-The approved plan is `plan/development/16-plane-work-management.md`. It fixes nine decisions, D1 to D9, and eight verify-first spikes. This design records the decisions with their rejected alternatives, the risks, the Phase 0 findings as they arrive, and the facts that are still unverified.
+The approved plan is `plan/development/16-plane-work-management.md`. It fixes nine decisions, D1 to D9, and eight verify-first spikes. Three further checks, spikes 0.14 to 0.16, were added on 2026-10-24 for the migration identity, the webhook digest encoding and delivery identity, and the GitHub webhook signature. This design records the decisions with their rejected alternatives, the risks, the Phase 0 findings as they arrive, and the facts that are still unverified.
 
 The composable-service shape comes from the Postiz change set. Postiz is the closest multi-container service on the platform: `platform/playbooks/deploy-postiz.yml` and the `platform/services/postiz/` directory are the models for Plane's deploy playbook and service layout.
 
@@ -48,7 +48,7 @@ The existing tududi-to-GitHub sync is built from n8n workflows and a dedicated G
 
 ### D3. Role mapping from Authentik groups
 
-**Chosen.** `platform-admins` maps to Owner. `platform-developers` and `platform-business` map to Member. `platform-user` is denied. A reconcile playbook applies the mapping, because the Plane OIDC documentation, as cited in the plan, describes no group-to-role mapping.
+**Chosen.** `platform-admins` maps to Owner. `platform-developers` and `platform-business` map to Member. `platform-user` is denied. A reconcile playbook applies the mapping, because the Plane OIDC documentation, as cited in the plan, describes no group-to-role mapping. Sequencing follows from that. Self sign-up is turned off first, so that only invited members can join. The reconcile playbook then invites and sets roles, and only after its apply run succeeds are the OIDC settings applied and the reconcile schedule registered (tasks 2.3 to 2.7).
 
 **Rejected: `platform-business` as Guest.** The approved plan rejects Guest for business users. It records no separate rationale, and it does not describe what a Guest can do in Plane. This change therefore does not compare the two roles beyond the decision itself.
 
@@ -80,7 +80,7 @@ The existing tududi-to-GitHub sync is built from n8n workflows and a dedicated G
 
 ### D7. Forge is the platform bot
 
-**Chosen.** The Plane Discord app runs under the platform bot token, `secret/services/discord:bot_token`, which is shared-read and never copied. The app connects through Discord's gateway websocket. That connection is outbound only, so it adds no public route. Features are notifications, the `/plane create|assign|status` slash commands, and link previews.
+**Chosen.** The Plane Discord app runs under the platform bot token, `secret/services/discord:bot_token`, which is shared-read and never copied. The app connects through Discord's gateway websocket. That connection is outbound only, so it adds no public route. Features are notifications, the `/plane create|assign|status` slash commands, and link previews. Slash commands are received over the Gateway and answered through Discord's HTTP interaction callback, never through the Gateway. The mutating commands `/plane create` and `/plane assign` are limited to members who hold a Discord role declared in site-config and who are mapped to a Plane member. The link previews need the privileged `MESSAGE_CONTENT` intent. The requirements are in `specs/platform/plane-discord-app/spec.md`.
 
 **Rejected: Discord thread synchronisation.** The approved plan does not include it, and Joe did not want it.
 
@@ -100,7 +100,7 @@ The existing tududi-to-GitHub sync is built from n8n workflows and a dedicated G
 
 ## Phase 0 Findings
 
-Each spike writes a dated finding into this table. No answer carries forward until it is recorded here. Every row is open as of 2026-10-23.
+Each spike writes a dated finding into this table. No answer carries forward until it is recorded here. Every row is open as of 2026-10-23, and rows 0.14 to 0.16 were added on 2026-10-24.
 
 | Spike | Informs | Finding (dated) |
 |---|---|---|
@@ -112,6 +112,9 @@ Each spike writes a dated finding into this table. No answer carries forward unt
 | 0.11 OpenTelemetry on Compose (spike 6) | Phase 1 telemetry | Open. The documentation shows Helm only. Fallback: logs only, through the existing Alloy docker discovery. |
 | 0.12 Hardware sizing (spike 7) | Phase 1 | Open. The entry goes into the private `site-config/proxmox/vm-specs.yml`. |
 | 0.13 Self-host OAuth endpoints (spike 8) | Phases 5 and 6 | Open. The documentation shows `api.plane.so`. The authorize, token and installation URLs on the platform's own domain must be confirmed. |
+| 0.14 External identifier support (added 2026-10-24) | Phase 7 migration identity (task 7.1) | Open. Whether Plane's work-item API offers an external identifier field that can hold a tududi task id. If it does, the migration uses it. If not, the migration uses a work-item link to the tududi task URL. |
+| 0.15 Webhook digest encoding and delivery id (added 2026-10-24) | Phase 6 webhook receiver (tasks 6.3 and 6.5) | Open. Two findings from one signed local delivery: the encoding of the `X-Plane-Signature` digest (hex or base64), and whether each delivery carries an `X-Plane-Delivery` header. |
+| 0.16 GitHub webhook signature (added 2026-10-24) | Phase 1 edge boundary (task 1.11) and risk 7 | Open. Whether Plane verifies `X-Hub-Signature-256` against the configured webhook secret, shown by a forged unsigned local delivery being rejected. If this does not pass, no challenge skip is added, and an authenticated boundary is recorded in its place before any Phase 1 edge task. |
 
 ## Risks and Trade-offs
 
@@ -119,15 +122,16 @@ Each spike writes a dated finding into this table. No answer carries forward unt
 2. **Machine-bound licence.** A license key binds to one workspace and one machine (D2). Moving the production stack to another host would need a licence decision. The approved plan records no such decision, so this stays open.
 3. **UI-only configuration.** Any step that exists only in the Plane UI is classified FORCED under `plan/architecture/01-automation-model.md`, section 5. FORCED means imperative by a real constraint, to be encoded as an idempotent post-deploy playbook. It is never left as a runbook click. Each of the six UI-only items in spike 0.3 to 0.8 is classified this way if no API exists.
 4. **Compose state.** The sync persists `state.json` somewhere, and the choice depends on spike 0.10. Until that answer is recorded, the generator omits `state`, so Plane keeps ownership of status. A lost state file could duplicate items, and that is what spike 0.10 tests.
-5. **Sync ordering.** The tududi sync and the Plane sync are both bidirectional on `dev-test`. Phase 3 switches the tududi sync off first with `provision-tududi-github-sync.yml -e sync_enabled=false`. Then it removes the 45-minute refresher schedule, which is declared at `platform/semaphore/templates.yml:691` as `cron: "*/45 * * * *"`. The sync GitHub App is uninstalled only in Phase 7, after the refresher is gone, because the approved plan records that the refresher's mint task refuses on any scope drift.
+5. **Sync ordering.** The tududi sync and the Plane sync are both bidirectional on `dev-test`. Phase 3 switches the tududi sync off first with `provision-tududi-github-sync.yml -e sync_enabled=false`. Then it removes the 45-minute refresher schedule from both refresher templates: the production template at `platform/semaphore/templates.yml:691-692`, and the local template at `platform/semaphore/templates-local.yml:69-70`. Both are `cron: "*/45 * * * *"`. Both templates stay until Phase 7. The sync GitHub App is uninstalled only in Phase 7, after the refresher is gone, because the approved plan records that the refresher's mint task refuses on any scope drift.
 6. **Bot-token blast radius.** The Forge app is one more holder of the platform bot token (D7). Phase 6 records that in the service's `CLAUDE.md`.
-7. **Public webhook path.** Phase 1 adds a Cloudflare challenge skip for `/silo/api/github/github-webhook` only, shaped like the `inference-api-bypass-challenge` rule at `platform/infra/cloudflare/waf.tf:124`. The approved plan does not record whether the GitHub webhook verifies its own signature. That is open.
+7. **Public webhook path.** Phase 1 may add a Cloudflare challenge skip for `/silo/api/github/github-webhook` only, shaped like the `inference-api-bypass-challenge` rule at `platform/infra/cloudflare/waf.tf:124`. The skip is added only if spike 0.16 shows that Plane verifies the GitHub webhook signature. The approved plan does not record that verification, so the spike decides it. If the spike does not pass, no skip is added, and an authenticated boundary is recorded in the design before any Phase 1 edge task. Examples are Caddy verifying the signature, or an allowlist of GitHub hook sources taken from GitHub's meta API. That decision is never deferred to Phase 3.
 8. **Tier gating.** Webhooks and personal access tokens may need a tier above Free. If they do, local validation of Phases 5 and 6 is limited. The approved plan lists this as unverified.
 9. **Step-result emit conflict.** Phase 1 has the deploy playbook emit a step result. `platform/playbooks/deploy-authentik.yml` is the only `deploy-*.yml` that includes `tasks/emit-step-result.yml`, and it records only its `oidc-config` step. The entry for the emit task in `AGENTS.md` says that per-service deploy playbooks do not include it, and that the `service-deploy` step records none. **Resolved 2026-10-23:** the collector records a synthetic `fail` for a failed deploy task that emitted nothing and records nothing for a successful one (`platform/workflows/service-onboarding/lib/step_results.py:239-249`). Every per-service deploy follows that convention, so the Plane deploy does too. A missing `pass` for `service-deploy` is a platform-wide gap; it is fixed once in the shared mechanism by a separate change, never special-cased here.
 10. **tududi restore path.** The final backup goes to site-config, but the approved plan does not record a restore procedure for tududi. Phase 7 is one-way until one exists.
 
 ## Open Items
 
+- Spike 0.16 decides whether the Cloudflare challenge skip for the GitHub webhook path is added (risk 7).
 - A restore procedure for tududi is written or explicitly accepted as absent before Phase 7 runs.
 
 ## Migration Plan
@@ -151,6 +155,9 @@ Each item below is unverified as of 2026-10-23. Each one is owned by a Phase 0 s
 - The `plane-sdk` and `discord.py` versions. Both packages were approved by Joseph A. Wisneski IV on 2026-10-23, and each version is pinned at implementation time. Neither package was checked against a package index while this change was written.
 - The version of `makeplane/plane-mcp-server`. No version has been chosen.
 - The `prime.plane.so` setup URL pattern, `prime.plane.so/api/v2/setup/?version=…&platform=amd64`, cited in the plan. It was not fetched.
-- Whether the GitHub webhook verifies its own signature (risk 7).
+- Whether the GitHub webhook verifies its own signature (spike 0.16, risk 7).
+- The external identifier field in Plane's work-item API (spike 0.14).
+- The Plane webhook digest encoding and the `X-Plane-Delivery` header (spike 0.15).
+- The Discord rules this change relies on: the 3-second window for answering an interaction, the HTTP interaction callback, the privileged `MESSAGE_CONTENT` intent, and close code 4014 for an intent that is not enabled. They are cited from `https://docs.discord.com/developers/interactions/receiving-and-responding` and `https://docs.discord.com/developers/events/gateway`. They were not fetched again while this design was edited.
 - A restore procedure for tududi (risk 10).
 - The Forge image workflow. The approved plan says it is built to GHCR by a workflow like `.github/workflows/build-honcho.yml`. That file exists, but its contents were not reviewed for this change.
