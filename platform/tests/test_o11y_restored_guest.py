@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ def fixture_inspection(monkeypatch, tmp_path):
     root = tmp_path / "service"
     root.mkdir()
     monkeypatch.setattr(guest.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=uid, pw_dir=str(root)))
+    monkeypatch.setattr(guest, "_service_owner_policy", lambda _name, _account: ((), "a" * 64))
     mounts = {}
     for service, (volume, _container, _destination, _port) in guest.VOLUMES.items():
         path = root / volume
@@ -100,6 +102,286 @@ def test_all_five_rootless_volumes_and_historical_backends_are_verified(monkeypa
     assert result["backend_count"] == 4
     assert result["grafana_integrity"] == "ok"
     assert all(item["historical_records"] == 4 for item in result["backends"].values())
+
+
+def test_subuid_parser_binds_named_and_unambiguous_numeric_account_entries():
+    passwd_entries = [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]
+    named_ranges, named_digest = guest.parse_subuid(
+        "svc_o11y:200000:65536\nalice:300000:65536\n",
+        service_user="svc_o11y",
+        service_uid=1000,
+        passwd_entries=passwd_entries,
+    )
+    numeric_ranges, numeric_digest = guest.parse_subuid(
+        "1000:200000:65536\nalice:300000:65536\n",
+        service_user="svc_o11y",
+        service_uid=1000,
+        passwd_entries=passwd_entries,
+    )
+    assert named_ranges == numeric_ranges == ((200000, 265536),)
+    assert named_digest == numeric_digest
+    assert guest._owner_allowed(200001, 1000, named_ranges)
+    assert not guest._owner_allowed(999999999, 1000, named_ranges)
+    assert not guest._owner_allowed(300001, 1000, named_ranges)
+
+
+@pytest.mark.parametrize(
+    "content,passwd_entries",
+    [
+        ("svc_o11y:0:1\n", [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]),
+        ("svc_o11y:1000:1\n", [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]),
+        ("alice:1001:1\n", [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]),
+        ("svc_o11y:300000:10\nalice:300005:10\n", [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]),
+        ("svc_o11y:4294967295:2\n", [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]),
+        ("9999:300000:10\n", [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]),
+        ("1000:300000:10\n", [("root", 0), ("svc_o11y", 1000), ("alias", 1000)]),
+    ],
+)
+def test_subuid_parser_rejects_uid_collisions_foreign_aliases_and_overlaps(content, passwd_entries):
+    with pytest.raises(guest.Refusal, match="volume_owner_invalid"):
+        guest.parse_subuid(
+            content,
+            service_user="svc_o11y",
+            service_uid=1000,
+            passwd_entries=passwd_entries,
+        )
+
+
+def test_subuid_parser_rejects_malformed_unbounded_or_duplicate_mapping_inputs():
+    rows = [("root", 0), ("svc_o11y", 1000), ("alice", 1001)]
+    for content in (
+        "svc_o11y:200000:65536 trailing\n",
+        "svc_o11y:200000:+65536\n",
+        "svc_o11y:200000:65536\nalice:265535:1\n",
+        "svc_o11y:200000:65536\nsvc_o11y:200000:65536\n",
+    ):
+        with pytest.raises(guest.Refusal, match="volume_owner_invalid"):
+            guest.parse_subuid(content, service_user="svc_o11y", service_uid=1000, passwd_entries=rows)
+    with pytest.raises(guest.Refusal, match="volume_owner_invalid"):
+        guest.parse_subuid("svc_o11y:200000:1\n", service_user="svc_o11y", service_uid=1000, passwd_entries=rows * 1000)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_uid=0, st_size=1),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=123, st_size=1),
+        SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0, st_size=1),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_size=guest.MAX_SUBUID_BYTES + 1),
+    ],
+)
+def test_subuid_file_reader_rejects_unsafe_file_metadata(monkeypatch, tmp_path, metadata):
+    monkeypatch.setattr(guest.os, "lstat", lambda _path: metadata)
+    with pytest.raises(guest.Refusal, match="volume_owner_invalid"):
+        guest._read_subuid(tmp_path / "subuid")
+
+
+def test_rootless_subuid_owned_volume_and_database_are_verified_and_fingerprinted(monkeypatch, tmp_path):
+    payload, mounts = fixture_inspection(monkeypatch, tmp_path)
+    baseline = guest.inspect(payload)
+    mapped_uid = 200123
+    mapping_digest = hashlib.sha256(b"svc_o11y:200000:65536").hexdigest()
+    monkeypatch.setattr(guest, "_service_owner_policy", lambda _name, _account: (((200000, 265536),), mapping_digest))
+    original_lstat = guest.os.lstat
+
+    def mapped_lstat(path):
+        actual = original_lstat(path)
+        if str(path) in set(mounts.values()) or str(path) == str(Path(mounts["grafana"]) / "grafana.db"):
+            return SimpleNamespace(
+                st_mode=actual.st_mode,
+                st_uid=mapped_uid,
+                st_size=actual.st_size,
+                st_nlink=actual.st_nlink,
+                st_dev=actual.st_dev,
+                st_ino=actual.st_ino,
+            )
+        return actual
+
+    monkeypatch.setattr(guest.os, "lstat", mapped_lstat)
+    result = guest.inspect(payload)
+    assert result["status"] == "verified"
+    assert set(result) == {
+        "schema_version",
+        "status",
+        "reason",
+        "volume_count",
+        "volume_bindings_sha256",
+        "container_bindings_sha256",
+        "backend_count",
+        "grafana_integrity",
+        "grafana_migrations",
+        "grafana_database_sha256",
+        "backends",
+        "receipt_fingerprint",
+    }
+    assert "owner_uid" not in result and "owner_mapping_sha256" not in result
+    assert result["volume_bindings_sha256"] != baseline["volume_bindings_sha256"]
+    assert result["grafana_database_sha256"] != baseline["grafana_database_sha256"]
+    monkeypatch.setattr(
+        guest,
+        "_service_owner_policy",
+        lambda _name, _account: (((200000, 265536),), hashlib.sha256(b"changed account mapping").hexdigest()),
+    )
+    changed_mapping = guest.inspect(payload)
+    assert changed_mapping["volume_bindings_sha256"] != result["volume_bindings_sha256"]
+    assert changed_mapping["grafana_database_sha256"] != result["grafana_database_sha256"]
+
+
+def test_rootless_mapped_uid_is_rejected_outside_declared_subuid_range(monkeypatch, tmp_path):
+    payload, mounts = fixture_inspection(monkeypatch, tmp_path)
+    original_lstat = guest.os.lstat
+
+    def foreign_lstat(path):
+        actual = original_lstat(path)
+        if str(path) == mounts["loki"]:
+            return SimpleNamespace(
+                st_mode=actual.st_mode,
+                st_uid=300000,
+                st_size=actual.st_size,
+                st_nlink=actual.st_nlink,
+                st_dev=actual.st_dev,
+                st_ino=actual.st_ino,
+            )
+        return actual
+
+    monkeypatch.setattr(guest.os, "lstat", foreign_lstat)
+    with pytest.raises(guest.Refusal, match="volume_owner_invalid"):
+        guest.inspect(payload)
+
+
+def test_subuid_owned_leaf_does_not_relax_parent_path_ownership(monkeypatch, tmp_path):
+    root = tmp_path / "service"
+    parent = root / "foreign-parent"
+    leaf = parent / "volume"
+    leaf.mkdir(parents=True)
+    original_lstat = guest.os.lstat
+
+    def foreign_parent_lstat(path):
+        actual = original_lstat(path)
+        if str(path) == str(parent):
+            return SimpleNamespace(st_mode=actual.st_mode, st_uid=300000)
+        return actual
+
+    monkeypatch.setattr(guest.os, "lstat", foreign_parent_lstat)
+    with pytest.raises(guest.Refusal, match="volume_state_invalid"):
+        guest._safe_path(str(leaf), root=root, owner_uid=1000, subuid_ranges=((200000, 265536),))
+
+
+def test_subuid_owned_leaf_cannot_escape_account_root(monkeypatch, tmp_path):
+    root = tmp_path / "service"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(guest.Refusal, match="volume_state_invalid"):
+        guest._safe_path(
+            str(root / ".." / "outside"),
+            root=root,
+            owner_uid=os.getuid(),
+            subuid_ranges=((200000, 265536),),
+        )
+
+
+def test_subuid_mapping_does_not_allow_a_symlinked_grafana_database(monkeypatch, tmp_path):
+    _payload, mounts = fixture_inspection(monkeypatch, tmp_path)
+    grafana = Path(mounts["grafana"])
+    database = grafana / "grafana.db"
+    target = grafana / "grafana.real"
+    database.rename(target)
+    database.symlink_to(target.name)
+    with pytest.raises(guest.Refusal, match="grafana_integrity_invalid"):
+        guest._sqlite_integrity(
+            grafana,
+            owner_uid=os.getuid(),
+            subuid_ranges=((200000, 265536),),
+            owner_mapping_sha256="b" * 64,
+        )
+
+
+def test_sqlite_database_hardlink_is_still_rejected(monkeypatch, tmp_path):
+    _payload, mounts = fixture_inspection(monkeypatch, tmp_path)
+    grafana = Path(mounts["grafana"])
+    (grafana / "grafana.db-copy").hardlink_to(grafana / "grafana.db")
+    with pytest.raises(guest.Refusal, match="grafana_integrity_invalid"):
+        guest._sqlite_integrity(
+            grafana,
+            owner_uid=os.getuid(),
+            subuid_ranges=((200000, 265536),),
+            owner_mapping_sha256="b" * 64,
+        )
+
+
+def test_sqlite_accepts_mapped_owner_on_live_wal_and_shared_memory(monkeypatch, tmp_path):
+    _payload, mounts = fixture_inspection(monkeypatch, tmp_path)
+    grafana = Path(mounts["grafana"])
+    database = grafana / "grafana.db"
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("INSERT INTO migration_log VALUES (2)")
+    connection.commit()
+    wal = grafana / "grafana.db-wal"
+    shm = grafana / "grafana.db-shm"
+    assert wal.exists() and shm.exists()
+
+    original_lstat = guest.os.lstat
+    mapped_uid = 200123
+
+    def mapped_lstat(path):
+        actual = original_lstat(path)
+        if str(path) in {str(database), str(wal), str(shm)}:
+            return SimpleNamespace(
+                st_mode=actual.st_mode,
+                st_uid=mapped_uid,
+                st_size=actual.st_size,
+                st_nlink=actual.st_nlink,
+                st_dev=actual.st_dev,
+                st_ino=actual.st_ino,
+            )
+        return actual
+
+    monkeypatch.setattr(guest.os, "lstat", mapped_lstat)
+    count, digest = guest._sqlite_integrity(
+        grafana,
+        owner_uid=os.getuid(),
+        subuid_ranges=((200000, 265536),),
+        owner_mapping_sha256="c" * 64,
+    )
+    connection.close()
+    assert count > 0
+    assert len(digest) == 64
+
+
+@pytest.mark.parametrize("foreign_file", ["grafana.db", "grafana.db-wal", "grafana.db-shm"])
+def test_sqlite_files_reject_unmapped_uid_owners(monkeypatch, tmp_path, foreign_file):
+    payload, mounts = fixture_inspection(monkeypatch, tmp_path)
+    del payload
+    grafana = Path(mounts["grafana"])
+    if foreign_file != "grafana.db":
+        (grafana / "grafana.db-wal").write_bytes(b"bounded wal fixture")
+        (grafana / "grafana.db-shm").write_bytes(b"bounded shm fixture")
+    foreign_path = grafana / foreign_file
+    original_lstat = guest.os.lstat
+
+    def foreign_file_lstat(path):
+        actual = original_lstat(path)
+        if str(path) == str(foreign_path):
+            return SimpleNamespace(
+                st_mode=actual.st_mode,
+                st_uid=300000,
+                st_size=actual.st_size,
+                st_nlink=actual.st_nlink,
+                st_dev=actual.st_dev,
+                st_ino=actual.st_ino,
+            )
+        return actual
+
+    monkeypatch.setattr(guest.os, "lstat", foreign_file_lstat)
+    with pytest.raises(guest.Refusal, match="grafana_integrity_invalid"):
+        guest._sqlite_integrity(
+            grafana,
+            owner_uid=os.getuid(),
+            subuid_ranges=((200000, 265536),),
+            owner_mapping_sha256="b" * 64,
+        )
 
 
 def test_historical_queries_use_only_loopback_inside_the_exact_container_namespace(monkeypatch):

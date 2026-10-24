@@ -15,16 +15,21 @@ import os
 import pwd
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
 import urllib.parse
 import urllib.request
+from bisect import bisect_left
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 MAX_INPUT_BYTES = 64 * 1024
 MAX_COMMAND_BYTES = 4 * 1024 * 1024
 MAX_HTTP_BYTES = 2 * 1024 * 1024
+MAX_SUBUID_BYTES = 256 * 1024
+MAX_SUBUID_ROWS = 4096
+MAX_UID = 2**32 - 1
 WINDOW_SECONDS = 86_400
 VOLUMES = {
     "prometheus": ("prometheus-data", "o11y-prometheus", "/prometheus", 9090),
@@ -63,6 +68,174 @@ def _require(condition: bool, reason: str) -> None:
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _read_subuid(path: Path = Path("/etc/subuid")) -> bytes:
+    """Read a bounded, root-owned subuid file without following its final symlink."""
+    try:
+        before = os.lstat(path)
+        _require(
+            stat.S_ISREG(before.st_mode)
+            and not stat.S_ISLNK(before.st_mode)
+            and before.st_uid == 0
+            and before.st_mode & 0o022 == 0
+            and before.st_size <= MAX_SUBUID_BYTES,
+            "volume_owner_invalid",
+        )
+        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            _require(
+                stat.S_ISREG(opened.st_mode)
+                and opened.st_uid == 0
+                and opened.st_mode & 0o022 == 0
+                and opened.st_size <= MAX_SUBUID_BYTES
+                and (opened.st_dev, opened.st_ino) == (before.st_dev, before.st_ino),
+                "volume_owner_invalid",
+            )
+            content = stream.read(MAX_SUBUID_BYTES + 1)
+        _require(len(content) <= MAX_SUBUID_BYTES, "volume_owner_invalid")
+        return content
+    except (OSError, TypeError, ValueError):
+        raise Refusal("volume_owner_invalid") from None
+
+
+def parse_subuid(
+    content: bytes | str,
+    *,
+    service_user: str,
+    service_uid: int,
+    passwd_entries: list[tuple[str, int]],
+) -> tuple[tuple[tuple[int, int], ...], str]:
+    """Resolve only this account's validated subordinate ranges and fingerprint the map.
+
+    Returned ranges are half-open. This pure parser takes NSS/passwd rows explicitly so
+    account binding and hostile allocation cases can be tested without changing host IDs.
+    """
+    try:
+        _require(isinstance(content, (bytes, str)), "volume_owner_invalid")
+        raw = content if isinstance(content, bytes) else content.encode("ascii")
+        _require(len(raw) <= MAX_SUBUID_BYTES, "volume_owner_invalid")
+        text = raw.decode("ascii")
+        _require("\x00" not in text, "volume_owner_invalid")
+        _require(
+            isinstance(service_user, str)
+            and USERNAME.fullmatch(service_user)
+            and type(service_uid) is int
+            and 0 <= service_uid <= MAX_UID
+            and isinstance(passwd_entries, list),
+            "volume_owner_invalid",
+        )
+        rows = [(name, uid) for name, uid in passwd_entries]
+        _require(
+            len(rows) <= MAX_SUBUID_ROWS * 16
+            and all(
+                isinstance(name, str)
+                and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,254}\$?", name))
+                and type(uid) is int
+                and 0 <= uid <= MAX_UID
+                for name, uid in rows
+            ),
+            "volume_owner_invalid",
+        )
+        names: dict[str, list[int]] = {}
+        uids: dict[int, list[str]] = {}
+        for name, uid in rows:
+            names.setdefault(name, []).append(uid)
+            uids.setdefault(uid, []).append(name)
+        passwd_uids = sorted(uids)
+        _require(names.get(service_user) == [service_uid], "volume_owner_invalid")
+
+        allocations: list[tuple[int, int, str, str]] = []
+        own_ranges: list[tuple[int, int]] = []
+        raw_lines = text.splitlines()
+        _require(len(raw_lines) <= MAX_SUBUID_ROWS, "volume_owner_invalid")
+        for line in raw_lines:
+            if not line or line.startswith("#"):
+                continue
+            _require(line == line.strip() and line.count(":") == 2, "volume_owner_invalid")
+            selector, start_text, count_text = line.split(":")
+            _require(
+                bool(selector)
+                and bool(re.fullmatch(r"[0-9]+", start_text))
+                and bool(re.fullmatch(r"[0-9]+", count_text))
+                and len(start_text) <= 10
+                and len(count_text) <= 10,
+                "volume_owner_invalid",
+            )
+            start, count = int(start_text), int(count_text)
+            _require(
+                0 < start <= MAX_UID and 0 < count <= MAX_UID and start + count <= MAX_UID + 1,
+                "volume_owner_invalid",
+            )
+
+            if re.fullmatch(r"[0-9]+", selector):
+                _require(len(selector) <= 10, "volume_owner_invalid")
+                selector_uid = int(selector)
+                _require(
+                    selector_uid <= MAX_UID and len(uids.get(selector_uid, [])) == 1,
+                    "volume_owner_invalid",
+                )
+                resolved_name = uids[selector_uid][0]
+                principal = f"account:{resolved_name}:{selector_uid}"
+            else:
+                _require(
+                    bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,254}\$?", selector)),
+                    "volume_owner_invalid",
+                )
+                matches = names.get(selector, [])
+                _require(len(matches) <= 1, "volume_owner_invalid")
+                principal = f"account:{selector}:{matches[0]}" if matches else f"unresolved:{selector}"
+
+            end = start + count
+            first_uid = bisect_left(passwd_uids, start)
+            _require(first_uid == len(passwd_uids) or passwd_uids[first_uid] >= end, "volume_owner_invalid")
+            allocations.append((start, end, principal, selector))
+            if principal == f"account:{service_user}:{service_uid}":
+                own_ranges.append((start, end))
+
+        allocations.sort(key=lambda item: (item[0], item[1], item[2]))
+        for previous, current in zip(allocations, allocations[1:], strict=False):
+            _require(previous[1] <= current[0], "volume_owner_invalid")
+
+        canonical = [
+            {"principal": principal, "start": start, "end": end} for start, end, principal, _selector in allocations
+        ]
+        fingerprint = _sha(
+            json.dumps(
+                {
+                    "service_user": service_user,
+                    "service_uid": service_uid,
+                    "passwd_uid_bindings": sorted({(name, uid) for name, uid in rows}),
+                    "allocations": canonical,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        return tuple(sorted(own_ranges)), fingerprint
+    except (UnicodeError, TypeError, ValueError, OverflowError):
+        raise Refusal("volume_owner_invalid") from None
+
+
+def _service_owner_policy(service_user: str, account: object) -> tuple[tuple[tuple[int, int], ...], str]:
+    try:
+        passwd_records = pwd.getpwall()
+        _require(len(passwd_records) <= MAX_SUBUID_ROWS * 16, "volume_owner_invalid")
+        passwd_entries = [(entry.pw_name, entry.pw_uid) for entry in passwd_records]
+    except (OSError, AttributeError):
+        raise Refusal("volume_owner_invalid") from None
+    return parse_subuid(
+        _read_subuid(),
+        service_user=service_user,
+        service_uid=account.pw_uid,
+        passwd_entries=passwd_entries,
+    )
+
+
+def _owner_allowed(uid: int, account_uid: int, subuid_ranges: tuple[tuple[int, int], ...]) -> bool:
+    return uid == account_uid or any(start <= uid < end for start, end in subuid_ranges)
 
 
 def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -155,25 +328,46 @@ def _json_command(argv: list[str], user: str) -> object:
         raise Refusal("podman_unavailable") from None
 
 
-def _safe_path(path: object, *, root: Path, owner_uid: int) -> Path:
+def _safe_path(
+    path: object,
+    *,
+    root: Path,
+    owner_uid: int,
+    subuid_ranges: tuple[tuple[int, int], ...],
+) -> tuple[Path, int]:
     _require(isinstance(path, str) and path.startswith("/"), "volume_state_invalid")
     candidate = Path(path)
     try:
         relative = candidate.relative_to(root)
+        _require(".." not in relative.parts, "volume_state_invalid")
+        root_stat = os.lstat(root)
+        _require(
+            stat.S_ISDIR(root_stat.st_mode)
+            and not stat.S_ISLNK(root_stat.st_mode)
+            and root_stat.st_uid in {0, owner_uid},
+            "volume_state_invalid",
+        )
         current = root
+        leaf_stat = None
         for part in relative.parts:
             current = current / part
-            stat = os.lstat(current)
+            current_stat = os.lstat(current)
             _require(
-                not os.path.islink(current) and (current == candidate or stat.st_uid in {0, owner_uid}),
+                not stat.S_ISLNK(current_stat.st_mode)
+                and (current == candidate or current_stat.st_uid in {0, owner_uid}),
                 "volume_state_invalid",
             )
-        stat = os.lstat(candidate)
+            if current == candidate:
+                leaf_stat = current_stat
     except (OSError, ValueError):
         raise Refusal("volume_state_invalid") from None
-    _require(os.path.isdir(candidate) and not os.path.islink(candidate), "volume_state_invalid")
-    _require(stat.st_uid == owner_uid, "volume_owner_invalid")
-    return candidate
+    _require(
+        leaf_stat is not None
+        and stat.S_ISDIR(leaf_stat.st_mode)
+        and _owner_allowed(leaf_stat.st_uid, owner_uid, subuid_ranges),
+        "volume_owner_invalid",
+    )
+    return candidate, leaf_stat.st_uid
 
 
 def _namespace_http(pid: int, url: str, *, timeout: int = 8, max_bytes: int = MAX_HTTP_BYTES) -> bytes:
@@ -277,32 +471,41 @@ def _probe_count(name: str, pid: int, epoch: int) -> tuple[int, str]:
     raise Refusal("invalid_input")
 
 
-def _sqlite_integrity(path: Path, *, owner_uid: int) -> tuple[int, str]:
+def _sqlite_integrity(
+    path: Path,
+    *,
+    owner_uid: int,
+    subuid_ranges: tuple[tuple[int, int], ...],
+    owner_mapping_sha256: str,
+) -> tuple[int, str]:
     db_path = path / "grafana.db"
     try:
         st = os.lstat(db_path)
         _require(
-            os.path.isfile(db_path)
-            and not os.path.islink(db_path)
+            stat.S_ISREG(st.st_mode)
+            and not stat.S_ISLNK(st.st_mode)
             and st.st_size >= 4096
-            and st.st_uid == owner_uid
+            and _owner_allowed(st.st_uid, owner_uid, subuid_ranges)
             and st.st_nlink == 1,
             "grafana_integrity_invalid",
         )
+        accepted_file_owners = {st.st_uid}
         wal_path = path / "grafana.db-wal"
         shm_path = path / "grafana.db-shm"
         if os.path.lexists(wal_path):
             wal_stat = os.lstat(wal_path)
+            shm_stat = os.lstat(shm_path) if os.path.lexists(shm_path) else None
             _require(
-                os.path.isfile(wal_path)
-                and not os.path.islink(wal_path)
-                and wal_stat.st_uid == owner_uid
-                and os.path.lexists(shm_path)
-                and os.path.isfile(shm_path)
-                and not os.path.islink(shm_path)
-                and os.lstat(shm_path).st_uid == owner_uid,
+                stat.S_ISREG(wal_stat.st_mode)
+                and not stat.S_ISLNK(wal_stat.st_mode)
+                and _owner_allowed(wal_stat.st_uid, owner_uid, subuid_ranges)
+                and shm_stat is not None
+                and stat.S_ISREG(shm_stat.st_mode)
+                and not stat.S_ISLNK(shm_stat.st_mode)
+                and _owner_allowed(shm_stat.st_uid, owner_uid, subuid_ranges),
                 "grafana_integrity_invalid",
             )
+            accepted_file_owners.update((wal_stat.st_uid, shm_stat.st_uid))
         # Grafana may still append to this database while the restored stack is
         # running. Use SQLite's normal WAL-aware read-only transaction rather
         # than immutable mode, which can silently ignore a live WAL.
@@ -319,7 +522,15 @@ def _sqlite_integrity(path: Path, *, owner_uid: int) -> tuple[int, str]:
                 type(migrations) is int and migrations > 0 and type(dashboards) is int and dashboards > 0,
                 "grafana_integrity_invalid",
             )
-        return migrations, _sha(f"{st.st_size}:{migrations}:{dashboards}:ok".encode())
+        integrity_evidence = {
+            "size": st.st_size,
+            "migrations": migrations,
+            "dashboards": dashboards,
+            "result": "ok",
+            "accepted_file_owner_uids": sorted(accepted_file_owners),
+            "owner_mapping_sha256": owner_mapping_sha256,
+        }
+        return migrations, _sha(json.dumps(integrity_evidence, sort_keys=True, separators=(",", ":")).encode())
     except (OSError, sqlite3.Error, TypeError):
         raise Refusal("grafana_integrity_invalid") from None
 
@@ -352,6 +563,7 @@ def inspect(payload: object) -> dict:
         account = pwd.getpwnam(user)
     except KeyError:
         raise Refusal("volume_owner_invalid") from None
+    subuid_ranges, owner_mapping_sha256 = _service_owner_policy(user, account)
     root = Path(account.pw_dir)
     _require(root.is_absolute() and root != Path("/"), "invalid_input")
     volumes = {}
@@ -386,7 +598,12 @@ def inspect(payload: object) -> dict:
             and labels.get("com.docker.compose.volume") == volume,
             "volume_state_invalid",
         )
-        mountpoint = _safe_path(vol["Mountpoint"], root=root, owner_uid=account.pw_uid)
+        mountpoint, mount_owner_uid = _safe_path(
+            vol["Mountpoint"],
+            root=root,
+            owner_uid=account.pw_uid,
+            subuid_ranges=subuid_ranges,
+        )
         volumes[service] = mountpoint
         volume_evidence.append(
             {
@@ -394,7 +611,8 @@ def inspect(payload: object) -> dict:
                 "logical_volume": volume,
                 "volume_name_sha256": _sha(physical_name.encode()),
                 "mountpoint_sha256": _sha(os.fsencode(mountpoint)),
-                "owner_uid": account.pw_uid,
+                "owner_uid": mount_owner_uid,
+                "owner_mapping_sha256": owner_mapping_sha256,
             }
         )
         raw_container = _json_command(["podman", "inspect", container], user)
@@ -456,7 +674,12 @@ def inspect(payload: object) -> dict:
                 "mount_sha256": _sha(str(mountpoint).encode()),
             }
         )
-    database_count, database_fingerprint = _sqlite_integrity(volumes["grafana"], owner_uid=account.pw_uid)
+    database_count, database_fingerprint = _sqlite_integrity(
+        volumes["grafana"],
+        owner_uid=account.pw_uid,
+        subuid_ranges=subuid_ranges,
+        owner_mapping_sha256=owner_mapping_sha256,
+    )
     backends = {}
     for name in sorted(BACKENDS):
         count, proof = _probe_count(name, container_pids[name], epoch)
