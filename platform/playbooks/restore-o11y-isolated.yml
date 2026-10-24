@@ -678,8 +678,8 @@
         status_code: [200]
       register: _restore_submit
       failed_when: false
-      check_mode: false
       no_log: true
+      when: not ansible_check_mode
 
     - name: Require one returned restore UPID without retrying an uncertain request
       ansible.builtin.assert:
@@ -862,8 +862,8 @@
         status_code: [200]
       register: _restore_isolation_submit
       failed_when: false
-      check_mode: false
       no_log: true
+      when: not ansible_check_mode
 
     - name: Read back the full disconnected target configuration
       ansible.builtin.uri:
@@ -1004,8 +1004,8 @@
         status_code: [200]
       register: _restore_start_submit
       failed_when: false
-      check_mode: false
       no_log: true
+      when: not ansible_check_mode
 
     - name: Record the actual qmstart UPID through CAS
       ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
@@ -1201,8 +1201,8 @@
         status_code: [200]
       register: _restore_guest_exec_submit
       failed_when: false
-      check_mode: false
       no_log: true
+      when: not ansible_check_mode
 
     - name: Require the actual QGA process ID before polling
       ansible.builtin.assert:
@@ -1365,8 +1365,8 @@
         status_code: [200]
       register: _restore_stop_submit
       failed_when: false
-      check_mode: false
       no_log: true
+      when: not ansible_check_mode
 
     - name: Record the actual qmstop UPID before polling
       ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
@@ -1474,6 +1474,7 @@
           changed_when: false
           failed_when: false
           no_log: true
+          check_mode: false
 
         - name: CAS complete stopped-target effect
           ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
@@ -1512,6 +1513,7 @@
       changed_when: false
       failed_when: false
       no_log: true
+      check_mode: false
 
     - name: Require the full stopped journal to seal one closed private receipt
       ansible.builtin.assert:

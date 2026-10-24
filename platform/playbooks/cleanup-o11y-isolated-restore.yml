@@ -476,8 +476,8 @@
         status_code: [200]
       register: _cleanup_delete_submit
       failed_when: false
-      check_mode: false
       no_log: true
+      when: not ansible_check_mode
 
     - name: Require and record the exact returned qmdestroy UPID
       ansible.builtin.assert:
