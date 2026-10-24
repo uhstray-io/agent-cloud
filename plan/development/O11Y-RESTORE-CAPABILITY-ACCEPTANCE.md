@@ -63,17 +63,23 @@ Required effective capabilities are exactly `{create, read, update}` for the dat
 | Lint and diff | Focused Ruff/YAML checks and `git diff --check` pass. |
 | Live activation | Separately verify Dev catalog binding, apply the reviewed policy through the existing Dev policy template, then run this verifier and review its receipt before enabling any guarded writer. |
 
-## Publication status (2026-10-24)
+## Publication and acceptance status (2026-10-24)
 
-Sanitized Dev task 8650 succeeded at commit
-`06ad8c32358518a1dc52181fde10439a8d431980` and created only the
-`Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
-5, environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
-survey fields. Existing main-bound policy template 50's bindings remained
-unchanged. This
-proves publication of the policy-application mechanism only. The policy has
-not been applied, and this verifier has not established the injected role's
-effective capabilities; those live acceptance gates remain open.
+PR #734 source is merged and its final-head CI passed. Scoped task 8706 at
+actual Dev `b0e7beeb9fcb6fa1e076b935aac39e86c9986f75` published only verifier
+template 352 with the sole reviewed-SHA survey field. Policy template 351 was
+published earlier by task 8650; no policy-apply task was launched. Managed
+automatic approval review rejected that production execution pending explicit
+user authorization. Do not infer the current stored policy or grants are wrong.
+
+Check-mode verifier task 8710 failed before Ansible plays because the public
+Galaxy collection artifact returned HTTP 500. It produced no policy equality
+or effective-capability proof. Keep live activation blocked on authorization,
+dependency availability and accepted readback, without weakening comparison,
+unpinning dependencies or routing around the approval decision. Exact source
+composition, template bindings, failure evidence and remaining prerequisites
+are recorded once in the
+[production checkpoint](openspec/changes/pbs-vm-and-restore-gate/implementation/production-checkpoint-2026-10-24.md).
 
 ## Security Considerations
 
@@ -92,3 +98,4 @@ The API token, login response, policy text, and capabilities response are protec
 
 - 2026-10-24: Approved the source-only capability and policy readback gate; live activation remains separate.
 - 2026-10-24: Preserve policy trailing newlines during shared publication so exact source/readback comparison succeeds.
+- 2026-10-24: Record merged source, scoped verifier publication and separately blocked authorization/dependency gates; effective grants remain unverified.

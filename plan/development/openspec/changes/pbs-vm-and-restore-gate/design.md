@@ -73,6 +73,12 @@ behavior remains a live compatibility gate.
 
 ### Proposed primary-unavailable acceptance child
 
+For the merged ordinary restore source and separately blocked production
+acceptance, see the
+[2026-10-24 checkpoint](implementation/production-checkpoint-2026-10-24.md).
+It records final-head CI, actual Dev composition and scoped catalog publication;
+it establishes no effective role, private PBS, outage or restore acceptance.
+
 Task 4.4c requires evidence the ordinary schema-2 journal and
 `restore_receipt/v3` do not provide. The proposed
 [primary-unavailable restore plan](implementation/primary-unavailable-restore-plan.md)

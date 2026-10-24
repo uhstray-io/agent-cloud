@@ -6,6 +6,14 @@ identity, or storage exists.
 
 ## Source integration status and current blockers
 
+The latest bounded source, publication and failed-check evidence is in the
+[2026-10-24 production checkpoint](production-checkpoint-2026-10-24.md).
+PR #734 is merged; its reviewed-head CI passed and actual Dev composition was
+audited with 558 static guards, not full combined-tree CI. Verifier publication
+does not accept role capabilities: production policy execution awaits explicit
+user authorization after managed approval rejection, and task 8710 stopped in
+Galaxy dependency setup before Ansible plays. Preserve both blockers.
+
 - PR #726 merged to `dev` at verified merge commit
   `c4eee56be4860702df537d40b71d8d85ad229a33`, containing reviewed PBS source
   head `e149fe641cf9f2a9034969dc9b3c2daf51032b09`. The source-only restore
@@ -19,7 +27,8 @@ identity, or storage exists.
   `391a4f7` stopped after creating the template. Catalog readback proves the
   definitions, not success of every publication invocation or acceptance of
   the created Proxmox template.
-- Private site-config PR #110 is approval-blocked. This blocks target allocation
+- Private site-config PR #110 remains open at remote `50672e3`; prepared IP
+  correction `e0b1ae7` awaits specific push approval. This blocks target allocation
   and guest configuration until the PBS inventory declaration is approved,
   merged, synchronized, and read back. It does not block publishing the Dev
   catalog entries. Do not substitute launch-time identity values or
@@ -34,15 +43,18 @@ identity, or storage exists.
   no-subscription path is allowed only with explicit private
   `pbs_accept_no_subscription_risk: true` acceptance and is not an implicit
   production default.
-- The seven-day capacity/retention gate remains blocked by
-  `source_series_ambiguous`. That does not prove capacity, authorize VM growth,
-  or authorize retention changes. Task 4.4's second-PBS destination remains a
-  planning candidate only.
+- Capacity task 8658 cleared the earlier source ambiguity for its observed
+  refresh but returned `source_history_too_short`: 2,305 points, 16 events,
+  604,701 seconds (99 short of seven days). Forecast, headroom and backup gates
+  remain open; do not rerun or generate samples merely to pass. Task 4.4's
+  second-PBS destination remains a planning candidate only.
 
 ## Preconditions before allocation or guest configuration
 
-1. Confirm PR #726 is merged to `dev`, all required final-head checks are green,
-   and record the exact 40-character Dev commit SHA. Use that SHA as the sole
+1. Confirm the required PBS source, including PR #726 and PR #734, is merged,
+   required final-head checks passed, and the live Dev ref/merge tree is reviewed.
+   Record its exact 40-character SHA rather than a PR base snapshot; distinguish
+   any bounded composition proof from full combined-tree CI. Use that SHA as the sole
    survey value `expected_repository_sha` for each catalog task. Do not pass
    private target identity, endpoints, credentials, or repository acceptance
    through surveys or extra vars.
@@ -162,8 +174,8 @@ reviewed-checkout dependency list within the bounded 16-path limit.
 
 Source guard tests do not establish target availability or successful restore.
 Before task 5.2 can be accepted, every cooperating writer/template variant
-must contain the guard and older invocations must be drained. The future restore
-workflow must journal each PVE write before execution, authenticate the completed
+must contain the guard and older invocations must be drained. The implemented
+ordinary restore source must be accepted live: journal each PVE write before execution, authenticate the completed
 prior restore task output, prove stopped/no-pending-action state, and prove
 cleanup task success plus authoritative exact-VMID absence. No restore target
 has been reserved or used, and no restore or cleanup has been performed.

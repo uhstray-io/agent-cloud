@@ -2233,9 +2233,10 @@ reviewed controller Dev `f259e2a77515115306563f0dcb96db1142060519` against
 expected and measured receiver source
 `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. It refused with
 `source_series_ambiguous`. The receipt proves no capacity gate pass or
-forecast, and it made no state mutation. The cause remains unconfirmed; the
-next step is a bounded diagnostic to distinguish duplicate collectors from a
-label migration. Do not prune/reset data or relax the single-source guard.
+forecast, and it made no state mutation. This historical ambiguity was cleared
+for the later task 8658 observation, which instead found history 99 seconds
+short of seven days. Do not prune/reset data, relax the single-source guard,
+or manufacture samples to pass the gate.
 Retention changes and VM growth remain blocked pending a successful seven-day
 capacity gate.
 
@@ -2284,8 +2285,10 @@ remain unchanged.
 
 This is source implementation only. Independent component reviews of the PBS,
 restore, and capability scopes are complete; actionable findings were fixed and
-verified. Final combined-head CI and publication/readback for the integrated
-PBS/restore source remain pending. Scoped policy catalog publication task 8650
+verified. PR #734 subsequently passed final-head CI and merged; the actual Dev
+composition and current publication/acceptance blockers are recorded in the
+[production checkpoint](openspec/changes/pbs-vm-and-restore-gate/implementation/production-checkpoint-2026-10-24.md).
+That bounded composition audit is not full combined-tree CI. Scoped policy catalog publication task 8650
 created only `Apply Policy - Semaphore (Dev)` (template 351, repository 5,
 environment 2, inventory 2, `apply-policy-semaphore.yml`, no survey); the
 existing main-bound policy template 50 bindings were unchanged. No policy apply
@@ -2386,3 +2389,15 @@ prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
 effective role capabilities, writer drain, or isolated restore/cleanup. The
 capacity source ambiguity is cleared for the observed refresh only; its history
 remains too short for the separate seven-day forecast.
+
+### 2026-10-24 merged PBS source and bounded production checkpoint
+
+The [production checkpoint](openspec/changes/pbs-vm-and-restore-gate/implementation/production-checkpoint-2026-10-24.md)
+records PR #734's final-head CI and actual Dev composition, scoped verifier
+publication task 8706, the pending production policy authorization, Galaxy
+dependency failure before verifier task 8710 reached Ansible, and gateway
+check-mode refusals 8705/8712. None establishes a policy mismatch, effective
+grants, accepted gateway runtime/configuration, fresh backup or restore proof.
+No receiver redeploy is needed for these controller diagnostic changes.
+Private PR #110 and all parent live acceptance, outage, capacity and retention
+gates remain open; no runtime fix or sampling workaround was performed.
