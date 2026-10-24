@@ -26,6 +26,7 @@
       - platform/playbooks/cleanup-o11y-isolated-restore.yml
       - platform/playbooks/files/o11y_isolated_restore.py
       - platform/playbooks/files/o11y_restore_coordination.py
+      - platform/playbooks/files/o11y_pbs_receipts.py
       - platform/playbooks/files/validate-o11y-restore-task.py
       - platform/playbooks/files/inspect_o11y_restore_target.py
       - platform/playbooks/tasks/o11y-restore-coordination.yml

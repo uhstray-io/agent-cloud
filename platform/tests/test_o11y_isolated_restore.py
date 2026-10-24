@@ -224,6 +224,7 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
         "status": 200,
         "data": {
             "vmid": 910001,
+            "digest": "a" * 40,
             "onboot": 0,
             "description": "o11y-restore:abc",
             "scsi0": "local:disk",
@@ -261,6 +262,9 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
         ("unused0", "local:orphan-disk"),
         ("scsi1", "local:unexpected-disk"),
         ("scsi0", "shared:disk"),
+        ("current", 1),
+        ("agent-enabled", 1),
+        ("digest", "not-a-pve-sha1"),
     ):
         bad = copy.deepcopy(good)
         bad["data"][key] = value
@@ -273,6 +277,68 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
                 expected_disk_keys=["scsi0"],
                 storage_id="local",
             )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        {"exited": True, "exitcode": 1, "out-data": '{"status":"verified"}'},
+        {"exited": False, "exitcode": 0, "out-data": '{"status":"verified"}'},
+        {"exited": True, "exitcode": 0, "out-truncated": True, "out-data": '{"status":"verified"}'},
+        {"exited": True, "exitcode": 0, "out-data": "eyJzdGF0dXMiOiJ2ZXJpZmllZCJ9"},
+        {"exited": True, "exitcode": 0, "out-data": "[]"},
+    ],
+)
+def test_qga_status_rejects_failed_truncated_or_encoded_output(status):
+    with pytest.raises(restore.Refusal, match="guest_exec_output_invalid"):
+        restore.parse_guest_exec_status(status)
+
+
+def test_qga_status_parses_pve_decoded_output_and_fingerprints_exact_bytes():
+    output = '{"status":"verified","volume_count":5}'
+    parsed = restore.parse_guest_exec_status({"exited": True, "exitcode": 0, "out-data": output})
+    assert parsed["receipt"] == {"status": "verified", "volume_count": 5}
+    assert parsed["output_sha256"] == hashlib.sha256(output.encode()).hexdigest()
+
+
+def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
+    path = Path(__file__).parents[1] / "playbooks" / "restore-o11y-isolated.yml"
+    tasks = list(playbook_yaml.tasks(playbook_yaml.load(path)))
+    by_name = {task.get("name"): task for task in tasks if task.get("name")}
+
+    chain = by_name["Validate all authenticated predecessor links and the closed private selector"]
+    assert "'mode': 'prerequisite_chain', 'payload': _restore_chain_input" in chain["ansible.builtin.command"]["stdin"]
+
+    artifact = by_name["Bind one fresh destination candidate to the private selector"]
+    artifact_input = artifact["ansible.builtin.command"]["stdin"]
+    assert "'vmid': _restore_source_vmid | string" in artifact_input
+    assert "'node': _restore_source_node" in artifact_input
+
+    disk_assertion = by_name["Require complete included disks, safe config, and live isolation preflight"]
+    disk_clauses = disk_assertion["ansible.builtin.assert"]["that"]
+    assert any("_restore_target_preflight.restore_disk_count" in clause for clause in disk_clauses)
+
+    submit = by_name["Send checker source and fixed expectations only through QGA input-data"]
+    submit = submit["ansible.builtin.uri"]
+    assert submit["body"]["command"][0] == "/usr/bin/python3"
+    assert "arg" not in submit["body"]
+    assert "capture-output" not in submit["body"]
+    assert "input-data" in submit["body"]
+
+    parse = by_name["Validate decoded QGA status and parse bounded checker receipt"]["ansible.builtin.command"]
+    assert "'mode': 'qga_exec_status'" in parse["stdin"]
+    receipt = by_name["Retain the bounded content-free guest verification receipt"]["ansible.builtin.set_fact"]
+    assert "b64decode" not in receipt["_restore_guest_receipt"]
+
+
+def test_reviewed_restore_and_cleanup_payloads_pin_receipt_dependency():
+    playbooks = Path(__file__).parents[1] / "playbooks"
+    for name in ("restore-o11y-isolated.yml", "cleanup-o11y-isolated-restore.yml"):
+        tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / name)))
+        reviewed = next(task for task in tasks if task.get("name", "").startswith("Require the exact reviewed"))
+        paths = reviewed["vars"]["_reviewed_checkout_payload_paths"]
+        assert "platform/playbooks/files/o11y_pbs_receipts.py" in paths
+        assert len(paths) <= 16
 
 
 def test_task_proof_adapter_delegates_only_the_authenticated_closed_fields(monkeypatch):

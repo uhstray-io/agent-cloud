@@ -33,6 +33,7 @@
       - platform/playbooks/restore-o11y-isolated.yml
       - platform/playbooks/files/o11y_isolated_restore.py
       - platform/playbooks/files/o11y_restore_coordination.py
+      - platform/playbooks/files/o11y_pbs_receipts.py
       - platform/playbooks/files/inspect_o11y_restore_target.py
       - platform/playbooks/files/inspect_o11y_backup_artifact.py
       - platform/playbooks/files/inspect_o11y_restored_guest.py
@@ -330,7 +331,7 @@
     - name: Validate all authenticated predecessor links and the closed private selector
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
-        stdin: "{{ _restore_chain_input | to_json }}"
+        stdin: "{{ {'mode': 'prerequisite_chain', 'payload': _restore_chain_input} | to_json }}"
         stdin_add_newline: false
       register: _restore_chain_raw
       changed_when: false
@@ -432,7 +433,8 @@
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/inspect_o11y_backup_artifact.py", inspect]
         stdin: >-
-          {{ {'vmid': _restore_source_vmid | int,
+          {{ {'vmid': _restore_source_vmid | string,
+              'node': _restore_source_node,
               'vms': _restore_vms.json.data,
               'storages': [{'storage': _restore_copy_storage_id,
                            'content': 'backup', 'active': 1, 'type': 'pbs'}],
@@ -551,7 +553,7 @@
       ansible.builtin.assert:
         that:
           - _restore_artifact_admission.rc == 0
-          - (_restore_target_preflight.layout.disk_count | int) == ((_restore_artifact_admission.stdout | from_json).disk_count | int)
+          - (_restore_target_preflight.restore_disk_count | int) == ((_restore_artifact_admission.stdout | from_json).disk_count | int)
           - (_restore_target_preflight.selected_candidate.backend_class | default('pbs')) == 'pbs'
         fail_msg: "The protected artifact configuration contains unsupported restore directives or incomplete disk evidence."
         quiet: true
@@ -1190,13 +1192,12 @@
         unredirected_headers: [Authorization]
         body_format: form-urlencoded
         body:
-          command: /usr/bin/python3
-          arg:
+          command:
+            - /usr/bin/python3
             - -c
             - "import base64,hashlib,json,sys; x=json.load(sys.stdin); s=base64.b64decode(x['source']); h=hashlib.sha256(s).hexdigest(); assert h==sys.argv[1]; g={'__name__':'restore_checker'}; exec(compile(s,'inspect_o11y_restored_guest.py','exec'),g); print(json.dumps(g['inspect'](x['expectations']),sort_keys=True,separators=(',',':')))"
             - "{{ _restore_checker_sha }}"
           input-data: "{{ {'source': _restore_checker_source | b64encode, 'expectations': _restore_checker_expectations} | to_json }}"
-          capture-output: 1
         status_code: [200]
       register: _restore_guest_exec_submit
       failed_when: false
@@ -1247,20 +1248,28 @@
       check_mode: false
       no_log: true
 
-    - name: Require successful QGA exit and bounded result bytes
+    - name: Validate decoded QGA status and parse bounded checker receipt
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: "{{ {'mode': 'qga_exec_status', 'status': _restore_guest_exec_status.json.data} | to_json }}"
+        stdin_add_newline: false
+      register: _restore_guest_status_parsed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require valid successful QGA checker output
       ansible.builtin.assert:
-        that:
-          - _restore_guest_exec_status.json.data.exitcode | default(-1) | int == 0
-          - _restore_guest_exec_status.json.data['out-data'] is string
-          - _restore_guest_exec_status.json.data['out-data'] | length <= 2796204
-        fail_msg: "The QGA checker failed or returned an oversized result; preserve the isolated target."
+        that: _restore_guest_status_parsed.rc == 0
+        fail_msg: "The QGA checker failed or returned invalid output; preserve the isolated target."
         quiet: true
       no_log: true
 
-    - name: Decode only the bounded content-free guest verification receipt
+    - name: Retain the bounded content-free guest verification receipt
       ansible.builtin.set_fact:
-        _restore_guest_receipt: "{{ _restore_guest_exec_status.json.data['out-data'] | b64decode | from_json }}"
-        _restore_guest_output_sha: "{{ (_restore_guest_exec_status.json.data['out-data'] | b64decode) | hash('sha256') }}"
+        _restore_guest_receipt: "{{ (_restore_guest_status_parsed.stdout | from_json).receipt }}"
+        _restore_guest_output_sha: "{{ (_restore_guest_status_parsed.stdout | from_json).output_sha256 }}"
       no_log: true
 
     - name: Require the exact five-volume and historical backend proof
