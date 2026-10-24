@@ -357,6 +357,71 @@ class CopyApiRequestTests(TestCase):
             )
         self.assertEqual(result["artifact_fingerprint"], pbs.artifact_fingerprint(manifest))
 
+    def test_manifest_restore_profile_accepts_only_destination_restore_reader(self):
+        manifest = {
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": 1792594800,
+            "files": [{
+                "filename": "qemu-server.conf.blob",
+                "crypt-mode": "none",
+                "size": 19,
+                "csum": "2" * 64,
+            }],
+        }
+        content = json.dumps(manifest, separators=(",", ":")).encode()
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return content
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def connect(self):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        restore_auth_id = pbs.COPY_READER_PROFILES["destination_restore"]["token_id"]
+        with patch.object(pbs, "_PinnedHTTPSConnection", PinnedConnection):
+            result = pbs.read_snapshot_manifest(
+                url="https://pbs-copy.internal.test",
+                expected_host="pbs-copy.internal.test",
+                fingerprint="b" * 64,
+                auth_id=restore_auth_id,
+                secret="protected-restore-reader-secret",
+                backup_id="120",
+                backup_time=1792594800,
+                identity_profile="destination_restore",
+            )
+        self.assertEqual(result["artifact_fingerprint"], pbs.artifact_fingerprint(manifest))
+
+        with (
+            patch.object(pbs, "_PinnedHTTPSConnection", PinnedConnection),
+            self.assertRaisesRegex(pbs.Refusal, "does not match its fixed profile"),
+        ):
+            pbs.read_snapshot_manifest(
+                url="https://pbs-copy.internal.test",
+                expected_host="pbs-copy.internal.test",
+                fingerprint="b" * 64,
+                auth_id=pbs.COPY_MANAGER_TOKEN_ID,
+                secret="protected-manager-secret",
+                backup_id="120",
+                backup_time=1792594800,
+                identity_profile="destination_restore",
+            )
+
     def test_endpoint_rejects_paths_queries_and_credential_bearing_urls(self):
         for url in (
             "https://pbs.internal.test/api2/json",
