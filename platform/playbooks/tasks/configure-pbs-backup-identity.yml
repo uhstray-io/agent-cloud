@@ -32,13 +32,27 @@
   changed_when: true
   no_log: true
 
+- name: Parse the generated PBS backup token using its documented result envelope
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", parse-generated-token]
+    stdin: >-
+      {{ {'stdout': _pbs_generated_token.stdout,
+          'expected_token_id': 'o11y-backup@pbs!pve-o11y'} | to_json }}
+  register: _pbs_generated_token_parsed
+  when: _pbs_backup_identity_action == 'create'
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  no_log: true
+
 - name: Keep only the newly generated token fields in protected task state
   ansible.builtin.set_fact:
-    _pbs_token_generated: "{{ _pbs_generated_token.stdout | from_json }}"
-    _pbs_token_secret: "{{ (_pbs_generated_token.stdout | from_json).value }}"
+    _pbs_token_generated: "{{ _pbs_generated_token_parsed.stdout | from_json }}"
+    _pbs_token_secret: "{{ (_pbs_generated_token_parsed.stdout | from_json).value }}"
     _pbs_token_record: >-
       {{ {'user': 'o11y-backup@pbs', 'token_id': 'o11y-backup@pbs!pve-o11y',
-          'secret': (_pbs_generated_token.stdout | from_json).value,
+          'secret': (_pbs_generated_token_parsed.stdout | from_json).value,
           'datastore': 'o11y', 'fingerprint': _pbs_backup_fingerprint} }}
   when: _pbs_backup_identity_action == 'create'
   no_log: true

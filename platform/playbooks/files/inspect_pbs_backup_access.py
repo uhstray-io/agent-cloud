@@ -54,6 +54,13 @@ COPY_READER_PROFILES = {
 }
 COPY_MANAGER_USER_ID = "o11y-copy-manager@pbs"
 COPY_MANAGER_TOKEN_ID = "o11y-copy-manager@pbs!copy-api"
+GENERATED_TOKEN_IDS = {
+    TOKEN_ID,
+    COPY_READER_TOKEN_ID,
+    COPY_MANAGER_TOKEN_ID,
+    COPY_READER_PROFILES["destination_restore"]["token_id"],
+}
+MAX_GENERATED_TOKEN_OUTPUT_BYTES = 4096
 COPY_MANAGER_ACL_ROLE_PATHS = {
     "remote-root": ("RemoteAdmin", 0),
     "remote-item": ("RemoteAdmin", 0),
@@ -90,6 +97,61 @@ class Refusal(ValueError):
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise Refusal(message)
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        _require(key not in result, "PBS generated-token result contains duplicate fields.")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise Refusal("PBS generated-token result is not one valid JSON object.")
+
+
+def parse_generated_token_output(output: Any, expected_token_id: Any) -> dict[str, str]:
+    """Normalize only PBS's documented `Result: { ... }` generated-token output."""
+    _require(
+        isinstance(expected_token_id, str) and expected_token_id in GENERATED_TOKEN_IDS,
+        "PBS generated-token request does not name an approved fixed identity.",
+    )
+    _require(isinstance(output, str), "PBS generated-token output has an unsupported shape.")
+    try:
+        raw = output.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise Refusal("PBS generated-token output has an unsupported shape.") from exc
+    _require(len(raw) <= MAX_GENERATED_TOKEN_OUTPUT_BYTES,
+             "PBS generated-token output exceeds the reviewed size limit.")
+    _require(output.startswith("Result:"), "PBS generated-token output is not the documented result envelope.")
+    payload = output[len("Result:"):]
+    start = len(payload) - len(payload.lstrip())
+    _require(start < len(payload), "PBS generated-token result is empty.")
+    try:
+        decoder = json.JSONDecoder(
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+        result, end = decoder.raw_decode(payload, start)
+    except (json.JSONDecodeError, Refusal, RecursionError) as exc:
+        raise Refusal("PBS generated-token result is not one valid JSON object.") from exc
+    _require(not payload[end:].strip(), "PBS generated-token result has trailing data.")
+    _require(isinstance(result, dict) and set(result) == {"tokenid", "value"},
+             "PBS generated-token result has an unsupported schema.")
+    _require(result["tokenid"] == expected_token_id,
+             "PBS generated-token result does not match its fixed identity.")
+    secret = result["value"]
+    try:
+        secret_size = len(secret.encode("utf-8")) if isinstance(secret, str) else 0
+    except UnicodeEncodeError as exc:
+        raise Refusal("PBS generated-token result has an invalid secret value.") from exc
+    _require(
+        isinstance(secret, str)
+        and 0 < secret_size <= 1024
+        and not any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in secret),
+             "PBS generated-token result has an invalid secret value.")
+    return {"tokenid": expected_token_id, "value": secret}
 
 
 def parse_pbs_version(value: Any) -> tuple[int, int, int, int]:
@@ -882,12 +944,18 @@ def main() -> int:
             "probe",
             "copy-api-request",
             "snapshot-manifest",
+            "parse-generated-token",
         ),
     )
     args = parser.parse_args()
     try:
         payload = _read()
-        if args.action == "identity":
+        if args.action == "parse-generated-token":
+            result = parse_generated_token_output(
+                output=payload.get("stdout"),
+                expected_token_id=payload.get("expected_token_id"),
+            )
+        elif args.action == "identity":
             result = plan_identity(
                 users=payload.get("users"),
                 tokens=payload.get("tokens"),
