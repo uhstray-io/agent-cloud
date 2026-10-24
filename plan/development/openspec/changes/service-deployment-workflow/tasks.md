@@ -785,6 +785,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       workflow rows
       - 2026-10-14: same count as 10.1 (23 registry entries; the diagram must show twenty-three).
         Not ticked
+      - 2026-10-24: three of the four parts done. `docs/agent-cloud-service-deploy.excalidraw` draws all
+        twenty-three steps: SSH Key Backup, Secrets & AppRole, Edge Route, Edge DNS and Credential
+        Backup are inserted in flow order, with owner lanes, including a new Network agent lane over
+        Edge DNS. Every registry entry now carries a `diagram_label`, and
+        `test_workflow_registry.py` requires each to name a box in the drawing (mutation-checked: a
+        wrong label fails). Plan 15 is ACTIVE, with a 23-row step table (Edge DNS is 16, the later
+        rows renumbered, including the schema and role tables). Root `AGENTS.md` gains the one
+        missing workflow row, `Create VM Template`. Open: re-export `docs/agent-cloud-service-deploy.svg`
+        from the updated drawing (Excalidraw's export needs a browser). Not ticked
 - [ ] 10.3 On archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
 - [ ] 10.4 Validation gate: `openspec validate service-deployment-workflow --store

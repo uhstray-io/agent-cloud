@@ -8,8 +8,9 @@
 # Fields
 #   id               stable step id; also the `step` in every step result
 #   order            execution order
-#   diagram_label    the box text in docs/agent-cloud-service-deploy.excalidraw; null for a step
-#                    the drawing does not show yet (added: true)
+#   diagram_label    the box text in docs/agent-cloud-service-deploy.excalidraw (line breaks as
+#                    spaces); every step is drawn
+#   added            true for a step added after the first drawing (plan 15, D6, and edge-dns)
 #   owner            OPA identity allowed to launch the executor (data.json allowed_templates)
 #   executor         Semaphore template name that converges/validates the step; "Deploy {service}"
 #                    is resolved per service. null for a reasoning step (it only proposes; the
@@ -111,7 +112,7 @@ steps:
 
   - id: ssh-key-backup
     order: 7
-    diagram_label: null
+    diagram_label: "SSH Key Backup"
     added: true
     owner: infra-agent
     executor: Back Up Service SSH Key
@@ -167,7 +168,7 @@ steps:
 
   - id: secrets-approle
     order: 11
-    diagram_label: null
+    diagram_label: "Secrets & AppRole"
     added: true
     owner: service-agent
     executor: Check Secrets
@@ -221,7 +222,7 @@ steps:
 
   - id: edge-route
     order: 15
-    diagram_label: null
+    diagram_label: "Edge Route"
     added: true
     owner: service-agent
     executor: Manage Caddy Sites
@@ -235,7 +236,7 @@ steps:
 
   - id: edge-dns
     order: 16
-    diagram_label: null
+    diagram_label: "Edge DNS"
     added: true
     owner: network-agent
     executor: Apply Cloudflare Tofu
@@ -336,7 +337,7 @@ steps:
 
   - id: credential-backup
     order: 23
-    diagram_label: null
+    diagram_label: "Credential Backup"
     added: true
     owner: security-agent
     executor: Back Up Credentials to site-config

@@ -238,8 +238,11 @@ the key nor its hash is printed. `legacy-shared` may not appear in `agw_clients`
 `VLLM_API_KEY` at vLLM and in OpenBao belongs to dgx-spark, which owns the key; the rollback
 `restore` mode does not rotate it either.
 
-Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch date + 14 days
-(task 4.7), recorded here when the route switches.
+Retirement date: **2026-11-13** (`legacy_shared_expires` in the production inventory, site-config #81;
+first set by task 4.7 as the route-switch date + 14 days, then moved from 2026-10-28). A deploy on or
+after that date drops `legacy-shared`, and fails until the vLLM key has been rotated (gateway task 5.1).
+If the key is rotated before the date, the grace-period probe is skipped rather than reporting a
+false failure (#631).
 
 ## Upstream
 
