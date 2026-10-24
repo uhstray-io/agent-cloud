@@ -8,12 +8,14 @@ ansible-playbook with a local-connection receiver whose deploy dir holds dashboa
 import errno
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +29,7 @@ from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/verify-o11y-dashboard-data.yml"
+WORKFLOW_REGISTRY = REPO / "platform/workflows/service-onboarding/registry.yml"
 GRAFANA = REPO / "platform/services/o11y/deployment/config/grafana"
 DASHBOARDS = GRAFANA / "dashboards"
 _spec = importlib.util.spec_from_file_location(
@@ -147,6 +150,12 @@ class FakeLoki:
             return 302, {"error": "redirect body must not be followed"}
         if behaviour == "empty":
             result_type, result = "streams", []
+        elif behaviour == "workflow_failure":
+            result_type = "vector"
+            result = [{
+                "metric": {"service": "netbox", "step": "provision-vm"},
+                "value": [1700000000, "0"],
+            }]
         elif behaviour == "metric":
             result_type = "vector" if path.endswith("/query") else "matrix"
             point = [1700000000, "2.5"]
@@ -184,6 +193,7 @@ def _payload(uid, **extra):
         "prometheus_url": "http://127.0.0.1:9",
         "loki_url": "http://127.0.0.1:9",
         "scrape_interval_seconds": 15,
+        "_vdd_workflow_steps": yaml.safe_load(WORKFLOW_REGISTRY.read_text(encoding="utf-8"))["steps"],
     }
     payload.update(extra)
     return payload
@@ -338,6 +348,487 @@ def test_real_time_from_panels_query_their_own_range(loki):
     assert report["status"] == "pass", report
     assert [form["start"] for _, form in loki.requests] == ["1699395200.000", "1699997300.000"]
     assert [form["end"] for _, form in loki.requests] == ["1700000000.000", "1700000000.000"]
+
+
+def _numeric_vector(values):
+    return {
+        "resultType": "vector",
+        "result": [
+            {"metric": {"service": "sanitized-test-service"}, "value": [1700000000, str(value)]}
+            for value in values
+        ],
+    }
+
+
+def _workflow_step_vector(rows):
+    return {
+        "resultType": "vector",
+        "result": [
+            {"metric": labels, "value": [1700000000, str(state)]}
+            for labels, state in rows
+        ],
+    }
+
+
+def _observe_dashboard(monkeypatch, uid, title, data):
+    seen = []
+
+    def query(base, backend, mode, expr, end, lookback, step):
+        seen.append((backend, mode, expr))
+        if data == "query_error":
+            return {"error": "execution"}
+        return {"data": data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(uid, panel_titles=[title]), now=1700000000)
+    assert report["status"] in ("pass", "fail")
+    assert len(seen) == 1
+    assert "sanitized-test-service" not in json.dumps(report)
+    return report["panels"][0]
+
+
+@pytest.mark.parametrize(("value", "observation"), [(1, "healthy"), (0, "unhealthy")])
+def test_known_scrape_health_observation_does_not_change_query_validity(monkeypatch, value, observation):
+    panel = _observe_dashboard(
+        monkeypatch, "service-overview", "Scrape target health", _numeric_vector([value])
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "scrape_health", "status": observation}
+
+
+def test_known_scrape_health_distinguishes_absent_from_zero(monkeypatch):
+    panel = _observe_dashboard(monkeypatch, "service-overview", "Scrape target health", _numeric_vector([]))
+    assert panel["status"] == "empty"
+    assert panel["observation"] == {"name": "scrape_health", "status": "no_metrics"}
+
+
+@pytest.mark.parametrize(("age", "observation"), [(1799, "fresh"), (1800, "fresh"), (1801, "stale")])
+def test_inventory_marker_freshness_uses_the_provisioned_boundary(monkeypatch, age, observation):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Latest inventory marker age", _numeric_vector([age])
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "inventory_marker_freshness", "status": observation}
+
+
+def test_inventory_marker_absence_is_not_zero_age(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Latest inventory marker age", _numeric_vector([])
+    )
+    assert panel["status"] == "empty"
+    assert panel["observation"] == {"name": "inventory_marker_freshness", "status": "no_data"}
+
+
+@pytest.mark.parametrize(("values", "observation"), [([0], "none"), ([1], "present")])
+def test_current_workflow_failure_observation_preserves_zero_and_failure(monkeypatch, values, observation):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Current failed step states", _numeric_vector(values)
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "current_workflow_failures", "status": observation}
+
+
+def test_current_workflow_failure_absence_differs_from_zero(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch, "service-conformance", "Current failed step states", _numeric_vector([])
+    )
+    assert panel["status"] == "empty"
+    assert panel["observation"] == {"name": "current_workflow_failures", "status": "no_data"}
+
+
+def test_latest_workflow_status_reports_only_registry_backed_current_failure_pairs(monkeypatch):
+    data = _workflow_step_vector([
+        ({"service": "netbox", "step": "provision-vm"}, 0),
+        ({"service": "netbox", "step": "service-validate"}, 1),
+    ])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {
+        "name": "current_workflow_failed_steps",
+        "status": "present",
+        "failed_step_count": 1,
+        "failed_steps": [{"service": "netbox", "step": "provision-vm"}],
+        "truncated_count": 0,
+        "unknown_series_count": 0,
+        "window_seconds": 2700,
+        "scope": "latest_recorded_state",
+    }
+
+
+def test_latest_status_query_reduction_does_not_relabel_a_later_pass_as_failure(monkeypatch):
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 1)])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["observation"]["status"] == "none"
+    assert panel["observation"]["failed_steps"] == []
+    assert panel["observation"]["window_seconds"] == 2700
+    assert panel["observation"]["scope"] == "latest_recorded_state"
+
+
+def test_latest_status_skip_is_not_reported_as_a_current_failure(monkeypatch):
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 2)])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["observation"]["status"] == "none"
+    assert panel["observation"]["failed_steps"] == []
+
+
+def test_latest_status_empty_result_is_no_data_not_a_cleared_failure(monkeypatch):
+    data = _workflow_step_vector([])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["status"] == "empty"
+    assert panel["observation"]["status"] == "no_data"
+    assert panel["observation"]["failed_steps"] == []
+    assert panel["observation"]["window_seconds"] == 2700
+    assert panel["observation"]["scope"] == "latest_recorded_state"
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        "10",
+        [1700000000, False],
+        ["invalid-time", "1"],
+        [1700000000, "1", "unexpected-extra"],
+        [True, "0"],
+        [1700000000, 0],
+        [10**1000, "0"],
+    ],
+)
+def test_malformed_latest_status_sample_is_unknown_not_failure_or_none(monkeypatch, sample):
+    data = {"resultType": "vector", "result": [{
+        "metric": {"service": "netbox", "step": "provision-vm"},
+        "value": sample,
+    }]}
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    observation = panel["observation"]
+    assert observation["status"] == "unverified"
+    assert observation["unknown_series_count"] == 1
+    assert observation["failed_steps"] == []
+    assert observation["window_seconds"] == 2700
+    assert observation["scope"] == "latest_recorded_state"
+
+
+def test_duplicate_current_status_for_a_pair_is_unverified(monkeypatch):
+    data = _workflow_step_vector([
+        ({"service": "netbox", "step": "provision-vm"}, 0),
+        ({"service": "netbox", "step": "provision-vm"}, 1),
+    ])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    assert panel["observation"]["status"] == "unverified"
+    assert panel["observation"]["failed_steps"] == []
+    assert panel["observation"]["unknown_series_count"] == 1
+
+
+def test_unknown_identity_labels_are_counted_but_never_echoed(monkeypatch):
+    data = _workflow_step_vector([
+        ({"service": "netbox", "step": "provision-vm", "identity": "private-user-123"}, 0),
+        ({"service": "private-user-123", "step": "provision-vm"}, 0),
+    ])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    serialized = json.dumps(panel)
+    assert panel["observation"]["status"] == "unverified"
+    assert panel["observation"]["unknown_series_count"] == 2
+    assert "private-user-123" not in serialized
+
+
+def test_failed_step_output_is_capped_and_deterministic(monkeypatch):
+    service_ids, step_ids = vdd._workflow_identity_allowlists(
+        str(DASHBOARDS), _payload("service-conformance")["_vdd_workflow_steps"]
+    )
+    pairs = [(service, step) for service in sorted(service_ids) for step in sorted(step_ids)][:51]
+    assert len(pairs) == 51
+    data = _workflow_step_vector([({"service": service, "step": step}, 0) for service, step in pairs])
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    observation = panel["observation"]
+    assert observation["status"] == "present"
+    assert observation["failed_step_count"] == 51
+    assert len(observation["failed_steps"]) == 50
+    assert observation["truncated_count"] == 1
+    assert observation["failed_steps"] == sorted(
+        observation["failed_steps"], key=lambda row: (row["service"], row["step"])
+    )
+
+
+@pytest.mark.parametrize("drift", ["expr", "datasource"])
+def test_changed_latest_status_contract_is_unverified_without_returning_labels(monkeypatch, tmp_path, drift):
+    dashboard = json.loads((DASHBOARDS / "service-conformance.json").read_text())
+    dashboard["panels"] = [
+        p for p in dashboard["panels"] if p.get("title") == "Latest step status by service"
+    ]
+    if drift == "expr":
+        dashboard["panels"][0]["targets"][0]["expr"] += " + 0"
+    else:
+        dashboard["panels"][0]["targets"][0]["datasource"] = {"type": "prometheus", "uid": "prometheus"}
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    report = vdd.evaluate(
+        _payload(
+            "service-conformance",
+            panel_titles=["Latest step status by service"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "current_workflow_failed_steps",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+        "window_seconds": 2700,
+        "scope": "latest_recorded_state",
+    }
+    assert "netbox" not in json.dumps(report)
+
+
+def test_unavailable_public_identity_sources_are_unverified_without_labels(monkeypatch, tmp_path):
+    dashboard = json.loads((DASHBOARDS / "service-conformance.json").read_text())
+    dashboard["panels"] = [
+        p for p in dashboard["panels"] if p.get("title") == "Latest step status by service"
+    ]
+    dashboard_dir = _dashboard_dir(tmp_path, dashboard)
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    report = vdd.evaluate(
+        _payload("service-conformance", panel_titles=["Latest step status by service"], dashboards_dir=dashboard_dir),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"]["status"] == "unverified"
+    assert report["panels"][0]["observation"]["unknown_series_count"] == 1
+    assert "netbox" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        None,
+        [],
+        {},
+        {"steps": "not-a-list"},
+        {"steps": {"forged": {"id": "forged-step"}}},
+        {"steps": []},
+        {"steps": [], "unrelated": [{"id": "forged-step"}]},
+        {"steps": ["not-a-mapping"]},
+        {"steps": [{"name": "missing-id"}]},
+        {"steps": [{"id": "invalid id"}]},
+        {"steps": [{"id": "provision-vm"}, {"id": "provision-vm"}]},
+    ],
+)
+def test_malformed_workflow_registry_is_unverified_without_returning_unknown_step(monkeypatch, registry):
+    payload = _payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service"],
+        _vdd_workflow_steps=registry.get("steps") if isinstance(registry, dict) else registry,
+    )
+    data = _workflow_step_vector([({"service": "netbox", "step": "forged-step"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    report = vdd.evaluate(payload, now=1700000000)
+    observation = report["panels"][0]["observation"]
+    assert observation["status"] == "unverified"
+    assert observation["unknown_series_count"] == 1
+    assert "forged-step" not in json.dumps(report)
+
+
+def test_valid_registry_does_not_accept_ids_from_an_unrelated_collection(monkeypatch):
+    registry_doc = yaml.safe_load(WORKFLOW_REGISTRY.read_text(encoding="utf-8"))
+    registry_doc = {**registry_doc, "unrelated": [{"id": "forged-step"}]}
+    data = _workflow_step_vector([({"service": "netbox", "step": "forged-step"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    report = vdd.evaluate(
+        _payload("service-conformance", panel_titles=["Latest step status by service"],
+                 _vdd_workflow_steps=registry_doc.get("steps")),
+        now=1700000000,
+    )
+    observation = report["panels"][0]["observation"]
+    assert observation["status"] == "unverified"
+    assert observation["unknown_series_count"] == 1
+    assert "forged-step" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    ("sample", "expected_status"),
+    [
+        ([1700000000, "0"], "present"),
+        ([1700000000, "1"], "none"),
+        (None, "no_data"),
+    ],
+)
+def test_latest_status_reports_its_own_45m_window_for_any_dashboard_lookback(
+    monkeypatch, sample, expected_status
+):
+    data = (
+        {"resultType": "vector", "result": []}
+        if sample is None
+        else {"resultType": "vector", "result": [{
+            "metric": {"service": "netbox", "step": "provision-vm"}, "value": sample,
+        }]}
+    )
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    report = vdd.evaluate(
+        _payload("service-conformance", lookback="1d", panel_titles=["Latest step status by service"]),
+        now=1700000000,
+    )
+    panel = report["panels"][0]
+    assert panel["lookback_seconds"] == 86400
+    assert panel["observation"]["status"] == expected_status
+    assert panel["observation"]["window_seconds"] == 2700
+    assert panel["observation"]["scope"] == "latest_recorded_state"
+
+
+def test_standalone_cli_uses_canonical_workflow_registry_and_reports_window(monkeypatch, capsys):
+    data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": data})
+    monkeypatch.setattr(
+        sys, "stdin",
+        io.StringIO(json.dumps(_payload(
+            "service-conformance", panel_titles=["Latest step status by service"]
+        ))),
+    )
+    assert vdd.main() == 0
+    report = json.loads(capsys.readouterr().out)
+    observation = report["panels"][0]["observation"]
+    assert observation["failed_steps"] == [{"service": "netbox", "step": "provision-vm"}]
+    assert observation["window_seconds"] == 2700
+
+
+@pytest.mark.parametrize(("age", "observation"), [(42, "known"), (-1, "unknown")])
+def test_completion_age_observation_uses_the_provisioned_unknown_mapping(monkeypatch, age, observation):
+    panel = _observe_dashboard(
+        monkeypatch,
+        "service-conformance",
+        "Latest workflow completion age by service and step",
+        _numeric_vector([age]),
+    )
+    assert panel["status"] == "pass"
+    assert panel["observation"] == {"name": "workflow_completion_age", "status": observation}
+
+
+def test_known_observation_query_error_stays_a_query_failure_without_backend_text(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch, "service-overview", "Scrape target health", "query_error"
+    )
+    assert panel["status"] == "error"
+    assert panel["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "query_error",
+    }
+    assert "error" not in panel["observation"]
+
+
+def test_known_title_with_changed_query_is_unverified(monkeypatch, tmp_path):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    dashboard["panels"] = [p for p in dashboard["panels"] if p.get("title") == "Scrape target health"]
+    dashboard["panels"][0]["targets"][0]["expr"] += " + 0"
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
+@pytest.mark.parametrize(
+    "source_drift",
+    [
+        {"location": "target", "field": "uid", "value": "different-backend"},
+        {"location": "panel", "field": "uid", "value": "different-backend"},
+        {"location": "panel", "field": "type", "value": "loki"},
+    ],
+)
+def test_known_query_with_datasource_identity_drift_is_unverified(
+    monkeypatch, tmp_path, source_drift
+):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Scrape target health")
+    target = panel["targets"][0]
+    if source_drift["location"] == "target":
+        target["datasource"] = {"type": "prometheus", "uid": "prometheus"}
+        target["datasource"][source_drift["field"]] = source_drift["value"]
+    else:
+        # The provisioned target inherits the panel source; mutate that source.
+        panel["datasource"][source_drift["field"]] = source_drift["value"]
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
+def test_provisioned_datasource_identity_verifies_known_observation(monkeypatch):
+    panel = _observe_dashboard(
+        monkeypatch,
+        "service-overview",
+        "Scrape target health",
+        _numeric_vector([1]),
+    )
+    assert panel["observation"] == {"name": "scrape_health", "status": "healthy"}
+
+
+def test_known_query_without_an_explicit_datasource_identity_is_unverified(
+    monkeypatch, tmp_path
+):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Scrape target health")
+    panel.pop("datasource")
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
+@pytest.mark.parametrize("target_datasource", [{}, None, {"type": "prometheus"}])
+def test_ambiguous_target_datasource_does_not_fall_back_to_panel_identity(
+    monkeypatch, tmp_path, target_datasource
+):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Scrape target health")
+    panel["targets"][0]["datasource"] = target_datasource
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
 
 
 @pytest.mark.parametrize("time_from", ["1h30m", "0m", "7d;up", "-45m", "45M"])
@@ -954,13 +1445,16 @@ def test_named_loki_panel_with_unsupported_options_is_refused(tmp_path):
 
 @pytest.fixture
 def receiver(tmp_path, prometheus, loki):
-    deploy = tmp_path / "repo/o11y/config/grafana"
+    repo = tmp_path / "repo"
+    (repo / "platform/services/netbox").mkdir(parents=True)
+    (repo / "agents").mkdir()
+    deploy = repo / "platform/services/o11y/deployment/config/grafana"
     shutil.copytree(DASHBOARDS, deploy / "dashboards")
     inventory = tmp_path / "inventory.ini"
     inventory.write_text(
         "[o11y_svc]\n"
         f"receiver ansible_connection=local ansible_python_interpreter=auto_silent "
-        f"local_monorepo_dir={tmp_path / 'repo'} monorepo_deploy_path=o11y "
+        f"local_monorepo_dir={repo} monorepo_deploy_path=platform/services/o11y/deployment "
         f"o11y_prom_bind=127.0.0.1 o11y_prom_port={prometheus.server.server_address[1]} "
         f"o11y_loki_bind=127.0.0.1 o11y_loki_port={loki.server.server_address[1]}\n"
     )
@@ -1047,6 +1541,66 @@ def test_playbook_reports_expected_empty_panel_in_readback(receiver):
     assert '"status": "pass"' in proc.stdout
     assert "Expected empty: Request rate by identity." in proc.stdout
     assert not any(label in proc.stdout for label in SECRET_LABELS)
+
+
+@needs_ansible
+def test_playbook_passes_canonical_controller_registry_to_receiver_evaluator(receiver):
+    receiver["loki"].rules["unwrap state_code"] = "workflow_failure"
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=service-conformance",
+        "-e",
+        '{"panel_titles": "[\\"Latest step status by service\\"]", "lookback": "1d"}',
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert '"lookback_seconds": 86400' in proc.stdout
+    assert '"window_seconds": 2700' in proc.stdout
+    assert '"scope": "latest_recorded_state"' in proc.stdout
+    assert '"status": "present"' in proc.stdout, proc.stdout
+    assert '"service": "netbox"' in proc.stdout
+    assert '"step": "provision-vm"' in proc.stdout
+    assert not any(label in proc.stdout for label in SECRET_LABELS)
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "forge",
+    forgeries.templated_forgeries(
+        "_vdd_workflow_registry", {"steps": []}, {"steps": [{"id": "forged-step"}]}
+    ),
+)
+def test_playbook_refuses_extra_var_registry_override_before_query(receiver, forge, tmp_path):
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=service-conformance",
+        "-e",
+        forge(tmp_path),
+    )
+    assert proc.returncode != 0
+    assert "Refusing to run: _vdd_workflow_registry set from outside the playbook" in proc.stdout
+    assert receiver["loki"].requests == []
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "forge",
+    forgeries.templated_forgeries(
+        "_vdd_workflow_steps", [], [{"id": "forged-step"}]
+    ),
+)
+def test_playbook_refuses_extra_var_step_override_before_query(receiver, forge, tmp_path):
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=service-conformance",
+        "-e",
+        forge(tmp_path),
+    )
+    assert proc.returncode != 0
+    assert "Refusing to run: _vdd_workflow_steps set from outside the playbook" in proc.stdout
+    assert receiver["loki"].requests == []
 
 
 @needs_ansible
@@ -1184,6 +1738,12 @@ def test_dev_template_declares_the_survey():
     template = next(t for t in templates if t["name"] == "Verify o11y Dashboard Data (Dev)")
     assert template["playbook"] == "platform/playbooks/verify-o11y-dashboard-data.yml"
     assert template["repository"] == "agent-cloud dev"
+    playbook = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    evaluator_play = next(p for p in playbook if p.get("hosts") == "o11y_svc")
+    assert "from_yaml" in evaluator_play["vars"]["_vdd_workflow_registry"]
+    assert "service-onboarding/registry.yml" in evaluator_play["vars"]["_vdd_workflow_registry"]
+    assert "type_debug == 'list'" in (REPO / "platform/playbooks/verify-o11y-dashboard-data.yml").read_text()
+    assert "_vdd_workflow_steps" in evaluator_play["tasks"][1]["ansible.builtin.command"]["stdin"]
     assert [v["name"] for v in template["survey_vars"]] == [
         "dashboard_uid",
         "lookback",

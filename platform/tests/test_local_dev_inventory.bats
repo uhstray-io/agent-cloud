@@ -211,6 +211,50 @@ setup() {
     "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
 }
 
+@test "inventory example and bootstrap INI: inference route fronts the agentgateway /v1 listener, not the Mac-host stand-in" {
+  # Prod's inference route fronts the gateway; local must too, or skynet's keyed, budgeted
+  # calls would skip the gateway. The stand-in port must not come back in either copy.
+  grep -qE 'host: "inference\.agent-cloud\.test", upstream: "agentgateway:4000", inference_api: true' "$INVENTORY"
+  run grep -q 'host.containers.internal:8001' "$INVENTORY"
+  [ "$status" -ne 0 ]
+  local bp="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  grep -qE "'host': 'inference\.\{\{ _dev_zone \}\}', 'upstream': 'agentgateway:4000', 'inference_api': true" "$bp"
+  run grep -q 'host.containers.internal:8001' "$bp"
+  [ "$status" -ne 0 ]
+}
+
+@test "inventory example and bootstrap INI: agentgateway upstream is the public edge, key required, qwen3.8-flash-next served" {
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
+  local bp="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  python3 - "$INVENTORY" "$bp" <<'PY'
+import ast, re, sys, yaml
+
+ROLES = ["infra-agent", "security-agent", "o11y-agent", "service-agent", "network-agent", "skynet-eval"]
+EDGE = "https://inference.uhstray.io/v1"
+MODELS = [{"name": "qwen3.8-flash-next"}]
+
+example = yaml.safe_load(open(sys.argv[1]))["all"]["children"]["agentgateway_svc"]["hosts"]["agentgateway-local"]
+assert example["agw_upstream_base_url"] == EDGE, example["agw_upstream_base_url"]
+assert example["agw_upstream_requires_key"] is True
+assert example["agw_models"] == MODELS, example["agw_models"]
+assert example["agw_clients"][0] == "dev-local", example["agw_clients"]
+assert set(ROLES) <= set(example["agw_clients"]), example["agw_clients"]
+
+ini = open(sys.argv[2]).read()
+def ini_value(key):
+    found = re.findall(rf"^\s*{key}=(.*)$", ini, re.M)
+    assert len(found) == 1, (key, found)
+    return found[0]
+assert ini_value("agw_upstream_base_url") == EDGE
+assert ini_value("agw_upstream_requires_key") == "true"
+assert ast.literal_eval(ini_value("agw_models")) == MODELS
+# The INI enrolls dev-local and the six role identities. Its isolation-probe and mcp-self drift
+# from the example is known and is NOT pinned here (listed as a follow-up in the PR).
+assert ast.literal_eval(ini_value("agw_clients")) == ["dev-local"] + ROLES
+PY
+}
+
 @test "inventory example: caddy_routes MCP entry opts into mcp_api on the default listener, same list as the bootstrap INI" {
   # mcp_api renders the exact-/mcp allowlist; a plain proxy here would expose every path the
   # gateway's default listener serves (/sse, /v1) on the MCP hostname.
@@ -219,6 +263,18 @@ setup() {
   # inventory; the two lists drift silently when only one is edited.
   grep -qE "'host': 'mcp\.\{\{ _dev_zone \}\}', 'upstream': 'agentgateway:4000', 'mcp_api': true" \
     "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+}
+
+@test "inventory example and bootstrap INI: OPA is served over HTTPS by a plain Caddy proxy, no edge gate" {
+  # Skynet trusts OPA's allow, so the decision API is reached over HTTPS (server-verified via
+  # step-ca) rather than plain http on the shared network. Phase 1 OPA stays unauthenticated, so
+  # the route must carry no forward_auth, allowlist flag or other edge gate.
+  grep -qE 'host: "opa\.agent-cloud\.test", upstream: "opa:8181" \}' "$INVENTORY"
+  run grep -E 'opa\.agent-cloud\.test' "$INVENTORY"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c 'forward_auth\|_api: true')" -eq 0 ]
+  local bp="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  grep -qF "{'host': 'opa.{{ _dev_zone }}', 'upstream': 'opa:8181'}" "$bp"
 }
 
 @test "bootstrap: the INI route table is emitted as a Python literal, not JSON" {

@@ -113,6 +113,15 @@ def test_history_requires_distinct_source_samples_across_seven_days():
     assert receipt["receiver_host_observations"]["cpu"]["points"] >= 2017
     assert receipt["receiver_host_observations"]["cpu"]["p95_method"] == "p95_of_evaluated_five_minute_means"
     assert set(receipt["backend_stored_bytes"]) == survey.BACKENDS
+    assert receipt["source_diagnostics"] == {
+        "available": True,
+        "source_series_count": 1,
+        "label_variation": dict.fromkeys(survey.DIAGNOSTIC_LABEL_KEYS),
+        "unrecognized_label_key_count": 0,
+        "series_at_latest_evaluation": 1,
+        "overlapping_evaluations": 0,
+        "overlapping_source_events": 0,
+    }
 
 
 def test_history_excludes_carried_in_sample_from_window_evidence():
@@ -202,7 +211,11 @@ def test_failure_receipt_contains_only_fixed_category(reason, monkeypatch, capsy
 
     assert survey.main() == 1
     output = capsys.readouterr().out
-    assert json.loads(output) == {"status": "insufficient", "reason": reason}
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == reason
+    assert receipt["source_diagnostics"]["available"] is False
+    assert receipt["source_diagnostics"]["source_series_count"] is None
     assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
 
 
@@ -214,10 +227,10 @@ def test_failure_receipt_rejects_unrecognized_reason_text(monkeypatch, capsys):
 
     assert survey.main() == 1
     output = capsys.readouterr().out
-    assert json.loads(output) == {
-        "status": "insufficient",
-        "reason": "malformed_or_incomplete_history",
-    }
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "malformed_or_incomplete_history"
+    assert receipt["source_diagnostics"]["available"] is False
     assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
 
 
@@ -242,8 +255,128 @@ def test_cli_classifies_empty_source_and_malformed_rows_without_leaking(
 
     assert survey.main() == 1
     output = capsys.readouterr().out
-    assert json.loads(output) == {"status": "insufficient", "reason": expected_reason}
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == expected_reason
+    assert receipt["source_diagnostics"]["available"] is True
+    assert receipt["source_diagnostics"]["source_series_count"] == (1 if malformed_metric else 0)
     assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
+
+
+def test_malformed_source_history_keeps_refusal_and_returns_unavailable_diagnostics(monkeypatch, capsys):
+    now = 1_800_000_000
+    responses = _history(now)
+    responses["source"]["data"]["result"][0]["values"] = ["private-label-value"]
+    monkeypatch.setattr(survey.time, "time", lambda: now)
+    monkeypatch.setattr(survey, "query", lambda metric, *_args: responses[metric])
+
+    assert survey.main() == 1
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "malformed_or_incomplete_history"
+    assert receipt["source_diagnostics"]["available"] is False
+    assert receipt["source_diagnostics"]["source_series_count"] is None
+    assert "private-label-value" not in output
+
+
+def test_source_diagnostics_refuse_fractional_timestamp_alignment():
+    body = _matrix(
+        "source",
+        [{"metric": {}, "values": [[1_800_000_000.5, "1_799_999_999"]]}],
+    )
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["available"] is False
+    assert diagnostic["series_at_latest_evaluation"] is None
+    assert diagnostic["overlapping_evaluations"] is None
+    assert diagnostic["overlapping_source_events"] is None
+
+
+def test_source_diagnostics_reports_target_id_and_component_variation_as_booleans():
+    body = _matrix(
+        "source",
+        [
+            {
+                "metric": {"component": "receiver-host", "target_id": "service:o11y"},
+                "values": [[1_800_000_000, "1_799_999_999"]],
+            },
+            {
+                "metric": {"component": "changed-component", "target_id": "changed-target"},
+                "values": [[1_800_000_300, "1_800_000_299"]],
+            },
+        ],
+    )
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["available"] is True
+    assert diagnostic["label_variation"]["component"] is True
+    assert diagnostic["label_variation"]["target_id"] is True
+    assert isinstance(diagnostic["label_variation"]["component"], bool)
+    assert isinstance(diagnostic["label_variation"]["target_id"], bool)
+
+
+@pytest.mark.parametrize(
+    ("overlap", "expected_latest", "expected_evaluation_overlap", "expected_event_overlap"),
+    [(False, 1, 0, 0), (True, 2, 2017, 8)],
+)
+def test_ambiguous_source_receipt_reports_only_bounded_aggregate_diagnostics(
+    overlap, expected_latest, expected_evaluation_overlap, expected_event_overlap, monkeypatch, capsys
+):
+    now = 1_800_000_000
+    responses = _history(now)
+    first = responses["source"]["data"]["result"][0]
+    first["metric"] = {
+        "component": "private-component-value-first-9a2f",
+        "target_id": "private-target-value-first-14b7",
+    }
+    second = json.loads(json.dumps(first))
+    second["metric"] = {
+        "component": "private-component-value-second-1c8e",
+        "cluster": "private-cluster-value-9f3a",
+        "environment": "dev",
+        "instance": "192.0.2.44:9100",
+        "job": "receiver-host",
+        "service": "private-service-value-7b12",
+        "target_id": "private-target-value-second-6de0",
+        "unapproved_sensitive_label_name": "private-value-6d51",
+    }
+    if not overlap:
+        second["values"] = [
+            [int(evaluation) + 2 * survey.RANGE_SECONDS, str(int(value) + 2 * survey.RANGE_SECONDS)]
+            for evaluation, value in second["values"]
+        ]
+    responses["source"]["data"]["result"].append(second)
+    monkeypatch.setattr(survey.time, "time", lambda: now)
+    monkeypatch.setattr(survey, "query", lambda metric, *_args: responses[metric])
+
+    assert survey.main() == 1
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    diagnostic = receipt["source_diagnostics"]
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "source_series_ambiguous"
+    assert diagnostic["available"] is True
+    assert diagnostic["source_series_count"] == 2
+    assert diagnostic["series_at_latest_evaluation"] == expected_latest
+    assert diagnostic["overlapping_evaluations"] == expected_evaluation_overlap
+    assert diagnostic["overlapping_source_events"] == expected_event_overlap
+    assert diagnostic["label_variation"]["cluster"] is True
+    assert diagnostic["label_variation"]["component"] is True
+    assert diagnostic["label_variation"]["instance"] is True
+    assert diagnostic["label_variation"]["target_id"] is True
+    assert diagnostic["unrecognized_label_key_count"] == 1
+    assert "private-cluster-value-9f3a" not in output
+    assert "private-component-value-first-9a2f" not in output
+    assert "private-component-value-second-1c8e" not in output
+    assert "private-target-value-first-14b7" not in output
+    assert "private-target-value-second-6de0" not in output
+    assert "private-service-value-7b12" not in output
+    assert "192.0.2.44:9100" not in output
+    assert "unapproved_sensitive_label_name" not in output
+    assert "private-value-6d51" not in output
 
 
 def test_history_rejects_a_repeated_single_point_snapshot():

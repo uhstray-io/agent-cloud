@@ -2146,6 +2146,55 @@ templates:
         type: string
         required: true
 
+  - name: Survey PBS VM Census (Dev)
+    playbook: platform/playbooks/survey-pbs-vm-census.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Proxmox VM and storage census"
+        type: string
+        required: true
+    # Emits counts and fixed status only. Debian names and guest type are hints;
+    # image provenance requires a trusted build receipt and is not inferred here.
+
+  - name: Provision PBS Debian Cloud Template (Dev)
+    playbook: platform/playbooks/provision-pbs-debian-template.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for pinned Debian cloud template publication"
+        type: string
+        required: true
+    # VM identity, node, stage storage and destination storage are private inventory
+    # declarations. The publication play refuses check mode and never starts a VM.
+
+  - name: Survey PBS Provisioning Candidates (Dev)
+    playbook: platform/playbooks/survey-pbs-provisioning-candidates.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only PBS identity and storage survey"
+        type: string
+        required: true
+    # The exact free VMIDs and active storage capabilities are shown only in this
+    # private Semaphore task output. No Proxmox or storage configuration is changed.
+
+  - name: Enable PBS Import Storage Content (Dev)
+    playbook: platform/playbooks/enable-o11y-pbs-import-content.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the inventory-pinned Proxmox import-content update"
+        type: string
+        required: true
+    # Storage content is cluster-wide. The playbook updates only the distinct private
+    # import-store declaration, preserves its current content list, and uses Proxmox's
+    # digest concurrency guard. Check mode is read-only.
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev
@@ -2196,6 +2245,66 @@ templates:
         required: true
     # Reads the existing protected survey payload and private inventory identity
     # pin. It emits fixed status only and authorizes no allocation or writes.
+
+  - name: Attach PBS Data Disk (Dev)
+    playbook: platform/playbooks/attach-pbs-data-disk.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the guarded PBS virtual-disk attachment"
+        type: string
+        required: true
+    # The target VM, node, and thick-LVM store come from private inventory. The
+    # workflow re-runs the pinned host-storage preflight and writes only scsi1.
+
+  - name: Prepare PBS Guest Data Disk (Dev)
+    playbook: platform/playbooks/prepare-pbs-guest-data-disk.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS guest filesystem preparation"
+        type: string
+        required: true
+    # Selects and formats only the VMID-derived serial-pinned virtual disk,
+    # mounts it by UUID, and verifies filesystem and mount readback.
+
+  - name: Configure PBS Service (Dev)
+    playbook: platform/playbooks/configure-pbs.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS service configuration"
+        type: string
+        required: true
+    # Repository channel and explicit risk acceptance are private inventory;
+    # this task adds no PBS API token or Linux root password.
+
+  - name: Configure PBS Backup Access (Dev)
+    playbook: platform/playbooks/configure-pbs-backup-access.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for PBS backup access configuration"
+        type: string
+        required: true
+    # PBS/OpenBao/PVE identity state comes from the declared private inventory
+    # and OpenBao. No credential or target values are launch-time survey input.
+
+  - name: Preflight o11y Restore Target (Dev)
+    playbook: platform/playbooks/preflight-o11y-restore-target.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only restore-target preflight"
+        type: string
+        required: true
+    # Reads private target/artifact declarations and Proxmox state only. It
+    # reserves no VMID, creates no VM, and emits no private identity values.
 
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
@@ -2674,6 +2783,16 @@ templates:
         description: "Which declared host to provision — REQUIRED when the group declares more than one"
         type: string
         required: false
+
+  - name: Provision PBS VM (Dev)
+    playbook: platform/playbooks/provision-pbs-vm.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).

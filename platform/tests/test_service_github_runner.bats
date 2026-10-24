@@ -458,8 +458,71 @@ setup() {
 
 @test "gh-runner: the deploy never restarts the unit in place; it quiesces it, then starts it" {
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
-  grep -vE '^[[:space:]]*#' "$PB" > "$BATS_TEST_TMPDIR/pb"
-  refute_grep -qE "(state: *restarted|'restarted')" "$BATS_TEST_TMPDIR/pb"
+  # Structural, not textual. A line grep missed `state: "restarted"` and could not tell the
+  # runner's unit from another one. Every task in every play (blocks, rescue, always and
+  # handlers included) that restarts a unit, by a service module or by systemctl in a shell,
+  # must name exactly systemd-binfmt.service: the one restart this playbook makes, which
+  # registers the arm64 emulator ("Register the arm64 binfmt handler now"). The runner's own
+  # unit is never restarted in place, because a restart stops the Listener holding a job; it
+  # goes through the quiesce, then the start. The walk must reach that start task, or it has
+  # checked nothing.
+  python3 - "$PB" <<'PYTHON'
+import re
+import sys
+
+import yaml
+
+ALLOWED_RESTART_UNITS = {"systemd-binfmt.service"}
+RUNNER_UNIT = "actions-runner.service"
+SERVICE_MODULES = {"systemd_service", "systemd", "service"}
+SHELL_MODULES = {"command", "shell"}
+
+
+def short(key):
+    for prefix in ("ansible.builtin.", "ansible.legacy."):
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return key
+
+
+def walk(tasks):
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        yield task
+        for section in ("block", "rescue", "always"):
+            yield from walk(task.get(section))
+
+
+with open(sys.argv[1]) as source:
+    plays = yaml.safe_load(source)
+
+tasks = []
+for play in plays:
+    for section in ("pre_tasks", "tasks", "post_tasks", "handlers"):
+        tasks.extend(walk(play.get(section)))
+
+failures = []
+reached_runner_unit = False
+for task in tasks:
+    for key, args in task.items():
+        module = short(key)
+        if module in SERVICE_MODULES and isinstance(args, dict):
+            if args.get("name") == RUNNER_UNIT:
+                reached_runner_unit = True
+            if args.get("state") == "restarted" and args.get("name") not in ALLOWED_RESTART_UNITS:
+                failures.append(f"{task.get('name')!r} restarts {args.get('name')!r} in place")
+        if module in SHELL_MODULES:
+            cmd = args if isinstance(args, str) else (args or {}).get("cmd", "")
+            if re.search(r"systemctl\b.*\brestart\b", str(cmd)):
+                failures.append(f"{task.get('name')!r} restarts a unit from a shell command")
+
+if not reached_runner_unit:
+    failures.append(f"the walk never reached the {RUNNER_UNIT} task, so nothing was checked")
+if failures:
+    print("\n".join(failures), file=sys.stderr)
+    sys.exit(1)
+PYTHON
   local q s
   q=$(grep -nF '    - name: "Drain, stop and empty the runner'"'"'s unit"' "$PB" | cut -d: -f1)
   s=$(grep -nF '    - name: "Reload the account'"'"'s systemd and start the runner"' "$PB" | cut -d: -f1)
