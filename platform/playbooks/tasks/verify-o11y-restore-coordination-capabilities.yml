@@ -1,0 +1,165 @@
+---
+# Verify the effective injected AppRole against exactly the coordination paths.
+# The shared preflight pins the only accepted endpoint to private inventory.
+- name: Verify fixed OpenBao destination and reject protected input overrides
+  ansible.builtin.include_tasks: preflight-o11y-restore-target.yml
+  tags: [always]
+
+- name: Require protected Semaphore AppRole credentials
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'BAO_ROLE_ID') | length > 0
+      - lookup('ansible.builtin.env', 'BAO_SECRET_ID') | length > 0
+    fail_msg: "The capability check requires the protected Semaphore AppRole environment."
+    quiet: true
+  no_log: true
+  tags: [always]
+
+- name: Derive the fixed private OpenBao endpoint
+  ansible.builtin.set_fact:
+    _orca_bao_url: "{{ hostvars[(groups['openbao_svc'] | first)].service_url }}"
+  no_log: true
+  tags: [always]
+
+- name: Authenticate with the protected Semaphore AppRole
+  ansible.builtin.uri:
+    url: "{{ _orca_bao_url }}/v1/auth/approle/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ lookup('ansible.builtin.env', 'BAO_ROLE_ID') }}"
+      secret_id: "{{ lookup('ansible.builtin.env', 'BAO_SECRET_ID') }}"
+    headers: {}
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    status_code: [200]
+  register: _orca_login
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always]
+
+- name: Require an authenticated OpenBao token
+  ansible.builtin.assert:
+    that:
+      - _orca_login.status | default(0) == 200
+      - _orca_login.json.auth.client_token | default('') | length > 0
+    fail_msg: "The capability check could not authenticate to the fixed OpenBao endpoint."
+    quiet: true
+  no_log: true
+  tags: [always]
+
+- name: Read back the fixed Semaphore policy
+  ansible.builtin.uri:
+    url: "{{ _orca_bao_url }}/v1/sys/policies/acl/semaphore-read"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _orca_login.json.auth.client_token }}"
+    unredirected_headers: [X-Vault-Token]
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    status_code: [200]
+  register: _orca_policy_readback
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always]
+
+- name: Read effective capabilities for the two fixed coordination paths
+  ansible.builtin.uri:
+    url: "{{ _orca_bao_url }}/v1/sys/capabilities-self"
+    method: POST
+    body_format: json
+    body:
+      paths:
+        - secret/data/coordination/o11y-restore-target
+        - secret/metadata/coordination/o11y-restore-target
+    headers:
+      X-Vault-Token: "{{ _orca_login.json.auth.client_token }}"
+    unredirected_headers: [X-Vault-Token]
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    status_code: [200]
+  register: _orca_capabilities_readback
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always]
+
+- name: Compare protected readbacks with the exact reviewed source
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/verify_o11y_restore_capabilities.py"
+    stdin: >-
+      {{ {
+        'reviewed_repository_sha': expected_repository_sha,
+        'expected_policy': _reviewed_checkout_payloads['platform/services/openbao/deployment/config/policies/semaphore-read.hcl'] | b64decode(encoding='utf-8'),
+        'policy_status': _orca_policy_readback.status | default(0),
+        'policy_response': _orca_policy_readback.json | default(none),
+        'capabilities_status': _orca_capabilities_readback.status | default(0),
+        'capabilities_response': _orca_capabilities_readback.json | default(none)
+      } | to_json }}
+  register: _orca_check
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always]
+
+- name: Report only the fixed verification outcome
+  ansible.builtin.debug:
+    msg: >-
+      {{ {
+        'status': (_orca_check.stdout | default('{}', true) | from_json).status | default('refused'),
+        'reason': (_orca_check.stdout | default('{}', true) | from_json).reason | default('verification_failed'),
+        'reviewed_repository_sha': (_orca_check.stdout | default('{}', true) | from_json).reviewed_repository_sha | default(expected_repository_sha),
+        'policy_matches_source': (_orca_check.stdout | default('{}', true) | from_json).policy_matches_source | default(false),
+        'data_capabilities_match': (_orca_check.stdout | default('{}', true) | from_json).data_capabilities_match | default(false),
+        'metadata_capabilities_match': (_orca_check.stdout | default('{}', true) | from_json).metadata_capabilities_match | default(false)
+      } | to_json }}
+  tags: [always]
+
+- name: Require matching policy and exact effective grants
+  ansible.builtin.assert:
+    that:
+      - _orca_check.rc | default(1) == 0
+      - (_orca_check.stdout | default('{}', true) | from_json).status == 'verified'
+    fail_msg: "OpenBao policy or effective coordination capabilities did not match the reviewed source."
+    quiet: true
+  tags: [always]

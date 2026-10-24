@@ -1387,7 +1387,10 @@ import sys
 
 import yaml
 
-playbook, = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
+playbook = next(
+    play for play in yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+    if play.get('name') == 'Proxmox pre-upgrade snapshot (create, wait, validate)'
+)
 defaults = playbook['module_defaults']['ansible.builtin.uri']
 assert defaults['validate_certs'] is False
 assert defaults['follow_redirects'] == 'none'

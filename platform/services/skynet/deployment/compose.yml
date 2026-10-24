@@ -10,8 +10,8 @@
 # deploy.sh is container lifecycle only — no secret generation.
 #
 # Every variable skynet reads is listed in deploy/tier2/README.md of the skynet repository.
-# Compose refuses to start without the required ones; skynet itself refuses to start if any
-# of its service variables is missing.
+# Compose refuses to start only without SKYNET_IMAGE and SKYNET_DB_PASSWORD (`:?`). The other
+# SKYNET_* values arrive via env_file, and skynet's own startup refuses a missing one.
 
 name: skynet
 

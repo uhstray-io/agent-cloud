@@ -1,0 +1,500 @@
+---
+# Register the protected PBS as an independently usable PVE restore source.
+# This workflow only adds/verifies one declared PBS storage; it never edits
+# backup jobs, other storage entries, the PBS datastore, or credentials.
+- name: Refuse caller values for protected selectors
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed source checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/register-o11y-pbs-restore-storage.yml
+      - platform/playbooks/files/reconcile_pbs_pve_storage.py
+      - platform/playbooks/files/inspect_pbs_backup_access.py
+      - platform/playbooks/tasks/o11y-pbs-inventory-provenance.yml
+      - platform/playbooks/files/inspect_o11y_pbs_provenance.py
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/files/reviewed-checkout.py
+
+- name: Require the declared protected-copy PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_copy_svc
+    preflight_group_expected: pbs_copy_svc
+    _preflight_redact_hostnames: true
+
+- name: Validate fixed restore-storage selectors before API access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_copy_host: "{{ groups['pbs_copy_svc'][0] }}"
+  tasks:
+    - name: Reject caller overrides for private placement and credentials
+      ansible.builtin.assert:
+        that: _forged_names | length == 0
+        fail_msg: "PVE endpoint, storage placement, and PBS credentials come from protected inventory and OpenBao."
+        quiet: true
+      vars:
+        _private_names:
+          - pbs_svc
+          - pbs_copy_svc
+          - pbs_api_host
+          - pbs_storage_id
+          - pbs_storage_nodes
+          - o11y_copy_restore_user
+          - o11y_copy_restore_token_id
+          - o11y_copy_restore_token_secret
+          - o11y_copy_restore_datastore
+          - o11y_copy_restore_fingerprint
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - local_mode
+        _forged_names: "{{ _private_names | intersect('' | extra_var_names) }}"
+
+    - name: Require exact reviewed inventory, destination placement, and normal apply mode
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - site_config_base_sha is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - hostvars[_pbs_copy_host].pbs_api_host is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+          - hostvars[_pbs_copy_host].pbs_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - hostvars[_pbs_copy_host].pbs_storage_nodes is sequence
+          - hostvars[_pbs_copy_host].pbs_storage_nodes is not string
+          - hostvars[_pbs_copy_host].pbs_storage_nodes | length > 0
+        fail_msg: "Restore storage registration requires exact Dev and private inventory selectors in normal apply mode."
+        quiet: true
+      no_log: true
+
+- name: Prove exact private inventory provenance before PVE access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Compare reviewed inventory bytes and current Semaphore bindings
+      ansible.builtin.include_tasks: tasks/o11y-pbs-inventory-provenance.yml
+      vars:
+        _pbs_provenance_template_name: Register o11y PBS Restore Storage (Dev)
+        _pbs_provenance_playbook: platform/playbooks/register-o11y-pbs-restore-storage.yml
+
+- name: Register or verify only the protected PBS restore storage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_copy_host: "{{ groups['pbs_copy_svc'][0] }}"
+    _pbs_endpoint: "{{ hostvars[_pbs_copy_host].pbs_api_host }}"
+    _storage_id: "{{ hostvars[_pbs_copy_host].pbs_storage_id }}"
+    _storage_nodes: "{{ hostvars[_pbs_copy_host].pbs_storage_nodes }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+  tasks:
+    - name: Require OpenBao AppRole and PVE endpoint inputs
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _bao_role_id | length > 0
+          - _bao_secret_id | length > 0
+          - _pbs_endpoint is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+        fail_msg: "PVE registration requires protected OpenBao access and the declared destination PBS endpoint."
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport before authentication
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read PVE API authority and the pre-provisioned restore Reader credential
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/{{ item }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        unredirected_headers: [X-Vault-Token]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      loop: [proxmox, pbs]
+      loop_control:
+        label: "OpenBao service record"
+      register: _secret_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Retain only the required private API and Reader fields
+      ansible.builtin.set_fact:
+        _proxmox_secret: "{{ _secret_reads.results[0].json.data.data }}"
+        _pbs_secret: "{{ _secret_reads.results[1].json.data.data }}"
+      no_log: true
+
+    - name: Require exact restore credential and OpenBao PVE authority
+      ansible.builtin.assert:
+        that:
+          - _proxmox_secret.url is match('^https://[^/]+$')
+          - _proxmox_secret.token_id | length > 0
+          - _proxmox_secret.api_token | length > 0
+          - _pbs_secret.o11y_copy_restore_user == 'o11y-copy-restore@pbs'
+          - _pbs_secret.o11y_copy_restore_token_id == 'o11y-copy-restore@pbs!pve-restore'
+          - _pbs_secret.o11y_copy_restore_token_secret | length > 0
+          - _pbs_secret.o11y_copy_restore_datastore == 'o11y'
+          - _pbs_secret.o11y_copy_restore_fingerprint | length == 64
+        fail_msg: "OpenBao does not contain the independent destination restore identity and PVE API authority."
+        quiet: true
+      no_log: true
+
+    - name: Build the exact PVE storage configuration from static placement and restore credentials
+      ansible.builtin.set_fact:
+        _pve_expected:
+          type: pbs
+          server: "{{ _pbs_endpoint }}"
+          port: 8007
+          datastore: o11y
+          username: "{{ _pbs_secret.o11y_copy_restore_token_id }}"
+          password: "{{ _pbs_secret.o11y_copy_restore_token_secret }}"
+          fingerprint: "{{ _pbs_secret.o11y_copy_restore_fingerprint }}"
+          content: backup
+          nodes: "{{ _storage_nodes }}"
+          prune-backups: keep-all=1
+        _pve_origin: "{{ _proxmox_secret.url }}"
+        _pve_token_id: "{{ _proxmox_secret.token_id }}"
+        _pve_token_secret: "{{ _proxmox_secret.api_token }}"
+      no_log: true
+
+    - name: Read all PVE nodes, storage rows, and backup jobs
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      loop:
+        - {key: nodes, url: "{{ _pve_origin }}/api2/json/nodes"}
+        - {key: storage_rows, url: "{{ _pve_origin }}/api2/json/storage"}
+        - {key: backup_jobs, url: "{{ _pve_origin }}/api2/json/cluster/backup"}
+      loop_control:
+        label: "PVE {{ item.key }} preflight"
+      register: _pve_initial_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Retain the initial PVE state snapshots
+      ansible.builtin.set_fact:
+        _pve_initial:
+          nodes: "{{ _pve_initial_reads.results[0].json.data }}"
+          storage_rows: "{{ _pve_initial_reads.results[1].json.data }}"
+          backup_jobs: "{{ _pve_initial_reads.results[2].json.data }}"
+      no_log: true
+
+    - name: Read the declared storage configuration when it is already listed
+      ansible.builtin.uri:
+        url: "{{ _pve_origin }}/api2/json/storage/{{ _storage_id | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        status_code: [200, 404]
+      register: _target_read
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _pve_initial.storage_rows | selectattr('storage', 'equalto', _storage_id) | list | length == 1
+
+    - name: Refuse any undeclared or conflicting existing storage settings
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", preflight]
+        stdin: >-
+          {{ {'storage_id': _storage_id, 'rows': _pve_initial.storage_rows,
+              'current': (_target_read.json.data if _target_read is not skipped and _target_read.status == 200 else none),
+              'expected': _pve_expected} | to_json }}
+        stdin_add_newline: false
+      register: _preflight_plan
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the declared target storage to be absent or an exact match
+      ansible.builtin.assert:
+        that: _preflight_plan.rc == 0
+        fail_msg: "A conflicting PVE storage ID exists; no PVE setting or backup job was changed."
+        quiet: true
+      no_log: true
+
+    - name: Probe existing target content through each declared PVE node
+      ansible.builtin.uri:
+        url: "{{ _pve_origin }}/api2/json/nodes/{{ item | urlencode }}/storage/{{ _storage_id | urlencode }}/content?content=backup"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      loop: "{{ _storage_nodes | sort }}"
+      loop_control:
+        label: "existing PVE restore access"
+      register: _existing_access
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: (_preflight_plan.stdout | from_json).action == 'verify_access'
+
+    - name: Normalize existing node access proof
+      ansible.builtin.set_fact:
+        _access_proofs: >-
+          {{ _access_proofs | default([]) + [{'node': item.item, 'url': item.url | default(''),
+             'status': item.status | default(0), 'data': item.json.data | default(none)}] }}
+      loop: "{{ _existing_access.results | default([]) }}"
+      loop_control:
+        label: "Keep bounded PVE proof"
+      no_log: true
+
+    - name: Validate exact initial registration and node access without changing PVE
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", plan]
+        stdin: >-
+          {{ {'storage_id': _storage_id, 'rows': _pve_initial.storage_rows,
+              'current': (_target_read.json.data if _target_read is not skipped and _target_read.status == 200 else none),
+              'expected': _pve_expected, 'jobs_before': _pve_initial.backup_jobs,
+              'nodes_before': _pve_initial.nodes, 'api_base': _pve_origin,
+              'access_proofs': _access_proofs | default([])} | to_json }}
+        stdin_add_newline: false
+      register: _initial_plan
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the exact initial plan
+      ansible.builtin.assert:
+        that: _initial_plan.rc == 0
+        fail_msg: "PVE storage or node access differs from the protected restore placement."
+        quiet: true
+      no_log: true
+
+    - name: Re-read all protected PVE snapshots immediately before storage create
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      loop:
+        - {key: nodes, url: "{{ _pve_origin }}/api2/json/nodes"}
+        - {key: storage_rows, url: "{{ _pve_origin }}/api2/json/storage"}
+        - {key: backup_jobs, url: "{{ _pve_origin }}/api2/json/cluster/backup"}
+      loop_control:
+        label: "PVE {{ item.key }} pre-write"
+      register: _pve_now_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read current target storage immediately before create
+      ansible.builtin.uri:
+        url: "{{ _pve_origin }}/api2/json/storage/{{ _storage_id | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        status_code: [200, 404]
+      register: _target_now
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Guard PVE mutation with the exact pre-write snapshots
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", prewrite]
+        stdin: >-
+          {{ {'storage_id': _storage_id, 'rows_before': _pve_initial.storage_rows,
+              'rows_now': _pve_now_reads.results[1].json.data,
+              'current': (_target_now.json.data if _target_now.status == 200 else none),
+              'expected': _pve_expected, 'jobs_before': _pve_initial.backup_jobs,
+              'jobs_now': _pve_now_reads.results[2].json.data,
+              'nodes_before': _pve_initial.nodes, 'nodes_now': _pve_now_reads.results[0].json.data,
+              'api_base': _pve_origin, 'access_proofs': _access_proofs | default([])} | to_json }}
+        stdin_add_newline: false
+      register: _prewrite_plan
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require unchanged jobs, storage rows, nodes, and exact plan before mutation
+      ansible.builtin.assert:
+        that:
+          - _prewrite_plan.rc == 0
+          - (_prewrite_plan.stdout | from_json).action == (_initial_plan.stdout | from_json).action
+        fail_msg: "PVE changed after preflight; the PBS storage create was refused."
+        quiet: true
+      no_log: true
+
+    - name: Create the single PBS restore storage using only the destination Reader token
+      ansible.builtin.uri:
+        url: "{{ _pve_origin }}/api2/json/storage"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        body_format: form-urlencoded
+        body: >-
+          {{ {'storage': _storage_id, 'type': 'pbs', 'server': _pbs_endpoint, 'port': 8007,
+              'datastore': 'o11y', 'username': _pbs_secret.o11y_copy_restore_token_id,
+              'password': _pbs_secret.o11y_copy_restore_token_secret,
+              'fingerprint': _pbs_secret.o11y_copy_restore_fingerprint,
+              'content': 'backup', 'nodes': _storage_nodes | join(','),
+              'prune-backups': 'keep-all=1'} }}
+        status_code: [200]
+      register: _storage_create
+      changed_when: true
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - (_prewrite_plan.stdout | from_json).action == 'create'
+
+    - name: Verify all PVE rows and node access after registration
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+        status_code: [200]
+      loop:
+        - {key: nodes, url: "{{ _pve_origin }}/api2/json/nodes"}
+        - {key: storage_rows, url: "{{ _pve_origin }}/api2/json/storage"}
+        - {key: backup_jobs, url: "{{ _pve_origin }}/api2/json/cluster/backup"}
+      loop_control:
+        label: "PVE final {{ item.key }}"
+      register: _pve_final_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read exact final restore storage configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_origin }}/api2/json/storage/{{ _storage_id | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        status_code: [200]
+      register: _target_final
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Probe final PBS content access from every declared PVE node
+      ansible.builtin.uri:
+        url: "{{ _pve_origin }}/api2/json/nodes/{{ item | urlencode }}/storage/{{ _storage_id | urlencode }}/content?content=backup"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_token_secret }}"
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        follow_redirects: none
+        status_code: [200]
+      loop: "{{ _storage_nodes | sort }}"
+      loop_control:
+        label: "Final PBS restore content access"
+      register: _final_access
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Normalize final node access proof
+      ansible.builtin.set_fact:
+        _final_access_proofs: >-
+          {{ _final_access_proofs | default([]) + [{'node': item.item, 'url': item.url | default(''),
+             'status': item.status | default(0), 'data': item.json.data | default(none)}] }}
+      loop: "{{ _final_access.results }}"
+      loop_control:
+        label: "Keep bounded final PVE proof"
+      no_log: true
+
+    - name: Validate final target, preserved unrelated storage and jobs, and node access
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/reconcile_pbs_pve_storage.py", plan]
+        stdin: >-
+          {{ {'storage_id': _storage_id, 'rows': _pve_final_reads.results[1].json.data,
+              'original_rows': _pve_initial.storage_rows,
+              'rows_after': _pve_final_reads.results[1].json.data,
+              'current': _target_final.json.data, 'expected': _pve_expected,
+              'jobs_before': _pve_initial.backup_jobs,
+              'jobs_after': _pve_final_reads.results[2].json.data,
+              'nodes_before': _pve_initial.nodes, 'nodes_after': _pve_final_reads.results[0].json.data,
+              'api_base': _pve_origin, 'access_proofs': _final_access_proofs} | to_json }}
+        stdin_add_newline: false
+      register: _final_validation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require exact final destination storage readback
+      ansible.builtin.assert:
+        that: _final_validation.rc == 0
+        fail_msg: "PVE restore storage does not match its static declaration or changed unrelated state."
+        quiet: true
+      no_log: true
+
+    - name: Report the verified destination restore storage
+      ansible.builtin.debug:
+        msg:
+          - "The declared PVE PBS restore storage is registered and readable on every declared node."
+          - "Existing PVE storage rows and backup-job configuration remain unchanged."

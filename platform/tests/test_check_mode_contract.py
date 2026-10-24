@@ -363,6 +363,14 @@ def test_post_is_a_write():
     assert found == ["create: uri write without a check-mode guard"]
 
 
+def test_mutating_post_forced_into_check_mode_is_caught():
+    found = _tasks(
+        "- name: create\n  ansible.builtin.uri:\n    url: http://x\n    method: POST\n"
+        "  check_mode: false\n"
+    )
+    assert found == ["create: uri write forced to run in check mode (check_mode: false)"]
+
+
 def test_read_only_command_needs_check_mode_false():
     found = _tasks("- name: probe\n  ansible.builtin.command: cat /etc/os-release\n  changed_when: false\n")
     assert found == ["probe: read-only command without check_mode: false"]

@@ -76,6 +76,8 @@ class FakePrometheus:
 
     def answer(self, path, form):
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "data")
+        if behaviour == "nonmapping":
+            return 200, {"status": "success", "data": [{"private-label": "do-not-report"}]}
         if behaviour == "error":
             return 400, {"status": "error", "errorType": "bad_data", "error": "parse error"}
         if behaviour == "redirect":
@@ -155,6 +157,12 @@ class FakeLoki:
             result = [{
                 "metric": {"service": "netbox", "step": "provision-vm"},
                 "value": [1700000000, "0"],
+            }]
+        elif behaviour == "workflow_age":
+            result_type = "vector"
+            result = [{
+                "metric": {"service": "netbox", "step": "provision-vm"},
+                "value": [1700000000, "42.5"],
             }]
         elif behaviour == "metric":
             result_type = "vector" if path.endswith("/query") else "matrix"
@@ -447,12 +455,392 @@ def test_latest_workflow_status_reports_only_registry_backed_current_failure_pai
         "name": "current_workflow_failed_steps",
         "status": "present",
         "failed_step_count": 1,
-        "failed_steps": [{"service": "netbox", "step": "provision-vm"}],
+        "failed_steps": [{
+            "service": "netbox", "step": "provision-vm", "completion_age_seconds": None,
+        }],
         "truncated_count": 0,
         "unknown_series_count": 0,
+        "unknown_label_shape_count": 0,
+        "unknown_identity_count": 0,
+        "unknown_sample_count": 0,
+        "duplicate_pair_count": 0,
         "window_seconds": 2700,
         "scope": "latest_recorded_state",
+        "completion_age_status": "not_selected",
+        "failed_pairs_with_known_completion_age": 0,
+        "failed_pairs_with_unknown_completion_age": 1,
+        "completion_age_diagnostics": {
+            "registry_unavailable_count": 0,
+            "invalid_result_shape_count": 0,
+            "invalid_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "duplicate_pair_count": 0,
+            "age_rows_with_unavailable_value_count": 0,
+            "failed_pairs_missing_age_row_count": 0,
+            "failed_pairs_with_unavailable_age_value_count": 0,
+        },
     }
+    assert panel["observation"]["failed_steps"][0]["completion_age_seconds"] is None
+
+
+def test_unknown_workflow_series_are_split_into_fixed_categories_without_echo(monkeypatch):
+    data = {"resultType": "vector", "result": [
+        {"metric": {"service": "netbox", "step": "provision-vm", "private": "private-label"},
+         "value": [1700000000, "0"]},
+        {"metric": {"service": "private-service", "step": "provision-vm"},
+         "value": [1700000000, "0"]},
+        {"metric": {"service": "netbox", "step": "service-validate"}, "value": "bad-sample"},
+        {"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000000, "0"]},
+        {"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000001, "1"]},
+    ]}
+    panel = _observe_dashboard(monkeypatch, "service-conformance", "Latest step status by service", data)
+    observation = panel["observation"]
+    assert observation["status"] == "unverified"
+    assert observation["unknown_series_count"] == 4
+    assert observation["unknown_label_shape_count"] == 1
+    assert observation["unknown_identity_count"] == 1
+    assert observation["unknown_sample_count"] == 1
+    assert observation["duplicate_pair_count"] == 1
+    assert "private-label" not in json.dumps(observation)
+    assert "private-service" not in json.dumps(observation)
+
+
+def test_selected_latest_status_joins_only_exact_completion_age_panel(monkeypatch):
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {
+        "resultType": "vector",
+        "result": [{
+            "metric": {"service": "netbox", "step": "provision-vm"},
+            "value": [1700000000, "42.5"],
+        }],
+    }
+    seen = []
+
+    def query(base, backend, mode, expr, end, lookback, step):
+        seen.append(expr)
+        return {"data": age_data if "completed_at_seconds" in expr else status_data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+    ), now=1700000000)
+    failure = next(p for p in report["panels"] if p["title"] == "Latest step status by service")["observation"]
+    assert len(seen) == 2
+    assert failure["status"] == "present"
+    assert failure["completion_age_status"] == "observed"
+    assert failure["failed_steps"] == [{
+        "service": "netbox", "step": "provision-vm", "completion_age_seconds": 42.5,
+    }]
+    assert failure["failed_pairs_with_known_completion_age"] == 1
+    assert failure["failed_pairs_with_unknown_completion_age"] == 0
+    assert failure["completion_age_diagnostics"] == {
+        "registry_unavailable_count": 0,
+        "invalid_result_shape_count": 0,
+        "invalid_label_shape_count": 0,
+        "unknown_identity_count": 0,
+        "duplicate_pair_count": 0,
+        "age_rows_with_unavailable_value_count": 0,
+        "failed_pairs_missing_age_row_count": 0,
+        "failed_pairs_with_unavailable_age_value_count": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("age_rows", "expected_status", "expected_diagnostics"),
+    [
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm", "private": "x"},
+                 "value": [1700000000, "42"]},
+                {"metric": {"service": "private-service", "step": "provision-vm"},
+                 "value": [1700000000, "42"]},
+            ],
+            "unverified",
+            {"invalid_label_shape_count": 1, "unknown_identity_count": 1},
+        ),
+        (
+            [{"metric": {"service": "netbox", "step": "service-validate"},
+              "value": [1700000000, "42"]}],
+            "observed",
+            {"failed_pairs_missing_age_row_count": 1},
+        ),
+        (
+            [{"metric": {"service": "netbox", "step": "provision-vm"},
+              "value": [1700000000, "-1"]}],
+            "observed",
+            {
+                "age_rows_with_unavailable_value_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "42"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "43"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "42"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "-1"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "age_rows_with_unavailable_value_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "-1"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "42"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "age_rows_with_unavailable_value_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "-1"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "-1"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "age_rows_with_unavailable_value_count": 2,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+    ],
+)
+def test_completion_age_reports_fixed_rejection_and_pair_join_counts(
+    monkeypatch, age_rows, expected_status, expected_diagnostics
+):
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {"resultType": "vector", "result": age_rows}
+
+    def query(_base, _backend, _mode, expr, _end, _lookback, _step):
+        return {"data": age_data if "completed_at_seconds" in expr else status_data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+    ), now=1700000000)
+    observation = next(
+        panel for panel in report["panels"] if panel["title"] == "Latest step status by service"
+    )["observation"]
+    diagnostics = observation["completion_age_diagnostics"]
+
+    assert observation["completion_age_status"] == expected_status
+    assert observation["failed_steps"][0]["completion_age_seconds"] is None
+    assert set(diagnostics) == set(vdd.COMPLETION_AGE_DIAGNOSTIC_COUNTERS)
+    assert {key: value for key, value in diagnostics.items() if value} == expected_diagnostics
+    serialized = json.dumps(observation)
+    assert "private-service" not in serialized
+    assert '"private"' not in serialized
+
+
+@pytest.mark.parametrize("rejection", ["registry", "result_shape"])
+def test_completion_age_reports_registry_and_result_shape_rejections(monkeypatch, rejection):
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {"resultType": "matrix", "result": []}
+    if rejection == "registry":
+        monkeypatch.setattr(vdd, "_workflow_identity_allowlists", lambda *_args: None)
+
+    def query(_base, _backend, _mode, expr, _end, _lookback, _step):
+        return {"data": age_data if "completed_at_seconds" in expr else status_data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+    ), now=1700000000)
+    observation = next(
+        panel for panel in report["panels"] if panel["title"] == "Latest step status by service"
+    )["observation"]
+    diagnostics = observation["completion_age_diagnostics"]
+    expected_key = "registry_unavailable_count" if rejection == "registry" else "invalid_result_shape_count"
+
+    assert observation["completion_age_status"] == "unverified"
+    if rejection == "result_shape":
+        assert observation["failed_steps"][0]["completion_age_seconds"] is None
+    else:
+        assert observation["failed_steps"] == []
+    assert diagnostics[expected_key] == 1
+    assert sum(diagnostics.values()) == 1
+
+
+@pytest.mark.parametrize("ambiguity", ["wrong_uid", "wrong_type", "duplicate"])
+def test_completion_age_ignores_mixed_or_ambiguous_targets_after_exact_target_error(
+    monkeypatch, tmp_path, ambiguity
+):
+    dashboard = json.loads((DASHBOARDS / "service-conformance.json").read_text())
+    age_panel = next(
+        panel for panel in dashboard["panels"]
+        if panel.get("title") == "Latest workflow completion age by service and step"
+    )
+    exact_target = age_panel["targets"][0]
+    other_target = json.loads(json.dumps(exact_target))
+    if ambiguity == "wrong_uid":
+        other_target["datasource"]["uid"] = "other-loki"
+    elif ambiguity == "wrong_type":
+        other_target["datasource"] = {"type": "prometheus", "uid": "prometheus"}
+    age_panel["targets"] = [exact_target, other_target]
+
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {
+        "resultType": "vector",
+        "result": [{
+            "metric": {"service": "netbox", "step": "provision-vm"},
+            "value": [1700000000, "42"],
+        }],
+    }
+    age_queries = 0
+
+    def query(_base, _backend, _mode, expr, _end, _lookback, _step):
+        nonlocal age_queries
+        if "completed_at_seconds" in expr:
+            age_queries += 1
+            return {"error": "target-specific query failure"} if age_queries == 1 else {"data": age_data}
+        return {"data": status_data}
+
+    original_allowlists = vdd._workflow_identity_allowlists
+    monkeypatch.setattr(
+        vdd, "_workflow_identity_allowlists",
+        lambda _dashboards_dir, steps: original_allowlists(str(DASHBOARDS), steps),
+    )
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+        dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+    ), now=1700000000)
+
+    observation = next(
+        panel for panel in report["panels"] if panel["title"] == "Latest step status by service"
+    )["observation"]
+    assert report["status"] == "fail"
+    assert age_queries == 2
+    assert observation["completion_age_status"] == "unverified"
+    assert observation["failed_steps"] == [{
+        "service": "netbox", "step": "provision-vm", "completion_age_seconds": None,
+    }]
+    assert observation["failed_pairs_with_known_completion_age"] == 0
+    assert observation["failed_pairs_with_unknown_completion_age"] == 1
+
+
+@pytest.mark.parametrize(
+    "age_rows",
+    [
+        [],
+        [{"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000000, "-1"]}],
+        [
+            {"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000000, "42"]},
+            {"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000001, "43"]},
+        ],
+        [{"metric": {"service": "netbox", "step": "service-validate"}, "value": [1700000000, "42"]}],
+        [{"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000000, "nan"]}],
+        [{"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000000, False]}],
+        [{"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000000, "-2"]}],
+        [{"metric": {"service": "netbox", "step": "provision-vm"}, "value": ["invalid-time", "42"]}],
+        [{"metric": {"service": "netbox", "step": "provision-vm", "private": "private-label"},
+          "value": [1700000000, "42"]}],
+    ],
+)
+def test_invalid_or_unavailable_age_rows_remain_null(monkeypatch, age_rows):
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {"resultType": "vector", "result": age_rows}
+
+    def query(base, backend, mode, expr, end, lookback, step):
+        return {"data": age_data if "completed_at_seconds" in expr else status_data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+    ), now=1700000000)
+    observation = next(p for p in report["panels"] if p["title"] == "Latest step status by service")["observation"]
+    assert observation["failed_steps"][0]["completion_age_seconds"] is None
+    assert observation["failed_pairs_with_known_completion_age"] == 0
+    assert observation["failed_pairs_with_unknown_completion_age"] == 1
+
+
+@pytest.mark.parametrize("drift", ["expr", "datasource"])
+def test_age_contract_drift_does_not_authorize_age_join(monkeypatch, tmp_path, drift):
+    dashboard = json.loads((DASHBOARDS / "service-conformance.json").read_text())
+    for panel in dashboard["panels"]:
+        if panel.get("title") == "Latest workflow completion age by service and step":
+            if drift == "expr":
+                panel["targets"][0]["expr"] += " + 0"
+            else:
+                panel["targets"][0]["datasource"] = {"type": "prometheus", "uid": "prometheus"}
+    original_allowlists = vdd._workflow_identity_allowlists
+    monkeypatch.setattr(
+        vdd, "_workflow_identity_allowlists",
+        lambda _dashboards_dir, steps: original_allowlists(str(DASHBOARDS), steps),
+    )
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": status_data})
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+        dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+    ), now=1700000000)
+    observation = next(p for p in report["panels"] if p["title"] == "Latest step status by service")["observation"]
+    assert observation["status"] == "present"
+    assert observation["completion_age_status"] == "unverified"
+    assert observation["failed_steps"][0]["completion_age_seconds"] is None
+
+
+def test_completion_age_join_is_bounded_to_returned_failure_pairs(monkeypatch):
+    service_ids, step_ids = vdd._workflow_identity_allowlists(
+        str(DASHBOARDS), _payload("service-conformance")["_vdd_workflow_steps"]
+    )
+    pairs = [(service, step) for service in sorted(service_ids) for step in sorted(step_ids)][:51]
+    assert len(pairs) == 51
+    status_data = _workflow_step_vector([
+        ({"service": service, "step": step}, 0) for service, step in pairs
+    ])
+    age_data = {
+        "resultType": "vector",
+        "result": [
+            {"metric": {"service": service, "step": step}, "value": [1700000000, "42"]}
+            for service, step in pairs
+        ],
+    }
+    monkeypatch.setattr(
+        vdd, "_query",
+        lambda *args: {"data": age_data if "completed_at_seconds" in args[3] else status_data},
+    )
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+    ), now=1700000000)
+    observation = next(p for p in report["panels"] if p["title"] == "Latest step status by service")["observation"]
+    assert observation["failed_step_count"] == 51
+    assert observation["truncated_count"] == 1
+    assert len(observation["failed_steps"]) == 50
+    assert observation["failed_pairs_with_known_completion_age"] == 50
+    assert observation["failed_pairs_with_unknown_completion_age"] == 0
 
 
 def test_latest_status_query_reduction_does_not_relabel_a_later_pass_as_failure(monkeypatch):
@@ -518,6 +906,26 @@ def test_duplicate_current_status_for_a_pair_is_unverified(monkeypatch):
     assert panel["observation"]["unknown_series_count"] == 1
 
 
+def test_duplicate_pair_with_malformed_sample_is_not_reported_as_current_failure(monkeypatch):
+    rows = [
+        {"metric": {"service": "netbox", "step": "provision-vm"}, "value": [1700000000, "0"]},
+        {"metric": {"service": "netbox", "step": "provision-vm"}, "value": "malformed"},
+    ]
+    observations = []
+    for ordered_rows in (rows, list(reversed(rows))):
+        data = {"resultType": "vector", "result": ordered_rows}
+        panel = _observe_dashboard(
+            monkeypatch, "service-conformance", "Latest step status by service", data
+        )
+        observations.append(panel["observation"])
+    for observation in observations:
+        assert observation["status"] == "unverified"
+        assert observation["failed_steps"] == []
+        assert observation["unknown_series_count"] == 1
+        assert observation["unknown_sample_count"] == 0
+        assert observation["duplicate_pair_count"] == 1
+
+
 def test_unknown_identity_labels_are_counted_but_never_echoed(monkeypatch):
     data = _workflow_step_vector([
         ({"service": "netbox", "step": "provision-vm", "identity": "private-user-123"}, 0),
@@ -575,6 +983,27 @@ def test_changed_latest_status_contract_is_unverified_without_returning_labels(m
         "reason": "contract_mismatch",
         "window_seconds": 2700,
         "scope": "latest_recorded_state",
+        "unknown_series_count": 0,
+        "unknown_label_shape_count": 0,
+        "unknown_identity_count": 0,
+        "unknown_sample_count": 0,
+        "duplicate_pair_count": 0,
+        "failed_step_count": 0,
+        "failed_steps": [],
+        "truncated_count": 0,
+        "completion_age_status": "not_selected",
+        "failed_pairs_with_known_completion_age": 0,
+        "failed_pairs_with_unknown_completion_age": 0,
+        "completion_age_diagnostics": {
+            "registry_unavailable_count": 0,
+            "invalid_result_shape_count": 0,
+            "invalid_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "duplicate_pair_count": 0,
+            "age_rows_with_unavailable_value_count": 0,
+            "failed_pairs_missing_age_row_count": 0,
+            "failed_pairs_with_unavailable_age_value_count": 0,
+        },
     }
     assert "netbox" not in json.dumps(report)
 
@@ -686,7 +1115,9 @@ def test_standalone_cli_uses_canonical_workflow_registry_and_reports_window(monk
     assert vdd.main() == 0
     report = json.loads(capsys.readouterr().out)
     observation = report["panels"][0]["observation"]
-    assert observation["failed_steps"] == [{"service": "netbox", "step": "provision-vm"}]
+    assert observation["failed_steps"] == [{
+        "service": "netbox", "step": "provision-vm", "completion_age_seconds": None,
+    }]
     assert observation["window_seconds"] == 2700
 
 
@@ -964,6 +1395,21 @@ def test_every_panel_with_data_passes_and_reports_counts_only(prometheus):
     path, form = prometheus.requests[0]
     assert path == "/api/v1/query_range"
     assert (form["start"], form["end"], form["step"]) == ("1700000000.000", "1700003600.000", "15s")
+
+
+def test_non_mapping_success_data_is_a_fixed_query_error_through_full_evaluation(prometheus):
+    prometheus.rules["min by (service)"] = "nonmapping"
+    report = vdd.evaluate(_payload("service-overview", prometheus_url=prometheus.url), now=1700003600)
+
+    target = next(
+        target
+        for panel in report["panels"]
+        for target in panel["targets"]
+        if target["status"] == "error"
+    )
+    assert report["status"] == "fail"
+    assert target["error"] == "response data is not an object"
+    assert "do-not-report" not in json.dumps(report)
 
 
 def test_nan_only_series_render_nothing_and_fail_the_panel(prometheus):
@@ -1560,6 +2006,29 @@ def test_playbook_passes_canonical_controller_registry_to_receiver_evaluator(rec
     assert '"status": "present"' in proc.stdout, proc.stdout
     assert '"service": "netbox"' in proc.stdout
     assert '"step": "provision-vm"' in proc.stdout
+    assert '"completion_age_status": "not_selected"' in proc.stdout
+    assert '"completion_age_seconds": null' in proc.stdout
+    assert len(receiver["loki"].requests) == 1
+    assert not any(label in proc.stdout for label in SECRET_LABELS)
+
+
+@needs_ansible
+def test_playbook_joins_completion_age_only_when_both_exact_panels_are_selected(receiver):
+    receiver["loki"].rules["unwrap state_code"] = "workflow_failure"
+    receiver["loki"].rules["completed_at_seconds"] = "workflow_age"
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=service-conformance",
+        "-e",
+        '{"panel_titles": "[\\"Latest step status by service\\", '
+        '\\"Latest workflow completion age by service and step\\"]"}',
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert '"completion_age_status": "observed"' in proc.stdout
+    assert '"completion_age_seconds": 42.5' in proc.stdout
+    assert '"failed_pairs_with_known_completion_age": 1' in proc.stdout
+    assert len(receiver["loki"].requests) == 2
     assert not any(label in proc.stdout for label in SECRET_LABELS)
 
 

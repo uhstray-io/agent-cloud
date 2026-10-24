@@ -28,9 +28,11 @@
 #
 # Read-only and identical under --check: the dashboard is read and Prometheus or Loki is queried in
 # both. Output is counts plus bounded public identities: only the exact latest-workflow-state
-# observation may report service/step pairs validated against the public registries. A
+# observation may report service/step pairs validated against the public registries. If both
+# exact latest-state and completion-age panels are selected, those pairs may also carry a
+# validated numeric completion age in seconds; unselected or unknown ages are null. A
 # per-identity panel reports the NUMBER of identities that answered, never their names. All
-# other labels, raw sample values, and Loki log lines are discarded.
+# other labels, raw samples, and Loki log lines are discarded.
 # Override values are not printed either, only the first 12 hex digits of each one's sha256.
 # No backend error body is printed: errors may embed label sets or log content. Only a fixed
 # status or exception class is reported.

@@ -48,10 +48,12 @@ skip_unless_service_file() {
 }
 
 @test "skynet: clean deploy wipes via clean-service, then imports the deploy" {
-  assert_grep -qF 'tasks/clean-service.yml' "$CLEAN_PLAYBOOK"
+  # Anchored to the task lines: the comments in this file name both files as well.
+  assert_grep -qE '^ +ansible\.builtin\.include_tasks: tasks/clean-service\.yml$' "$CLEAN_PLAYBOOK"
   assert_grep -qF 'import_playbook: deploy-skynet.yml' "$CLEAN_PLAYBOOK"
   assert_grep -qF '_extra_var_guard_nested: true' "$CLEAN_PLAYBOOK"
-  assert_grep -qF 'refuse-internal-extra-vars.yml' "$CLEAN_PLAYBOOK"
+  assert_grep -qE '^ +ansible\.builtin\.import_playbook: refuse-internal-extra-vars\.yml$' "$CLEAN_PLAYBOOK"
+  assert_precedes "$CLEAN_PLAYBOOK" 'import_playbook: refuse-internal-extra-vars\.yml' 'include_tasks: tasks/clean-service\.yml'
 }
 
 @test "skynet: deploy secrets are api_token and db_password, both random and generate-once" {
@@ -92,6 +94,18 @@ skip_unless_service_file() {
 @test "skynet: transport guard guards every play that reaches OpenBao" {
   # Play 1 (secret reads and writes) and Play 2 (registry login reads the GHCR PAT).
   [ "$(grep -c 'include_tasks: tasks/assert-bao-transport.yml' "$PLAYBOOK")" -eq 2 ]
+}
+
+@test "skynet: the OpenBao endpoint falls back to OPENBAO_ADDR, and both guards check that one resolved value" {
+  local resolve="_bao_url: \"{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}\""
+  # Play 1 writes secrets and play 2 reads the GHCR PAT; each defines the endpoint the same way.
+  [ "$(grep -cF "$resolve" "$PLAYBOOK")" -eq 2 ]
+  # Phase 2 names the resolved value, not a second lookup that could disagree with it.
+  local play2
+  play2=$(sed -n '/^- name: "Phase 2: Start skynet"/,/^- name: "Phase 3: Verify skynet"/p' "$PLAYBOOK")
+  assert_contains "$play2" '_assert_bao_url: "{{ _bao_url }}"'
+  assert_contains "$play2" "$resolve"
+  refute_grep -qF '_assert_bao_url: "{{ openbao_addr' "$PLAYBOOK"
 }
 
 @test "skynet: the Semaphore token stopgap is a no_log credential read, labelled as a stopgap" {
@@ -145,6 +159,20 @@ PY
   assert_grep -qF "'DEPLOY_CHANGED=true' in _deploy.stdout_lines" "$PLAYBOOK"
 }
 
+@test "skynet: deploy.sh stages the start, database first, then skynet, and chains every failure" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  # The hook must be defined before main runs, or common.sh falls back to the one-shot start.
+  assert_precedes "$deploy" '^compose_staged_up\(\) \{' '^main\(\) \{'
+  local block
+  block=$(sed -n '/^compose_staged_up() {/,/^}/p' "$deploy")
+  printf '%s\n' "$block" > "$BATS_TEST_TMPDIR/staged-up.sh"
+  assert_precedes "$BATS_TEST_TMPDIR/staged-up.sh" 'compose up .*skynet-db' 'wait_for_healthy skynet-db'
+  assert_precedes "$BATS_TEST_TMPDIR/staged-up.sh" 'wait_for_healthy skynet-db' 'compose up .*--no-deps skynet( |$)'
+  # The helper runs the hook with errexit suspended, so each compose call that can fail returns.
+  [ "$(grep -c '|| return 1' <<<"$block")" -eq 2 ]
+}
+
 @test "skynet: verify is inside the container and records the step result last" {
   local play3 last
   play3=$(sed -n '/^- name: "Phase 3: Verify skynet"/,$p' "$PLAYBOOK")
@@ -172,7 +200,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the eight refusals are present as named assert tasks, all before the repo is placed" {
+@test "skynet: the nine refusals are present as named assert tasks, all before the repo is placed" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -184,7 +212,7 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 7 ]
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 8 ]
   assert_grep -qx 'Require a usable Semaphore token before rendering skynet.s env' <<<"$refusals"
   # Every refusal sits before the monorepo is placed, so a refused run changes nothing.
   assert_precedes "$PLAYBOOK" 'Refuse skynet_image unless' 'tasks/place-monorepo\.yml'
@@ -216,8 +244,8 @@ tasks = [
     if "ansible.builtin.assert" in t
     and (t["name"].startswith("Refuse ") or t["name"].startswith("Require a usable Semaphore token"))
 ]
-if len(tasks) != 8:
-    sys.exit(f"expected 8 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 9:
+    sys.exit(f"expected 9 refusal asserts in Phase 1, found {len(tasks)}")
 play = [{"name": "extracted refusals", "hosts": "localhost", "connection": "local",
          "gather_facts": False, "tasks": tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
@@ -230,6 +258,7 @@ base = {
     "skynet_semaphore_catalog": "local",
     "skynet_semaphore_project": 1,
     "_skynet_semaphore_token": "present",
+    "skynet_model": "test-model",
     "local_mode": True,
 }
 with open(f"{out}/base.json", "w", encoding="utf-8") as fh:
@@ -296,6 +325,32 @@ accepted() {
   [ "$status" -ne 0 ]
   run accepted skynet_semaphore_project '"7"'
   [ "$status" -eq 0 ]
+}
+
+@test "skynet: an empty, blank or undefined skynet_model is refused; a declared one is accepted" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  run accepted skynet_model '""'
+  [ "$status" -ne 0 ]
+  run accepted skynet_model '"   "'
+  [ "$status" -ne 0 ]
+  run accepted skynet_model '"test-model"'
+  [ "$status" -eq 0 ]
+  # Undefined: the baseline without the key, so no extra var supplies a value.
+  python3 - "$BATS_TEST_TMPDIR/base.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    base = json.load(fh)
+del base["skynet_model"]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(base, fh)
+PY
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Declare skynet_model'
 }
 
 @test "skynet: an empty Semaphore token refuses before any write" {
@@ -403,11 +458,56 @@ for ln in lines[start + 1:]:
         section.append(ln)
 ini = dict(ln.split("=", 1) for ln in section)
 for key, value in host.items():
-    if key in ("ansible_host", "ansible_connection"):
+    if key in ("ansible_host", "ansible_connection", "skynet_semaphore_project"):
         continue
     assert key in ini, f"{key} missing from the INI skynet_svc:vars"
     assert ini[key] == str(value), f"{key}: INI {ini[key]!r} != example {value!r}"
 assert "skynet_image" in ini, "the INI must carry the same pinned skynet_image as the example"
+# The project id is resolved live by name (_pid), so the INI names that lookup, not the example's literal.
+assert ini["skynet_semaphore_project"] == "{{ _pid }}", ini["skynet_semaphore_project"]
+PY
+}
+
+@test "skynet: the genesis INI forwards the agentgateway skynet route switch from local-dev, off by default" {
+  # bootstrap renders the Semaphore inventory from the operator's local-dev.yml, so the route keys
+  # set on agentgateway-local there must be forwarded here, or enabling the route does nothing.
+  python3 - "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml" <<'PY'
+import sys
+import yaml
+
+def find(node, key):
+    if isinstance(node, dict):
+        if key in node:
+            return node[key]
+        for value in node.values():
+            hit = find(value, key)
+            if hit is not None:
+                return hit
+    elif isinstance(node, list):
+        for value in node:
+            hit = find(value, key)
+            if hit is not None:
+                return hit
+    return None
+
+ini_text = find(yaml.safe_load(open(sys.argv[1], encoding="utf-8")), "_inv_ini")
+assert ini_text, "no _inv_ini in bootstrap-local-dev.yml"
+lines = [ln.strip() for ln in ini_text.splitlines()]
+start = lines.index("[agentgateway_svc:vars]")
+section = []
+for ln in lines[start + 1:]:
+    if ln.startswith("["):
+        break
+    if ln and not ln.startswith("#"):
+        section.append(ln)
+ini = dict(ln.split("=", 1) for ln in section)
+forwarded = {
+    "agw_skynet_route_enabled": "{{ hostvars['agentgateway-local'].agw_skynet_route_enabled | default(false) }}",
+    "agw_skynet_backend": "{{ hostvars['agentgateway-local'].agw_skynet_backend | default('') }}",
+    "agw_skynet_route_identities": "{{ hostvars['agentgateway-local'].agw_skynet_route_identities | default([]) | to_json }}",
+}
+for key, value in forwarded.items():
+    assert ini.get(key) == value, f"{key}: INI {ini.get(key)!r} != {value!r}"
 PY
 }
 

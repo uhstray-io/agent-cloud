@@ -26,6 +26,7 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/preflight-o11y-restore-target.yml
       - platform/playbooks/files/inspect_o11y_restore_target.py
+      - platform/playbooks/files/o11y_restore_cloud_init.py
       - platform/playbooks/files/inspect_o11y_backup_artifact.py
       - platform/playbooks/tasks/assert-bao-transport.yml
 

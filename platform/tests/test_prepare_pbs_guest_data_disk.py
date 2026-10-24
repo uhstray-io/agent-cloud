@@ -502,13 +502,16 @@ def test_verify_yaml_capture_argv_hands_canonical_inventory_to_real_helper(tmp_p
 
 def test_attachment_config_carries_stable_proxmox_serial_and_requires_it_on_reruns():
     attachment = yaml.safe_load((ROOT / "platform/playbooks/attach-pbs-data-disk.yml").read_text())
-    vars_text = str(attachment[2]["vars"])
+    attach_play = next(
+        play for play in attachment if play.get("name") == "Attach the declared PBS guest data disk"
+    )
+    vars_text = str(attach_play["vars"])
     assert "ac-pbs-data-{{ _vmid }}" in vars_text
     assert "serial={{ _expected_disk_serial }}" in vars_text
     assert "serial={{ _expected_disk_serial }}" in vars_text
-    assert attachment[2]["vars"]["_disk_request"] == "{{ _storage }}:512,serial={{ _expected_disk_serial }}"
+    assert attach_play["vars"]["_disk_request"] == "{{ _storage }}:512,serial={{ _expected_disk_serial }}"
 
-    pattern = attachment[2]["vars"]["_expected_disk_pattern"]
+    pattern = attach_play["vars"]["_expected_disk_pattern"]
     import re
     assert re.search(pattern.replace("{{ _storage }}", "pbs-data").replace("{{ _vmid }}", "1234").replace(
         "{{ _expected_disk_serial }}", SERIAL

@@ -121,6 +121,12 @@ def test_history_requires_distinct_source_samples_across_seven_days():
         "series_at_latest_evaluation": 1,
         "overlapping_evaluations": 0,
         "overlapping_source_events": 0,
+        "source_evaluation_points": survey.MIN_METRIC_POINTS,
+        "canonical_source_events": 8,
+        "source_event_span_seconds": survey.MIN_HISTORY_SECONDS,
+        "required_source_evaluation_points": survey.MIN_METRIC_POINTS,
+        "required_canonical_source_events": 8,
+        "required_source_event_span_seconds": survey.MIN_HISTORY_SECONDS,
     }
 
 
@@ -134,6 +140,8 @@ def test_history_excludes_carried_in_sample_from_window_evidence():
     assert receipt["history"]["source_samples"] == 8
     assert receipt["history"]["source_span_seconds"] == 7 * 86400
     assert receipt["history"]["latest_sample_age_seconds"] == 12 * 60 * 60
+    assert receipt["source_diagnostics"]["canonical_source_events"] == 8
+    assert receipt["source_diagnostics"]["source_event_span_seconds"] == 7 * 86400
     first_index = (samples[1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     last_index = (samples[-1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     assert all(
@@ -190,6 +198,123 @@ def test_history_failure_categories_are_bounded_by_prerequisite():
     with pytest.raises(survey.InsufficientHistory) as malformed_error:
         survey.parse_matrix({"status": "error", "error": "private label and URL"})
     assert malformed_error.value.reason == "malformed_or_incomplete_history"
+
+
+@pytest.mark.parametrize(
+    ("samples", "expected_points", "expected_events", "expected_span"),
+    [
+        ([0, 1, 2, 3, 4, 5, 6, 7], 8, 8, 7 * 86400),
+        ([0, 1, 2, 3, 4, 5, 7], survey.MIN_METRIC_POINTS, 7, 7 * 86400),
+        ([0, 1, 2, 3, 4, 5, 5.5, 6], survey.MIN_METRIC_POINTS, 8, 6 * 86400),
+    ],
+    ids=["few-evaluations", "few-distinct-events", "short-event-span"],
+)
+def test_short_source_history_receipt_identifies_the_failed_threshold(
+    samples, expected_points, expected_events, expected_span, monkeypatch, capsys
+):
+    now = 1_800_000_000
+    start = now - 7 * 86400
+    sample_times = [start + int(day * 86400) for day in samples]
+    responses = _history(now, sample_times)
+    if expected_points == 8:
+        responses["source"] = _matrix(
+            "source",
+            [{"metric": {}, "values": [[timestamp, str(timestamp)] for timestamp in sample_times]}],
+        )
+
+    with pytest.raises(survey.InsufficientHistory) as error:
+        survey.assess(responses, now)
+
+    diagnostic = survey.source_diagnostics(responses["source"])
+    assert error.value.reason == "source_history_too_short"
+    assert diagnostic["source_evaluation_points"] == expected_points
+    assert diagnostic["canonical_source_events"] == expected_events
+    assert diagnostic["source_event_span_seconds"] == expected_span
+    assert diagnostic["required_source_evaluation_points"] == survey.MIN_METRIC_POINTS
+    assert diagnostic["required_canonical_source_events"] == 8
+    assert diagnostic["required_source_event_span_seconds"] == survey.MIN_HISTORY_SECONDS
+
+    monkeypatch.setattr(survey.time, "time", lambda: now)
+    monkeypatch.setattr(survey, "query", lambda metric, *_args: responses[metric])
+    assert survey.main() == 1
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "source_history_too_short"
+    assert receipt["source_diagnostics"]["source_evaluation_points"] == expected_points
+    assert receipt["source_diagnostics"]["canonical_source_events"] == expected_events
+    assert receipt["source_diagnostics"]["source_event_span_seconds"] == expected_span
+
+
+@pytest.mark.parametrize(
+    ("value", "aggregate_diagnostics_available"),
+    [(True, True), (float("nan"), False), (float("inf"), False)],
+    ids=["boolean", "nan", "infinity"],
+)
+def test_source_history_thresholds_are_unknown_for_non_numeric_or_nonfinite_points(
+    value, aggregate_diagnostics_available
+):
+    body = _matrix("source", [{"metric": {}, "values": [[1_800_000_000, value]]}])
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["available"] is aggregate_diagnostics_available
+    assert diagnostic["source_evaluation_points"] is None
+    assert diagnostic["canonical_source_events"] is None
+    assert diagnostic["source_event_span_seconds"] is None
+    assert diagnostic["required_source_evaluation_points"] == survey.MIN_METRIC_POINTS
+
+
+@pytest.mark.parametrize("metric", [None, "missing", []], ids=["null", "missing", "nondict"])
+@pytest.mark.parametrize("values", [[], [[1_800_000_000, "1_799_999_999"]]], ids=["empty", "positive"])
+def test_source_history_thresholds_are_unknown_for_malformed_metric_labels(metric, values):
+    row = {"values": values}
+    if metric != "missing":
+        row["metric"] = metric
+    diagnostic = survey.source_diagnostics(_matrix("source", [row]))
+
+    assert diagnostic["source_evaluation_points"] is None
+    assert diagnostic["canonical_source_events"] is None
+    assert diagnostic["source_event_span_seconds"] is None
+
+
+def test_malformed_source_metric_does_not_change_assessment_acceptance():
+    now = 1_800_000_000
+    responses = _history(now)
+    responses["source"]["data"]["result"][0]["metric"] = None
+
+    result = survey.assess(responses, now)
+
+    assert result["status"] == "ready_for_separate_forecast_review"
+    assert result["source_diagnostics"]["source_evaluation_points"] is None
+
+
+def test_source_history_thresholds_are_unknown_for_ambiguous_or_fractional_source_rows():
+    ambiguous = _matrix(
+        "source",
+        [
+            {"metric": {}, "values": [[1_800_000_000, "1_799_999_999"]]},
+            {"metric": {}, "values": [[1_800_000_300, "1_800_000_299"]]},
+        ],
+    )
+    fractional = _matrix(
+        "source", [{"metric": {}, "values": [[1_800_000_000.5, "1_799_999_999"]]}]
+    )
+
+    for body in (ambiguous, fractional):
+        diagnostic = survey.source_diagnostics(body)
+        assert diagnostic["source_evaluation_points"] is None
+        assert diagnostic["canonical_source_events"] is None
+        assert diagnostic["source_event_span_seconds"] is None
+
+
+def test_empty_single_source_reports_zero_counts_without_claiming_history():
+    body = _matrix("source", [{"metric": {}, "values": []}])
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["source_evaluation_points"] == 0
+    assert diagnostic["canonical_source_events"] == 0
+    assert diagnostic["source_event_span_seconds"] == 0
 
 
 @pytest.mark.parametrize(

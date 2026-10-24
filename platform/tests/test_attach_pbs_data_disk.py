@@ -28,18 +28,25 @@ def _tasks(play: dict, base: Path = ROOT / "platform/playbooks") -> list[dict]:
 def test_workflow_reruns_pinned_preflight_before_vm_config_read_and_write() -> None:
     plays = yaml.safe_load(PLAYBOOK.read_text())
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
-    assert plays[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
-    assert plays[1]["vars"]["_reviewed_checkout_payload_paths"] == [
+    assert plays[1]["ansible.builtin.import_playbook"] == "preflight-o11y-restore-target-inputs.yml"
+    assert plays[2]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    assert plays[2]["vars"]["_reviewed_checkout_payload_paths"] == [
         "platform/playbooks/attach-pbs-data-disk.yml",
         "platform/playbooks/refuse-internal-extra-vars.yml",
+        "platform/playbooks/preflight-o11y-restore-target-inputs.yml",
+        "platform/playbooks/tasks/preflight-o11y-restore-target.yml",
         "platform/playbooks/tasks/o11y-pbs-physical-storage-survey.yml",
         "platform/playbooks/tasks/preflight-o11y-pbs-thick-lvm-allocation.yml",
         "platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml",
         "platform/playbooks/tasks/assert-bao-transport.yml",
+        "platform/playbooks/tasks/guard-o11y-restore-target.yml",
         "platform/playbooks/files/inspect_o11y_pbs_physical_storage.py",
+        "platform/playbooks/files/guard_o11y_restore_target.py",
+        "platform/playbooks/files/o11y_restore_coordination.py",
         "platform/semaphore/templates.yml",
     ]
-    play = plays[2]
+    assert len(plays[2]["vars"]["_reviewed_checkout_payload_paths"]) <= 16
+    play = plays[3]
     tasks = _tasks(play)
     names = [task.get("name", "") for task in tasks]
     survey_tasks = yaml.safe_load(
@@ -70,17 +77,18 @@ def test_workflow_reruns_pinned_preflight_before_vm_config_read_and_write() -> N
 
 
 def test_only_guarded_api_allocation_writes_exact_scsi1_with_config_digest() -> None:
-    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[3])
     writes = [
         task["ansible.builtin.uri"]
         for task in tasks
         if task.get("ansible.builtin.uri", {}).get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+        and "/api2/json/" in task.get("ansible.builtin.uri", {}).get("url", "")
     ]
     assert len(writes) == 1
     assert "/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config" in writes[0]["url"]
     assert writes[0]["body"] == {"scsi1": "{{ _disk_request }}", "digest": "{{ _vm_config_digest }}"}
     assert "{{ _storage }}:512,serial={{ _expected_disk_serial }}" in str(
-        yaml.safe_load(PLAYBOOK.read_text())[2]["vars"]
+        yaml.safe_load(PLAYBOOK.read_text())[3]["vars"]
     )
     source = PLAYBOOK.read_text() + (ROOT / "platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml").read_text()
     assert "vm-{{ _vmid }}-disk-[0-9]+(?=,|$)" in source
@@ -90,7 +98,7 @@ def test_only_guarded_api_allocation_writes_exact_scsi1_with_config_digest() -> 
 
 
 def test_conflicting_or_mismatched_existing_disks_refuse_but_exact_scsi1_is_idempotent() -> None:
-    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[3])
     validate = next(task for task in tasks if task.get("name", "").startswith("Refuse VM identity"))
     checks = " ".join(validate["ansible.builtin.assert"]["that"])
     assert "_disk_keys | difference(['scsi0', 'scsi1', 'ide2']) | length == 0" in checks
@@ -103,7 +111,7 @@ def test_conflicting_or_mismatched_existing_disks_refuse_but_exact_scsi1_is_idem
 
 
 def test_assertions_remain_visible_without_rendering_protected_results() -> None:
-    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[3])
     names = (
         "Require complete HTTPS Proxmox credentials from OpenBao",
         "Require successful Proxmox task completion",
@@ -137,10 +145,10 @@ def test_assertions_remain_visible_without_rendering_protected_results() -> None
 
 
 def test_exact_guest_validation_matches_declared_network_bridge_cores_and_memory() -> None:
-    play_vars = yaml.safe_load(PLAYBOOK.read_text())[2]["vars"]
+    play_vars = yaml.safe_load(PLAYBOOK.read_text())[3]["vars"]
     for name in ("_ip", "_gw", "_netmask", "_bridge", "_cores", "_memory"):
         assert name in play_vars
-    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[3])
     declaration = next(task for task in tasks if task.get("name", "").startswith("Require one declared PBS VM"))
     declaration_checks = declaration["ansible.builtin.assert"]["that"]
     for check in ("_ip | length > 0", "_gw | length > 0", "_cores | int > 0", "_memory | int > 0"):
@@ -194,7 +202,7 @@ def test_exact_guest_validation_matches_declared_network_bridge_cores_and_memory
 
 
 def test_pbs_data_disk_inventory_must_match_pinned_store_and_exact_512g_declaration() -> None:
-    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[3])
     declaration = next(
         task for task in tasks if task.get("name", "").startswith("Require one declared PBS VM")
     )
@@ -210,7 +218,7 @@ def test_pbs_data_disk_inventory_must_match_pinned_store_and_exact_512g_declarat
 
 
 def test_openbao_uses_matching_inventory_url_and_guards_transport_before_lookup() -> None:
-    play = yaml.safe_load(PLAYBOOK.read_text())[2]
+    play = yaml.safe_load(PLAYBOOK.read_text())[3]
     tasks = _tasks(play)
     names = [task.get("name", "") for task in tasks]
     vars_text = str(play["vars"])
@@ -255,7 +263,7 @@ def test_openbao_uses_matching_inventory_url_and_guards_transport_before_lookup(
 
 
 def test_openbao_url_match_and_shared_transport_policy_accept_internal_http_and_refuse_public_http() -> None:
-    play = yaml.safe_load(PLAYBOOK.read_text())[2]
+    play = yaml.safe_load(PLAYBOOK.read_text())[3]
     tasks = _tasks(play)
     declaration = next(
         task for task in tasks if task.get("name", "").startswith("Require one declared PBS VM")
@@ -300,7 +308,7 @@ def test_openbao_url_match_and_shared_transport_policy_accept_internal_http_and_
 
 def test_check_mode_reads_and_reports_without_any_mutation_or_host_device_operation() -> None:
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    tasks = _tasks(plays[2])
+    tasks = _tasks(plays[3])
     post = next(task for task in tasks if task.get("name", "").startswith("Allocate exactly one"))
     assert "not ansible_check_mode" in post["when"]
     assert not any("ansible.builtin.shell" in task for task in tasks)
@@ -336,7 +344,7 @@ def test_semaphore_template_is_dev_bound_and_only_accepts_reviewed_sha() -> None
 
 
 def test_rerun_preflight_condition_skips_exact_existing_disk_and_requires_missing_disk() -> None:
-    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[2])
+    tasks = _tasks(yaml.safe_load(PLAYBOOK.read_text())[3])
     include = next(
         task for task in tasks
         if task.get("name", "").startswith("Require pinned backing identity")
@@ -352,7 +360,7 @@ def test_rerun_preflight_condition_skips_exact_existing_disk_and_requires_missin
 
 
 def test_serial_contract_is_vm_derived_and_option_order_independent():
-    play = yaml.safe_load(PLAYBOOK.read_text())[2]
+    play = yaml.safe_load(PLAYBOOK.read_text())[3]
     assert play["vars"]["_expected_disk_serial"] == "ac-pbs-data-{{ _vmid }}"
     assert "serial={{ _expected_disk_serial }}" in play["vars"]["_disk_request"]
     pattern = play["vars"]["_expected_disk_pattern"]

@@ -373,7 +373,9 @@ all:
           # Deploy skynet (Local) has run once: this gateway reads skynet's api_token by shared read, so
           # enabling it before skynet is deployed stops this deploy by name. Enabling it also needs a
           # host:port backend and the identities allowed to call it. Those identities also pass /v1 (see
-          # the architecture doc, "skynet orchestration route").
+          # the architecture doc, "skynet orchestration route"). Bootstrap forwards these three keys into
+          # the Semaphore inventory, so after editing them re-run `make local-bootstrap`, then Deploy
+          # agentgateway (Local).
           #   agw_skynet_route_enabled: true
           #   agw_skynet_backend: skynet:8080
           #   agw_skynet_route_identities: [dev-local]
