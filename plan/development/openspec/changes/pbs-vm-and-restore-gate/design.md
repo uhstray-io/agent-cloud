@@ -44,12 +44,29 @@ and the exact reviewed commit. Current Semaphore does not retain historical
 inventory, environment, repository, or playbook bindings; this path relies on
 the trusted cooperating controller's receipt attestation and makes no
 cryptographic or immutable-history claim. A shared producer-owned proof module
-will provide the closed receipt schema, exact-byte inventory provenance check,
-and stable artifact fingerprint. Cleanup re-authenticates the successful
+provides the closed receipt schema, exact-byte inventory provenance check,
+and stable artifact fingerprint. Source, copy, and restore-target hosts, nodes,
+storage IDs, and network mode remain static private-inventory declarations.
+The artifact location is not a private selector: restore derives the closed
+`normalized_restore_locator` from the authenticated copy-readiness receipt,
+then checks that locator against fresh destination PVE content and the PBS
+manifest. Readiness also binds the dedicated destination restore Reader identity
+and PVE storage configuration fingerprints; restore re-reads both and refuses
+drift. Restore uses only `o11y-copy-restore@pbs!pve-restore` for direct PBS
+manifest reads, while the destination copy manager remains confined to the
+producer workflow. Cleanup re-authenticates the successful
 restore task and exact private receipt, compares the entire coordination
 record/version, checks the stopped owned target, and requires exact
 authoritative deletion readback. See the source-child runbook in
 `implementation/isolated-restore-executor-runbook.md`.
+
+Artifact admission allows only the reviewed provisioner-shaped cloud-init
+configuration. A backed `ide2` cloud-init auxiliary volume is tracked separately
+from included backup disks; its source VMID and target store/VMID are exact,
+and all source cloud-init network, user, SSH-key, and UUID metadata is removed
+in the journaled isolation update before boot. Unsupported auxiliary formats
+and arbitrary CD-ROMs are refused before target mutation. Installed PVE
+behavior remains a live compatibility gate.
 
 ### Implementation refinements from the read-only census
 

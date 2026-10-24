@@ -2257,25 +2257,41 @@ The isolated restore executor and separately launched cleanup are implemented
 in the feature worktree described by
 [`isolated-restore-executor.md`](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor.md)
 and its [operator runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor-runbook.md).
-The source authenticates the four prerequisite task outputs in order, uses the
-shared fixed-mode receipt validator, validates the declared artifact/config
-before reserving, and journals restore, isolation, start, guest execution,
-stop, and cleanup writes. The guest checker runs only through QGA and emits a
-bounded private receipt. Cleanup derives that receipt from authenticated task
-output and proves the full journal/version and exact target state before
-deletion. Its current private pin is verified independently from the historical
-restore pin, allowing unrelated private inventory changes while requiring the
-declared target and artifact evidence to remain unchanged.
+The source authenticates the four prerequisite task outputs in order and uses
+the copy-readiness receipt's closed `normalized_restore_locator` as the dynamic
+artifact location. Static source/copy/target hosts, nodes, and storage IDs stay
+in private inventory; a caller or legacy protected-copy selector is refused.
+Before using the copy, restore compares fresh destination PVE content and the
+PBS manifest to readiness, verifies the dedicated destination restore Reader
+identity and current PVE storage configuration fingerprints, then validates
+the exact artifact config before reservation. The Reader
+`o11y-copy-restore@pbs!pve-restore` is separate from the destination copy
+Manager and is the only PBS identity used by restore-side manifest reads. The
+artifact gate admits only the reviewed provisioner-shaped cloud-init config;
+its regenerated target auxiliary is checked separately from included backup
+disks, and source cloud-init and NIC identity/network data is scrubbed before
+boot. The shared fixed-mode receipt validator and journal cover restore,
+isolation, start, guest execution, stop, and cleanup writes. The guest checker
+runs only through QGA and emits a bounded private receipt. Cleanup derives that
+receipt from authenticated task output and proves the full journal/version and
+exact target state before deletion. Its current private pin is verified
+independently from the historical restore pin, allowing unrelated private
+inventory changes while requiring the declared target and artifact evidence to
+remain unchanged.
 
-This is source implementation only. Independent reviews of the full PBS/restore
-and capability source scopes are complete, and actionable findings were fixed
-and verified. Final combined-head CI remains pending, followed by Dev
-publication/catalog readback, private target declaration acceptance, effective
-OpenBao role verification, all-writer drain, protected-copy restore while
-primary PBS is unavailable, and live restore/cleanup. Keep OpenSpec 5.2, the seven-day
-capacity forecast, and the separate 90d/45d/45d retention decision open; no
-live API, backup, restore, cleanup, or storage change was performed for this
-source work.
+This is source implementation only. Independent component reviews of the PBS,
+restore, and capability scopes are complete; actionable findings were fixed and
+verified. Final combined-head CI and publication/readback for the integrated
+PBS/restore source remain pending. Scoped policy catalog publication task 8650
+created only `Apply Policy - Semaphore (Dev)` (template 351, repository 5,
+environment 2, inventory 2, `apply-policy-semaphore.yml`, no survey); the
+existing main-bound policy template 50 bindings were unchanged. No policy apply
+or effective-capability verification ran. Private target declaration, actual
+Reader and ACL readback, all-writer drain, protected-copy restore while primary
+PBS is unavailable, and live restore/cleanup remain open. Keep OpenSpec 5.2,
+the seven-day capacity forecast, and the separate 90d/45d/45d retention
+decision open; no live restore, cleanup, or storage change was performed for
+this source work.
 
 ### 2026-10-24 limited observability and backup probes
 
@@ -2341,6 +2357,20 @@ survey fields. Existing main-bound policy template 50's bindings remained
 unchanged. The task published the policy-application mechanism only; no policy
 apply or effective-capability verification was run, so guarded-writer
 activation remains blocked.
+
+Capacity task 8658 at Dev commit `e68ca3de948914cb5ba820c92e12627277d468d6`
+ended with `source_history_too_short`: it evaluated 2,305 points (at least
+2,017 expected), saw 16 canonical source events (at least 8 expected), but the
+observed event span was 604,701 seconds, 99 seconds short of the 604,800-second
+window. The separate seven-day forecast gate remains open; elapsed time alone
+does not extend the observed source-event span.
+
+Conformance task 8659 at the same controller revision queried both exact
+service-conformance panels successfully over 24 hours. Categorical age data was
+available, but the identity join remained unverified: five failed pairs had
+unknown age, and the age-map diagnostics reported three registry-unknown rows.
+The map was rejected; per-pair missing/unavailable counters were zero. This is
+not application-health or delivery proof and does not close service conformance.
 
 These observations do not change the prior acceptance boundary: they do not
 prove a fresh PBS artifact, primary-unavailable protected-copy recovery,

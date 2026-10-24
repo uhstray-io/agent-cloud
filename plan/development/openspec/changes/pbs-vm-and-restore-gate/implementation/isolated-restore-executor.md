@@ -47,8 +47,12 @@ Proxmox mutation retains the VM and coordination record for operator review.
 3. Add `restore-o11y-isolated.yml`. Validate internal/private launch inputs and
    the exact reviewed checkout before secret lookup. Authenticate prior backup,
    PBS verification, protected-copy sync, and copy-readiness task outputs in
-   strict order. Enforce the fixed 24-hour artifact age. Inspect the exact
-   artifact configuration and reject unsupported restore inputs before target
+   strict order. Derive the artifact locator only from authenticated readiness,
+   then compare fresh PVE content, the PBS manifest, the destination Reader
+   identity, and PVE storage fingerprints to that receipt. Refuse legacy
+   inventory or caller selectors. Enforce the fixed 24-hour artifact age.
+   Inspect the exact artifact configuration, admit only the reviewed cloud-init
+   provisioner shape, and reject unsupported restore inputs before target
    reservation. Recheck target capacity and VMID availability, reserve with
    version CAS, restore stopped, apply and read back disconnected isolation,
    start only the target, run fixed guest inspection through QGA, stop the target,
@@ -69,7 +73,10 @@ All five source steps are now implemented in the consumer worktree. The shared
 receipt validator's explicit playbook-mode API and exact restore/cleanup launch
 shapes are integrated from the producer's normal merge. The restore launch binds
 four separately authenticated prerequisite task IDs plus the public and private
-revision pins. Cleanup derives the receipt from the authenticated restore task
+revision pins. Dynamic artifact location comes from copy readiness, while PBS
+host/storage placement and target identity remain private static configuration.
+Restore uses the dedicated destination Reader, not the copy Manager, for PBS
+manifest reads. Cleanup derives the receipt from the authenticated restore task
 output and accepts only four selectors; historical restore and current cleanup
 private pins are independently proven and need not be equal. Tests cover their
 allowed difference and rejection when either proof or target/declaration binding

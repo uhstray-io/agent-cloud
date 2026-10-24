@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 import o11y_restore_coordination as restore_coordination
-from o11y_restore_cloud_init import source_auxiliary, target_auxiliary, valid_smbios_uuid
 from o11y_pbs_receipts import (
     RESTORE_RECEIPT_KEYS,
     validate_completed_output,
@@ -21,6 +20,7 @@ from o11y_pbs_receipts import (
 from o11y_pbs_receipts import (
     Refusal as PBSRefusal,
 )
+from o11y_restore_cloud_init import source_auxiliary, target_auxiliary, valid_smbios_uuid
 
 VMID = re.compile(r"(?:0|[1-9][0-9]{0,8})\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
@@ -210,7 +210,10 @@ def _parse_artifact_config(value: object, *, source_vmid: int) -> dict[str, str]
             key, content = key.strip(), content.strip()
             require(SAFE_ID.fullmatch(key) is not None and key not in parsed, "artifact_config_invalid")
             parsed[key] = content
-            require(key in ALLOWED_CONFIG_KEYS or DISK.fullmatch(key) or re.fullmatch(r"net[0-9]+", key), "artifact_unsupported")
+            require(
+                key in ALLOWED_CONFIG_KEYS or DISK.fullmatch(key) or re.fullmatch(r"net[0-9]+", key),
+                "artifact_unsupported",
+            )
             require(
                 key not in FORBIDDEN_KEYS and not key.startswith(("hostpci", "usb", "virtiofs", "mp")),
                 "artifact_unsupported",
@@ -247,7 +250,10 @@ def _parse_artifact_config(value: object, *, source_vmid: int) -> dict[str, str]
     cloud_values = {key: parsed[key] for key in CLOUD_INIT_FIELDS if key in parsed}
     if cloud_values:
         require(parsed.get("ide2") not in {None, "none,media=cdrom"}, "artifact_unsupported")
-    require(all(name in parsed and "=" in parsed[name] for name in parsed if re.fullmatch(r"net[0-9]+", name)), "artifact_config_invalid")
+    require(
+        all(name in parsed and "=" in parsed[name] for name in parsed if re.fullmatch(r"net[0-9]+", name)),
+        "artifact_config_invalid",
+    )
     return parsed
 
 
@@ -450,7 +456,6 @@ def _verify_prerequisite_chain(payload: object) -> dict:
         "expected_launches",
         "task_proofs",
         "artifact_fingerprint",
-        "private_copy_selector",
         "expected_copy_storage_id",
     }
     require(isinstance(payload, dict) and set(payload) == keys, "invalid_input")
@@ -467,19 +472,10 @@ def _verify_prerequisite_chain(payload: object) -> dict:
         isinstance(payload["task_proofs"], dict) and set(payload["task_proofs"]) == expected_contracts,
         "task_chain_invalid",
     )
-    selector = payload["private_copy_selector"]
     selector_keys = {"volid", "backend", "format", "creation_time_epoch", "size_bytes"}
     require(
-        isinstance(selector, dict)
-        and set(selector) == selector_keys
-        and isinstance(selector.get("volid"), str)
-        and isinstance(selector.get("backend"), str)
-        and isinstance(selector.get("format"), str)
-        and type(selector.get("creation_time_epoch")) is int
-        and type(selector.get("size_bytes")) is int
-        and isinstance(payload["expected_copy_storage_id"], str)
-        and SAFE_ID.fullmatch(payload["expected_copy_storage_id"]) is not None
-        and selector["volid"].split(":", 1)[0] == payload["expected_copy_storage_id"],
+        isinstance(payload["expected_copy_storage_id"], str)
+        and SAFE_ID.fullmatch(payload["expected_copy_storage_id"]) is not None,
         "task_chain_invalid",
     )
     fingerprint = payload["artifact_fingerprint"]
@@ -541,8 +537,23 @@ def _verify_prerequisite_chain(payload: object) -> dict:
     require(
         isinstance(locator, dict)
         and set(locator) == selector_keys | {"storage_id"}
-        and {key: locator[key] for key in selector_keys} == selector
-        and locator["storage_id"] == payload["expected_copy_storage_id"],
+        and isinstance(locator.get("volid"), str)
+        and locator.get("backend") == "pbs"
+        and locator.get("format") == "pbs-vm"
+        and type(locator.get("creation_time_epoch")) is int
+        and locator["creation_time_epoch"] > 0
+        and type(locator.get("size_bytes")) is int
+        and locator["size_bytes"] > 0
+        and locator.get("storage_id") == payload["expected_copy_storage_id"]
+        and locator["volid"].split(":", 1)[0] == payload["expected_copy_storage_id"]
+        and locator["creation_time_epoch"] == ready["snapshot"].get("backup_time"),
+        "task_chain_invalid",
+    )
+    require(
+        isinstance(ready.get("destination_identity_fingerprint"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", ready["destination_identity_fingerprint"]) is not None
+        and isinstance(ready.get("destination_storage_config_fingerprint"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", ready["destination_storage_config_fingerprint"]) is not None,
         "task_chain_invalid",
     )
     require(
@@ -572,6 +583,9 @@ def _verify_prerequisite_chain(payload: object) -> dict:
         "task_ids": ids,
         "task_metadata": validated,
         "readiness_evidence": ready,
+        "normalized_restore_locator": locator,
+        "destination_identity_fingerprint": ready["destination_identity_fingerprint"],
+        "destination_storage_config_fingerprint": ready["destination_storage_config_fingerprint"],
     }
 
 

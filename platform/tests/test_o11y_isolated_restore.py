@@ -6,6 +6,7 @@ import base64
 import copy
 import hashlib
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -63,6 +64,24 @@ def _chain_fixture(*, old_backup: bool = False):
         "creation_time_epoch": backup_epoch,
         "size_bytes": 300,
     }
+    destination_reader = {
+        "api_host": "pbs-copy.example",
+        "token_id": "o11y-copy-restore@pbs!pve-restore",
+        "certificate_fingerprint": "c" * 64,
+        "roles": ["Datastore.Audit", "Datastore.Read", "Datastore.Verify"],
+        "datastore": "o11y",
+        "propagate": False,
+    }
+    destination_storage = {
+        "storage_id": copy_store,
+        "server": "pbs-copy.example",
+        "port": 8007,
+        "datastore": "o11y",
+        "username": destination_reader["token_id"],
+        "fingerprint": destination_reader["certificate_fingerprint"],
+        "content": "backup",
+        "nodes": "copy-node",
+    }
     evidence = [
         {
             "backup_upid": BACKUP_UPID,
@@ -105,8 +124,10 @@ def _chain_fixture(*, old_backup: bool = False):
             "deletion_isolation": "verified",
             "maintenance_isolation": "verified",
             "normalized_restore_locator": {**copy_selector, "storage_id": copy_store},
-            "destination_identity_fingerprint": "a" * 64,
-            "destination_storage_config_fingerprint": "b" * 64,
+            "destination_identity_fingerprint": hashlib.sha256(json.dumps(destination_reader).encode()).hexdigest(),
+            "destination_storage_config_fingerprint": hashlib.sha256(
+                json.dumps(destination_storage).encode()
+            ).hexdigest(),
             "playbook": pbs_receipts.CONTRACTS[CONTRACTS[3]]["playbook"],
         },
     ]
@@ -179,7 +200,6 @@ def _chain_fixture(*, old_backup: bool = False):
         "expected_launches": launches,
         "task_proofs": task_proofs,
         "artifact_fingerprint": artifact,
-        "private_copy_selector": copy_selector,
         "expected_copy_storage_id": copy_store,
     }
 
@@ -469,34 +489,50 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
 
     vmid = 120
     source_node = "source-node"
-    destination_storage = "copy-pbs"
-    backup_time = 1_790_640_000
-    volid = "copy-pbs:backup/vm/120/2026-09-29T00:00:00Z"
-    selector = {
-        "volid": volid,
-        "backend": "pbs",
-        "format": "pbs-vm",
-        "creation_time_epoch": backup_time,
-        "size_bytes": 300,
-    }
-    candidate = {"vmid": vmid, "volid": volid, "format": "pbs-vm", "size": 300, "ctime": backup_time}
     chain_input = _chain_fixture()
+    readiness = chain_input["task_proofs"][CONTRACTS[3]]["receipt"]["evidence"]
+    destination_storage = readiness["normalized_restore_locator"]["storage_id"]
+    destination_reader_fingerprint = "c" * 64
+    destination_storage_config = {
+        "server": "pbs-copy.example",
+        "port": 8007,
+        "datastore": "o11y",
+        "username": "o11y-copy-restore@pbs!pve-restore",
+        "fingerprint": destination_reader_fingerprint,
+        "content": "backup",
+        "nodes": "copy-node",
+    }
+    selector = {
+        key: readiness["normalized_restore_locator"][key]
+        for key in ("volid", "backend", "format", "creation_time_epoch", "size_bytes")
+    }
+    candidate = {
+        "vmid": vmid,
+        "volid": selector["volid"],
+        "format": selector["format"],
+        "size": selector["size_bytes"],
+        "ctime": selector["creation_time_epoch"],
+    }
     variables = {
         "ansible_connection": "local",
         "ansible_python_interpreter": sys.executable,
         "_restore_chain_input": chain_input,
-        "_restore_manifest_raw": {
-            "stdout": json.dumps({"artifact_fingerprint": chain_input["artifact_fingerprint"]}),
+        "_restore_chain_raw": {
+            "rc": 0,
+            "stdout": json.dumps(restore.verify_prerequisite_chain(chain_input)),
         },
         "_restore_source_vmid": str(vmid),
         "_restore_source_node": source_node,
         "_restore_vms": {"json": {"data": [{"type": "qemu", "vmid": vmid, "node": source_node}]}},
         "_restore_copy_storage_id": destination_storage,
+        "_restore_copy_api_host": "pbs-copy.example",
+        "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
+        "_restore_copy_fingerprint": destination_reader_fingerprint,
+        "_restore_copy_pve_storage": {"json": {"data": destination_storage_config}},
         "_restore_copy_content": {"status": 200, "json": {"data": [candidate]}},
-        "_restore_selector": selector,
         "_restore_source_config": {
             "status": 200,
-            "json": {"data": {"scsi0": "copy-pbs:vm-120-disk-0,size=20G"}},
+            "json": {"data": {"scsi0": "copy-store:vm-120-disk-0,size=20G"}},
         },
         "_restore_target_preflight": {
             "restore_disk_count": 1,
@@ -507,7 +543,7 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
         "_restore_cloud_init_admission": {
             "rc": 0,
                 "stdout": json.dumps(restore.exact_artifact_cloud_init(
-                {"status": 200, "data": "vmid: 120\nagent: enabled=1\nscsi0: copy-pbs:disk,size=20G\n"},
+                {"status": 200, "data": "vmid: 120\nagent: enabled=1\nscsi0: copy-store:disk,size=20G\n"},
                 source_vmid=120,
             )),
         },
@@ -576,9 +612,12 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
                        status=200 if accepted else 400)
 
     task_names = (
-        "Validate all authenticated predecessor links and the closed private selector",
+        "Validate all authenticated predecessor links and readiness locator",
         "Require the authenticated task chain and fixed 24-hour freshness",
-        "Bind one fresh destination candidate to the private selector",
+        "Retain the validated chain and private artifact fingerprint",
+        "Bind current Reader identity and PVE storage to authenticated readiness",
+        "Require current Reader identity and PVE storage to match readiness fingerprints",
+        "Bind one fresh destination candidate to authenticated readiness locator",
         "Require one fresh protected candidate and read online node/storage state",
         "Require complete included disks, safe config, and live isolation preflight",
         "Build and pin the reviewable QGA checker input bytes",
@@ -630,6 +669,62 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
     assert checker_source == expected_checker_source
     assert hashlib.sha256(checker_source.encode()).hexdigest() == expected_checker_sha
     assert input_data["expectations"] == variables["_restore_checker_expectations"]
+
+
+def test_restore_live_storage_fingerprint_refuses_readiness_drift():
+    path = Path(__file__).parents[1] / "playbooks" / "restore-o11y-isolated.yml"
+    tasks = {task.get("name"): task for task in playbook_yaml.tasks(playbook_yaml.load(path))}
+    selected = [
+        tasks["Bind current Reader identity and PVE storage to authenticated readiness"],
+        tasks["Require current Reader identity and PVE storage to match readiness fingerprints"],
+    ]
+    chain = restore.verify_prerequisite_chain(_chain_fixture())
+    variables = {
+        "ansible_connection": "local",
+        "_restore_chain": chain,
+        "_restore_copy_api_host": "pbs-copy.example",
+        "_restore_copy_storage_id": "copy-store",
+        "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
+        "_restore_copy_fingerprint": "c" * 64,
+        "_restore_copy_pve_storage": {
+            "json": {
+                "data": {
+                    "server": "pbs-copy.example",
+                    "port": 8007,
+                    "datastore": "o11y",
+                    "username": "o11y-copy-restore@pbs!pve-restore",
+                    "fingerprint": "c" * 64,
+                    "content": "backup",
+                    "nodes": "copy-node",
+                }
+            }
+        },
+    }
+    with tempfile.TemporaryDirectory(prefix="o11y-ready-fingerprint-") as scratch:
+        tmp_path = Path(scratch)
+
+        def run():
+            play_path = tmp_path / "fingerprint.yml"
+            play_path.write_text(yaml.safe_dump([{
+                "name": "Check authenticated destination fingerprints",
+                "hosts": "localhost",
+                "gather_facts": False,
+                "connection": "local",
+                "vars": variables,
+                "tasks": selected,
+            }], sort_keys=False))
+            return harness_sandbox.run(
+                ["ansible-playbook", "-i", "localhost,", str(play_path)],
+                tmp_path,
+                cwd=playbook_yaml.REPO,
+                env=harness_sandbox.env_for(tmp_path),
+            )
+
+        matching = run()
+        assert matching.returncode == 0, matching.stdout + matching.stderr
+        variables["_restore_chain"] = dict(chain, destination_storage_config_fingerprint="0" * 64)
+        drifted = run()
+        assert drifted.returncode != 0
 
 
 def test_reviewed_restore_and_cleanup_payloads_pin_receipt_dependency():
@@ -752,6 +847,8 @@ def test_prerequisite_chain_authenticates_task_order_links_and_artifact():
     assert result["status"] == "verified"
     assert result["task_ids"] == [100, 101, 102, 103]
     assert result["task_metadata"][CONTRACTS[3]]["project_id"] == PROJECT_ID
+    assert result["normalized_restore_locator"]["storage_id"] == "copy-store"
+    assert re.fullmatch(r"[0-9a-f]{64}", result["destination_identity_fingerprint"])
 
 
 def test_prerequisite_chain_rejects_link_forgery_duplicate_tasks_and_stale_artifact():
@@ -770,11 +867,20 @@ def test_prerequisite_chain_rejects_link_forgery_duplicate_tasks_and_stale_artif
         restore.verify_prerequisite_chain(stale)
 
 
-def test_prerequisite_chain_requires_the_private_copy_selector_and_storage():
+def test_prerequisite_chain_uses_only_the_authenticated_ready_locator_and_storage():
     mismatch = _chain_fixture()
-    mismatch["private_copy_selector"] = dict(mismatch["private_copy_selector"], size_bytes=301)
-    with pytest.raises(restore.Refusal, match="task_chain_invalid"):
+    ready_receipt = mismatch["task_proofs"][CONTRACTS[3]]["receipt"]
+    ready_receipt.pop("receipt_fingerprint")
+    ready_receipt["evidence"]["normalized_restore_locator"]["creation_time_epoch"] += 1
+    ready_receipt.update(pbs_receipts.seal_receipt(ready_receipt))
+    with pytest.raises(restore.Refusal, match="invalid_input"):
         restore.verify_prerequisite_chain(mismatch)
+    caller_selector = _chain_fixture()
+    caller_selector["private_copy_selector"] = dict(
+        caller_selector["task_proofs"][CONTRACTS[3]]["receipt"]["evidence"]["normalized_restore_locator"]
+    )
+    with pytest.raises(restore.Refusal, match="invalid_input"):
+        restore.verify_prerequisite_chain(caller_selector)
     undeclared_store = _chain_fixture()
     undeclared_store["expected_copy_storage_id"] = "other-store"
     with pytest.raises(restore.Refusal, match="task_chain_invalid"):
