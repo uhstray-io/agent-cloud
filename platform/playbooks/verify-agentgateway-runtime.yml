@@ -232,7 +232,7 @@
 
     - name: Compare rendered inputs to the running deployment without mutation
       ansible.builtin.command:
-        argv: [bash, deploy.sh, --verify-only]
+        argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/verify-agentgateway-runtime-inputs.py') }}"]
         chdir: "{{ _deploy_dir }}"
       environment: "{{ _agw_deploy_env }}"
       register: _agw_runtime_match
@@ -244,8 +244,37 @@
       ansible.builtin.assert:
         that:
           - _agw_runtime_match.rc == 0
-          - "'runtime-inputs-result: pass' in (_agw_runtime_match.stdout | default(''))"
-        fail_msg: "The running gateway does not match the current rendered inputs, pinned image, and readiness; no sampling receipt was produced."
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json) is mapping
+          - >-
+            (_agw_runtime_match.stdout | default('{}', true) | from_json).keys() | list | sort ==
+            ['error', 'pass_marker', 'rc', 'reason', 'result']
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).rc is integer
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).rc is not boolean
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).result is string
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).reason is string
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).pass_marker is boolean
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).error is string
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).result == 'pass'
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).rc == 0
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).pass_marker == true
+          - (_agw_runtime_match.stdout | default('{}', true) | from_json).error == 'none'
+          - >-
+            (_agw_runtime_match.stdout | default('{}', true) | from_json).reason in
+            ['matched', 'gateway-state-unavailable', 'gateway-not-running', 'inputs-not-matched',
+            'project-enumeration-unavailable', 'image-not-matched', 'readiness-unproven',
+            'diagnostic-unavailable']
+        fail_msg: >-
+          The running gateway does not match the current rendered inputs, pinned image, and
+          readiness (reason={{ (_agw_runtime_match.stdout | default('', true) |
+          regex_search('"reason":"(' ~
+          'matched|gateway-state-unavailable|gateway-not-running|inputs-not-matched|' ~
+          'project-enumeration-unavailable|image-not-matched|readiness-unproven|diagnostic-unavailable)"',
+          '\\1') | default(['diagnostic-unavailable'], true) | first)}},
+          adapter={{ (_agw_runtime_match.stdout | default('', true) |
+          regex_search('"error":"(' ~
+          'none|setup-failed|invocation-failed|timeout|output-limit|capture-failed|cleanup-failed|invalid-output)"',
+          '\\1') | default(['diagnostic-unavailable'], true) | first)}});
+          no sampling receipt was produced.
         quiet: true
 
     - name: Read safe metadata again after runtime comparison
