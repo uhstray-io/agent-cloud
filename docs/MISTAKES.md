@@ -101,6 +101,7 @@ and why.
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
 | 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 3.16 | A local Semaphore container recreate minted a new encryption key while its database lived on; every encrypted environment input became undecryptable and the next seed failed | Live state | 1 | Bootstrap (config on the data volume + carry-forward before any recreate) + test (`test_local_semaphore_config_persistence.py`, mutation-checked) |
+| 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2486,6 +2487,24 @@ data volume and copies an older container's key there before the recreate step;
 stubbed engine, mutation-checked). The replace path is `platform/tests/test_provision_seed_replace_auth.py`
 (the provisioner's own tasks run against synthetic environments, mutation-checked). Triage entry
 in `docs/LOCAL-DEV.md`.
+
+### 3.17 A dry-run-then-real loop launched the real run after the dry run failed
+
+**What happened.** On 2026-10-24 I published one survey field to local Semaphore with
+`for mode in --dry-run ""; do python3 scripts/semaphore-launch.py --template "Publish Semaphore
+Template Surveys (Dev)" ... $mode ...; done`. The check-mode task (6943) failed: "Project,
+inventory, and variable-group IDs are accepted only for one-template creation." The loop did
+not look at the exit code and launched the real task (6944), which failed at the same input
+check and changed nothing. With inputs that passed validation but failed a later check-mode
+step, the same loop would have written for real on a dry run that had just failed.
+
+**Root cause.** The loop treated "dry run, then real" as two iterations of one command rather
+than a gate. The order was right; nothing made the second step depend on the first.
+
+**The rule.** A real launch follows a dry run only when the dry run succeeded: chain them with
+`&&` (`launch --dry-run ... && launch ...`), or `|| break` inside a loop, never a bare loop.
+
+**Enforced by.** Convention.
 
 ## 4. Data handling
 
