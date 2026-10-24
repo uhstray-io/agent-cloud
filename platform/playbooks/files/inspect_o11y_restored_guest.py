@@ -146,6 +146,7 @@ def parse_subuid(
             uids.setdefault(uid, []).append(name)
         passwd_uids = sorted(uids)
         _require(names.get(service_user) == [service_uid], "volume_owner_invalid")
+        _require(uids.get(service_uid) == [service_user], "volume_owner_invalid")
 
         allocations: list[tuple[int, int, str, str]] = []
         own_ranges: list[tuple[int, int]] = []

@@ -125,6 +125,18 @@ def test_subuid_parser_binds_named_and_unambiguous_numeric_account_entries():
     assert not guest._owner_allowed(300001, 1000, named_ranges)
 
 
+@pytest.mark.parametrize("content", ["", "svc_o11y:200000:65536\n"])
+def test_subuid_parser_rejects_ambiguous_service_uid_for_named_and_account_ownership(content):
+    passwd_entries = [("root", 0), ("svc_o11y", 1000), ("service_alias", 1000)]
+    with pytest.raises(guest.Refusal, match="volume_owner_invalid"):
+        guest.parse_subuid(
+            content,
+            service_user="svc_o11y",
+            service_uid=1000,
+            passwd_entries=passwd_entries,
+        )
+
+
 @pytest.mark.parametrize(
     "content,passwd_entries",
     [
