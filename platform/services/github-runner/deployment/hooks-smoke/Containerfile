@@ -1,0 +1,40 @@
+# hooks-smoke: the runner host's container stack, in one image, for a local smoke run of
+# the container hooks. Built and run by run.sh beside this file; never deployed.
+#
+# Same packages as a runner host: Ubuntu 24.04's podman (4.9.3) and uidmap, and Docker's
+# CLI client from Docker's apt repository (no engine), at the version run.sh passes, which
+# defaults to install-podman.yml's pin. fuse-overlayfs is here only because this podman
+# runs nested inside a container; a runner VM does not need it.
+#
+# Node: Ubuntu's nodejs package, signed by the archive. The runner runs the hooks with its
+# bundled Node 20; the hooks' docker calls do not depend on the Node version.
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      podman uidmap fuse-overlayfs slirp4netns passt catatonit \
+      ca-certificates curl unzip nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG DOCKER_CLI_VERSION
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+      > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends "docker-ce-cli=5:${DOCKER_CLI_VERSION}-*" \
+ && rm -rf /var/lib/apt/lists/*
+
+# The runner account, with the runner home as its home (as github_runner_home declares).
+RUN useradd --create-home --home-dir /opt/actions-runner --uid 1001 --shell /bin/bash ghrunner
+
+# The hooks archive, verified by run.sh against the release's published digest.
+COPY actions-runner-hooks-docker.zip /opt/actions-runner/_hooks/
+RUN unzip -q -d /opt/actions-runner/_hooks /opt/actions-runner/_hooks/actions-runner-hooks-docker.zip \
+ && rm /opt/actions-runner/_hooks/actions-runner-hooks-docker.zip
+
+COPY hooks-cycle.sh /usr/local/bin/hooks-cycle.sh
+CMD ["/usr/local/bin/hooks-cycle.sh"]
