@@ -32,6 +32,7 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/restore-o11y-isolated.yml
       - platform/playbooks/files/o11y_isolated_restore.py
+      - platform/playbooks/files/o11y_restore_cloud_init.py
       - platform/playbooks/files/o11y_restore_coordination.py
       - platform/playbooks/files/o11y_pbs_receipts.py
       - platform/playbooks/files/inspect_o11y_restore_target.py
@@ -549,10 +550,25 @@
       check_mode: false
       no_log: true
 
+    - name: Derive private cloud-init scrub expectations from the authenticated artifact config
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'artifact_cloud_init',
+              'config': {'status': _restore_artifact_config.status, 'data': _restore_artifact_config.json.data},
+              'source_vmid': _restore_source_vmid | int} | to_json }}
+        stdin_add_newline: false
+      register: _restore_cloud_init_admission
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
     - name: Require complete included disks, safe config, and live isolation preflight
       ansible.builtin.assert:
         that:
           - _restore_artifact_admission.rc == 0
+          - _restore_cloud_init_admission.rc == 0
           - (_restore_target_preflight.restore_disk_count | int) == ((_restore_artifact_admission.stdout | from_json).disk_count | int)
           - (_restore_target_preflight.selected_candidate.backend_class | default('pbs')) == 'pbs'
         fail_msg: "The protected artifact configuration contains unsupported restore directives or incomplete disk evidence."
@@ -562,6 +578,7 @@
     - name: Retain admitted artifact disk set and target identity
       ansible.builtin.set_fact:
         _restore_artifact_layout: "{{ _restore_artifact_admission.stdout | from_json }}"
+        _restore_cloud_init_expectation: "{{ _restore_cloud_init_admission.stdout | from_json }}"
         _restore_target_ref: {node: "{{ _restore_target_node }}", vmid: "{{ _restore_target_vmid | int }}"}
         _restore_target_declaration:
           vmid: "{{ _restore_target_vmid | int }}"
@@ -763,7 +780,8 @@
               'marker': none,
               'isolated': false,
               'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
-              'storage_id': _restore_target_storage} | to_json }}
+              'storage_id': _restore_target_storage,
+              'cloud_init_expectation': _restore_cloud_init_expectation} | to_json }}
       register: _restore_vm_admission_raw
       changed_when: false
       failed_when: false
@@ -855,7 +873,7 @@
         unredirected_headers: [Authorization]
         body_format: form-urlencoded
         body:
-          delete: "{{ (_restore_artifact_layout.nic_keys | join(',')) if _restore_artifact_layout.nic_keys else omit }}"
+          delete: "{{ ((_restore_artifact_layout.nic_keys + _restore_cloud_init_expectation.scrub_keys) | unique | join(',')) if (_restore_artifact_layout.nic_keys + _restore_cloud_init_expectation.scrub_keys) else omit }}"
           onboot: 0
           startup: ""
           description: "{{ _restore_marker }}"
@@ -887,7 +905,8 @@
               'marker': _restore_marker,
               'isolated': true,
               'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
-              'storage_id': _restore_target_storage} | to_json }}
+              'storage_id': _restore_target_storage,
+              'cloud_init_expectation': _restore_cloud_init_expectation} | to_json }}
       register: _restore_isolation_validated
       changed_when: false
       failed_when: false
@@ -1076,7 +1095,8 @@
               'target_vmid': _restore_target_vmid | int, 'marker': _restore_marker,
               'isolated': true,
               'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
-              'storage_id': _restore_target_storage} | to_json }}
+              'storage_id': _restore_target_storage,
+              'cloud_init_expectation': _restore_cloud_init_expectation} | to_json }}
       register: _restore_running_isolation
       changed_when: false
       failed_when: false
@@ -1429,7 +1449,8 @@
               'target_vmid': _restore_target_vmid | int, 'marker': _restore_marker,
               'isolated': true,
               'expected_disk_keys': (_restore_artifact_layout.disks | map(attribute='device') | list),
-              'storage_id': _restore_target_storage} | to_json }}
+              'storage_id': _restore_target_storage,
+              'cloud_init_expectation': _restore_cloud_init_expectation} | to_json }}
       register: _restore_stopped_isolation_raw
       changed_when: false
       failed_when: false

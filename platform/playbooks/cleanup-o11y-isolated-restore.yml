@@ -25,6 +25,7 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/cleanup-o11y-isolated-restore.yml
       - platform/playbooks/files/o11y_isolated_restore.py
+      - platform/playbooks/files/o11y_restore_cloud_init.py
       - platform/playbooks/files/o11y_restore_coordination.py
       - platform/playbooks/files/o11y_pbs_receipts.py
       - platform/playbooks/files/validate-o11y-restore-task.py
@@ -95,7 +96,7 @@
           - hostvars[_cleanup_source].vm_vmid | string != _cleanup_target_ref.vmid | string
           - _cleanup_target_ref.node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
           - _cleanup_target_ref.vmid | string is match('^[1-9][0-9]{0,8}$')
-          - _cleanup_bao_url is match('^https://')
+          - _cleanup_bao_url | length > 0
         fail_msg: "Cleanup requires one exact restore task ID, reviewed repository revisions, and privately declared target."
         quiet: true
 

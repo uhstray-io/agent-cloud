@@ -926,7 +926,10 @@ def _query(base: str, backend: str, mode: str, expr: str, end: float, lookback: 
         # errorType only, never `error`: execution errors embed label sets.
         kind = body.get("errorType")
         return {"error": kind if isinstance(kind, str) and kind in ERROR_TYPES else "unrecognised error"}
-    return {"data": body.get("data") or {}}
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return {"error": "response data is not an object"}
+    return {"data": data}
 
 
 def _finite(sample: Any) -> bool:

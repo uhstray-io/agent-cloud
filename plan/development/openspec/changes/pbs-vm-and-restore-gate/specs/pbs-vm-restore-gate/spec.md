@@ -57,7 +57,7 @@ The system SHALL configure a backup credential that cannot prune or delete exist
 - **THEN** the restore remains unverified; paths alone cannot satisfy the restore gate
 
 #### Scenario: Cleanup selects a prior task
-- **WHEN** cleanup is launched with a prior restore task ID and expected receipt SHA
+- **WHEN** cleanup is launched with a prior restore task ID, reviewed restore and cleanup code SHAs, and the current private site-config SHA
 - **THEN** it authenticates the completed task's project, status, reviewed commit, ordered output, and one fixed-contract receipt, compares the full coordination record/version, and deletes only the stopped target still owned by that record
 
 #### Scenario: Cleanup absence is ambiguous

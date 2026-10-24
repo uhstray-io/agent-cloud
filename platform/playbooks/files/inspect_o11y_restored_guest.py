@@ -222,7 +222,7 @@ def _probe_count(name: str, pid: int, epoch: int) -> tuple[int, str]:
         digest = _sha(json.dumps({"status": data["status"], "count": count}, sort_keys=True).encode())
         return count, digest
     if name == "loki":
-        query = f' sum(count_over_time({{job=~".+"}}[24h] @ {end})) '
+        query = ' sum(count_over_time({job=~".+"}[24h])) '
         data = _get_json(
             pid,
             f"http://127.0.0.1:3100/loki/api/v1/query?{urllib.parse.urlencode({'query': query, 'time': str(end)})}"

@@ -146,12 +146,12 @@
   ansible.builtin.debug:
     msg: >-
       {{ {
-        'status': (_orca_check.stdout | default('{}') | from_json).status | default('refused'),
-        'reason': (_orca_check.stdout | default('{}') | from_json).reason | default('verification_failed'),
-        'reviewed_repository_sha': (_orca_check.stdout | default('{}') | from_json).reviewed_repository_sha | default(expected_repository_sha),
-        'policy_matches_source': (_orca_check.stdout | default('{}') | from_json).policy_matches_source | default(false),
-        'data_capabilities_match': (_orca_check.stdout | default('{}') | from_json).data_capabilities_match | default(false),
-        'metadata_capabilities_match': (_orca_check.stdout | default('{}') | from_json).metadata_capabilities_match | default(false)
+        'status': (_orca_check.stdout | default('{}', true) | from_json).status | default('refused'),
+        'reason': (_orca_check.stdout | default('{}', true) | from_json).reason | default('verification_failed'),
+        'reviewed_repository_sha': (_orca_check.stdout | default('{}', true) | from_json).reviewed_repository_sha | default(expected_repository_sha),
+        'policy_matches_source': (_orca_check.stdout | default('{}', true) | from_json).policy_matches_source | default(false),
+        'data_capabilities_match': (_orca_check.stdout | default('{}', true) | from_json).data_capabilities_match | default(false),
+        'metadata_capabilities_match': (_orca_check.stdout | default('{}', true) | from_json).metadata_capabilities_match | default(false)
       } | to_json }}
   tags: [always]
 
@@ -159,7 +159,7 @@
   ansible.builtin.assert:
     that:
       - _orca_check.rc | default(1) == 0
-      - (_orca_check.stdout | from_json).status == 'verified'
+      - (_orca_check.stdout | default('{}', true) | from_json).status == 'verified'
     fail_msg: "OpenBao policy or effective coordination capabilities did not match the reviewed source."
     quiet: true
   tags: [always]

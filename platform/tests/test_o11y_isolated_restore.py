@@ -27,6 +27,11 @@ import seed_harness  # noqa: E402
 PUBLIC_SHA = "a" * 40
 PRIVATE_SHA = "b" * 40
 PROJECT_ID = 7
+NO_CLOUD_INIT = {
+    "present": False,
+    "field_fingerprint": hashlib.sha256(b"{}").hexdigest(),
+    "scrub_keys": [],
+}
 BACKUP_UPID = "UPID:pve1:00000001:00000002:00000003:vzdump:120:root@pam:"
 VERIFY_UPID = "UPID:pve1:00000004:00000005:00000006:pbs-verify:120:root@pam:"
 SYNC_UPID = "UPID:pve-copy:00000007:00000008:00000009:pbs-sync:120:root@pam:"
@@ -192,28 +197,173 @@ def test_exact_artifact_config_requires_source_vmid_included_disks_and_hashes():
     assert result["disk_count"] == 1
     assert result["nic_keys"] == ["net0"]
     assert result["config_sha256"] == hashlib.sha256(config["data"].encode()).hexdigest()
+    assert set(result) == {"config_sha256", "disk_count", "disks", "nic_count", "nic_keys", "config_keys_sha256"}
+
+
+def test_provisioner_cloud_init_is_separate_from_included_disk_layout():
+    config = {
+        "status": 200,
+        "data": (
+            "vmid: 700\nagent: 1\nciuser: observer\nsshkeys: ssh-ed25519%20synthetic\n"
+            "ipconfig0: ip=dhcp\nnameserver: 192.0.2.53\n"
+            "smbios1: uuid=00000000-0000-4000-8000-000000000700\n"
+            "ide2: source-lvm:vm-700-cloudinit,media=cdrom\n"
+            "scsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+        ),
+    }
+    layout = restore.exact_artifact_config(config, source_vmid=700)
+    cloud_init = restore.exact_artifact_cloud_init(config, source_vmid=700)
+
+    assert layout["disk_count"] == 1
+    assert layout["disks"] == [{"device": "scsi0", "size_bytes": 20 * 1024**3}]
+    assert cloud_init["present"] is True
+    assert cloud_init["scrub_keys"] == ["ciuser", "ipconfig0", "nameserver", "smbios1", "sshkeys"]
+    assert cloud_init["field_fingerprint"] == hashlib.sha256(
+        json.dumps(
+            {
+                "ciuser": "observer",
+                "ipconfig0": "ip=dhcp",
+                "nameserver": "192.0.2.53",
+                "smbios1": "uuid=00000000-0000-4000-8000-000000000700",
+                "sshkeys": "ssh-ed25519%20synthetic",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("line", "reason"),
     [
-        "hookscript: local:snippets/restore-hook.pl",
-        "args: -device host-pci",
-        "hostpci0: 0000:03:00.0",
-        "usb0: host=1-1",
-        "virtiofs0: shared",
-        "mp0: /srv/share,mp=/host",
-        "smbios1: uuid=abc",
-        "cicustom: user=local:snippets/custom.yaml",
-        "unused0: local:orphan-disk",
-        "ide2: local:iso/debian.iso,media=cdrom",
-        "scsi0: pbs:archive,size=20G,backup=0",
-        "scsi0: pbs:archive,size=20G,backup=0\nscsi0: pbs:archive,size=20G,backup=1",
+        ("ide2: local:iso/debian.iso,media=cdrom", "artifact_unsupported"),
+        ("ide2: local:vm-701-cloudinit,media=cdrom", "artifact_unsupported"),
+        ("ide2: local:vm-700-cloudinit.qcow2,media=cdrom", "artifact_unsupported"),
+        ("ide2: local:vm-700-cloudinit,media=cdrom,size=4M", "artifact_unsupported"),
+        ("ide2: none,media=cdrom\nciuser: observer", "artifact_unsupported"),
+        ("ipconfig1: ip=dhcp", "artifact_unsupported"),
+        ("smbios1: uuid=invalid", "artifact_unsupported"),
+        ("cicustom: user=local:snippets/user.yaml", "artifact_unsupported"),
     ],
 )
-def test_unsafe_passthrough_shared_hooks_or_excluded_disks_refuse(line):
-    config = {"status": 200, "data": "vmid: 700\nscsi0: pbs:backup/vm/700,backup=1,size=20G\n" + line + "\n"}
-    with pytest.raises(restore.Refusal):
+def test_unreviewed_cloud_init_and_cdrom_shapes_refuse_before_mutation(line, reason):
+    base = "vmid: 700\nagent: enabled=1\nscsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+    with pytest.raises(restore.Refusal, match=reason):
+        restore.exact_artifact_config({"status": 200, "data": base + line + "\n"}, source_vmid=700)
+
+
+def test_target_auxiliary_must_be_regenerated_for_target_store_and_vmid():
+    config = {
+        "status": 200,
+        "data": (
+            "vmid: 700\nagent: enabled=1\nciuser: observer\n"
+            "ide2: source-lvm:vm-700-cloudinit,media=cdrom\n"
+            "scsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+        ),
+    }
+    expectation = restore.exact_artifact_cloud_init(config, source_vmid=700)
+    expected_fields = {
+        "ciuser": "observer",
+        "ide2": "target-lvm:vm-910001-cloudinit,media=cdrom",
+        "onboot": 0,
+        "description": "o11y-restore:abc",
+        "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+        "vmid": 910001,
+    }
+    admitted = {
+        "status": 200,
+        "data": {**expected_fields, "digest": "a" * 40},
+    }
+    assert restore.validate_target_config(
+        admitted,
+        target_vmid=910001,
+        marker=None,
+        isolated=False,
+        expected_disk_keys=["scsi0"],
+        storage_id="target-lvm",
+        cloud_init_expectation=expectation,
+    )["cloud_init_present"] is True
+
+    for replacement in (
+        "source-lvm:vm-700-cloudinit,media=cdrom",
+        "target-lvm:vm-910002-cloudinit,media=cdrom",
+        "other-lvm:vm-910001-cloudinit,media=cdrom",
+    ):
+        invalid = copy.deepcopy(admitted)
+        invalid["data"]["ide2"] = replacement
+        with pytest.raises(restore.Refusal, match="target_config_invalid"):
+            restore.validate_target_config(
+                invalid,
+                target_vmid=910001,
+                marker=None,
+                isolated=False,
+                expected_disk_keys=["scsi0"],
+                storage_id="target-lvm",
+                cloud_init_expectation=expectation,
+            )
+
+
+def test_isolated_target_keeps_target_auxiliary_but_has_no_source_cloud_init_metadata():
+    config = {
+        "status": 200,
+        "data": {
+            "vmid": 910001,
+            "digest": "a" * 40,
+            "onboot": 0,
+            "description": "o11y-restore:abc",
+            "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+            "ide2": "target-lvm:vm-910001-cloudinit,media=cdrom",
+        },
+    }
+    expectation = {
+        "present": True,
+        "field_fingerprint": hashlib.sha256(b"{\"ciuser\":\"observer\"}").hexdigest(),
+        "scrub_keys": ["ciuser"],
+    }
+    assert restore.validate_target_config(
+        config,
+        target_vmid=910001,
+        marker="o11y-restore:abc",
+        isolated=True,
+        expected_disk_keys=["scsi0"],
+        storage_id="target-lvm",
+        cloud_init_expectation=expectation,
+    )["cloud_init_present"] is True
+    config["data"]["sshkeys"] = "must-be-removed"
+    with pytest.raises(restore.Refusal, match="target_config_invalid"):
+        restore.validate_target_config(
+            config,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            isolated=True,
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            cloud_init_expectation=expectation,
+        )
+
+
+@pytest.mark.parametrize(
+    "line, reason",
+    [
+        ("hookscript: local:snippets/restore-hook.pl", "artifact_unsupported"),
+        ("args: -device host-pci", "artifact_unsupported"),
+        ("hostpci0: 0000:03:00.0", "artifact_unsupported"),
+        ("usb0: host=1-1", "artifact_unsupported"),
+        ("virtiofs0: shared", "artifact_unsupported"),
+        ("mp0: /srv/share,mp=/host", "artifact_unsupported"),
+        ("smbios1: uuid=abc", "artifact_unsupported"),
+        ("cicustom: user=local:snippets/custom.yaml", "artifact_unsupported"),
+        ("unused0: local:orphan-disk", "artifact_unsupported"),
+        ("ide2: local:iso/debian.iso,media=cdrom", "artifact_unsupported"),
+        ("scsi1: pbs:archive,size=20G,backup=0", "artifact_disk_incomplete"),
+        ("scsi0: pbs:archive,size=20G,backup=0\nscsi0: pbs:archive,size=20G,backup=1", "artifact_config_invalid"),
+    ],
+)
+def test_unsafe_passthrough_shared_hooks_or_excluded_disks_refuse(line, reason):
+    base = "vmid: 700\nagent: enabled=1\nscsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+    assert restore.exact_artifact_config({"status": 200, "data": base}, source_vmid=700)["disk_count"] == 1
+    config = {"status": 200, "data": base + line + "\n"}
+    with pytest.raises(restore.Refusal, match=reason):
         restore.exact_artifact_config(config, source_vmid=700)
 
 
@@ -245,6 +395,7 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
             isolated=True,
             expected_disk_keys=["scsi0"],
             storage_id="local",
+            cloud_init_expectation=NO_CLOUD_INIT,
         )["nic_count"]
         == 0
     )
@@ -259,6 +410,7 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
         isolated=False,
         expected_disk_keys=["scsi0"],
         storage_id="local",
+        cloud_init_expectation=NO_CLOUD_INIT,
     )["nic_count"] == 0
     for key, value in (
         ("net0", "virtio=aa,bridge=vmbr0"),
@@ -283,6 +435,7 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
                 isolated=True,
                 expected_disk_keys=["scsi0"],
                 storage_id="local",
+                cloud_init_expectation=NO_CLOUD_INIT,
             )
 
 
@@ -351,6 +504,13 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
             "selected_candidate": {"backend_class": "pbs"},
         },
         "_restore_artifact_admission": {"rc": 0, "stdout": '{"disk_count":1}'},
+        "_restore_cloud_init_admission": {
+            "rc": 0,
+                "stdout": json.dumps(restore.exact_artifact_cloud_init(
+                {"status": 200, "data": "vmid: 120\nagent: enabled=1\nscsi0: copy-pbs:disk,size=20G\n"},
+                source_vmid=120,
+            )),
+        },
         "_restore_guest_exec_status": {
             "json": {
                 "data": {
@@ -437,6 +597,7 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
         helper_dir.mkdir()
         for helper in (
             "o11y_isolated_restore.py",
+            "o11y_restore_cloud_init.py",
             "o11y_restore_coordination.py",
             "o11y_pbs_receipts.py",
             "inspect_o11y_backup_artifact.py",

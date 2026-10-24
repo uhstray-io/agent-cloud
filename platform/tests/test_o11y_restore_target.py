@@ -57,6 +57,8 @@ def payload():
         "artifact_config": {
             "status": 200,
             "data": (
+                "vmid: 102\n"
+                "agent: enabled=1\n"
                 "name: private-o11y\n"
                 "scsi0: source-storage-private:vm-102-disk-0,size=100G\n"
                 "efidisk0: source-storage-private:vm-102-disk-1,size=4M\n"
@@ -286,10 +288,31 @@ def test_refuses_oversized_or_invalid_unicode_artifact_configuration(config):
 def test_cdrom_does_not_count_as_restore_disk_or_require_size():
     data = payload()
     data["artifact_config"]["data"] = (
+        "vmid: 102\n"
+        "agent: enabled=1\n"
         "ide2: none,media=cdrom\n"
         "scsi0: source-storage-private:vm-102-disk-0,size=100G\n"
     )
     assert inspect(data)["restore_disk_count"] == 1
+
+
+def test_target_preflight_keeps_block_cloud_init_aux_out_of_disk_capacity_count():
+    data = payload()
+    data["artifact_config"]["data"] = (
+        "vmid: 102\n"
+        "agent: 1\n"
+        "ciuser: observer\n"
+        "ipconfig0: ip=dhcp\n"
+        "ide2: source-storage-private:vm-102-cloudinit,media=cdrom\n"
+        "scsi0: source-storage-private:vm-102-disk-0,size=100G\n"
+    )
+    result = inspect(data)
+    assert result["restore_disk_count"] == 1
+    assert result["artifact_restore_layout_complete"] is True
+
+    data["storage_reads"][0]["data"][0]["type"] = "dir"
+    with pytest.raises(ValueError, match="reviewed cloud-init auxiliary shape"):
+        inspect(data)
 
 
 def test_cli_refusal_uses_fixed_sanitized_message(monkeypatch, capsys):

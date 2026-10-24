@@ -8,6 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -114,6 +115,23 @@ def test_historical_queries_use_only_loopback_inside_the_exact_container_namespa
     assert captured["command"][0:2] == ["/usr/bin/nsenter", "--net=/proc/4321/ns/net"]
     assert captured["command"][-3:] == ["http://127.0.0.1:3200/api/search", "8", str(guest.MAX_HTTP_BYTES)]
     assert captured["env"] == {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+
+
+def test_loki_historical_counter_uses_api_evaluation_time_not_logql_at_modifier(monkeypatch):
+    captured = {}
+
+    def get_json(_pid, url):
+        captured.update(url=url)
+        return {"status": "success", "data": {"result": []}}
+
+    monkeypatch.setattr(guest, "_get_json", get_json)
+    count, _digest = guest._probe_count("loki", 4321, 1_700_000_000)
+
+    query = parse_qs(urlsplit(captured["url"]).query)
+    assert count == 0
+    assert query["time"] == ["1700000000"]
+    assert "[24h]" in query["query"][0]
+    assert "@" not in query["query"][0]
 
 
 def test_pyroscope_historical_read_uses_its_container_network_namespace_loopback(monkeypatch):

@@ -9,6 +9,8 @@ import sys
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 
+from o11y_restore_cloud_init import source_auxiliary
+
 VMID = re.compile(r"[1-9][0-9]{0,8}")
 NODE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 STORAGE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -16,9 +18,6 @@ DISK_DEVICE = re.compile(r"(?:ide|sata|scsi|virtio|efidisk|tpmstate)[0-9]+")
 MEDIA_OPTION = re.compile(r"(?:^|,)media=([^,]+)(?:$|,)")
 SIZE = re.compile(r"(?:^|,)size=([0-9]+(?:\.[0-9]+)?)([KMGT])(?:$|,)", re.I)
 MULTIPLIERS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-MAX_ARTIFACT_CONFIG_BYTES = 256 * 1024
-MAX_ARTIFACT_CONFIG_LINES = 4096
-MAX_RESTORE_DISKS = 128
 SAFE_REFUSALS = {
     "The restore target declaration is missing or malformed.",
     "The source and restore target declarations conflict.",
@@ -29,6 +28,7 @@ SAFE_REFUSALS = {
     "The restore target node is unavailable or shares the source node.",
     "Proxmox returned malformed or conflicting storage evidence.",
     "The declared restore storage is unavailable or does not support VM images.",
+    "The declared restore storage does not support the reviewed cloud-init auxiliary shape.",
     "The selected artifact is not bound to the verified artifact census.",
     "Proxmox returned malformed artifact configuration.",
     "The artifact restore layout is incomplete, excluded, or ambiguous.",
@@ -93,7 +93,7 @@ def _declaration(payload: Mapping[str, object]) -> tuple[int, str, int, str, str
     return source_vmid, source_node, target_vmid, target_node, storage, headroom
 
 
-def _artifact_layout(payload: Mapping[str, object]) -> tuple[list[tuple[str, int]], dict[str, object]]:
+def _artifact_layout(payload: Mapping[str, object]) -> tuple[list[tuple[str, int]], dict[str, object], bool]:
     selector = payload.get("artifact_selector")
     receipt = payload.get("artifact_receipt")
     config = payload.get("artifact_config")
@@ -137,35 +137,48 @@ def _artifact_layout(payload: Mapping[str, object]) -> tuple[list[tuple[str, int
         and isinstance(config.get("data"), str),
         "Proxmox returned malformed artifact configuration.",
     )
-    config_lines = config["data"].splitlines()
+    source = payload.get("source")
+    _require(isinstance(source, Mapping), "Proxmox returned malformed artifact configuration.")
+    source_vmid = _positive_vmid(source.get("vmid"))
     try:
+        config_bytes = config["data"].encode("utf-8")
+        config_lines = config["data"].splitlines()
         _require(
-            len(config["data"].encode("utf-8")) <= MAX_ARTIFACT_CONFIG_BYTES
-            and len(config_lines) <= MAX_ARTIFACT_CONFIG_LINES
+            len(config_bytes) <= 256 * 1024
+            and len(config_lines) <= 4096
             and all(len(line.encode("utf-8")) <= 4096 for line in config_lines),
             "Proxmox returned malformed artifact configuration.",
         )
     except UnicodeEncodeError:
         raise ValueError("Proxmox returned malformed artifact configuration.") from None
-    lines: dict[str, str] = {}
-    seen_devices: set[str] = set()
+    devices: dict[str, str] = {}
+    source_cloud_init = False
     try:
         for line in config_lines:
             if not line or line.lstrip().startswith("#") or ":" not in line:
                 continue
             device, raw = line.split(":", 1)
-            device = device.strip()
-            if not DISK_DEVICE.fullmatch(device):
-                continue
-            _require(device not in seen_devices, "The artifact restore layout is incomplete, excluded, or ambiguous.")
-            seen_devices.add(device)
-            value = raw.strip()
-            media_option = MEDIA_OPTION.search(value)
-            if media_option is not None:
+            device, value = device.strip(), raw.strip()
+            if device == "ide2":
                 _require(
-                    media_option.group(1) == "cdrom",
+                    device not in devices and source_auxiliary(value, source_vmid),
                     "The artifact restore layout is incomplete, excluded, or ambiguous.",
                 )
+                devices[device] = value
+                source_cloud_init = value != "none,media=cdrom"
+                continue
+            if not DISK_DEVICE.fullmatch(device):
+                continue
+            _require(device not in devices, "The artifact restore layout is incomplete, excluded, or ambiguous.")
+            devices[device] = value
+            media_option = MEDIA_OPTION.search(value)
+            _require(
+                media_option is None,
+                "The artifact restore layout is incomplete, excluded, or ambiguous.",
+            )
+        disks = []
+        for device, value in sorted(devices.items()):
+            if device == "ide2":
                 continue
             size_matches = SIZE.findall(value)
             _require(
@@ -178,20 +191,16 @@ def _artifact_layout(payload: Mapping[str, object]) -> tuple[list[tuple[str, int
                 size > 0 and size == size.to_integral_value(),
                 "The artifact restore layout is incomplete, excluded, or ambiguous.",
             )
-            backup_matches = re.findall(r"(?:^|,)backup=([01])(?:$|,)", value)
+            backup = re.findall(r"(?:^|,)backup=([01])(?:$|,)", value)
             _require(
-                len(backup_matches) <= 1 and (not backup_matches or backup_matches[0] == "1"),
+                len(backup) <= 1 and (not backup or backup[0] == "1"),
                 "The artifact restore layout is incomplete, excluded, or ambiguous.",
             )
-            lines[device] = str(int(size))
+            disks.append((device, int(size)))
     except (InvalidOperation, ValueError):
         raise ValueError("The artifact restore layout is incomplete, excluded, or ambiguous.") from None
-    _require(
-        bool(lines) and len(lines) <= MAX_RESTORE_DISKS,
-        "The artifact restore layout is incomplete, excluded, or ambiguous.",
-    )
-    disks = [(device, int(size)) for device, size in sorted(lines.items())]
-    return disks, dict(selected)
+    _require(bool(disks) and len(disks) <= 128, "The artifact restore layout is incomplete, excluded, or ambiguous.")
+    return disks, dict(selected), source_cloud_init
 
 
 def _vm_census(
@@ -256,7 +265,7 @@ def _node_is_online(raw: object, node: str) -> bool:
 
 def _target_storage(
     raw_reads: object, node: str, storage_id: str
-) -> tuple[int, int]:
+) -> tuple[int, int, str]:
     _require(
         isinstance(raw_reads, list) and all(isinstance(read, Mapping) for read in raw_reads),
         "Proxmox returned malformed or conflicting storage evidence.",
@@ -314,12 +323,12 @@ def _target_storage(
         and 0 <= available <= total,
         "The declared restore storage is unavailable or does not support VM images.",
     )
-    return total, available
+    return total, available, row["type"]
 
 
 def inspect(payload: Mapping[str, object]) -> dict[str, object]:
     source_vmid, source_node, target_vmid, target_node, storage_id, headroom = _declaration(payload)
-    disks, selected = _artifact_layout(payload)
+    disks, selected, has_cloud_init = _artifact_layout(payload)
     _, target_seen = _vm_census(payload.get("vms"), source_vmid, source_node, target_vmid)
     target_config = payload.get("target_config")
     target_nextid = payload.get("target_nextid")
@@ -345,7 +354,12 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
         _node_is_online(payload.get("nodes"), target_node),
         "The restore target node is unavailable or shares the source node.",
     )
-    total, available = _target_storage(payload.get("storage_reads"), target_node, storage_id)
+    total, available, storage_type = _target_storage(payload.get("storage_reads"), target_node, storage_id)
+    if has_cloud_init:
+        _require(
+            storage_type == "lvmthin",
+            "The declared restore storage does not support the reviewed cloud-init auxiliary shape.",
+        )
     required = sum(size for _, size in disks)
     remaining = available - required
     _require(
