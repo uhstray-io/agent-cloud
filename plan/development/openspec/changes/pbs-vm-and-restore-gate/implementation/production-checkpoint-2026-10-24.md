@@ -89,6 +89,26 @@ Task-output readers must strip ANSI framing before parsing JSON, treat a
 callback host prefix as framing rather than receipt identity, and validate
 the fixed task and closed receipt keys. Printed partial JSON is not acceptance.
 
+The independent source follow-up, [PR #736](https://github.com/uhstray-io/agent-cloud/pull/736),
+is open at `12f04fc10cd15df073d6929b0fbdb4a79e1d796c`. It adds fixed safe
+comparison reasons and a bounded command-output adapter while preserving legacy
+successful-comparison acceptance. Owner verification passed 71 Python and 20
+BATS cases, lint and strict OpenSpec validation. A fresh read-only GPT-6.1 Sol
+Medium review completed with approval and no findings; its Ansible templar
+check was blocked by temporary-directory access, distinct from the checks it
+completed. See the [independent review](https://github.com/uhstray-io/agent-cloud/pull/736#issuecomment-6383999255).
+[CI run 40092120662](https://github.com/uhstray-io/agent-cloud/actions/runs/40092120662)
+cannot yet support merge: four Python jobs stopped before tests when the exact
+`community.hashi_vault` 7.1.0 artifact returned HTTP 500, and Static Analysis hit
+a collection-download 500 during Ansible lint. Other jobs, including Bash,
+were still potentially running at this checkpoint; the run is not recorded
+as terminal. Do not retry CI while the artifact remains unhealthy; do not skip
+or unpin dependencies, work around the failure, or merge on this evidence.
+This source work is independent of the
+denied policy execution and private PR #110 push approval. It establishes no
+cause for task 8712, production rollout, role/sampling acceptance, protected
+copy, restore or capacity proof; all existing gates and checkboxes remain open.
+
 ## Receiver, capacity and backup boundaries
 
 The exact receiver comparison from `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`
