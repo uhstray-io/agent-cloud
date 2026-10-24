@@ -37,6 +37,10 @@
 #                          secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key; never generated)
 #   agw_verify_openrouter  (default false) send ONE completion (max_tokens 8) to the first OpenRouter model
 #                          the verifying identity may use; off, the verify only checks the keyed listing
+#   agw_verify_json_schema (default true) send ONE schema-constrained completion (`response_format`
+#                          type json_schema) to the verifying model and require a reply that parses
+#                          against that schema: skynet's structured output depends on the gateway
+#                          passing it through unchanged (service-deployment-workflow 0.5/3.3)
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
 #   agw_admin_identities_enabled (default false) gate for the personal identities below: off,
 #                          agw_identities == agw_clients and the admin list is not read
@@ -1378,6 +1382,67 @@
         - not ansible_check_mode
         - _verify_client | length > 0
         - not (_verify_refused | bool)
+
+    # ONE schema-constrained completion (agw_verify_json_schema, default on). The gateway must hand
+    # `response_format` to the upstream unchanged, which constrains the reply to the schema; a reply
+    # that is not exactly {"reply": <string>} means the field was dropped or rewritten on the way.
+    - name: "An enrolled identity completes one schema-constrained request through the upstream"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [200]
+        _agwp_timeout: 120
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
+          model: "{{ _verify_models[0] }}"
+          max_tokens: 512
+          messages: [{role: user, content: "Reply with the word pong."}]
+          response_format:
+            type: json_schema
+            json_schema:
+              name: verify_reply
+              strict: true
+              schema:
+                type: object
+                properties: {reply: {type: string}}
+                required: [reply]
+                additionalProperties: false
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
+
+    - name: "Keyed probes: keep the schema-constrained response"
+      ansible.builtin.set_fact:
+        _keyed_schema: "{{ _agwp_out }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
+
+    - name: "Require a reply that parses against the requested schema"
+      ansible.builtin.assert:
+        that:
+          - (_keyed_schema.status | int) == 200
+          - _schema_content is match('^\\s*\\{')
+          - (_schema_content | from_json) is mapping
+          - (_schema_content | from_json | list) == ['reply']
+          - (_schema_content | from_json).reply is string
+        fail_msg: >-
+          Schema-constrained completion as {{ _verify_client }} for {{ _verify_models[0] }} did not
+          return a reply matching its schema (HTTP {{ _keyed_schema.status }}): the gateway or the
+          upstream did not honour response_format type json_schema.
+        success_msg: "response_format json_schema passed through: the reply parses against its schema."
+      vars:
+        _schema_content: "{{ _keyed_schema.json.choices[0].message.content | default('', true) | string }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
 
     # Opt-in (agw_verify_openrouter): ONE completion with max_tokens 8 to the first OpenRouter model
     # the verifying identity may use, so a deploy proves the OpenRouter path only when the operator
