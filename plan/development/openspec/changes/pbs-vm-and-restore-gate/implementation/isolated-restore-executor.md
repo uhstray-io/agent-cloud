@@ -2,7 +2,7 @@
 
 **Status:** source implementation complete; final combined-head CI, publication, and live acceptance remain open
 **Scope:** OpenSpec `pbs-vm-and-restore-gate`, task 5.2, bounded source child
-**Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation, shared PBS receipt, capability, and `dev` commits. The current Dev history includes PR #728 merge `06ad8c32358518a1dc52181fde10439a8d431980` and PR #733 merge `e68ca3de948914cb5ba820c92e12627277d468d6` (reviewed PR #733 head `32d5d49e5b01d7c0e5811738aef7f4cbd93ddf17`). The feature worktree still needs the normal merge of that exact Dev merge commit before its corrected push. The combined feature head remains unpublished.
+**Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation, shared PBS receipt, capability, and `dev` commits. Its current Dev history includes PR #728 merge `06ad8c32358518a1dc52181fde10439a8d431980` and PR #733 merge `e68ca3de948914cb5ba820c92e12627277d468d6` (reviewed PR #733 head `32d5d49e5b01d7c0e5811738aef7f4cbd93ddf17`). Both are now normally merged into the consumer feature branch. The corrected feature head remains unpublished pending final checks.
 
 This record covers source implementation and focused local verification only. It
 does not close OpenSpec 5.2 or establish any Semaphore, OpenBao, Proxmox, private
@@ -92,9 +92,17 @@ new PVE-token playbooks absent from the
 coverage table, and an old-schema fixture inconsistent with the strict schema-2
 record. The fixes preserve the production guards and broaden exact coverage;
 they do not relax the tests. The local check-mode run before producer-branch
-integration passed the restore and cleanup entrypoints; its remaining failures
-were confined to producer-owned playbooks and shared tasks and are not a final
-combined result. Source tests do not establish runtime acceptance.
+integration exposed six producer-owned failures. After the approved producer
+and Dev merges, the complete check-mode module passed (367 tests). The restore
+target-guard, extra-var refusal, and PVE-token modules passed together (113
+tests). Ruff passed for the three changed Python test modules. Full Ansible
+lint exited 0 with four warnings (three Jinja-formatting warnings and the
+restore play's task-count warning); syntax checks passed for all six affected
+entrypoints, with expected host-pattern warnings on PBS inventory patterns.
+Strict OpenSpec status showed all four planning artifacts complete and
+validation passed. The earlier PR CI run remains failed on its old head; these
+local source checks do not replace CI on the corrected head or establish
+runtime acceptance.
 
 ## Acceptance for this source child
 
