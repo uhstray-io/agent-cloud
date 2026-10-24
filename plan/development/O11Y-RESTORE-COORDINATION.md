@@ -102,6 +102,13 @@ inventory bytes. The two pins may differ when unrelated private changes occur;
 the declaration, artifact, full target config, ownership marker, and complete
 coordination record/version must still match.
 
+The restore entrypoint reads the declared protected copy, but it does not
+assert or record that primary PBS is unavailable. `restore_receipt/v3` carries
+no outage proof or final-acceptance field. A successful isolated restore can
+prove the bounded copy restore only; it cannot satisfy OpenSpec 4.4c until an
+independently reviewed outage condition and matching restore evidence exist.
+Keep that protected-copy acceptance open.
+
 Source implementation is not activation evidence. The exact feature head has
 not yet completed independent review, CI, Dev publication, private inventory
 acceptance, effective OpenBao role verification, writer-drain verification,

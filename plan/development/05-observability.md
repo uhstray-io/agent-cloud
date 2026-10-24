@@ -2274,3 +2274,41 @@ copy restore while primary PBS is unavailable, or live restore/cleanup. Keep
 OpenSpec 5.2, the seven-day capacity forecast, and the separate 90d/45d/45d
 retention decision open; no live API, backup, restore, cleanup, or storage
 change was performed for this source work.
+
+### 2026-10-24 limited observability and backup probes
+
+Sanitized task 8632 ran at controller `482a81c72cdf8b36e9f1245b7b07c3437b932cf3`
+with receiver revision `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. The dashboard
+probe reported five failed workflow steps; all five had unknown completion
+age. Three series/identities were unclassified, with no unknown label-shape or
+sample records. This is a limited dashboard observation, not proof that a
+restore or PBS workflow ran successfully.
+
+Sanitized backup inspection task 8634 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3`. It verified that the selected
+backup job is enabled and includes o11y, but found no successful backup within
+26 hours. The selected destination was reported low on free space. A separate
+node task log produced a `no_space` hint, but its task identity did not match
+the selected job, so that hint cannot be attributed to that job. No fresh PBS
+artifact or PBS-side verification was established.
+
+Sanitized task 8638 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3` with receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; its selected agentgateway scrape
+returned one series with values. This establishes scrape visibility only. It
+does not prove application health, service-level conformance, or fleet-wide
+coverage.
+
+Capacity refresh task 8623 had one source series and one series at the latest
+evaluation, no overlapping source events/evaluations, and no unknown label
+keys. It clears the earlier duplicate-source ambiguity for that read, but its
+source history is too short to provide a seven-day forecast or pass the
+capacity gate. The task used controller `391a4f7c168a51cf753d0a7cce202724a89b3b95`
+and expected receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`.
+
+None of these probes validates the private PBS placement, protected-copy
+failover with primary PBS unavailable, effective OpenBao role capabilities,
+writer drain, restore-target availability, or isolated restore/cleanup. They
+do not close OpenSpec 4.3, 4.4b/c, 5.1b, 5.2, 5.3, the seven-day forecast, or
+the separate 90d/45d/45d retention gate.

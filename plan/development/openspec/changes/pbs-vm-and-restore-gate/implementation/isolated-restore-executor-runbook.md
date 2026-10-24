@@ -7,6 +7,31 @@ declarations are accepted, OpenBao capabilities and writer coverage are
 verified, protected-copy recovery passes with primary PBS unavailable, and a
 Dev-bound restore and separate cleanup succeed.
 
+## Limited runtime evidence (2026-10-24)
+
+These observations are from separate sanitized dashboard, backup-job, and
+capacity tasks. They are not restore acceptance evidence:
+
+- Task 8632 at controller `482a81c72cdf8b36e9f1245b7b07c3437b932cf3` and
+  receiver `67b9cffcdda8b3b10e840c50357c1b23f8410cbb` observed five failed
+  workflow steps, all with unknown completion age, plus three unclassified
+  series/identities.
+- Task 8634 verified that the selected enabled backup job includes o11y, but
+  found no successful backup within 26 hours. The selected destination was
+  low on free space. A separate node task log showed a `no_space` hint whose
+  task identity did not match the selected job, so the failure cannot be
+  attributed to it. No fresh artifact or PBS verification was established.
+- Task 8638, at the same controller and receiver revisions, observed one
+  agentgateway scrape series with values. This does not prove application
+  health or fleet coverage.
+- Capacity refresh task 8623 found one source series, no overlapping source
+  events/evaluations, and no unknown label keys. This clears the earlier source
+  ambiguity, but its history is too short for a seven-day forecast or gate pass.
+
+These tasks do not check private PBS placement, effective OpenBao capabilities,
+writer drain, restore-target availability, protected-copy failover, or restore
+and cleanup execution.
+
 ## Restore transaction
 
 1. Reject all forged internal/private identity, task evidence, URL, TLS,
@@ -90,6 +115,11 @@ in this fixed order: backup, exact-snapshot PBS verification, destination-initia
 protected-copy sync with `remove-vanished=false`, and independent destination
 readiness. Readiness leaves `final_acceptance=pending_isolated_restore`; the
 isolated restore must prove recovery while the primary PBS guest is unavailable.
+The current restore entrypoint reads the declared protected copy but does not
+test or record primary PBS unavailability. The `restore_receipt/v3` has no
+outage proof or final-acceptance field, so even a successful restore task cannot
+satisfy OpenSpec 4.4c by itself. Keep 4.4c open until an independently reviewed
+outage condition and restore evidence are available.
 The shared module owns the canonical receipt envelope, exact-byte inventory
 provenance check, and stable PBS artifact fingerprint. The restore executor
 consumes that interface and rejects omitted, unknown, stale or ambiguous proof.

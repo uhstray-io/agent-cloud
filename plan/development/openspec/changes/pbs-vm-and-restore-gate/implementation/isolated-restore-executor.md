@@ -90,6 +90,10 @@ publication, and private gates pass.
   rollout/drain, actual Dev task execution, and seven-day capacity gate remain
   activation/acceptance prerequisites.
 
+The current restore entrypoint has no primary-PBS outage control or evidence
+field in its v3 receipt. Its success therefore cannot satisfy OpenSpec 4.4c;
+the outage condition and its evidence require a separately reviewed design.
+
 ## Stop conditions
 
 Stop and retain the target and journal on any unknown Proxmox response, failed
