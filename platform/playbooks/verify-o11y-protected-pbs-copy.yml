@@ -295,6 +295,7 @@
         stdin_add_newline: false
       register: _pbs_copy_acl_validation
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -323,6 +324,7 @@
         label: "pinned destination PBS configuration read"
       register: _pbs_copy_config_reads
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -371,6 +373,7 @@
         label: "destination PVE registration and artifact locator"
       register: _pbs_copy_pve_reads
       changed_when: false
+      check_mode: false
       no_log: true
 
     - name: Require exact destination PBS storage registration
@@ -400,6 +403,7 @@
         stdin_add_newline: false
       register: _pbs_copy_locator_raw
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -432,6 +436,7 @@
         label: "independent pinned PBS artifact readback"
       register: _pbs_copy_manifests
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 

@@ -12,4 +12,5 @@
       - "0"
   register: _pbs_manager_acl_write
   changed_when: true
+  when: not ansible_check_mode
   no_log: true

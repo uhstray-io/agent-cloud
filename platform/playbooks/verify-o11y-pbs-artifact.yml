@@ -187,6 +187,7 @@
         stdin_add_newline: false
       register: _pbs_manifest_before
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -217,7 +218,8 @@
                 'backup_time': _pbs_snapshot.backup_time | int}} | to_json }}
         stdin_add_newline: false
       register: _pbs_verify_start_raw
-      changed_when: false
+      changed_when: true
+      when: not ansible_check_mode
       failed_when: false
       no_log: true
 
@@ -233,6 +235,7 @@
         stdin_add_newline: false
       register: _pbs_verify_upid_check
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -256,6 +259,7 @@
         stdin_add_newline: false
       register: _pbs_verification_status_raw
       changed_when: false
+      check_mode: false
       failed_when: false
       until: >-
         _pbs_verification_status_raw.rc == 0 and
@@ -287,6 +291,7 @@
         stdin_add_newline: false
       register: _pbs_manifest_after
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 

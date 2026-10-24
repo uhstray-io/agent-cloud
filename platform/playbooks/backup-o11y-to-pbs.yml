@@ -158,6 +158,7 @@
         status_code: [200]
       register: _pbs_pve_storage
       changed_when: false
+      check_mode: false
       no_log: true
 
     - name: Require the existing PBS datastore registration to match primary authority
@@ -192,6 +193,7 @@
         label: "declared o11y VM read"
       register: _pbs_vm_reads
       changed_when: false
+      check_mode: false
       no_log: true
 
     - name: Require the exact running source VM configuration
@@ -217,6 +219,7 @@
         status_code: [200]
       register: _pbs_baseline_content
       changed_when: false
+      check_mode: false
       no_log: true
 
     - name: Record the bounded PVE operation window start
@@ -243,6 +246,7 @@
           mode: snapshot
         status_code: [200]
       register: _pbs_backup_start
+      when: not ansible_check_mode
       no_log: true
 
     - name: Retain the exact PVE backup UPID
@@ -257,6 +261,7 @@
         stdin_add_newline: false
       register: _pbs_backup_upid_check
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -280,6 +285,7 @@
         status_code: [200]
       register: _pbs_backup_status
       changed_when: false
+      check_mode: false
       until: _pbs_backup_status.json.data.status == 'stopped'
       retries: 1440
       delay: 60
@@ -307,6 +313,7 @@
         status_code: [200]
       register: _pbs_new_content
       changed_when: false
+      check_mode: false
       no_log: true
 
     - name: Select one new snapshot inside the exact operation window
@@ -321,6 +328,7 @@
         stdin_add_newline: false
       register: _pbs_snapshot_raw
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -365,6 +373,7 @@
         stdin_add_newline: false
       register: _pbs_disk_layout_raw
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -385,6 +394,7 @@
         stdin_add_newline: false
       register: _pbs_source_raw
       changed_when: false
+      check_mode: false
       no_log: true
 
     - name: Emit the backup receipt bound to the exact UPID and manifest
