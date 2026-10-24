@@ -1,8 +1,8 @@
 # Isolated o11y restore executor source plan
 
-**Status:** source implementation complete; final combined-head CI, publication, and live acceptance remain open
+**Status:** source implementation complete; corrected-head CI and live acceptance remain open
 **Scope:** OpenSpec `pbs-vm-and-restore-gate`, task 5.2, bounded source child
-**Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation, shared PBS receipt, capability, and `dev` commits. Its current Dev history includes PR #728 merge `06ad8c32358518a1dc52181fde10439a8d431980` and PR #733 merge `e68ca3de948914cb5ba820c92e12627277d468d6` (reviewed PR #733 head `32d5d49e5b01d7c0e5811738aef7f4cbd93ddf17`). Both are now normally merged into the consumer feature branch. The corrected feature head remains unpublished pending final checks.
+**Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation, shared PBS receipt, capability, and `dev` commits. Its current Dev history includes PR #728 merge `06ad8c32358518a1dc52181fde10439a8d431980` and PR #733 merge `e68ca3de948914cb5ba820c92e12627277d468d6` (reviewed PR #733 head `32d5d49e5b01d7c0e5811738aef7f4cbd93ddf17`). Both are now normally merged into the consumer feature branch. This source work is tracked in PR #734; CI on the corrected head remains pending.
 
 This record covers source implementation and focused local verification only. It
 does not close OpenSpec 5.2 or establish any Semaphore, OpenBao, Proxmox, private
@@ -129,6 +129,24 @@ configurations. On the corrected source, the bounded combined restore/PBS,
 gateway, and cross-cutting cohort passed 1,033 tests plus 46 subtests. The
 corrected feature head still requires final CI and does not establish any live
 PBS, Proxmox, or protected-restore acceptance.
+
+CI run `40079059919` on head `a76c1ef4` failed one Python-core check:
+`test_no_recursive_task_vars.py::test_no_task_var_resolves_to_itself` found a
+self-referential `site_config_base_sha` override in the cleanup provenance
+include. The complete job log showed 5,517 passed, 5 skipped, 283 subtests, and
+that single failure. The aggregated `gh run view --log-failed` output was
+truncated, so diagnosis used the complete job log. The cleanup include now
+inherits its already-validated current launch pin directly, matching restore's
+include pattern. A caller-path regression executes the selected cleanup include
+and the real provenance selector assertion with distinct current and historical
+pins; side-effecting provenance tasks are stubbed. The regression, cleanup
+pin-independence test, and recursive-task-var guard passed together (3 tests).
+These follow-up checks do not replace CI on the corrected head.
+
+Strict branch-history TruffleHog scans from base `391a4f7c` used
+`--no-verification --fail --fail-on-scan-errors --no-update` and reported zero
+verified or unverified findings. TruffleHog logged that sandbox policy blocked
+temporary-process cleanup after the scans had completed.
 
 ## Acceptance for this source child
 
