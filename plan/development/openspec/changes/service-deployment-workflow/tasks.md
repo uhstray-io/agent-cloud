@@ -214,9 +214,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         So section 3's local gateway runs against the public edge (subject to its rate limit)
         until the VM path is fixed. Ticked once the measured result and the
         degraded path were recorded in `design.md` (Risks, "Measured 2026-10-12")
-- [x] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
-      `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
-      secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
+- [x] 3.2 Local inventory: agentgateway upstream set in `local-dev.yml` only to the DGX API,
+      directly on the LAN or, while 3.1's degraded path holds, through the public edge that
+      fronts it; `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the
+      environment secret, never an argv; `agw_clients` gains the five role identities (plan
+      15's four plus `network-agent`) and `skynet-eval`
+      - 2026-10-24: task text amended on review. It first named the DGX API without the
+        degraded path, and four role identities.
       - 2026-10-24, upstream: the public edge (`https://inference.uhstray.io/v1`), not the DGX
         LAN address. That is the degraded path recorded in 3.1, kept by operator decision while
         the VM path to the LAN stays cut; `local-dev.yml.example` documents the LAN override for
@@ -235,7 +239,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       the reply parses against the schema (live half of 0.5)
       - 2026-10-24, json_schema half done: PR #737 (merged `3a00cac1`) adds the probe to the
         deploy's verify; `Deploy agentgateway (Local)` task 6872 passed it ("response_format
-        json_schema passed through: the reply parses against its schema"). Open: the route
+        json_schema passed through: the reply parses against its schema"). Endpoint: the run's
+        verify names its upstream as `https://inference.uhstray.io/v1` (model
+        `nvidia/Qwen3.8-Flash-Next-NVFP4`), the public edge in front of vLLM on the DGX Spark
+        head. So the request reached the DGX through the edge, not over the LAN. Open: the route
         deploy, which needs `Deploy skynet (Local)` first, and that needs a GitHub PAT with
         `read:packages` in local OpenBao (`secret/services/github:pat`) to pull the image.
 - [ ] 3.4 **[skynet]** Drop Bifrost from the agent-cloud path: Tier 2 calls the gateway's `/v1`

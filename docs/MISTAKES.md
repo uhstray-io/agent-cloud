@@ -2501,8 +2501,11 @@ step, the same loop would have written for real on a dry run that had just faile
 **Root cause.** The loop treated "dry run, then real" as two iterations of one command rather
 than a gate. The order was right; nothing made the second step depend on the first.
 
-**The rule.** A real launch follows a dry run only when the dry run succeeded: chain them with
-`&&` (`launch --dry-run ... && launch ...`), or `|| break` inside a loop, never a bare loop.
+**The rule.** A real launch follows a dry run only when the dry run finished and succeeded.
+Launch the dry run without `--no-wait` (with it, `scripts/semaphore-launch.py` returns 0 as soon
+as the task is submitted, while the task is still running) and chain the real launch with `&&`:
+`launch --dry-run ... && launch ...`. Never a bare loop, and not `|| break` inside one, which
+leaves the loop's own status 0 after a failure.
 
 **Enforced by.** Convention.
 
