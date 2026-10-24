@@ -2267,8 +2267,11 @@ identity and current PVE storage configuration fingerprints, then validates
 the exact artifact config before reservation. The Reader
 `o11y-copy-restore@pbs!pve-restore` is separate from the destination copy
 Manager and is the only PBS identity used by restore-side manifest reads. The
-artifact gate admits only the reviewed provisioner-shaped cloud-init config;
-its regenerated target auxiliary is checked separately from included backup
+artifact gate admits only the reviewed provisioner-shaped cloud-init config,
+the provisioner's exact `serial0: socket`, and canonical PVE
+`meta: creation-qemu=<version>,ctime=<epoch>`; arbitrary serial settings and
+unknown or malformed metadata are refused in artifact and target validation.
+Its regenerated target auxiliary is checked separately from included backup
 disks, and source cloud-init and NIC identity/network data is scrubbed before
 boot. The shared fixed-mode receipt validator and journal cover restore,
 isolation, start, guest execution, stop, and cleanup writes. The guest checker

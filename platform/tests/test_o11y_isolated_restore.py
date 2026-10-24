@@ -227,6 +227,7 @@ def test_provisioner_cloud_init_is_separate_from_included_disk_layout():
             "vmid: 700\nagent: 1\nciuser: observer\nsshkeys: ssh-ed25519%20synthetic\n"
             "ipconfig0: ip=dhcp\nnameserver: 192.0.2.53\n"
             "smbios1: uuid=00000000-0000-4000-8000-000000000700\n"
+            "serial0: socket\nmeta: creation-qemu=8.1.5,ctime=1714504207\n"
             "ide2: source-lvm:vm-700-cloudinit,media=cdrom\n"
             "scsi0: pbs:backup/vm/700,backup=1,size=20G\n"
         ),
@@ -263,6 +264,11 @@ def test_provisioner_cloud_init_is_separate_from_included_disk_layout():
         ("ide2: none,media=cdrom\nciuser: observer", "artifact_unsupported"),
         ("ipconfig1: ip=dhcp", "artifact_unsupported"),
         ("smbios1: uuid=invalid", "artifact_unsupported"),
+        ("serial0: tcp", "artifact_unsupported"),
+        ("serial1: socket", "artifact_unsupported"),
+        ("meta: creation-qemu=8.1.5,ctime=1714504207,unreviewed=value", "artifact_unsupported"),
+        ("meta: ctime=1714504207,creation-qemu=8.1.5", "artifact_unsupported"),
+        ("metadata: creation-qemu=8.1.5,ctime=1714504207", "artifact_unsupported"),
         ("cicustom: user=local:snippets/user.yaml", "artifact_unsupported"),
     ],
 )
@@ -278,6 +284,7 @@ def test_target_auxiliary_must_be_regenerated_for_target_store_and_vmid():
         "data": (
             "vmid: 700\nagent: enabled=1\nciuser: observer\n"
             "ide2: source-lvm:vm-700-cloudinit,media=cdrom\n"
+            "serial0: socket\nmeta: creation-qemu=8.1.5,ctime=1714504207\n"
             "scsi0: pbs:backup/vm/700,backup=1,size=20G\n"
         ),
     }
@@ -289,6 +296,8 @@ def test_target_auxiliary_must_be_regenerated_for_target_store_and_vmid():
         "description": "o11y-restore:abc",
         "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
         "vmid": 910001,
+        "serial0": "socket",
+        "meta": "creation-qemu=8.1.5,ctime=1714504207",
     }
     admitted = {
         "status": 200,
@@ -434,6 +443,9 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
     )["nic_count"] == 0
     for key, value in (
         ("net0", "virtio=aa,bridge=vmbr0"),
+        ("serial0", "tcp"),
+        ("serial1", "socket"),
+        ("meta", "creation-qemu=8.1.5,ctime=1714504207,unexpected=1"),
         ("hostpci0", "0000:02:00.0"),
         ("onboot", 1),
         ("startup", "order=1"),

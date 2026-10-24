@@ -608,6 +608,10 @@
           {{ ['o11y_copy_restore_user', 'o11y_copy_restore_token_id', 'o11y_copy_restore_token_secret',
               'o11y_copy_restore_datastore', 'o11y_copy_restore_fingerprint']
              | select('in', (_pbs_manager_bao_data | default({})).keys() | list) | list }}
+      no_log: true
+
+    - name: Build the closed destination restore Reader credential record
+      ansible.builtin.set_fact:
         _pbs_restore_reader_saved_record: >-
           {{ {'user': _pbs_manager_bao_data.get('o11y_copy_restore_user'),
               'token_id': _pbs_manager_bao_data.get('o11y_copy_restore_token_id'),

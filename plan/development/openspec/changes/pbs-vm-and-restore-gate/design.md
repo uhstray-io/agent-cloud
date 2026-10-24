@@ -61,7 +61,10 @@ authoritative deletion readback. See the source-child runbook in
 `implementation/isolated-restore-executor-runbook.md`.
 
 Artifact admission allows only the reviewed provisioner-shaped cloud-init
-configuration. A backed `ide2` cloud-init auxiliary volume is tracked separately
+configuration, the provisioner's exact `serial0: socket`, and PVE's canonical
+`meta: creation-qemu=<version>,ctime=<epoch>` pair. Other serial settings and
+unknown or malformed metadata are refused in both artifact and target
+validation. A backed `ide2` cloud-init auxiliary volume is tracked separately
 from included backup disks; its source VMID and target store/VMID are exact,
 and all source cloud-init network, user, SSH-key, and UUID metadata is removed
 in the journaled isolation update before boot. Unsupported auxiliary formats

@@ -20,7 +20,13 @@ from o11y_pbs_receipts import (
 from o11y_pbs_receipts import (
     Refusal as PBSRefusal,
 )
-from o11y_restore_cloud_init import source_auxiliary, target_auxiliary, valid_smbios_uuid
+from o11y_restore_cloud_init import (
+    source_auxiliary,
+    target_auxiliary,
+    valid_creation_meta,
+    valid_provisioner_serial,
+    valid_smbios_uuid,
+)
 
 VMID = re.compile(r"(?:0|[1-9][0-9]{0,8})\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
@@ -44,6 +50,7 @@ ALLOWED_CONFIG_KEYS = {
     "keyboard",
     "kvm",
     "machine",
+    "meta",
     "memory",
     "name",
     "numa",
@@ -51,6 +58,7 @@ ALLOWED_CONFIG_KEYS = {
     "ostype",
     "scsihw",
     "sockets",
+    "serial0",
     "startup",
     "tablet",
     "tags",
@@ -225,6 +233,10 @@ def _parse_artifact_config(value: object, *, source_vmid: int) -> dict[str, str]
                 require(content in {"1", "enabled=1"}, "artifact_unsupported")
             if key == "smbios1":
                 require(valid_smbios_uuid(content), "artifact_unsupported")
+            if key == "serial0":
+                require(valid_provisioner_serial(content), "artifact_unsupported")
+            if key == "meta":
+                require(valid_creation_meta(content), "artifact_unsupported")
             if key in CLOUD_INIT_FIELDS - {"smbios1"}:
                 require(bool(content) and not any(ord(char) < 32 for char in content), "artifact_unsupported")
             if IPCONFIG_KEY.fullmatch(key):
@@ -372,6 +384,12 @@ def validate_target_config(
                 isinstance(data[key], str) and PVE_CONFIG_DIGEST.fullmatch(data[key]) is not None,
                 "target_config_invalid",
             )
+            continue
+        if key == "serial0":
+            require(valid_provisioner_serial(data[key]), "target_config_invalid")
+            continue
+        if key == "meta":
+            require(valid_creation_meta(data[key]), "target_config_invalid")
             continue
         require(
             key in ALLOWED_CONFIG_KEYS or DISK.fullmatch(key) or re.fullmatch(r"net[0-9]+", key) is not None,

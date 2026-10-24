@@ -52,8 +52,9 @@ Proxmox mutation retains the VM and coordination record for operator review.
    identity, and PVE storage fingerprints to that receipt. Refuse legacy
    inventory or caller selectors. Enforce the fixed 24-hour artifact age.
    Inspect the exact artifact configuration, admit only the reviewed cloud-init
-   provisioner shape, and reject unsupported restore inputs before target
-   reservation. Recheck target capacity and VMID availability, reserve with
+   provisioner shape plus `serial0: socket` and canonical PVE
+   `meta: creation-qemu=<version>,ctime=<epoch>`, and reject other serial or
+   metadata settings before target reservation. Recheck target capacity and VMID availability, reserve with
    version CAS, restore stopped, apply and read back disconnected isolation,
    start only the target, run fixed guest inspection through QGA, stop the target,
    and CAS the receipt-bound `awaiting_receipt` state. Print one private
@@ -110,6 +111,24 @@ Strict OpenSpec status showed all four planning artifacts complete and
 validation passed. The earlier PR CI run remains failed on its old head; these
 local source checks do not replace CI on the corrected head or establish
 runtime acceptance.
+
+## Independent review corrections
+
+A bounded independent review of integrated head `91eddf9794ded04dba45bcc64eca173e3624f134`
+identified three caller-path defects. The destination Reader saved-key fact is
+now established in its own `set_fact` task before the record builder consumes
+it. Copy-readiness manifest calls explicitly select the fixed `source` and
+`destination_restore` profiles; the helper continues to reject a Manager under
+the destination restore profile. Artifact parsing, target preflight, and target
+readback share the same exact `serial0: socket` and PVE creation-meta predicate,
+and reject arbitrary serial settings and extra, reordered, or malformed meta
+fields. Regression tests execute the actual Reader task sequence under local
+Ansible, render the actual copy-readiness manifest task into the PBS helper, and
+exercise artifact and target-readback validators with accepted and refused
+configurations. On the corrected source, the bounded combined restore/PBS,
+gateway, and cross-cutting cohort passed 1,033 tests plus 46 subtests. The
+corrected feature head still requires final CI and does not establish any live
+PBS, Proxmox, or protected-restore acceptance.
 
 ## Acceptance for this source child
 

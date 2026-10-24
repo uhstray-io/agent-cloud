@@ -9,7 +9,7 @@ import sys
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 
-from o11y_restore_cloud_init import source_auxiliary
+from o11y_restore_cloud_init import source_auxiliary, valid_creation_meta, valid_provisioner_serial
 
 VMID = re.compile(r"[1-9][0-9]{0,8}")
 NODE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -153,12 +153,28 @@ def _artifact_layout(payload: Mapping[str, object]) -> tuple[list[tuple[str, int
         raise ValueError("Proxmox returned malformed artifact configuration.") from None
     devices: dict[str, str] = {}
     source_cloud_init = False
+    serial_seen = False
+    meta_seen = False
     try:
         for line in config_lines:
             if not line or line.lstrip().startswith("#") or ":" not in line:
                 continue
             device, raw = line.split(":", 1)
             device, value = device.strip(), raw.strip()
+            if device.startswith("serial"):
+                _require(
+                    device == "serial0" and not serial_seen and valid_provisioner_serial(value),
+                    "The artifact restore layout is incomplete, excluded, or ambiguous.",
+                )
+                serial_seen = True
+                continue
+            if device.startswith("meta"):
+                _require(
+                    device == "meta" and not meta_seen and valid_creation_meta(value),
+                    "The artifact restore layout is incomplete, excluded, or ambiguous.",
+                )
+                meta_seen = True
+                continue
             if device == "ide2":
                 _require(
                     device not in devices and source_auxiliary(value, source_vmid),

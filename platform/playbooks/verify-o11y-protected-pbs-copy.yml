@@ -455,15 +455,18 @@
         stdin: >-
           {{ {'url': 'https://' ~ item.api_host ~ ':8007', 'expected_host': item.api_host,
               'fingerprint': item.fingerprint, 'auth_id': item.auth_id,
-              'secret': item.secret, 'backup_id': _pbs_snapshot.backup_id,
+              'secret': item.secret, 'identity_profile': item.identity_profile,
+              'backup_id': _pbs_snapshot.backup_id,
               'backup_time': _pbs_snapshot.backup_time | int} | to_json }}
         stdin_add_newline: false
       loop:
         - api_host: "{{ _pbs_source_api_host }}"
+          identity_profile: source
           fingerprint: "{{ _pbs_copy_secret_record.o11y_copy_reader_fingerprint }}"
           auth_id: "{{ _pbs_copy_secret_record.o11y_copy_reader_token_id }}"
           secret: "{{ _pbs_copy_secret_record.o11y_copy_reader_token_secret }}"
         - api_host: "{{ _pbs_copy_api_host }}"
+          identity_profile: destination_restore
           fingerprint: "{{ _pbs_copy_secret_record.o11y_copy_restore_fingerprint }}"
           auth_id: "{{ _pbs_copy_secret_record.o11y_copy_restore_token_id }}"
           secret: "{{ _pbs_copy_secret_record.o11y_copy_restore_token_secret }}"

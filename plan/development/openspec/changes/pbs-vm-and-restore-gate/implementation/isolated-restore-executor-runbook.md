@@ -87,8 +87,10 @@ seven-day forecast.
    included disk set before reservation or restore. Refuse hooks, extra
    arguments, passthrough devices, host/shared mounts, excluded disks, arbitrary
    CD-ROMs, and unrecognized disk layouts. Admit only the reviewed provisioner
-   cloud-init shape; derive its auxiliary expectation from those exact config
-   bytes, count it separately from backup disks, scrub source NIC and cloud-init
+   cloud-init fields, `serial0: socket`, and canonical PVE
+   `meta: creation-qemu=<version>,ctime=<epoch>`; refuse other serial keys and
+   unknown or malformed meta fields. Derive the cloud-init auxiliary expectation
+   from those exact config bytes, count it separately from backup disks, scrub source NIC and cloud-init
    identity/network values in the journaled isolation write, and require the
    regenerated auxiliary to use the target VMID and store.
 4. Recheck artifact freshness against the fixed 24-hour limit, exact VMID

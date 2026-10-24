@@ -133,6 +133,29 @@ def test_reports_only_fixed_sanitized_available_now_facts():
     assert "capacity_gate_pass" not in result
 
 
+def test_artifact_preflight_admits_only_the_canonical_provisioner_console_and_metadata():
+    data = payload()
+    data["artifact_config"]["data"] += (
+        "serial0: socket\n"
+        "meta: creation-qemu=8.1.5,ctime=1714504207\n"
+    )
+    result = inspect(data)
+    assert result["artifact_restore_layout_complete"] is True
+    assert result["restore_disk_count"] == 2
+
+    for line in (
+        "serial0: tcp",
+        "serial1: socket",
+        "meta: creation-qemu=8.1.5,ctime=1714504207,unreviewed=value",
+        "meta: ctime=1714504207,creation-qemu=8.1.5",
+        "metadata: creation-qemu=8.1.5,ctime=1714504207",
+    ):
+        invalid = payload()
+        invalid["artifact_config"]["data"] += line + "\n"
+        with pytest.raises(ValueError, match="artifact restore layout is incomplete"):
+            inspect(invalid)
+
+
 def test_refuses_target_vmid_occupied_by_exact_config_read():
     data = payload()
     data["target_config"]["status"] = 200

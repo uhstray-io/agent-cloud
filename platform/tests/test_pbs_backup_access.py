@@ -1612,6 +1612,166 @@ class PlaybookBoundaryTests(TestCase):
         self.assertIn("Refuse a concurrent guarded creation", merge_task)
         self.assertIn("_bm_create.status == 200", merge_task)
 
+    def test_destination_restore_reader_saved_state_handoff_runs_as_separate_tasks(self):
+        ansible_playbook = shutil.which("ansible-playbook")
+        if ansible_playbook is None:
+            self.skipTest("needs ansible-playbook")
+        plays = yaml.safe_load((ROOT / "playbooks" / "configure-o11y-pbs-copy-access.yml").read_text())
+        tasks = [task for play in plays for task in play.get("tasks", [])]
+        retain_manager = next(
+            task for task in tasks
+            if task.get("name") == "Retain only the destination manager fields from the credential record"
+        )
+        retain_reader_keys = next(
+            task for task in tasks
+            if task.get("name") == "Retain only destination restore Reader fields from the credential record"
+        )
+        build_reader_record = next(
+            task for task in tasks
+            if task.get("name") == "Build the closed destination restore Reader credential record"
+        )
+        self.assertEqual(
+            set(retain_reader_keys["ansible.builtin.set_fact"]),
+            {"_pbs_restore_reader_saved_keys"},
+        )
+        self.assertEqual(
+            set(build_reader_record["ansible.builtin.set_fact"]),
+            {"_pbs_restore_reader_saved_record"},
+        )
+
+        expected_record = {
+            "user": "o11y-copy-restore@pbs",
+            "token_id": "o11y-copy-restore@pbs!pve-restore",
+            "secret": "synthetic-reader-secret",
+            "datastore": "o11y",
+            "fingerprint": "a" * 64,
+        }
+        cases = (
+            (
+                {"status": 200, "json": {"data": {"data": {
+                    "o11y_copy_restore_user": expected_record["user"],
+                    "o11y_copy_restore_token_id": expected_record["token_id"],
+                    "o11y_copy_restore_token_secret": expected_record["secret"],
+                    "o11y_copy_restore_datastore": expected_record["datastore"],
+                    "o11y_copy_restore_fingerprint": expected_record["fingerprint"],
+                    "unrelated_manager_secret": "must-not-be-copied",
+                }}}},
+                ["o11y_copy_restore_user", "o11y_copy_restore_token_id", "o11y_copy_restore_token_secret",
+                 "o11y_copy_restore_datastore", "o11y_copy_restore_fingerprint"],
+                expected_record,
+            ),
+            ({"status": 404, "json": {}}, [], None),
+        )
+        for bao_read, expected_keys, expected_saved in cases:
+            with self.subTest(status=bao_read["status"]), tempfile.TemporaryDirectory(
+                prefix="pbs-restore-reader-handoff-"
+            ) as temporary:
+                tmp_path = Path(temporary)
+                harness = [{
+                    "name": "Exercise the production destination restore Reader state handoff",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "vars": {"_pbs_manager_bao_read": bao_read},
+                    "tasks": [retain_manager, retain_reader_keys, build_reader_record, {
+                        "name": "Check the retained destination Reader state without printing it",
+                        "ansible.builtin.assert": {
+                            "that": [
+                                f"_pbs_restore_reader_saved_keys == {expected_keys!r}",
+                                f"_pbs_restore_reader_saved_record == {expected_saved!r}",
+                            ]
+                        },
+                        "no_log": True,
+                    }],
+                }]
+                harness_path = tmp_path / "restore-reader-state.yml"
+                harness_path.write_text(yaml.safe_dump(harness))
+                ansible_tmp = tmp_path / "ansible-local"
+                ansible_tmp.mkdir()
+                completed = subprocess.run(
+                    [ansible_playbook, "-i", "localhost,", "-c", "local", str(harness_path)],
+                    cwd=ROOT.parent,
+                    env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(ansible_tmp), "ANSIBLE_NOCOLOR": "1"},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_copy_readiness_passes_fixed_source_and_destination_profiles_from_real_task(self):
+        from jinja2 import StrictUndefined
+
+        plays = yaml.safe_load((ROOT / "playbooks" / "verify-o11y-protected-pbs-copy.yml").read_text())
+        task = next(
+            task for play in plays for task in play.get("tasks", [])
+            if task.get("name") == "Read source and destination manifests independently over pinned TLS"
+        )
+        self.assertEqual([row.get("identity_profile") for row in task["loop"]], ["source", "destination_restore"])
+        env = Environment(undefined=StrictUndefined)
+        env.filters["to_json"] = lambda value: json.dumps(value)
+        context = {
+            "_pbs_source_api_host": "pbs-source.internal.test",
+            "_pbs_copy_api_host": "pbs-destination.internal.test",
+            "_pbs_copy_secret_record": {
+                "o11y_copy_reader_fingerprint": "a" * 64,
+                "o11y_copy_reader_token_id": pbs.COPY_READER_TOKEN_ID,
+                "o11y_copy_reader_token_secret": "synthetic-source-reader",
+                "o11y_copy_restore_fingerprint": "b" * 64,
+                "o11y_copy_restore_token_id": pbs.COPY_READER_PROFILES["destination_restore"]["token_id"],
+                "o11y_copy_restore_token_secret": "synthetic-destination-reader",
+            },
+            "_pbs_snapshot": {"backup_id": "120", "backup_time": 1792594800},
+        }
+        manifest = {
+            "backup-type": "vm",
+            "backup-id": "120",
+            "backup-time": 1792594800,
+            "files": [{"filename": "qemu-server.conf.blob", "crypt-mode": "none", "size": 19, "csum": "2" * 64}],
+        }
+        content = json.dumps(manifest, separators=(",", ":")).encode()
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return content
+
+        class PinnedConnection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def connect(self):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                return None
+
+        rendered = []
+        with patch.object(pbs, "_PinnedHTTPSConnection", PinnedConnection):
+            for row in task["loop"]:
+                item = {
+                    key: env.from_string(value).render(**context) if isinstance(value, str) and "{{" in value else value
+                    for key, value in row.items()
+                }
+                stdin_payload = json.loads(env.from_string(task["ansible.builtin.command"]["stdin"]).render(
+                    **context, item=item
+                ))
+                result = pbs.read_snapshot_manifest(**stdin_payload)
+                rendered.append((item["identity_profile"], result["artifact_fingerprint"]))
+
+        self.assertEqual(
+            rendered,
+            [("source", pbs.artifact_fingerprint(manifest)),
+             ("destination_restore", pbs.artifact_fingerprint(manifest))],
+        )
+
 
 if __name__ == "__main__":
     main()
