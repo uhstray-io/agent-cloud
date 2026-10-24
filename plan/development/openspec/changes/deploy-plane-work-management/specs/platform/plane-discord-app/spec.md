@@ -41,7 +41,7 @@ The webhook receiver SHALL verify each delivery before it acts on the delivery. 
 
 ### Requirement: Each delivery is posted at most once
 
-Before it posts a verified delivery, the app MUST atomically claim the delivery's identity from the `X-Plane-Delivery` header in a persistent store on the app's own volume. The claim SHALL be a unique-key insert. A delivery identity that has been claimed MUST NOT be posted again, so that retries and concurrent deliveries cannot produce duplicate posts.
+Before it posts a verified delivery, the app MUST atomically claim the event's identity, the identifier Plane keeps unchanged across retries of one event (the payload's event id or the `X-Plane-Delivery` header, whichever spike 0.15 shows is stable), in a persistent store on the app's own volume. The claim SHALL be a unique-key insert. A delivery identity that has been claimed MUST NOT be posted again, so that retries and concurrent deliveries cannot produce duplicate posts.
 
 #### Scenario: Redelivered event is not posted twice
 
