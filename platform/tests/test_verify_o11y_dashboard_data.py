@@ -585,6 +585,48 @@ def test_selected_latest_status_joins_only_exact_completion_age_panel(monkeypatc
                 "failed_pairs_with_unavailable_age_value_count": 1,
             },
         ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "42"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "-1"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "age_rows_with_unavailable_value_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "-1"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "42"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "age_rows_with_unavailable_value_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "-1"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "-1"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "age_rows_with_unavailable_value_count": 2,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
     ],
 )
 def test_completion_age_reports_fixed_rejection_and_pair_join_counts(

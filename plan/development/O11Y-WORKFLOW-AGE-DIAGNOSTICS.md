@@ -1,7 +1,9 @@
 # O11Y Workflow Age Diagnostics
 
-**Date:** 2026-10-24  
-**Status:** IMPLEMENTED  
+**Date:** 2026-10-24
+
+**Status:** IMPLEMENTED
+
 **Context:** The dashboard verifier safely refuses to join completion ages when returned rows do not match the public workflow identity contract, but its sanitized report does not say which fixed validation category rejected the age map or why a returned failure pair has no numeric age.
 
 ## Problem
@@ -38,7 +40,7 @@ The verifier will add fixed counters for registry/result/label/identity rejectio
 
 | Check | Pass condition |
 |---|---|
-| Focused verifier tests | Pass: 205 tests; existing outcomes remain unchanged and fixed categories are counted |
+| Focused verifier tests | Pass: 208 tests; existing outcomes remain unchanged and fixed categories are counted |
 | Ruff | Pass: no lint errors in changed Python files |
 | Diff review | Pass: query strings, allowlists, and raw-output boundaries are unchanged |
 

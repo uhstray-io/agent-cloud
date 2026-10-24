@@ -494,15 +494,15 @@ def _completion_age_map(
             rejected = True
             continue
         key = (service, step)
+        sample = series.get("value")
+        age = _completion_age_seconds(sample)
+        if age is None:
+            diagnostics["age_rows_with_unavailable_value_count"] += 1
         if key in ages:
             # A duplicate is ambiguous even if one row carried a plausible age.
             diagnostics["duplicate_pair_count"] += 1
             ages[key] = None
             continue
-        sample = series.get("value")
-        age = _completion_age_seconds(sample)
-        if age is None:
-            diagnostics["age_rows_with_unavailable_value_count"] += 1
         ages[key] = age
     return (None if rejected else ages), diagnostics
 
