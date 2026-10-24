@@ -72,6 +72,18 @@ step_wait_healthy() {
   wait_for_healthy skynet 120
 }
 
+# Staged start (Rule 4, plan/architecture/05-platform-infra.md): the checkpoint database first,
+# gated on its own healthcheck, then the API. skynet's depends_on: service_healthy would also order
+# them, but the rule is explicit staging, not reliance on a compose condition. --no-deps keeps the
+# second up from touching skynet-db again. common.sh calls this in place of the one-shot up when the
+# inputs changed; the hook owns recreating, ordering and orphan removal, and each command chains
+# `|| return 1` because the helper runs it with errexit suspended.
+compose_staged_up() {
+  compose up -d --force-recreate --remove-orphans skynet-db || return 1
+  wait_for_healthy skynet-db 120
+  compose up -d --force-recreate --no-deps skynet || return 1
+}
+
 main() {
   info "=== skynet deployment (container lifecycle) ==="
   detect_runtime
