@@ -133,7 +133,6 @@
   delegate_to: localhost
   become: false
   no_log: true
-  check_mode: false
   when:
     - not ansible_check_mode
     - _o11y_rc_plan.result == 'write'
