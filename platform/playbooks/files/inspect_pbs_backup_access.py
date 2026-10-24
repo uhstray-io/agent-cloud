@@ -28,6 +28,30 @@ COPY_READER_USER_ID = "o11y-copy-reader@pbs"
 COPY_READER_TOKEN_ID = "o11y-copy-reader@pbs!pbs-sync"
 COPY_READER_ROLE = "DatastoreReader"
 COPY_READER_PRIVILEGES = {"Datastore.Audit", "Datastore.Read", "Datastore.Verify"}
+COPY_READER_PROFILES = {
+    "source": {
+        "user": COPY_READER_USER_ID,
+        "token_id": COPY_READER_TOKEN_ID,
+        "secret_fields": (
+            "o11y_copy_reader_user",
+            "o11y_copy_reader_token_id",
+            "o11y_copy_reader_token_secret",
+            "o11y_copy_reader_datastore",
+            "o11y_copy_reader_fingerprint",
+        ),
+    },
+    "destination_restore": {
+        "user": "o11y-copy-restore@pbs",
+        "token_id": "o11y-copy-restore@pbs!pve-restore",
+        "secret_fields": (
+            "o11y_copy_restore_user",
+            "o11y_copy_restore_token_id",
+            "o11y_copy_restore_token_secret",
+            "o11y_copy_restore_datastore",
+            "o11y_copy_restore_fingerprint",
+        ),
+    },
+}
 COPY_MANAGER_USER_ID = "o11y-copy-manager@pbs"
 COPY_MANAGER_TOKEN_ID = "o11y-copy-manager@pbs!copy-api"
 COPY_MANAGER_ACL_ROLE_PATHS = {
@@ -256,22 +280,25 @@ def plan_acl(*, user_permissions: Any, token_permissions: Any, acl_rows: Any) ->
 
 
 def plan_copy_reader_identity(
-    *, users: Any, tokens: Any, secret_record: Any, authenticated: bool = False
+    *, users: Any, tokens: Any, secret_record: Any, authenticated: bool = False, profile: str = "source"
 ) -> dict[str, str]:
-    """Manage a separate, stable source-pull identity without backup privileges."""
-    user = _one_by_id(users, "userid", COPY_READER_USER_ID, "copy-reader user")
-    token = _one_by_id(tokens, "tokenid", COPY_READER_TOKEN_ID, "copy-reader token")
+    """Manage only one of the two compiled-in source or destination Reader profiles."""
+    _require(profile in COPY_READER_PROFILES, "PBS copy-reader profile is not an approved fixed identity.")
+    selected = COPY_READER_PROFILES[profile]
+    user_id, token_id = selected["user"], selected["token_id"]
+    user = _one_by_id(users, "userid", user_id, "copy-reader user")
+    token = _one_by_id(tokens, "tokenid", token_id, "copy-reader token")
     _require(secret_record is None or isinstance(secret_record, dict),
              "OpenBao PBS copy-reader record has an unsupported schema.")
     saved = secret_record or {}
     saved_any = bool(saved)
     user_exists, token_exists = user is not None, token is not None
     if not user_exists and not token_exists and not saved_any:
-        return {"action": "create", "user": COPY_READER_USER_ID, "token_id": COPY_READER_TOKEN_ID}
+        return {"action": "create", "user": user_id, "token_id": token_id}
     _require(user_exists and token_exists,
              "PBS copy-reader user and token are incomplete; no identity mutation is allowed.")
     _require(saved_any, "PBS copy-reader token exists without its OpenBao copy.")
-    _require(saved.get("user") == COPY_READER_USER_ID and saved.get("token_id") == COPY_READER_TOKEN_ID,
+    _require(saved.get("user") == user_id and saved.get("token_id") == token_id,
              "OpenBao PBS copy-reader identity conflicts with its stable ID.")
     _require(saved.get("datastore") == DATASTORE, "OpenBao PBS copy-reader identity names an unexpected datastore.")
     _require(isinstance(saved.get("secret"), str) and bool(saved["secret"]),
@@ -283,15 +310,20 @@ def plan_copy_reader_identity(
     _require(token.get("enable", 0) in (1, True, "1"), "PBS copy-reader token is disabled.")
     _require(token.get("expire", 0) in (0, "0", None), "PBS copy-reader token has an expiry.")
     _require(authenticated, "The existing PBS copy-reader token was not authenticated successfully.")
-    return {"action": "reuse", "user": COPY_READER_USER_ID, "token_id": COPY_READER_TOKEN_ID}
+    return {"action": "reuse", "user": user_id, "token_id": token_id}
 
 
-def plan_copy_reader_acl(*, user_permissions: Any, token_permissions: Any, acl_rows: Any) -> dict[str, Any]:
+def plan_copy_reader_acl(
+    *, user_permissions: Any, token_permissions: Any, acl_rows: Any, profile: str = "source"
+) -> dict[str, Any]:
     """Permit only the exact DatastoreReader grants on the o11y datastore."""
-    expected_ids = {COPY_READER_USER_ID, COPY_READER_TOKEN_ID}
+    _require(profile in COPY_READER_PROFILES, "PBS copy-reader profile is not an approved fixed identity.")
+    selected = COPY_READER_PROFILES[profile]
+    user_id, token_id = selected["user"], selected["token_id"]
+    expected_ids = {user_id, token_id}
     permission_sets = {
-        COPY_READER_USER_ID: _effective_map(user_permissions),
-        COPY_READER_TOKEN_ID: _effective_map(token_permissions),
+        user_id: _effective_map(user_permissions),
+        token_id: _effective_map(token_permissions),
     }
     for identity, paths in permission_sets.items():
         _require(set(paths).issubset({DATASTORE_PATH}),
@@ -311,17 +343,20 @@ def plan_copy_reader_acl(*, user_permissions: Any, token_permissions: Any, acl_r
         _require(row.get("path") == DATASTORE_PATH and row.get("roleid") == COPY_READER_ROLE
                  and row.get("propagate") in (0, "0", False),
                  "PBS copy-reader ACL is not the exact non-propagating DatastoreReader grant.")
-    return {"missing_auth_ids": [identity for identity in (COPY_READER_USER_ID, COPY_READER_TOKEN_ID)
+    return {"missing_auth_ids": [identity for identity in (user_id, token_id)
                                   if identity not in seen]}
 
 
 def validate_copy_reader_permissions(
-    *, user_permissions: Any, token_permissions: Any, acl_rows: Any
+    *, user_permissions: Any, token_permissions: Any, acl_rows: Any, profile: str = "source"
 ) -> dict[str, Any]:
     """Verify the final source-pull user and token remain strictly read-only."""
-    plan = plan_copy_reader_acl(user_permissions=[], token_permissions=[], acl_rows=acl_rows)
+    _require(profile in COPY_READER_PROFILES, "PBS copy-reader profile is not an approved fixed identity.")
+    plan = plan_copy_reader_acl(
+        user_permissions=[], token_permissions=[], acl_rows=acl_rows, profile=profile
+    )
     _require(plan["missing_auth_ids"] == [], "PBS copy-reader ACL list is missing an identity grant.")
-    expected = {"identity": "copy_reader", "path": DATASTORE_PATH,
+    expected = {"identity": "copy_reader" if profile == "source" else "copy_restore_reader", "path": DATASTORE_PATH,
                 "privileges": sorted(COPY_READER_PRIVILEGES), "propagate": False}
     for value in (user_permissions, token_permissions):
         permissions = _effective_map(value)
@@ -744,10 +779,12 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
             _require(isinstance(data, dict)
                      and data.get("status") in {"running", "stopped"},
                      "PBS task status returned an unsupported schema.")
+            exitstatus = data.get("exitstatus")
+            _require(exitstatus is None or isinstance(exitstatus, str),
+                     "PBS task status returned an unsupported schema.")
             if data["status"] == "stopped":
-                _require(data.get("exitstatus") == "OK",
-                         "PBS task did not finish successfully.")
-            return {"status": data["status"], "exitstatus": data.get("exitstatus")}
+                return {"status": "stopped", "exitstatus": "OK" if exitstatus == "OK" else "failed"}
+            return {"status": "running", "exitstatus": None}
         return decoded["data"]
     finally:
         connection.close()
@@ -867,18 +904,21 @@ def main() -> int:
                 tokens=payload.get("tokens"),
                 secret_record=payload.get("secret_record"),
                 authenticated=payload.get("authenticated") is True,
+                profile=payload.get("profile", "source"),
             )
         elif args.action == "copy-reader-acl-plan":
             result = plan_copy_reader_acl(
                 user_permissions=payload.get("user_permissions"),
                 token_permissions=payload.get("token_permissions"),
                 acl_rows=payload.get("acl_rows"),
+                profile=payload.get("profile", "source"),
             )
         elif args.action == "copy-reader-permissions":
             result = validate_copy_reader_permissions(
                 user_permissions=payload.get("user_permissions"),
                 token_permissions=payload.get("token_permissions"),
                 acl_rows=payload.get("acl_rows"),
+                profile=payload.get("profile", "source"),
             )
         elif args.action == "copy-manager-identity":
             result = plan_copy_manager_identity(

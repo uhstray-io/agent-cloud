@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -47,6 +51,47 @@ def test_snapshot_selection_binds_one_new_pbs_snapshot_to_exact_operation_window
     }
 
 
+def test_backup_window_epoch_commands_remain_correct_under_non_utc_timezone():
+    backup = Path(__file__).resolve().parents[1] / "playbooks" / "backup-o11y-to-pbs.yml"
+    plays = yaml.safe_load(backup.read_text())
+    tasks = [task for play in plays for task in play.get("tasks", [])]
+    epoch_tasks = [task for task in tasks if task.get("name", "").startswith(
+        "Read timezone-independent PVE operation "
+    )]
+    assert [task["name"] for task in epoch_tasks] == [
+        "Read timezone-independent PVE operation start epoch",
+        "Read timezone-independent PVE operation end epoch",
+    ]
+
+    environment = {**os.environ, "TZ": "Etc/GMT+8"}
+    for task in epoch_tasks:
+        assert task["changed_when"] is False
+        assert task["check_mode"] is False
+        result = subprocess.run(
+            task["ansible.builtin.command"]["argv"],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+        )
+        assert result.returncode == 0
+        observed_epoch = int(result.stdout.strip())
+        assert abs(observed_epoch - int(time.time())) <= 2
+
+        legacy = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from datetime import datetime; print(int(datetime.utcnow().strftime('%s')))"
+            ],
+            capture_output=True,
+            check=True,
+            env=environment,
+            text=True,
+        )
+        assert abs(observed_epoch - int(legacy.stdout.strip())) >= 7 * 60 * 60
+
+
 def test_snapshot_selection_refuses_ambiguous_or_stale_operation_output():
     first = _pbs_row()
     second = _pbs_row(epoch=1792598401)
@@ -62,9 +107,9 @@ def test_snapshot_selection_refuses_ambiguous_or_stale_operation_output():
             )
 
 
-def test_destination_restore_locator_must_match_private_selector_byte_for_byte():
+def test_destination_restore_locator_is_derived_from_authenticated_snapshot_and_static_storage():
     row = _pbs_row()
-    selector = {
+    expected = {
         "volid": row["volid"],
         "backend": "pbs",
         "format": "pbs-vm",
@@ -76,35 +121,28 @@ def test_destination_restore_locator_must_match_private_selector_byte_for_byte()
         vmid="120",
         storage_id="pbs-o11y",
         snapshot_time=1792598400,
-        selector=selector,
-    ) == {**selector, "storage_id": "pbs-o11y"}
-    selector["size_bytes"] = 999
-    with pytest.raises(operations.Refusal):
-        operations.select_copy_locator(
-            [row],
-            vmid="120",
-            storage_id="pbs-o11y",
-            snapshot_time=1792598400,
-            selector=selector,
-        )
+    ) == {**expected, "storage_id": "pbs-o11y"}
+    # A stale legacy selector carried by the request is ignored by the closed
+    # CLI schema; readiness refuses the corresponding inventory declaration.
+    request = {"operation": "select_copy_locator", "rows": [row], "vmid": "120",
+               "storage_id": "pbs-o11y", "snapshot_time": 1792598400,
+               "selector": {"volid": "stale"}}
+    result = subprocess.run(
+        [sys.executable, str(FILES / "o11y_pbs_operations.py")],
+        input=json.dumps(request), capture_output=True, check=False, text=True,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {**expected, "storage_id": "pbs-o11y"}
 
 
 def test_destination_locator_rejects_other_vm_or_duplicate_pbs_artifacts():
     row = _pbs_row()
-    selector = {
-        "volid": row["volid"],
-        "backend": "pbs",
-        "format": "pbs-vm",
-        "creation_time_epoch": row["ctime"],
-        "size_bytes": row["size"],
-    }
     with pytest.raises(operations.Refusal):
         operations.select_copy_locator(
             [{**row, "vmid": 121}],
             vmid="120",
             storage_id="pbs-o11y",
             snapshot_time=1792598400,
-            selector=selector,
         )
     with pytest.raises(operations.Refusal):
         operations.select_copy_locator(
@@ -112,7 +150,6 @@ def test_destination_locator_rejects_other_vm_or_duplicate_pbs_artifacts():
             vmid="120",
             storage_id="pbs-o11y",
             snapshot_time=1792598400,
-            selector=selector,
         )
 
 

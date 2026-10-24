@@ -90,14 +90,12 @@ def validate_operation_upid(value: object) -> dict[str, object]:
 
 
 def select_copy_locator(
-    rows: object, *, vmid: object, storage_id: object, snapshot_time: object, selector: object
+    rows: object, *, vmid: object, storage_id: object, snapshot_time: object
 ) -> dict[str, object]:
-    """Bind the private PVE restore selector to one exact destination snapshot."""
+    """Derive one destination locator from authenticated VM/time and static storage."""
     _require(isinstance(vmid, str) and VMID.fullmatch(vmid) is not None, "readback_incomplete")
     _require(isinstance(storage_id, str) and STORAGE_ID.fullmatch(storage_id) is not None, "readback_incomplete")
     _require(_positive(snapshot_time), "readback_incomplete")
-    keys = {"volid", "backend", "format", "creation_time_epoch", "size_bytes"}
-    _require(isinstance(selector, Mapping) and set(selector) == keys, "readback_incomplete")
     _require(isinstance(rows, list), "readback_incomplete")
     matches: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -133,7 +131,7 @@ def select_copy_locator(
             "creation_time_epoch": ctime,
             "size_bytes": size,
         }
-        if epoch == snapshot_time and normalized == dict(selector):
+        if epoch == snapshot_time:
             matches.append(normalized)
     _require(len(matches) == 1, "readback_incomplete")
     return {**matches[0], "storage_id": storage_id}
@@ -196,7 +194,6 @@ def main() -> int:
                 vmid=request.get("vmid"),
                 storage_id=request.get("storage_id"),
                 snapshot_time=request.get("snapshot_time"),
-                selector=request.get("selector"),
             )
         elif operation == "validate_manifest_disk_layout":
             result = validate_manifest_disk_layout(request.get("manifest_filenames"), request.get("vm_config"))

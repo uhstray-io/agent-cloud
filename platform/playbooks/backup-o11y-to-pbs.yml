@@ -222,10 +222,17 @@
       check_mode: false
       no_log: true
 
+    - name: Read timezone-independent PVE operation start epoch
+      ansible.builtin.command:
+        argv: [python3, -c, "import time; print(int(time.time()))"]
+      register: _pbs_operation_start_epoch_raw
+      changed_when: false
+      check_mode: false
+
     - name: Record the bounded PVE operation window start
       ansible.builtin.set_fact:
         _pbs_operation_start: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
-        _pbs_operation_start_epoch: "{{ now(utc=true, fmt='%s') | int }}"
+        _pbs_operation_start_epoch: "{{ _pbs_operation_start_epoch_raw.stdout | int }}"
         _pbs_baseline_volids: "{{ _pbs_baseline_content.json.data | map(attribute='volid') | list }}"
       no_log: true
 
@@ -316,6 +323,13 @@
       check_mode: false
       no_log: true
 
+    - name: Read timezone-independent PVE operation end epoch
+      ansible.builtin.command:
+        argv: [python3, -c, "import time; print(int(time.time()))"]
+      register: _pbs_operation_end_epoch_raw
+      changed_when: false
+      check_mode: false
+
     - name: Select one new snapshot inside the exact operation window
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_operations.py"]
@@ -323,7 +337,7 @@
           {{ {'operation': 'snapshot_from_operation', 'rows': _pbs_new_content.json.data,
               'vmid': _pbs_vmid, 'storage_id': _pbs_storage,
               'started_epoch': _pbs_operation_start_epoch | int,
-              'ended_epoch': now(utc=true, fmt='%s') | int,
+              'ended_epoch': _pbs_operation_end_epoch_raw.stdout | int,
               'baseline_volids': _pbs_baseline_volids} | to_json }}
         stdin_add_newline: false
       register: _pbs_snapshot_raw

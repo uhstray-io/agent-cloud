@@ -82,7 +82,7 @@
           - local_mode
         _pbs_forged_names: "{{ _pbs_private_names | intersect('' | extra_var_names) }}"
 
-    - name: Require exact reviewed chain IDs and private restore selector
+    - name: Require exact reviewed chain IDs and no legacy inventory locator
       ansible.builtin.assert:
         that:
           - expected_repository_sha is match('^[0-9a-f]{40}$')
@@ -90,10 +90,10 @@
           - backup_task_id is integer and backup_task_id > 0
           - verify_task_id is integer and verify_task_id > 0
           - sync_task_id is integer and sync_task_id > 0
-          - hostvars[_pbs_o11y_host].o11y_protected_copy_artifact_selector is mapping
+          - hostvars[_pbs_o11y_host].o11y_protected_copy_artifact_selector is not defined
           - not ansible_check_mode
           - not (local_mode | default(false) | bool)
-        fail_msg: "Readiness requires the completed backup, verification, and sync task chain plus the private restore selector."
+        fail_msg: "Readiness requires the completed backup, verification, and sync chain; migrate any legacy private artifact selector out of inventory."
         quiet: true
       no_log: true
 
@@ -210,7 +210,7 @@
     - name: Resolve the existing PBS guest become credential
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 
-    - name: Read destination manager user and token permissions and all ACL rows
+    - name: Read destination manager and restore-reader permissions and complete ACL rows
       ansible.builtin.command:
         argv: "{{ item.argv }}"
       loop:
@@ -218,10 +218,14 @@
           argv: [proxmox-backup-manager, user, permissions, o11y-copy-manager@pbs, --output-format, json]
         - key: token_permissions
           argv: [proxmox-backup-manager, user, permissions, "o11y-copy-manager@pbs!copy-api", --output-format, json]
+        - key: restore_user_permissions
+          argv: [proxmox-backup-manager, user, permissions, o11y-copy-restore@pbs, --output-format, json]
+        - key: restore_token_permissions
+          argv: [proxmox-backup-manager, user, permissions, "o11y-copy-restore@pbs!pve-restore", --output-format, json]
         - key: acl_rows
           argv: [proxmox-backup-manager, acl, list, --output-format, json]
       loop_control:
-        label: "protected copy ACL readback"
+        label: "protected copy role readback"
       register: _pbs_copy_acl_reads
       changed_when: false
       check_mode: false
@@ -257,6 +261,11 @@
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
   tasks:
+    - name: Refuse public cleartext OpenBao transport before reading PBS identities
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: Read source and destination API identities from OpenBao
       ansible.builtin.set_fact:
         _pbs_copy_secret_record: >-
@@ -276,6 +285,11 @@
           - _pbs_copy_secret_record.o11y_copy_manager_token_id == 'o11y-copy-manager@pbs!copy-api'
           - _pbs_copy_secret_record.o11y_copy_manager_token_secret | length > 0
           - _pbs_copy_secret_record.o11y_copy_manager_fingerprint | length == 64
+          - _pbs_copy_secret_record.o11y_copy_restore_user == 'o11y-copy-restore@pbs'
+          - _pbs_copy_secret_record.o11y_copy_restore_token_id == 'o11y-copy-restore@pbs!pve-restore'
+          - _pbs_copy_secret_record.o11y_copy_restore_token_secret | length > 0
+          - _pbs_copy_secret_record.o11y_copy_restore_datastore == 'o11y'
+          - _pbs_copy_secret_record.o11y_copy_restore_fingerprint | length == 64
           - _pve_secret_record.url is match('^https://[^/]+$')
           - _pve_secret_record.token_id | length > 0
           - _pve_secret_record.api_token | length > 0
@@ -303,6 +317,28 @@
       ansible.builtin.assert:
         that: _pbs_copy_acl_validation.rc == 0
         fail_msg: "Protected destination ACLs include broad or destructive privileges."
+        quiet: true
+      no_log: true
+
+    - name: Validate separate destination restore Reader permissions and ACLs
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-reader-permissions]
+        stdin: >-
+          {{ {'user_permissions': hostvars['localhost']._pbs_copy_acl_data.restore_user_permissions,
+              'token_permissions': hostvars['localhost']._pbs_copy_acl_data.restore_token_permissions,
+              'acl_rows': hostvars['localhost']._pbs_copy_acl_data.acl_rows,
+              'profile': 'destination_restore'} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_copy_restore_acl_validation
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: Require exact destination restore-only permissions
+      ansible.builtin.assert:
+        that: _pbs_copy_restore_acl_validation.rc == 0
+        fail_msg: "Destination restore Reader has missing, propagated, or broader datastore privileges."
         quiet: true
       no_log: true
 
@@ -385,21 +421,20 @@
           - _pbs_copy_pve_reads.results[0].json.data.port | int == 8007
           - _pbs_copy_pve_reads.results[0].json.data.datastore == 'o11y'
           - _pbs_copy_pve_reads.results[0].json.data.content == 'backup'
-          - _pbs_copy_pve_reads.results[0].json.data.username == _pbs_copy_secret_record.o11y_copy_manager_token_id
-          - _pbs_copy_pve_reads.results[0].json.data.fingerprint | lower | replace(':', '') == _pbs_copy_secret_record.o11y_copy_manager_fingerprint | lower | replace(':', '')
-        fail_msg: "The PVE PBS registration does not point to the protected destination and its separate manager identity."
+          - _pbs_copy_pve_reads.results[0].json.data.username == _pbs_copy_secret_record.o11y_copy_restore_token_id
+          - _pbs_copy_pve_reads.results[0].json.data.fingerprint | lower | replace(':', '') == _pbs_copy_secret_record.o11y_copy_restore_fingerprint | lower | replace(':', '')
+        fail_msg: "The PVE PBS registration does not point to the protected destination and its separate restore Reader identity."
         quiet: true
       no_log: true
 
-    - name: Bind the private reviewed restore selector to one live destination snapshot
+    - name: Derive one destination locator from the authenticated backup time
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_operations.py"]
         stdin: >-
           {{ {'operation': 'select_copy_locator',
               'rows': _pbs_copy_pve_reads.results[1].json.data,
               'vmid': _pbs_vmid, 'storage_id': _pbs_copy_store,
-              'snapshot_time': _pbs_snapshot.backup_time | int,
-              'selector': hostvars[_pbs_o11y_host].o11y_protected_copy_artifact_selector} | to_json }}
+              'snapshot_time': _pbs_snapshot.backup_time | int} | to_json }}
         stdin_add_newline: false
       register: _pbs_copy_locator_raw
       changed_when: false
@@ -407,10 +442,10 @@
       failed_when: false
       no_log: true
 
-    - name: Require the exact live destination restore locator
+    - name: Require one unambiguous live destination restore locator
       ansible.builtin.assert:
         that: _pbs_copy_locator_raw.rc == 0
-        fail_msg: "The private protected-copy selector does not identify exactly one live destination snapshot."
+        fail_msg: "The live destination content does not identify exactly one artifact from the authenticated backup snapshot."
         quiet: true
       no_log: true
 
@@ -429,9 +464,9 @@
           auth_id: "{{ _pbs_copy_secret_record.o11y_copy_reader_token_id }}"
           secret: "{{ _pbs_copy_secret_record.o11y_copy_reader_token_secret }}"
         - api_host: "{{ _pbs_copy_api_host }}"
-          fingerprint: "{{ _pbs_copy_secret_record.o11y_copy_manager_fingerprint }}"
-          auth_id: "{{ _pbs_copy_secret_record.o11y_copy_manager_token_id }}"
-          secret: "{{ _pbs_copy_secret_record.o11y_copy_manager_token_secret }}"
+          fingerprint: "{{ _pbs_copy_secret_record.o11y_copy_restore_fingerprint }}"
+          auth_id: "{{ _pbs_copy_secret_record.o11y_copy_restore_token_id }}"
+          secret: "{{ _pbs_copy_secret_record.o11y_copy_restore_token_secret }}"
       loop_control:
         label: "independent pinned PBS artifact readback"
       register: _pbs_copy_manifests
@@ -456,10 +491,10 @@
       ansible.builtin.set_fact:
         _pbs_destination_identity_fingerprint: >-
           {{ {'api_host': _pbs_copy_api_host,
-              'token_id': _pbs_copy_secret_record.o11y_copy_manager_token_id,
-              'certificate_fingerprint': _pbs_copy_secret_record.o11y_copy_manager_fingerprint | lower | replace(':', ''),
-              'roles': ['DatastoreAudit', 'DatastoreBackup', 'DatastoreReader', 'RemoteAdmin', 'RemoteSyncOperator'],
-              'prune': false} | to_json | hash('sha256') }}
+              'token_id': _pbs_copy_secret_record.o11y_copy_restore_token_id,
+              'certificate_fingerprint': _pbs_copy_secret_record.o11y_copy_restore_fingerprint | lower | replace(':', ''),
+              'roles': ['Datastore.Audit', 'Datastore.Read', 'Datastore.Verify'],
+              'datastore': 'o11y', 'propagate': false} | to_json | hash('sha256') }}
         _pbs_destination_storage_fingerprint: >-
           {{ {'storage_id': _pbs_copy_store,
               'server': _pbs_copy_pve_reads.results[0].json.data.server,

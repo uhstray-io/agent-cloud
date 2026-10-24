@@ -1,0 +1,34 @@
+- name: Read ACL configuration digest before a copy-reader grant
+  ansible.builtin.stat:
+    path: /etc/proxmox-backup/acl.cfg
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: _pbs_reader_acl_file
+  changed_when: false
+
+- name: Require regular PBS ACL configuration before a digest-guarded grant
+  ansible.builtin.assert:
+    that:
+      - _pbs_reader_acl_file.stat.isreg | default(false)
+      - not (_pbs_reader_acl_file.stat.islnk | default(false))
+    fail_msg: "PBS ACL configuration is absent or not regular; no unguarded copy-reader grant is allowed."
+    quiet: true
+
+- name: Grant only DatastoreReader to the selected managed source identity
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - acl
+      - update
+      - /datastore/o11y
+      - DatastoreReader
+      - --auth-id
+      - "{{ _pbs_restore_reader_auth_id }}"
+      - --propagate
+      - "0"
+      - --digest
+      - "{{ _pbs_reader_acl_file.stat.checksum }}"
+  changed_when: true
+  when: not ansible_check_mode
+  no_log: true

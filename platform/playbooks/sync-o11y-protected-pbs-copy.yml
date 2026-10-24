@@ -194,6 +194,11 @@
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
   tasks:
+    - name: Refuse public cleartext OpenBao transport before reading PBS identities
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: Read protected source and destination credentials from OpenBao
       ansible.builtin.set_fact:
         _pbs_source_record: >-

@@ -154,6 +154,11 @@
     _pbs_backup_receipt: "{{ hostvars['localhost']._pbs_task_validated.receipt }}"
     _pbs_snapshot: "{{ _pbs_backup_receipt.evidence.snapshot }}"
   tasks:
+    - name: Refuse public cleartext OpenBao transport before reading the PBS Reader
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: Read the dedicated primary Reader secret from OpenBao
       ansible.builtin.set_fact:
         _pbs_reader_secret_record: >-

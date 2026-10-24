@@ -10,8 +10,10 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/configure-o11y-pbs-copy-access.yml
       - platform/playbooks/tasks/configure-pbs-copy-reader-identity.yml
+      - platform/playbooks/tasks/configure-pbs-copy-restore-identity.yml
       - platform/playbooks/tasks/configure-pbs-copy-manager-identity.yml
       - platform/playbooks/tasks/grant-pbs-copy-reader-acl.yml
+      - platform/playbooks/tasks/grant-pbs-copy-restore-acl.yml
       - platform/playbooks/tasks/grant-pbs-copy-manager-acl.yml
       - platform/playbooks/files/inspect_pbs_backup_access.py
       - platform/tests/test_pbs_backup_access.py
@@ -53,6 +55,13 @@
           - pbs_storage_id
           - pbs_copy_remote_id
           - pbs_copy_sync_job_id
+          - pbs_storage_nodes
+          - o11y_copy_restore_user
+          - o11y_copy_restore_token_id
+          - o11y_copy_restore_token_secret
+          - o11y_copy_restore_datastore
+          - o11y_copy_restore_fingerprint
+          - _pbs_restore_reader_identity_action
           - pbs_storage_nodes
           - openbao_addr
           - bao_role_id
@@ -324,6 +333,7 @@
       loop:
         - {key: users, argv: [proxmox-backup-manager, user, list, --output-format, json]}
         - {key: tokens, argv: [proxmox-backup-manager, user, list-tokens, o11y-copy-manager@pbs, --output-format, json]}
+        - {key: restore_tokens, argv: [proxmox-backup-manager, user, list-tokens, o11y-copy-restore@pbs, --output-format, json]}
         - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
       loop_control:
         label: "PBS destination manager {{ item.key }}"
@@ -357,6 +367,24 @@
       no_log: true
       when: _pbs_manager_initial_data.tokens | selectattr('tokenid', 'equalto', 'o11y-copy-manager@pbs!copy-api') | list | length == 1
 
+    - name: Read effective permissions for an existing destination restore user
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, user, permissions, o11y-copy-restore@pbs, --output-format, json]
+      register: _pbs_restore_reader_user_permissions
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _pbs_manager_initial_data.users | selectattr('userid', 'equalto', 'o11y-copy-restore@pbs') | list | length == 1
+
+    - name: Read effective permissions for an existing destination restore token
+      ansible.builtin.command:
+        argv: [proxmox-backup-manager, user, permissions, "o11y-copy-restore@pbs!pve-restore", --output-format, json]
+      register: _pbs_restore_reader_token_permissions
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _pbs_manager_initial_data.restore_tokens | selectattr('tokenid', 'equalto', 'o11y-copy-restore@pbs!pve-restore') | list | length == 1
+
     - name: Retain absent or observed destination manager permissions
       ansible.builtin.set_fact:
         _pbs_manager_user_permission_data: >-
@@ -365,6 +393,21 @@
         _pbs_manager_token_permission_data: >-
           {{ _pbs_manager_token_permissions.stdout | from_json
              if _pbs_manager_token_permissions is not skipped else [] }}
+      no_log: true
+
+    - name: Retain the protected destination restore permission state
+      ansible.builtin.set_fact:
+        _pbs_restore_reader_initial_data:
+          users: "{{ _pbs_manager_initial_data.users }}"
+          tokens: "{{ _pbs_manager_initial_data.restore_tokens }}"
+          acls: "{{ _pbs_manager_initial_data.acls }}"
+        _pbs_restore_reader_user_permission_data: >-
+          {{ _pbs_restore_reader_user_permissions.stdout | from_json
+             if _pbs_restore_reader_user_permissions is not skipped else [] }}
+        _pbs_restore_reader_token_permission_data: >-
+          {{ _pbs_restore_reader_token_permissions.stdout | from_json
+             if _pbs_restore_reader_token_permissions is not skipped else [] }}
+        _pbs_restore_reader_guest_fingerprint: "{{ _pbs_manager_guest_fingerprint }}"
       no_log: true
 
 - name: Validate managed Reader credential state before any identity mutation
@@ -559,6 +602,72 @@
              if _pbs_manager_saved_keys | length > 0 else none }}
       no_log: true
 
+    - name: Retain only destination restore Reader fields from the credential record
+      ansible.builtin.set_fact:
+        _pbs_restore_reader_saved_keys: >-
+          {{ ['o11y_copy_restore_user', 'o11y_copy_restore_token_id', 'o11y_copy_restore_token_secret',
+              'o11y_copy_restore_datastore', 'o11y_copy_restore_fingerprint']
+             | select('in', (_pbs_manager_bao_data | default({})).keys() | list) | list }}
+        _pbs_restore_reader_saved_record: >-
+          {{ {'user': _pbs_manager_bao_data.get('o11y_copy_restore_user'),
+              'token_id': _pbs_manager_bao_data.get('o11y_copy_restore_token_id'),
+              'secret': _pbs_manager_bao_data.get('o11y_copy_restore_token_secret'),
+              'datastore': _pbs_manager_bao_data.get('o11y_copy_restore_datastore'),
+              'fingerprint': _pbs_manager_bao_data.get('o11y_copy_restore_fingerprint')}
+             if _pbs_restore_reader_saved_keys | length > 0 else none }}
+      no_log: true
+
+    - name: Authenticate existing destination restore token for a complete state
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", probe]
+        stdin: >-
+          {{ {'url': _pbs_manager_api_url,
+              'fingerprint': _pbs_restore_reader_saved_record.fingerprint,
+              'auth_id': 'o11y-copy-restore@pbs!pve-restore',
+              'secret': _pbs_restore_reader_saved_record.secret} | to_json }}
+      register: _pbs_restore_reader_auth_probe
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - >-
+          hostvars[_pbs_manager_guest]._pbs_restore_reader_initial_data.users
+          | selectattr('userid', 'equalto', 'o11y-copy-restore@pbs') | list | length == 1
+        - >-
+          hostvars[_pbs_manager_guest]._pbs_restore_reader_initial_data.tokens
+          | selectattr('tokenid', 'equalto', 'o11y-copy-restore@pbs!pve-restore') | list | length == 1
+        - _pbs_restore_reader_saved_keys | length == 5
+
+    - name: Validate the closed destination restore Reader profile
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-reader-identity]
+        stdin: >-
+          {{ {'users': hostvars[_pbs_manager_guest]._pbs_restore_reader_initial_data.users,
+              'tokens': hostvars[_pbs_manager_guest]._pbs_restore_reader_initial_data.tokens,
+              'secret_record': _pbs_restore_reader_saved_record,
+              'authenticated': (_pbs_restore_reader_auth_probe.rc | default(2)) == 0,
+              'profile': 'destination_restore'} | to_json }}
+      register: _pbs_restore_reader_identity_plan
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a complete or wholly absent destination restore identity
+      ansible.builtin.assert:
+        that: _pbs_restore_reader_identity_plan.rc == 0
+        fail_msg: "Destination restore Reader state is partial, conflicting, unauthenticated, or unsupported."
+        quiet: true
+      no_log: true
+
+    - name: Retain the closed destination restore identity action
+      ansible.builtin.set_fact:
+        _pbs_restore_reader_identity_action: "{{ (_pbs_restore_reader_identity_plan.stdout | from_json).action }}"
+        _pbs_restore_reader_bao_url: "{{ _pbs_manager_bao_url }}"
+        _pbs_restore_reader_api_url: "{{ _pbs_manager_api_url }}"
+      no_log: true
+
     - name: Authenticate the existing destination manager token only for a complete state
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", probe]
@@ -649,4 +758,12 @@
         _pbs_manager_certificate_fingerprint: "{{ _pbs_manager_guest_fingerprint }}"
         _pbs_manager_bao_url: "{{ hostvars['localhost']._pbs_manager_bao_url }}"
         _pbs_manager_api_url: "{{ hostvars['localhost']._pbs_manager_api_url }}"
+      when: not ansible_check_mode
+
+    - name: Configure destination restore Reader only outside check mode
+      ansible.builtin.include_tasks: tasks/configure-pbs-copy-restore-identity.yml
+      vars:
+        _pbs_restore_reader_identity_action: "{{ hostvars['localhost']._pbs_restore_reader_identity_action }}"
+        _pbs_backup_fingerprint: "{{ _pbs_restore_reader_guest_fingerprint }}"
+        _pbs_backup_bao_url: "{{ hostvars['localhost']._pbs_restore_reader_bao_url }}"
       when: not ansible_check_mode
