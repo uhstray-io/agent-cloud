@@ -1065,6 +1065,59 @@ def test_access_log_otlp_unknown_metadata_never_echoes_alias_or_raw_value(tmp_pa
     assert "private-config-value" not in output
 
 
+def test_access_log_otlp_inspector_fails_closed_on_unparsed_yaml_shapes(tmp_path, capsys):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    enabled = RENDERED_CONFIG.replace(
+        "  accessLog:\n    add:\n      identity: apiKey.name\n",
+        "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+        "          service: '\"agentgateway\"'\n"
+        "          signal: '\"access-log\"'\n",
+    )
+    cases = {
+        "quoted-duplicate-parent": enabled + (
+            '"frontendPolicies":\n'
+            "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n"
+            "          signal: '\"access-log\"'\n"
+        ),
+        "merge-alias": RENDERED_CONFIG.replace(
+            "  accessLog:\n    add:\n      identity: apiKey.name\n",
+            "  accessLog:\n    <<: *private-exporter\n    add:\n      identity: apiKey.name\n",
+        ),
+        "orphan-fields": RENDERED_CONFIG.replace(
+            "  accessLog:\n    add:\n      identity: apiKey.name\n",
+            "  accessLog:\n    fields:\n      add:\n"
+            "        signal: 'private-signal-value'\n",
+        ),
+        "scalar-continuation": enabled.replace(
+            "          signal: '\"access-log\"'\n",
+            "          signal: '\"access-log\"'\n"
+            "            private-invalid-continuation\n",
+        ),
+    }
+
+    from unittest.mock import patch
+
+    for case, rendered in cases.items():
+        config.write_text(rendered)
+        with patch.object(sys, "stdin", open_json_input(env, config)):
+            assert helper.main() == 0
+        output = capsys.readouterr().out
+        report = json.loads(output)
+        assert report["access_log_otlp"] == {
+            "state": "unknown",
+            "service_field_matches": None,
+            "signal_field_matches": None,
+        }, case
+        for private_value in (
+            "private-exporter", "private-signal-value", "private-invalid-continuation"
+        ):
+            assert private_value not in output, case
+
+
 @pytest.mark.parametrize(
     "access_log_block",
     [

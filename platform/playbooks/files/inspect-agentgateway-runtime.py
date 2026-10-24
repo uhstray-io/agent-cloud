@@ -91,6 +91,21 @@ def _has_access_label_keys(lines: list[str], start: int, end: int) -> bool:
     return any(_key_candidates(lines, start, end, key) for key in ACCESS_LOG_LABELS)
 
 
+def _has_unresolved_yaml_structure(lines: list[str], start: int, end: int) -> bool:
+    """Reject merge keys and aliases in the policy scope this parser does not parse."""
+    for line in lines[start:end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if re.match(r"^<<\s*:", stripped):
+            return True
+        # This is intentionally conservative: the inspector only understands the
+        # rendered scalar subset and must not interpret YAML anchors or aliases.
+        if re.search(r"(?:^|:\s|\s)[*&][A-Za-z0-9_-]+(?:\s|$)", stripped):
+            return True
+    return False
+
+
 def _unknown_access_log_metadata() -> dict[str, str | bool | None]:
     return {
         "state": "unknown",
@@ -107,7 +122,9 @@ def _absent_access_log_metadata() -> dict[str, str | bool | None]:
     }
 
 
-def _field_match(entries: list[dict[str, object]], key: str) -> tuple[bool | None, bool]:
+def _field_match(
+    entries: list[dict[str, object]], key: str, lines: list[str], end: int,
+) -> tuple[bool | None, bool]:
     """Return (match, malformed); only compare safe, single-line scalar text."""
     matches = [entry for entry in entries if entry.get("key") == key]
     if not matches:
@@ -119,6 +136,13 @@ def _field_match(entries: list[dict[str, object]], key: str) -> tuple[bool | Non
     if (entry.get("indent") != 10 or not entry.get("canonical_key")
             or not entry.get("has_colon") or not isinstance(raw, str) or not raw):
         return None, True
+    for line in lines[int(entry["index"]) + 1:end]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        leading = line[:len(line) - len(line.lstrip(" \t"))]
+        if "\t" in leading or len(leading) > 10:
+            return None, True
+        break
     # YAML aliases, anchors, collections, tags and block scalars are not interpreted.
     if raw.startswith(("*", "&", "!", "[", "{", "|", ">")) or raw in {"~", "null", "Null", "NULL"}:
         return None, True
@@ -132,13 +156,19 @@ def _field_match(entries: list[dict[str, object]], key: str) -> tuple[bool | Non
 def parse_access_log_otlp(config: str) -> dict[str, str | bool | None]:
     """Classify only the canonical accessLog.otlp structure and fixed bounded labels."""
     lines = config.splitlines()
-    policy_starts = [index for index, line in enumerate(lines) if FRONTEND_POLICIES.fullmatch(line)]
-    if len(policy_starts) != 1:
+    policy_candidates = [
+        entry for entry in _key_candidates(lines, 0, len(lines), "frontendPolicies")
+        if entry["indent"] == 0
+    ]
+    if (len(policy_candidates) != 1 or not policy_candidates[0]["canonical_key"]
+            or not policy_candidates[0]["has_colon"] or policy_candidates[0]["value"]):
         return _unknown_access_log_metadata()
-    policy_start = policy_starts[0]
+    policy_start = int(policy_candidates[0]["index"])
     policy_end = next((index for index in range(policy_start + 1, len(lines))
                        if lines[index].strip() and not lines[index].lstrip().startswith("#")
                        and len(lines[index]) == len(lines[index].lstrip(" "))), len(lines))
+    if _has_unresolved_yaml_structure(lines, policy_start + 1, policy_end):
+        return _unknown_access_log_metadata()
 
     all_access_logs = _key_candidates(lines, 0, len(lines), "accessLog")
     access_block, error = _mapping_block(lines, policy_start + 1, policy_end, "accessLog", 2)
@@ -163,7 +193,11 @@ def parse_access_log_otlp(config: str) -> dict[str, str | bool | None]:
     if error:
         return _unknown_access_log_metadata()
     if otlp_block is None:
-        return _unknown_access_log_metadata() if all_otlp else _absent_access_log_metadata()
+        related_keys = any(
+            _key_candidates(lines, access_start + 1, access_end, key)
+            for key in ("fields", "service", "signal")
+        ) or _has_access_label_keys(lines, access_start + 1, access_end)
+        return _unknown_access_log_metadata() if all_otlp or related_keys else _absent_access_log_metadata()
     otlp_start, otlp_end = otlp_block
     if len(all_otlp) != 1 or int(all_otlp[0]["index"]) != otlp_start:
         return _unknown_access_log_metadata()
@@ -216,8 +250,8 @@ def parse_access_log_otlp(config: str) -> dict[str, str | bool | None]:
         int(entry["index"]) not in range(add_start + 1, add_end) for entry in all_fields
     )):
         return _unknown_access_log_metadata()
-    service_match, service_error = _field_match(field_entries, "service")
-    signal_match, signal_error = _field_match(field_entries, "signal")
+    service_match, service_error = _field_match(field_entries, "service", lines, add_end)
+    signal_match, signal_error = _field_match(field_entries, "signal", lines, add_end)
     if service_error or signal_error:
         return _unknown_access_log_metadata()
     return {
