@@ -922,6 +922,80 @@ def test_cleanup_keeps_historical_and_current_private_inventory_pins_independent
         restore.verify_cleanup_inventory_pins(wrong_current_pin)
 
 
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_cleanup_provenance_include_inherits_current_pin_not_historical_restore_pin(tmp_path):
+    playbooks = Path(__file__).resolve().parents[1] / "playbooks"
+    cleanup = playbook_yaml.load(playbooks / "cleanup-o11y-isolated-restore.yml")
+    cleanup_tasks = list(playbook_yaml.tasks(cleanup))
+    include = copy.deepcopy(
+        next(
+            task
+            for task in cleanup_tasks
+            if task.get("name") == "Reprove exact current private inventory bytes against the restore binding"
+        )
+    )
+    assert "site_config_base_sha" not in include.get("vars", {})
+
+    provenance_tasks = list(
+        playbook_yaml.tasks(playbook_yaml.load(playbooks / "tasks/o11y-pbs-inventory-provenance.yml"))
+    )
+    validate_selectors = copy.deepcopy(
+        next(task for task in provenance_tasks if task.get("name") == "Validate fixed PBS provenance selectors")
+    )
+    current_sha = "b" * 40
+    historical_sha = "a" * 40
+    assert current_sha != historical_sha
+
+    stub = tmp_path / "provenance-stub.yml"
+    stub.write_text(
+        yaml.safe_dump(
+            [
+                validate_selectors,
+                {
+                    "name": "Confirm the included pin is the current cleanup pin",
+                    "ansible.builtin.assert": {
+                        "that": [
+                            "site_config_base_sha == expected_current_pin",
+                            "site_config_base_sha != historical_restore_pin",
+                        ]
+                    },
+                },
+            ]
+        )
+    )
+    include["ansible.builtin.include_tasks"] = str(stub)
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text("localhost ansible_connection=local\n")
+    harness = tmp_path / "cleanup-provenance.yml"
+    harness.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "vars": {
+                        "expected_repository_sha": "c" * 40,
+                        "site_config_base_sha": current_sha,
+                        "expected_current_pin": current_sha,
+                        "historical_restore_pin": historical_sha,
+                        "estate_coverage_semaphore_project_id": 7,
+                        "estate_coverage_semaphore_repository_id": 11,
+                    },
+                    "tasks": [include],
+                }
+            ]
+        )
+    )
+
+    result = harness_sandbox.run(
+        ["ansible-playbook", "-i", str(inventory), str(harness)],
+        tmp_path,
+        cwd=Path(__file__).resolve().parents[2],
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_restore_and_cleanup_api_writes_follow_intent_handle_and_effect_order():
     playbooks = Path(__file__).parents[1] / "playbooks"
     restore_tasks = list(playbook_yaml.tasks(playbook_yaml.load(playbooks / "restore-o11y-isolated.yml")))

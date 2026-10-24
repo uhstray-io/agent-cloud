@@ -264,7 +264,6 @@
     - name: Reprove exact current private inventory bytes against the restore binding
       ansible.builtin.include_tasks: tasks/o11y-pbs-inventory-provenance.yml
       vars:
-        site_config_base_sha: "{{ site_config_base_sha }}"
         _pbs_provenance_template_name: Cleanup o11y Isolated Restore (Dev)
         _pbs_provenance_playbook: platform/playbooks/cleanup-o11y-isolated-restore.yml
 
