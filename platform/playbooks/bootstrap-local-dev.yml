@@ -1436,6 +1436,28 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          # skynet — mirrors local-dev.yml.example's skynet_svc, including the pinned skynet_image digest.
+          [skynet_svc]
+          skynet-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [skynet_svc:vars]
+          ansible_user=semaphore
+          service_name=skynet
+          monorepo_deploy_path=platform/services/skynet/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:d1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da
+          skynet_gateway_url=https://inference.agent-cloud.test
+          skynet_model=qwen3.8-flash-next
+          skynet_opa_url=https://opa.agent-cloud.test
+          skynet_semaphore_url=https://semaphore.agent-cloud.test
+          skynet_semaphore_project=1
+          skynet_semaphore_catalog=local
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           # agentgateway — inference edge gateway; local upstream is the public edge
           # (https://inference.uhstray.io/v1, prod's route, keyed as the local-gateway identity).
           # The LAN override (DGX directly) lives in the gitignored local-dev.yml, never here.

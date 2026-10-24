@@ -1,0 +1,62 @@
+# skynet — Tier 2 orchestration API and its checkpoint database (Podman-compatible compose).
+#
+# Two containers: skynet (the orchestration API, :8080 on the container network) and
+# skynet-db (its own Postgres for durable LangGraph checkpoints, internal only). Neither
+# publishes a host port. The base file is what skynet's own compose declares; compose.local.yml
+# attaches skynet to the local-dev network so the local agentgateway can route /skynet/ to it.
+#
+# The image is skynet's Tier 2 image, pinned by digest through SKYNET_IMAGE (inventory
+# skynet_image). Ansible renders .env from OpenBao + inventory BEFORE this stack starts.
+# deploy.sh is container lifecycle only — no secret generation.
+#
+# Every variable skynet reads is listed in deploy/tier2/README.md of the skynet repository.
+# Compose refuses to start without the required ones; skynet itself refuses to start if any
+# of its service variables is missing.
+
+name: skynet
+
+services:
+  skynet:
+    image: ${SKYNET_IMAGE:?set skynet_image in the inventory}
+    container_name: skynet
+    restart: always
+    env_file:
+      - .env
+    environment:
+      PGHOST: skynet-db
+      PGUSER: skynet
+      PGDATABASE: skynet
+      # libpq reads PGPASSWORD, so the password is handed over here rather than through .env.
+      PGPASSWORD: ${SKYNET_DB_PASSWORD:?set SKYNET_DB_PASSWORD in .env}
+    depends_on:
+      skynet-db:
+        condition: service_healthy
+    healthcheck:
+      # CMD-SHELL, not exec form: podman-compose mis-quotes ["CMD", ...] lists (honcho's compose
+      # records the same). urlopen raises on any non-2xx or connection error, so the exit is non-zero.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/skynet/healthz', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  skynet-db:
+    image: docker.io/library/postgres:18.6-alpine
+    container_name: skynet-db
+    restart: always
+    environment:
+      POSTGRES_USER: skynet
+      POSTGRES_DB: skynet
+      POSTGRES_PASSWORD: ${SKYNET_DB_PASSWORD:?set SKYNET_DB_PASSWORD in .env}
+    volumes:
+      # Postgres 18 keeps PGDATA at /var/lib/postgresql/18/docker under the image's declared
+      # volume, so the volume mounts the parent, not .../data.
+      - skynet-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skynet -d skynet"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    # No published port: only services on this compose network reach the database.
+
+volumes:
+  skynet-db:

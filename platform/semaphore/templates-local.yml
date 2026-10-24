@@ -100,6 +100,11 @@ templates:
   - name: "Deploy honcho (Local)"
     playbook: platform/playbooks/deploy-honcho.yml
 
+  # skynet - orchestration API (digest-pinned tier-2 image + its Postgres; /skynet/ behind the
+  # gateway's route once that route is enabled). The deploy refuses until skynet_image is set.
+  - name: "Deploy skynet (Local)"
+    playbook: platform/playbooks/deploy-skynet.yml
+
   # agentgateway - inference edge gateway (gateway + its own budget Postgres;
   # locally fronts the public edge as identity local-gateway, or the DGX on the LAN).
   - name: "Deploy agentgateway (Local)"
@@ -195,6 +200,14 @@ templates:
         required: true
   - name: "Clean Deploy honcho (Local)"
     playbook: platform/playbooks/clean-deploy-honcho.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+  - name: "Clean Deploy skynet (Local)"
+    playbook: platform/playbooks/clean-deploy-skynet.yml
     survey_vars:
       - name: confirm_reset
         title: "Confirm: host whose data is destroyed"
