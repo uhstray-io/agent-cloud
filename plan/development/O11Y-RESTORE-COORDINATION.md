@@ -3,7 +3,7 @@
 **Date:** 2026-10-24
 
 **Status:** ACTIVE
-**Context:** This plan records the source implementation boundary for OpenSpec `pbs-vm-and-restore-gate`, task 5.2. The isolated restore executor and separately launched cleanup are implemented in the current feature worktree around a schema-2 CAS journal and the shared PBS completed-task contract. This is not a claim that this feature head is reviewed, published, CI-verified, imported into Dev Semaphore, or exercised against private OpenBao, Semaphore, PBS, Proxmox, or guest state. Private inventory declarations and all live acceptance gates remain separate.
+**Context:** This plan records the source implementation boundary for OpenSpec `pbs-vm-and-restore-gate`, task 5.2. The isolated restore executor and separately launched cleanup are implemented in the current feature worktree around a schema-2 CAS journal and the shared PBS completed-task contract. The integrated combined head still awaits its final independent review and CI; it is not published, imported into Dev Semaphore, or exercised against private OpenBao, Semaphore, PBS, Proxmox, or guest state. Private inventory declarations and all live acceptance gates remain separate.
 
 ## Problem
 
@@ -109,11 +109,12 @@ prove the bounded copy restore only; it cannot satisfy OpenSpec 4.4c until an
 independently reviewed outage condition and matching restore evidence exist.
 Keep that protected-copy acceptance open.
 
-Source implementation is not activation evidence. The exact feature head has
-not yet completed independent review, CI, Dev publication, private inventory
-acceptance, effective OpenBao role verification, writer-drain verification,
-or live restore/cleanup. The separate protected-copy acceptance while primary
-PBS is unavailable and the seven-day capacity forecast remain open.
+Source implementation is not activation evidence. Final review and CI for the
+integrated combined head remain pending, followed by Dev publication, private
+inventory acceptance, effective OpenBao role verification, writer-drain
+verification, and live restore/cleanup. The separate protected-copy
+acceptance while primary PBS is unavailable and the seven-day capacity
+forecast remain open.
 
 ## Validation Criteria
 

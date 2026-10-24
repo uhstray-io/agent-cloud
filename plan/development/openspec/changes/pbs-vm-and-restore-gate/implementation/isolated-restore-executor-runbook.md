@@ -27,10 +27,26 @@ capacity tasks. They are not restore acceptance evidence:
 - Capacity refresh task 8623 found one source series, no overlapping source
   events/evaluations, and no unknown label keys. This clears the earlier source
   ambiguity, but its history is too short for a seven-day forecast or gate pass.
+- Service overview task 8645 at the same controller and receiver revisions
+  reported partial Logvolume data (3 of 6 targets). Recent gateway access
+  records were empty and the verifier returned `ERROR`; recent container logs
+  were expected to be empty. No query errors does not prove delivery or
+  application health. The agentgateway scrape observation covered one series
+  for roughly six hours, not application or fleet health.
+- Configuration census task 8647 completed at controller commit
+  `06ad8c32358518a1dc52181fde10439a8d431980`: 31 candidates, 9 declared
+  targets, 31 unverified targets, no duplicate identities, and an inventory
+  revision present. Coverage was incomplete for 9 and unverified for 22;
+  signal states were incomplete for 3 and undeclared for 33; no template
+  references were missing. The launch supplied no receipt task IDs and the
+  census provided no receiver proof. These are configuration classifications,
+  not telemetry-absence, application-health, or fleet-coverage evidence.
 
 These tasks do not check private PBS placement, effective OpenBao capabilities,
 writer drain, restore-target availability, protected-copy failover, or restore
-and cleanup execution.
+and cleanup execution. The capacity source ambiguity is cleared for the
+observed refresh only; the source history remains too short for the separate
+seven-day forecast.
 
 ## Restore transaction
 

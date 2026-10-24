@@ -63,6 +63,17 @@ Required effective capabilities are exactly `{create, read, update}` for the dat
 | Lint and diff | Focused Ruff/YAML checks and `git diff --check` pass. |
 | Live activation | Separately verify Dev catalog binding, apply the reviewed policy through the existing Dev policy template, then run this verifier and review its receipt before enabling any guarded writer. |
 
+## Publication status (2026-10-24)
+
+Sanitized Dev task 8650 succeeded at commit
+`06ad8c32358518a1dc52181fde10439a8d431980` and created only the
+`Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
+5, Dev environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
+survey fields. The main Semaphore template catalog remained unchanged. This
+proves publication of the policy-application mechanism only. The policy has
+not been applied, and this verifier has not established the injected role's
+effective capabilities; those live acceptance gates remain open.
+
 ## Security Considerations
 
 The API token, login response, policy text, and capabilities response are protected Ansible values and remain hidden from task output. The helper uses fixed path names and exact expected grants; no caller-controlled route or expected capability list is accepted. A policy match does not substitute for the effective capability check, and a successful local test does not establish a live role binding. No VM, coordination record, policy, or Semaphore runtime object is changed by this verifier.
