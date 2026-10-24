@@ -1,0 +1,33 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+#
+# Attaches skynet to the `local-dev` network (created by bootstrap-local-dev.yml), so the local
+# agentgateway reaches the orchestration API by container name (skynet:8080) for the /skynet/
+# route. skynet-db stays on the project network only.
+#
+# skynet reaches the gateway, OPA and Semaphore over HTTPS through local Caddy, whose
+# certificates come from the local step-ca. SSL_CERT_FILE REPLACES the trust store for the
+# process, so the file it names must carry the step-ca root and intermediate. That is the bundle
+# tasks/distribute-ca-root.yml writes to certs/step-ca-bundle.crt (the deploy dir is the
+# consumer's _ca_root_dest_dir). No public roots are needed: skynet's configured endpoints are
+# all local in local-dev.
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default: {}
+  local-dev:
+    external: true
+
+services:
+  skynet:
+    networks:
+      - default
+      - local-dev
+    security_opt:
+      - label=disable
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      SSL_CERT_FILE: /certs/step-ca-bundle.crt
+  skynet-db:
+    security_opt:
+      - label=disable
