@@ -264,6 +264,30 @@ def test_source_history_thresholds_are_unknown_for_non_numeric_or_nonfinite_poin
     assert diagnostic["required_source_evaluation_points"] == survey.MIN_METRIC_POINTS
 
 
+@pytest.mark.parametrize("metric", [None, "missing", []], ids=["null", "missing", "nondict"])
+@pytest.mark.parametrize("values", [[], [[1_800_000_000, "1_799_999_999"]]], ids=["empty", "positive"])
+def test_source_history_thresholds_are_unknown_for_malformed_metric_labels(metric, values):
+    row = {"values": values}
+    if metric != "missing":
+        row["metric"] = metric
+    diagnostic = survey.source_diagnostics(_matrix("source", [row]))
+
+    assert diagnostic["source_evaluation_points"] is None
+    assert diagnostic["canonical_source_events"] is None
+    assert diagnostic["source_event_span_seconds"] is None
+
+
+def test_malformed_source_metric_does_not_change_assessment_acceptance():
+    now = 1_800_000_000
+    responses = _history(now)
+    responses["source"]["data"]["result"][0]["metric"] = None
+
+    result = survey.assess(responses, now)
+
+    assert result["status"] == "ready_for_separate_forecast_review"
+    assert result["source_diagnostics"]["source_evaluation_points"] is None
+
+
 def test_source_history_thresholds_are_unknown_for_ambiguous_or_fractional_source_rows():
     ambiguous = _matrix(
         "source",

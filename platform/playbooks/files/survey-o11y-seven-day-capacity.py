@@ -133,6 +133,8 @@ def _source_history_thresholds(body: object) -> dict[str, int | None]:
         rows = parse_matrix(body)
         if len(rows) != 1:
             return unavailable
+        if not isinstance(rows[0].get("metric"), dict):
+            return unavailable
         raw_values = rows[0].get("values")
         if not isinstance(raw_values, list):
             return unavailable
