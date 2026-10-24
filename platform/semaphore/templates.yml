@@ -2550,6 +2550,8 @@ templates:
 
   - name: Apply Policy - Semaphore
     playbook: platform/playbooks/apply-policy-semaphore.yml
+    # Publish this policy from reviewed Dev before activating Dev-bound guard writers.
+    dev_variant: true
 
   - name: Apply Policy - NemoClaw
     playbook: platform/playbooks/apply-policy-nemoclaw.yml

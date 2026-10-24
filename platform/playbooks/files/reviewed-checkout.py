@@ -27,6 +27,7 @@ MAX_BLOB = 4 * 1024 * 1024
 MAX_TOTAL_BLOBS = 64 * 1024 * 1024
 MAX_RESULT = 12 * 1024 * 1024
 MAX_INDEX_FILE = 8 * 1024 * 1024
+MAX_PAYLOAD_PATHS = 16
 
 
 class Refusal(Exception):
@@ -391,7 +392,7 @@ def _read_worktree(root_fd: int, path: bytes, expected_mode: bytes, expected: by
 def verify_checkout(checkout: Path, expected_sha: str, payload_paths: list[str], require_dev_ref: bool) -> dict:
     if re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None:
         raise Refusal("expected_revision_invalid")
-    if len(payload_paths) > 8 or any(
+    if len(payload_paths) > MAX_PAYLOAD_PATHS or any(
         not isinstance(name, str)
         or not name
         or name.startswith("/")

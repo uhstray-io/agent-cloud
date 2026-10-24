@@ -389,6 +389,12 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.environments[0]["name"], "Isolated inputs (Dev)")
         self.assertEqual(self.records[-1]["environment_id"], self.environments[0]["id"])
 
+    def test_semaphore_policy_catalog_keeps_a_dev_variant(self):
+        declarations = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+        policy = next(template for template in declarations if template["name"] == "Apply Policy - Semaphore")
+        self.assertEqual(policy["playbook"], "platform/playbooks/apply-policy-semaphore.yml")
+        self.assertIs(policy.get("dev_variant"), True)
+
     def test_authentik_dev_variant_targets_dev_and_base_targets_main(self):
         for name, repository_id, expected_branch in (
             ("Deploy Authentik", 1, "main"),
