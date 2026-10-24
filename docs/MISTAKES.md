@@ -54,6 +54,7 @@ and why.
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
+| 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1000,6 +1001,30 @@ contradicted it, and nobody cross-checked them.
 (deletion, compaction, restarts) and cross-check it against an independent figure from the same
 reading. When they disagree, report the bound each one gives, not the product of one. Related to
 1.21 (cite only what the check measures); this is the arithmetic form.
+
+**Enforced by.** Convention.
+
+### 1.25 Line references relayed from a scout that read a stale checkout
+
+**What happened.** Planning the Plane service (2026-10-23), a read-only scout reported the
+service-deployment pattern with `file:line` evidence from the primary checkout, which was
+on a local branch 1,703 commits behind `origin/dev`. A second scout's report said so in
+its first line. I re-checked file existence and two structural claims against
+`origin/dev`, but carried three of the first scout's line references into the plan Joe
+approved without re-reading them: the tududi token-refresh schedule (`templates.yml:341`;
+on `dev` it is line 692), the collector's record path (`step_results.py:193-204`; on `dev`
+that range is two unrelated helpers, and the record logic is lines 239-249), and the VM
+destroy gate (`confirm=`; the variable is `confirm_destroy`, `destroy-vm.yml:112`). The doc
+writer caught all three while drafting plan 16, before anything was pushed.
+
+**Root cause.** Re-verification was done per claim I judged load-bearing, not per claim
+repeated. Knowing the source checkout was stale should have voided every line number in
+that report, not just the ones I happened to check.
+
+**The rule.** A subagent's `file:line` is a pointer, not a fact. Before a line reference
+enters a plan, a doc or a reply, re-read it at the ref the work will be based on. When a
+report is known to come from a different ref, treat all its line numbers as unverified
+until re-read; file paths and line numbers do not survive 1,700 commits.
 
 **Enforced by.** Convention.
 

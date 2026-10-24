@@ -965,6 +965,18 @@ root-filesystem, and load collectors. Its exact container isolation, metrics
 availability, and host-versus-guest root filesystem parity require a passing
 Semaphore runtime readback.
 
+`instrument-host-o11y.yml` can attach a reviewed estate target ID to host
+exporter series with the inventory boolean `o11y_host_metrics_identity_enabled: true`.
+It resolves the existing deployed declaration by exact `inventory_host` and
+effective service identity, validates the full declaration through the existing
+coverage schema, and refuses before exporter or scrape changes if the binding is
+missing or ambiguous. Absent/false preserves legacy labels. The target labels
+include `target_id`, `component=node-exporter`, and `metrics_scope=host`; returned
+`node_memory_MemAvailable_bytes` must match all three and the host. This host
+probe does not rewrite or satisfy an application-specific metrics selector and
+does not establish application health or other signal coverage. It is a source
+mechanism only; private enrollment and runtime receipts remain separate gates.
+
 In production, `deploy-o11y.yml` installs an idempotent daily rootless-Podman sampler. Local mode
 skips the systemd sampler and applies the textfile collector overlay only when the optional
 inference probe is enabled. The production sampler
