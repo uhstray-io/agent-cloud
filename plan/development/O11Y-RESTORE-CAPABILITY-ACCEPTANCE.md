@@ -68,8 +68,9 @@ Required effective capabilities are exactly `{create, read, update}` for the dat
 Sanitized Dev task 8650 succeeded at commit
 `06ad8c32358518a1dc52181fde10439a8d431980` and created only the
 `Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
-5, Dev environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
-survey fields. The main Semaphore template catalog remained unchanged. This
+5, environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
+survey fields. Existing main-bound policy template 50's bindings remained
+unchanged. This
 proves publication of the policy-application mechanism only. The policy has
 not been applied, and this verifier has not established the injected role's
 effective capabilities; those live acceptance gates remain open.

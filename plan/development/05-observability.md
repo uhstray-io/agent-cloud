@@ -2267,11 +2267,12 @@ deletion. Its current private pin is verified independently from the historical
 restore pin, allowing unrelated private inventory changes while requiring the
 declared target and artifact evidence to remain unchanged.
 
-This is source implementation only. The integrated combined head still needs
-its final independent review and CI, followed by Dev publication/catalog
-readback, private target declaration acceptance, effective OpenBao role
-verification, all-writer drain, protected-copy restore while primary PBS is
-unavailable, and live restore/cleanup. Keep OpenSpec 5.2, the seven-day
+This is source implementation only. Independent reviews of the full PBS/restore
+and capability source scopes are complete, and actionable findings were fixed
+and verified. Final combined-head CI remains pending, followed by Dev
+publication/catalog readback, private target declaration acceptance, effective
+OpenBao role verification, all-writer drain, protected-copy restore while
+primary PBS is unavailable, and live restore/cleanup. Keep OpenSpec 5.2, the seven-day
 capacity forecast, and the separate 90d/45d/45d retention decision open; no
 live API, backup, restore, cleanup, or storage change was performed for this
 source work.
@@ -2332,13 +2333,14 @@ IDs, and it did not prove receiver coverage. This is a current configuration
 census, not evidence that telemetry is absent, applications are healthy, or
 fleet coverage is verified. All target receipt gates remain open.
 
-Read-only publication task 8650 succeeded at Dev commit
+Scoped catalog publication task 8650 succeeded at Dev commit
 `06ad8c32358518a1dc52181fde10439a8d431980`. It created only the
 `Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
-5, Dev environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
-survey fields. The main Semaphore template catalog remained unchanged. This
-publishes the policy-application mechanism only: no policy apply or effective
-capability verification was run, so guarded-writer activation remains blocked.
+5, environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
+survey fields. Existing main-bound policy template 50's bindings remained
+unchanged. The task published the policy-application mechanism only; no policy
+apply or effective-capability verification was run, so guarded-writer
+activation remains blocked.
 
 These observations do not change the prior acceptance boundary: they do not
 prove a fresh PBS artifact, primary-unavailable protected-copy recovery,

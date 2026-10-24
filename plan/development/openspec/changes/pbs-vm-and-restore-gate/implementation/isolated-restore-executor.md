@@ -1,6 +1,6 @@
 # Isolated o11y restore executor source plan
 
-**Status:** source implementation complete; final combined-head review, CI, publication, and live acceptance remain open
+**Status:** source implementation complete; final combined-head CI, publication, and live acceptance remain open
 **Scope:** OpenSpec `pbs-vm-and-restore-gate`, task 5.2, bounded source child
 **Integration:** consumer worktree started from the exact `dev`-derived feature base and normally merged foundation, shared PBS receipt, capability, and current `dev` commits. The current `dev` base includes PR #728 merge `06ad8c32358518a1dc52181fde10439a8d431980`. Reviewed PR #733 head `32d5d49e5b01d7c0e5811738aef7f4cbd93ddf17` is also normally merged locally while its Dev integration is pending, to compose the already-reviewed diagnostics with this source on one CI head. The combined feature head remains local and unpublished.
 
@@ -73,10 +73,10 @@ revision pins. Cleanup derives the receipt from the authenticated restore task
 output and accepts only four selectors; historical restore and current cleanup
 private pins are independently proven and need not be equal. Tests cover their
 allowed difference and rejection when either proof or target/declaration binding
-is invalid. The component changes have had independent review and their
-findings were addressed, but the integrated combined head still needs final
-independent review and CI. The playbooks and catalog remain source-only until
-those gates, publication, and private acceptance prerequisites pass.
+is invalid. Independent reviews covered the full PBS/restore and capability
+source scopes; actionable findings were addressed and verified. Final
+combined-head CI remains pending. The playbooks and catalog remain source-only
+until CI, publication, and private acceptance prerequisites pass.
 
 ## Acceptance for this source child
 

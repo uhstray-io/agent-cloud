@@ -2,7 +2,7 @@
 
 The restore and cleanup entrypoints are implemented as source workflows for
 OpenSpec 5.2. This runbook is not activation or live acceptance evidence. Keep
-5.2 open until review and CI pass, the feature is published to Dev, private
+5.2 open through final combined-head CI and Dev publication, private
 declarations are accepted, OpenBao capabilities and writer coverage are
 verified, protected-copy recovery passes with primary PBS unavailable, and a
 Dev-bound restore and separate cleanup succeed.
