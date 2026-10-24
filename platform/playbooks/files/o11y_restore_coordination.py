@@ -15,7 +15,7 @@ import secrets
 import sys
 from typing import Any
 
-from o11y_pbs_receipts import restore_receipt_fingerprint
+from o11y_pbs_receipts import restore_receipt_fingerprint, seal_restore_receipt
 
 SCHEMA_VERSION = 2
 RECORD_KEYS = {
@@ -1006,6 +1006,48 @@ def verify_readback(
     return {"result": "verified", "phase": expected["phase"], "version": version}
 
 
+def build_restore_receipt(record: object, version: object, fields: object) -> dict[str, Any]:
+    """Build the closed private v3 receipt from the verified stopped journal."""
+    _require(isinstance(record, dict), "invalid_input")
+    record = validate_record(record)
+    _require(_is_int(version, 1), "invalid_input")
+    _require(record["phase"] == "restore_active" and record["pending"] is None, "phase_transition_invalid")
+    _require(
+        [event["action"] for event in record["journal"]] == ["restore", "isolate", "start", "guest_exec", "stop"],
+        "phase_transition_invalid",
+    )
+    keys = {
+        "artifact_config", "checker_sha256", "checker_receipt_fingerprint", "guest_execution_pid",
+        "data_checks", "isolation_config_sha256",
+    }
+    _require(isinstance(fields, dict) and set(fields) == keys, "evidence_invalid")
+    candidate = {
+        "type": "restore_receipt/v3",
+        "bindings": {
+            key: record[key]
+            for key in (
+                "operation_id", "target_fingerprint", "artifact_fingerprint", "restore_nonce",
+                "public_sha", "private_inventory_sha",
+            )
+        },
+        "restore_upid": record["restore_upid"],
+        "target_state": "stopped",
+        "pending_action": None,
+        "completed_actions": ["restore", "isolate", "start", "guest_exec", "stop"],
+        "coordination_record": {
+            **record,
+            "phase": "awaiting_receipt",
+            "active_nonce": None,
+            "receipt_fingerprint": None,
+        },
+        "coordination_version": version + 1,
+        **fields,
+    }
+    sealed = seal_restore_receipt(candidate)
+    _restore_receipt(sealed, record, version + 1)
+    return sealed
+
+
 def _main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -1029,6 +1071,9 @@ def _main() -> int:
                 payload.get("data_status"),
                 payload.get("secret"),
             )
+        elif payload.get("mode") == "build_restore_receipt":
+            _require(set(payload) == {"mode", "record", "version", "fields"}, "invalid_input")
+            result = build_restore_receipt(payload.get("record"), payload.get("version"), payload.get("fields"))
         else:
             raise Refusal("invalid_input")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))

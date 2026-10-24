@@ -273,6 +273,65 @@ def test_every_lifecycle_write_has_intent_real_handle_and_verified_effect():
     assert version == 17
 
 
+def test_restore_receipt_builder_seals_both_fingerprints_from_stopped_journal():
+    record, version = reserve()
+    for name, kind, handle, marker in (
+        ("restore", "upid", RESTORE_UPID, 1),
+        ("isolate", "response_sha256", "2" * 64, 2),
+        ("start", "upid", START_UPID, 3),
+        ("guest_exec", "qga_pid", 44, 4),
+        ("stop", "upid", STOP_UPID, 5),
+    ):
+        record, version = action(record, version, name, kind, handle, marker)
+    _final, _version = completed_restore()
+    nested = _final["journal"]
+    data_checks = {
+        "schema_version": 1,
+        "status": "verified",
+        "reason": "restored_historical_data_verified",
+        "volume_count": 5,
+        "volume_bindings_sha256": "4" * 64,
+        "container_bindings_sha256": "5" * 64,
+        "backend_count": 4,
+        "grafana_integrity": "ok",
+        "grafana_migrations": 3,
+        "grafana_database_sha256": "6" * 64,
+        "backends": {
+            name: {
+                "expectation": "present",
+                "historical_records": 1,
+                "evidence_sha256": "7" * 64,
+                "readback_sha256": "8" * 64,
+            }
+            for name in ("prometheus", "loki", "tempo", "pyroscope")
+        },
+        "receipt_fingerprint": "9" * 64,
+    }
+    receipt = coordination.build_restore_receipt(
+        record,
+        version,
+        {
+            "artifact_config": {
+                "config_sha256": "a" * 64,
+                "disk_count": 1,
+                "disks": [{"device": "scsi0", "size_bytes": 20 * 1024**3}],
+                "nic_count": 1,
+                "nic_keys": ["net0"],
+                "config_keys_sha256": "b" * 64,
+            },
+            "checker_sha256": "c" * 64,
+            "checker_receipt_fingerprint": data_checks["receipt_fingerprint"],
+            "guest_execution_pid": 44,
+            "data_checks": data_checks,
+            "isolation_config_sha256": "d" * 64,
+        },
+    )
+    assert receipt["receipt_fingerprint"] == receipt["coordination_record"]["receipt_fingerprint"]
+    assert receipt["coordination_record"]["journal"][-1] == nested[-1]
+    restored, _ = apply(record, version, "awaiting_receipt", evidence=receipt)
+    assert restored["receipt_fingerprint"] == receipt["receipt_fingerprint"]
+
+
 def test_new_reservation_is_version_cas_zero_and_record_readback_is_exact():
     plan = coordination.plan_transition(None, 0, request("reserve"))
     assert plan["payload"]["options"] == {"cas": 0}
