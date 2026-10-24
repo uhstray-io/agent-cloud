@@ -48,10 +48,10 @@ The Plane service SHALL deploy through Semaphore playbooks, with `deploy.sh` lim
 - **WHEN** the Compose stack is running on the Plane VM
 - **THEN** the reverse proxy is the only container that publishes a host port
 
-#### Scenario: Deploy records its step result
+#### Scenario: A failed deploy is visible to the conformance collector
 
-- **WHEN** the deploy playbook finishes a run
-- **THEN** it emits a service-deployment step result that the collector can read
+- **WHEN** a run of the Plane deploy template fails
+- **THEN** the conformance collector records the service's `service-deploy` step as failed, with the run's last output lines
 
 #### Scenario: Redeploy keeps generated secrets
 

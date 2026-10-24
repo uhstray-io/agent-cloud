@@ -101,11 +101,11 @@ Production validation covers the parts that depend on the Pro plan and the real 
 
 ## Open questions
 
-These three points are not settled by the approved plan. Each one is recorded in the change's `design.md` as an open item.
+Two points raised while writing this plan were resolved on 2026-10-23, and one stays open.
 
-1. **Step-result emit in the Plane deploy.** Phase 1 has the deploy playbook emit a step result. `platform/playbooks/deploy-authentik.yml` is the only `deploy-*.yml` file that includes the emit task, and it records only its `oidc-config` step. The entry for `tasks/emit-step-result.yml` in `AGENTS.md` says that per-service deploy playbooks do not include the task, and that the `service-deploy` step records none. Task 1.3 in the change resolves this against the collector before the emit step is written.
-2. **Meaning of "its own host" in D5.** D5 says the MCP server runs "on its own host". Phase 5 adds the MCP container to the Plane Compose stack on the Plane VM, behind its own hostname `plane-mcp.<zone>`. This plan reads "own host" as the public hostname. Joe should confirm that reading.
-3. **Vendor facts not re-checked.** The plan cites the Plane licence terms, the tier gating, the price and the documentation URLs. None of them was fetched again for this plan. The Phase 0 spikes confirm or correct them.
+1. **Step-result emit in the Plane deploy.** Phase 1 has the deploy playbook emit a step result. `platform/playbooks/deploy-authentik.yml` is the only `deploy-*.yml` file that includes the emit task, and it records only its `oidc-config` step. The entry for `tasks/emit-step-result.yml` in `AGENTS.md` says that per-service deploy playbooks do not include the task, and that the `service-deploy` step records none. **Resolved:** the collector records a failed deploy run as `fail` and records nothing for a successful one (`platform/workflows/service-onboarding/lib/step_results.py:239-249`). The Plane deploy follows the same convention as every other per-service deploy; the missing `pass` is a platform-wide gap for a separate change.
+2. **Meaning of "its own host" in D5.** D5 says the MCP server runs "on its own host". Phase 5 adds the MCP container to the Plane Compose stack on the Plane VM, behind its own hostname `plane-mcp.<zone>`. **Resolved:** it means its own public hostname, as the question Joe answered stated.
+3. **Open: vendor facts not re-checked.** The plan cites the Plane licence terms, the tier gating, the price and the documentation URLs. None of them was fetched again for this plan. The Phase 0 spikes confirm or correct them.
 
 ## Execution
 

@@ -70,7 +70,7 @@ The existing tududi-to-GitHub sync is built from n8n workflows and a dedicated G
 - The gateway admits only `_agw_admin_identities`, which are admin-derived personal identities.
 - `backendAuth` sets the caller's authorization to the gateway's own `mcp-self` key by environment reference, so the gateway replaces the caller's credential.
 
-**Open reading.** D5 says "on its own host". Phase 5 adds the MCP container to the Plane Compose stack on the Plane VM, and gives it its own public hostname. This change reads "own host" as the hostname. Joe confirms the reading before Phase 5 starts.
+**Open reading.** D5 says "on its own host". Phase 5 adds the MCP container to the Plane Compose stack on the Plane VM, and gives it its own public hostname. **Resolved 2026-10-23:** "own host" means its own public hostname; the question Joe answered read "at its own hostname behind Caddy". The container runs in the Plane stack on the Plane VM.
 
 ### D6. weft uses a service identity
 
@@ -123,13 +123,11 @@ Each spike writes a dated finding into this table. No answer carries forward unt
 6. **Bot-token blast radius.** The Forge app is one more holder of the platform bot token (D7). Phase 6 records that in the service's `CLAUDE.md`.
 7. **Public webhook path.** Phase 1 adds a Cloudflare challenge skip for `/silo/api/github/github-webhook` only, shaped like the `inference-api-bypass-challenge` rule at `platform/infra/cloudflare/waf.tf:124`. The approved plan does not record whether the GitHub webhook verifies its own signature. That is open.
 8. **Tier gating.** Webhooks and personal access tokens may need a tier above Free. If they do, local validation of Phases 5 and 6 is limited. The approved plan lists this as unverified.
-9. **Step-result emit conflict.** Phase 1 has the deploy playbook emit a step result. `platform/playbooks/deploy-authentik.yml` is the only `deploy-*.yml` that includes `tasks/emit-step-result.yml`, and it records only its `oidc-config` step. The entry for the emit task in `AGENTS.md` says that per-service deploy playbooks do not include it, and that the `service-deploy` step records none. Task 1.3 resolves this against the collector before the emit step is written.
+9. **Step-result emit conflict.** Phase 1 has the deploy playbook emit a step result. `platform/playbooks/deploy-authentik.yml` is the only `deploy-*.yml` that includes `tasks/emit-step-result.yml`, and it records only its `oidc-config` step. The entry for the emit task in `AGENTS.md` says that per-service deploy playbooks do not include it, and that the `service-deploy` step records none. **Resolved 2026-10-23:** the collector records a synthetic `fail` for a failed deploy task that emitted nothing and records nothing for a successful one (`platform/workflows/service-onboarding/lib/step_results.py:239-249`). Every per-service deploy follows that convention, so the Plane deploy does too. A missing `pass` for `service-deploy` is a platform-wide gap; it is fixed once in the shared mechanism by a separate change, never special-cased here.
 10. **tududi restore path.** The final backup goes to site-config, but the approved plan does not record a restore procedure for tududi. Phase 7 is one-way until one exists.
 
 ## Open Items
 
-- Joe confirms the reading of "its own host" in D5 (see Decisions).
-- Task 1.3 resolves the step-result emit conflict against the collector.
 - A restore procedure for tududi is written or explicitly accepted as absent before Phase 7 runs.
 
 ## Migration Plan
@@ -154,6 +152,5 @@ Each item below is unverified as of 2026-10-23. Each one is owned by a Phase 0 s
 - The version of `makeplane/plane-mcp-server`. No version has been chosen.
 - The `prime.plane.so` setup URL pattern, `prime.plane.so/api/v2/setup/?version=…&platform=amd64`, cited in the plan. It was not fetched.
 - Whether the GitHub webhook verifies its own signature (risk 7).
-- The step-result emit conflict (risk 9).
 - A restore procedure for tududi (risk 10).
 - The Forge image workflow. The approved plan says it is built to GHCR by a workflow like `.github/workflows/build-honcho.yml`. That file exists, but its contents were not reviewed for this change.
