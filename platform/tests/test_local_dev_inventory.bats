@@ -77,6 +77,8 @@ setup() {
   # (asserted by the dns_upstreams test below).
   # Allowed: loopback, RFC 1918, and the bind-all address 0.0.0.0 (used for
   # VM-side service binds, e.g. dns_listen — not a routable IP).
+  # An unreadable or empty file would leave `bad` empty and pass unchecked.
+  [ -r "$INVENTORY" ] && [ -s "$INVENTORY" ] || { echo "Cannot read inventory: $INVENTORY"; return 1; }
   local bad
   bad=$(grep -vE '^[[:space:]]*#|dns_upstreams' "$INVENTORY" \
     | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
