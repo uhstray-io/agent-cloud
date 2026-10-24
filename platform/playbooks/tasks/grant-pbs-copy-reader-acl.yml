@@ -30,4 +30,5 @@
       - --digest
       - "{{ _pbs_reader_acl_file.stat.checksum }}"
   changed_when: true
+  when: not ansible_check_mode
   no_log: true

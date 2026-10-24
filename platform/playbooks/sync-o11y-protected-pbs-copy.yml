@@ -236,6 +236,7 @@
         stdin_add_newline: false
       register: _pbs_remote_list_raw
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -278,6 +279,7 @@
         stdin_add_newline: false
       register: _pbs_remote_write_raw
       changed_when: true
+      when: not ansible_check_mode
       failed_when: false
       no_log: true
 
@@ -300,6 +302,7 @@
         stdin_add_newline: false
       register: _pbs_sync_list_raw
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -342,6 +345,7 @@
         stdin_add_newline: false
       register: _pbs_sync_write_raw
       changed_when: true
+      when: not ansible_check_mode
       failed_when: false
       no_log: true
 
@@ -368,7 +372,8 @@
               'request': {'operation': 'sync-run', 'sync_job_id': _pbs_copy_job}} | to_json }}
         stdin_add_newline: false
       register: _pbs_sync_start_raw
-      changed_when: false
+      changed_when: true
+      when: not ansible_check_mode
       failed_when: false
       no_log: true
 
@@ -384,6 +389,7 @@
         stdin_add_newline: false
       register: _pbs_sync_upid_check
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
@@ -408,6 +414,7 @@
         stdin_add_newline: false
       register: _pbs_sync_status_raw
       changed_when: false
+      check_mode: false
       failed_when: false
       until: >-
         _pbs_sync_status_raw.rc == 0 and
@@ -448,6 +455,7 @@
         label: "pinned snapshot manifest read"
       register: _pbs_sync_manifests
       changed_when: false
+      check_mode: false
       failed_when: false
       no_log: true
 
