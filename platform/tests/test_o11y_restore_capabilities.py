@@ -167,9 +167,10 @@ def test_requests_are_fixed_read_only_and_check_mode_safe():
     assert not any(uri["method"] in {"PUT", "PATCH", "DELETE"} for uri in args)
 
 
-def _run_fixture(tmp_path: Path, *, capabilities=None, stored_policy=None, check=False, extra=None):
+def _run_fixture(tmp_path: Path, *, capabilities=None, stored_policy=None, check=False, extra=None, publish=False):
     class FakeBao(DrainingHandler):
         requests = []
+        published_policy = None
 
         def log_message(self, *_args):
             pass
@@ -191,10 +192,20 @@ def _run_fixture(tmp_path: Path, *, capabilities=None, stored_policy=None, check
                 return self._reply({"data": capabilities or EXPECTED})
             return self._reply({"errors": ["unexpected path"]}, 404)
 
+        def do_PUT(self):  # noqa: N802
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            type(self).requests.append(("PUT", self.path, body, self.headers.get("X-Vault-Token")))
+            if self.path != "/v1/sys/policies/acl/semaphore-read":
+                return self._reply({"errors": ["unexpected path"]}, 404)
+            type(self).published_policy = body["policy"]
+            return self._reply({"data": {}})
+
         def do_GET(self):  # noqa: N802
             type(self).requests.append(("GET", self.path, {}, self.headers.get("X-Vault-Token")))
             if self.path == "/v1/sys/policies/acl/semaphore-read":
-                value = POLICY.read_text() if stored_policy is None else stored_policy
+                value = type(self).published_policy
+                if value is None:
+                    value = POLICY.read_text() if stored_policy is None else stored_policy
                 return self._reply({"data": {"name": "semaphore-read", "policy": value, "rules": value}})
             return self._reply({"errors": ["unexpected path"]}, 404)
 
@@ -230,7 +241,32 @@ def _run_fixture(tmp_path: Path, *, capabilities=None, stored_policy=None, check
     }], sort_keys=False))
     env = harness_sandbox.env_for(tmp_path)
     env.update(BAO_ROLE_ID="synthetic-role-id", BAO_SECRET_ID="synthetic-role-secret")
+    publisher_done = None
     try:
+        if publish:
+            publisher_play = tmp_path / "publisher.yml"
+            publisher_play.write_text(yaml.safe_dump([{
+                "hosts": "localhost",
+                "connection": "local",
+                "gather_facts": False,
+                "vars": {
+                    "_bao_url": address,
+                    "_bao_role_id": "synthetic-role-id",
+                    "_bao_secret_id": "synthetic-role-secret",
+                    "_policy_name": "semaphore-read",
+                    "_policy_file": str(POLICY),
+                },
+                "tasks": [{
+                    "name": "Run the real shared policy publisher",
+                    "ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/apply-openbao-policy.yml"),
+                }],
+            }], sort_keys=False))
+            publisher_done = harness_sandbox.run(
+                ["ansible-playbook", "-i", str(inventory), str(publisher_play)],
+                tmp_path,
+                cwd=REPO,
+                env=env,
+            )
         done = harness_sandbox.run(
             ["ansible-playbook", "-i", str(inventory), str(play), "-e", json.dumps(extra or {}),
              *( ["--check"] if check else [])],
@@ -242,12 +278,12 @@ def _run_fixture(tmp_path: Path, *, capabilities=None, stored_policy=None, check
         server.shutdown()
         server.server_close()
         thread.join()
-    return done, FakeBao.requests
+    return done, FakeBao.requests, publisher_done
 
 
 @pytest.mark.parametrize("check", [False, True])
 def test_synthetic_http_readback_runs_only_fixed_reads_even_in_check_mode(tmp_path, check):
-    done, requests = _run_fixture(tmp_path, check=check)
+    done, requests, _publisher_done = _run_fixture(tmp_path, check=check)
     assert done.returncode == 0, done.stdout + done.stderr
     assert [item[:2] for item in requests] == [
         ("POST", "/v1/auth/approle/login"),
@@ -264,7 +300,7 @@ def test_synthetic_http_readback_runs_only_fixed_reads_even_in_check_mode(tmp_pa
 
 def test_synthetic_http_extra_effective_grant_refuses_without_record_access(tmp_path):
     broad = {**EXPECTED, DATA_PATH: [*EXPECTED[DATA_PATH], "delete"]}
-    done, requests = _run_fixture(tmp_path, capabilities=broad)
+    done, requests, _publisher_done = _run_fixture(tmp_path, capabilities=broad)
     assert done.returncode != 0
     assert "capabilities_mismatch" in done.stdout
     assert [item[:2] for item in requests] == [
@@ -279,7 +315,24 @@ def test_synthetic_http_extra_effective_grant_refuses_without_record_access(tmp_
 
 @pytest.mark.parametrize("name", ["openbao_addr", "bao_role_id", "BAO_ROLE_ID"])
 def test_launch_endpoint_or_credential_override_refuses_before_network(tmp_path, name):
-    done, requests = _run_fixture(tmp_path, extra={name: "synthetic-override"})
+    done, requests, _publisher_done = _run_fixture(tmp_path, extra={name: "synthetic-override"})
     assert done.returncode != 0
     assert requests == []
     assert "synthetic-override" not in done.stdout + done.stderr
+
+
+def test_shared_policy_publisher_preserves_bytes_for_exact_verifier_readback(tmp_path):
+    done, requests, publisher_done = _run_fixture(tmp_path, publish=True)
+    assert publisher_done is not None and publisher_done.returncode == 0
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert requests[1][:2] == ("PUT", "/v1/sys/policies/acl/semaphore-read")
+    assert requests[1][2] == {"policy": POLICY.read_text()}
+    assert [item[:2] for item in requests] == [
+        ("POST", "/v1/auth/approle/login"),
+        ("PUT", "/v1/sys/policies/acl/semaphore-read"),
+        ("POST", "/v1/auth/approle/login"),
+        ("GET", "/v1/sys/policies/acl/semaphore-read"),
+        ("POST", "/v1/sys/capabilities-self"),
+    ]
+    assert "verified" in done.stdout
+    assert POLICY.read_text() not in done.stdout + done.stderr + publisher_done.stdout + publisher_done.stderr
