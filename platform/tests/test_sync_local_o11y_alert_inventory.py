@@ -17,36 +17,46 @@ SPEC = importlib.util.spec_from_file_location("sync_local_o11y_alert_inventory",
 sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
 
-CURRENT = """[o11y_svc]
-o11y-local ansible_host=127.0.0.1
-
-[o11y_svc:vars]
-service_name=o11y
-local_mode=true
-
-[other_svc]
-other-local ansible_host=127.0.0.1
-"""
+RECORD = {"all": {"children": {
+    "o11y_svc": {"hosts": {"o11y-local": {"ansible_host": "127.0.0.1"}},
+                 "vars": {"service_name": "o11y", "local_mode": True}},
+    "other_svc": {"hosts": {"other-local": {"ansible_host": "127.0.0.1"}}},
+}}}
+CURRENT = yaml.safe_dump(RECORD, sort_keys=False)
 VALUES = {"o11y_alert_discord_guild_id": "1" * 18,
           "o11y_alert_discord_channel_id": "2" * 19}
+WANTED = {name: int(value) for name, value in VALUES.items()}
+
+
+def _record(mutate):
+    record = json.loads(json.dumps(RECORD))
+    mutate(record["all"]["children"])
+    return yaml.safe_dump(record, sort_keys=False)
 
 
 def test_overlay_changes_only_the_declared_group_and_converges():
     updated = sync.overlay(CURRENT, VALUES)
-    assert updated.split("[other_svc]")[1] == CURRENT.split("[other_svc]")[1]
-    assert updated.count("o11y_alert_discord_guild_id=") == 1
-    assert updated.count("o11y_alert_discord_channel_id=") == 1
+    before = yaml.safe_load(CURRENT)["all"]["children"]
+    after = yaml.safe_load(updated)["all"]["children"]
+    assert after["other_svc"] == before["other_svc"]
+    assert after["o11y_svc"]["hosts"] == before["o11y_svc"]["hosts"]
+    assert after["o11y_svc"]["vars"] == {**before["o11y_svc"]["vars"], **WANTED}
     assert sync.overlay(updated, VALUES) == updated
-    assert "local_mode=true\no11y_alert_discord_guild_id=" in sync.overlay(
-        CURRENT.split("[other_svc]")[0].rstrip("\n"), VALUES)
 
 
-def test_overlay_refuses_ambiguous_section_or_variable():
-    for inventory in (CURRENT.replace("[other_svc]", "[o11y_svc:vars]\n[other_svc]"),
-                      CURRENT.replace("service_name=o11y", "o11y_alert_discord_guild_id=1\n"
-                                      "o11y_alert_discord_guild_id=2\nservice_name=o11y"),
-                      CURRENT.replace("[o11y_svc:vars]", "[wrong:vars]"),
-                      CURRENT.replace("o11y-local ansible_host", "other-local ansible_host")):
+def test_overlay_adds_vars_to_a_group_without_them():
+    bare = _record(lambda children: children["o11y_svc"].pop("vars"))
+    updated = yaml.safe_load(sync.overlay(bare, VALUES))
+    assert updated["all"]["children"]["o11y_svc"]["vars"] == WANTED
+
+
+def test_overlay_refuses_ambiguous_or_foreign_group():
+    renamed_host = _record(lambda children: children["o11y_svc"]["hosts"].update(
+        {"other-local": children["o11y_svc"]["hosts"].pop("o11y-local")}))
+    extra_host = _record(lambda children: children["o11y_svc"]["hosts"].update({"extra-local": {}}))
+    renamed_group = _record(lambda children: children.update({"wrong_svc": children.pop("o11y_svc")}))
+    missing_group = _record(lambda children: children.pop("o11y_svc"))
+    for inventory in (renamed_host, extra_host, renamed_group, missing_group, "all: [unclosed\n"):
         with pytest.raises(sync.Refusal):
             sync.overlay(inventory, VALUES)
 
@@ -87,7 +97,7 @@ def test_preview_then_apply_updates_only_the_local_inventory(monkeypatch, tmp_pa
                         str(private) if args == ("rev-parse", "--show-toplevel") else
                         sha + "\t" + args[-1] if args[0] == "ls-remote" else
                         "" if args[0] == "status" else sha)
-    record = {"id": 1, "project_id": 1, "name": "local", "type": "static",
+    record = {"id": 1, "project_id": 1, "name": "local", "type": "static-yaml",
               "ssh_key_id": 2, "become_key_id": None, "inventory": CURRENT}
     writes = []
 
@@ -135,7 +145,7 @@ def test_readback_mismatch_does_not_save_projection(monkeypatch, tmp_path):
         o11y_alert_discord_guild_id: '{VALUES["o11y_alert_discord_guild_id"]}'
         o11y_alert_discord_channel_id: '{VALUES["o11y_alert_discord_channel_id"]}'
 """)
-    record = {"id": 1, "project_id": 1, "name": "local", "type": "static", "inventory": CURRENT}
+    record = {"id": 1, "project_id": 1, "name": "local", "type": "static-yaml", "inventory": CURRENT}
 
     class Opener:
         def open(self, request, timeout):
@@ -154,7 +164,7 @@ def test_readback_mismatch_does_not_save_projection(monkeypatch, tmp_path):
 
 def test_bootstrap_renders_private_projection_only_when_present():
     play = yaml.safe_load((SCRIPT.parents[1] / "platform/playbooks/bootstrap-local-dev.yml").read_text())[0]
-    task = next(item for item in play["tasks"] if item["name"] == "Create or update local inventory")
+    task = next(item for item in play["tasks"] if item["name"] == "Write the local inventory INI source")
     block = task["vars"]["_inv_ini"].split("[o11y_svc:vars]")[1].split("[opa_svc]")[0]
     env = Environment()
     env.filters["b64decode"] = lambda value: base64.b64decode(value).decode()
@@ -168,6 +178,20 @@ def test_bootstrap_renders_private_projection_only_when_present():
                                             _o11y_projection_raw={"content": encoded})
     assert f"o11y_alert_discord_guild_id={VALUES['o11y_alert_discord_guild_id']}" in present
     assert f"o11y_alert_discord_channel_id={VALUES['o11y_alert_discord_channel_id']}" in present
+
+
+def test_bootstrap_registers_the_static_yaml_form_with_a_literal_address():
+    play = yaml.safe_load((SCRIPT.parents[1] / "platform/playbooks/bootstrap-local-dev.yml").read_text())[0]
+    tasks = {item["name"]: item for item in play["tasks"]}
+    register = tasks["Create or update local inventory"]["vars"]
+    assert "'type': 'static-yaml'" in register["_inv_body"]
+    assert "'inventory': _inv_yaml}" in register["_inv_body"]
+    assert "{'all': {'vars': {'openbao_addr': _bao_url_net}}}" in register["_inv_yaml"]
+    argv = tasks["Convert the local inventory to the static-yaml shape prod uses"]["ansible.builtin.command"]["argv"]
+    assert argv[0] == "{{ ansible_playbook_python }}"
+    assert argv[1:3] == ["-m", "ansible.cli.inventory"]
+    assert "--export" in argv
+    assert tasks["Write the local inventory INI source"]["ansible.builtin.copy"]["dest"] in argv
 
 
 def test_bootstrap_refusals_evaluate_against_synthetic_inventory():
@@ -200,9 +224,12 @@ def test_bootstrap_refusals_evaluate_against_synthetic_inventory():
     assert accepts(missing, _existing_o11y_inventory=CURRENT)
     synced = sync.overlay(CURRENT, VALUES)
     assert not accepts(missing, _existing_o11y_inventory=synced)
-    spaced = synced.replace("o11y_alert_discord_guild_id=", "  o11y_alert_discord_guild_id = ")
-    spaced = spaced.replace("o11y_alert_discord_channel_id=", "o11y_alert_discord_channel_id = ")
+    spaced = synced.replace("o11y_alert_discord_guild_id:", "  o11y_alert_discord_guild_id :")
+    spaced = spaced.replace("o11y_alert_discord_channel_id:", "o11y_alert_discord_channel_id : ")
     assert not accepts(missing, _existing_o11y_inventory=spaced)
+    # A record synced before the static-yaml change still carries the INI spelling.
+    legacy_ini = "[o11y_svc:vars]\no11y_alert_discord_guild_id=1\n"
+    assert not accepts(missing, _existing_o11y_inventory=legacy_ini)
 
     stale = "Refuse a stale local alert projection"
     assert accepts(stale, _existing_o11y_inventory=CURRENT, _o11y_projection=good)
