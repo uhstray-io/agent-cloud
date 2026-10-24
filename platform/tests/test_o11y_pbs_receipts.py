@@ -204,6 +204,22 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
             now=NOW,
         )
 
+    wrong_private_launch = {"expected_repository_sha": PUBLIC, "site_config_base_sha": "5" * 40}
+    wrong_private_task = {**task, "environment": json.dumps(wrong_private_launch)}
+    with pytest.raises(pbs.Refusal, match="task_binding_mismatch"):
+        pbs.validate_completed_task(
+            wrong_private_task,
+            rows,
+            contract="o11y-pbs-backup/v1",
+            public_sha=PUBLIC,
+            private_sha=PRIVATE,
+            playbook=BACKUP_PLAYBOOK,
+            expected_project_id=1,
+            expected_task_id=10,
+            expected_launch=wrong_private_launch,
+            now=NOW,
+        )
+
 
 def test_verification_receipt_must_bind_its_authenticated_backup_task_selector() -> None:
     digest = pbs.artifact_fingerprint(manifest())
@@ -284,6 +300,7 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
         key: ("restore_receipt/v3" if key == "type" else "verified")
         for key in pbs.RESTORE_RECEIPT_KEYS - {"receipt_fingerprint", "coordination_record"}
     }
+    receipt_body["bindings"] = {"public_sha": PUBLIC, "private_inventory_sha": PRIVATE}
     receipt_body["coordination_record"] = {"receipt_fingerprint": None, "version": 1}
     receipt = pbs.seal_restore_receipt(receipt_body)
     task = {
@@ -297,6 +314,7 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
         "end": "2026-10-21T15:30:00Z",
         "environment": {
             "expected_repository_sha": PUBLIC,
+            "site_config_base_sha": PRIVATE,
             "backup_task_id": 10,
             "pbs_verify_task_id": 11,
             "copy_sync_task_id": 12,
@@ -328,23 +346,12 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
         rows,
         public_sha=PUBLIC,
         expected_project_id=1,
-        expected_launch={
-            "expected_repository_sha": PUBLIC,
-            "backup_task_id": 10,
-            "pbs_verify_task_id": 11,
-            "copy_sync_task_id": 12,
-            "copy_ready_task_id": 13,
-        },
+        expected_playbook="platform/playbooks/restore-o11y-isolated.yml",
+        expected_launch=task["environment"],
         selector="type",
         expected_selector="restore_receipt/v3",
         expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
-        allowed_launch_keys={
-            "expected_repository_sha",
-            "backup_task_id",
-            "pbs_verify_task_id",
-            "copy_sync_task_id",
-            "copy_ready_task_id",
-        },
+        allowed_launch_keys=set(task["environment"]),
         now=NOW,
     )
     assert result["receipt"] == receipt
@@ -361,17 +368,132 @@ def test_completed_output_reconstructs_private_restore_receipt_and_closed_launch
             forged_rows,
             public_sha=PUBLIC,
             expected_project_id=1,
+            expected_playbook="platform/playbooks/restore-o11y-isolated.yml",
             expected_launch=task["environment"],
             selector="type",
             expected_selector="restore_receipt/v3",
             expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
-            allowed_launch_keys={
-                "expected_repository_sha",
-                "backup_task_id",
-                "pbs_verify_task_id",
-                "copy_sync_task_id",
-                "copy_ready_task_id",
-            },
+            allowed_launch_keys=set(task["environment"]),
+            now=NOW,
+        )
+
+    for bad_launch in (
+        {key: value for key, value in task["environment"].items() if key != "site_config_base_sha"},
+        {**task["environment"], "site_config_base_sha": 123},
+        {**task["environment"], "site_config_base_sha": "not-a-git-sha"},
+        {**task["environment"], "site_config_base_sha": "5" * 40},
+        {**task["environment"], "copy_ready_task_id": 0},
+    ):
+        bad_task = {**task, "environment": bad_launch, "id": task["id"] + 1}
+        bad_rows = [{**rows[0], "task_id": bad_task["id"], "output": json.dumps(receipt)}]
+        with pytest.raises(pbs.Refusal):
+            pbs.validate_completed_output(
+                bad_task,
+                bad_rows,
+                public_sha=PUBLIC,
+                expected_project_id=1,
+                expected_playbook="platform/playbooks/restore-o11y-isolated.yml",
+                expected_launch=bad_launch,
+                selector="type",
+                expected_selector="restore_receipt/v3",
+                expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
+                allowed_launch_keys=set(bad_launch),
+                now=NOW,
+            )
+
+    with pytest.raises(pbs.Refusal, match="invalid_input"):
+        pbs.validate_completed_output(
+            task,
+            rows,
+            public_sha=PUBLIC,
+            expected_project_id=1,
+            expected_playbook="platform/playbooks/restore-o11y-isolated.yml",
+            expected_launch=task["environment"],
+            selector="type",
+            expected_selector="restore_receipt/v3",
+            expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
+            allowed_launch_keys=set(task["environment"]) | {"restore_locator"},
+            now=NOW,
+        )
+
+    with pytest.raises(pbs.Refusal, match="task_binding_mismatch"):
+        mismatched_task = {**task, "environment": {**task["environment"], "site_config_base_sha": "5" * 40}}
+        pbs.validate_completed_output(
+            mismatched_task,
+            rows,
+            public_sha=PUBLIC,
+            expected_project_id=1,
+            expected_playbook="platform/playbooks/restore-o11y-isolated.yml",
+            expected_launch=mismatched_task["environment"],
+            selector="type",
+            expected_selector="restore_receipt/v3",
+            expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
+            allowed_launch_keys=set(mismatched_task["environment"]),
+            now=NOW,
+        )
+
+
+def test_cleanup_receipt_mode_uses_its_own_exact_launch_shape() -> None:
+    receipt_body = {
+        key: ("restore_receipt/v3" if key == "type" else "verified")
+        for key in pbs.RESTORE_RECEIPT_KEYS - {"receipt_fingerprint", "coordination_record"}
+    }
+    receipt_body["coordination_record"] = {"receipt_fingerprint": None, "version": 1}
+    receipt = pbs.seal_restore_receipt(receipt_body)
+    launch = {
+        "expected_repository_sha": PUBLIC,
+        "site_config_base_sha": PRIVATE,
+        "restore_task_id": 14,
+        "expected_restore_repository_sha": "8" * 40,
+    }
+    task = {
+        "id": 15,
+        "project_id": 1,
+        "template_id": 57,
+        "commit_hash": PUBLIC,
+        "status": "success",
+        "created": "2026-10-21T14:59:00Z",
+        "start": "2026-10-21T15:00:00Z",
+        "end": "2026-10-21T15:30:00Z",
+        "environment": launch,
+        "playbook": "",
+        "params": {"diff": False, "dry_run": False},
+    }
+    rows = [{
+        "id": 5,
+        "task_id": 15,
+        "stage_id": None,
+        "time": "2026-10-21T15:20:00Z",
+        "output": json.dumps(receipt),
+    }]
+    result = pbs.validate_completed_output(
+        task,
+        rows,
+        public_sha=PUBLIC,
+        expected_project_id=1,
+        expected_playbook="platform/playbooks/cleanup-o11y-isolated-restore.yml",
+        expected_launch=launch,
+        selector="type",
+        expected_selector="restore_receipt/v3",
+        expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
+        allowed_launch_keys=set(launch),
+        now=NOW,
+    )
+    assert result["receipt"] == receipt
+
+    wrong_mode_keys = set(launch) | {"target_vmid"}
+    with pytest.raises(pbs.Refusal, match="invalid_input"):
+        pbs.validate_completed_output(
+            task,
+            rows,
+            public_sha=PUBLIC,
+            expected_project_id=1,
+            expected_playbook="platform/playbooks/cleanup-o11y-isolated-restore.yml",
+            expected_launch=launch,
+            selector="type",
+            expected_selector="restore_receipt/v3",
+            expected_receipt_keys=pbs.RESTORE_RECEIPT_KEYS,
+            allowed_launch_keys=wrong_mode_keys,
             now=NOW,
         )
 
