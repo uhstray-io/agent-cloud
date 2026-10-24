@@ -20,6 +20,13 @@ from o11y_pbs_receipts import (
 from o11y_pbs_receipts import (
     Refusal as PBSRefusal,
 )
+from o11y_restore_cloud_init import (
+    source_auxiliary,
+    target_auxiliary,
+    valid_creation_meta,
+    valid_provisioner_serial,
+    valid_smbios_uuid,
+)
 
 VMID = re.compile(r"(?:0|[1-9][0-9]{0,8})\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
@@ -33,11 +40,17 @@ ALLOWED_CONFIG_KEYS = {
     "cores",
     "cpu",
     "description",
+    "ciuser",
+    "sshkeys",
+    "ipconfig0",
+    "nameserver",
+    "smbios1",
     "freeze",
     "hotplug",
     "keyboard",
     "kvm",
     "machine",
+    "meta",
     "memory",
     "name",
     "numa",
@@ -45,6 +58,7 @@ ALLOWED_CONFIG_KEYS = {
     "ostype",
     "scsihw",
     "sockets",
+    "serial0",
     "startup",
     "tablet",
     "tags",
@@ -116,9 +130,11 @@ FORBIDDEN_KEYS = {
     "shared",
     "vmstatestorage",
     "ivshmem",
-    "smbios1",
     "tpmstate0",
 }
+IPCONFIG_KEY = re.compile(r"ipconfig[0-9]+\Z")
+CLOUD_INIT_FIELDS = {"ciuser", "sshkeys", "nameserver", "ipconfig0", "smbios1"}
+CLOUD_INIT_SCRUB_FIELDS = {"ciuser", "sshkeys", "nameserver", "ipconfig0", "smbios1"}
 SAFE_REASONS = {
     "invalid_input",
     "artifact_config_invalid",
@@ -176,8 +192,8 @@ def _strict_int(value: object, minimum: int = 0) -> bool:
     return type(value) is int and value >= minimum
 
 
-def exact_artifact_config(value: object, *, source_vmid: int) -> dict:
-    """Reject unsafe restore directives before the target reservation or write."""
+def _parse_artifact_config(value: object, *, source_vmid: int) -> dict[str, str]:
+    """Parse the authenticated config, admitting only the reviewed PVE provisioner shape."""
     require(
         isinstance(value, dict)
         and set(value) == {"status", "data"}
@@ -187,10 +203,12 @@ def exact_artifact_config(value: object, *, source_vmid: int) -> dict:
     )
     require(_strict_int(source_vmid, 100) and source_vmid <= 999_999_999, "artifact_config_invalid")
     raw = value["data"]
-    require(len(raw.encode("utf-8")) <= 256 * 1024 and len(raw.splitlines()) <= 4096, "artifact_config_invalid")
+    try:
+        encoded = raw.encode("utf-8")
+    except UnicodeEncodeError:
+        raise Refusal("artifact_config_invalid") from None
+    require(len(encoded) <= 256 * 1024 and len(raw.splitlines()) <= 4096, "artifact_config_invalid")
     parsed: dict[str, str] = {}
-    nics = []
-    disks = []
     try:
         for line in raw.splitlines():
             if not line or line.lstrip().startswith("#"):
@@ -211,9 +229,23 @@ def exact_artifact_config(value: object, *, source_vmid: int) -> dict:
             require(not key.startswith("unused"), "artifact_disk_incomplete")
             if key == "vmid":
                 require(VMID.fullmatch(content) is not None and int(content) == source_vmid, "artifact_config_invalid")
+            if key == "agent":
+                require(content in {"1", "enabled=1"}, "artifact_unsupported")
+            if key == "smbios1":
+                require(valid_smbios_uuid(content), "artifact_unsupported")
+            if key == "serial0":
+                require(valid_provisioner_serial(content), "artifact_unsupported")
+            if key == "meta":
+                require(valid_creation_meta(content), "artifact_unsupported")
+            if key in CLOUD_INIT_FIELDS - {"smbios1"}:
+                require(bool(content) and not any(ord(char) < 32 for char in content), "artifact_unsupported")
+            if IPCONFIG_KEY.fullmatch(key):
+                require(key == "ipconfig0", "artifact_unsupported")
             if key.startswith("net") and key[3:].isdigit():
-                nics.append(key)
                 require("=" in content, "artifact_config_invalid")
+            if key == "ide2":
+                _validate_source_auxiliary(content, source_vmid)
+                continue
             if DISK.fullmatch(key):
                 require(re.search(r"(?:^|,)media=cdrom(?:$|,)", content) is None, "artifact_unsupported")
                 options = content.split(":", 1)[-1]
@@ -223,13 +255,46 @@ def exact_artifact_config(value: object, *, source_vmid: int) -> dict:
                 require(amount > 0 and amount == amount.to_integral_value(), "artifact_disk_incomplete")
                 backup = re.findall(r"(?:^|,)backup=([01])(?:$|,)", options)
                 require(len(backup) <= 1 and (not backup or backup[0] == "1"), "artifact_disk_incomplete")
-                disks.append({"device": key, "size_bytes": int(amount)})
     except (UnicodeEncodeError, InvalidOperation, ArithmeticError):
         raise Refusal("artifact_config_invalid") from None
-    require(parsed.get("vmid") is not None and disks and len(disks) <= 128, "artifact_disk_incomplete")
-    agent = parsed.get("agent", "")
-    require(re.search(r"(?:^|,)enabled=1(?:,|$)", agent) is not None, "artifact_unsupported")
-    require(all(name in parsed for name in nics), "artifact_config_invalid")
+    require(parsed.get("vmid") is not None, "artifact_config_invalid")
+    require(parsed.get("agent") in {"1", "enabled=1"}, "artifact_unsupported")
+    cloud_values = {key: parsed[key] for key in CLOUD_INIT_FIELDS if key in parsed}
+    if cloud_values:
+        require(parsed.get("ide2") not in {None, "none,media=cdrom"}, "artifact_unsupported")
+    require(
+        all(name in parsed and "=" in parsed[name] for name in parsed if re.fullmatch(r"net[0-9]+", name)),
+        "artifact_config_invalid",
+    )
+    return parsed
+
+
+def _validate_source_auxiliary(content: str, source_vmid: int) -> bool:
+    require(source_auxiliary(content, source_vmid), "artifact_unsupported")
+    return content != "none,media=cdrom"
+
+
+def exact_artifact_config(value: object, *, source_vmid: int) -> dict:
+    """Reject unsafe restore directives before the target reservation or write."""
+    parsed = _parse_artifact_config(value, source_vmid=source_vmid)
+    disks = []
+    nics = sorted(key for key in parsed if re.fullmatch(r"net[0-9]+", key))
+    try:
+        for key, content in parsed.items():
+            if not DISK.fullmatch(key) or key == "ide2":
+                continue
+            options = content.split(":", 1)[-1]
+            match = SIZE.findall(options)
+            require(len(match) == 1, "artifact_disk_incomplete")
+            amount = Decimal(match[0][0]) * MULTIPLIERS[match[0][1].upper()]
+            require(amount > 0 and amount == amount.to_integral_value(), "artifact_disk_incomplete")
+            backup = re.findall(r"(?:^|,)backup=([01])(?:$|,)", options)
+            require(len(backup) <= 1 and (not backup or backup[0] == "1"), "artifact_disk_incomplete")
+            disks.append({"device": key, "size_bytes": int(amount)})
+    except (InvalidOperation, ArithmeticError):
+        raise Refusal("artifact_disk_incomplete") from None
+    require(disks and len(disks) <= 128, "artifact_disk_incomplete")
+    raw = value["data"]
     return {
         "config_sha256": sha256(raw.encode("utf-8")),
         "disk_count": len(disks),
@@ -237,6 +302,18 @@ def exact_artifact_config(value: object, *, source_vmid: int) -> dict:
         "nic_count": len(nics),
         "nic_keys": sorted(nics),
         "config_keys_sha256": sha256("\n".join(sorted(parsed)).encode()),
+    }
+
+
+def exact_artifact_cloud_init(value: object, *, source_vmid: int) -> dict:
+    """Return private scrub expectations without changing the closed six-field layout receipt."""
+    parsed = _parse_artifact_config(value, source_vmid=source_vmid)
+    present = "ide2" in parsed and parsed["ide2"] != "none,media=cdrom"
+    values = {key: parsed[key] for key in sorted(CLOUD_INIT_FIELDS) if key in parsed}
+    return {
+        "present": present,
+        "field_fingerprint": sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode()),
+        "scrub_keys": sorted(CLOUD_INIT_SCRUB_FIELDS.intersection(parsed)),
     }
 
 
@@ -248,6 +325,7 @@ def validate_target_config(
     isolated: bool,
     expected_disk_keys: list[str],
     storage_id: str,
+    cloud_init_expectation: object,
 ) -> dict:
     """Validate read-back configuration and absence of host/network escape paths."""
     require(
@@ -256,6 +334,17 @@ def validate_target_config(
     )
     require(type(isolated) is bool, "target_config_invalid")
     data = value["data"]
+    require(
+        isinstance(cloud_init_expectation, dict)
+        and set(cloud_init_expectation) == {"present", "field_fingerprint", "scrub_keys"}
+        and type(cloud_init_expectation.get("present")) is bool
+        and isinstance(cloud_init_expectation.get("field_fingerprint"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", cloud_init_expectation["field_fingerprint"]) is not None
+        and isinstance(cloud_init_expectation.get("scrub_keys"), list)
+        and all(key in CLOUD_INIT_SCRUB_FIELDS for key in cloud_init_expectation["scrub_keys"])
+        and len(cloud_init_expectation["scrub_keys"]) == len(set(cloud_init_expectation["scrub_keys"])),
+        "target_config_invalid",
+    )
     if isolated:
         require(isinstance(marker, str) and 1 <= len(marker.encode("utf-8")) <= 128, "target_config_invalid")
         require(data.get("onboot") in (0, "0", False, None), "target_config_invalid")
@@ -273,15 +362,34 @@ def validate_target_config(
     )
     require(isinstance(storage_id, str) and SAFE_ID.fullmatch(storage_id) is not None, "target_config_invalid")
     disk_keys = sorted(key for key in data if DISK.fullmatch(key))
-    require(disk_keys == sorted(expected_disk_keys), "target_config_invalid")
-    for key in disk_keys:
+    included_disk_keys = [key for key in disk_keys if key != "ide2"]
+    require(included_disk_keys == sorted(expected_disk_keys), "target_config_invalid")
+    for key in included_disk_keys:
         require(isinstance(data[key], str) and data[key].startswith(storage_id + ":"), "target_config_invalid")
+    if cloud_init_expectation["present"]:
+        require("ide2" in data and isinstance(data["ide2"], str), "target_config_invalid")
+    require(
+        target_auxiliary(data.get("ide2"), target_vmid, storage_id, cloud_init_expectation["present"]),
+        "target_config_invalid",
+    )
+    cloud_values = {key: data[key] for key in sorted(CLOUD_INIT_FIELDS) if key in data}
+    cloud_fingerprint = sha256(json.dumps(cloud_values, sort_keys=True, separators=(",", ":")).encode())
+    if isolated:
+        require(not cloud_values, "target_config_invalid")
+    else:
+        require(cloud_fingerprint == cloud_init_expectation["field_fingerprint"], "target_config_invalid")
     for key in data:
         if key == "digest":
             require(
                 isinstance(data[key], str) and PVE_CONFIG_DIGEST.fullmatch(data[key]) is not None,
                 "target_config_invalid",
             )
+            continue
+        if key == "serial0":
+            require(valid_provisioner_serial(data[key]), "target_config_invalid")
+            continue
+        if key == "meta":
+            require(valid_creation_meta(data[key]), "target_config_invalid")
             continue
         require(
             key in ALLOWED_CONFIG_KEYS or DISK.fullmatch(key) or re.fullmatch(r"net[0-9]+", key) is not None,
@@ -292,13 +400,14 @@ def validate_target_config(
             "target_config_invalid",
         )
         require(not key.startswith("unused"), "target_config_invalid")
-        if isolated and key.startswith("net") and key[3:].isdigit():
+        if isolated and (key.startswith("net") and key[3:].isdigit() or key in CLOUD_INIT_FIELDS):
             raise Refusal("target_config_invalid")
     return {
         "config_sha256": sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()),
-        "disk_count": sum(bool(DISK.fullmatch(key)) for key in data),
+        "disk_count": sum(bool(DISK.fullmatch(key)) and key != "ide2" for key in data),
         "disk_keys_sha256": sha256("\n".join(disk_keys).encode()),
         "nic_count": sum(key.startswith("net") and key[3:].isdigit() for key in data),
+        "cloud_init_present": cloud_init_expectation["present"],
     }
 
 
@@ -365,7 +474,6 @@ def _verify_prerequisite_chain(payload: object) -> dict:
         "expected_launches",
         "task_proofs",
         "artifact_fingerprint",
-        "private_copy_selector",
         "expected_copy_storage_id",
     }
     require(isinstance(payload, dict) and set(payload) == keys, "invalid_input")
@@ -382,19 +490,10 @@ def _verify_prerequisite_chain(payload: object) -> dict:
         isinstance(payload["task_proofs"], dict) and set(payload["task_proofs"]) == expected_contracts,
         "task_chain_invalid",
     )
-    selector = payload["private_copy_selector"]
     selector_keys = {"volid", "backend", "format", "creation_time_epoch", "size_bytes"}
     require(
-        isinstance(selector, dict)
-        and set(selector) == selector_keys
-        and isinstance(selector.get("volid"), str)
-        and isinstance(selector.get("backend"), str)
-        and isinstance(selector.get("format"), str)
-        and type(selector.get("creation_time_epoch")) is int
-        and type(selector.get("size_bytes")) is int
-        and isinstance(payload["expected_copy_storage_id"], str)
-        and SAFE_ID.fullmatch(payload["expected_copy_storage_id"]) is not None
-        and selector["volid"].split(":", 1)[0] == payload["expected_copy_storage_id"],
+        isinstance(payload["expected_copy_storage_id"], str)
+        and SAFE_ID.fullmatch(payload["expected_copy_storage_id"]) is not None,
         "task_chain_invalid",
     )
     fingerprint = payload["artifact_fingerprint"]
@@ -456,8 +555,23 @@ def _verify_prerequisite_chain(payload: object) -> dict:
     require(
         isinstance(locator, dict)
         and set(locator) == selector_keys | {"storage_id"}
-        and {key: locator[key] for key in selector_keys} == selector
-        and locator["storage_id"] == payload["expected_copy_storage_id"],
+        and isinstance(locator.get("volid"), str)
+        and locator.get("backend") == "pbs"
+        and locator.get("format") == "pbs-vm"
+        and type(locator.get("creation_time_epoch")) is int
+        and locator["creation_time_epoch"] > 0
+        and type(locator.get("size_bytes")) is int
+        and locator["size_bytes"] > 0
+        and locator.get("storage_id") == payload["expected_copy_storage_id"]
+        and locator["volid"].split(":", 1)[0] == payload["expected_copy_storage_id"]
+        and locator["creation_time_epoch"] == ready["snapshot"].get("backup_time"),
+        "task_chain_invalid",
+    )
+    require(
+        isinstance(ready.get("destination_identity_fingerprint"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", ready["destination_identity_fingerprint"]) is not None
+        and isinstance(ready.get("destination_storage_config_fingerprint"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", ready["destination_storage_config_fingerprint"]) is not None,
         "task_chain_invalid",
     )
     require(
@@ -487,6 +601,9 @@ def _verify_prerequisite_chain(payload: object) -> dict:
         "task_ids": ids,
         "task_metadata": validated,
         "readiness_evidence": ready,
+        "normalized_restore_locator": locator,
+        "destination_identity_fingerprint": ready["destination_identity_fingerprint"],
+        "destination_storage_config_fingerprint": ready["destination_storage_config_fingerprint"],
     }
 
 
@@ -624,6 +741,8 @@ def _main() -> int:
         mode = payload.get("mode") if isinstance(payload, dict) else None
         if mode == "artifact_config":
             result = exact_artifact_config(payload.get("config"), source_vmid=payload.get("source_vmid"))
+        elif mode == "artifact_cloud_init":
+            result = exact_artifact_cloud_init(payload.get("config"), source_vmid=payload.get("source_vmid"))
         elif mode == "target_config":
             result = validate_target_config(
                 payload.get("config"),
@@ -632,6 +751,7 @@ def _main() -> int:
                 isolated=payload.get("isolated"),
                 expected_disk_keys=payload.get("expected_disk_keys"),
                 storage_id=payload.get("storage_id"),
+                cloud_init_expectation=payload.get("cloud_init_expectation"),
             )
         elif mode == "qga_exec_status":
             require(set(payload) == {"mode", "status"}, "invalid_input")

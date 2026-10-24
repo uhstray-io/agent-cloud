@@ -34,6 +34,7 @@ TOKEN_ID_VAR = {
     "provision-template.yml": "_pve_token_id",
     "provision-vm.yml": "_pve_token_id",
     "provision-pbs-debian-template.yml": "_pve_token_id",
+    "register-o11y-pbs-restore-storage.yml": "_proxmox_secret.token_id",
     "prepare-pbs-guest-data-disk.yml": "_pve_token_id",
     "preflight-o11y-restore-target.yml": "_pve_token_id",
     "proxmox-validate.yml": "_pve_token_id",
@@ -130,6 +131,7 @@ def _token_id_sources(play):
         "_restore_pve_secret",
         "_cleanup_pve",
         "_pve_secret_record",
+        "_proxmox_secret",
     )
     found = [str(v) for k, v in (play.get("vars") or {}).items() if k in names]
     for task in playbook_yaml.tasks(play.get("tasks")):
@@ -155,6 +157,7 @@ def _token_id_comes_from_store(play, prior_plays):
     stored = (
         r"_pve\.token_id|_pve_data\.token_id|_pve_bao_read\.json\.data\.data\.token_id"
         r"|_pve_credentials\.token_id|_restore_pve_secret\.token_id|_cleanup_pve\.token_id"
+        r"|_proxmox_secret\.token_id"
         r"|_pve_secret_record\.token_id"
     )
     if any(re.search(stored, source) for source in sources):
@@ -241,6 +244,11 @@ def _run_guards(tmp_path, name, token_id):
         "o11y_copy_manager_token_id": "o11y-copy-manager@pbs!copy-api",
         "o11y_copy_manager_token_secret": "synthetic-manager",
         "o11y_copy_manager_fingerprint": "b" * 64,
+        "o11y_copy_restore_user": "o11y-copy-restore@pbs",
+        "o11y_copy_restore_token_id": "o11y-copy-restore@pbs!pve-restore",
+        "o11y_copy_restore_token_secret": "synthetic-restore-reader",
+        "o11y_copy_restore_datastore": "o11y",
+        "o11y_copy_restore_fingerprint": "c" * 64,
     }
     extra_vars = {
         "backup-o11y-to-pbs.yml": {
@@ -266,9 +274,10 @@ def _run_guards(tmp_path, name, token_id):
             "_restore_pve_host": pve["url"],
             "_restore_pve_token_id": pve_token_id,
             "_restore_pve_token": "synthetic",
-            "_restore_copy_token_id": "o11y-copy-manager@pbs!copy-api",
-            "_restore_copy_token": "synthetic-manager",
-            "_restore_copy_fingerprint": "b" * 64,
+            "_restore_pbs_secret": pbs_copy_secret,
+            "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
+            "_restore_copy_token": "synthetic-restore-reader",
+            "_restore_copy_fingerprint": "c" * 64,
             "_restore_semaphore_secret": {"url": "https://semaphore.test", "api_token": "synthetic"},
             "_restore_semaphore_project_id": 1,
             "_restore_copy_vm_storage_id": "pbs-vm-store",
@@ -278,6 +287,10 @@ def _run_guards(tmp_path, name, token_id):
             "_pbs_copy_secret_record": pbs_copy_secret,
             "_pve_secret_record": {**pve, "token_id": pve_token_id},
             "_pbs_copy_store": "pbs-copy-store",
+        },
+        "register-o11y-pbs-restore-storage.yml": {
+            "_proxmox_secret": {**pve, "token_id": pve_token_id},
+            "_pbs_secret": pbs_copy_secret,
         },
     }
     harness = [{

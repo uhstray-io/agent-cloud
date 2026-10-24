@@ -6,6 +6,7 @@ import base64
 import copy
 import hashlib
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -27,6 +28,11 @@ import seed_harness  # noqa: E402
 PUBLIC_SHA = "a" * 40
 PRIVATE_SHA = "b" * 40
 PROJECT_ID = 7
+NO_CLOUD_INIT = {
+    "present": False,
+    "field_fingerprint": hashlib.sha256(b"{}").hexdigest(),
+    "scrub_keys": [],
+}
 BACKUP_UPID = "UPID:pve1:00000001:00000002:00000003:vzdump:120:root@pam:"
 VERIFY_UPID = "UPID:pve1:00000004:00000005:00000006:pbs-verify:120:root@pam:"
 SYNC_UPID = "UPID:pve-copy:00000007:00000008:00000009:pbs-sync:120:root@pam:"
@@ -57,6 +63,24 @@ def _chain_fixture(*, old_backup: bool = False):
         "format": "pbs-vm",
         "creation_time_epoch": backup_epoch,
         "size_bytes": 300,
+    }
+    destination_reader = {
+        "api_host": "pbs-copy.example",
+        "token_id": "o11y-copy-restore@pbs!pve-restore",
+        "certificate_fingerprint": "c" * 64,
+        "roles": ["Datastore.Audit", "Datastore.Read", "Datastore.Verify"],
+        "datastore": "o11y",
+        "propagate": False,
+    }
+    destination_storage = {
+        "storage_id": copy_store,
+        "server": "pbs-copy.example",
+        "port": 8007,
+        "datastore": "o11y",
+        "username": destination_reader["token_id"],
+        "fingerprint": destination_reader["certificate_fingerprint"],
+        "content": "backup",
+        "nodes": "copy-node",
     }
     evidence = [
         {
@@ -100,8 +124,10 @@ def _chain_fixture(*, old_backup: bool = False):
             "deletion_isolation": "verified",
             "maintenance_isolation": "verified",
             "normalized_restore_locator": {**copy_selector, "storage_id": copy_store},
-            "destination_identity_fingerprint": "a" * 64,
-            "destination_storage_config_fingerprint": "b" * 64,
+            "destination_identity_fingerprint": hashlib.sha256(json.dumps(destination_reader).encode()).hexdigest(),
+            "destination_storage_config_fingerprint": hashlib.sha256(
+                json.dumps(destination_storage).encode()
+            ).hexdigest(),
             "playbook": pbs_receipts.CONTRACTS[CONTRACTS[3]]["playbook"],
         },
     ]
@@ -174,7 +200,6 @@ def _chain_fixture(*, old_backup: bool = False):
         "expected_launches": launches,
         "task_proofs": task_proofs,
         "artifact_fingerprint": artifact,
-        "private_copy_selector": copy_selector,
         "expected_copy_storage_id": copy_store,
     }
 
@@ -192,28 +217,182 @@ def test_exact_artifact_config_requires_source_vmid_included_disks_and_hashes():
     assert result["disk_count"] == 1
     assert result["nic_keys"] == ["net0"]
     assert result["config_sha256"] == hashlib.sha256(config["data"].encode()).hexdigest()
+    assert set(result) == {"config_sha256", "disk_count", "disks", "nic_count", "nic_keys", "config_keys_sha256"}
+
+
+def test_provisioner_cloud_init_is_separate_from_included_disk_layout():
+    config = {
+        "status": 200,
+        "data": (
+            "vmid: 700\nagent: 1\nciuser: observer\nsshkeys: ssh-ed25519%20synthetic\n"
+            "ipconfig0: ip=dhcp\nnameserver: 192.0.2.53\n"
+            "smbios1: uuid=00000000-0000-4000-8000-000000000700\n"
+            "serial0: socket\nmeta: creation-qemu=8.1.5,ctime=1714504207\n"
+            "ide2: source-lvm:vm-700-cloudinit,media=cdrom\n"
+            "scsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+        ),
+    }
+    layout = restore.exact_artifact_config(config, source_vmid=700)
+    cloud_init = restore.exact_artifact_cloud_init(config, source_vmid=700)
+
+    assert layout["disk_count"] == 1
+    assert layout["disks"] == [{"device": "scsi0", "size_bytes": 20 * 1024**3}]
+    assert cloud_init["present"] is True
+    assert cloud_init["scrub_keys"] == ["ciuser", "ipconfig0", "nameserver", "smbios1", "sshkeys"]
+    assert cloud_init["field_fingerprint"] == hashlib.sha256(
+        json.dumps(
+            {
+                "ciuser": "observer",
+                "ipconfig0": "ip=dhcp",
+                "nameserver": "192.0.2.53",
+                "smbios1": "uuid=00000000-0000-4000-8000-000000000700",
+                "sshkeys": "ssh-ed25519%20synthetic",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("line", "reason"),
     [
-        "hookscript: local:snippets/restore-hook.pl",
-        "args: -device host-pci",
-        "hostpci0: 0000:03:00.0",
-        "usb0: host=1-1",
-        "virtiofs0: shared",
-        "mp0: /srv/share,mp=/host",
-        "smbios1: uuid=abc",
-        "cicustom: user=local:snippets/custom.yaml",
-        "unused0: local:orphan-disk",
-        "ide2: local:iso/debian.iso,media=cdrom",
-        "scsi0: pbs:archive,size=20G,backup=0",
-        "scsi0: pbs:archive,size=20G,backup=0\nscsi0: pbs:archive,size=20G,backup=1",
+        ("ide2: local:iso/debian.iso,media=cdrom", "artifact_unsupported"),
+        ("ide2: local:vm-701-cloudinit,media=cdrom", "artifact_unsupported"),
+        ("ide2: local:vm-700-cloudinit.qcow2,media=cdrom", "artifact_unsupported"),
+        ("ide2: local:vm-700-cloudinit,media=cdrom,size=4M", "artifact_unsupported"),
+        ("ide2: none,media=cdrom\nciuser: observer", "artifact_unsupported"),
+        ("ipconfig1: ip=dhcp", "artifact_unsupported"),
+        ("smbios1: uuid=invalid", "artifact_unsupported"),
+        ("serial0: tcp", "artifact_unsupported"),
+        ("serial1: socket", "artifact_unsupported"),
+        ("meta: creation-qemu=8.1.5,ctime=1714504207,unreviewed=value", "artifact_unsupported"),
+        ("meta: ctime=1714504207,creation-qemu=8.1.5", "artifact_unsupported"),
+        ("metadata: creation-qemu=8.1.5,ctime=1714504207", "artifact_unsupported"),
+        ("cicustom: user=local:snippets/user.yaml", "artifact_unsupported"),
     ],
 )
-def test_unsafe_passthrough_shared_hooks_or_excluded_disks_refuse(line):
-    config = {"status": 200, "data": "vmid: 700\nscsi0: pbs:backup/vm/700,backup=1,size=20G\n" + line + "\n"}
-    with pytest.raises(restore.Refusal):
+def test_unreviewed_cloud_init_and_cdrom_shapes_refuse_before_mutation(line, reason):
+    base = "vmid: 700\nagent: enabled=1\nscsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+    with pytest.raises(restore.Refusal, match=reason):
+        restore.exact_artifact_config({"status": 200, "data": base + line + "\n"}, source_vmid=700)
+
+
+def test_target_auxiliary_must_be_regenerated_for_target_store_and_vmid():
+    config = {
+        "status": 200,
+        "data": (
+            "vmid: 700\nagent: enabled=1\nciuser: observer\n"
+            "ide2: source-lvm:vm-700-cloudinit,media=cdrom\n"
+            "serial0: socket\nmeta: creation-qemu=8.1.5,ctime=1714504207\n"
+            "scsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+        ),
+    }
+    expectation = restore.exact_artifact_cloud_init(config, source_vmid=700)
+    expected_fields = {
+        "ciuser": "observer",
+        "ide2": "target-lvm:vm-910001-cloudinit,media=cdrom",
+        "onboot": 0,
+        "description": "o11y-restore:abc",
+        "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+        "vmid": 910001,
+        "serial0": "socket",
+        "meta": "creation-qemu=8.1.5,ctime=1714504207",
+    }
+    admitted = {
+        "status": 200,
+        "data": {**expected_fields, "digest": "a" * 40},
+    }
+    assert restore.validate_target_config(
+        admitted,
+        target_vmid=910001,
+        marker=None,
+        isolated=False,
+        expected_disk_keys=["scsi0"],
+        storage_id="target-lvm",
+        cloud_init_expectation=expectation,
+    )["cloud_init_present"] is True
+
+    for replacement in (
+        "source-lvm:vm-700-cloudinit,media=cdrom",
+        "target-lvm:vm-910002-cloudinit,media=cdrom",
+        "other-lvm:vm-910001-cloudinit,media=cdrom",
+    ):
+        invalid = copy.deepcopy(admitted)
+        invalid["data"]["ide2"] = replacement
+        with pytest.raises(restore.Refusal, match="target_config_invalid"):
+            restore.validate_target_config(
+                invalid,
+                target_vmid=910001,
+                marker=None,
+                isolated=False,
+                expected_disk_keys=["scsi0"],
+                storage_id="target-lvm",
+                cloud_init_expectation=expectation,
+            )
+
+
+def test_isolated_target_keeps_target_auxiliary_but_has_no_source_cloud_init_metadata():
+    config = {
+        "status": 200,
+        "data": {
+            "vmid": 910001,
+            "digest": "a" * 40,
+            "onboot": 0,
+            "description": "o11y-restore:abc",
+            "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+            "ide2": "target-lvm:vm-910001-cloudinit,media=cdrom",
+        },
+    }
+    expectation = {
+        "present": True,
+        "field_fingerprint": hashlib.sha256(b"{\"ciuser\":\"observer\"}").hexdigest(),
+        "scrub_keys": ["ciuser"],
+    }
+    assert restore.validate_target_config(
+        config,
+        target_vmid=910001,
+        marker="o11y-restore:abc",
+        isolated=True,
+        expected_disk_keys=["scsi0"],
+        storage_id="target-lvm",
+        cloud_init_expectation=expectation,
+    )["cloud_init_present"] is True
+    config["data"]["sshkeys"] = "must-be-removed"
+    with pytest.raises(restore.Refusal, match="target_config_invalid"):
+        restore.validate_target_config(
+            config,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            isolated=True,
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            cloud_init_expectation=expectation,
+        )
+
+
+@pytest.mark.parametrize(
+    "line, reason",
+    [
+        ("hookscript: local:snippets/restore-hook.pl", "artifact_unsupported"),
+        ("args: -device host-pci", "artifact_unsupported"),
+        ("hostpci0: 0000:03:00.0", "artifact_unsupported"),
+        ("usb0: host=1-1", "artifact_unsupported"),
+        ("virtiofs0: shared", "artifact_unsupported"),
+        ("mp0: /srv/share,mp=/host", "artifact_unsupported"),
+        ("smbios1: uuid=abc", "artifact_unsupported"),
+        ("cicustom: user=local:snippets/custom.yaml", "artifact_unsupported"),
+        ("unused0: local:orphan-disk", "artifact_unsupported"),
+        ("ide2: local:iso/debian.iso,media=cdrom", "artifact_unsupported"),
+        ("scsi1: pbs:archive,size=20G,backup=0", "artifact_disk_incomplete"),
+        ("scsi0: pbs:archive,size=20G,backup=0\nscsi0: pbs:archive,size=20G,backup=1", "artifact_config_invalid"),
+    ],
+)
+def test_unsafe_passthrough_shared_hooks_or_excluded_disks_refuse(line, reason):
+    base = "vmid: 700\nagent: enabled=1\nscsi0: pbs:backup/vm/700,backup=1,size=20G\n"
+    assert restore.exact_artifact_config({"status": 200, "data": base}, source_vmid=700)["disk_count"] == 1
+    config = {"status": 200, "data": base + line + "\n"}
+    with pytest.raises(restore.Refusal, match=reason):
         restore.exact_artifact_config(config, source_vmid=700)
 
 
@@ -245,6 +424,7 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
             isolated=True,
             expected_disk_keys=["scsi0"],
             storage_id="local",
+            cloud_init_expectation=NO_CLOUD_INIT,
         )["nic_count"]
         == 0
     )
@@ -259,9 +439,13 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
         isolated=False,
         expected_disk_keys=["scsi0"],
         storage_id="local",
+        cloud_init_expectation=NO_CLOUD_INIT,
     )["nic_count"] == 0
     for key, value in (
         ("net0", "virtio=aa,bridge=vmbr0"),
+        ("serial0", "tcp"),
+        ("serial1", "socket"),
+        ("meta", "creation-qemu=8.1.5,ctime=1714504207,unexpected=1"),
         ("hostpci0", "0000:02:00.0"),
         ("onboot", 1),
         ("startup", "order=1"),
@@ -283,6 +467,7 @@ def test_target_readback_requires_disconnected_owned_stopped_config():
                 isolated=True,
                 expected_disk_keys=["scsi0"],
                 storage_id="local",
+                cloud_init_expectation=NO_CLOUD_INIT,
             )
 
 
@@ -316,34 +501,50 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
 
     vmid = 120
     source_node = "source-node"
-    destination_storage = "copy-pbs"
-    backup_time = 1_790_640_000
-    volid = "copy-pbs:backup/vm/120/2026-09-29T00:00:00Z"
-    selector = {
-        "volid": volid,
-        "backend": "pbs",
-        "format": "pbs-vm",
-        "creation_time_epoch": backup_time,
-        "size_bytes": 300,
-    }
-    candidate = {"vmid": vmid, "volid": volid, "format": "pbs-vm", "size": 300, "ctime": backup_time}
     chain_input = _chain_fixture()
+    readiness = chain_input["task_proofs"][CONTRACTS[3]]["receipt"]["evidence"]
+    destination_storage = readiness["normalized_restore_locator"]["storage_id"]
+    destination_reader_fingerprint = "c" * 64
+    destination_storage_config = {
+        "server": "pbs-copy.example",
+        "port": 8007,
+        "datastore": "o11y",
+        "username": "o11y-copy-restore@pbs!pve-restore",
+        "fingerprint": destination_reader_fingerprint,
+        "content": "backup",
+        "nodes": "copy-node",
+    }
+    selector = {
+        key: readiness["normalized_restore_locator"][key]
+        for key in ("volid", "backend", "format", "creation_time_epoch", "size_bytes")
+    }
+    candidate = {
+        "vmid": vmid,
+        "volid": selector["volid"],
+        "format": selector["format"],
+        "size": selector["size_bytes"],
+        "ctime": selector["creation_time_epoch"],
+    }
     variables = {
         "ansible_connection": "local",
         "ansible_python_interpreter": sys.executable,
         "_restore_chain_input": chain_input,
-        "_restore_manifest_raw": {
-            "stdout": json.dumps({"artifact_fingerprint": chain_input["artifact_fingerprint"]}),
+        "_restore_chain_raw": {
+            "rc": 0,
+            "stdout": json.dumps(restore.verify_prerequisite_chain(chain_input)),
         },
         "_restore_source_vmid": str(vmid),
         "_restore_source_node": source_node,
         "_restore_vms": {"json": {"data": [{"type": "qemu", "vmid": vmid, "node": source_node}]}},
         "_restore_copy_storage_id": destination_storage,
+        "_restore_copy_api_host": "pbs-copy.example",
+        "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
+        "_restore_copy_fingerprint": destination_reader_fingerprint,
+        "_restore_copy_pve_storage": {"json": {"data": destination_storage_config}},
         "_restore_copy_content": {"status": 200, "json": {"data": [candidate]}},
-        "_restore_selector": selector,
         "_restore_source_config": {
             "status": 200,
-            "json": {"data": {"scsi0": "copy-pbs:vm-120-disk-0,size=20G"}},
+            "json": {"data": {"scsi0": "copy-store:vm-120-disk-0,size=20G"}},
         },
         "_restore_target_preflight": {
             "restore_disk_count": 1,
@@ -351,6 +552,13 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
             "selected_candidate": {"backend_class": "pbs"},
         },
         "_restore_artifact_admission": {"rc": 0, "stdout": '{"disk_count":1}'},
+        "_restore_cloud_init_admission": {
+            "rc": 0,
+                "stdout": json.dumps(restore.exact_artifact_cloud_init(
+                {"status": 200, "data": "vmid: 120\nagent: enabled=1\nscsi0: copy-store:disk,size=20G\n"},
+                source_vmid=120,
+            )),
+        },
         "_restore_guest_exec_status": {
             "json": {
                 "data": {
@@ -416,9 +624,12 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
                        status=200 if accepted else 400)
 
     task_names = (
-        "Validate all authenticated predecessor links and the closed private selector",
+        "Validate all authenticated predecessor links and readiness locator",
         "Require the authenticated task chain and fixed 24-hour freshness",
-        "Bind one fresh destination candidate to the private selector",
+        "Retain the validated chain and private artifact fingerprint",
+        "Bind current Reader identity and PVE storage to authenticated readiness",
+        "Require current Reader identity and PVE storage to match readiness fingerprints",
+        "Bind one fresh destination candidate to authenticated readiness locator",
         "Require one fresh protected candidate and read online node/storage state",
         "Require complete included disks, safe config, and live isolation preflight",
         "Build and pin the reviewable QGA checker input bytes",
@@ -437,6 +648,7 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
         helper_dir.mkdir()
         for helper in (
             "o11y_isolated_restore.py",
+            "o11y_restore_cloud_init.py",
             "o11y_restore_coordination.py",
             "o11y_pbs_receipts.py",
             "inspect_o11y_backup_artifact.py",
@@ -469,6 +681,62 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
     assert checker_source == expected_checker_source
     assert hashlib.sha256(checker_source.encode()).hexdigest() == expected_checker_sha
     assert input_data["expectations"] == variables["_restore_checker_expectations"]
+
+
+def test_restore_live_storage_fingerprint_refuses_readiness_drift():
+    path = Path(__file__).parents[1] / "playbooks" / "restore-o11y-isolated.yml"
+    tasks = {task.get("name"): task for task in playbook_yaml.tasks(playbook_yaml.load(path))}
+    selected = [
+        tasks["Bind current Reader identity and PVE storage to authenticated readiness"],
+        tasks["Require current Reader identity and PVE storage to match readiness fingerprints"],
+    ]
+    chain = restore.verify_prerequisite_chain(_chain_fixture())
+    variables = {
+        "ansible_connection": "local",
+        "_restore_chain": chain,
+        "_restore_copy_api_host": "pbs-copy.example",
+        "_restore_copy_storage_id": "copy-store",
+        "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
+        "_restore_copy_fingerprint": "c" * 64,
+        "_restore_copy_pve_storage": {
+            "json": {
+                "data": {
+                    "server": "pbs-copy.example",
+                    "port": 8007,
+                    "datastore": "o11y",
+                    "username": "o11y-copy-restore@pbs!pve-restore",
+                    "fingerprint": "c" * 64,
+                    "content": "backup",
+                    "nodes": "copy-node",
+                }
+            }
+        },
+    }
+    with tempfile.TemporaryDirectory(prefix="o11y-ready-fingerprint-") as scratch:
+        tmp_path = Path(scratch)
+
+        def run():
+            play_path = tmp_path / "fingerprint.yml"
+            play_path.write_text(yaml.safe_dump([{
+                "name": "Check authenticated destination fingerprints",
+                "hosts": "localhost",
+                "gather_facts": False,
+                "connection": "local",
+                "vars": variables,
+                "tasks": selected,
+            }], sort_keys=False))
+            return harness_sandbox.run(
+                ["ansible-playbook", "-i", "localhost,", str(play_path)],
+                tmp_path,
+                cwd=playbook_yaml.REPO,
+                env=harness_sandbox.env_for(tmp_path),
+            )
+
+        matching = run()
+        assert matching.returncode == 0, matching.stdout + matching.stderr
+        variables["_restore_chain"] = dict(chain, destination_storage_config_fingerprint="0" * 64)
+        drifted = run()
+        assert drifted.returncode != 0
 
 
 def test_reviewed_restore_and_cleanup_payloads_pin_receipt_dependency():
@@ -591,6 +859,8 @@ def test_prerequisite_chain_authenticates_task_order_links_and_artifact():
     assert result["status"] == "verified"
     assert result["task_ids"] == [100, 101, 102, 103]
     assert result["task_metadata"][CONTRACTS[3]]["project_id"] == PROJECT_ID
+    assert result["normalized_restore_locator"]["storage_id"] == "copy-store"
+    assert re.fullmatch(r"[0-9a-f]{64}", result["destination_identity_fingerprint"])
 
 
 def test_prerequisite_chain_rejects_link_forgery_duplicate_tasks_and_stale_artifact():
@@ -609,11 +879,20 @@ def test_prerequisite_chain_rejects_link_forgery_duplicate_tasks_and_stale_artif
         restore.verify_prerequisite_chain(stale)
 
 
-def test_prerequisite_chain_requires_the_private_copy_selector_and_storage():
+def test_prerequisite_chain_uses_only_the_authenticated_ready_locator_and_storage():
     mismatch = _chain_fixture()
-    mismatch["private_copy_selector"] = dict(mismatch["private_copy_selector"], size_bytes=301)
-    with pytest.raises(restore.Refusal, match="task_chain_invalid"):
+    ready_receipt = mismatch["task_proofs"][CONTRACTS[3]]["receipt"]
+    ready_receipt.pop("receipt_fingerprint")
+    ready_receipt["evidence"]["normalized_restore_locator"]["creation_time_epoch"] += 1
+    ready_receipt.update(pbs_receipts.seal_receipt(ready_receipt))
+    with pytest.raises(restore.Refusal, match="invalid_input"):
         restore.verify_prerequisite_chain(mismatch)
+    caller_selector = _chain_fixture()
+    caller_selector["private_copy_selector"] = dict(
+        caller_selector["task_proofs"][CONTRACTS[3]]["receipt"]["evidence"]["normalized_restore_locator"]
+    )
+    with pytest.raises(restore.Refusal, match="invalid_input"):
+        restore.verify_prerequisite_chain(caller_selector)
     undeclared_store = _chain_fixture()
     undeclared_store["expected_copy_storage_id"] = "other-store"
     with pytest.raises(restore.Refusal, match="task_chain_invalid"):
@@ -641,6 +920,80 @@ def test_cleanup_keeps_historical_and_current_private_inventory_pins_independent
     wrong_current_pin = dict(pins, current_provenance_private_sha="e" * 40)
     with pytest.raises(restore.Refusal, match="restore_receipt_invalid"):
         restore.verify_cleanup_inventory_pins(wrong_current_pin)
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_cleanup_provenance_include_inherits_current_pin_not_historical_restore_pin(tmp_path):
+    playbooks = Path(__file__).resolve().parents[1] / "playbooks"
+    cleanup = playbook_yaml.load(playbooks / "cleanup-o11y-isolated-restore.yml")
+    cleanup_tasks = list(playbook_yaml.tasks(cleanup))
+    include = copy.deepcopy(
+        next(
+            task
+            for task in cleanup_tasks
+            if task.get("name") == "Reprove exact current private inventory bytes against the restore binding"
+        )
+    )
+    assert "site_config_base_sha" not in include.get("vars", {})
+
+    provenance_tasks = list(
+        playbook_yaml.tasks(playbook_yaml.load(playbooks / "tasks/o11y-pbs-inventory-provenance.yml"))
+    )
+    validate_selectors = copy.deepcopy(
+        next(task for task in provenance_tasks if task.get("name") == "Validate fixed PBS provenance selectors")
+    )
+    current_sha = "b" * 40
+    historical_sha = "a" * 40
+    assert current_sha != historical_sha
+
+    stub = tmp_path / "provenance-stub.yml"
+    stub.write_text(
+        yaml.safe_dump(
+            [
+                validate_selectors,
+                {
+                    "name": "Confirm the included pin is the current cleanup pin",
+                    "ansible.builtin.assert": {
+                        "that": [
+                            "site_config_base_sha == expected_current_pin",
+                            "site_config_base_sha != historical_restore_pin",
+                        ]
+                    },
+                },
+            ]
+        )
+    )
+    include["ansible.builtin.include_tasks"] = str(stub)
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text("localhost ansible_connection=local\n")
+    harness = tmp_path / "cleanup-provenance.yml"
+    harness.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "vars": {
+                        "expected_repository_sha": "c" * 40,
+                        "site_config_base_sha": current_sha,
+                        "expected_current_pin": current_sha,
+                        "historical_restore_pin": historical_sha,
+                        "estate_coverage_semaphore_project_id": 7,
+                        "estate_coverage_semaphore_repository_id": 11,
+                    },
+                    "tasks": [include],
+                }
+            ]
+        )
+    )
+
+    result = harness_sandbox.run(
+        ["ansible-playbook", "-i", str(inventory), str(harness)],
+        tmp_path,
+        cwd=Path(__file__).resolve().parents[2],
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_restore_and_cleanup_api_writes_follow_intent_handle_and_effect_order():

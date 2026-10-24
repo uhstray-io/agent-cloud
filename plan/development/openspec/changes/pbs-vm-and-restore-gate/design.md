@@ -44,12 +44,32 @@ and the exact reviewed commit. Current Semaphore does not retain historical
 inventory, environment, repository, or playbook bindings; this path relies on
 the trusted cooperating controller's receipt attestation and makes no
 cryptographic or immutable-history claim. A shared producer-owned proof module
-will provide the closed receipt schema, exact-byte inventory provenance check,
-and stable artifact fingerprint. Cleanup re-authenticates the successful
+provides the closed receipt schema, exact-byte inventory provenance check,
+and stable artifact fingerprint. Source, copy, and restore-target hosts, nodes,
+storage IDs, and network mode remain static private-inventory declarations.
+The artifact location is not a private selector: restore derives the closed
+`normalized_restore_locator` from the authenticated copy-readiness receipt,
+then checks that locator against fresh destination PVE content and the PBS
+manifest. Readiness also binds the dedicated destination restore Reader identity
+and PVE storage configuration fingerprints; restore re-reads both and refuses
+drift. Restore uses only `o11y-copy-restore@pbs!pve-restore` for direct PBS
+manifest reads, while the destination copy manager remains confined to the
+producer workflow. Cleanup re-authenticates the successful
 restore task and exact private receipt, compares the entire coordination
 record/version, checks the stopped owned target, and requires exact
 authoritative deletion readback. See the source-child runbook in
 `implementation/isolated-restore-executor-runbook.md`.
+
+Artifact admission allows only the reviewed provisioner-shaped cloud-init
+configuration, the provisioner's exact `serial0: socket`, and PVE's canonical
+`meta: creation-qemu=<version>,ctime=<epoch>` pair. Other serial settings and
+unknown or malformed metadata are refused in both artifact and target
+validation. A backed `ide2` cloud-init auxiliary volume is tracked separately
+from included backup disks; its source VMID and target store/VMID are exact,
+and all source cloud-init network, user, SSH-key, and UUID metadata is removed
+in the journaled isolation update before boot. Unsupported auxiliary formats
+and arbitrary CD-ROMs are refused before target mutation. Installed PVE
+behavior remains a live compatibility gate.
 
 ### Implementation refinements from the read-only census
 
@@ -150,9 +170,12 @@ from the trusted boundary, and is not an absolute immutability claim. Do not
 declare or provision that guest before GET-only placement/capacity evidence and
 installed PBS sync-schema verification. Acceptance needs destination-side
 protection checks and an isolated restore while the primary is unavailable,
-plus the separate seven-day capacity gate. The source-only restore-target
-preflight requires a private exact-artifact declaration; it reserves no VMID
-and does not establish allocation authority or ACL census visibility.
+plus the separate seven-day capacity gate. The independent GET-only
+restore-target survey still accepts its private source-artifact selector and
+reserves no VMID; that selector is not an authority for the write-capable
+protected restore. The protected restore consumes only the authenticated
+copy-readiness locator described above. Neither preflight establishes
+allocation authority or ACL census visibility.
 
 ### Reserved restore target and coordination foundation
 

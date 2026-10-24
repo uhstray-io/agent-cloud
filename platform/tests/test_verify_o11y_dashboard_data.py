@@ -76,6 +76,8 @@ class FakePrometheus:
 
     def answer(self, path, form):
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "data")
+        if behaviour == "nonmapping":
+            return 200, {"status": "success", "data": [{"private-label": "do-not-report"}]}
         if behaviour == "error":
             return 400, {"status": "error", "errorType": "bad_data", "error": "parse error"}
         if behaviour == "redirect":
@@ -1393,6 +1395,21 @@ def test_every_panel_with_data_passes_and_reports_counts_only(prometheus):
     path, form = prometheus.requests[0]
     assert path == "/api/v1/query_range"
     assert (form["start"], form["end"], form["step"]) == ("1700000000.000", "1700003600.000", "15s")
+
+
+def test_non_mapping_success_data_is_a_fixed_query_error_through_full_evaluation(prometheus):
+    prometheus.rules["min by (service)"] = "nonmapping"
+    report = vdd.evaluate(_payload("service-overview", prometheus_url=prometheus.url), now=1700003600)
+
+    target = next(
+        target
+        for panel in report["panels"]
+        for target in panel["targets"]
+        if target["status"] == "error"
+    )
+    assert report["status"] == "fail"
+    assert target["error"] == "response data is not an object"
+    assert "do-not-report" not in json.dumps(report)
 
 
 def test_nan_only_series_render_nothing_and_fail_the_panel(prometheus):

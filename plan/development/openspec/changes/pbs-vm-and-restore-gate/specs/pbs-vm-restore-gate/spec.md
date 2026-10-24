@@ -48,6 +48,10 @@ The system SHALL configure a backup credential that cannot prune or delete exist
 - **WHEN** the artifact, target, or restored data cannot be verified
 - **THEN** the workflow refuses to mark the restore gate complete and preserves existing services and volumes
 
+#### Scenario: Restore uses authenticated readiness for artifact placement
+- **WHEN** restore authenticates the ordered PBS task chain and the copy-readiness receipt
+- **THEN** it derives the artifact locator from that receipt, compares it with fresh destination PVE and manifest readback, and verifies the current destination Reader identity and storage configuration fingerprints; a caller or legacy inventory artifact selector is refused
+
 #### Scenario: Restore action response is uncertain
 - **WHEN** any restore, isolation, start, guest-exec, stop, or cleanup mutation has an unknown response or mismatched versioned journal readback
 - **THEN** the workflow preserves the target and current journal state, does not retry or adopt a nonce, and does not report success or clean the target
@@ -57,7 +61,7 @@ The system SHALL configure a backup credential that cannot prune or delete exist
 - **THEN** the restore remains unverified; paths alone cannot satisfy the restore gate
 
 #### Scenario: Cleanup selects a prior task
-- **WHEN** cleanup is launched with a prior restore task ID and expected receipt SHA
+- **WHEN** cleanup is launched with a prior restore task ID, reviewed restore and cleanup code SHAs, and the current private site-config SHA
 - **THEN** it authenticates the completed task's project, status, reviewed commit, ordered output, and one fixed-contract receipt, compares the full coordination record/version, and deletes only the stopped target still owned by that record
 
 #### Scenario: Cleanup absence is ambiguous

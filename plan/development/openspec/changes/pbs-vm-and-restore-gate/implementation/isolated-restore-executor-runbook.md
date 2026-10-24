@@ -41,6 +41,17 @@ capacity tasks. They are not restore acceptance evidence:
   references were missing. The launch supplied no receipt task IDs and the
   census provided no receiver proof. These are configuration classifications,
   not telemetry-absence, application-health, or fleet-coverage evidence.
+- Capacity task 8658 at Dev `e68ca3de948914cb5ba820c92e12627277d468d6` ended
+  `source_history_too_short`: 2,305 evaluation points (at least 2,017 expected),
+  16 canonical source events (at least 8 expected), and a 604,701-second event
+  span, 99 seconds short of seven days. The forecast gate remains open; elapsed
+  time alone cannot lengthen the observed event span.
+- Conformance task 8659 at the same controller queried both exact
+  service-conformance panels successfully over 24 hours. Categorical age data
+  was available, but the identity join was unverified: all five failed pairs
+  had unknown age, and three registry rows had unknown identity. The rejected
+  age map had zero per-pair missing/unavailable counters. This does not prove
+  application health or delivery.
 
 These tasks do not check private PBS placement, effective OpenBao capabilities,
 writer drain, restore-target availability, protected-copy failover, or restore
@@ -65,11 +76,23 @@ seven-day forecast.
    for those bindings. This is a trusted-controller attestation, not an
    immutable-history or cryptographic-signature claim. The shared prerequisite
    proof module owns the canonical receipt schema and artifact fingerprint.
+   The artifact locator comes only from the authenticated copy-readiness
+   receipt's `normalized_restore_locator`. Static host/node/storage placement
+   remains private inventory. Restore refuses the legacy inventory selector,
+   checks fresh PVE content and the PBS manifest against the authenticated
+   locator, and compares the destination Reader identity and current PVE
+   storage fingerprints to readiness before using the copy.
    Missing or ambiguous task/output/API evidence refuses.
 3. Read the selected artifact's exact configuration and validate its complete
    included disk set before reservation or restore. Refuse hooks, extra
-   arguments, passthrough devices, host/shared mounts, excluded disks, CD-ROMs,
-   and unrecognized disk layouts.
+   arguments, passthrough devices, host/shared mounts, excluded disks, arbitrary
+   CD-ROMs, and unrecognized disk layouts. Admit only the reviewed provisioner
+   cloud-init fields, `serial0: socket`, and canonical PVE
+   `meta: creation-qemu=<version>,ctime=<epoch>`; refuse other serial keys and
+   unknown or malformed meta fields. Derive the cloud-init auxiliary expectation
+   from those exact config bytes, count it separately from backup disks, scrub source NIC and cloud-init
+   identity/network values in the journaled isolation write, and require the
+   regenerated auxiliary to use the target VMID and store.
 4. Recheck artifact freshness against the fixed 24-hour limit, exact VMID
    absence, disconnected target configuration, node and storage availability,
    and capacity. Only then reserve the five-field target
@@ -129,7 +152,13 @@ The upstream backup, PBS verification and protected-copy workflows emit
 versioned receipts through the shared proof module. Restore authenticates them
 in this fixed order: backup, exact-snapshot PBS verification, destination-initiated
 protected-copy sync with `remove-vanished=false`, and independent destination
-readiness. Readiness leaves `final_acceptance=pending_isolated_restore`; the
+readiness. The destination copy Manager is used for copy administration; the
+separate `o11y-copy-restore@pbs!pve-restore` Reader is used for restore-side
+manifest reads and the registered PVE PBS storage. Readiness records the
+Reader and storage fingerprints plus a locator derived from authenticated
+backup VM/time, static destination storage, and the unique current PVE content
+row. Restore compares them all to fresh readback. Readiness leaves
+`final_acceptance=pending_isolated_restore`; the
 isolated restore must prove recovery while the primary PBS guest is unavailable.
 The current restore entrypoint reads the declared protected copy but does not
 test or record primary PBS unavailability. The `restore_receipt/v3` has no
