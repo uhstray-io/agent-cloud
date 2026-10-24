@@ -1,5 +1,7 @@
 # Establish a separately managed destination API identity. It is distinct from
 # both the PVE backup identity and the primary PBS read-only source identity.
+# DatastoreReader is granted only on /datastore/o11y so the manager can read
+# back the protected copy's manifest without using the source Reader token.
 - name: Create the passwordless PBS copy-manager user when absent
   ansible.builtin.command:
     argv:

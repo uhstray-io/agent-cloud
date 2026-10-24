@@ -190,6 +190,35 @@ def test_completed_task_must_bind_task_output_project_and_reviewed_commit() -> N
     )
     assert result["receipt"] == receipt
     assert result["task_metadata"]["template_id"] == 55
+    for wrapped_output in (
+        json.dumps({"o11y_pbs_receipt": receipt}, indent=2),
+        json.dumps({"msg": receipt}, indent=2),
+    ):
+        assert pbs.validate_completed_task(
+            task,
+            [{**rows[0], "output": wrapped_output}],
+            contract="o11y-pbs-backup/v1",
+            public_sha=PUBLIC,
+            private_sha=PRIVATE,
+            playbook=BACKUP_PLAYBOOK,
+            expected_project_id=1,
+            expected_task_id=10,
+            expected_launch={"expected_repository_sha": PUBLIC, "site_config_base_sha": PRIVATE},
+            now=NOW,
+        )["receipt"] == receipt
+    with pytest.raises(pbs.Refusal, match="receipt_missing"):
+        pbs.validate_completed_task(
+            task,
+            [{**rows[0], "output": json.dumps({"unrecognized": {"receipt": receipt}})}],
+            contract="o11y-pbs-backup/v1",
+            public_sha=PUBLIC,
+            private_sha=PRIVATE,
+            playbook=BACKUP_PLAYBOOK,
+            expected_project_id=1,
+            expected_task_id=10,
+            expected_launch={"expected_repository_sha": PUBLIC, "site_config_base_sha": PRIVATE},
+            now=NOW,
+        )
     with pytest.raises(pbs.Refusal, match="output_invalid"):
         pbs.validate_completed_task(
             task,
@@ -542,6 +571,39 @@ def test_copy_readiness_binds_exact_restore_locator_and_destination_fingerprints
     assert pbs.validate_receipt(
         receipt, contract="o11y-pbs-copy-ready/v1", public_sha=PUBLIC, private_sha=PRIVATE, now=NOW
     ) == receipt
+    task = {
+        "id": 12,
+        "project_id": 1,
+        "template_id": 57,
+        "commit_hash": PUBLIC,
+        "status": "success",
+        "created": "2026-10-21T14:59:00Z",
+        "start": "2026-10-21T15:00:00Z",
+        "end": "2026-10-21T15:30:00Z",
+        "environment": {
+            "expected_repository_sha": PUBLIC,
+            "site_config_base_sha": PRIVATE,
+            "backup_task_id": 10,
+            "verify_task_id": 11,
+            "sync_task_id": 12,
+        },
+        "playbook": "",
+        "params": {"diff": False, "dry_run": False},
+    }
+    validated = pbs.validate_completed_task(
+        task,
+        [{"id": 8, "task_id": 12, "stage_id": None,
+          "time": "2026-10-21T15:20:00Z", "output": json.dumps({"msg": receipt})}],
+        contract="o11y-pbs-copy-ready/v1",
+        public_sha=PUBLIC,
+        private_sha=PRIVATE,
+        playbook="platform/playbooks/verify-o11y-protected-pbs-copy.yml",
+        expected_project_id=1,
+        expected_task_id=12,
+        expected_launch=task["environment"],
+        now=NOW,
+    )
+    assert validated["receipt"]["status"] == "ready"
     bad_body = {key: value for key, value in receipt.items() if key != "receipt_fingerprint"}
     bad_body["evidence"] = dict(evidence, normalized_restore_locator={"volid": "invented"})
     with pytest.raises(pbs.Refusal, match="readback_incomplete"):
