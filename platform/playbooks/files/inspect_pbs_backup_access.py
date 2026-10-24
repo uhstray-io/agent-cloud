@@ -792,10 +792,18 @@ def copy_api_request(*, url: str, fingerprint: str, auth_id: str, secret: str,
 
 def read_snapshot_manifest(*, url: str, expected_host: str, fingerprint: str,
                            auth_id: str, secret: str, backup_id: str,
-                           backup_time: int, include_files: bool = False) -> dict[str, Any]:
+                           backup_time: int, include_files: bool = False,
+                           identity_profile: str | None = None) -> dict[str, Any]:
     """Read exactly one manifest over a same-connection pinned PBS reader session."""
-    _require(auth_id in {COPY_READER_TOKEN_ID, COPY_MANAGER_TOKEN_ID},
-             "PBS manifest read requires a dedicated source Reader or destination manager identity.")
+    manifest_profiles = {
+        "source": {COPY_READER_TOKEN_ID},
+        "destination_manager": {COPY_MANAGER_TOKEN_ID},
+        "destination_restore": {COPY_READER_PROFILES["destination_restore"]["token_id"]},
+    }
+    allowed_auth_ids = ({COPY_READER_TOKEN_ID, COPY_MANAGER_TOKEN_ID}
+                        if identity_profile is None else manifest_profiles.get(identity_profile, set()))
+    _require(auth_id in allowed_auth_ids,
+             "PBS manifest read identity does not match its fixed profile.")
     _require(isinstance(backup_id, str) and re.fullmatch(r"[1-9][0-9]{0,8}", backup_id) is not None
              and type(backup_time) is int and backup_time > 0,
              "PBS manifest snapshot selector is malformed.")
@@ -965,6 +973,7 @@ def main() -> int:
                     backup_id=payload.get("backup_id", ""),
                     backup_time=payload.get("backup_time"),
                     include_files=payload.get("include_files", False) is True,
+                    identity_profile=payload.get("identity_profile"),
                 )
             else:
                 result = authenticate_token(
