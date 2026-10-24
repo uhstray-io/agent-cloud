@@ -467,6 +467,16 @@ def test_latest_workflow_status_reports_only_registry_backed_current_failure_pai
         "completion_age_status": "not_selected",
         "failed_pairs_with_known_completion_age": 0,
         "failed_pairs_with_unknown_completion_age": 1,
+        "completion_age_diagnostics": {
+            "registry_unavailable_count": 0,
+            "invalid_result_shape_count": 0,
+            "invalid_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "duplicate_pair_count": 0,
+            "age_rows_with_unavailable_value_count": 0,
+            "failed_pairs_missing_age_row_count": 0,
+            "failed_pairs_with_unavailable_age_value_count": 0,
+        },
     }
     assert panel["observation"]["failed_steps"][0]["completion_age_seconds"] is None
 
@@ -522,6 +532,117 @@ def test_selected_latest_status_joins_only_exact_completion_age_panel(monkeypatc
     }]
     assert failure["failed_pairs_with_known_completion_age"] == 1
     assert failure["failed_pairs_with_unknown_completion_age"] == 0
+    assert failure["completion_age_diagnostics"] == {
+        "registry_unavailable_count": 0,
+        "invalid_result_shape_count": 0,
+        "invalid_label_shape_count": 0,
+        "unknown_identity_count": 0,
+        "duplicate_pair_count": 0,
+        "age_rows_with_unavailable_value_count": 0,
+        "failed_pairs_missing_age_row_count": 0,
+        "failed_pairs_with_unavailable_age_value_count": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("age_rows", "expected_status", "expected_diagnostics"),
+    [
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm", "private": "x"},
+                 "value": [1700000000, "42"]},
+                {"metric": {"service": "private-service", "step": "provision-vm"},
+                 "value": [1700000000, "42"]},
+            ],
+            "unverified",
+            {"invalid_label_shape_count": 1, "unknown_identity_count": 1},
+        ),
+        (
+            [{"metric": {"service": "netbox", "step": "service-validate"},
+              "value": [1700000000, "42"]}],
+            "observed",
+            {"failed_pairs_missing_age_row_count": 1},
+        ),
+        (
+            [{"metric": {"service": "netbox", "step": "provision-vm"},
+              "value": [1700000000, "-1"]}],
+            "observed",
+            {
+                "age_rows_with_unavailable_value_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+        (
+            [
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000000, "42"]},
+                {"metric": {"service": "netbox", "step": "provision-vm"},
+                 "value": [1700000001, "43"]},
+            ],
+            "observed",
+            {
+                "duplicate_pair_count": 1,
+                "failed_pairs_with_unavailable_age_value_count": 1,
+            },
+        ),
+    ],
+)
+def test_completion_age_reports_fixed_rejection_and_pair_join_counts(
+    monkeypatch, age_rows, expected_status, expected_diagnostics
+):
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {"resultType": "vector", "result": age_rows}
+
+    def query(_base, _backend, _mode, expr, _end, _lookback, _step):
+        return {"data": age_data if "completed_at_seconds" in expr else status_data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+    ), now=1700000000)
+    observation = next(
+        panel for panel in report["panels"] if panel["title"] == "Latest step status by service"
+    )["observation"]
+    diagnostics = observation["completion_age_diagnostics"]
+
+    assert observation["completion_age_status"] == expected_status
+    assert observation["failed_steps"][0]["completion_age_seconds"] is None
+    assert set(diagnostics) == set(vdd.COMPLETION_AGE_DIAGNOSTIC_COUNTERS)
+    assert {key: value for key, value in diagnostics.items() if value} == expected_diagnostics
+    serialized = json.dumps(observation)
+    assert "private-service" not in serialized
+    assert '"private"' not in serialized
+
+
+@pytest.mark.parametrize("rejection", ["registry", "result_shape"])
+def test_completion_age_reports_registry_and_result_shape_rejections(monkeypatch, rejection):
+    status_data = _workflow_step_vector([({"service": "netbox", "step": "provision-vm"}, 0)])
+    age_data = {"resultType": "matrix", "result": []}
+    if rejection == "registry":
+        monkeypatch.setattr(vdd, "_workflow_identity_allowlists", lambda *_args: None)
+
+    def query(_base, _backend, _mode, expr, _end, _lookback, _step):
+        return {"data": age_data if "completed_at_seconds" in expr else status_data}
+
+    monkeypatch.setattr(vdd, "_query", query)
+    report = vdd.evaluate(_payload(
+        "service-conformance",
+        panel_titles=["Latest step status by service", "Latest workflow completion age by service and step"],
+    ), now=1700000000)
+    observation = next(
+        panel for panel in report["panels"] if panel["title"] == "Latest step status by service"
+    )["observation"]
+    diagnostics = observation["completion_age_diagnostics"]
+    expected_key = "registry_unavailable_count" if rejection == "registry" else "invalid_result_shape_count"
+
+    assert observation["completion_age_status"] == "unverified"
+    if rejection == "result_shape":
+        assert observation["failed_steps"][0]["completion_age_seconds"] is None
+    else:
+        assert observation["failed_steps"] == []
+    assert diagnostics[expected_key] == 1
+    assert sum(diagnostics.values()) == 1
 
 
 @pytest.mark.parametrize("ambiguity", ["wrong_uid", "wrong_type", "duplicate"])
@@ -829,6 +950,16 @@ def test_changed_latest_status_contract_is_unverified_without_returning_labels(m
         "completion_age_status": "not_selected",
         "failed_pairs_with_known_completion_age": 0,
         "failed_pairs_with_unknown_completion_age": 0,
+        "completion_age_diagnostics": {
+            "registry_unavailable_count": 0,
+            "invalid_result_shape_count": 0,
+            "invalid_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "duplicate_pair_count": 0,
+            "age_rows_with_unavailable_value_count": 0,
+            "failed_pairs_missing_age_row_count": 0,
+            "failed_pairs_with_unavailable_age_value_count": 0,
+        },
     }
     assert "netbox" not in json.dumps(report)
 
