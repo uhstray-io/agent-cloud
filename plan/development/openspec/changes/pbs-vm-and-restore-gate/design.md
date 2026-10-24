@@ -167,9 +167,12 @@ from the trusted boundary, and is not an absolute immutability claim. Do not
 declare or provision that guest before GET-only placement/capacity evidence and
 installed PBS sync-schema verification. Acceptance needs destination-side
 protection checks and an isolated restore while the primary is unavailable,
-plus the separate seven-day capacity gate. The source-only restore-target
-preflight requires a private exact-artifact declaration; it reserves no VMID
-and does not establish allocation authority or ACL census visibility.
+plus the separate seven-day capacity gate. The independent GET-only
+restore-target survey still accepts its private source-artifact selector and
+reserves no VMID; that selector is not an authority for the write-capable
+protected restore. The protected restore consumes only the authenticated
+copy-readiness locator described above. Neither preflight establishes
+allocation authority or ACL census visibility.
 
 ### Reserved restore target and coordination foundation
 
