@@ -66,6 +66,157 @@ def access_proof(node="node-a", storage="pbs-o11y", data=None):
     }
 
 
+class GeneratedTokenOutputTests(TestCase):
+    def test_only_documented_result_envelope_is_normalized_for_fixed_id(self):
+        expected_id = pbs.TOKEN_ID
+        self.assertEqual(
+            pbs.parse_generated_token_output(
+                'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"}',
+                expected_id,
+            ),
+            {"tokenid": expected_id, "value": "fixture-secret"},
+        )
+
+    def test_rejects_ambiguous_malformed_or_unbounded_cli_results_without_echoing_data(self):
+        expected_id = pbs.TOKEN_ID
+        invalid_outputs = (
+            '{"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"}',
+            'prefix Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"}',
+            (
+                'Result: {"tokenid":"o11y-backup@pbs!pve-o11y",'
+                '"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"}'
+            ),
+            'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"} trailing',
+            'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"} {}',
+            'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret","extra":true}',
+            'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":NaN}',
+            'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret\\u0000"}',
+            'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"}' * 80,
+        )
+        for output in invalid_outputs:
+            with self.subTest(output_length=len(output)), self.assertRaises(pbs.Refusal):
+                pbs.parse_generated_token_output(output, expected_id)
+        for expected in ([], {}, "caller-selected"):
+            with self.subTest(expected=type(expected).__name__), self.assertRaises(pbs.Refusal):
+                pbs.parse_generated_token_output(
+                    'Result: {"tokenid":"o11y-backup@pbs!pve-o11y","value":"fixture-secret"}',
+                    expected,
+                )
+
+    def test_cli_refusal_does_not_echo_minted_secret(self):
+        private_fixture = "synthetic-private-token-value"
+        completed = subprocess.run(
+            [sys.executable, str(FILES / "inspect_pbs_backup_access.py"), "parse-generated-token"],
+            input=json.dumps({
+                "stdout": f'Result: {{"tokenid":"{pbs.TOKEN_ID}","value":"{private_fixture}"}}',
+                "expected_token_id": pbs.COPY_READER_TOKEN_ID,
+            }),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertNotIn(private_fixture, completed.stdout + completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {"refusal": "PBS generated-token result does not match its fixed identity."},
+        )
+
+    def test_fake_pbs_cli_default_envelope_flows_through_production_helper_for_all_identities(self):
+        fake_cli_script = (
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "args = sys.argv[1:]\n"
+            "if args[:2] != ['user', 'generate-token'] or '--output-format' in args:\n"
+            "    raise SystemExit(2)\n"
+            "user, token_name = args[2:4]\n"
+            "print('Result: ' + json.dumps({'tokenid': f'{user}!{token_name}', 'value': 'fixture-secret'}))\n"
+        )
+        caller_paths = (
+            ROOT / "playbooks" / "tasks" / "configure-pbs-backup-identity.yml",
+            ROOT / "playbooks" / "tasks" / "configure-pbs-copy-reader-identity.yml",
+            ROOT / "playbooks" / "tasks" / "configure-pbs-copy-manager-identity.yml",
+            ROOT / "playbooks" / "tasks" / "configure-pbs-copy-restore-identity.yml",
+        )
+        helper_path = FILES / "inspect_pbs_backup_access.py"
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            fake_cli = temp / "proxmox-backup-manager"
+            fake_cli.write_text(fake_cli_script)
+            fake_cli.chmod(0o700)
+            env = {**os.environ, "PATH": f"{temp}{os.pathsep}{os.environ.get('PATH', '')}"}
+            observed_ids = set()
+            for task_path in caller_paths:
+                tasks = yaml.safe_load(task_path.read_text())
+                mint = next(
+                    task for task in tasks
+                    if task.get("name", "").startswith("Mint the stable")
+                    or task.get("name", "").startswith("Mint the generated")
+                )
+                argv = mint["ansible.builtin.command"]["argv"]
+                self.assertEqual(argv[:3], ["proxmox-backup-manager", "user", "generate-token"])
+                self.assertNotIn("--output-format", argv)
+                cli_result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(cli_result.returncode, 0)
+                expected_id = f"{argv[3]}!{argv[4]}"
+                observed_ids.add(expected_id)
+                parse_task = next(
+                    task for task in tasks
+                    if "parse-generated-token" in task.get("ansible.builtin.command", {}).get("argv", [])
+                )
+                template_env = Environment()
+                template_env.filters["to_json"] = json.dumps
+                task_stdin = template_env.from_string(
+                    parse_task["ansible.builtin.command"]["stdin"]
+                ).render(**{mint["register"]: {"stdout": cli_result.stdout}})
+                task_payload = json.loads(task_stdin)
+                self.assertEqual(task_payload["expected_token_id"], expected_id)
+                parser_result = subprocess.run(
+                    [sys.executable, str(helper_path), "parse-generated-token"],
+                    input=task_stdin,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(parser_result.returncode, 0, parser_result.stderr)
+                self.assertEqual(
+                    json.loads(parser_result.stdout),
+                    {"tokenid": expected_id, "value": "fixture-secret"},
+                )
+            self.assertEqual(observed_ids, pbs.GENERATED_TOKEN_IDS)
+
+    def test_each_token_mint_uses_parser_before_persist_and_acl_grants(self):
+        for task_path in (
+            ROOT / "playbooks" / "tasks" / "configure-pbs-backup-identity.yml",
+            ROOT / "playbooks" / "tasks" / "configure-pbs-copy-reader-identity.yml",
+            ROOT / "playbooks" / "tasks" / "configure-pbs-copy-manager-identity.yml",
+            ROOT / "playbooks" / "tasks" / "configure-pbs-copy-restore-identity.yml",
+        ):
+            with self.subTest(task=task_path.name):
+                tasks = yaml.safe_load(task_path.read_text())
+                mint_index = next(i for i, task in enumerate(tasks) if "generate-token" in task.get(
+                    "ansible.builtin.command", {}).get("argv", []))
+                parser_index = next(i for i, task in enumerate(tasks) if "parse-generated-token" in task.get(
+                    "ansible.builtin.command", {}).get("argv", []))
+                persist_index = next(i for i, task in enumerate(tasks) if task.get(
+                    "ansible.builtin.include_tasks", {}).get("file") == "bao-merge-keys.yml")
+                self.assertLess(mint_index, parser_index)
+                self.assertLess(parser_index, persist_index)
+                parser = tasks[parser_index]
+                self.assertIs(parser.get("no_log"), True)
+                self.assertIs(parser.get("check_mode"), False)
+                self.assertEqual(parser.get("delegate_to"), "localhost")
+                self.assertIs(parser.get("become"), False)
+                self.assertIn("_generated_token.stdout", parser["ansible.builtin.command"]["stdin"])
+                self.assertIn("expected_token_id", parser["ansible.builtin.command"]["stdin"])
+                self.assertTrue(all("_generated_token_parsed.stdout" in str(value)
+                                    for value in tasks[parser_index + 1]["ansible.builtin.set_fact"].values()))
+                grants = [i for i, task in enumerate(tasks)
+                          if task.get("name", "").startswith("Grant only ")]
+                self.assertTrue(grants)
+                self.assertLess(persist_index, min(grants))
+
+
 class IdentityStateTests(TestCase):
     def setUp(self):
         self.user = {"userid": pbs.USER_ID, "enable": 1, "expire": 0}

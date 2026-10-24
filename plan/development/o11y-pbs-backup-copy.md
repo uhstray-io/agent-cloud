@@ -65,11 +65,14 @@ the generated token is persisted and read back before its ACL is granted.
 
 The same standalone workflow manages a separate destination copy-manager
 identity. It is never reused by PVE, the source Reader, or the destination
-restore Reader. It receives only
-`Datastore.Audit` plus `Datastore.Backup` on `/datastore/o11y`, `RemoteAdmin` on `/remote` only for
+restore Reader. It receives only `Datastore.Audit`, `Datastore.Backup`, and the
+built-in `DatastoreReader` role (effective `Datastore.Read` and
+`Datastore.Verify`) on `/datastore/o11y`; the Reader role is needed for
+destination manifest readback. It also receives `RemoteAdmin` on `/remote` only for
 remote creation, `RemoteAdmin` on `/remote/<declared remote>` for that remote's
 configuration, and `RemoteSyncOperator` on its exact `/o11y` remote datastore
-path. Every grant is non-propagating; it receives no `Datastore.Prune`. API
+path. Every grant is non-propagating; the manager has no `Datastore.Prune` or
+broad datastore role, and its credential is never used by PVE. API
 requests use the shared same-connection certificate-pinning helper, fixed
 paths/methods, and bounded JSON responses. Secret request bodies remain in
 protected Ansible memory and never enter argv or intermediary files. PBS

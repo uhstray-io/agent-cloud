@@ -1,0 +1,5 @@
+# Rendered per-deploy by the skynet deploy playbook from OpenBao + inventory. Never committed.
+.env
+# The step-ca trust bundle the local overlay mounts (tasks/distribute-ca-root.yml). Listed here
+# so local-dev's rsync --delete (tasks/place-monorepo.yml honours .gitignore) leaves it in place.
+certs/

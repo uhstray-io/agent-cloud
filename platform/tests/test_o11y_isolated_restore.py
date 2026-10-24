@@ -371,6 +371,79 @@ def test_isolated_target_keeps_target_auxiliary_but_has_no_source_cloud_init_met
         )
 
 
+def test_cleanup_target_config_requires_bound_digest_before_auxiliary_validation():
+    def config(ide2=None, **updates):
+        data = {
+            "vmid": 910001,
+            "digest": "a" * 40,
+            "onboot": 0,
+            "description": "o11y-restore:abc",
+            "scsi0": "target-lvm:vm-910001-disk-0,size=20G",
+        }
+        if ide2 is not None:
+            data["ide2"] = ide2
+        data.update(updates)
+        return {"status": 200, "data": data}
+
+    def fingerprint(candidate):
+        return hashlib.sha256(json.dumps(candidate["data"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    for candidate, expected_present in (
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom"), True),
+        (config("none,media=cdrom"), False),
+        (config(), False),
+    ):
+        result = restore.validate_cleanup_target_config(
+            candidate,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            expected_config_sha256=fingerprint(candidate),
+        )
+        assert result["cloud_init_present"] is expected_present
+
+    valid = config("target-lvm:vm-910001-cloudinit,media=cdrom")
+    with pytest.raises(restore.Refusal, match="target_config_invalid"):
+        restore.validate_cleanup_target_config(
+            valid,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            expected_config_sha256="f" * 64,
+        )
+
+    tampered = copy.deepcopy(valid)
+    tampered["data"]["ide2"] = "target-lvm:vm-910002-cloudinit,media=cdrom"
+    with pytest.raises(restore.Refusal, match="target_config_invalid"):
+        restore.validate_cleanup_target_config(
+            tampered,
+            target_vmid=910001,
+            marker="o11y-restore:abc",
+            expected_disk_keys=["scsi0"],
+            storage_id="target-lvm",
+            expected_config_sha256=fingerprint(valid),
+        )
+
+    for unsafe, expected_disk_keys in (
+        (config("other-lvm:vm-910001-cloudinit,media=cdrom"), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", scsi0="other-lvm:vm-910001-disk-0,size=20G"), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", description="o11y-restore:other"), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", vmid=910002), ["scsi0"]),
+        (config("target-lvm:vm-910001-cloudinit,media=cdrom", scsi1="target-lvm:vm-910001-disk-1,size=20G"), ["scsi0"]),
+    ):
+        with pytest.raises(restore.Refusal, match="target_config_invalid"):
+            restore.validate_cleanup_target_config(
+                unsafe,
+                target_vmid=910001,
+                marker="o11y-restore:abc",
+                expected_disk_keys=expected_disk_keys,
+                storage_id="target-lvm",
+                expected_config_sha256=fingerprint(unsafe),
+            )
+
+
 @pytest.mark.parametrize(
     "line, reason",
     [
@@ -920,6 +993,80 @@ def test_cleanup_keeps_historical_and_current_private_inventory_pins_independent
     wrong_current_pin = dict(pins, current_provenance_private_sha="e" * 40)
     with pytest.raises(restore.Refusal, match="restore_receipt_invalid"):
         restore.verify_cleanup_inventory_pins(wrong_current_pin)
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_cleanup_provenance_include_inherits_current_pin_not_historical_restore_pin(tmp_path):
+    playbooks = Path(__file__).resolve().parents[1] / "playbooks"
+    cleanup = playbook_yaml.load(playbooks / "cleanup-o11y-isolated-restore.yml")
+    cleanup_tasks = list(playbook_yaml.tasks(cleanup))
+    include = copy.deepcopy(
+        next(
+            task
+            for task in cleanup_tasks
+            if task.get("name") == "Reprove exact current private inventory bytes against the restore binding"
+        )
+    )
+    assert "site_config_base_sha" not in include.get("vars", {})
+
+    provenance_tasks = list(
+        playbook_yaml.tasks(playbook_yaml.load(playbooks / "tasks/o11y-pbs-inventory-provenance.yml"))
+    )
+    validate_selectors = copy.deepcopy(
+        next(task for task in provenance_tasks if task.get("name") == "Validate fixed PBS provenance selectors")
+    )
+    current_sha = "b" * 40
+    historical_sha = "a" * 40
+    assert current_sha != historical_sha
+
+    stub = tmp_path / "provenance-stub.yml"
+    stub.write_text(
+        yaml.safe_dump(
+            [
+                validate_selectors,
+                {
+                    "name": "Confirm the included pin is the current cleanup pin",
+                    "ansible.builtin.assert": {
+                        "that": [
+                            "site_config_base_sha == expected_current_pin",
+                            "site_config_base_sha != historical_restore_pin",
+                        ]
+                    },
+                },
+            ]
+        )
+    )
+    include["ansible.builtin.include_tasks"] = str(stub)
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text("localhost ansible_connection=local\n")
+    harness = tmp_path / "cleanup-provenance.yml"
+    harness.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "vars": {
+                        "expected_repository_sha": "c" * 40,
+                        "site_config_base_sha": current_sha,
+                        "expected_current_pin": current_sha,
+                        "historical_restore_pin": historical_sha,
+                        "estate_coverage_semaphore_project_id": 7,
+                        "estate_coverage_semaphore_repository_id": 11,
+                    },
+                    "tasks": [include],
+                }
+            ]
+        )
+    )
+
+    result = harness_sandbox.run(
+        ["ansible-playbook", "-i", str(inventory), str(harness)],
+        tmp_path,
+        cwd=Path(__file__).resolve().parents[2],
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_restore_and_cleanup_api_writes_follow_intent_handle_and_effect_order():
