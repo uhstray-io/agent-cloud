@@ -214,21 +214,49 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         So section 3's local gateway runs against the public edge (subject to its rate limit)
         until the VM path is fixed. Ticked once the measured result and the
         degraded path were recorded in `design.md` (Risks, "Measured 2026-10-12")
-- [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
-      `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
-      secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
+- [x] 3.2 Local inventory: agentgateway upstream set in `local-dev.yml` only to the DGX API,
+      directly on the LAN or, while 3.1's degraded path holds, through the public edge that
+      fronts it; `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the
+      environment secret, never an argv; `agw_clients` gains the five role identities (plan
+      15's four plus `network-agent`) and `skynet-eval`
+      - 2026-10-24: task text amended on review. It first named the DGX API without the
+        degraded path, and four role identities.
+      - 2026-10-24, upstream: the public edge (`https://inference.uhstray.io/v1`), not the DGX
+        LAN address. That is the degraded path recorded in 3.1, kept by operator decision while
+        the VM path to the LAN stays cut; `local-dev.yml.example` documents the LAN override for
+        a gitignored `local-dev.yml`.
+      - `vllm_api_key` seeded by local `Seed OpenBao Key (Dev)` task 6767 (success), the value
+        staged as the encrypted `BAO_VALUE` environment input by `scripts/semaphore-seed-input.py`,
+        never a task parameter or argv. `Deploy agentgateway (Local)` task 6768 then passed its
+        verify: a chat completion came back from the upstream for `dev-local`.
+      - `agw_clients` in `local-dev.yml.example` lists `infra-agent`, `security-agent`,
+        `o11y-agent`, `service-agent`, `network-agent` and `skynet-eval`. Five role identities,
+        not four: `network-agent` joined plan 15's role table on 2026-10-04 (edge-dns), after
+        this task was written.
 - [ ] 3.3 agentgateway route for skynet's orchestration API on the default gateway, key-gated,
       restricted to the operator identity; deploy and verify locally. The verify also sends
       one `response_format: json_schema` request through the gateway to the DGX and asserts
       the reply parses against the schema (live half of 0.5)
+      - 2026-10-24, json_schema half done: PR #737 (merged `3a00cac1`) adds the probe to the
+        deploy's verify; `Deploy agentgateway (Local)` task 6872 passed it ("response_format
+        json_schema passed through: the reply parses against its schema"). Endpoint: the run's
+        verify names its upstream as `https://inference.uhstray.io/v1` (model
+        `nvidia/Qwen3.8-Flash-Next-NVFP4`), the public edge in front of vLLM on the DGX Spark
+        head. So the request reached the DGX through the edge, not over the LAN. Open: the route
+        deploy, which needs `Deploy skynet (Local)` first, and that needs a GitHub PAT with
+        `read:packages` in local OpenBao (`secret/services/github:pat`) to pull the image.
 - [ ] 3.4 **[skynet]** Drop Bifrost from the agent-cloud path: Tier 2 calls the gateway's `/v1`
       with the calling role's key; Tier 1 stays only for skynet-local models
 - [ ] 3.5 **[skynet]** Postgres checkpointer in place of the in-memory saver; its own small
       Postgres in skynet's compose
 - [ ] 3.6 **[skynet]** A deployable image and compose file for Tier 2
-- [ ] 3.7 `skynet_svc` in `local-dev.yml.example`, `deploy-skynet.yml` and
+- [x] 3.7 `skynet_svc` in `local-dev.yml.example`, `deploy-skynet.yml` and
       `clean-deploy-skynet.yml` from the shared tasks, local templates in
       `templates-local.yml`; secrets through manage-secrets; BATS test
+      - 2026-10-24: merged in PR #732 (`07f2dc84`): `skynet_svc` / `skynet-local` in
+        `local-dev.yml.example`, both playbooks, `Deploy skynet (Local)` in `templates-local.yml`,
+        `platform/tests/test_service_skynet.bats`. The live deploy is part of 3.8; it waits on
+        the same GitHub PAT as 3.3.
 - [ ] 3.8 Validation gate: spec scenarios "Agent calls are attributable per role",
       "Orchestration route is key-gated", "Restart mid-run" and "No private address in the
       public repo" pass on local-dev
@@ -757,6 +785,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       workflow rows
       - 2026-10-14: same count as 10.1 (23 registry entries; the diagram must show twenty-three).
         Not ticked
+      - 2026-10-24: three of the four parts done. `docs/agent-cloud-service-deploy.excalidraw` draws all
+        twenty-three steps: SSH Key Backup, Secrets & AppRole, Edge Route, Edge DNS and Credential
+        Backup are inserted in flow order, with owner lanes, including a new Network agent lane over
+        Edge DNS. Every registry entry now carries a `diagram_label`, and
+        `test_workflow_registry.py` requires each to name a box in the drawing (mutation-checked: a
+        wrong label fails). Plan 15 is ACTIVE, with a 23-row step table (Edge DNS is 16, the later
+        rows renumbered, including the schema and role tables). Root `AGENTS.md` gains the one
+        missing workflow row, `Create VM Template`. Open: re-export `docs/agent-cloud-service-deploy.svg`
+        from the updated drawing (Excalidraw's export needs a browser). Not ticked
 - [ ] 10.3 On archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
 - [ ] 10.4 Validation gate: `openspec validate service-deployment-workflow --store

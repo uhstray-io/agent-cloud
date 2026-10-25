@@ -299,6 +299,11 @@ An environment provisioned before 2026-09-25 carries an `openbao_addr` pin. Publ
 refuses it until **Provision Seed Environment** runs again, which removes the pin and keeps
 the AppRole inputs.
 
+If a task launch fails with `cannot decrypt access key, perhaps encryption key was changed`,
+Semaphore's encryption key changed under existing inputs. Run **Provision Seed Environment**
+for that seed template with `seed_replace_auth=true`: it overwrites the two AppRole inputs in
+place from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
+
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
    with `seed_template` set to the declared base name, plus the verified
    `semaphore_project_id`, `semaphore_inventory_id` and `semaphore_source_environment_id`

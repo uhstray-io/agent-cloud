@@ -17,7 +17,7 @@
 # 3. Guards the opt-in Docker CLI client (podman_docker_api_client): Docker's own client,
 #    pinned, from Docker's repository, with no Docker engine, pointed by its consumer at a
 #    podman API socket. It replaces the shim for the GitHub runner (design D4,
-#    docs/MISTAKES.md 10.28), so the two are mutually exclusive.
+#    docs/MISTAKES.md 10.29), so the two are mutually exclusive.
 #
 # Negative assertions use refute_grep, never `! grep`: on Bats 1.13.0 a `!`-inverted
 # command anywhere but the final statement of a body leaves the test PASSING, which makes

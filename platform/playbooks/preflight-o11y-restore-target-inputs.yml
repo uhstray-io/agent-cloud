@@ -1,0 +1,12 @@
+---
+# Credential-free destination/input gate. Import after refusing internal extra vars
+# and before any OpenBao credential lookup.
+- name: Preflight protected restore-target inputs before authentication
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Check the fixed restore-target OpenBao destination and protected inputs
+      ansible.builtin.include_tasks: tasks/preflight-o11y-restore-target.yml
+      tags: [always]

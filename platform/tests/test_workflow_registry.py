@@ -263,13 +263,10 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
 
 def test_drawn_steps_match_the_drawing():
     drawn = _drawn_labels()
-    labelled = [s for s in STEPS if s.get("diagram_label")]
-    assert len(labelled) == 18, "the drawing shows eighteen workflow steps"
+    # Every step is drawn (workflow task 10.2): each label names a box in the drawing.
     for step in STEPS:
-        if step.get("diagram_label"):
-            assert step["diagram_label"] in drawn, f"{step['id']}: {step['diagram_label']!r} not in the drawing"
-        else:
-            assert step.get("added") is True, f"{step['id']} is undrawn but not marked added"
+        assert step.get("diagram_label"), f"{step['id']} has no box in the drawing"
+        assert step["diagram_label"] in drawn, f"{step['id']}: {step['diagram_label']!r} not in the drawing"
 
 
 def test_every_schema_parses_and_is_referenced():

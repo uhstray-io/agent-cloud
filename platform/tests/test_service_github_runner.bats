@@ -316,7 +316,7 @@ setup() {
   # Design D4: Docker's CLI client against the account's rootless podman API socket. The
   # hooks pass DOCKER_* through to every `docker` they start (runner-container-hooks
   # v0.8.1, utils.ts optionsWithDockerEnvs), so DOCKER_HOST in .env reaches each call,
-  # while the job's HOME=/github/home never reaches podman (docs/MISTAKES.md 10.28).
+  # while the job's HOME=/github/home never reaches podman (docs/MISTAKES.md 10.29).
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
   local E="$D/templates/runner-dotenv.j2"
   assert_grep -qxF 'DOCKER_HOST=unix:///run/user/{{ github_runner_uid }}/podman/podman.sock' "$E"

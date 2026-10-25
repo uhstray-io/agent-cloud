@@ -42,6 +42,10 @@ NOT_TEMPLATED = {
         "lifted section, as above",
     "test_materialise_ssh_key.py::test_extra_vars_cannot_widen_the_wipe":
         "lifted section, as above",
+    "test_o11y_isolated_restore.py::test_prerequisite_chain_rejects_link_forgery_duplicate_tasks_and_stale_artifact":
+        "pure Python validator: rejects forged authenticated API receipt fields; no Jinja extra-var sink",
+    "test_o11y_isolated_restore.py::test_restore_task_proof_selects_restore_contract_and_rejects_receipt_forgery":
+        "pure Python validator: rejects forged authenticated task receipt fields; no Jinja extra-var sink",
 }
 
 

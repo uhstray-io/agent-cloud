@@ -48,7 +48,7 @@
       and the network, leaving none. (a) is therefore a property of running podman as a
       CLI in the job's environment, not of rootless podman: the API service runs with the
       account's own environment. The interim fix for (a), the `_bin/docker` wrapper of
-      #556, is replaced by the client and removed (`docs/MISTAKES.md` 10.28). Still to
+      #556, is replaced by the client and removed (`docs/MISTAKES.md` 10.29). Still to
       observe: the same cycle on the live hosts (1.5).
 - [x] 1.3 Write the outcome into `design.md` under D4 as a resolved decision (replacing
       the "unverified" wording) — either "rootless podman compatibility socket works,

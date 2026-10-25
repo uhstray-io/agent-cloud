@@ -23,7 +23,7 @@
 #                        openspec add-github-actions-runners): the container hooks start
 #                        `docker` with only the job's variables, HOME=/github/home among
 #                        them, and podman run as a CLI with that HOME fails with
-#                        `cannot resolve /github/home` (docs/MISTAKES.md 10.25, 10.28).
+#                        `cannot resolve /github/home` (docs/MISTAKES.md 10.25, 10.29).
 #                        This playbook enables no socket; the consumer enables the API
 #                        service for the account that owns it.
 #   podman_docker_api_client_version

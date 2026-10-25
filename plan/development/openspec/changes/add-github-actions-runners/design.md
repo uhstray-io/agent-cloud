@@ -275,7 +275,7 @@ The upstream hooks, runner and Podman stay as shipped, so this is the existing s
 path the paragraph above asks for, not a patch. It supersedes the interim `docker` wrapper
 of PR #556, which made the CLI path work by rewriting the engine's environment and the
 job's `-e` arguments, a patch on the CLI path; the wrapper and its PATH line are removed
-(`docs/MISTAKES.md` 10.28). The alternative engine (Docker) is not needed and is not used.
+(`docs/MISTAKES.md` 10.29). The alternative engine (Docker) is not needed and is not used.
 
 ### D5 — Runner group membership is configuration, not a console click
 
@@ -372,7 +372,7 @@ hand.
   is sequenced first: discovering it late would be the moment someone reaches for a
   patch. **Resolved 2026-10-18 (D4):** it works through a Docker CLI client of the
   socket, not through the `podman-docker` CLI shim. The spike ran late, and a patch was
-  reached for first (#556, `docs/MISTAKES.md` 10.28); it is removed.
+  reached for first (#556, `docs/MISTAKES.md` 10.29); it is removed.
 - **Host-level egress denial is weaker than gateway segmentation.** → Accepted and
   stated (D6), paired with unprivileged containerised execution so the rule is not the
   only thing standing between a job and the interior. Gateway segmentation recorded as

@@ -1,0 +1,168 @@
+# O11Y Restore Coordination
+
+**Date:** 2026-10-24
+
+**Status:** ACTIVE
+**Context:** This plan records the source implementation boundary for OpenSpec `pbs-vm-and-restore-gate`, task 5.2. The isolated restore executor and separately launched cleanup are implemented in the current feature worktree around a schema-2 CAS journal and the shared PBS completed-task contract. Independent reviews of the full PBS/restore and capability source scopes are complete, and actionable findings were fixed and verified. Final combined-head CI remains pending; the source is not published, imported into Dev Semaphore, or exercised against private OpenBao, Semaphore, PBS, Proxmox, or guest state. Private inventory declarations and all live acceptance gates remain separate.
+
+## Problem
+
+An isolated restore and its later cleanup can overlap or be retried after an uncertain API response. A target declaration in private inventory identifies what may be used, but does not serialize cooperating workflow runs. Semaphore task output is the durable acceptance record, but an Ansible `set_stats` value alone cannot authenticate a completed restore or authorize deletion. The platform needs a fixed-path, version-CAS record that requires each owner to present its held nonce and complete prior record/version; a fresh GET alone must never grant ownership.
+
+The coordination helper is a pure state-machine validator and its Ansible include performs only fixed-path OpenBao reads, full-record CAS writes, and readbacks. The restore and cleanup playbooks are separate callers that obtain exact API evidence before asking the helper to transition. Neither an inventory declaration, a nonce, nor a generated task output alone proves identity; the task validator authenticates the bounded task/output contract and cleanup compares its receipt snapshot to the live CAS record.
+
+## Design Principles
+
+- The private Git inventory owns the exact target and artifact declaration. Public source contains only schema and workflow logic.
+- OpenBao KV v2 at the fixed `secret/data/coordination/o11y-restore-target` path serializes cooperative transitions with version compare-and-set. The path is not an extra var or inventory input.
+- A completed Semaphore task with a separately authenticated, exact-bound receipt is the acceptance authority. A caller-provided boolean, nonce, or `set_stats` field is not sufficient proof.
+- Every write uses a full validated record and the version read with it. No merge patch, TTL, automatic takeover, release, rescue cleanup, or silent retry is allowed.
+- Every later transition compares the fresh GET with the caller's protected complete prior record and version, then checks the matching held owner nonce. The fresh GET is only a comparison target; it is never adopted as caller state.
+- Unknown write outcome, failed exact readback, malformed data, a tombstone, or any ownership/fingerprint drift retains the claim and target for operator investigation.
+- Do not claim a live Proxmox or Semaphore proof from local source tests.
+
+## Architecture
+
+```mermaid
+stateDiagram-v2
+    [*] --> absent
+    absent --> reserved: CAS 0 after data and metadata both prove absence
+    reserved --> restore_active: held restore nonce + expected record/version
+    restore_active --> awaiting_receipt: held owner nonce + exact expected record/version + generated receipt
+    awaiting_receipt --> cleanup_active: held restore nonce + exact awaiting record/version + authenticated prior task proof
+    cleanup_active --> cleaned: held cleanup nonce + expected record/version + exact delete and VMID absence proofs
+    cleaned --> cleaned: same expected record/version and owner; no automatic new restore
+```
+
+The current record is strict schema version 2 with exact keys: declaration, target, artifact, public/private revision fingerprints, stable operation identity, generation, phase, restore and active nonces, one pending action, an ordered action journal, the restore UPID, receipt fingerprint, and prior authenticated task ID. Schema-1 records are refused; there is no implicit migration, nonce adoption, TTL takeover, or timeout retry. Each of `restore`, `isolate`, `start`, `guest_exec`, `stop`, and `delete` follows an intent → exact returned handle → verified effect sequence. The target, artifact, and private inventory remain private; only SHA-256 fingerprints enter public summaries. `target_fingerprint` binds canonical compact sorted-key JSON for the transient `{node, vmid}` reference; `declaration_fingerprint` separately binds the five normalized target declaration fields `vmid`, `node`, `storage_id`, `network_mode`, and `headroom_percent`. Booleans are not integers for this schema; malformed or noncanonical fields are refused. The caller holds the most recently verified complete record, its observed KV version, and owner nonce in protected controller state. Reservation creates one random 256-bit restore nonce; cleanup transfer creates a distinct random nonce. No credential is stored in the record.
+
+## Reserved-target guard and writer boundary
+
+Before any PVE or guest-side preparatory write, each managed writer must authenticate the fixed coordination state through the private OpenBao endpoint and check its candidate VMID. The guard takes the endpoint only from the sole `openbao_svc` inventory host's `service_url`, validates the private declaration, and uses protected Semaphore environment `BAO_ROLE_ID` and `BAO_SECRET_ID` inputs. It must refuse lowercase credential overrides, URL/path variables, reserved internal inputs, launch values that redirect the endpoint, and internal controller names using existing extra-var guard conventions. It must not reject the protected uppercase Semaphore environment inputs. The trusted endpoint and environment are part of the Semaphore/inventory launch boundary; source code cannot defeat a privileged launcher that controls those inputs or permissions.
+
+Every assigned writer first imports a separate credential-free input/destination preflight, after `refuse-internal-extra-vars.yml` and before any AppRole or Proxmox credential lookup. The preflight pins the sole private inventory `service_url`, requires the existing downstream `openbao_addr` to match it exactly, rejects launch-time endpoint aliases, protected AppRole environment names, and restore-target declaration fields, and checks the existing transport guard without authenticating or reading credentials. The full GET guard reuses the same input checks before its own OpenBao login. Ordinary inventory and protected Semaphore environment inputs remain available; no play-level URI defaults may redirect authentication or supply a Proxmox bearer header to OpenBao.
+
+Each OpenBao URI task explicitly sets its own headers, requires certificate validation, disables proxy use and redirects, and clears inherited client-certificate, CA-path, and URL-authentication fields. AppRole login replaces inherited PVE `Authorization` headers with an empty header map; metadata/data reads carry only their own `X-Vault-Token`. Tests apply the installed Ansible URI module-default merge function to these rendered request arguments, so parent play defaults cannot silently add PVE credentials or disable TLS checks.
+
+The private inventory declaration has one group `o11y_restore_target_svc` with `o11y_restore_target_vmid`, `o11y_restore_target_node`, `o11y_restore_target_storage_id`, `o11y_restore_target_network_mode`, and `o11y_restore_target_headroom_percent`. Its target VMID is protected clusterwide even when the coordination record is absent or cleaned. With a valid declaration and both fixed KV v2 paths truly absent, only that declared VMID is denied; unrelated VMIDs remain usable. With a valid matching record, the declared target remains denied. Malformed, tombstoned, unauthorized, unreachable, mismatched, or removed-declaration-with-record states refuse all PVE side effects. Only a 404 from both exact metadata/data reads proves absence; an ACL denial is never absence.
+
+The guard is source-only and read-only. The mutator wiring covers `provision-vm.yml` (candidate and source-template VMIDs), `provision-template.yml`, `provision-pbs-debian-template.yml`, `resize-vm.yml`, `destroy-vm.yml` (including VMID-derived storage cleanup), `snapshot-vm.yml`, and `attach-pbs-data-disk.yml`; `provision-pbs-vm.yml` must pin the exact dependency paths for the shared guard and provisioner. Include the guard before staging, uploads, seed generation, or other preparatory writes, and refresh it before each separate mutating group, recovery path, and rescue write. Every managed writer, including direct PVE-token operator modes, fails closed when the Bao guard cannot authenticate. This does not guard privileged users or unmanaged code outside the cooperative writer boundary. Reviewed-checkout payload limits remain bounded at 16 entries, sufficient for the exact attach workflow dependency closure; tests accept that bound and reject an additional path.
+
+The exact `semaphore-read.hcl` additions are metadata `read` on `secret/metadata/coordination/o11y-restore-target` and data `create`, `read`, and `update` on `secret/data/coordination/o11y-restore-target`. Ordinary guard invocations use GET only. No wildcard, list, patch, delete, TTL, or metadata-write grant is part of this change. The source policy does not establish the capabilities of an actual injected Semaphore role; activation must verify that role's binding and effective capabilities through the reviewed Semaphore mechanism.
+
+The task reads both KV v2 data and metadata at the fixed path. It refuses a version tombstone or metadata-only record. A reservation is the sole CAS-0 creation. Each later transition requires the caller-supplied complete prior record and version to equal the fresh read and requires the caller-held owner nonce to match that record. It then uses the matched KV version as `options.cas`. The include cannot adopt state from a fresh GET when caller-held expected state is absent or stale. After a write, the task performs an exact readback before reporting a fixed categorical result. The pure helper checks schemas, ownership-state continuity, nonce format, pending-action rules, exact UPID node/type/VMID shape, and proof structure; it does not authenticate the source or assert that the caller obtained those facts from Proxmox or Semaphore.
+
+```mermaid
+sequenceDiagram
+    participant Caller as Future trusted workflow with protected owner state
+    participant Task as Coordination include
+    participant Bao as OpenBao KV v2
+    participant PVE as Proxmox / guest checks
+    participant Sem as Semaphore task history
+    participant Validator as Future task-history validator
+    Caller->>Task: guarded declaration, held nonce, complete expected record/version, transition evidence
+    Task->>Bao: GET fixed data and metadata paths
+    Bao-->>Task: protected snapshot and CAS version
+    Task->>Task: compare GET with caller-held state and validate owner nonce
+    Task->>Task: strict schema, target-bound UPID kind, and transition validation
+    Task->>Bao: POST full record with exact CAS
+    Bao-->>Task: protected write response
+    Task->>Bao: GET exact readback
+    Bao-->>Task: protected resulting record
+    Task-->>Caller: fixed categorical outcome only
+    PVE-->>Sem: restore task output with bounded private receipt
+    Sem->>Validator: completed prior restore task output
+    Validator->>Validator: exact bindings and unique bounded receipt
+    Validator-->>Caller: authenticated prior-restore-task proof input
+    PVE-->>Caller: exact delete UPID result and authoritative VMID absence reads
+```
+
+## Source implementation status
+
+The current feature worktree implements the source path for the isolated restore
+and separately launched cleanup. It consumes the shared authenticated PBS task
+contract, admits the exact protected artifact/configuration before reservation,
+and journals restore, isolation, start, QGA execution, stop, and delete as
+intent → handle → verified effect transitions. The restore checker runs only
+through QGA and emits bounded categories, counts, and hashes. Cleanup fetches
+the successful restore task and its output, validates the private v3 receipt,
+compares the complete coordination record/version with OpenBao, checks the
+stopped isolated target, then deletes only that target and proves exact VMID
+absence before marking the journal cleaned.
+
+The restore task launch has one exact closed shape: reviewed public SHA,
+reviewed private site-config pin, and the backup, PBS verification, copy-sync,
+and copy-readiness task IDs. Cleanup accepts only the current code SHA, the
+current private site-config pin, the authenticated restore task ID, and its
+reviewed public SHA. Cleanup obtains the receipt fingerprint from the
+authenticated task output; it accepts no caller receipt, VMID, locator, nonce,
+or target selector. Its historical private pin is bound to the restore task
+and receipt. Its current private pin is separately proven against runtime
+inventory bytes. The two pins may differ when unrelated private changes occur;
+the declaration, artifact, full target config, ownership marker, and complete
+coordination record/version must still match.
+
+The restore entrypoint reads the declared protected copy, but it does not
+assert or record that primary PBS is unavailable. `restore_receipt/v3` carries
+no outage proof or final-acceptance field. A successful isolated restore can
+prove the bounded copy restore only; it cannot satisfy OpenSpec 4.4c until an
+independently reviewed outage condition and matching restore evidence exist.
+Keep that protected-copy acceptance open.
+
+Source implementation is not activation evidence. Final CI for the integrated
+combined head remains pending, followed by Dev publication, private inventory
+acceptance, effective OpenBao role verification, writer-drain
+verification, and live restore/cleanup. The separate protected-copy
+acceptance while primary PBS is unavailable and the seven-day capacity
+forecast remain open.
+
+## Validation Criteria
+
+| Check | Pass condition |
+|---|---|
+| Focused Python tests | Exercise production helper functions and serialized KV v2 response/write payloads; all fail-closed cases reject. |
+| Ruff | New Python helper and test file pass repository Ruff configuration. |
+| YAML syntax / static inspection | Task include parses and uses only the fixed path, KV v2 version CAS, protected reads/writes/readback, no redirects, and fixed visible status. Caller tests pin credential-free preflight ordering and the exact reviewed payload closure. |
+| Ansible URI default merge | The installed Ansible merge behavior leaves AppRole login headers empty and metadata/data reads with only `X-Vault-Token`, certificate checks enabled, and proxy disabled. |
+| Whitespace and introduced-history scan | `git diff --check` passes; count-only secret scanning of introduced commits finds no credential material. |
+| Runtime boundaries | No live OpenBao, Proxmox, Semaphore API, deployment, or state mutation is performed as part of this source task. |
+
+## Security Considerations
+
+- The fixed path prevents launch-time path selection. The exact policy change in this source task grants only metadata `read` and coordination data `create`, `read`, `update`; guard requests themselves are GET only. Effective capabilities of the Semaphore-injected role remain unverified and are an activation gate.
+- The guard pins the login URL to `service_url` on exactly one private inventory `openbao_svc` host and accepts the protected uppercase AppRole values from the Semaphore process environment. It does not source its login URL from public `openbao_addr` or a launch `service_url` extra var. Semaphore environment binding and launch/edit permissions are part of the trust boundary; no playbook assertion can defeat a privileged launcher that can choose arbitrary extra vars or alter the trusted environment.
+- The repository's play-level `refuse-internal-extra-vars.yml` and `refuse-var-overrides.yml` patterns protect reserved names. The restore and cleanup wrappers reject forged internal/evidence variables before credential lookup and construct closed proof inputs only from authenticated task metadata/output and protected controller state.
+- A 256-bit nonce correlates transitions and is one part of lease ownership; it is not authorization by itself. A new transition also requires the complete expected prior record and KV version from prior protected state. Stable operation identity and generation prevent accidental cross-operation reuse but do not prove human or task identity.
+- After acquisition, the caller must keep the returned record, readback version, and owner nonce in protected controller state. Every later transition supplies those exact values. A mismatch, absent expected record, stale expected version, or missing nonce refuses before CAS; reading the latest record does not enable adoption or resume by a new run.
+- `awaiting_receipt` records the restore run's generated receipt fingerprint only. It does not authorize cleanup. Cleanup must be a separate invocation that fetches and authenticates the prior completed successful restore task through the Semaphore API, confirms exact project/template/revision/inventory bindings, validates one unique bounded receipt, and supplies the complete `awaiting_receipt` record and KV version from that completed task's protected output. The helper compares that expected record/version to the fresh GET and only validates the resulting typed proof structure; it does not authenticate API output. It records the authenticated prior restore task ID when transferring the CAS lease to `cleanup_active`. No environment variable for the current task ID is assumed.
+- `cleaned` is written after the exact recorded delete UPID is proven stopped with successful exit status, authoritative target absence is proven, and the OpenBao CAS write is read back exactly. Target absence needs an exact-VMID authoritative check, such as `cluster/nextid?vmid=<exact-id>` returning HTTP 200 with the same VMID plus validated absence from the declared node's VM configuration endpoint. An arbitrary 500, ACL-filtered list result, or caller boolean is insufficient. The pure helper validates the proof structure; the cleanup playbook performs the live checks. The design does not require a third task to authenticate its own cleanup completion.
+- The coordination phase/action fields journal every implemented restore lifecycle mutation. Unknown write outcomes stop further action. The wrapper verifies exact live-target readbacks and successful Proxmox tasks before accepting transitions. Source tests cannot prove external API behavior, effective role permissions, private declaration correctness, or the result of a real restore.
+- The cleanup UPID task type follows Proxmox's upstream `qemu-server` `src/PVE/API2/Qemu.pm`: its VM DELETE route forks `qmdestroy` (upstream `master`, reviewed 2026-10-21; see [official source around line 2751](https://github.com/proxmox/qemu-server/blob/master/src/PVE/API2/Qemu.pm#L2751)). `qmrestore` remains the restore worker. This source reference is branch-based because the upstream commit SHA could not be retrieved in this environment; it does not establish which qemu-server revision is installed on any target.
+- Never release or automatically expire an active claim. If OpenBao reports an uncertain write or readback drift, retain target and claim, stop further action, and investigate the stored version and task history.
+- `cleaned` is terminal for the exact operation. A rerun must not silently recreate a reservation or start another restore generation.
+
+## Cross-references
+
+- [Platform principles](../../PRINCIPLES.md)
+- [Architecture map](../../ARCHITECTURE.md)
+- [Ansible automation standards](../architecture/08-ansible-automation-standards.md)
+- [Credential and access architecture](../architecture/04-credentials-access.md)
+- [Testing and quality gates](../architecture/03-testing-ci-quality.md)
+- Existing Proxmox task status / exit-status pattern: [snapshot-vm.yml](../../platform/playbooks/snapshot-vm.yml)
+- Existing node-bound UPID validation pattern: [reconcile_proxmox_backup_job.py](../../platform/playbooks/files/reconcile_proxmox_backup_job.py)
+- [Observability development plan](05-observability.md)
+- PBS VM and restore gate OpenSpec change `pbs-vm-and-restore-gate` — PBS source merged to Dev through PR #726 at `c4eee56`; restore workflow acceptance remains open.
+- [Repository operating instructions](../../AGENTS.md)
+
+## Revision History
+
+- 2026-10-21: Initial approved implementation plan for the source-only coordination primitive.
+- 2026-10-21: Clarified restore-proof lifecycle, authoritative exact-VMID absence evidence, and future action-journal integration gate.
+- 2026-10-21: Recorded the pending normal Dev merge and source-only boundary; specified safe command/result diagnostics without exposing protected payloads.
+- 2026-10-21: Required held nonce and complete expected record/version for every owner transition; bound UPIDs to transient private target node/VMID and operation kind.
+- 2026-10-21: Defined canonical node/VMID identity fingerprint binding for the transient target reference; documented separate full-declaration binding.
+- 2026-10-21: Recorded the inspected Semaphore policy paths and the include's metadata/data GET plus data CAS-POST requirements without changing policy.
+- 2026-10-21: Corrected the cleanup UPID kind to upstream `qmdestroy`; the branch-based official source reference is not installed-version compatibility evidence.
+- 2026-10-21: Approved the five-field normalized declaration fingerprint and added the read-only reserved-target guard, narrow policy, and mutator coverage as source scope; no live or policy-application claim.
+- 2026-10-21: Added credential-free destination preflight before all caller secret lookups, explicit OpenBao URI auth/TLS/proxy isolation, and a bounded reviewed-payload limit of 16.
+- 2026-10-24: Recorded the schema-2 isolated restore and cleanup source implementation, the exact shared PBS task contracts, separate historical/current private inventory pin semantics, and the still-open live acceptance gates.

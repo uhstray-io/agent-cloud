@@ -26,16 +26,20 @@ PLAYBOOKS = REPO / "platform/playbooks"
 # Every play that builds a PVEAPIToken header, and the variable that carries its token id there.
 TOKEN_ID_VAR = {
     "attach-pbs-data-disk.yml": "_pve_token_id",
+    "backup-o11y-to-pbs.yml": "_pve_token_id",
+    "cleanup-o11y-isolated-restore.yml": "_cleanup_pve_token_id",
     "configure-pbs-backup-access.yml": "_pve_token_id",
     "destroy-vm.yml": "_pve_token_id",
     "enable-o11y-pbs-import-content.yml": "_pve_token_id",
     "provision-template.yml": "_pve_token_id",
     "provision-vm.yml": "_pve_token_id",
     "provision-pbs-debian-template.yml": "_pve_token_id",
+    "register-o11y-pbs-restore-storage.yml": "_proxmox_secret.token_id",
     "prepare-pbs-guest-data-disk.yml": "_pve_token_id",
     "preflight-o11y-restore-target.yml": "_pve_token_id",
     "proxmox-validate.yml": "_pve_token_id",
     "reconcile-o11y-backup-job.yml": "_pve_token_id",
+    "restore-o11y-isolated.yml": "_restore_pve_token_id",
     "resize-vm.yml": "_pve_token_id",
     "snapshot-vm.yml": "_pve_tid",
     "survey-o11y-backup-artifact.yml": "_pve_token_id",
@@ -44,6 +48,7 @@ TOKEN_ID_VAR = {
     "survey-pbs-provisioning-candidates.yml": "_pve_token_id",
     "survey-o11y-pbs-physical-storage.yml": "_pve_token_id",
     "validate-address-free.yml": "_pve.token_id",
+    "verify-o11y-protected-pbs-copy.yml": "_pve_secret_record.token_id",
 }
 
 # A literal Proxmox token id: <user>@<realm>!<name> with no template or placeholder in it.
@@ -117,7 +122,17 @@ def test_each_pve_play_refuses_an_empty_token_id_before_its_first_request(name):
 def _token_id_sources(play):
     """Where this play itself assigns its token id: play vars and set_fact, nothing inherited.
     Play vars and facts set in an earlier play's vars do not cross the play boundary."""
-    names = ("_pve_token_id", "_pve_tid", "_pve_headers", "_pve")
+    names = (
+        "_pve_token_id",
+        "_pve_tid",
+        "_pve_headers",
+        "_pve",
+        "_pve_credentials",
+        "_restore_pve_secret",
+        "_cleanup_pve",
+        "_pve_secret_record",
+        "_proxmox_secret",
+    )
     found = [str(v) for k, v in (play.get("vars") or {}).items() if k in names]
     for task in playbook_yaml.tasks(play.get("tasks")):
         facts = task.get("ansible.builtin.set_fact") or {}
@@ -139,8 +154,15 @@ def _localhost_token_id_fact_sources(play):
 
 def _token_id_comes_from_store(play, prior_plays):
     sources = _token_id_sources(play)
-    stored = r"_pve\.token_id|_pve_data\.token_id|_pve_bao_read\.json\.data\.data\.token_id"
+    stored = (
+        r"_pve\.token_id|_pve_data\.token_id|_pve_bao_read\.json\.data\.data\.token_id"
+        r"|_pve_credentials\.token_id|_restore_pve_secret\.token_id|_cleanup_pve\.token_id"
+        r"|_proxmox_secret\.token_id"
+        r"|_pve_secret_record\.token_id"
+    )
     if any(re.search(stored, source) for source in sources):
+        return True
+    if any("lookup(" in source and "secret/data/services/proxmox" in source for source in sources):
         return True
     handed_off = any(
         re.search(r"hostvars\[['\"]localhost['\"]\]\._pve_token_id", source)
@@ -214,12 +236,70 @@ def _run_guards(tmp_path, name, token_id):
     pve = {"url": "https://pve.test:8006", "api_token": "synthetic"}
     if token_id is not None:
         pve["token_id"] = token_id
+    pve_token_id = token_id or ""
+    pbs_copy_secret = {
+        "o11y_copy_reader_token_id": "o11y-copy-reader@pbs!pbs-sync",
+        "o11y_copy_reader_token_secret": "synthetic-reader",
+        "o11y_copy_reader_fingerprint": "a" * 64,
+        "o11y_copy_manager_token_id": "o11y-copy-manager@pbs!copy-api",
+        "o11y_copy_manager_token_secret": "synthetic-manager",
+        "o11y_copy_manager_fingerprint": "b" * 64,
+        "o11y_copy_restore_user": "o11y-copy-restore@pbs",
+        "o11y_copy_restore_token_id": "o11y-copy-restore@pbs!pve-restore",
+        "o11y_copy_restore_token_secret": "synthetic-restore-reader",
+        "o11y_copy_restore_datastore": "o11y",
+        "o11y_copy_restore_fingerprint": "c" * 64,
+    }
+    extra_vars = {
+        "backup-o11y-to-pbs.yml": {
+            "_pbs_manifest_auth_id": "o11y-copy-reader@pbs!pbs-sync",
+            "_pbs_manifest_secret": "synthetic-reader",
+            "_pbs_fingerprint": "c" * 64,
+            "_pbs_inventory": {
+                "status": "observed",
+                "reason": "exact_bytes_match",
+                "inventory_fingerprint": "d" * 64,
+            },
+        },
+        "cleanup-o11y-isolated-restore.yml": {
+            "_cleanup_bao_auth": {"status": 200, "json": {"auth": {"client_token": "synthetic"}}},
+            "_cleanup_pve_host": pve["url"],
+            "_cleanup_pve_token_id": pve_token_id,
+            "_cleanup_pve_token": "synthetic",
+            "_cleanup_semaphore_url": "https://semaphore.test",
+            "_cleanup_semaphore_token": "synthetic",
+            "_cleanup_project_id": 1,
+        },
+        "restore-o11y-isolated.yml": {
+            "_restore_pve_host": pve["url"],
+            "_restore_pve_token_id": pve_token_id,
+            "_restore_pve_token": "synthetic",
+            "_restore_pbs_secret": pbs_copy_secret,
+            "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
+            "_restore_copy_token": "synthetic-restore-reader",
+            "_restore_copy_fingerprint": "c" * 64,
+            "_restore_semaphore_secret": {"url": "https://semaphore.test", "api_token": "synthetic"},
+            "_restore_semaphore_project_id": 1,
+            "_restore_copy_vm_storage_id": "pbs-vm-store",
+            "_restore_copy_storage_id": "pbs-vm-store",
+        },
+        "verify-o11y-protected-pbs-copy.yml": {
+            "_pbs_copy_secret_record": pbs_copy_secret,
+            "_pve_secret_record": {**pve, "token_id": pve_token_id},
+            "_pbs_copy_store": "pbs-copy-store",
+        },
+        "register-o11y-pbs-restore-storage.yml": {
+            "_proxmox_secret": {**pve, "token_id": pve_token_id},
+            "_pbs_secret": pbs_copy_secret,
+        },
+    }
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": {"_pve": pve, "_pve_token_id": token_id or "", "_pve_tid": token_id or "",
                  "_pve_host": pve["url"], "_pve_url": pve["url"], "_pve_secret": "synthetic",
                  "_pve_token_secret": "synthetic",
-                 "_pve_sec": "synthetic", "pve_vmid": 100, "pve_node": "node1"},
+                 "_pve_sec": "synthetic", "pve_vmid": 100, "pve_node": "node1",
+                 **extra_vars.get(name, {})},
         "tasks": guards,
     }]
     path = tmp_path / "guards.yml"

@@ -176,7 +176,7 @@
       # rootless podman resolves its configuration from HOME on the host: every container
       # job failed with `cannot resolve /github/home`. Docker's CLI client sends the same
       # calls to the account's podman API service (DOCKER_HOST, .env), which runs with the
-      # account's own environment (design D4; docs/MISTAKES.md 10.28). The runtime install
+      # account's own environment (design D4; docs/MISTAKES.md 10.29). The runtime install
       # owns the package, so this deploy only checks it.
       ansible.builtin.assert:
         that: "'owner=docker-ce-cli' in _docker_owner.stdout_lines"
@@ -684,7 +684,7 @@
       # PR #556 put a `docker` wrapper in _bin and listed _bin first on the runner's PATH.
       # The hooks' docker is now Docker's CLI client against the account's podman API
       # socket, and .env no longer sets PATH, so the wrapper is unused; removed so that no
-      # second `docker` lingers in the runner's home (docs/MISTAKES.md 10.28).
+      # second `docker` lingers in the runner's home (docs/MISTAKES.md 10.29).
       ansible.builtin.file:
         path: "{{ _home }}/_bin"
         state: absent
@@ -900,7 +900,7 @@
       # GITHUB_ACTIONS=true CI=true DOCKER_HOST=...` with `-e HOME`, and must find the
       # imported image; and the created container must carry HOME=/github/home. Under the
       # podman-docker shim this exact create failed with `cannot resolve /github/home`
-      # (docs/MISTAKES.md 10.28). No second `system migrate` here: it stops running
+      # (docs/MISTAKES.md 10.29). No second `system migrate` here: it stops running
       # containers, so it could stop a job that started after the uid-map check.
       ansible.builtin.shell: |
         set -euo pipefail

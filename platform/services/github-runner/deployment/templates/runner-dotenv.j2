@@ -24,7 +24,7 @@ ACTIONS_RUNNER_CONTAINER_HOOKS={{ github_runner_home }}/_hooks/index.js
 # (runner-container-hooks v0.8.1, utils.ts optionsWithDockerEnvs). So this value reaches
 # every hook call, while the job's HOME never reaches podman: the API service runs with
 # the account's own environment. Run as a CLI with the job's HOME, podman failed every
-# container job with `cannot resolve /github/home` (docs/MISTAKES.md 10.25, 10.28).
+# container job with `cannot resolve /github/home` (docs/MISTAKES.md 10.25, 10.29).
 # Every host step inherits this too, so a plain step's `docker` uses the same engine and
 # image store as the hooks. The runner reads this file only when it starts, so the
 # deploy restarts it on a change.

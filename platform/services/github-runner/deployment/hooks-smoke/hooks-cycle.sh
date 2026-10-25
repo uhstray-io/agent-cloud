@@ -4,7 +4,7 @@
 # report whether a `container:` job would start. Runs as root inside the hooks-smoke
 # image (Containerfile beside this file), started by run.sh. Never deployed.
 #
-# The two `docker` binaries the hooks can be given (design D4, docs/MISTAKES.md 10.28):
+# The two `docker` binaries the hooks can be given (design D4, docs/MISTAKES.md 10.29):
 #   shim    a script that runs podman as a CLI, as podman-docker's /usr/bin/docker does.
 #           Expected to FAIL in prepare_job with `cannot resolve /github/home`, the
 #           failure seen on both runners: if it does not, this harness no longer

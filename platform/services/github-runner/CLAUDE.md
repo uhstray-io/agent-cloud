@@ -177,7 +177,7 @@ The options, and why this one (decided under design D4, issue #609):
 |---|---|
 | Set the XDG variables in the job's environment | **Rejected.** Workflow-side, so it fails open, and the values would also enter the job container. |
 | Make `/github/home` exist on the host (a link to the account's home) | **Rejected.** A new path at the host's filesystem root, made for one account's engine, and it would put the image store under a path name that only the hooks' calls use. |
-| A runner-only `docker` wrapper first on the runner's PATH that rewrites podman's environment and the job's bare `-e` arguments, then runs `/usr/bin/podman` (PR #556) | **Replaced.** It worked in principle, but it is a patch on the CLI path, which D4 rules out ("the fallback is an existing supported path rather than a patch"), and it had to carry podman's own option tables to know where the image starts. Removed (`docs/MISTAKES.md` 10.28). |
+| A runner-only `docker` wrapper first on the runner's PATH that rewrites podman's environment and the job's bare `-e` arguments, then runs `/usr/bin/podman` (PR #556) | **Replaced.** It worked in principle, but it is a patch on the CLI path, which D4 rules out ("the fallback is an existing supported path rather than a patch"), and it had to carry podman's own option tables to know where the image starts. Removed (`docs/MISTAKES.md` 10.29). |
 | Run the Docker engine (D4's declared fallback) | **Not needed, and not wanted.** Its socket is root-equivalent, and the owner wants podman as the engine. |
 | Docker's CLI client against the account's rootless podman API socket (`DOCKER_HOST`, which the hooks pass through) | **Chosen.** D4's own description of the runtime: "the container hooks drive a Docker-compatible API". The client only sends API calls; the account's `podman.socket` user unit answers them with the account's own environment, so the job's HOME never reaches podman, while the client still fills `-e HOME` from it. Nothing upstream is changed. |
 
@@ -420,7 +420,7 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
   `DOCKER_HOST` (`docs/MISTAKES.md` 10.25).
 - **The hooks need Docker's CLI client, not podman as a CLI.** The podman-docker shim runs
   podman in the job's environment and fails on `HOME=/github/home`; Docker's client against
-  the account's podman API does not (`docs/MISTAKES.md` 10.28). Declare
+  the account's podman API does not (`docs/MISTAKES.md` 10.29). Declare
   `podman_docker_api_client`, not `podman_docker_cli`, for runner hosts.
 - **The root disk is small until grown.** Both hosts came up with a 9.8 GiB root LV on a
   200 G disk, 878 MiB free, which no Rust build fits in. Run Grow GitHub Runner Root
