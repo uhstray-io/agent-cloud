@@ -179,6 +179,7 @@ and why.
 | 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 10.28 | The seed address check read the inventory as YAML; local-dev registers INI, so every seed template had been unrunnable locally since the check landed and nobody had run one | Mechanism never exercised | 1 | Bootstrap registers `static-yaml` + test (`test_sync_local_o11y_alert_inventory.py`, mutation-checked) |
+| 10.29 | Fixed the container hooks' HOME failure with a `docker` wrapper that patched the CLI path, while the design named the API socket and its open spike would have shown the CLI path was the cause; the wrapper never reached the process that runs jobs, so the runners kept failing | Mechanism never exercised | 1 | Playbook (requires Docker's CLI client, `DOCKER_HOST` probe) + local smoke harness (`hooks-smoke/`, must reproduce the shim failure) + test (`test_service_github_runner.bats`, `test_install_podman.bats`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -5006,6 +5007,50 @@ environment that runs it, not the one its author had in mind. Prefer removing th
 **Enforced by.** `bootstrap-local-dev.yml` registers Ansible's own `--export` YAML of the local
 inventory as `static-yaml` with a literal `all.vars.openbao_addr`; the registration test in
 `test_sync_local_o11y_alert_inventory.py` fails if the type reverts (mutation-checked).
+
+### 10.29 The hooks' HOME failure was patched on the CLI path; the design named the API socket
+
+**What happened.** 10.25 found that the container hooks start `docker` with only the job's
+variables, `HOME=/github/home` among them, and that podman, run as a CLI by the
+podman-docker shim, fails on that HOME with `cannot resolve /github/home`. The fix chosen
+(PR #556) was a `docker` wrapper first on the runner's PATH: it replaced podman's
+XDG directories and PATH, and, because the hooks pass job variables as bare `-e NAME`,
+rewrote those arguments for four names, with a copy of podman v4.9.3's option tables to
+find where the image starts. The PR itself recorded that this conflicts with design D4,
+which says the hooks "drive a Docker-compatible API", leaves open whether they work
+"against rootless Podman's compatibility socket", and requires that the fallback be "an
+existing supported path rather than a patch". The wrapper never reached the process that
+runs jobs (10.27, then a deploy that could not be launched, issue #609), so the runners
+kept failing: zerds run 39135564896 on 2026-10-18 shows the hooks running
+`/usr/bin/docker create` and the same error, six days later.
+
+**Root cause.** The design's spike (tasks 1.2) was still open, so the question it asks,
+does the API socket work, had no answer, and the fix was built on the path that had
+already failed rather than on the one the design named. The spike, once run
+(`hooks-smoke/`, 2026-10-18), shows the failure is a property of running podman as a CLI
+in the job's environment: Docker's CLI client against the account's rootless podman API
+socket runs the hooks' whole cycle unmodified, because the API service keeps the
+account's own environment and only the client sees the job's HOME.
+
+**The rule.** When a design names the mechanism and leaves its feasibility to a spike,
+run the spike before building around the mechanism that failed. A workaround that has
+to imitate another program's argument parser to stay correct is a patch, however small
+its footprint (widens 10.24 and 10.25).
+
+**Enforced by.** `install-podman.yml` has an opt-in `podman_docker_api_client` that
+removes podman-docker, installs only `docker-ce-cli` at a declared pin from Docker's
+repository (one shared task with `install-docker.yml`), and fails unless
+`/usr/bin/docker` is that package at that version and no Docker engine is installed. The
+runner's `.env` sets `DOCKER_HOST` to the account's podman socket and no PATH; the
+wrapper template is deleted and the deploy removes `_bin/` from a host that has it.
+`deploy-github-runner.yml` refuses a host whose `/usr/bin/docker` is not Docker's client,
+and its mount probe requires the client, the `.env` `DOCKER_HOST`, and every engine call
+under `env -i`. `platform/services/github-runner/deployment/hooks-smoke/run.sh` runs the
+real hooks through prepare, a step and cleanup, and fails unless the shim reproduces
+`cannot resolve /github/home` AND the client passes. `test_service_github_runner.bats`
+and `test_install_podman.bats` hold each of these, each assertion seen to fail once under
+a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
+hosts").
 
 ## 11. The largest one
 

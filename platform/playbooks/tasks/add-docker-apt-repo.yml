@@ -1,0 +1,50 @@
+---
+# add-docker-apt-repo.yml: add Docker's official apt repository (download.docker.com),
+# signed by Docker's published key. Adds the SOURCE only; the caller installs what it
+# needs from it.
+#
+# Two callers, so the repository is declared once:
+#   install-docker.yml  the Docker engine (docker-ce, containerd.io and the plugins)
+#   install-podman.yml  only the Docker CLI client (docker-ce-cli), opt-in through
+#                       podman_docker_api_client, as a client of podman's API socket
+#
+# Idempotent: get_url keeps an existing key file and apt_repository an existing source.
+# Requires become (the caller's play escalates).
+
+- name: "Install the repository prerequisites"
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+    state: present
+    update_cache: true
+
+- name: "Create keyrings directory"
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: "Add Docker GPG key"
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: "Get architecture"
+  ansible.builtin.command: dpkg --print-architecture
+  register: _arch
+  changed_when: false
+  check_mode: false
+
+- name: "Get Ubuntu codename"
+  ansible.builtin.shell: . /etc/os-release && echo "${VERSION_CODENAME}"
+  register: _codename
+  changed_when: false
+  check_mode: false
+
+- name: "Add Docker apt repository"
+  ansible.builtin.apt_repository:
+    repo: "deb [arch={{ _arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ _codename.stdout }} stable"
+    state: present
+    filename: docker
