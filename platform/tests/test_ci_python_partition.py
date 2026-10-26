@@ -151,10 +151,12 @@ def test_unit_tests_aggregate_requires_playbook_safety_success_for_every_result(
     assert "python-playbook-safety" in aggregate["needs"]
     assert "python-agentgateway" in aggregate["needs"]
     assert "node-pi-provider" in aggregate["needs"]
+    assert "rust-console" in aggregate["needs"]
     gate = aggregate["steps"][0]
     required = {
         "PYTHON_CORE_RESULT", "PYTHON_PLAYBOOK_SAFETY_RESULT", "PYTHON_AGENTGATEWAY_RESULT",
         "NODE_PI_PROVIDER_RESULT", "PYTHON_NETBOX_RESULT", "PYTHON_SEMAPHORE_RESULT", "BATS_RESULT", "REGO_RESULT",
+        "RUST_CONSOLE_RESULT",
     }
     assert set(gate["env"]) == required
     for name in required:
