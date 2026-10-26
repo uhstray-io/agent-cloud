@@ -326,6 +326,29 @@ reset_prod() {
   assert_contains "$output" QUARANTINED
 }
 
+@test "ephemeral: an unset RUNTIME_DIRECTORY spools in /run, with no unbound-variable error" {
+  # /run does not exist on macOS, and nothing may be written there from a test: the existence
+  # check and mktemp are stubbed, and the template mktemp is called with is what is asserted.
+  run sup 'check_config; unset RUNTIME_DIRECTORY; spool_ready() { return 0; }; mktemp() { printf "%s\n" "$*" >>"$TEST_DIR/mktemp.args"; f="$TEST_DIR/stub.$RANDOM$RANDOM"; : >"$f"; printf "%s\n" "$f"; }; owned_paths >/dev/null'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "unbound"
+  assert_grep -qx '/run/sweep.XXXXXX' "$T/mktemp.args"
+}
+
+@test "ephemeral: a spool directory that does not exist quarantines the reset, by name" {
+  prod_fixtures
+  RUNTIME_OVERRIDE="$T/nowhere" run reset_prod ':'
+  assert_contains "$output" "no sweep spool at $T/nowhere"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: an awk that fails while reading find's messages quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /x: No such file or directory" >&2; return 1; }; awk() { case "$*" in *"No such file"*) return 2 ;; *) command awk "$@" ;; esac; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {
   printf 'OLD' >"$T/state/gh/jit/gh-runner-01-jit-a.jit"
   printf 'MID' >"$T/state/gh/jit/gh-runner-01-jit-b.jit"
