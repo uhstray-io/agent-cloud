@@ -230,19 +230,27 @@ Axis 2 - HOW MUCH (privilege):  Admin > Maintainer > Developer > User   (highest
 
 ### Authentik Is the Source of Truth
 
-**Authentik groups are the single source of truth** for the (org, department, team, role, access-level) tuple. A **provisioning mechanism** reads an identity's groups and derives its per-service roles — no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
+**Authentik groups are the single source of truth** for the (tenant, org, department, team, role, access-level) tuple. A **provisioning mechanism** reads an identity's groups and derives its per-service roles — no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
 
 Group-schema convention (encoding the tuple in Authentik group names):
 
 ```
-<org>-<department>-<team>-<role>       # placement (Axis 1)
-<org>-<access-level>                   # privilege within the org (Axis 2)
+<tenant>-<org>-<department>-<team>-<role>   # placement (Axis 1)
+<tenant>-<org>-<access-level>               # privilege within the org (Axis 2)
 
 Examples:
-  uhstray-platform-infra-engineer      # WHO: uhstray / platform dept / infra team / engineer role
-  uhstray-admins                       # HOW MUCH: Admin tier for the uhstray org
-  uhstray-developers                   # HOW MUCH: Developer tier for the uhstray org
+  uhstray-uhstray-io-platform-infra-engineer   # WHO: uhstray tenant / uhstray-io org / platform dept / infra team / engineer role
+  uhstray-uhstray-io-admins                    # HOW MUCH: Admin tier for the uhstray-io org in the uhstray tenant
+  uhstray-uhstray-io-developers                # HOW MUCH: Developer tier for the uhstray-io org in the uhstray tenant
 ```
+
+The tenant leads every group name because the tenant is the hard isolation boundary: two tenants may
+use the same organization identifier, and the tenant prefix keeps their groups distinct.
+
+**Open — per-project access levels.** The Axis 2 group above is per organization, so it cannot yet
+give one identity a different access level on different projects, which the "applied per tenant and
+per project" rule requires. A project-scoped group or claim, or an authoritative per-project binding
+with a precedence rule, is still to be designed (`plan/development/12-rbac-user-provisioning.md`).
 
 The provisioning mechanism is the hinge between identity and access: it reads the two-axis identity from Authentik groups and derives concrete per-service roles, so no downstream service is hand-granted. The flow:
 
