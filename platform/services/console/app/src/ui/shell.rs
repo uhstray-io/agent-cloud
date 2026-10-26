@@ -150,7 +150,10 @@ fn SignIn() -> Element {
 fn Workspace(account: Account) -> Element {
     let ctx = use_context::<Ctx>();
     // Only a signed-in shell polls Active Work, so a signed-out visitor never sends the request.
-    use_effect(move || {
+    // `use_hook` runs its closure once, on the first render of this instance. `use_effect`
+    // would run it again whenever a signal read in its body changed, and each run would
+    // start another poll loop. The poll's own waits are in the browser (`api::sleep_unless_hidden`).
+    use_hook(move || {
         spawn(work::poll(ctx.work));
     });
     let no_access = has_no_tenant_access(&ctx.tenants.read());
