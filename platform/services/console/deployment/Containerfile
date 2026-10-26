@@ -85,6 +85,9 @@ RUN install -d -m 0750 -o 65532 -g 65532 /data
 # NO_DOWNLOADS=1: dx takes wasm-bindgen and wasm-opt from PATH, and verifies
 # the wasm-bindgen version, instead of fetching unchecksummed binaries from GitHub.
 WORKDIR /src/app
+# Release bundle without debug symbols. dx's --debug-symbols defaults to true
+# (packages/cli/src/cli/target.rs:104), which keeps DWARF in the wasm and passes
+# --debuginfo to wasm-opt: the shipped wasm was 2.28 MB. Without it, about 860 KB.
 # dx does not fail the build when wasm-opt fails. It logs the error and ships the
 # unoptimized wasm, exit 0 (dioxus-cli v0.7.10 wasm_opt.rs, optimize()). So the log is
 # checked for that message. dx logs no success message, so this gate is negative only:
@@ -92,7 +95,7 @@ WORKDIR /src/app
 # -e for a pipeline that starts with `!`.
 # target/ is deleted in the same RUN: only /out is kept in the layer.
 RUN set -eux; \
-    rc=0; NO_DOWNLOADS=1 dx bundle --web --release --out-dir /out > /tmp/dx.log 2>&1 || rc=$?; \
+    rc=0; NO_DOWNLOADS=1 dx bundle --web --release --out-dir /out --debug-symbols=false > /tmp/dx.log 2>&1 || rc=$?; \
     cat /tmp/dx.log; \
     test "$rc" -eq 0; \
     if grep -q 'wasm-opt failed with status code' /tmp/dx.log; then \
