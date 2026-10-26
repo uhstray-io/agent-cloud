@@ -102,6 +102,12 @@ def test_an_unknown_or_malformed_tier_is_refused_by_name(tmp_path):
     assert not any("dev1" in p for p in problems)
 
 
+def test_the_legacy_shared_key_takes_its_tier(tmp_path):
+    hv = {**BASE, "agw_tier_tokens_per_hour": TIERS, "_legacy_shared_active": True, "_legacy_fp_recorded": "f" * 64,
+          "agw_client_policies": {**BASE["agw_client_policies"], "legacy-shared": {"tier": "business"}}}
+    assert _budgets(tmp_path, hv)["legacy-shared"] == 250000000
+
+
 def test_admins_are_always_tier_admin(tmp_path):
     # A map without admin while admin identities exist, and a tier on an admin identity, are both refused:
     # either would give an admin a figure other than the admin tier's without saying so.
