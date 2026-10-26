@@ -163,7 +163,7 @@
         # Default figure from inventory (design §4), then the identity's tier
         # figure, then its own agw_client_policies.<name>.tokens_per_hour. The only
         # per-identity control v1.5.0 offers, and the reason the db exists.
-{% set _tier = _pol.tier | default('admin' if c in _admin_ids else '') %}
+{% set _tier = 'admin' if c in _admin_ids else (_pol.tier | default('')) %}
         budgets:
         - name: hourly-tokens
           limit:

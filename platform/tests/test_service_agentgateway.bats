@@ -453,7 +453,10 @@ PY
   assert_grep -qF 'agw_client_policies' "$CONFIG"
   assert_grep -qF 'allowedModels: {{ _am | to_json }}' "$CONFIG"
   assert_grep -qF '_pol.allowed_models | default([])' "$CONFIG"
-  assert_grep -qF '_pol.tokens_per_hour | default(_tier_budgets[_tier] if _tier in _tier_budgets else (agw_rate_tokens_per_hour' "$CONFIG"
+  # Scoped to the key-loop macro: the expression must be the budget the macro renders, not a comment elsewhere.
+  local macro
+  macro=$(sed -n '/^{% macro apikey_policy/,/^{% endmacro %}/p' "$CONFIG")
+  assert_contains "$macro" '_pol.tokens_per_hour | default(_tier_budgets[_tier] if _tier in _tier_budgets else (agw_rate_tokens_per_hour'
 }
 
 # ── agw_ui_enabled: /v1 can ship before the Authentik client exists ─────────

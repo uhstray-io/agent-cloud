@@ -100,3 +100,16 @@ def test_an_unknown_or_malformed_tier_is_refused_by_name(tmp_path):
     assert any("agw_tier_tokens_per_hour.developer must be a positive whole number" in p for p in problems)
     assert any("agw_client_policies.biz1.tier names business" in p for p in problems)
     assert not any("dev1" in p for p in problems)
+
+
+def test_admins_are_always_tier_admin(tmp_path):
+    # A map without admin while admin identities exist, and a tier on an admin identity, are both refused:
+    # either would give an admin a figure other than the admin tier's without saying so.
+    no_admin = {"developer": 500000000, "business": 250000000}
+    problems = _problems(tmp_path, {**BASE, "agw_tier_tokens_per_hour": no_admin})
+    assert any("has no admin figure" in p for p in problems), problems
+    hv = {**BASE, "agw_tier_tokens_per_hour": TIERS,
+          "agw_client_policies": {**BASE["agw_client_policies"], "alice": {"tier": "business"}}}
+    problems = _problems(tmp_path, hv)
+    assert any("agw_client_policies.alice.tier is set on a platform_admins identity" in p for p in problems)
+    assert _budgets(tmp_path, hv)["alice"] == 1000000000
