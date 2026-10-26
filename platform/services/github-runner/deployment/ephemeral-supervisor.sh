@@ -275,7 +275,8 @@ owned_paths() {
   # subshell, and a die reads as "nothing left" to that verification.
   while IFS= read -r line; do pred+=("$line"); done < <(owner_predicate)
   roots=$(sweep_roots) || return 1
-  # With no configured roots, findmnt must name at least one: every host has a root filesystem.
+  # With no configured roots, an empty list is refused, not swept as nothing. So a host whose
+  # local filesystems are all of a type outside sweep_roots' list is quarantined, by design.
   [ -n "$SWEEP_ROOTS" ] || [ -n "$roots" ] || return 1
   while IFS= read -r root; do
     [ -d "$root" ] || continue
