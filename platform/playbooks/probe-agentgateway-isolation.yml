@@ -85,7 +85,8 @@
     _control_named: "{{ agw_isolation_control | default('', true) | string | trim }}"
     _control: >-
       {{ _control_named if (_control_named | length > 0)
-         else (agw_identities | default([]) | reject('equalto', _burst) | list | first | default('')) }}
+         else (agw_identities | default([]) | reject('equalto', _burst) | reject('in', _agw_pool_identities)
+               | list | first | default('')) }}
     # Never burst an identity that has a real budget: the probe spends it down on purpose.
     _budget_cap: 1000
     _burst_budget: "{{ ((agw_client_policies | default({}))[_burst] | default({})).tokens_per_hour | default('', true) }}"

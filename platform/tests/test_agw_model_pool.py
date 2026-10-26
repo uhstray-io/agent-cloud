@@ -195,3 +195,56 @@ def test_the_real_render_caps_the_pool_on_the_pinned_image(tmp_path):
             subprocess.run(["podman", "rm", "-f", name], capture_output=True)
     finally:
         up.close()
+
+
+# ── The deploy's own tasks (reviewer finding: the guards must be pinned where they run) ──
+
+DEPLOY = REPO / "platform/playbooks/deploy-agentgateway.yml"
+PHASE1 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 1"))
+NAMES = [t.get("name") for t in PHASE1["tasks"]]
+POOL_GUARD = "Refuse a shared model pool that cannot be rendered safely"
+TIER_GUARD = "Refuse a budget tier with no figure"
+RENDER = "Manage secrets and render env + config"
+SURFACE = "Require the rendered MCP surface to match agw_mcp_enabled"
+
+
+def _task(name: str) -> dict:
+    return next(t for t in PHASE1["tasks"] if t.get("name") == name)
+
+
+def test_the_pool_and_tier_guards_run_before_the_render_and_refuse(tmp_path):
+    assert NAMES.index(POOL_GUARD) < NAMES.index(RENDER)
+    assert NAMES.index(TIER_GUARD) < NAMES.index(RENDER)
+    r = _play(tmp_path, BASE, [_task(POOL_GUARD), _task(TIER_GUARD)])
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = _play(tmp_path, {**BASE, "agw_client_policies": {}}, [_task(POOL_GUARD)])
+    assert r.returncode != 0 and "needs agw_client_policies.kimi-pool.tokens_per_hour" in r.stdout, r.stdout
+    r = _play(tmp_path, {**BASE, "agw_tier_tokens_per_hour": {"developer": 5}}, [_task(TIER_GUARD)])
+    assert r.returncode != 0 and "has no admin figure" in r.stdout, r.stdout
+
+
+def _surface(tmp_path, loopback: bool, **hv):
+    read = {"stdout": json.dumps({"mcp": False, "loopback": loopback})}
+    return _play(tmp_path, {**BASE, "_agw_render_read": read, **hv}, [_task(SURFACE)])
+
+
+def test_the_render_check_requires_the_loopback_listener_exactly_when_a_pool_or_mcp_needs_it(tmp_path):
+    assert _surface(tmp_path, True).returncode == 0
+    assert _surface(tmp_path, False).returncode != 0
+    no_pool = {"agw_models": [{"name": "m"}]}
+    assert _surface(tmp_path, False, **no_pool).returncode == 0
+    assert _surface(tmp_path, True, **no_pool).returncode != 0
+
+
+def test_pool_identities_are_internal_outside_the_template(tmp_path):
+    # Rollback publishes no direct_<pool> copy, the isolation probe never picks a pool as its control, and the
+    # skynet route refuses one: all three read the vars file's lists.
+    out = tmp_path / "ids.json"
+    r = _play(tmp_path, BASE, [{"ansible.builtin.copy": {"content": "{{ _agw_internal_identities | to_json }}",
+                                                         "dest": str(out)}}])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "kimi-pool" in json.loads(out.read_text())
+    rollback = yaml.safe_load((REPO / "platform/playbooks/rollback-inference-route.yml").read_text())
+    assert any("_agw_pool_identities" in str(p.get("vars", {}).get("_declared", "")) for p in rollback)
+    probe = (REPO / "platform/playbooks/probe-agentgateway-isolation.yml").read_text()
+    assert "reject('in', _agw_pool_identities)" in probe

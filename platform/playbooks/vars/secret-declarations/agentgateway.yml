@@ -287,10 +287,12 @@ _agw_openrouter_identities: >-
   {%- endif -%}
   {{ out }}
 # Identities the gateway renders for itself, never as a person or a client: `legacy-shared` (the shared
-# vLLM key, config.yaml.j2) and `mcp-self` (the MCP target's own call). OpenRouter spend can never be
-# granted to them; config.yaml.j2 keeps its own copy of `mcp-self` in `_internal_ids`, and a test
-# pins that this list covers it.
-_agw_internal_identities: ['legacy-shared', 'mcp-self']
+# vLLM key, config.yaml.j2) and `mcp-self` (the MCP target's own call), plus every shared-pool identity
+# (`_agw_pool_identities`: an agw_clients entry the gateway presents to itself, never handed out). OpenRouter
+# spend can never be granted to them, nor the skynet route; config.yaml.j2 keeps its own copy in
+# `_internal_ids`, and a test pins that this list covers it.
+_agw_pool_identities: "{{ agw_models | default([]) | selectattr('pool_identity', 'defined') | map(attribute='pool_identity') | unique | list }}"
+_agw_internal_identities: "{{ ['legacy-shared', 'mcp-self'] + _agw_pool_identities }}"
 # What is wrong with the OpenRouter declaration, one sentence per problem, empty when nothing is.
 # deploy-agentgateway.yml refuses a non-empty list before any restart or store write. Names only.
 _agw_openrouter_problems: >-

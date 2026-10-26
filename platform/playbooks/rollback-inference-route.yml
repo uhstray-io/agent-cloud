@@ -265,10 +265,10 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # The enrolled CLIENTS: agw_identities without the internal MCP self-call identity (config.yaml.j2
-    # `_internal_ids`), which no client holds, so a `direct_mcp-self` copy of the vLLM key would be
-    # published for nobody (and one already there is withdrawn).
-    _declared: "{{ agw_identities | reject('in', ['mcp-self']) | list }}"
+    # The enrolled CLIENTS: agw_identities without the internal MCP self-call identity and the shared-pool
+    # identities (config.yaml.j2 `_internal_ids`), which no client holds, so a `direct_<name>` copy of the vLLM
+    # key would be published for nobody (and one already there is withdrawn).
+    _declared: "{{ agw_identities | reject('in', ['mcp-self'] + _agw_pool_identities) | list }}"
   tasks:
     - name: "Load the shared platform admin list"
       tags: [verify]
