@@ -26,7 +26,10 @@ def semaphore_admin_roster(declared_admins, platform_admins=None):
                                   in vars/platform-admins.yml holds local-dev placeholders, and
                                   a placeholder name must never become an admin)
     """
-    if isinstance(declared_admins, str):
+    if declared_admins is not None and (
+        isinstance(declared_admins, (str, Mapping)) or not isinstance(declared_admins, Sequence)
+    ):
+        # A mapping would iterate its keys and promote each one (CodeRabbit on #709).
         raise ValueError("semaphore_admin_users is not a list")
     names = set()
     for name in declared_admins or []:

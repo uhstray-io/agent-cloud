@@ -180,10 +180,12 @@
 
     - name: "Require every promoted admin to read back as admin"
       vars:
+        # Targeted accounts minus those that read back as admin, so an account missing
+        # from the read-back fails too, not only one that reads back as non-admin.
         _still_not_admin: >-
-          {{ _sem_users_after.json | rejectattr('admin')
-             | selectattr('username', 'in', _to_promote | map(attribute='username') | list)
-             | map(attribute='username') | list }}
+          {{ _to_promote | map(attribute='username') | list
+             | difference(_sem_users_after.json | selectattr('admin')
+                          | map(attribute='username') | list) }}
       ansible.builtin.assert:
         that: _still_not_admin | length == 0
         fail_msg: "Semaphore accepted the promotion but these accounts are still not admin: {{ _still_not_admin }}"

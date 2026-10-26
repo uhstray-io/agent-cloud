@@ -95,6 +95,7 @@ def test_an_admin_list_this_play_cannot_see_derives_nothing():
     (["ok"], "ops-admin", "platform_admins is not a list"),
     (["ok"], {"username": "ops-admin"}, "platform_admins is not a list"),
     ("ops-admin", None, "semaphore_admin_users is not a list"),
+    ({"newcomer": "guest"}, None, "semaphore_admin_users is not a list"),
     ([""], None, "is not a username"),
 ])
 def test_a_malformed_declaration_is_refused_rather_than_read_partly(declared, admins, message):
