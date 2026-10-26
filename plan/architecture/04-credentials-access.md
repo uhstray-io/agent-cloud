@@ -244,8 +244,18 @@ Examples:
   uhstray-uhstray-io-developers                # HOW MUCH: Developer tier for the uhstray-io org in the uhstray tenant
 ```
 
-The tenant leads every group name because the tenant is the hard isolation boundary: two tenants may
-use the same organization identifier, and the tenant prefix keeps their groups distinct.
+The tenant leads every tenant-scoped group name because the tenant is the hard isolation boundary:
+two tenants may use the same organization identifier, and the name has to say which tenant a group
+belongs to. The platform-wide operator groups (`platform-admins`, `platform-developers`,
+`platform-business`; plan 12) sit outside this convention: they span tenants, and `platform-admins`
+sees every tenant.
+
+**Open — names that can be parsed.** The fields are joined with `-`, and identifiers may contain
+`-` themselves (org `uhstray-io`, role `platform-engineer`). So a name can split more than one way
+(tenant `a` + org `b-c` and tenant `a-b` + org `c` both give `a-b-c-admins`), and a provisioning
+mechanism cannot read the tuple back from the name alone. A separator identifiers cannot contain,
+hyphen-free identifiers, or the tuple held as structured group data instead of in the name is still
+to be chosen (`plan/development/12-rbac-user-provisioning.md`).
 
 **Open — per-project access levels.** The Axis 2 group above is per organization, so it cannot yet
 give one identity a different access level on different projects, which the "applied per tenant and
@@ -276,7 +286,7 @@ The provisioning mechanism maps each Access Level to concrete per-service roles.
 
 Rules that fall out of the table:
 
-- **Admin is fully derived, never hand-granted.** Any identity in the org's Admin group (`uhstray-admins`) is provisioned the Semaphore `admin` flag **and** all-project visibility **automatically** — no per-service "make this person admin" click. Granting admin by hand is a defect, not a shortcut.
+- **Admin is fully derived, never hand-granted.** Any identity in the org's Admin group (`uhstray-uhstray-io-admins`) is provisioned the Semaphore `admin` flag **and** all-project visibility **automatically** — no per-service "make this person admin" click. Granting admin by hand is a defect, not a shortcut.
 - **Role scopes *which* projects/services; Access Level scopes *what* you may do in them.** A `network-operator` Role with Developer Access Level gets Project-Manager rights on the NetBox/network projects their team owns — not on unrelated projects.
 - **User is genuinely least-privilege:** no direct OpenBao path, run-only or read-only in Semaphore/NetBox.
 
@@ -284,8 +294,8 @@ Rules that fall out of the table:
 
 **[TARGET] / NOT BUILT:** the provisioning automation (Authentik groups -> per-service roles) and the full group schema above are **not implemented yet**. Do not reason as if role-based provisioning already holds. Today's reality:
 
-- **`platform-admins` is the sole admin group**, **being renamed `uhstray-admins`** (the uhstray-org Admin tier above).
-- **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as such, not the foundational fix. The foundational fix is the provisioning mechanism here: derive `stray`'s admin flag from `uhstray-admins` membership instead of hand-setting it.
+- **`platform-admins` is the sole admin group**, **being renamed `uhstray-uhstray-io-admins`** (the Admin tier of the uhstray-io org in the uhstray tenant, above).
+- **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as such, not the foundational fix. The foundational fix is the provisioning mechanism here: derive `stray`'s admin flag from `uhstray-uhstray-io-admins` membership instead of hand-setting it.
 - No Department/Team/Role decomposition is wired into Authentik groups yet, and no automated (tuple -> per-service role) mapper. Until it ships, downstream roles are set by hand and this section is the design target they converge to.
 
 ---

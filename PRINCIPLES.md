@@ -195,7 +195,7 @@ highest-to-lowest **Admin -> Maintainer -> Developer -> User** - applied per ten
 A tenant is a tier above Organization (tenant -> org -> site -> env), and the **tenant is the hard
 isolation boundary**; organizations inside one tenant share it. Department/Team/Role place a person within an org;
 Access Level is how much they may do. Authentik groups are the source of truth;
-a provisioning mechanism maps an identity's (org, department, team, role, access-level) to per-service
+a provisioning mechanism maps an identity's (tenant, org, department, team, role, access-level) to per-service
 roles - Semaphore admin-flag vs project owner/manager/task_runner/guest, NetBox permissions, etc. Any
 Admin-level user is provisioned with admin rights and all-project visibility automatically - never a
 per-service hand-grant.
@@ -204,7 +204,7 @@ it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identi
 "user type") lets access be derived from real org structure instead of bespoke per-person grants.
 **[TARGET]** the provisioning automation + the group schema are not built yet - the operator's Semaphore user
 was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, with a proposed rename to
-`uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
+`uhstray-uhstray-io-admins` (the Admin tier of the uhstray-io org in the uhstray tenant). The exact group-naming + (identity -> per-service role)
 mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based
 provisioning already holds.*
 
