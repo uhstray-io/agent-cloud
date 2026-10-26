@@ -1,5 +1,7 @@
 //! JSON API under `/v1`. Every route checks the session first and answers 401
 //! JSON without one, so an unauthenticated probe learns nothing about tenants.
+//! The tenant routes then filter on the caller's groups: a tenant is a hard
+//! isolation boundary, so a member sees only the tenants that name one of their groups.
 
 use dioxus::server::axum::extract::rejection::JsonRejection;
 use dioxus::server::axum::extract::{Path, State};
@@ -97,14 +99,15 @@ struct TenantList {
     tenants: Vec<NamedRef>,
 }
 
+/// Only the tenants the caller may see (membership rule in `scope.rs`).
 pub async fn list_tenants(State(app): State<SharedState>, session: Session) -> Response {
-    if auth::current_user(&session).await.is_none() {
+    let Some(user) = auth::current_user(&session).await else {
         return unauthenticated();
-    }
+    };
     let tenants = app
         .scope
-        .tenants
-        .iter()
+        .visible_tenants(&user.groups)
+        .into_iter()
         .map(|tenant| NamedRef {
             id: tenant.id.clone(),
             name: tenant.name.clone(),
@@ -124,15 +127,17 @@ struct TreeBody {
     example: bool,
 }
 
+/// A tenant the caller may not see answers exactly as an unknown one does, so the
+/// route cannot be used to learn that a tenant exists.
 pub async fn tenant_tree(
     State(app): State<SharedState>,
     session: Session,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    if auth::current_user(&session).await.is_none() {
+    let Some(user) = auth::current_user(&session).await else {
         return unauthenticated();
-    }
-    let Some(tenant) = app.scope.tenant(&tenant_id) else {
+    };
+    let Some(tenant) = app.scope.visible_tenant(&tenant_id, &user.groups) else {
         return error(StatusCode::NOT_FOUND, "unknown_tenant");
     };
     Json(TreeBody {

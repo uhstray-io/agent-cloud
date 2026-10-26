@@ -2,7 +2,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 ## Purpose
 
-Provides the Dispatch Console, the agent-cloud administration UI, in its Phase 1 form. The console is one Dioxus fullstack binary. It signs users in through Authentik, requires a session for every API route, shows the tenant and scope tree declared in the inventory, stores each user's own preferences, and is deployed through a Semaphore template whose verify step checks the running container.
+Provides the Dispatch Console, the agent-cloud administration UI, in its Phase 1 form. The console is one Dioxus fullstack binary. It signs users in through Authentik, requires a session for every API route, shows the tenants its user is a member of and their scope tree, both declared in the inventory, stores each user's own preferences, and is deployed through a Semaphore template whose verify step checks the running container.
 
 ## ADDED Requirements
 
@@ -46,17 +46,32 @@ The console MUST answer `GET /healthz` with 200 and the text `ok` without a sess
 
 ### Requirement: Tenants and scope tree come from the inventory declaration
 
-The console MUST read its tenants, organizations, sites and environments from the scope file, which is rendered from the inventory variable `console_tenants`. In Phase 1 the console MUST NOT read NetBox or Proxmox for this data. The scope file carries an `example` flag. Example data MUST be labelled as example in every response that carries it.
+The console MUST read its tenants, organizations, sites and environments from the scope file, which is rendered from the inventory variable `console_tenants`. Each tenant MAY list, in its `groups` field, the Authentik groups that may see it. A signed-in user MUST see only the tenants that list one of the user's groups. A member of `platform-admins` sees every tenant, and a tenant with no `groups` is visible to `platform-admins` only. `GET /v1/tenants` and `GET /v1/tenants/{t}/tree` MUST apply this same rule. A tenant the user may not see MUST answer exactly as a tenant that is not in the scope file does. The responses MUST NOT carry any tenant's group list. In Phase 1 the console MUST NOT read NetBox or Proxmox for this data. The scope file carries an `example` flag. Example data MUST be labelled as example in every response that carries it.
 
 #### Scenario: Tenant list reads the inventory declaration
 
-- **WHEN** a signed-in user calls `GET /v1/tenants`
-- **THEN** the response lists each tenant in the scope file with its `id` and `name`, and it reports the `example` flag from that file
+- **WHEN** a signed-in user who is a member of group `ops` calls `GET /v1/tenants`
+- **THEN** the response lists each tenant in the scope file that names `ops` in its `groups`, with its `id` and `name` and no group list, and it reports the `example` flag from that file
+
+#### Scenario: Platform admin sees every tenant
+
+- **WHEN** a signed-in user who is a member of `platform-admins` calls `GET /v1/tenants`
+- **THEN** the response lists every tenant in the scope file, including a tenant with no `groups`
+
+#### Scenario: No tenant access
+
+- **WHEN** a signed-in user who is not a platform admin holds no group that any tenant lists, and calls `GET /v1/tenants`
+- **THEN** the response is 200 with an empty `tenants` list, and the UI shows a signed-in empty state in place of the scope bar that asks a platform admin to add one of the user's groups to a tenant
 
 #### Scenario: Scope tree for a tenant
 
-- **WHEN** a signed-in user calls `GET /v1/tenants/{t}/tree` for a tenant in the scope file
-- **THEN** the response holds the tenant's `id` and `name`, its organizations with their sites, each site's environments, and the `example` flag
+- **WHEN** a signed-in user calls `GET /v1/tenants/{t}/tree` for a tenant in the scope file that the user may see
+- **THEN** the response holds the tenant's `id` and `name`, its organizations with their sites, each site's environments, and the `example` flag, and no group list
+
+#### Scenario: Tenant the user may not see is not found
+
+- **WHEN** a signed-in user calls `GET /v1/tenants/{t}/tree` for a tenant that is in the scope file but lists none of the user's groups, and the user is not a platform admin
+- **THEN** the response is 404 with the same body as for a tenant that is not in the scope file, so the response does not reveal that the tenant exists
 
 #### Scenario: Unknown tenant is not found
 
@@ -89,12 +104,17 @@ The console MUST show the signed-in user's OIDC claims (`sub`, `email`, `name`, 
 
 ### Requirement: Deployment through a Semaphore template with verify
 
-The console MUST be deployed through the Semaphore templates `Deploy console` and `Clean Deploy console`, which run the playbook `deploy-console.yml`. The deployment MUST build the console image on the host from the Containerfile in `platform/services/console/deployment/`. The deployment MUST be idempotent. The verify step MUST pass only when `/healthz` answers 200 and `/v1/me` answers 401 inside the running container.
+The console MUST be deployed through the Semaphore templates `Deploy console` and `Clean Deploy console`. `Deploy console` runs the playbook `deploy-console.yml`. `Clean Deploy console` runs the playbook `clean-deploy-console.yml`, which destroys the console's data and then runs `deploy-console.yml`. The deployment MUST build the console image on the host from the Containerfile in `platform/services/console/deployment/`. The deployment MUST be idempotent. The verify step MUST pass only when `/healthz` answers 200 and `/v1/me` answers 401 inside the running container.
 
 #### Scenario: Deploy builds the image on the host
 
 - **WHEN** the `Deploy console` template runs
 - **THEN** `deploy.sh` builds the console image on the host with the container engine from the Containerfile, and the console image is not pulled from a registry
+
+#### Scenario: Clean deploy resets the console's data
+
+- **WHEN** the `Clean Deploy console` template runs with its `confirm_reset` field set to the target host
+- **THEN** the console's containers and its `console-data` volume are removed, so every stored preference is lost, and the console is then redeployed through `deploy-console.yml`
 
 #### Scenario: Verify checks health and the API gate
 

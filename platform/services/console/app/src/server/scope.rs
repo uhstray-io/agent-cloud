@@ -1,7 +1,15 @@
 //! Scope file (rendered from inventory `console_tenants`). The console only
 //! reads it: it is the catalogue the UI picks from, never a store it writes.
+//!
+//! A tenant is the hard isolation boundary (PRINCIPLES.md, plan 17 D16). Each
+//! tenant lists the Authentik groups that may see it; the API filters on them.
 
 use serde::{Deserialize, Serialize};
+
+/// The Authentik group that sees every tenant. It matches the UI's Settings gate
+/// (`ui/shell.rs`, `is_platform_admin`) and the group declared in
+/// `platform/services/authentik/deployment/blueprints/platform-groups.yaml`.
+pub const ADMIN_GROUP: &str = "platform-admins";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Scope {
@@ -15,8 +23,22 @@ pub struct Scope {
 pub struct Tenant {
     pub id: String,
     pub name: String,
+    /// Authentik groups that may see this tenant. Empty means platform admins
+    /// only. Never serialized: the API returns ids and names, not membership.
+    #[serde(default, skip_serializing)]
+    pub groups: Vec<String>,
     #[serde(default)]
     pub orgs: Vec<Org>,
+}
+
+impl Tenant {
+    /// True when the caller is a platform admin or shares one group with this
+    /// tenant. Matching is exact and case-sensitive, as Authentik names groups.
+    pub fn visible_to(&self, groups: &[String]) -> bool {
+        groups
+            .iter()
+            .any(|group| group == ADMIN_GROUP || self.groups.contains(group))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -45,6 +67,20 @@ impl Scope {
 
     pub fn tenant(&self, id: &str) -> Option<&Tenant> {
         self.tenants.iter().find(|tenant| tenant.id == id)
+    }
+
+    /// The tenants the caller may see, in scope-file order.
+    pub fn visible_tenants(&self, groups: &[String]) -> Vec<&Tenant> {
+        self.tenants
+            .iter()
+            .filter(|tenant| tenant.visible_to(groups))
+            .collect()
+    }
+
+    /// The tenant when the caller may see it. A tenant the caller may not see is
+    /// `None`, exactly as an unknown id is, so the API cannot probe for it.
+    pub fn visible_tenant(&self, id: &str, groups: &[String]) -> Option<&Tenant> {
+        self.tenant(id).filter(|tenant| tenant.visible_to(groups))
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -119,5 +155,89 @@ mod tests {
     #[test]
     fn rejects_malformed_json() {
         assert!(Scope::parse("{").is_err());
+    }
+
+    const GROUPED: &str = r#"{"tenants": [
+        {"id": "acme", "name": "Acme", "groups": ["ops"]},
+        {"id": "initech", "name": "Initech", "groups": ["finance", "ops"]},
+        {"id": "hidden", "name": "Hidden"}
+    ]}"#;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    fn ids(scope: &Scope, groups: &[String]) -> Vec<String> {
+        scope
+            .visible_tenants(groups)
+            .iter()
+            .map(|tenant| tenant.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn platform_admin_sees_every_tenant_including_ungrouped_ones() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert_eq!(
+            ids(&scope, &names(&[ADMIN_GROUP])),
+            ["acme", "initech", "hidden"]
+        );
+    }
+
+    #[test]
+    fn member_sees_only_tenants_that_list_one_of_their_groups() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert_eq!(ids(&scope, &names(&["ops"])), ["acme", "initech"]);
+        assert_eq!(ids(&scope, &names(&["finance"])), ["initech"]);
+    }
+
+    #[test]
+    fn non_member_sees_no_tenant() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert!(ids(&scope, &names(&["users"])).is_empty());
+        assert!(ids(&scope, &[]).is_empty());
+        assert!(scope.visible_tenant("acme", &names(&["users"])).is_none());
+    }
+
+    #[test]
+    fn tenant_without_groups_is_platform_admin_only() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert!(scope
+            .visible_tenant("hidden", &names(&["ops", "finance"]))
+            .is_none());
+        assert!(scope
+            .visible_tenant("hidden", &names(&[ADMIN_GROUP]))
+            .is_some());
+    }
+
+    #[test]
+    fn group_match_is_exact_and_case_sensitive() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert!(ids(&scope, &names(&["Ops"])).is_empty());
+        assert!(ids(&scope, &names(&["ops-old"])).is_empty());
+        assert!(ids(&scope, &names(&["platform-admins-old"])).is_empty());
+    }
+
+    #[test]
+    fn visible_tenant_is_the_lookup_gated_by_membership() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        let finance = names(&["finance"]);
+        assert_eq!(
+            scope
+                .visible_tenant("initech", &finance)
+                .map(|t| t.name.as_str()),
+            Some("Initech")
+        );
+        // acme exists in the file but lists no group this caller has.
+        assert!(scope.visible_tenant("acme", &finance).is_none());
+        assert!(scope.visible_tenant("nope", &finance).is_none());
+    }
+
+    #[test]
+    fn groups_are_read_but_never_serialized() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        let json = serde_json::to_string(&scope.tenants[0]).expect("serialize tenant");
+        assert!(!json.contains("groups"), "{json}");
+        assert_eq!(scope.tenants[0].groups, names(&["ops"]));
     }
 }

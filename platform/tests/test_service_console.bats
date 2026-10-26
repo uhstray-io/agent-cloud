@@ -120,17 +120,17 @@ PY
 @test "console: healthcheck is the exec-form probe (distroless image has no shell)" {
   local f="$DEPLOY_DIR/compose.yml"
   grep -qF 'test: ["CMD", "/usr/local/app/server", "probe", "/healthz", "200"]' "$f"
-  ! grep -qE '^[[:space:]]*test:.*CMD-SHELL' "$f"
+  refute_grep -qE '^[[:space:]]*test:.*CMD-SHELL' "$f"
 }
 
 @test "console: compose has no hardcoded credentials" {
   local f="$DEPLOY_DIR/compose.yml"
-  ! grep -qiE '(password|secret|token|api_key)[[:space:]]*[:=][[:space:]]*["'\''0-9A-Za-z]{8}' "$f"
+  refute_grep -qiE '(password|secret|token|api_key)[[:space:]]*[:=][[:space:]]*["'\''0-9A-Za-z]{8}' "$f"
 }
 
 @test "console: compose has no RFC1918 IPs" {
   local f="$DEPLOY_DIR/compose.yml"
-  ! grep -qE '192\.168\.|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.' "$f"
+  refute_grep -qE '192\.168\.|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.' "$f"
 }
 
 @test "console: deploy.sh is executable bash, sources common.sh, uses compose_up_if_changed, no secrets" {
@@ -141,12 +141,15 @@ PY
   grep -qE 'compose_up_if_changed' "$f"
   grep -q 'wait_for_healthy console' "$f"
   # Lifecycle plus a host build only: no secret generation, no OpenBao interaction (Deploy Rule #2).
-  ! grep -qiE 'openssl rand|secret_id|vault|\bbao |gen_secret|put_secret|get_secret' "$f"
+  refute_grep -qiE 'openssl rand|secret_id|vault|\bbao |gen_secret|put_secret|get_secret' "$f"
 }
 
 @test "console: deploy.sh never forces a recreate on every run" {
   # Comment lines may name the flag; only a live use counts.
-  ! grep -v '^[[:space:]]*#' "$DEPLOY_DIR/deploy.sh" | grep -q -- '--force-recreate'
+  local code="$BATS_TEST_TMPDIR/deploy-code.sh"
+  sed '/^[[:space:]]*#/d' "$DEPLOY_DIR/deploy.sh" > "$code"
+  [ -s "$code" ]
+  refute_grep -q -- '--force-recreate' "$code"
 }
 
 @test "console: deploy.sh builds the image on the host, labelled with its inputs digest" {
@@ -177,8 +180,11 @@ PY
 
 @test "console: deploy.sh never sources .env into the shell environment" {
   # Only CONSOLE_IMAGE is read from .env, by key. Sourcing it would export the OIDC secret.
-  ! grep -v '^[[:space:]]*#' "$DEPLOY_DIR/deploy.sh" | grep -qE '^[[:space:]]*(\.|source) .*\.env'
-  ! grep -v '^[[:space:]]*#' "$DEPLOY_DIR/deploy.sh" | grep -qE 'set -a'
+  local code="$BATS_TEST_TMPDIR/deploy-code.sh"
+  sed '/^[[:space:]]*#/d' "$DEPLOY_DIR/deploy.sh" > "$code"
+  [ -s "$code" ]
+  refute_grep -qE '^[[:space:]]*(\.|source) .*\.env' "$code"
+  refute_grep -qE 'set -a' "$code"
 }
 
 @test "console: env template is non-secret config plus the shared OIDC secret, no literals" {
@@ -188,8 +194,8 @@ PY
   grep -qF 'CONSOLE_OIDC_CLIENT_SECRET={{ secrets.console_oidc_client_secret }}' "$f"
   grep -qF 'CONSOLE_OIDC_CLIENT_ID=console' "$f"
   grep -qF 'CONSOLE_SCOPE_FILE=/etc/console/scope.json' "$f"
-  ! grep -qE '192\.168\.|10\.[0-9]+\.' "$f"
-  ! grep -qiE '(password|secret|token|api_key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9]{8,}' "$f"
+  refute_grep -qE '192\.168\.|10\.[0-9]+\.' "$f"
+  refute_grep -qiE '(password|secret|token|api_key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9]{8,}' "$f"
 }
 
 @test "console: scope template renders the inventory's tenants as JSON" {
