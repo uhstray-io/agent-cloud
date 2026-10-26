@@ -296,6 +296,12 @@ all:
           # which has the profile only at this path ON THE ENGINE. Without it the image build's RUN
           # steps fail "opening seccomp profile failed" (the NetBox build hit this 2026-09-22).
           console_build_seccomp: /usr/share/containers/seccomp.json
+          # The Phase 2 work source: the Semaphore API the console reads server-side, the UI its links
+          # open, and the project it lists. Its token is the svc-console account's, stored by
+          # Provision Console Semaphore Access (guest; no run permission).
+          console_semaphore_api_url: https://semaphore.agent-cloud.test
+          console_semaphore_ui_url: https://semaphore.agent-cloud.test:8443
+          console_semaphore_project: 1
           # Example scope only: no real tenants, sites or addresses. Production declares its own in
           # site-config. Sites and environments here are names, not hosts.
           console_scope_is_example: true

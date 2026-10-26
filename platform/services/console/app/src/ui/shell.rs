@@ -10,6 +10,7 @@ use dioxus::prelude::*;
 use super::api::{self, Account, Claims, Me, NamedRef, TenantList, Tree};
 use super::icons::icon;
 use super::scope::{self, Scope, ScopeBar};
+use super::work::{self, WorkState};
 use super::Route;
 
 /// A value loaded from the API. `Loading` is also what the first render shows.
@@ -30,6 +31,8 @@ pub struct Ctx {
     /// The scope tree of `tenant`.
     pub tree: Signal<Loaded<Tree>>,
     pub scope: Signal<Scope>,
+    /// The Active Work list. One poll writes it; the page and the sidebar badge read it.
+    pub work: Signal<WorkState>,
 }
 
 #[component]
@@ -39,12 +42,14 @@ pub fn Shell() -> Element {
     let tenant = use_signal(|| None::<String>);
     let tree = use_signal(|| Loaded::Loading);
     let scope = use_signal(Scope::default);
+    let work = use_signal(|| WorkState::Loading);
     let ctx = use_context_provider(|| Ctx {
         me,
         tenants,
         tenant,
         tree,
         scope,
+        work,
     });
 
     use_effect(move || {
@@ -144,6 +149,13 @@ fn SignIn() -> Element {
 #[component]
 fn Workspace(account: Account) -> Element {
     let ctx = use_context::<Ctx>();
+    // Only a signed-in shell polls Active Work, so a signed-out visitor never sends the request.
+    // `use_hook` runs its closure once, on the first render of this instance. `use_effect`
+    // would run it again whenever a signal read in its body changed, and each run would
+    // start another poll loop. The poll's own waits are in the browser (`api::sleep_unless_hidden`).
+    use_hook(move || {
+        spawn(work::poll(ctx.work));
+    });
     let no_access = has_no_tenant_access(&ctx.tenants.read());
     // The outlet stays in both cases, so the profile still works without a tenant.
     rsx! {
@@ -184,6 +196,8 @@ fn Sidebar(account: Account) -> Element {
     let name = display_name(&account.claims);
     let initials = initials(&name);
     let admin = is_platform_admin(&account.claims);
+    let ctx = use_context::<Ctx>();
+    let attention = work::attention(&ctx.work.read());
     rsx! {
         aside { class: "side",
             div { class: "brand",
@@ -193,7 +207,7 @@ fn Sidebar(account: Account) -> Element {
             TenantSwitch {}
             nav { class: "nav", aria_label: "Main",
                 NavItem { to: Route::Dashboard {}, icon_name: "layout-dashboard", label: "Dashboard" }
-                NavItem { to: Route::Home {}, icon_name: "list-todo", label: "Active Work" }
+                NavItem { to: Route::Home {}, icon_name: "list-todo", label: "Active Work", attention }
                 div { class: "grp", "Infrastructure" }
                 NavItem { to: Route::Topology {}, icon_name: "waypoints", label: "Topology" }
                 NavItem { to: Route::Services {}, icon_name: "boxes", label: "Services" }
@@ -241,11 +255,26 @@ fn Sidebar(account: Account) -> Element {
 }
 
 #[component]
-fn NavItem(to: Route, icon_name: &'static str, label: &'static str) -> Element {
+fn NavItem(
+    to: Route,
+    icon_name: &'static str,
+    label: &'static str,
+    /// Items that need a person. Shown as a red count only when above zero.
+    #[props(default)]
+    attention: usize,
+) -> Element {
     rsx! {
         Link { to, class: "nav-link", active_class: "active",
             {icon(icon_name)}
             span { "{label}" }
+            if attention > 0 {
+                span {
+                    class: "nav-badge",
+                    role: "img",
+                    aria_label: "{attention} need attention",
+                    "{attention}"
+                }
+            }
         }
     }
 }

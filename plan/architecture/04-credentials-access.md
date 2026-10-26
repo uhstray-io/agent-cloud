@@ -228,11 +228,11 @@ Axis 2 - HOW MUCH (privilege):  Admin > Maintainer > Developer > User   (highest
 - **The tenant is the hard isolation boundary.** A tenant is a tier above Organization (tenant -> org -> site -> env), and the organizations inside one tenant share its boundary. An identity in tenant A can never see tenant B's secrets, projects, or infrastructure. Organization, Department, Team and Role only place a person *within* a tenant; they are not isolation boundaries (`PRINCIPLES.md` §3; `plan/development/17-dispatch-console.md` D16, decided 2026-10-26).
 - Applied **per tenant and per project**: a person carries a (tenant, org, department, team, role, access-level) tuple, and Access Level resolves per project (User on project X, Maintainer on project Y).
 
-### Authentik Is the Source of Truth
+### Site-config Is the Source of Truth; Authentik Groups Are Derived
 
-**Authentik groups are the single source of truth** for the (tenant, org, department, team, role, access-level) tuple. A **provisioning mechanism** reads an identity's groups and derives its per-service roles — no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
+**site-config is the authority** for the (tenant, org, department, team, role, access-level) tuple. Authentik groups are **derived**: they are rendered from that declaration, the same way `platform_admins` is rendered into the `platform-admins` group (issue #604, below). A **provisioning mechanism** then derives each identity's per-service roles from those groups, with no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
 
-Group-schema convention (encoding the tuple in Authentik group names):
+Group-name convention (labels rendered from the declaration; the decision below says they are not parsed):
 
 ```
 <tenant>-<org>-<department>-<team>-<role>   # placement (Axis 1)
@@ -250,17 +250,32 @@ belongs to. The platform-wide operator groups (`platform-admins`, `platform-deve
 `platform-business`; plan 12) sit outside this convention: they span tenants, and `platform-admins`
 sees every tenant.
 
-**Open — names that can be parsed.** The fields are joined with `-`, and identifiers may contain
-`-` themselves (org `uhstray-io`, role `platform-engineer`). So a name can split more than one way
-(tenant `a` + org `b-c` and tenant `a-b` + org `c` both give `a-b-c-admins`), and a provisioning
-mechanism cannot read the tuple back from the name alone. A separator identifiers cannot contain,
-hyphen-free identifiers, or the tuple held as structured group data instead of in the name is still
-to be chosen (`plan/development/12-rbac-user-provisioning.md`).
+**Decided 2026-10-26: group names are labels, and the tuple is structured data.** [TARGET] / NOT BUILT.
+A group name is a label that people read; provisioning never parses it. The fields are joined with
+`-`, and identifiers may contain `-` themselves (org `uhstray-io`, role `platform-engineer`), so one
+name can split more than one way (tenant `a` with org `b-c`, and tenant `a-b` with org `c`, both give
+`a-b-c-admins`). The `(tenant, org, department, team, role, access-level)` tuple lives in structured
+data that provisioning reads. The carrier is an inventory declaration in site-config. Authentik group
+attributes are a candidate rendering target, pending verification: no file under
+`platform/services/authentik` sets group attributes, and `platform-groups.yaml:16-37` sets only
+`is_superuser` on each group. This design does not depend on Authentik storing or returning attributes.
 
-**Open — per-project access levels.** The Axis 2 group above is per organization, so it cannot yet
-give one identity a different access level on different projects, which the "applied per tenant and
-per project" rule requires. A project-scoped group or claim, or an authoritative per-project binding
-with a precedence rule, is still to be designed (`plan/development/12-rbac-user-provisioning.md`).
+**Decided 2026-10-26: per-project access levels are a reviewed binding.** [TARGET] / NOT BUILT. The
+Axis 2 group above is per organization, so one identity gets one level everywhere. A per-project level
+is an inventory binding from project to group to access level, a declaration of the same kind as
+`semaphore_project_members`:
+
+```yaml
+# site-config, top-level all.vars. Placeholders only. The variable name and shape are a proposal.
+project_access_bindings:
+  - project: <project-name>
+    group: <tenant>-<org>-developers
+    access_level: <access-level>
+```
+
+Precedence is most specific wins: a project binding overrides the organization-wide Admin or Developer
+group for that project. The authority is the reviewed site-config diff, as it is for
+`semaphore_project_members` (`platform/semaphore/README.md:77`). A binding changes only through that diff.
 
 The provisioning mechanism is the hinge between identity and access: it reads the two-axis identity from Authentik groups and derives concrete per-service roles, so no downstream service is hand-granted. The flow:
 

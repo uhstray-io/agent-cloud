@@ -171,11 +171,6 @@ pub fn EmptyPage(page: PageMeta) -> Element {
 }
 
 #[component]
-pub fn Home() -> Element {
-    rsx! { EmptyPage { page: ACTIVE_WORK } }
-}
-
-#[component]
 pub fn Dashboard() -> Element {
     rsx! { EmptyPage { page: DASHBOARD } }
 }

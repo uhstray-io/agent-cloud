@@ -31,6 +31,11 @@ pub struct Tenant {
     pub orgs: Vec<Org>,
 }
 
+/// True when the caller holds the platform-admin group. Exact and case-sensitive, as Authentik names groups.
+pub fn is_platform_admin(groups: &[String]) -> bool {
+    groups.iter().any(|group| group == ADMIN_GROUP)
+}
+
 impl Tenant {
     /// True when the caller is a platform admin or shares one group with this
     /// tenant. Matching is exact and case-sensitive, as Authentik names groups.

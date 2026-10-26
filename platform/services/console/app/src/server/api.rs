@@ -22,7 +22,7 @@ pub fn error(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({ "error": code }))).into_response()
 }
 
-fn unauthenticated() -> Response {
+pub(super) fn unauthenticated() -> Response {
     error(StatusCode::UNAUTHORIZED, "unauthenticated")
 }
 

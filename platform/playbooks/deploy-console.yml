@@ -1,9 +1,13 @@
 ---
 # deploy-console.yml — the Dispatch Console deploy (composable).
 #
-# Phase 1: Transport guard on the OpenBao endpoint, then place the repo, create config/, and
-#          manage-secrets. The console owns no secret: the OIDC client secret is shared-read from
-#          authentik, which owns it. Template .env and config/scope.json.
+# Phase 1: Production guard on the console_svc host vars (skipped for local_mode), transport guard on
+#          the OpenBao endpoint, then place the repo, create config/, and manage-secrets. The console's
+#          own secret is its Semaphore API token, which this play
+#          reads and never generates: Provision Console Semaphore Access (provision-console-semaphore-access.yml)
+#          creates it, and this play stops before any write when it is absent. The OIDC client secret
+#          is shared-read from authentik, which owns it. Template .env, config/scope.json and
+#          config/workflow.json (the service-onboarding registry's steps: id, order, owner, label).
 # Phase 2: deploy.sh — builds the image on THIS host from platform/services/console (there is no
 #          registry), then container lifecycle (compose_up_if_changed, wait healthy).
 # Phase 3: Verify inside the container: `probe /healthz 200`, and an unauthenticated `/v1/me`
@@ -41,8 +45,13 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # The console stores no secret of its own. An empty list is valid for manage-secrets.
-    _secret_definitions: []
+    # The Semaphore API token is provisioned by provision-console-semaphore-access.yml (the svc-console
+    # account, guest role) and only READ here: type `existing` never generates it. A missing token fails
+    # before any write, because manage-secrets checks _required_existing_secrets first. manage-secrets
+    # words that failure generically; this comment names the play that creates the token.
+    _secret_definitions:
+      - { name: semaphore_api_token, type: existing }
+    _required_existing_secrets: [semaphore_api_token]
     # The OIDC client secret is owned by authentik (the IdP). Read it read-only so the console's
     # CONSOLE_OIDC_CLIENT_SECRET matches the value the console provider was created with. It is
     # never stored back under secret/services/console.
@@ -50,14 +59,40 @@
       - { from_service: authentik, read_keys: [console_oidc_client_secret] }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
-      # Not a secret, so 0644. config/ is created below before manage-secrets templates into it.
+      # Not secrets, so 0644. config/ is created below before manage-secrets templates into it.
       - { src: scope.json.j2, dest: config/scope.json, mode: "0644" }
-    # manage-secrets writes `url` to secret/services/console only when this is set. With no secret of
-    # its own the store step would have nothing to merge, and bao-merge-keys.yml refuses empty data.
-    # The URL is not a secret; comfyui and hunyuan3d set it the same way.
-    _service_url: "{{ console_base_url | default('https://console.agent-cloud.test:8443') }}"
+      # The steps the console labels a skynet run with, rendered from the registry so the console never
+      # keeps a second copy of the step list.
+      - { src: workflow.json.j2, dest: config/workflow.json, mode: "0644" }
+    # The service-onboarding workflow registry: the one definition of the steps (read on the controller).
+    _workflow_registry: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}"
+    # The console_svc host vars a production console cannot run without. The guard task below checks them.
+    _console_prod_required:
+      - console_base_url
+      - console_oidc_issuer
+      - console_semaphore_api_url
+      - console_semaphore_ui_url
+      - console_semaphore_project
 
   tasks:
+    # GUARD: refuse a production deploy before anything is written, when a console_svc host var is unset,
+    # empty or still an agent-cloud.test (local-dev) value. Mirrors the Authentik promotion guard in
+    # deploy-authentik.yml. Skipped for local_mode: local-dev runs on the agent-cloud.test defaults.
+    # Brace check: an unrendered "{{ ... }}" value would pass the other two checks with its braces intact.
+    - name: "Production guard: the console's host vars are set and not local-dev defaults"
+      ansible.builtin.assert:
+        that:
+          - "(lookup('vars', item, default='')) | string | length > 0"
+          - "'agent-cloud.test' not in (lookup('vars', item, default='') | string)"
+          - "('{' ~ '{') not in (lookup('vars', item, default='') | string)"
+        fail_msg: >-
+          Production guard: console_svc host var '{{ item }}' must be set to a production value
+          (in site-config), not empty, not an agent-cloud.test default and not an unresolved
+          template. Refusing to deploy the console.
+        quiet: true
+      loop: "{{ _console_prod_required }}"
+      when: not (local_mode | default(false) | bool)
+
     # Read-only check of the credential path before anything is written: a refused run must not
     # have already placed the repo or written a secret (deploy-skynet.yml pattern).
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"

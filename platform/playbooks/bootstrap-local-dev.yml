@@ -1411,6 +1411,9 @@
           console_base_url=https://console.{{ _dev_zone }}:{{ _edge_https_port }}
           console_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/console/
           console_build_seccomp=/usr/share/containers/seccomp.json
+          console_semaphore_api_url=https://semaphore.{{ _dev_zone }}
+          console_semaphore_ui_url=https://semaphore.{{ _dev_zone }}:{{ _edge_https_port }}
+          console_semaphore_project=1
           console_scope_is_example=true
           console_tenants={{ _console_example_tenants | string }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud

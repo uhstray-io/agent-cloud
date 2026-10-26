@@ -1,14 +1,18 @@
 //! Per-user preferences in SQLite (`<CONSOLE_DATA_DIR>/prefs.db`).
 //!
-//! One connection behind a tokio Mutex. That is fine at console scale: a few
-//! users, one row each, so each query holds the lock for microseconds. A
-//! contended database would move these calls into spawn_blocking.
+//! One connection behind a tokio Mutex, shared with the session store (see
+//! `sessions.rs`). That is fine at console scale: a few users, one row each, so
+//! each query holds the lock for microseconds. A contended database would move
+//! these calls into spawn_blocking.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+use super::sessions::{self, SqliteStore};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -60,7 +64,7 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS preferences (
 )";
 
 pub struct Prefs {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Prefs {
@@ -75,9 +79,15 @@ impl Prefs {
 
     fn from_connection(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        sessions::init(&conn)?;
         Ok(Prefs {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// The session store over this same connection, so sessions live in `prefs.db`.
+    pub fn session_store(&self) -> SqliteStore {
+        SqliteStore::new(self.conn.clone())
     }
 
     /// Stored preferences, or the defaults when the user has none yet.

@@ -100,6 +100,11 @@ templates:
   - name: "Deploy console (Local)"
     playbook: platform/playbooks/deploy-console.yml
 
+  # console's read-only Semaphore identity (svc-console, guest): run before Deploy console (Local),
+  # which reads the token this stores.
+  - name: "Provision Console Semaphore Access (Local)"
+    playbook: platform/playbooks/provision-console-semaphore-access.yml
+
   # honcho - memory API (api+deriver+pgvector+redis; /v3 JWT, /docs forward_auth).
   - name: "Deploy honcho (Local)"
     playbook: platform/playbooks/deploy-honcho.yml
