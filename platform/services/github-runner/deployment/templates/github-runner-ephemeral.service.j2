@@ -28,6 +28,11 @@ RestartPreventExitStatus=3
 # The loop traps TERM and exits between steps; a reset in progress is safe to cut short,
 # because the next start begins with a full reset.
 TimeoutStopSec=60
+# The sweep spools its temporary listings in this directory, not in /tmp, which the runner
+# account can fill (ephemeral-supervisor.sh, spool_dir). The unit has no User=, so systemd
+# creates the directory owned by root, and RuntimeDirectoryMode keeps it root-only.
+RuntimeDirectory=github-runner-supervisor
+RuntimeDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target

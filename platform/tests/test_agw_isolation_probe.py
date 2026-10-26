@@ -292,6 +292,11 @@ def test_the_cap_itself_is_allowed(tmp_path, gateway):
     pytest.param({"agw_isolation_control": "ghost"}, {}, "must be declared in agw_identities and differ",
                  id="control-undeclared"),
     pytest.param({}, {"agw_clients": [BURST]}, "must be declared in agw_identities and differ", id="no-other-identity"),
+    pytest.param({"agw_isolation_control": CONTROL},
+                 {"agw_models": [{"name": "m"}, {"name": "p", "pool_identity": CONTROL}]},
+                 "'other' is a shared-pool identity", id="control-is-a-pool"),
+    pytest.param({}, {"agw_models": [{"name": "m"}, {"name": "p", "pool_identity": BURST}]},
+                 "'isolation-probe' is a shared-pool identity", id="burst-is-a-pool"),
     pytest.param({}, {"agw_client_policies": {BURST: {"tokens_per_hour": 20, "allowed_models": ["nope"]}}},
                  "at least one declared agw_models name", id="burst-allowed-no-declared-model"),
 ])

@@ -141,15 +141,19 @@ owned_id() {
 # from /proc, not from a cgroup: a job's processes are in the runner unit's cgroup, in scopes
 # rootless podman asks the user manager for, or anywhere else the account could start them.
 account_pids() {
-  local d tag r e s f
+  local d tag r e s f seen=0
   for d in "$PROC_ROOT"/[0-9]*; do
     [ -r "$d/status" ] || continue
+    seen=$((seen + 1))
     read -r tag r e s f < <(grep '^Uid:' "$d/status" 2>/dev/null || true) || true
     [ "${tag:-}" = "Uid:" ] || continue
     if owned_id "$r" || owned_id "$e" || owned_id "$s" || owned_id "$f"; then
       echo "${d##*/}"
     fi
   done
+  # A process table with no readable entry is missing or unreadable, not empty: this process is
+  # always in /proc. An unexpanded glob (no table at all) lands here too.
+  [ "$seen" -gt 0 ] || return 1
 }
 
 as_user() {
@@ -159,21 +163,25 @@ as_user() {
 # The user manager first, so its units (the runner, podman's API service, any unit or timer a
 # job created) stop through systemd and their cgroups are killed whole; then SIGKILL, from
 # /proc, to whatever is left, until nothing is.
+# Returns non-zero when the account's processes cannot be listed, or survive SIGKILL. A listing
+# that fails is not "no processes": the caller stops before any sweep (do_reset).
 kill_account() {
-  local n pids
+  local n out pids
   loginctl terminate-user "$RUNNER_ACCOUNT" >/dev/null 2>&1 || true
   systemctl stop "user@${UID_}.service" >/dev/null 2>&1 || true
   systemctl kill --signal=SIGKILL "user-${UID_}.slice" >/dev/null 2>&1 || true
   # Unmounts /run/user/<uid>, so the sweep below does not meet a busy mount point.
   systemctl stop "user-runtime-dir@${UID_}.service" >/dev/null 2>&1 || true
   for n in 1 2 3 4 5 6 7 8 9 10; do
-    pids=$(account_pids | tr '\n' ' ')
+    if ! out=$(account_pids); then log "cannot list processes of $RUNNER_ACCOUNT"; return 1; fi
+    pids=$(printf '%s\n' "$out" | tr '\n' ' ')
     [ -n "${pids// /}" ] || return 0
     # shellcheck disable=SC2086
     kill -KILL $pids 2>/dev/null || true
     sleep "0.$n"
   done
-  pids=$(account_pids | tr '\n' ' ')
+  if ! out=$(account_pids); then log "cannot list processes of $RUNNER_ACCOUNT"; return 1; fi
+  pids=$(printf '%s\n' "$out" | tr '\n' ' ')
   [ -n "${pids// /}" ] || return 0
   log "processes of $RUNNER_ACCOUNT survived SIGKILL: $pids"
   return 1
@@ -187,7 +195,10 @@ ipc_owned() {
   local kind f
   for kind in shm msg sem; do
     f="$SYSVIPC_ROOT/$kind"
-    [ -r "$f" ] || continue
+    # A table that cannot be read is a failure, not an empty table: it would list nothing and
+    # read as a clean host. Each table's status is checked, so a failure on an earlier kind is
+    # not hidden by the loop's last iteration.
+    [ -r "$f" ] || return 1
     awk -v k="$kind" 'NR == 1 {
         for (i = 1; i <= NF; i++) {
           if (!idc && $i ~ /id$/ && $i != "uid" && $i != "cuid") idc = i
@@ -198,7 +209,7 @@ ipc_owned() {
       }
       idc && uc && cc { print k, $idc, $uc, $cc }' "$f" | while read -r k id u cu; do
       if owned_id "$u" || owned_id "$cu"; then echo "$k $id"; fi
-    done
+    done || return 1
   done
 }
 
@@ -253,21 +264,88 @@ owner_predicate() {
   printf '%s\n' ')'
 }
 
+# Where the sweep's temporary listings go. Never TMPDIR or /tmp: the runner account can fill
+# /tmp, and a reset that cannot write its listing quarantines the host, so a job could take the
+# pool out of service. Under the unit, systemd sets RUNTIME_DIRECTORY to the directory the unit
+# declares: RuntimeDirectory= creates it below /run, and RuntimeDirectoryMode=0700 keeps it
+# root-only (systemd.exec(5): https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+# The deploy also runs reset as root outside the unit, where RUNTIME_DIRECTORY is unset, so the
+# fallback is /run. UAPI.9 describes /run as a tmpfs, "generally writable for privileged programs
+# only" (https://uapi-group.org/specifications/specs/linux_file_system_hierarchy/). It states no
+# mode for /run, so the root-only reading of /run is unverified on a host. /run/user/<uid> is the
+# account's own runtime directory, usually a separate tmpfs; it is never the fallback.
+# RUNNER_STATE_DIR is not used: check_config does not check its owner or mode, the repository
+# declares no mount that keeps it off the disk the job's home is on, so a job could fill it.
+spool_dir() {
+  # RUNTIME_DIRECTORY may be unset (the deploy's own reset runs outside the unit). The expansions
+  # use :- so set -u does not stop here: under bash 5 an unset name in ${var%%...} is an error.
+  local d="${RUNTIME_DIRECTORY:-}"
+  d="${d%%:*}"
+  printf '%s\n' "${d:-/run}"
+}
+
+# A function, so a test can stub the existence check: /run does not exist on macOS, where the
+# suite runs.
+spool_ready() { [ -d "$1" ]; }
+
 # Paths owned by the account outside the home, NUL-terminated: a job chooses its file names,
 # and a name with a newline in it must not split into two paths. A matched directory is pruned:
 # it is removed whole, so listing its contents adds nothing. A sweep root itself, and any
 # mount point (the account's /run/user/<uid> while it is still mounted), is never listed:
-# each mounted filesystem is swept as its own root.
+# each mounted filesystem is swept as its own root. Returns non-zero when the roots cannot be
+# listed or a root cannot be walked: a failed listing is not an empty one. The one exception is
+# a path that vanishes during the walk (find's "No such file or directory"). /tmp is busy, and a
+# reset that quarantined on one would take the runner out of service. Any other find error fails.
 owned_paths() {
-  local root p pred=()
-  mapfile -t pred < <(owner_predicate)
-  while read -r root; do
+  local root p line roots spool err list fst bad rc pred=()
+  # A read loop, not mapfile: macOS ships bash 3.2, which has no mapfile, and the suite runs
+  # there on pre-push. The ${pred[@]+...} form because bash 3.2 rejects "${pred[@]}" on an
+  # empty array under set -u. An empty predicate lists every path: the caller's verification
+  # then sees the leftovers and quarantines. It must not die here instead: this runs in a
+  # subshell, and a die reads as "nothing left" to that verification.
+  while IFS= read -r line; do pred+=("$line"); done < <(owner_predicate)
+  roots=$(sweep_roots) || return 1
+  # With no configured roots, an empty list is refused, not swept as nothing. So a host whose
+  # local filesystems are all of a type outside sweep_roots' list is quarantined, by design.
+  [ -n "$SWEEP_ROOTS" ] || [ -n "$roots" ] || return 1
+  while IFS= read -r root; do
     [ -d "$root" ] || continue
+    # find writes to a file, not a pipe, so its status is its own; its stderr is kept to tell a
+    # vanished path from a real failure. LC_ALL=C keeps find's messages in English, which the
+    # match below depends on. The files live in the root-only spool (spool_dir), so they are
+    # never the account's and the sweep never lists them.
+    spool=$(spool_dir)
+    spool_ready "$spool" || { log "no sweep spool at $spool"; return 1; }
+    err=$(mktemp "$spool/sweep.XXXXXX") || { log "cannot create a sweep listing in $spool"; return 1; }
+    list=$(mktemp "$spool/sweep.XXXXXX") || { rm -- "$err"; log "cannot create a sweep listing in $spool"; return 1; }
+    fst=0
+    LC_ALL=C find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o ${pred[@]+"${pred[@]}"} -print0 -prune >"$list" 2>"$err" || fst=$?
+    if [ "$fst" -ne 0 ]; then
+      # Only a failure over vanished paths is tolerated, and only a line that ends in exactly that
+      # message counts as one: a line that merely contains it, or a blank line, is a real error.
+      # The decision is awk's exit status, not its output, so no line can hide a later one:
+      # 0 = a real error was found, 1 = none was, anything else = awk itself failed, which is not
+      # evidence of vanished paths either.
+      rc=0
+      bad=$(awk '!/: No such file or directory$/ { print substr($0, 1, 200); bad = 1; exit } END { exit !bad }' "$err") || rc=$?
+      case "$rc" in
+        0) log "cannot walk $root: $bad"; rm -- "$err" "$list"; return 1 ;;
+        1) ;;
+        *) log "cannot read the messages of find on $root: awk exited $rc"; rm -- "$err" "$list"; return 1 ;;
+      esac
+      # A failure that printed nothing is not vanished paths either.
+      if [ ! -s "$err" ]; then
+        log "cannot walk $root: find exited $fst without a message"
+        rm -- "$err" "$list"
+        return 1
+      fi
+    fi
     while IFS= read -r -d '' p; do
       if command -v mountpoint >/dev/null 2>&1 && mountpoint -q -- "$p"; then continue; fi
       printf '%s\0' "$p"
-    done < <(find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o "${pred[@]}" -print0 -prune 2>/dev/null || true)
-  done < <(sweep_roots)
+    done <"$list" || { rm -- "$err" "$list"; return 1; }
+    rm -- "$err" "$list"
+  done <<<"$roots"
 }
 
 file_owner() { stat -c %u -- "$1" 2>/dev/null || stat -f %u -- "$1"; }
@@ -300,7 +378,7 @@ sweep_files() {
 
 # ── reset ─────────────────────────────────────────────────────────────────────
 do_reset() {
-  local left
+  local left out
   kill_account || return 1
   sweep_ipc
   # The keyrings are cleared by a process of the account, which the second kill removes.
@@ -308,17 +386,26 @@ do_reset() {
   kill_account || return 1
   sweep_files
 
-  left=$(account_pids | tr '\n' ' ')
+  # Each check fails closed. A lister that cannot run is not an empty listing: under
+  # "do_reset || quarantine" set -e is off, so the lister's status is tested here, not left to
+  # errexit. head stays outside the checked command, so its SIGPIPE cannot read as a failure.
+  if ! out=$(account_pids); then log "reset: cannot list processes"; return 1; fi
+  left=$(printf '%s\n' "$out" | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
     log "reset: processes remain: $left"
     return 1
   fi
-  left=$(ipc_owned | tr '\n' ' ')
+  if ! out=$(ipc_owned); then log "reset: cannot list IPC objects"; return 1; fi
+  left=$(printf '%s\n' "$out" | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
     log "reset: IPC objects remain: $left"
     return 1
   fi
-  left=$(owned_paths | tr '\0' '\n' | head -n 20 | tr '\n' ' ')
+  # NUL-separated in, newline-separated out: a command substitution would drop the NULs, so tr
+  # stays in the checked command. Under the script's set -o pipefail the pipeline fails when
+  # owned_paths does, and owned_paths returns non-zero when it cannot list.
+  if ! out=$(owned_paths | tr '\0' '\n'); then log "reset: cannot list files"; return 1; fi
+  left=$(head -n 20 <<<"$out" | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
     log "reset: files remain: $left"
     return 1

@@ -50,7 +50,12 @@ only until someone widened it in a hurry, with no review trail.
   included), their System V IPC objects and the account's keyrings, verifies all of it, and
   copies a root-owned seed of the deployed home into the empty home. A reset it cannot
   verify, or runners that keep exiting without a job, quarantine the host: it takes no job
-  until a deploy proves a clean reset. The configurations are minted on the orchestrator
+  until a deploy proves a clean reset. A host whose local filesystems all match none of the
+  sweep's filesystem types (ext2/3/4, xfs, btrfs, tmpfs, mqueue, vfat) quarantines too, unless
+  `RUNNER_SWEEP_ROOTS` names its roots; that is intended, fail closed. The sweep spools its
+  temporary listings in the unit's `RuntimeDirectory` (`/run/github-runner-supervisor`, root-only),
+  and a reset run outside the unit spools in `/run`, never in `/tmp`, which the runner account
+  can fill. The configurations are minted on the orchestrator
   (`stock-github-runner-jit.yml`, scheduled every 10 minutes) and stocked root-only in
   `/var/lib/github-runner/jit`; the App key still never reaches the host.
 

@@ -41,11 +41,12 @@ const KNOWN: Record<string, { contextWindow: number; maxTokens: number; develope
   "mistralai/mistral-large-4-0": { contextWindow: 1048576, maxTokens: 131072, developerRole: false },
   "z-ai/glm-5.3": { contextWindow: 1048576, maxTokens: 131072, developerRole: false },
   "anthropic/claude-opus-5.5": { contextWindow: 1000000, maxTokens: 128000, developerRole: true },
+  "moonshotai/kimi-k3.1-pro": { contextWindow: 1048576, maxTokens: 131072, developerRole: false },
 };
 
 test("every known id maps to its own context window, output cap and role setting", () => {
   const models = parseModelList(modelsBody(...Object.keys(KNOWN)), BASE);
-  assert.equal(models.length, 9);
+  assert.equal(models.length, 10);
   for (const model of models) {
     const expected = KNOWN[model.id];
     assert.equal(model.contextWindow, expected.contextWindow, model.id);
