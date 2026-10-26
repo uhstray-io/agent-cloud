@@ -20,7 +20,7 @@ setup() {
   T=$(cd "$BATS_TEST_TMPDIR" && pwd -P)
   ME=$(id -un)
   MYUID=$(id -u)
-  mkdir -p "$T/proc" "$T/sysvipc" "$T/tmp" "$T/run/$MYUID" "$T/state/gh/jit" "$T/homes" "$T/seeds"
+  mkdir -p "$T/proc" "$T/sysvipc" "$T/tmp" "$T/run/$MYUID" "$T/state/gh/jit" "$T/homes" "$T/seeds" "$T/rt"
   printf '%s:165536:65536\n' "$ME" >"$T/subuid"
 }
 
@@ -32,10 +32,13 @@ sup() {
     RUNNER_HOME="${HOME_OVERRIDE:-$T/homes/runner}" \
     RUNNER_SEED="${SEED_OVERRIDE:-$T/seeds/runner}" \
     RUNNER_STATE_DIR="$T/state/gh" \
-    RUNNER_PROC_ROOT="$T/proc" \
+    RUNNER_PROC_ROOT="${PROC_OVERRIDE-$T/proc}" \
     RUNNER_SUBUID_FILE="$T/subuid" \
     RUNNER_SYSVIPC_ROOT="$T/sysvipc" \
-    RUNNER_SWEEP_ROOTS="$T/tmp" \
+    RUNNER_SWEEP_ROOTS="${SWEEP_OVERRIDE-$T/tmp}" \
+    RUNTIME_DIRECTORY="${RUNTIME_OVERRIDE-$T/rt}" \
+    TMPDIR="${TMPDIR_OVERRIDE:-${TMPDIR:-/tmp}}" \
+    TEST_DIR="$T" \
     RUNNER_RUNTIME_ROOT="$T/run" \
     RUNNER_JIT_MAX_AGE_MINUTES=60 \
     bash -c ". '$SUP'; $1"
@@ -153,6 +156,214 @@ name@" ]
   [ -z "$output" ]
 }
 
+# do_reset's three checks each fail closed. The stubs make the earlier steps no-ops, so only the
+# check under test can end the reset: a lister that cannot run must not read as an empty listing
+# and let the reset report a clean account.
+reset_with() {
+  sup "check_config; kill_account() { :; }; clear_keyrings() { :; }; sweep_ipc() { :; }; sweep_files() { :; }; $1; do_reset"
+}
+
+@test "ephemeral: a reset whose process listing fails is an error, not a clean account" {
+  run reset_with 'account_pids() { return 1; }'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "reset: cannot list processes"
+  refute_contains "$output" "remain"
+}
+
+@test "ephemeral: a reset whose IPC listing fails is an error, not a clean account" {
+  prod_fixtures
+  run reset_with 'ipc_owned() { return 1; }'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "reset: cannot list IPC objects"
+  refute_contains "$output" "remain"
+}
+
+@test "ephemeral: a reset whose file listing fails is an error, not a clean account" {
+  prod_fixtures
+  run reset_with 'owned_paths() { return 1; }'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "reset: cannot list files"
+  refute_contains "$output" "remain"
+}
+
+@test "ephemeral: a reset whose listings are all empty passes every check" {
+  prod_fixtures
+  run reset_with ':'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "cannot list"
+  refute_contains "$output" "remain"
+}
+
+# The real listers, on fixtures that are complete and empty: /proc holds one process that is not
+# the account's (init), and each SysV table is present with its header and no rows. Each test
+# below breaks one real lister and runs do_reset as cmd_loop does, where a failed reset is a
+# quarantine.
+prod_fixtures() {
+  fake_proc 1 0 0 0 0
+  printf '%s\n' '       key      shmid perms size uid gid cuid cgid' >"$T/sysvipc/shm"
+  printf '%s\n' '       key      msqid perms cbytes qnum lspid lrpid uid gid cuid cgid' >"$T/sysvipc/msg"
+  printf '%s\n' '       key      semid perms nsems uid gid cuid cgid' >"$T/sysvipc/sem"
+}
+
+# Stubbed: the steps that act on the live host (kill, keyring clear, IPC removal). Real: the
+# three checks and their listers, and the file sweep, which can only reach the test's directories.
+reset_prod() {
+  sup "check_config; kill_account() { :; }; clear_keyrings() { :; }; sweep_ipc() { :; }; $1; do_reset || echo QUARANTINED"
+}
+
+@test "ephemeral: a reset whose sweep roots cannot be listed quarantines, and leaves the files" {
+  prod_fixtures
+  : >"$T/tmp/leftover"
+  SWEEP_OVERRIDE= run reset_prod 'findmnt() { return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+  [ -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a findmnt that lists no sweepable root, and succeeds, quarantines the reset" {
+  prod_fixtures
+  : >"$T/tmp/leftover"
+  SWEEP_OVERRIDE= run reset_prod "findmnt() { printf '%s %s\\n' /proc proc; }"
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+  [ -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a reset whose process table is missing quarantines" {
+  prod_fixtures
+  PROC_OVERRIDE=/nonexistent run reset_prod ':'
+  assert_contains "$output" "reset: cannot list processes"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a reset whose SysV IPC table is unreadable quarantines" {
+  prod_fixtures
+  chmod 000 "$T/sysvipc/msg"
+  run reset_prod ':'
+  assert_contains "$output" "reset: cannot list IPC objects"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a SysV table that fails to read is not masked by the table after it" {
+  prod_fixtures
+  run reset_prod 'awk() { case "$*" in *sysvipc/msg) return 2 ;; *) command awk "$@" ;; esac; }'
+  assert_contains "$output" "reset: cannot list IPC objects"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a reset over real empty listers and an empty sweep root passes" {
+  prod_fixtures
+  run reset_prod ':'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" QUARANTINED
+  refute_contains "$output" "cannot list"
+}
+
+# find wrappers for the walk. Each lists the real tree as find does, then fails with the stderr
+# given. The wrapper is a function, so owned_paths' LC_ALL=C find call reaches it.
+@test "ephemeral: a path that vanishes mid-walk does not quarantine the reset" {
+  prod_fixtures
+  : >"$T/tmp/leftover"
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /x: No such file or directory" >&2; return 1; }'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" QUARANTINED
+  refute_contains "$output" "cannot list"
+  [ ! -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a walk that is refused with Permission denied quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /x: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "Permission denied"
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a walk with a vanished path and a refused one quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; printf "%s\n" "find: /x: No such file or directory" "find: /y: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a walk that fails without saying why quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; return 1; }'
+  assert_contains "$output" "without a message"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: the sweep's listings are spooled in RUNTIME_DIRECTORY and removed after" {
+  run sup 'check_config; find() { ls -A "$RUNTIME_DIRECTORY" >"$TEST_DIR/seen"; command find "$@"; }; owned_paths >/dev/null'
+  [ "$status" -eq 0 ]
+  assert_grep -q '^sweep\.' "$T/seen"
+  [ -z "$(ls -A "$T/rt")" ]
+}
+
+@test "ephemeral: a sweep whose TMPDIR is unwritable still lists, from RUNTIME_DIRECTORY" {
+  prod_fixtures
+  mkdir -p "$T/ro"
+  chmod 0500 "$T/ro"
+  : >"$T/tmp/leftover"
+  TMPDIR_OVERRIDE="$T/ro" run reset_prod ':'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "cannot"
+  refute_contains "$output" QUARANTINED
+  [ ! -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a path whose name contains the vanished-path message is still a refused walk" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /tmp/a: No such file or directory/b: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a blank stderr line does not hide a refused walk after it" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; printf "\n%s\n" "find: /x: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: an unset RUNTIME_DIRECTORY spools in /run, with no unbound-variable error" {
+  # /run does not exist on macOS, and nothing may be written there from a test: the existence
+  # check and mktemp are stubbed, and the template mktemp is called with is what is asserted.
+  run sup 'check_config; unset RUNTIME_DIRECTORY; spool_ready() { return 0; }; mktemp() { printf "%s\n" "$*" >>"$TEST_DIR/mktemp.args"; f="$TEST_DIR/stub.$RANDOM$RANDOM"; : >"$f"; printf "%s\n" "$f"; }; owned_paths >/dev/null'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "unbound"
+  assert_grep -qx '/run/sweep.XXXXXX' "$T/mktemp.args"
+}
+
+@test "ephemeral: a spool directory that does not exist quarantines the reset, by name" {
+  prod_fixtures
+  RUNTIME_OVERRIDE="$T/nowhere" run reset_prod ':'
+  assert_contains "$output" "no sweep spool at $T/nowhere"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: an awk that fails while reading find's messages quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /x: No such file or directory" >&2; return 1; }; awk() { case "$*" in *"No such file"*) return 2 ;; *) command awk "$@" ;; esac; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+# The real kill_account, with the system tools it calls stubbed: on a host with systemd these
+# would stop the account's user manager, and on a CI runner that is the job's own session.
+@test "ephemeral: a kill step that cannot list the account's processes returns non-zero" {
+  PROC_OVERRIDE=/nonexistent run sup 'check_config; loginctl() { :; }; systemctl() { :; }; kill_account'
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "cannot list processes"
+}
+
+@test "ephemeral: a reset whose kill step cannot list the account's processes sweeps nothing" {
+  PROC_OVERRIDE=/nonexistent run sup 'check_config; loginctl() { :; }; systemctl() { :; }; sweep_ipc() { :; }; clear_keyrings() { :; }; sweep_files() { : >"$TEST_DIR/swept"; }; do_reset || echo QUARANTINED'
+  assert_contains "$output" QUARANTINED
+  assert_contains "$output" "cannot list processes"
+  [ ! -e "$T/swept" ]
+}
+
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {
   printf 'OLD' >"$T/state/gh/jit/gh-runner-01-jit-a.jit"
   printf 'MID' >"$T/state/gh/jit/gh-runner-01-jit-b.jit"
@@ -214,6 +425,14 @@ name@" ]
   run sup 'check_config; cmd_loop'
   [ "$status" -eq 3 ]
   grep -q '^RestartPreventExitStatus=3$' "$BATS_TEST_DIRNAME/../services/github-runner/deployment/templates/github-runner-ephemeral.service.j2"
+}
+
+@test "ephemeral: the supervisor unit gives the sweep a root-only spool directory" {
+  local unit="$BATS_TEST_DIRNAME/../services/github-runner/deployment/templates/github-runner-ephemeral.service.j2"
+  assert_grep -qx 'RuntimeDirectory=github-runner-supervisor' "$unit"
+  assert_grep -qx 'RuntimeDirectoryMode=0700' "$unit"
+  # The unit runs the supervisor as root, so systemd makes the directory root's.
+  refute_grep -qE '^(User|Group)=' "$unit"
 }
 
 @test "ephemeral: the seed never carries a registration, a workspace or an image store" {
