@@ -835,6 +835,14 @@ templates:
         required: false
         default_value: "false"
 
+  # The Dispatch Console's own read-only Semaphore identity (plan 17, D20): svc-console, a non-admin
+  # account at project role guest, its token stored at secret/services/console. Run it BEFORE Deploy
+  # console (which reads that token and stops when it is absent), and before Manage Semaphore Access
+  # declares svc-console (which refuses a declared member with no account yet).
+  - name: Provision Console Semaphore Access
+    playbook: platform/playbooks/provision-console-semaphore-access.yml
+    dev_variant: true
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
