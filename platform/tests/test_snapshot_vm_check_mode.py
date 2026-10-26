@@ -18,6 +18,7 @@ import threading
 from http.server import ThreadingHTTPServer
 
 import pytest
+import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -96,16 +97,50 @@ class FakeProxmoxTLS:
 
 def _snapshot(tmp_path, check):
     fake = FakeProxmoxTLS(tmp_path)
+    class OpenBaoHandler(DrainingHandler):
+        def log_message(self, *_args):
+            pass
+
+        def _reply(self, payload, status):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):  # noqa: N802
+            if self.path == "/v1/auth/approle/login":
+                return self._reply({"auth": {"client_token": "synthetic-openbao-token"}}, 200)
+            return self._reply({"errors": ["unexpected synthetic OpenBao path"]}, 404)
+
+        def do_GET(self):  # noqa: N802
+            return self._reply({"errors": ["synthetic coordination record absent"]}, 404)
+
+    openbao = ThreadingHTTPServer(("127.0.0.1", 0), OpenBaoHandler)
+    openbao_url = f"http://127.0.0.1:{openbao.server_port}"
+    threading.Thread(target=openbao.serve_forever, daemon=True).start()
     extra = {"pve_api_host": fake.url, "pve_node": "n1", "pve_vmid": 100, "snapshot_name": SNAP,
              "pve_token_id": "automation@pve!fixture"}
     env = {k: v for k, v in os.environ.items() if k not in ("ANSIBLE_CONFIG", "PVE_TOKEN_SECRET")}
-    env.update(ANSIBLE_NOCOLOR="1", PVE_TOKEN_SECRET="synthetic-pve-secret")
+    env.update(ANSIBLE_NOCOLOR="1", PVE_TOKEN_SECRET="synthetic-pve-secret",
+               BAO_ROLE_ID="synthetic-role", BAO_SECRET_ID="synthetic-secret")
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(yaml.safe_dump({
+        "all": {
+            "hosts": {"localhost": {"ansible_connection": "local"}},
+            "vars": {"openbao_addr": openbao_url},
+            "children": {"openbao_svc": {"hosts": {"openbao-test": {"service_url": openbao_url}}}},
+        }
+    }))
     try:
-        done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(PLAYBOOK), "-e", json.dumps(extra),
+        done = subprocess.run(["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", json.dumps(extra),
                                *(["--check"] if check else [])],
                               cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
     finally:
         fake.close()
+        openbao.shutdown()
+        openbao.server_close()
     assert "synthetic-pve-secret" not in done.stdout + done.stderr
     return done, fake
 

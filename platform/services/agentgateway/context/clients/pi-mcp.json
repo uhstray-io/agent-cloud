@@ -1,0 +1,6 @@
+{
+  "url": "https://mcp.example.invalid/mcp",
+  "headers": {
+    "Authorization": "!<helper command, set by scripts/agw-mcp-client.py>"
+  }
+}

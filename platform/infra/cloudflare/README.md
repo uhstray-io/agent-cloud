@@ -27,11 +27,14 @@ Do not put credentials in this directory or pass them on a command line.
 ## Operation
 
 1. Change the declared HCL through the repository branch workflow.
-2. Run **Apply Cloudflare Tofu** with `tofu_action=plan` (the default) and inspect the diff.
-3. Run the same template with `tofu_action=apply` after reviewing the intended changes.
+2. Run **Apply Cloudflare Tofu** for generic DNS/WAF changes. Review its plan before using its existing apply path.
+3. For the Grafana API challenge bypass, run **Apply Grafana API Cloudflare Tofu (Dev)** with `tofu_action=plan`, review its safe rule receipt, then apply with that `reviewed_plan_digest`.
+   The dedicated operation accepts only the exact in-place rule insertion or a
+   matching zero-diff rerun, applies the saved plan file, and proves zero diff after apply.
 
-The apply branch uses `-auto-approve`; the preceding review is essential. The
-checked-in template does not itself implement an automatic PR-plan/merge-apply pipeline.
+The Grafana guard is isolated to that Dev-bound operation. Generic Cloudflare
+DNS/WAF plan and apply behavior remains available through **Apply Cloudflare Tofu**.
+This is not an automatic PR-plan/merge-apply pipeline.
 For any future adoption, declare imports and verify the plan preserves existing
 objects before applying; do not recreate live DNS or WAF objects to gain ownership.
 

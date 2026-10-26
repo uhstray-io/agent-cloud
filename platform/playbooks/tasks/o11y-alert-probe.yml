@@ -20,6 +20,10 @@
     that: (local_mode | default(false) | bool) or (o11y_production_static_probe | default(false) | bool)
     fail_msg: "The unreachable-endpoint drill needs local mode or the production static probe."
 
+- name: Bind the expected scrape instances for this probe
+  ansible.builtin.set_fact:
+    _probe_expected_instances: "{{ o11y_probe_expected_instances | default([expected_instance]) }}"
+
 - name: Require alerting to be enabled for the alert drill
   ansible.builtin.assert:
     that: o11y_alerts_enabled | default(false) | bool
@@ -41,12 +45,14 @@
   changed_when: false
   when: drill_expect_alert | default(false) | bool
   check_mode: false
+  no_log: true
 
 - name: Require an active provisioned rule before injecting the alert fault
   ansible.builtin.assert:
     that: not ((_service_down_rule.stdout | from_json).isPaused | bool)
     fail_msg: "The provisioned service-down rule is paused; no alert fault was injected."
   when: drill_expect_alert | default(false) | bool
+  no_log: true
 
 - name: Exercise the declared unreachable endpoint
   block:
@@ -102,14 +108,27 @@
       # Podman discovery, the 15s scrape, and remote write may span a minute.
       retries: 24
       delay: 5
+      no_log: true
       until: >-
         _probe_scrapes.rc == 0 and
-        ((_probe_scrapes.stdout | from_json).data.result |
-         selectattr('metric.instance', 'equalto', expected_instance) |
-         selectattr('value.1', 'equalto', '0') | list | length) == 1
+        ((o11y_grouped_probe | default(false) | bool and
+          ((_probe_scrapes.stdout | from_json).data.result |
+           map(attribute='metric.instance') | list | sort) == (_probe_expected_instances | sort) and
+          ((_probe_scrapes.stdout | from_json).data.result |
+           selectattr('metric.cluster', 'defined') |
+           selectattr('metric.cluster', 'equalto', _drill_cluster) |
+           selectattr('metric.environment', 'defined') |
+           selectattr('metric.environment', 'equalto', _drill_environment) |
+           selectattr('value.1', 'equalto', '0') |
+           map(attribute='metric.instance') | list | sort) == (_probe_expected_instances | sort)) or
+         (not (o11y_grouped_probe | default(false) | bool) and
+          ((_probe_scrapes.stdout | from_json).data.result |
+           selectattr('metric.instance', 'equalto', expected_instance) |
+           selectattr('value.1', 'equalto', '0') | list | length) == 1))
       when: not ansible_check_mode
 
     - name: Require the onboarding verifier to refuse the named endpoint
+      no_log: true
       block:
         - name: Run the same metrics gate used by service onboarding
           ansible.builtin.include_tasks: verify-o11y-metrics.yml
@@ -125,10 +144,12 @@
               - "'failing instances=' in ansible_failed_result.msg"
               - ("'" ~ expected_instance ~ "'") in (ansible_failed_result.msg.split('failing instances=', 1)[1].split(';', 1)[0])
             fail_msg: "The verifier failed without naming the unreachable service and endpoint."
+          no_log: true
 
-        - name: Report the expected verification failure
-          ansible.builtin.debug:
-            msg: "Verified refusal: {{ expected_service }} at {{ expected_instance }} reported up=0."
+    - name: Report the expected verification failure without target identity
+      ansible.builtin.debug:
+        msg: "Verified refusal: the unreachable metrics target was rejected."
+      when: not ansible_check_mode
 
     - name: Wait for Grafana's service-down rule to fire for the probe
       ansible.builtin.command:
@@ -145,13 +166,30 @@
       changed_when: false
       retries: 36
       delay: 10
+      no_log: true
       until: >-
         _firing_alerts.rc == 0 and
-        ((_firing_alerts.stdout | from_json).data.alerts |
-         selectattr('labels', 'defined') |
-         selectattr('labels.service', 'defined') |
-         selectattr('labels.service', 'equalto', expected_service) |
-         selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
+        ((o11y_grouped_probe | default(false) | bool and
+          ((_firing_alerts.stdout | from_json).data.alerts |
+           selectattr('labels', 'defined') |
+           selectattr('labels.service', 'defined') |
+           selectattr('labels.service', 'equalto', expected_service) |
+           selectattr('labels.alertname', 'defined') |
+           selectattr('labels.alertname', 'equalto', (_service_down_rule.stdout | from_json).title) |
+           selectattr('labels.grafana_folder', 'defined') |
+           selectattr('labels.grafana_folder', 'equalto', 'agent-cloud') |
+           selectattr('labels.cluster', 'defined') |
+           selectattr('labels.cluster', 'equalto', _drill_cluster) |
+           selectattr('labels.environment', 'defined') |
+           selectattr('labels.environment', 'equalto', _drill_environment) |
+           selectattr('state', 'match', '^(Alerting|firing)$') |
+           map(attribute='labels.instance') | list | sort) == (_probe_expected_instances | sort)) or
+         (not (o11y_grouped_probe | default(false) | bool) and
+          ((_firing_alerts.stdout | from_json).data.alerts |
+           selectattr('labels', 'defined') |
+           selectattr('labels.service', 'defined') |
+           selectattr('labels.service', 'equalto', expected_service) |
+           selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0))
       when: not ansible_check_mode and (drill_expect_alert | default(false) | bool)
 
     - name: Wait for the matching Discord webhook message
@@ -167,34 +205,103 @@
       retries: 60
       delay: 5
       until: >-
-        (_discord_messages.json | default([]) |
-         selectattr('webhook_id', 'defined') |
-         selectattr('webhook_id', 'equalto', _webhook_id) |
-         list | to_json) is search(_delivery_marker)
+        ((_discord_messages.json | default([]) |
+          selectattr('webhook_id', 'defined') |
+          selectattr('webhook_id', 'equalto', _webhook_id) |
+          list | to_json) is search(_delivery_marker)) and
+        (not (o11y_grouped_probe | default(false) | bool) or
+          (_discord_messages.json | default([]) |
+           selectattr('webhook_id', 'defined') |
+           selectattr('webhook_id', 'equalto', _webhook_id) |
+           selectattr('content', 'defined') |
+           selectattr('content', 'search', _delivery_marker) |
+           list | length) == 1 and
+          (_discord_messages.json | default([]) |
+             selectattr('webhook_id', 'defined') |
+             selectattr('webhook_id', 'equalto', _webhook_id) |
+             selectattr('content', 'defined') |
+             selectattr('content', 'search', _delivery_marker) |
+             map(attribute='content') | list | first | default('')).splitlines() |
+             select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length) and
+          ((' - instance = ' ~ _probe_expected_instances[0]) in
+             (_discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               selectattr('content', 'search', _delivery_marker) |
+               map(attribute='content') | list | first | default('')).splitlines()) and
+          ((' - instance = ' ~ _probe_expected_instances[1]) in
+             (_discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               selectattr('content', 'search', _delivery_marker) |
+               map(attribute='content') | list | first | default('')).splitlines()) and
+          ((_discord_messages.json | default([]) |
+             selectattr('webhook_id', 'defined') |
+             selectattr('webhook_id', 'equalto', _webhook_id) |
+             selectattr('content', 'defined') |
+             selectattr('content', 'search', _delivery_marker) |
+             map(attribute='content') | list | first | default('')).splitlines() |
+             select('search', '/d/service-overview[?]var-service=' ~ expected_service ~ '$') | list | length > 0))
       no_log: true
       ignore_errors: true
       when: not ansible_check_mode and (drill_expect_alert | default(false) | bool)
 
+    - name: Count the matching Discord receipt without retaining its content
+      ansible.builtin.set_fact:
+        _discord_receipt_summary:
+          succeeded: "{{ _discord_messages is succeeded }}"
+          webhook_message_count: >-
+            {{ _discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) | list | length }}
+          readable_message_count: >-
+            {{ _discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               rejectattr('content', 'equalto', '') | list | length }}
+          grouped_message_count: >-
+            {{ _discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               selectattr('content', 'search', _delivery_marker) | list | length }}
+          grouped_details_present: >-
+            {%- set owned = _discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               selectattr('content', 'search', _delivery_marker) | list %}
+            {%- set content = owned[0].content if owned | length == 1 else '' -%}
+            {{ not (o11y_grouped_probe | default(false) | bool) or (owned | length == 1 and
+               (content.splitlines() | select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length)) and
+               ((' - instance = ' ~ _probe_expected_instances[0]) in content.splitlines()) and
+               ((' - instance = ' ~ _probe_expected_instances[1]) in content.splitlines()) and
+               (content.splitlines() | select('search', '/d/service-overview[?]var-service=' ~ expected_service ~ '$') | list | length > 0)) }}
+      no_log: true
+      when: drill_expect_alert | default(false) | bool
+
     - name: Require a readable firing receipt from the owned webhook
       ansible.builtin.assert:
-        that: _discord_messages is succeeded
+        that:
+          - _discord_receipt_summary.succeeded | bool
+          - _discord_receipt_summary.webhook_message_count | int > 0
+          - _discord_receipt_summary.readable_message_count | int > 0
+          - not (o11y_grouped_probe | default(false) | bool) or _discord_receipt_summary.grouped_message_count | int == 1
+          - not (o11y_grouped_probe | default(false) | bool) or _discord_receipt_summary.grouped_details_present | bool
         fail_msg: >-
-          Discord firing receipt absent after the wait: webhook messages={{
-          _discord_messages.json | default([]) |
-          selectattr('webhook_id', 'defined') |
-          selectattr('webhook_id', 'equalto', _webhook_id) |
-          list | length }}, readable messages={{
-          _discord_messages.json | default([]) |
-          selectattr('webhook_id', 'defined') |
-          selectattr('webhook_id', 'equalto', _webhook_id) |
-          selectattr('content', 'defined') |
-          rejectattr('content', 'equalto', '') |
-          list | length }}. Check bot message-history and message-content access.
+          Discord firing receipt was incomplete after the wait: webhook messages={{
+          _discord_receipt_summary.webhook_message_count }}, readable messages={{
+          _discord_receipt_summary.readable_message_count }}, owned messages={{
+          _discord_receipt_summary.grouped_message_count }}.
+        quiet: true
       when: drill_expect_alert | default(false) | bool
 
     - name: Report the fired rule and confirmed Discord receipt
       ansible.builtin.debug:
-        msg: "Grafana fired for {{ expected_service }} and its dedicated webhook delivered a matching Discord message."
+        msg: "Grafana fired for the drill and the matching delivery receipt was confirmed."
       when: drill_expect_alert | default(false) | bool
   always:
     - name: Remove only the probe started by this drill

@@ -1,0 +1,257 @@
+---
+# stop-local-service.yml — stop ONE idle local-dev service's containers, keep everything else.
+#
+#   -e target_service=<group>       e.g. erpnext_svc
+#
+# Why it exists: a developer keeps only the services the current work needs running. Before
+# this, the only ways to free a service's memory were clean-deploy-<service>.yml (which deletes
+# its volumes) or a hand-typed `podman stop` (a one-off nobody can reproduce).
+#
+# What it does: `<engine> stop` over the service's RUNNING containers, selected exactly as
+# verify-service-persistence.yml selects them (tasks/list-service-containers.yml: the compose
+# working_dir label), plus the names in the optional host var `stop_extra_containers` for a
+# container the compose project did not create and so carries no label (NetBox's
+# `netbox-orb-agent`, started by tasks/deploy-orb-agent.yml). Containers, images, volumes, the
+# deploy directory, OpenBao state and every rendered file are untouched: no `compose down`, no
+# `rm`, no volume command, no restart-policy change (`podman update` would drift from the
+# inputs-digest label compose recorded, and survive the next deploy).
+#
+# Bring it back: run the service's own "Deploy <Service> (Local)" template. How that restarts the
+# stopped containers depends on the service's deploy.sh (read from the scripts, 2026-10-12):
+#   - authentik, honcho, o11y, openhands, tududi call compose_up_if_changed
+#     (lib/common.sh): a not-running container is the reason "container not running", which
+#     recreates the project. agentgateway keeps its own copy of that comparison
+#     ("gateway container not running", deploy.sh:153), and caddy runs
+#     `compose up -d --force-recreate` every time, so both recreate too.
+#   - dns, step-ca, opa, n8n, erpnext, uhhcraft, netbox, postiz (and the other services whose
+#     deploy.sh runs plain `compose up -d`) rely on `compose up -d` to start an existing,
+#     stopped container. unverified: that podman-compose does so. The local Semaphore installs
+#     podman-compose with an unpinned `pip3 install podman-compose` when the image lacks it
+#     (bootstrap-local-dev.yml:853), so which version it runs is not recorded in the repo.
+#   - A container listed in stop_extra_containers is NOT restarted by the service's Deploy: it
+#     was never part of the compose project. NetBox's `netbox-orb-agent` comes back only through
+#     its own "Deploy Orb Agent (Local)" template (deploy-netbox.yml: "Orb Agent is a separate
+#     workflow").
+#
+# LOCAL-DEV ONLY, by design. Every host of the play must be named `<name>-local` (the name every
+# local-dev inventory gives its host: platform/inventory/local-dev.yml.example); anything else
+# is refused before any engine call. Production has no idle-stop need, and stopping a
+# production service is an outage. The host names are read from ansible_play_hosts_all, which
+# an extra var cannot set (tasks/clean-service.yml, the same refusal there), never from
+# inventory_hostname.
+#
+# Idempotent: a container already stopped, or absent, is reported and left alone; a second run
+# changes nothing. Under --check it reports what it would stop and stops nothing.
+#
+# KNOWN CEILING (read before relying on it across a reboot). The containers keep their
+# `restart: always` policy. Verified against podman-run(1), `--restart`
+# (https://docs.podman.io/en/latest/markdown/podman-run.1.html, fetched 2026-10-12):
+#   - "Restart policy does not take effect if a container is stopped via the podman kill or
+#     podman stop commands", so the stop sticks for as long as the machine stays up.
+#   - podman-restart.service "restarts containers after a system reboot", and `always`
+#     "restarts containers after a system reboot regardless of whether they were user-stopped"
+#     (that page contrasts it with `unless-stopped`).
+# So a container stopped here can start again the next time the machine reboots; re-run this
+# playbook afterwards. unverified: the exact command podman-restart.service runs, and whether a
+# Docker engine behaves the same (only the podman page was read).
+#
+# No credential is read or written here, so no task carries no_log.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refuse a target group that is not one service's group, or matches no hosts"
+  # A play whose hosts: matches nothing exits 0 having stopped nothing, which reads as success.
+  # `--limit` leaves localhost out and skips this play, so the work play repeats the host-name
+  # refusal as its own first task; this play is the empty-group and group-shape guard.
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Require target_service to name one populated <service>_svc group"
+      ansible.builtin.assert:
+        that:
+          - target_service | default('') is match('^[A-Za-z0-9_]+_svc\Z')
+          - (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: >-
+          Refusing: target_service '{{ target_service | default('') }}' must name one
+          <service>_svc inventory group that holds hosts (for example erpnext_svc). Nothing was
+          stopped.
+        quiet: true
+
+- name: "Stop the idle local-dev service: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Refuse any host that is not a local-dev host, before any engine call"
+      # ansible_play_hosts_all, not inventory_hostname: an extra var can set the latter.
+      ansible.builtin.assert:
+        that: ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | length == 0
+        fail_msg: >-
+          Refusing: stop-local-service is for local-dev hosts only (named <name>-local), and
+          these hosts of the play are not:
+          {{ ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | join(', ') }}.
+          Nothing was stopped.
+        quiet: true
+
+    - name: "Refuse a connection that is not the local one"
+      # Every local-dev host declares ansible_connection=local (bootstrap-local-dev.yml, the
+      # inventory example). An extra var can override it, and `--limit` skips the guard play, so
+      # the engine calls below are refused unless the run really is on the local connection.
+      ansible.builtin.assert:
+        that: (ansible_connection | default('')) == 'local'
+        fail_msg: >-
+          Refusing: stop-local-service runs over the local connection only; ansible_connection is
+          '{{ ansible_connection | default('') }}'. Nothing was stopped.
+        quiet: true
+
+    - name: "Refuse any internal name that was set from outside the play"
+      # An extra var outranks what this play computes, so `-e _stop_now=[...]` would choose what
+      # is stopped. refuse-internal-extra-vars.yml refuses underscore extra vars, but only in a
+      # play `--limit` does not skip; this repeats the refusal here. Read-only: lookup() writes
+      # nothing, so the include parameters below (_lsc_all, _lsc_fields) are not shadowed.
+      ansible.builtin.assert:
+        that: lookup('ansible.builtin.vars', item, default='__unset__') == '__unset__'
+        fail_msg: >-
+          Refusing: {{ item }} is internal to stop-local-service and was set from outside the
+          play. Nothing was stopped.
+        quiet: true
+      loop:
+        - _stop_all
+        - _stop_running
+        - _stop_present
+        - _stop_now
+        - _stop_result
+        - _stop_engine_all
+        - _stop_engine_running
+        - _lsc
+        - _lsc_fields
+        - _lsc_all
+        - _engine
+        - _deploy_dir
+
+    - name: "Refuse an extra-container list that is not a list of plain container names"
+      ansible.builtin.assert:
+        that:
+          - stop_extra_containers | default([]) is sequence
+          - stop_extra_containers | default([]) is not string
+          - stop_extra_containers | default([]) | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.-]*\Z') | list | length == 0
+        fail_msg: >-
+          Refusing: stop_extra_containers must be a list of container names (letters, digits,
+          `.`, `_`, `-`, starting with a letter or digit). Nothing was stopped.
+        quiet: true
+
+    - name: "Refuse a container engine that is neither docker nor podman"
+      ansible.builtin.assert:
+        that: (container_engine | default('podman')) in ['docker', 'podman']
+        fail_msg: "Refusing: container_engine must be docker or podman. Nothing was stopped."
+        quiet: true
+
+    - name: "List every container of the service, stopped ones included"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: true
+
+    - name: "Require the engine to have answered the listing"
+      ansible.builtin.assert:
+        that: (_lsc.rc | default(1)) == 0
+        fail_msg: >-
+          {{ _engine }} did not answer on {{ inventory_hostname }} (exit {{ _lsc.rc | default('none') }}:
+          {{ (_lsc.stderr | default(_lsc.msg | default(''))) | trim | truncate(300) }}). Is the engine
+          reachable (podman machine running, the socket, podman_rootful for a rootful engine)?
+          Nothing was stopped, and nothing is known about what is running.
+        quiet: true
+
+    - name: "Remember the service's containers"
+      ansible.builtin.set_fact:
+        _stop_all: "{{ _lsc.stdout_lines }}"
+
+    - name: "List the service's RUNNING containers"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: false
+
+    - name: "Require the engine to have answered the running listing"
+      ansible.builtin.assert:
+        that: (_lsc.rc | default(1)) == 0
+        fail_msg: >-
+          {{ _engine }} did not answer on {{ inventory_hostname }} (exit {{ _lsc.rc | default('none') }}:
+          {{ (_lsc.stderr | default(_lsc.msg | default(''))) | trim | truncate(300) }}). Is the engine
+          reachable (podman machine running, the socket, podman_rootful for a rootful engine)?
+          Nothing was stopped, and nothing is known about what is running.
+        quiet: true
+
+    - name: "Remember the service's running containers"
+      ansible.builtin.set_fact:
+        _stop_running: "{{ _lsc.stdout_lines }}"
+
+    - name: "List every container on the engine (the extra containers carry no compose label)"
+      ansible.builtin.command:
+        argv: [ "{{ _engine }}", ps, -a, --format, "{{ '{{' }}.Names{{ '}}' }}" ]
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _stop_engine_all
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: stop_extra_containers | default([]) | length > 0
+
+    - name: "List the engine's RUNNING containers"
+      ansible.builtin.command:
+        argv: [ "{{ _engine }}", ps, --format, "{{ '{{' }}.Names{{ '}}' }}" ]
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _stop_engine_running
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: stop_extra_containers | default([]) | length > 0
+
+    - name: "Require the engine to have answered the extra-container listings"
+      ansible.builtin.assert:
+        that:
+          - (_stop_engine_all.rc | default(1)) == 0
+          - (_stop_engine_running.rc | default(1)) == 0
+        fail_msg: >-
+          {{ _engine }} did not list its containers on {{ inventory_hostname }}, so the extra
+          containers cannot be found. Nothing was stopped.
+        quiet: true
+      when: stop_extra_containers | default([]) | length > 0
+
+    - name: "Work out what to stop and what is already stopped"
+      ansible.builtin.set_fact:
+        _stop_present: >-
+          {{ _stop_all + (stop_extra_containers | default([]) | select('in', _stop_engine_all.stdout_lines | default([])) | list) }}
+        _stop_now: >-
+          {{ _stop_running + (stop_extra_containers | default([]) | select('in', _stop_engine_running.stdout_lines | default([])) | list) }}
+
+    - name: "Stop the running containers (nothing is removed)"
+      ansible.builtin.command:
+        argv: "{{ [_engine, 'stop'] + _stop_now }}"
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _stop_result
+      changed_when: true
+      # Skipped under --check on purpose: the report task below says what it would stop.
+      # (check_mode: true would be no guard here: it would make a REAL run skip the stop too.)
+      when:
+        - _stop_now | length > 0
+        - not ansible_check_mode
+
+    - name: "Report what was stopped"
+      ansible.builtin.debug:
+        msg: >-
+          {{ [
+               (('Would stop' if ansible_check_mode else 'Stopped') ~ ': ' ~ (_stop_now | join(', ')))
+                 if _stop_now | length > 0 else 'Nothing was running.',
+               'Already stopped or absent: '
+                 ~ (((_stop_present | difference(_stop_now)) | join(', ')) if (_stop_present | difference(_stop_now)) | length > 0 else '(none)'),
+               'Containers, images and volumes were kept. Bring it back with its Deploy <Service> (Local) template.'
+             ]
+             + ((['The extra containers (' ~ (stop_extra_containers | join(', ')) ~ ') are restarted by their own workflows, not by the service Deploy.']
+                 + (['Orb agent: run Deploy Orb Agent (Local).'] if 'netbox-orb-agent' in stop_extra_containers else []))
+                if stop_extra_containers | default([]) | length > 0 else [])
+             + ['Containers with restart policy always can start again at the next machine boot (podman-restart.service); re-run this to stop them again.'] }}

@@ -1,0 +1,521 @@
+---
+# probe-agentgateway-isolation.yml — encoded proof of the spec scenario "One client cannot exceed
+# its share" (change inference-gateway-agentgateway, task 4.5): one identity with a small token
+# budget is driven to HTTP 429 `budget_exceeded` while a second identity is still served 200.
+#
+# The budget is a rolling one-hour window charged AFTER each response from the upstream's reported
+# usage (platform/services/agentgateway/deployment/templates/config.yaml.j2): the request that
+# crosses the limit completes, the next one is refused. So the burst identity may already be
+# exhausted when this run starts; a 429 on the first attempt is valid evidence.
+#
+#   1. Up to five sequential POST /v1/chat/completions as the BURST identity (a tiny body,
+#      max_tokens 16), stopping at the first answer that is not HTTP 200.
+#   2. One POST /v1/chat/completions as the CONTROL identity, which must be HTTP 200.
+#
+# Pass: an attempt answered 429 whose body carries `error.code` = `budget_exceeded`, AND the
+# control answered 200. A 429 WITHOUT that code is the gateway's global request bucket (or an
+# upstream 429): the report says so and the run fails, because it is not isolation evidence. No
+# 429 within five attempts fails too (the budget was not reached: see the report).
+#
+# Refused before ANY request (and before any OpenBao call): a missing or undeclared burst identity,
+# a control identity that is undeclared or the burst identity, a burst identity with no
+# `agw_client_policies.<burst>.tokens_per_hour`, or one whose budget exceeds 1000 tokens. The cap
+# protects the production GPU: this probe never drives an identity that has a real budget. Declare
+# a dedicated probe identity with a small budget (local-dev: `isolation-probe`, 50) and name it.
+# 1000 is a safety bound, not a recommendation: a workable probe budget is below about five times the
+# per-request charge of the chosen model (local-dev uses 50, a completion charges about 94 tokens);
+# a budget above what five attempts can exhaust ends the run "NOT proven", loudly, never a false pass.
+#
+# Keys. Both identities' client keys are read from secret/services/<service_name> (field
+# client_<name>) by the same AppRole login the conformance run uses; the login, the read and the
+# facts that hold the keys are the only `no_log` tasks. Every request goes through the one probe
+# path (tasks/agw-probe.yml). Nothing here prints a key, a header or a response body: the report
+# carries per-attempt statuses and the error code only.
+#
+# A dry run (--check) validates the inputs and the leaf files, reads no key and sends nothing: every
+# request is a real completion that costs upstream capacity.
+#
+# Extra vars (Semaphore survey on "Probe agentgateway Isolation (Dev)"):
+#   agw_isolation_burst     REQUIRED. The identity to drive to its budget.
+#   agw_isolation_control   optional. The identity that must stay served (default: the first
+#                           agw_identities entry other than the burst identity).
+#
+# Inventory (agentgateway_svc host), all read by the deploy and the conformance run too:
+#   agw_clients, agw_client_policies, agw_models, service_name, agw_listener_tls,
+#   agw_verifier_leaf (default agw-verifier), internal_leaves, agw_tls_server_name, agw_bind, agw_port,
+#   agw_verify_base_url, agw_internal_dns_authoritative, monorepo_deploy_path
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: agentgateway_svc
+    preflight_group_expected: agentgateway_svc
+
+- name: "Prove one identity's budget cannot starve another identity"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  # agw_identities: agw_clients plus the personal identities derived from the declared admin list.
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path | default('platform/services/agentgateway/deployment') }}"
+    _port: "{{ agw_port | default('4000') }}"
+    _probe_ip: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+    _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    _leaf_dir: >-
+      {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
+         | map(attribute='dir') | first | default('') }}
+    _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+    _gateway_base: >-
+      {{ agw_verify_base_url if (agw_verify_base_url is defined) else
+         (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _probe_ip ~ ':' ~ _port)) }}
+    # A survey variable left blank reaches the play as an empty string.
+    _burst: "{{ agw_isolation_burst | default('', true) | string | trim }}"
+    _control_named: "{{ agw_isolation_control | default('', true) | string | trim }}"
+    _control: >-
+      {{ _control_named if (_control_named | length > 0)
+         else (agw_identities | default([]) | reject('equalto', _burst) | list | first | default('')) }}
+    # Never burst an identity that has a real budget: the probe spends it down on purpose.
+    _budget_cap: 1000
+    _burst_budget: "{{ ((agw_client_policies | default({}))[_burst] | default({})).tokens_per_hour | default('', true) }}"
+    # Order-preserving, as the conformance run and the deploy verify pick their model. OpenRouter
+    # models (agentgateway-openrouter) are never picked: the burst sends real requests and
+    # OpenRouter is billed per token.
+    _burst_models: >-
+      {{ ((agw_client_policies | default({}))[_burst] | default({})).allowed_models
+         | default(agw_models | default([]) | map(attribute='name') | list)
+         | select('in', agw_models | default([]) | map(attribute='name') | list)
+         | reject('in', _openrouter_names) | list }}
+    _control_models: >-
+      {{ ((agw_client_policies | default({}))[_control] | default({})).allowed_models
+         | default(agw_models | default([]) | map(attribute='name') | list)
+         | select('in', agw_models | default([]) | map(attribute='name') | list)
+         | reject('in', _openrouter_names) | list }}
+    _openrouter_names: >-
+      {{ agw_models | default([]) | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list }}
+    _attempts_max: 5
+
+  tasks:
+    - name: "Require one gateway host"
+      ansible.builtin.assert:
+        that: groups['agentgateway_svc'] | length == 1
+        fail_msg: "This probe runs against exactly one agentgateway_svc host."
+        quiet: true
+
+    # After the run's refusal of internal extra vars, before any identity is looked at.
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
+    - name: "Refuse a missing burst identity"
+      ansible.builtin.assert:
+        that: _burst | length > 0
+        fail_msg: >-
+          Set agw_isolation_burst to the identity to drive to its budget: a dedicated probe identity
+          declared in agw_clients with a small agw_client_policies.<name>.tokens_per_hour.
+        quiet: true
+
+    - name: "Refuse a burst identity the gateway does not declare"
+      ansible.builtin.assert:
+        that: _burst in agw_identities
+        fail_msg: >-
+          '{{ _burst }}' is not a declared identity (agw_identities: {{ agw_identities | join(', ') | default('none', true) }});
+          declare it in agw_clients first, and deploy.
+        quiet: true
+
+    - name: "Refuse a burst identity with no declared token budget"
+      ansible.builtin.assert:
+        that: (_burst_budget | string) is match('^[0-9]+$') and (_burst_budget | int) > 0
+        fail_msg: >-
+          '{{ _burst }}' has no agw_client_policies.{{ _burst }}.tokens_per_hour: without its own small
+          budget the probe would run against the default figure and spend real capacity. Declare a
+          budget of at most {{ _budget_cap }} tokens for a dedicated probe identity.
+        quiet: true
+
+    - name: "Refuse a burst identity whose budget is a real one"
+      ansible.builtin.assert:
+        that: (_burst_budget | int) <= (_budget_cap | int)
+        fail_msg: >-
+          agw_client_policies.{{ _burst }}.tokens_per_hour is {{ _burst_budget }}, above the {{ _budget_cap }}
+          this probe will burst: it never drives an identity with a real budget (production GPU). Name a
+          dedicated probe identity with a budget of at most {{ _budget_cap }} tokens.
+        quiet: true
+
+    - name: "Refuse a control identity that is missing, undeclared or the burst identity"
+      ansible.builtin.assert:
+        that:
+          - _control | length > 0
+          - _control in agw_identities
+          - _control != _burst
+        fail_msg: >-
+          The control identity '{{ _control }}' must be declared in agw_identities and differ from the burst
+          identity '{{ _burst }}' (agw_isolation_control; default: the first other identity).
+          Declared: {{ agw_identities | join(', ') | default('none', true) }}.
+        quiet: true
+
+    - name: "Refuse an identity that may use no declared model"
+      ansible.builtin.assert:
+        that:
+          - _burst_models | length > 0
+          - _control_models | length > 0
+        fail_msg: >-
+          The burst identity '{{ _burst }}' and the control identity '{{ _control }}' must each be allowed at
+          least one declared agw_models name (agw_client_policies.<name>.allowed_models).
+        quiet: true
+
+    # Both keys travel in a header, so the transport rule applies to the gateway as well as OpenBao.
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Refuse a cleartext public gateway URL"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _gateway_base }}"
+        _assert_url_label: "the gateway"
+
+    - name: "Read the verifier leaf and the trust bundle (listener TLS only)"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _leaf_dir }}/current/cert.pem"
+        - "{{ _leaf_dir }}/current/key.pem"
+        - "{{ _ca }}"
+      register: _tls_files
+      when: _tls
+
+    - name: "Refuse a verifier leaf or trust bundle that is not on this host"
+      ansible.builtin.assert:
+        that:
+          - _leaf_dir | length > 0
+          - _tls_files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          With agw_listener_tls the probe presents the {{ agw_verifier_leaf | default('agw-verifier') }} leaf and
+          trusts {{ _ca }}; missing: {{ _tls_files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
+        quiet: true
+      when: _tls
+
+    - name: "Dry run: report (every request is a real completion)"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: the run would send up to {{ _attempts_max }} chat completions as '{{ _burst }}' (budget
+          {{ _burst_budget }} tokens/hour) and one as '{{ _control }}' to
+          {{ _gateway_base }}. No key was read and nothing was sent.
+      when: ansible_check_mode
+
+    - name: "Probe the budget isolation"
+      when: not ansible_check_mode
+      block:
+        - name: "Probe path: resolve the server leaf's name (task 7.2)"
+          ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+          vars:
+            _agwr_check_only: true
+            _agwr_name: "{{ _server_name }}"
+            _agwr_ip: "{{ _probe_ip }}"
+            _agwr_expect: ""
+            _agwr_hosts_file: /etc/hosts
+          when: _tls and agw_verify_base_url is not defined
+
+        # The credential boundary: login, read, keep. Only these three tasks are no_log.
+        - name: "Authenticate to OpenBao"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+            status_code: [200]
+          register: _bao_auth
+          delegate_to: localhost
+          changed_when: false
+          no_log: true
+
+        - name: "Read the gateway's secret path"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
+            method: GET
+            follow_redirects: none
+            unredirected_headers: [X-Vault-Token]
+            headers:
+              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+            status_code: [200]
+          register: _iso_secret
+          delegate_to: localhost
+          no_log: true
+
+        # Only booleans leave this task; the values stay in no_log facts.
+        - name: "Keep the two identities' keys"
+          ansible.builtin.set_fact:
+            _iso_key_burst: "{{ _iso_secret.json.data.data['client_' ~ _burst] | default('') }}"
+            _iso_key_control: "{{ _iso_secret.json.data.data['client_' ~ _control] | default('') }}"
+            _iso_have_burst: "{{ (_iso_secret.json.data.data['client_' ~ _burst] | default('')) | length > 0 }}"
+            _iso_have_control: "{{ (_iso_secret.json.data.data['client_' ~ _control] | default('')) | length > 0 }}"
+          no_log: true
+
+        - name: "Require both identities' keys"
+          ansible.builtin.assert:
+            that:
+              - _iso_have_burst | bool
+              - _iso_have_control | bool
+            fail_msg: >-
+              secret/services/{{ service_name }} lacks
+              {{ ('client_' ~ _burst) if not (_iso_have_burst | bool) else ('client_' ~ _control) }}; deploy the
+              gateway (it mints a key for every declared identity) before probing.
+            quiet: true
+
+        - name: "No attempt has run yet"
+          ansible.builtin.set_fact:
+            _iso_attempts: []
+            _iso_stop: false
+            _iso_burst_body:
+              model: "{{ _burst_models | first }}"
+              messages: [{ role: user, content: ok }]
+              max_tokens: 16
+            _iso_control_body:
+              model: "{{ _control_models | first }}"
+              messages: [{ role: user, content: ok }]
+              max_tokens: 16
+
+        # Burst attempt 1: skipped once an earlier attempt answered anything but 200. The status and the
+        # error code are copied out of the probe's clean response; the code is read from the parsed body,
+        # else from the raw text, so a 429 whose Content-Type is not JSON is still recognised.
+        - name: "Burst attempt 1"
+          when: not (_iso_stop | bool)
+          block:
+            - name: "Burst attempt 1: POST /v1/chat/completions as the burst identity"
+              ansible.builtin.include_tasks: tasks/agw-probe.yml
+              vars:
+                _agwp_base: "{{ _gateway_base }}"
+                _agwp_path: /v1/chat/completions
+                _agwp_status: [200, 401, 403, 404, 429]
+                _agwp_key: "{{ _iso_key_burst }}"
+                _agwp_method: POST
+                _agwp_body: "{{ _iso_burst_body }}"
+                _agwp_timeout: 120
+                _agwp_leaf_dir: "{{ _leaf_dir }}"
+                _agwp_ca: "{{ _ca }}"
+
+            - name: "Burst attempt 1: keep the status and the error code"
+              ansible.builtin.set_fact:
+                _iso_attempts: >-
+                  {{ _iso_attempts + [{'n': 1, 'status': _agwp_out.status | int, 'code': _iso_code,
+                                      'msg': _agwp_out.msg | string}] }}
+                _iso_stop: "{{ (_agwp_out.status | int) != 200 }}"
+              vars:
+                # strict undefined: `.get`, never an attribute that a 200 body does not have
+                _iso_err: "{{ _agwp_out.json.get('error', '') if (_agwp_out.json is mapping) else '' }}"
+                _iso_code: >-
+                  {{ (_iso_err.get('code', '') | string) if (_iso_err is mapping)
+                     else ('budget_exceeded' if ((_agwp_out.content | string) is search('"code" *: *"budget_exceeded"'))
+                           else '') }}
+
+        # Burst attempt 2: skipped once an earlier attempt answered anything but 200. The status and the
+        # error code are copied out of the probe's clean response; the code is read from the parsed body,
+        # else from the raw text, so a 429 whose Content-Type is not JSON is still recognised.
+        - name: "Burst attempt 2"
+          when: not (_iso_stop | bool)
+          block:
+            - name: "Burst attempt 2: POST /v1/chat/completions as the burst identity"
+              ansible.builtin.include_tasks: tasks/agw-probe.yml
+              vars:
+                _agwp_base: "{{ _gateway_base }}"
+                _agwp_path: /v1/chat/completions
+                _agwp_status: [200, 401, 403, 404, 429]
+                _agwp_key: "{{ _iso_key_burst }}"
+                _agwp_method: POST
+                _agwp_body: "{{ _iso_burst_body }}"
+                _agwp_timeout: 120
+                _agwp_leaf_dir: "{{ _leaf_dir }}"
+                _agwp_ca: "{{ _ca }}"
+
+            - name: "Burst attempt 2: keep the status and the error code"
+              ansible.builtin.set_fact:
+                _iso_attempts: >-
+                  {{ _iso_attempts + [{'n': 2, 'status': _agwp_out.status | int, 'code': _iso_code,
+                                      'msg': _agwp_out.msg | string}] }}
+                _iso_stop: "{{ (_agwp_out.status | int) != 200 }}"
+              vars:
+                # strict undefined: `.get`, never an attribute that a 200 body does not have
+                _iso_err: "{{ _agwp_out.json.get('error', '') if (_agwp_out.json is mapping) else '' }}"
+                _iso_code: >-
+                  {{ (_iso_err.get('code', '') | string) if (_iso_err is mapping)
+                     else ('budget_exceeded' if ((_agwp_out.content | string) is search('"code" *: *"budget_exceeded"'))
+                           else '') }}
+
+        # Burst attempt 3: skipped once an earlier attempt answered anything but 200. The status and the
+        # error code are copied out of the probe's clean response; the code is read from the parsed body,
+        # else from the raw text, so a 429 whose Content-Type is not JSON is still recognised.
+        - name: "Burst attempt 3"
+          when: not (_iso_stop | bool)
+          block:
+            - name: "Burst attempt 3: POST /v1/chat/completions as the burst identity"
+              ansible.builtin.include_tasks: tasks/agw-probe.yml
+              vars:
+                _agwp_base: "{{ _gateway_base }}"
+                _agwp_path: /v1/chat/completions
+                _agwp_status: [200, 401, 403, 404, 429]
+                _agwp_key: "{{ _iso_key_burst }}"
+                _agwp_method: POST
+                _agwp_body: "{{ _iso_burst_body }}"
+                _agwp_timeout: 120
+                _agwp_leaf_dir: "{{ _leaf_dir }}"
+                _agwp_ca: "{{ _ca }}"
+
+            - name: "Burst attempt 3: keep the status and the error code"
+              ansible.builtin.set_fact:
+                _iso_attempts: >-
+                  {{ _iso_attempts + [{'n': 3, 'status': _agwp_out.status | int, 'code': _iso_code,
+                                      'msg': _agwp_out.msg | string}] }}
+                _iso_stop: "{{ (_agwp_out.status | int) != 200 }}"
+              vars:
+                # strict undefined: `.get`, never an attribute that a 200 body does not have
+                _iso_err: "{{ _agwp_out.json.get('error', '') if (_agwp_out.json is mapping) else '' }}"
+                _iso_code: >-
+                  {{ (_iso_err.get('code', '') | string) if (_iso_err is mapping)
+                     else ('budget_exceeded' if ((_agwp_out.content | string) is search('"code" *: *"budget_exceeded"'))
+                           else '') }}
+
+        # Burst attempt 4: skipped once an earlier attempt answered anything but 200. The status and the
+        # error code are copied out of the probe's clean response; the code is read from the parsed body,
+        # else from the raw text, so a 429 whose Content-Type is not JSON is still recognised.
+        - name: "Burst attempt 4"
+          when: not (_iso_stop | bool)
+          block:
+            - name: "Burst attempt 4: POST /v1/chat/completions as the burst identity"
+              ansible.builtin.include_tasks: tasks/agw-probe.yml
+              vars:
+                _agwp_base: "{{ _gateway_base }}"
+                _agwp_path: /v1/chat/completions
+                _agwp_status: [200, 401, 403, 404, 429]
+                _agwp_key: "{{ _iso_key_burst }}"
+                _agwp_method: POST
+                _agwp_body: "{{ _iso_burst_body }}"
+                _agwp_timeout: 120
+                _agwp_leaf_dir: "{{ _leaf_dir }}"
+                _agwp_ca: "{{ _ca }}"
+
+            - name: "Burst attempt 4: keep the status and the error code"
+              ansible.builtin.set_fact:
+                _iso_attempts: >-
+                  {{ _iso_attempts + [{'n': 4, 'status': _agwp_out.status | int, 'code': _iso_code,
+                                      'msg': _agwp_out.msg | string}] }}
+                _iso_stop: "{{ (_agwp_out.status | int) != 200 }}"
+              vars:
+                # strict undefined: `.get`, never an attribute that a 200 body does not have
+                _iso_err: "{{ _agwp_out.json.get('error', '') if (_agwp_out.json is mapping) else '' }}"
+                _iso_code: >-
+                  {{ (_iso_err.get('code', '') | string) if (_iso_err is mapping)
+                     else ('budget_exceeded' if ((_agwp_out.content | string) is search('"code" *: *"budget_exceeded"'))
+                           else '') }}
+
+        # Burst attempt 5: skipped once an earlier attempt answered anything but 200. The status and the
+        # error code are copied out of the probe's clean response; the code is read from the parsed body,
+        # else from the raw text, so a 429 whose Content-Type is not JSON is still recognised.
+        - name: "Burst attempt 5"
+          when: not (_iso_stop | bool)
+          block:
+            - name: "Burst attempt 5: POST /v1/chat/completions as the burst identity"
+              ansible.builtin.include_tasks: tasks/agw-probe.yml
+              vars:
+                _agwp_base: "{{ _gateway_base }}"
+                _agwp_path: /v1/chat/completions
+                _agwp_status: [200, 401, 403, 404, 429]
+                _agwp_key: "{{ _iso_key_burst }}"
+                _agwp_method: POST
+                _agwp_body: "{{ _iso_burst_body }}"
+                _agwp_timeout: 120
+                _agwp_leaf_dir: "{{ _leaf_dir }}"
+                _agwp_ca: "{{ _ca }}"
+
+            - name: "Burst attempt 5: keep the status and the error code"
+              ansible.builtin.set_fact:
+                _iso_attempts: >-
+                  {{ _iso_attempts + [{'n': 5, 'status': _agwp_out.status | int, 'code': _iso_code,
+                                      'msg': _agwp_out.msg | string}] }}
+                _iso_stop: "{{ (_agwp_out.status | int) != 200 }}"
+              vars:
+                # strict undefined: `.get`, never an attribute that a 200 body does not have
+                _iso_err: "{{ _agwp_out.json.get('error', '') if (_agwp_out.json is mapping) else '' }}"
+                _iso_code: >-
+                  {{ (_iso_err.get('code', '') | string) if (_iso_err is mapping)
+                     else ('budget_exceeded' if ((_agwp_out.content | string) is search('"code" *: *"budget_exceeded"'))
+                           else '') }}
+
+        - name: "Control: POST /v1/chat/completions as the control identity"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /v1/chat/completions
+            _agwp_status: [200, 401, 403, 404, 429]
+            _agwp_key: "{{ _iso_key_control }}"
+            _agwp_method: POST
+            _agwp_body: "{{ _iso_control_body }}"
+            _agwp_timeout: 120
+            _agwp_leaf_dir: "{{ _leaf_dir }}"
+            _agwp_ca: "{{ _ca }}"
+
+        - name: "Control: keep the status and the failure text"
+          ansible.builtin.set_fact:
+            _iso_control_result: "{{ {'status': _agwp_out.status | int, 'msg': _agwp_out.msg | string} }}"
+
+        - name: "Judge the burst attempts"
+          ansible.builtin.set_fact:
+            _iso_budget_hit: "{{ _iso_attempts | selectattr('status', 'equalto', 429) | selectattr('code', 'equalto', 'budget_exceeded') | list | length > 0 }}"
+            _iso_bare_429: "{{ _iso_attempts | selectattr('status', 'equalto', 429) | rejectattr('code', 'equalto', 'budget_exceeded') | list | length > 0 }}"
+
+        # Statuses and the error code only. A status of -1 is a transport failure: no HTTP answer, the
+        # error text is the finding. Printed before the assertions, so a failing run still carries it.
+        - name: "Report"
+          ansible.builtin.debug:
+            msg:
+              - "gateway: {{ _gateway_base }}"
+              - "burst identity: {{ _burst }} (budget {{ _burst_budget }} tokens/hour, model {{ _burst_models | first }})"
+              - "control identity: {{ _control }} (model {{ _control_models | first }})"
+              - "burst attempts: {{ _iso_lines | join('; ') }}"
+              - "control: {{ _iso_c }} (want HTTP 200)"
+              - "burst budget refusal (HTTP 429 budget_exceeded): {{ 'seen' if (_iso_budget_hit | bool) else 'NOT seen' }}"
+          vars:
+            _iso_lines: >-
+              {% set out = [] %}
+              {%- for a in _iso_attempts %}
+              {%- set said = ('HTTP ' ~ a.status ~ (' ' ~ a.code if a.code | length > 0 else ''))
+                             if a.status > 0 else ('no HTTP answer (' ~ (a.msg | truncate(160, true)) ~ ')') %}
+              {%- if out.append(a.n ~ ': ' ~ said) %}{% endif %}
+              {%- endfor %}
+              {{- out }}
+            _iso_c: "{{ ('HTTP ' ~ _iso_control_result.status) if _iso_control_result.status > 0 else ('no HTTP answer (' ~ (_iso_control_result.msg | truncate(160, true)) ~ ')') }}"
+
+        - name: "Require the burst identity to be refused for its budget"
+          ansible.builtin.assert:
+            that: _iso_budget_hit | bool
+            fail_msg: "{{ _iso_bare_msg if (_iso_bare_429 | bool) else _iso_none_msg }}"
+            quiet: true
+          vars:
+            _iso_bare_msg: >-
+              Isolation NOT proven: the burst identity was answered 429 WITHOUT error.code budget_exceeded.
+              That is the gateway's global request bucket (or an upstream 429), not the per-identity
+              budget, so it is no evidence of isolation.
+            _iso_none_msg: >-
+              Isolation NOT proven: no HTTP 429 budget_exceeded for '{{ _burst }}' in
+              {{ _iso_attempts | length }} attempt(s) against a budget of {{ _burst_budget }} tokens/hour
+              (a stop before 429 is an answer other than 200, see the report; all 200 means the budget
+              was not reached: check that the deployed policy matches the inventory).
+
+        - name: "Require the control identity to be served"
+          ansible.builtin.assert:
+            that: (_iso_control_result.status | int) == 200
+            fail_msg: >-
+              Isolation FAILED: the control identity '{{ _control }}' answered {{ _iso_control_result.status }}
+              right after '{{ _burst }}' was refused; it must be 200 (the burst identity's budget must not
+              take a second identity's share). -1 is a transport failure that proves nothing. See the report above.
+            quiet: true

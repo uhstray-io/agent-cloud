@@ -1,0 +1,20 @@
+{
+  "name": "pi-uhstray-provider",
+  "private": true,
+  "version": "0.1.0",
+  "description": "pi provider for the Uhstray inference gateway: /login with a gateway key, live model discovery",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "scripts": {
+    "test": "node --test gateway.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

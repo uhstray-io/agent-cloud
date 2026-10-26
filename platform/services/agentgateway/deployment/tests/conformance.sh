@@ -33,6 +33,29 @@
 #                       it (include_usage and continuous_usage_stats true), so the two shapes are
 #                       comparable
 #   responses           one Responses API request (POST /responses, reasoning.effort nested)
+#   stream-long         OPT-IN (AGW_CONF_LONG_STREAM=1; change tasks 2.3 and 2.4, spec scenario "Stream
+#                       is not buffered"): one streamed xhigh request sized to run past 130 s
+#                       (max_tokens 8000 and a prompt asking for an exhaustive answer, the technique
+#                       of dgx-spark's vllm/public_probe.py `long` mode), sent to both targets. Per
+#                       side it records the duration, the first-byte time, the SSE comment lines
+#                       (vLLM's keep-alives) and the longest silence between two received lines. It
+#                       PASSES only when the direct stream itself ran past the required time (else
+#                       nothing is proved), both streams ended with [DONE], the gateway stream ran
+#                       past it too, the gateway passed at least as many comments as vLLM (less one
+#                       for a boundary), and it neither started late nor went quiet for longer than
+#                       vLLM did (plus 2 s): a buffering gateway shows as a late first byte.
+#                       vLLM sends a keep-alive comment only after 15 s with no chunk, which steady
+#                       generation never allows, so a plain run usually proves nothing about
+#                       comments (the report says `unproven: ["keepalive"]`). With
+#                       AGW_CONF_LONG_STREAM_SATURATE=N the case first starts N filler streams on
+#                       the SAME side, so the measured request waits in vLLM's queue, and vLLM
+#                       sends comments while it waits. The fillers are bounded (their own
+#                       max_tokens and a hard time limit), are always killed and waited for when
+#                       the measured request ends or the script exits, and use the target's key
+#                       the same way (never argv). The measured request then starts late on BOTH
+#                       sides (about 15 s: its first line is a comment), which the existing relative
+#                       first-byte and silence checks still judge. A filler the side did not accept
+#                       fails the case: the measured request may not have queued
 #
 # Each case goes to the gateway, then straight to vLLM, from the same host, so the two differ only
 # by the gateway hop. A result line records the status, a sha256 of the body with identifiers and
@@ -62,12 +85,27 @@
 #   AGW_CONF_TIMEOUT          per-request ceiling in seconds (default 600)
 #   AGW_CONF_MAX_TOKENS       max_tokens for non-streamed cases (default 512)
 #   AGW_CONF_STREAM_MAX_TOKENS max_tokens for the streamed case (default 2048)
+#   AGW_CONF_LONG_STREAM      1 or true adds the stream-long case (default off: the 14 cases above)
+#   AGW_CONF_LONG_STREAM_MIN_S      seconds the direct stream must last to prove anything (default 130)
+#   AGW_CONF_LONG_STREAM_MAX_TOKENS max_tokens for stream-long (default 8000)
+#   AGW_CONF_LONG_STREAM_TIMEOUT    hard ceiling per side for stream-long, seconds (default 600)
+#   AGW_CONF_LONG_STREAM_SATURATE   0 to 16 filler streams started on each side before stream-long
+#                                   so it queues (default 0 = none; needs AGW_CONF_LONG_STREAM).
+#                                   It should be at least vLLM's max-num-seqs; every filler is a real
+#                                   generation on the shared upstream
+#   AGW_CONF_LONG_STREAM_SATURATE_S seconds a filler may live (curl --max-time; default 45, at most
+#                                   AGW_CONF_LONG_STREAM_TIMEOUT), so the
+#                                   measured request waits about that long on each side
+#   AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S  seconds between starting the fillers and the measured
+#                                   request, and after reaping them (default 2)
 #
 # Needs bash, curl (7.55 or later, for -H @file), jq (1.6 or later) and sha256sum or shasum.
 set -euo pipefail
 
 EFFORTS="none minimal low medium high xhigh max"
 PROMPT='What is 12*17? Answer with the number only.'
+# stream-long asks for a long answer (the prompt of dgx-spark's vllm/public_probe.py).
+LONG_PROMPT='Prove, step by step and checking every assumption, that there are infinitely many primes; then do the same for the irrationality of the square root of 2; then compare the two proofs in detail. Be exhaustive.'
 
 die() {
 	printf 'conformance: %s\n' "$*" >&2
@@ -158,6 +196,21 @@ body_for() { # case model target -> JSON on stdout
 			'$b + {stream: true, stream_options: ({include_usage: $iu} + if $iu then {continuous_usage_stats: true} else {} end),
 			reasoning_effort: "low", max_tokens: $mt}'
 		;;
+	stream-long)
+		# The same deterministic base as every case (temperature 0, seed 7), so the two sides run
+		# for about as long: their keep-alive counts and silences are then comparable.
+		jq -nc --argjson b "$base" --arg p "$LONG_PROMPT" --argjson mt "$LONG_MAX_TOKENS" \
+			'$b + {stream: true, reasoning_effort: "xhigh", max_tokens: $mt,
+			messages: [{role: "user", content: $p}]}'
+		;;
+	stream-filler)
+		# Occupies a scheduler slot while the measured stream-long request queues behind it. The
+		# same prompt and effort as stream-long, but bounded by STREAM_MAX_TOKENS and the curl time
+		# limit rather than by the long request's size.
+		jq -nc --argjson b "$base" --arg p "$LONG_PROMPT" --argjson mt "$STREAM_MAX_TOKENS" \
+			'$b + {stream: true, reasoning_effort: "xhigh", max_tokens: $mt,
+			messages: [{role: "user", content: $p}]}'
+		;;
 	responses)
 		jq -nc --arg m "$model" --arg p "$PROMPT" --argjson mt "$MAX_TOKENS" \
 			'{model: $m, input: $p, reasoning: {effort: "low"}, max_output_tokens: $mt, temperature: 0}'
@@ -227,13 +280,74 @@ run_plain() { # case kind method path target
 	emit "$case" "$target" "$method" "$path" "$status" "$rc" "$body.sum" "$timing"
 }
 
+# ── saturation: fillers that make the measured stream-long request queue ─────────
+FILLER_PIDS=()
+
+# start_fillers <target>: SATURATE background streams to the same side the measured request goes
+# to. Each goes through curl_target, so its key travels as the measured request's does. Only the
+# response headers are kept (to see whether the side accepted it); the stream goes to /dev/null.
+start_fillers() {
+	local target="$1" req="$WORK/filler.$1.req" i
+	body_for stream-filler "$(model_for "$target")" "$target" >"$req"
+	for ((i = 1; i <= SATURATE; i++)); do
+		: >"$WORK/filler.$target.$i.hdr"
+		(curl_target "$target" -sS --max-time "$SATURATE_S" -o /dev/null -D "$WORK/filler.$target.$i.hdr" \
+			-H 'Content-Type: application/json' --data-binary "@$req" \
+			"$(base_url "$target")/chat/completions" 2>>"$WORK/curl.err" || true) </dev/null >/dev/null 2>&1 &
+		FILLER_PIDS+=($!)
+	done
+	# Let them reach vLLM's scheduler first: it serves in arrival order.
+	sleep "$SATURATE_SETTLE_S"
+}
+
+# kill_tree <pid>: the pid and everything under it, children first. A filler is a subshell around
+# curl, so killing the subshell alone would leave curl running. Without pgrep only the pid is
+# killed; the curl --max-time limit still ends the rest.
+kill_tree() {
+	local c
+	if command -v pgrep >/dev/null 2>&1; then
+		for c in $(pgrep -P "$1" 2>/dev/null || true); do kill_tree "$c"; done
+	fi
+	kill "$1" 2>/dev/null || true
+}
+
+# reap_fillers: kill every filler still running and wait for all of them. Safe to call twice, and
+# from the EXIT trap, so no path out of the script leaves a generation running on the upstream.
+reap_fillers() {
+	local p
+	for p in ${FILLER_PIDS[@]+"${FILLER_PIDS[@]}"}; do kill_tree "$p"; done
+	for p in ${FILLER_PIDS[@]+"${FILLER_PIDS[@]}"}; do wait "$p" 2>/dev/null || true; done
+	FILLER_PIDS=()
+}
+
+# filler_accepted <target>: how many of that side's fillers got a 2xx status line (the headers
+# arrive before the time limit or the reaping ends the stream).
+filler_accepted() {
+	local f s n=0
+	for f in "$WORK"/filler."$1".*.hdr; do
+		[ -e "$f" ] || continue
+		s=$(tr -d '\r' <"$f" | awk '/^HTTP\//{s=$2} END{print s+0}')
+		if [ "$s" -ge 200 ] && [ "$s" -lt 300 ]; then n=$((n + 1)); fi
+	done
+	printf '%s' "$n"
+}
+
 run_stream() { # case target
 	local case="$1" target="$2"
 	local req="$WORK/$case.$target.req" raw="$WORK/$case.$target.raw" hdr="$WORK/$case.$target.hdr"
-	local t0 rc_curl rc_jq
+	local t0 rc_curl rc_jq timeout="$TIMEOUT" required=null
+	if [ "$case" = stream-long ]; then
+		timeout="$LONG_TIMEOUT"
+		required="$LONG_MIN_S"
+	fi
 	body_for "$case" "$(model_for "$target")" "$target" >"$req"
 	: >"$raw"
 	: >"$hdr"
+	local saturated=0
+	if [ "$case" = stream-long ] && [ "$SATURATE" -gt 0 ]; then
+		saturated=1
+		start_fillers "$target"
+	fi
 	# One long-lived jq stamps every line as it arrives (`now`, microsecond resolution); curl -N
 	# passes each chunk on unbuffered. Measured with a stub emitting every 0.3 s: the stamps
 	# reproduce the cadence (platform/tests/test_agw_conformance.py).
@@ -249,7 +363,7 @@ run_stream() { # case target
 	#         death would make curl fail too (write error 23), so jq's status is checked first.
 	# Nothing in this pipeline exits early on purpose (no head, no grep -q): jq reads to EOF.
 	local -a st
-	if curl_target "$target" -sS -N --max-time "$TIMEOUT" -D "$hdr" -H 'Content-Type: application/json' \
+	if curl_target "$target" -sS -N --max-time "$timeout" -D "$hdr" -H 'Content-Type: application/json' \
 		--data-binary "@$req" "$(base_url "$target")/chat/completions" 2>>"$WORK/curl.err" |
 		jq -R -c --unbuffered '[now, .]' >"$raw"; then
 		st=("${PIPESTATUS[@]}")
@@ -263,14 +377,21 @@ run_stream() { # case target
 	# tr and awk both read their whole input, so no SIGPIPE; an empty header file (no connection)
 	# prints 0, which is the "no answer" status the comparison treats as a failure.
 	status=$(tr -d '\r' <"$hdr" | awk '/^HTTP\//{s=$2} END{print s+0}')
-	jq -s -c --argjson t0 "$t0" --argjson status "$status" "$JQ_LIB"'
+	jq -s -c --argjson t0 "$t0" --argjson status "$status" --argjson required "$required" "$JQ_LIB"'
 		map(.[1] |= rtrimstr("\r")) as $lines
 		| [$lines[] | select(.[1] | startswith("data:")) | {t: .[0], d: (.[1][5:] | ltrimstr(" "))}] as $data
 		| ([$lines[] | select(.[1] | startswith(":"))] | length) as $ka
 		| (($lines | last | .[0]) // $t0) as $tend
+		# When each non-blank line (data or comment) arrived: the first byte, and the longest
+		# silence between two of them (null with fewer than two). A blank line only ends an event.
+		| ([$lines[] | select(.[1] != "") | .[0]]) as $lt
+		| ([range(1; $lt | length) as $i | $lt[$i] - $lt[$i - 1]] | max) as $lgap
+		| ({first_byte_s: (if ($lt | length) == 0 then null else ($lt[0] - $t0 | r3) end),
+			line_gap_max_s: ($lgap | r3)}
+			+ (if $required == null then {} else {required_s: $required} end)) as $x
 		| if ($status < 200 or $status >= 300) or ($data | length) == 0 then
 			{summary: ($lines | map(.[1]) | join("\n") | summarise_body("stream"; $status)),
-			 timing: {ttft_s: null, total_s: ($tend - $t0 | r3), keepalives: $ka, gaps: ([] | stats)}}
+			 timing: ({ttft_s: null, total_s: ($tend - $t0 | r3), keepalives: $ka, gaps: ([] | stats)} + $x)}
 		  else
 			[$data[] | select(.d != "[DONE]") | {t, e: (.d | try fromjson catch {_unparsed: true})}] as $ev
 			| any($data[]; .d == "[DONE]") as $done
@@ -287,14 +408,24 @@ run_stream() { # case target
 					done: $done,
 					error_event: any($ev[]; .e.error != null),
 					usage_chunk: any($ev[]; (.e.usage.total_tokens | type) == "number")}},
-			   timing: {
+			   timing: ({
 				ttft_s: (if $ft == null then null else ($ft - $t0 | r3) end),
 				total_s: ($tend - $t0 | r3),
 				keepalives: $ka,
-				gaps: ([range(1; $ts | length) as $i | $ts[$i] - $ts[$i - 1]] | stats)}}
+				gaps: ([range(1; $ts | length) as $i | $ts[$i] - $ts[$i - 1]] | stats)} + $x)}
 		  end' "$raw" >"$raw.out"
 	jq -c '.summary' "$raw.out" >"$raw.sum"
-	emit "$case" "$target" POST /chat/completions "$status" "$rc_curl" "$raw.sum" "$(jq -c '.timing' "$raw.out")"
+	local timing
+	timing=$(jq -c '.timing' "$raw.out")
+	if [ "$saturated" = 1 ]; then
+		reap_fillers
+		timing=$(jq -nc --argjson t "$timing" --argjson n "$SATURATE" --argjson s "$SATURATE_S" \
+			--argjson a "$(filler_accepted "$target")" \
+			'$t + {fillers: {requested: $n, accepted: $a, lifetime_s: $s}}')
+		# vLLM aborts a request whose client went away; give it a moment before the next side.
+		sleep "$SATURATE_SETTLE_S"
+	fi
+	emit "$case" "$target" POST /chat/completions "$status" "$rc_curl" "$raw.sum" "$timing"
 }
 
 read_key() { # file -> value on stdout (first line, no newline); never echoed elsewhere
@@ -319,6 +450,34 @@ cmd_run() {
 	positive_int AGW_CONF_TIMEOUT "$TIMEOUT"
 	positive_int AGW_CONF_MAX_TOKENS "$MAX_TOKENS"
 	positive_int AGW_CONF_STREAM_MAX_TOKENS "$STREAM_MAX_TOKENS"
+	LONG_STREAM=0
+	case "${AGW_CONF_LONG_STREAM:-}" in
+	'' | 0 | false) ;;
+	1 | true) LONG_STREAM=1 ;;
+	*) die "AGW_CONF_LONG_STREAM must be 1, true, 0, false or empty" ;;
+	esac
+	LONG_MIN_S="${AGW_CONF_LONG_STREAM_MIN_S:-130}"
+	LONG_MAX_TOKENS="${AGW_CONF_LONG_STREAM_MAX_TOKENS:-8000}"
+	LONG_TIMEOUT="${AGW_CONF_LONG_STREAM_TIMEOUT:-600}"
+	positive_int AGW_CONF_LONG_STREAM_MIN_S "$LONG_MIN_S"
+	positive_int AGW_CONF_LONG_STREAM_MAX_TOKENS "$LONG_MAX_TOKENS"
+	positive_int AGW_CONF_LONG_STREAM_TIMEOUT "$LONG_TIMEOUT"
+	SATURATE="${AGW_CONF_LONG_STREAM_SATURATE:-0}"
+	case "$SATURATE" in *[!0-9]*) die "AGW_CONF_LONG_STREAM_SATURATE must be a whole number from 0 to 16" ;; esac
+	SATURATE=$((10#$SATURATE))
+	[ "$SATURATE" -le 16 ] || die "AGW_CONF_LONG_STREAM_SATURATE must be a whole number from 0 to 16"
+	if [ "$SATURATE" -gt 0 ] && [ "$LONG_STREAM" != 1 ]; then
+		die "AGW_CONF_LONG_STREAM_SATURATE needs AGW_CONF_LONG_STREAM=1: it only shapes the stream-long case"
+	fi
+	SATURATE_S="${AGW_CONF_LONG_STREAM_SATURATE_S:-45}"
+	SATURATE_SETTLE_S="${AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S:-2}"
+	positive_int AGW_CONF_LONG_STREAM_SATURATE_S "$SATURATE_S"
+	positive_int AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S "$SATURATE_SETTLE_S"
+	# A filler that may outlive the measured request's own ceiling would hold the slots past it.
+	# Judged only when fillers are asked for: the default lifetime means nothing with none.
+	if [ "$SATURATE" -gt 0 ] && [ "$SATURATE_S" -gt "$LONG_TIMEOUT" ]; then
+		die "AGW_CONF_LONG_STREAM_SATURATE_S ($SATURATE_S) must not exceed AGW_CONF_LONG_STREAM_TIMEOUT ($LONG_TIMEOUT)"
+	fi
 	GATEWAY_URL="${AGW_CONF_GATEWAY_URL%/}"
 	DIRECT_URL="${AGW_CONF_DIRECT_URL%/}"
 	MODEL="$AGW_CONF_MODEL"
@@ -345,7 +504,7 @@ cmd_run() {
 	umask 077
 	WORK=$(mktemp -d "$AGW_CONF_OUT/work.XXXXXX")
 	# Request and response bodies live only here, and only for the run, whatever ends it.
-	trap 'rm -rf "$WORK"' EXIT
+	trap 'reap_fillers; rm -rf "$WORK"' EXIT
 
 	local t e
 	for t in gateway direct; do run_plain models models GET /models "$t"; done
@@ -358,6 +517,10 @@ cmd_run() {
 	for t in gateway direct; do run_stream stream-xhigh "$t"; done
 	for t in gateway direct; do run_stream stream-options-without-usage "$t"; done
 	for t in gateway direct; do run_plain responses responses POST /responses "$t"; done
+	# Last, so the minutes it takes delay nothing else and a hang costs only its own ceiling.
+	if [ "$LONG_STREAM" = 1 ]; then
+		for t in gateway direct; do run_stream stream-long "$t"; done
+	fi
 }
 
 # ── 2.2: the comparison ────────────────────────────────────────────────────────
@@ -441,6 +604,36 @@ cmd_diff() {
 			   only_direct: [$dt | keys[] | . as $k | select($gt | has($k) | not)],
 			   type_changed: [$gt | keys[] | . as $k | select(($dt | has($k)) and $dt[$k] != $gt[$k])
 				| {path: $k, gateway: $gt[$k], direct: $dt[$k]}]};
+		# stream-long (OPT-IN case, see the header). The figures for one side, and the reasons the pair
+		# cannot be accepted; none means the gateway added no buffering. Silence is judged from
+		# the request: a late first byte counts as much as a long gap between lines, because a
+		# gateway that holds the whole stream delivers it in one burst at the end.
+		def long_side($r): {duration_s: $r.timing.total_s, first_byte_s: $r.timing.first_byte_s,
+			keepalives: $r.timing.keepalives, gap_max_s: $r.timing.line_gap_max_s}
+			+ (if $r.timing.fillers != null then {fillers_accepted: $r.timing.fillers.accepted} else {} end);
+		# A saturated run only proves queueing when every filler was accepted; a side that refused
+		# some (a 429 from the gateway request bucket or a key budget) did not queue the measured request.
+		def filler_failure($r; $who): $r.timing.fillers as $f
+			| if $f != null and $f.accepted < $f.requested then
+				"\($who) accepted \($f.accepted) of \($f.requested) filler streams: the measured request may not have queued"
+			  else empty end;
+		def long_failures($g; $d): ($d.timing.required_s // 130) as $req | 2 as $tol
+			| [filler_failure($g; "the gateway"), filler_failure($d; "vLLM"),
+			   (if ($d.timing.total_s // 0) < $req then
+					"direct vLLM stream lasted \($d.timing.total_s) s, under the \($req) s needed: nothing is proved about buffering"
+				else empty end),
+			   (if ($g.timing.total_s // 0) < $req then
+					"gateway stream lasted \($g.timing.total_s) s, under the \($req) s needed"
+				else empty end),
+			   (if $g.timing.keepalives < ($d.timing.keepalives - 1) then
+					"gateway passed \($g.timing.keepalives) keep-alive comments, vLLM \($d.timing.keepalives): the gateway dropped keep-alives"
+				else empty end),
+			   (if ($g.timing.first_byte_s // 0) > (($d.timing.first_byte_s // 0) + $tol) then
+					"gateway first byte after \($g.timing.first_byte_s) s, vLLM after \($d.timing.first_byte_s) s: the gateway held the stream"
+				else empty end),
+			   (if ($g.timing.line_gap_max_s // 0) > (($d.timing.line_gap_max_s // 0) + $tol) then
+					"gateway went quiet for \($g.timing.line_gap_max_s) s between lines, vLLM for \($d.timing.line_gap_max_s) s: the gateway buffered the stream"
+				else empty end)];
 		def not_in($l): map(. as $x | select(($l // []) | index($x) | not));
 		def only_in($l): map(. as $x | select(($l // []) | index($x)));
 		# The lists for one case: the global ones plus the entry for that case, if any.
@@ -491,7 +684,17 @@ cmd_diff() {
 				| if ($g.semantic | has("done")) then
 					.stream_usage = {gateway: $g.semantic.usage_chunk, direct: $d.semantic.usage_chunk}
 				  else . end
-				| if ($g | ok) and ($d | ok) and ($g.semantic | has("done")) and $g.semantic.usage_chunk != true then
+				| if $g.case == "stream-long" and ($g | ok) and ($d | ok) then
+					# Judged on timing alone: at temperature 0 the two bodies are not guaranteed
+					# identical over thousands of tokens, and the usage chunk is a check of stream-xhigh.
+					long_failures($g; $d) as $lf
+					| .long_stream = {required_s: ($d.timing.required_s // 130), tolerance_s: 2,
+						saturate: ($d.timing.fillers.requested // 0),
+						keepalives_seen_from_vllm: ($d.timing.keepalives > 0),
+						gateway: long_side($g), direct: long_side($d)}
+					| if ($lf | length) == 0 then .verdict = "match"
+					  else .verdict = "error" | .failure = ($lf | join("; ")) end
+				  elif ($g | ok) and ($d | ok) and ($g.semantic | has("done")) and $g.semantic.usage_chunk != true then
 					.verdict = "error"
 					| .failure = "gateway \($g | how), stream carried no usage chunk (its tokens are not charged to the budget)"
 				  elif ($g | ok) and ($d | ok) then
@@ -505,6 +708,11 @@ cmd_diff() {
 		   total: length,
 		   not_matched: [.[] | select(.verdict != "match") | .case],
 		   failures: [.[] | select(.failure != null) | "\(.case): \(.failure)"],
+		   # What a passing verdict did NOT prove. "keepalive": the long stream passed, but vLLM sent
+		   # no keep-alive comments (it sends one only after 15 s without a chunk), so comparing the
+		   # gateway count against it showed nothing about comment pass-through.
+		   unproven: ([.[] | select(.case == "stream-long" and .verdict == "match"
+				and .long_stream.keepalives_seen_from_vllm == false) | "keepalive"] | unique),
 		   shape_differences: ([.[] | select(.shape_diff != null and (.shape_diff | empty_diff | not))
 			| {key: .case, value: {diff: .shape_diff, unaccepted: .shape_unaccepted}}] | from_entries),
 		   cases: .}' "$1"

@@ -100,12 +100,19 @@ templates:
   - name: "Deploy honcho (Local)"
     playbook: platform/playbooks/deploy-honcho.yml
 
+  # skynet - orchestration API (digest-pinned tier-2 image + its Postgres; /skynet/ behind the
+  # gateway's route once that route is enabled). The deploy refuses until skynet_image is set.
+  - name: "Deploy skynet (Local)"
+    playbook: platform/playbooks/deploy-skynet.yml
+
   # agentgateway - inference edge gateway (gateway + its own budget Postgres;
-  # fronts LM Studio on the Mac locally via host.containers.internal:1234).
+  # locally fronts the public edge as identity local-gateway, or the DGX on the LAN).
   - name: "Deploy agentgateway (Local)"
     playbook: platform/playbooks/deploy-agentgateway.yml
   - name: "Manage agentgateway Client Key (Local)"
     playbook: platform/playbooks/manage-agentgateway-client-key.yml
+  - name: "Probe agentgateway Isolation (Local)"
+    playbook: platform/playbooks/probe-agentgateway-isolation.yml
 
   # postiz - social publishing (app + postgres + redis + temporal + temporal-pg;
   # native OIDC, API-key automation endpoint ungated at the edge).
@@ -199,6 +206,14 @@ templates:
         description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
+  - name: "Clean Deploy skynet (Local)"
+    playbook: platform/playbooks/clean-deploy-skynet.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy agentgateway (Local)"
     playbook: platform/playbooks/clean-deploy-agentgateway.yml
     survey_vars:
@@ -244,6 +259,19 @@ templates:
   # section 6). Replaces the Mac-driven scripts/local-netbox-up.sh path.
   - name: "Deploy NetBox (Local)"
     playbook: platform/playbooks/deploy-netbox.yml
+    survey_vars:
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount). This stops the orb-agent: run Deploy Orb Agent afterwards"
+        type: string
+        required: false
+        default_value: "false"
+      - name: netbox_force_rebuild
+        title: "Force plugin image rebuild"
+        description: "true to rebuild the NetBox plugin image even when its build inputs match (takes a newer Diode plugin release; the rebuilt image recreates the stack and stops the orb-agent)"
+        type: string
+        required: false
+        default_value: "false"
 
   # Local NetBox answers the IPAM read; local inventory declares no vm_* spec, so a local
   # run records the step's refusal, which is the path worth proving here.
@@ -262,6 +290,18 @@ templates:
       - name: target_service
         title: Target group
         description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Free an idle service's memory without losing its state: stops its containers, keeps the
+  # containers, images and volumes. Local-dev hosts only (refuses any host not named
+  # <name>-local). Reverse it with the service's own Deploy template.
+  - name: "Stop Local Service"
+    playbook: platform/playbooks/stop-local-service.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the idle local service to stop (e.g. erpnext_svc)
         type: string
         required: true
 

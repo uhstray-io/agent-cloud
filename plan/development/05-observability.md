@@ -50,6 +50,146 @@ Pyroscope profile data and a language bridge that adds
 pyroscope.profile.id to the span; a datasource mapping alone is not a profile
 receipt.
 
+> **Coverage receipt update (2026-10-17):** Dev-bound census task 6755 found 31
+> source candidates, 9 declared targets, and 0 verified targets; `service:o11y`
+> metrics remain incomplete. This records a declaration and receipt visibility
+> gap, not proof that services emit no telemetry. The repeatable refresh CLI
+> launches strict receipts for an explicitly selected bounded cohort, keeps the
+> returned task IDs in memory, then submits them as transient census input. The
+> code does not persist fresh IDs in private inventory. This source change does
+> not itself provide fresh task receipts or close OpenSpec task 6.2.
+
+> **Dev survey publication and refresh path:** After this source change is merged
+> to the reviewed `dev` SHA, publish only the existing `Verify o11y Coverage
+> Census` survey through `Publish Semaphore Template Surveys (Dev)` by setting
+> `semaphore_template_names_json` to `["Verify o11y Coverage Census"]`. The
+> publisher reads the declared template catalog and updates its survey in place;
+> do not enable scoped creation or supply create bindings. From a clean `dev`
+> checkout at that same SHA, run `scripts/o11y-coverage-refresh.py` with that
+> SHA, the exact target/signal pairs, the Semaphore HTTPS origin, and the
+> operator token redirected through stdin. For example, use
+> `--target-signal service:o11y:metrics` for the incomplete o11y metrics binding.
+> The CLI refuses a different local branch or SHA, a dirty checkout, any changed
+> template/repository/inventory binding, or an invalid target digest. Fresh
+> task IDs are returned in memory and submitted only to the census survey. This
+> source record does not claim that the Dev survey has been published or that a
+> fresh cohort has run.
+
+```sh
+python3 scripts/o11y-coverage-refresh.py \
+  --url https://semaphore.uhstray.io \
+  --reviewed-dev-sha "$REVIEWED_DEV_SHA" \
+  --target-signal service:o11y:metrics \
+  < "$SEMAPHORE_OPERATOR_TOKEN_FILE"
+```
+
+> **Production coverage and collector update (2026-10-18):** Dev-bound journal
+> collector stage task 6795, survey 6796, survey-cursor 6800, and non-destructive
+> apply 6804 succeeded. The v3 positions volume was in safe pending state before
+> apply; all seven existing receiver containers remained unchanged, and the exact
+> bounded journal stream reached Loki. The direct Grafana aggregate
+> `sum(count_over_time({target_id="service:o11y"}[1h]))` returned 19 records;
+> the aggregate does not preserve stream labels. A separate label-preserving
+> Loki range query with exact selector
+> `{target_id="service:o11y",service="o11y/alloy",signal="container",cluster="agent-cloud-prod",environment="prod"}`
+> returned one stream and two bounded recent lines with matching labels. Private
+> site-config PR #104 merged as `6f32209`; the inventory sync read back production
+> record 2 as the exact merged bytes.
+>
+> Strict receipt task 6813 verified `service:o11y` logs and census task 6814
+> succeeded with 31 candidates, 9 declared targets, 0 duplicates, and 31
+> unverified targets. Only logs were refreshed; `service:o11y` metrics remain
+> incomplete, health and traces are undeclared, and overall coverage is
+> incomplete. A later combined cohort safely stopped after logs task 6816
+> succeeded: the next launch refused because Semaphore changed template runtime
+> fields `tasks` and `last_task` during preflight, so no second task was
+> launched. Public launcher fix `1a3a02d` ignores only those fields and still
+> requires PR/merge and a rerun. Alloy also continues to log Docker discovery
+> socket errors because production Compose has no socket mount; public local-only
+> gating fix `a96cced` is not deployed. Keep OpenSpec tasks 6.2 and 7.4 open;
+> this evidence does not establish full-estate coverage, gateway access-record
+> coverage, or a retention gate.
+
+> **Dev agentgateway identity and dashboard receipt (2026-10-18):** At Dev SHA
+> `717dffff`, journal stage 6886, cursor survey 6887, non-destructive apply 6890,
+> strict logs receipt 6892, metrics receipt 6893, and census 6894 completed.
+> The census found 31 candidates, 9 declared targets, and 0 duplicate identities;
+> `service:o11y` logs and metrics were verified, while overall coverage remained
+> incomplete. Direct Grafana queries showed 19 tracked services, a freshest
+> inventory marker about 11 minutes old, and five current failed workflow-step
+> states. Existing agentgateway metrics and logs lacked `target_id`; the bounded
+> `service:o11y/alloy` container-log stream was present. The source now assigns
+> the gateway scrape the static bounded identity `service:agentgateway`, pending
+> deployment and a fresh exact-target receipt. Dashboard verifiers 6898 and 6899
+> supplied query evidence, but browser rendering remains unverified because the
+> browser surface was unavailable. No retention expansion is authorized by
+> these receipts. Keep tasks 6.2 and 7.4 open; overall estate coverage remains
+> incomplete.
+
+> **Agentgateway trace-silence alert implementation evidence (2026-10-18):** Public
+> PR #706 merged to Dev at `6ed7987`. Deploy o11y check task 6914 and normal task
+> 6916 succeeded; cursor survey 6919 succeeded. Private site-config PR #105 merged
+> as `b4da321` and PR #106 as `23137a1`; the Semaphore production inventory passed
+> exact-byte sync check and apply. Initial strict receipt 6928 succeeded, while
+> census 6929 refused its `launch_inputs` because the persistent task 6565 carried
+> a stale inventory revision. After correction, receipts 6935 and 6936 succeeded,
+> collector apply 6945 succeeded, and final receipts 6946-6948 plus census 6949
+> succeeded with 31 candidates, 9 declared targets, and 0 duplicates. Gateway
+> metrics and o11y logs/metrics were verified. Disk serial-to-chassis comparison
+> remains unverified; backup/restore and retention remain gated.
+>
+> The trace-silence alert source now uses the existing gateway request counter and
+> global Tempo received-span counter, and remains paused unless production alerts,
+> the exact declared gateway trace switch, no-canary state, and a separate reviewed
+> exclusive-sender declaration all pass. That exclusive-sender review has not been
+> established by the receipts above. The inspected live 30-minute window had about
+> six gateway requests and a zero Tempo span rate, below the alert's 100-request
+> threshold. The source has not yet been deployed and the
+> live Grafana rule-expression readback is pending; OpenSpec task 8.2 remains open.
+
+> **Journal collector project-isolation follow-up (2026-10-18):** The normal
+> Dev-bound o11y deployment task 6836 completed healthy and removed the journal
+> collector as an orphan because both Compose files shared project `o11y`.
+> Read-only collector survey 6845 confirmed `collector_present=false` while the
+> existing v3 volume remained present in `volume_initialization_pending`; strict
+> logs receipt 6839 returned `no_evidence`. The survey also reported
+> `root_owner=matches_collector`, `entry_count=3`, and `journal_cursor=unavailable`;
+> it did not prove a cursor was absent. Independent metrics receipt 6840 and census
+> 6841 passed. This does not supersede the earlier Loki receipt: it proves
+> that the collector registration did not survive the subsequent normal deploy.
+> The source change isolates the collector in project `o11y-journal`, keeps the
+> exact v3 volume external under its existing `o11y` identity, and checks the
+> existing `o11y_o11y` network and the one-time old-container transition. The
+> change has not yet been staged or applied on Dev, so collector survival and a
+> fresh strict log receipt remain unverified. Keep OpenSpec tasks 6.2 and 7.4
+> open.
+>
+> **Pending-volume transition check (2026-10-18):** Read-only `survey-cursor`
+> task 6852 later reported `collector_present=false`, `volume_use_count=0`,
+> `journal_cursor=valid`, `root_owner=matches_collector`,
+> `status=volume_initialization_pending`, and `entry_count=3`. The apply helper's
+> existing pre-start verifier can map this class of no-copy-up pending state to
+> `ready` only when its full volume, cursor, layout, access, and capacity checks
+> pass. A regression test now exercises the absent-collector transition with that
+> complete verified state and confirms it does not mutate the v3 volume. Receipt
+> 6852 alone does not report every verifier input and is not a live apply result;
+> deployment and fresh log evidence remain outstanding.
+>
+> **Deterministic journal proof follow-up (2026-10-18):** Production collector
+> apply task 6873 refused before starting the collector because preflight required
+> a recent `CONTAINER_NAME=o11y-alloy` entry, while the healthy Alloy process was
+> quiet. No collector start or receiver mutation occurred. The source follow-up
+> removes this incidental-log prerequisite while retaining the standard-path,
+> directory-permission, and rootless file-read checks. After the isolated
+> collector becomes healthy, apply writes one fixed safe marker line through the
+> existing `o11y-alloy` container's PID 1 stdout, captures the fresh Loki lower
+> bound immediately beforehand, and requires that marker in the exact
+> `service=o11y/alloy`, `signal=container` stream at or after the bound. Write or
+> receipt failure uses the existing collector-only rollback; no volume is
+> deleted, no receiver is restarted, and check mode skips the writer. This is
+> source-level work only: no production apply, new journal receipt, or dashboard
+> coverage is claimed. Keep OpenSpec tasks 6.2 and 7.4 open.
+
 Tempo-derived service graphs and span metrics are disabled by default. The
 production opt-in requires numeric Semaphore receipts for capacity,
 backup/isolated restore, metrics, alert delivery, retention, and cardinality.
@@ -58,6 +198,24 @@ the existing Pyroscope datasource, but no service profile pivot is claimed
 without the span bridge and live profile data. Grafana 12 trace-correlations
 UI evaluation is separate and remains behind backup/restore and capacity
 gates.
+
+> **Trace-to-Loki correlation source update (2026-10-17):** Grafana's
+> provisioned Tempo datasource uses a custom LogQL query that filters the exact
+> trace ID in either the JSON `traceid` field or a `tid` token inside the parsed
+> JSON `body` field, with the existing -2s/+2s span window. This bypasses
+> Grafana's built-in substring trace-ID filter; built-in trace and span filters
+> remain off. The custom query accounts for the observed canonicalization where
+> a 31-character Tempo trace ID is stored in logs as 32 characters with a
+> leading zero. Read-only production evidence for one sampled agentgateway
+> trace found three matching Loki records in an exact five-second query
+> window: one `traceid` field and two `body` fields containing a `tid` token.
+> The Loki derived-field regex already links trace IDs back to Tempo. This
+> bounded evidence covers only these observed agentgateway formats; other
+> services remain unproven. It does not establish a Grafana browser click-
+> through or that the updated provisioning has been deployed. Tempo search
+> works; service-graph and span-metric series remain absent because their
+> processors are disabled pending backup/isolated-restore and capacity
+> evidence.
 
 > **Source configuration status, 2026-09-29:** The o11y service-graph and
 > span-metrics config, Grafana correlations, production receipt checks, and
@@ -68,19 +226,147 @@ gates.
 > receipts above are recorded.
 
 Pyroscope is private on the o11y network with a persistent named volume and a
-seven-day initial retention policy. Its Alloy self-profile pilot is disabled
-unless private inventory explicitly enables it after the pinned Alloy config,
-target reachability, privacy, and VM headroom are verified. The initial pilot
-uses only Alloy's own pprof endpoint at `alloy:12345` under `service_name=o11y/alloy`
-and a 60-second scrape interval. Record the before/after CPU, memory, profile
-ingestion, and retained-disk measurements before adding another producer. A
-normal deploy preserves this volume and every existing telemetry volume.
+seven-day initial retention policy. Alloy profiling remains disabled. A shared
+early guard in `deploy-o11y.yml` and `clean-deploy-o11y.yml` refuses an enabled
+pilot or profile-operation selector before either broad workflow mutates files,
+containers, or volumes. The existing deploy-time receipt-ID check validates only
+numeric references; it does not authenticate private inventory provenance or
+prove successful config, privacy, or resource-gate outcomes. Do not enable
+profiling through either broad workflow.
+
+The candidate verifier binds the public code revision but reports
+`private_revision=unverified`; that result is not private inventory provenance.
+The Dev-bound `Survey o11y Profile Pilot Inventory Provenance` template compares
+the exact Semaphore `production` static-YAML bytes with
+`inventory/production.yml` from a caller-supplied site-config integration branch
+and SHA. It requires the current remote branch tip to equal that SHA, binds the
+named production inventory to the uniquely named survey template and the
+`agent-cloud dev` repository, accepts only a regular private inventory file,
+parses both YAML documents with duplicate-key rejection, and emits only fixed
+status/reason plus the reviewed public/private SHAs. API reads use OpenBao-sourced
+credentials; the private deploy key and clone are removed in an unconditional
+cleanup block. Dev-bound inventory provenance task 5818 later matched these
+exact private inventory bytes at site-config `main` SHA
+`e3e04294442e7e88baa3ca6ff233572f31eacdd4`.
+
+The dedicated Dev-bound **Accept o11y Profile Pilot (Dev)** operation reruns the
+bounded candidate verifier and current budget verifier, checks the current
+private inventory against its reviewed site-config branch/SHA in the same run,
+and requires the deployed receiver checkout to match an explicit revision. It
+refuses an enabled inventory switch, a non-baseline rendered config, a mismatched
+or writable Alloy config bind mount, an unhealthy receiver set, or less than
+30% guest-root free space / 25% memory headroom. It snapshots every `o11y-*`
+container identity and mount plus all rootless Podman named-volume metadata.
+The helper writes the temporary enabled config through the existing
+`config.alloy` inode, POSTs Alloy's `/-/reload` endpoint from inside the Alloy
+container, checks the profile component, and queries Pyroscope for
+`service_name="o11y/alloy"`. SIGTERM and SIGINT are recorded without raising so
+the cleanup can restore the disabled config through that same inode, reload
+Alloy, verify the profile component is absent, query Pyroscope again with the
+same activation boundary, and require a positive timeline sample at or after
+that boundary. After cleanup, a pending signal produces a sanitized failed
+receipt. SIGKILL or host power loss can still stop the process before cleanup;
+the operation does not protect against those events. The receipt reports
+`post_disable_query=observed`; this proves a post-disable query result, not disk
+durability across a Pyroscope restart. It compares the container and volume
+snapshots, emits only fixed status/reason, bounded service identity, and
+revision/config hashes, and does not change retention or restart/recreate a
+receiver container.
+
+The operation gate checks the fetched Semaphore metadata for exactly one
+production inventory, one acceptance template for this playbook, and the expected
+repository. It binds the template's inventory ID to that unique production record;
+the imported provenance survey separately requires `observed` with
+`exact_bytes_match` for the same fetched production inventory. The inventory ID
+stays inside the `no_log` acceptance validation and is not added to the survey's
+public receipt. This proves the configured template binding. As recorded in
+`docs/MISTAKES.md` §1.20, no trusted task-ID environment variable is available, so
+this source gate cannot prove which template launched the current invocation. It
+refuses duplicate same-playbook templates and does not require
+`SEMAPHORE_TASK_ID`.
+
+**Prior receipts (2026-10-15):** Dev-bound inventory provenance task 5818
+matched the exact private inventory bytes at site-config `main` SHA
+`e3e04294442e7e88baa3ca6ff233572f31eacdd4`. Candidate task 5819 validated the
+disabled and enabled Alloy configs and bounded component loading. Current
+budget task 5821, at deployed receiver SHA
+`23cc35595ca1aa0358f409920f40a48a80a6a100`, observed 80.85% guest-root free
+space and 83.31% memory headroom. These are prior observations; the acceptance
+operation rechecks its gates, and these receipts do not authorize retention
+expansion. Dev-bound Semaphore task 5842 ran against public merge
+`c70735cc03e92842f4ed4ac13011d7f22119d5a4` and private main merge
+`b14f6cb1`; its receipt was unavailable with sampling and delivery unverified,
+restored disabled, post-disable query unverified, and reason
+`post_disable_query_not_observed`. That final reason overwrote the initial
+`profile_not_observed` failure. A separate bounded, read-only Grafana
+Pyroscope datasource-proxy query for the same profile and pilot window returned
+HTTP 200 with seven positive CPU timeline samples; this does not establish that
+the acceptance operation's initial query succeeded. The helper now reads the
+fixed internal render URL with `podman exec o11y-grafana wget -q -O -`, and
+preserves `profile_not_observed` unless initial sampling and delivery succeeded.
+Keep the pilot disabled: reviewed Dev-bound acceptance must still prove live
+sampling, delivery, and a successful post-disable query. Durable storage
+persistence across a Pyroscope restart remains a separate open gate. The only
+profile target remains Alloy's own `alloy:12345` pprof endpoint, with the
+bounded `service_name="o11y/alloy"` identity and 60-second interval.
+
+Dev-bound durability task 5880 (source `f696d208813e753bcd519fc57b001353b2d50920`)
+refused at the initial localhost assertion because the configured Semaphore
+variable group's OpenBao input names were treated as forged extra vars. It
+stopped before contacting the receiver or restarting Pyroscope, so it provides
+no durability evidence. The playbook-specific forged-name set now permits those
+three names while retaining its internal-override checks; at that point task 2.3
+remained open until a reviewed durability run succeeded.
+
+Dev-bound acceptance task 5854 subsequently succeeded against the exact reviewed
+receiver revision. Its fixed receipt reports `verified`,
+`sampled_delivered_restored_post_disable_query_observed`, observed sampling and
+delivery, disabled restoration, an observed post-disable query, exact private
+inventory bytes, a validated candidate, and a passed resource gate. The task ran
+from `2026-10-15T09:17:36.844212Z` through `2026-10-15T09:21:59.271931Z` UTC;
+the only profile identity is `service_name="o11y/alloy"`, CPU. This closes the
+prior live sampling/delivery/post-disable acceptance gap but does not establish
+restart durability. The Dev-bound **Prove o11y Pyroscope Restart Durability
+(Dev)** operation reads the selected successful task, its output, template, and
+repository from Semaphore and refuses unless their revision-bound receipt is
+exact. It uses that task's bounded UTC window for the same fixed CPU query,
+requires the disabled rendered config to match the live config, and queries the
+historical sample before and after restarting only `o11y-pyroscope`. It compares
+all o11y container identity/mount snapshots and all named-volume metadata and
+requires the Pyroscope container ID and `/data` volume to remain unchanged. The
+operation gives the restart a 10-second stop grace and a 45-second command
+deadline. If restart fails, it makes one bounded `podman start` recovery attempt
+with a 15-second command timeout and still emits the fixed `restart_failed`
+refusal. Recovery never counts as a durability success. The operation has no
+volume or retention mutation path. Dev-bound durability task 5889 returned
+`status=verified`, reason `prior_sample_queryable_after_pyroscope_restart`, for
+acceptance task 5854 at `acceptance_sha=8cf5b90a2ca0b7362933fcba68a2b026ac1bf1ad`
+and `receiver_sha=23cc35595ca1aa0358f409920f40a48a80a6a100`. The same CPU profile
+query was observed before and after restart; restart/readiness were observed;
+container identity and volume metadata were preserved; and
+`fingerprint_present=true`. Together with task 5854, this closes OpenSpec task
+2.3. Task 5880 failed before receiver contact; PR #655 fixed its OpenBao
+pre-restart guard refusal. No retention or restore gate is claimed.
 
 Use the existing Discord contact point. Group notifications by the bounded
 service and environment context, wait 30 seconds before the first grouped
 notification, then use a five-minute group interval and a four-hour repeat
 interval. Verify the provisioned rule settings by read-back; a Discord delivery
 drill is a separate runtime receipt.
+
+Dev-bound task 5925 at merged `dev` revision
+`bb66c323386299a9bb2f52453078540d0db7a19c` completed the grouped delivery
+proof: two unreachable scrape instances under one service, two matching Grafana
+service-down alerts, and one owned Discord message with both instance details
+and the service dashboard link. Its always-run recovery removed the temporary
+scrape job, preserved the active rule and target baselines, and cleared the
+marker. Task 5913 had timed out because Grafana's evaluated-alert API lacks
+`__alert_rule_uid__`; the reviewed correction matches the provisioned title
+through `alertname` and checks `grafana_folder` with exact service, cluster,
+environment, and instance labels. Non-destructive deploy task 5784 verified
+provisioned labels and timing, and delivery task 5795 confirmed the Discord
+destination. Together these receipts close OpenSpec alert task 3.3. Resource
+promotion and retention capacity remain separate gates.
 
 > **As-built check, 2026-09-22 (branch `feat/observability-estate`):** The
 > committed local o11y compose defines Grafana, Prometheus, Loki and Alloy;
@@ -1290,6 +1576,23 @@ point-in-time reported-capacity facts do not establish backing media, PBS
 readiness, reserve capacity, allocation authority, or write authority; those
 flags remain false. The GET request set is unchanged.
 
+The separate private identity result includes one fixed SMART health category
+for its exact selected disk from the already protected Proxmox `disks/list`
+payload. The optional `health` field is produced with SMART checks enabled by
+default. Exact `PASSED` or `OK` maps to `passed`, exact `FAILED` or `FAILED!`
+maps to `failed`, and absent, malformed, or any other value maps to `unknown`. Only
+the category is emitted; raw health text remains private. This observation is
+not a health gate and does not prove physical locality, device safety, storage
+allocation, PBS readiness, or restore success, and it authorizes no write. The
+operator has attested that the hardware is local, but no serial-to-chassis/BMC
+comparison was made or claimed. Proxmox source documents the optional `health`
+field and `skipsmart=0` default in [`PVE/API2/Disks.pm`](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm);
+[`PVE/Diskmanage.pm`](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
+captures SMART status strings and uses `UNKNOWN` when health is absent.
+Smartmontools emits `PASSED` for successful ATA self-assessment and `OK` for a
+successful SCSI health-status response ([ATA output](https://www.smartmontools.org/static/doxygen/ataprint_8cpp_source.html),
+[SCSI output](https://www.smartmontools.org/static/doxygen/scsiprint_8cpp_source.html)).
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan
@@ -1490,6 +1793,20 @@ selectors are not a synthetic union, and current data applicability still needs
 service-specific receipts. A capped all-streams drill-down remains available for
 unclassified Loki streams; source-specific panels lead the routine view.
 
+## 2026-10-17 unclassified Overview records
+
+Read-only Grafana inspection found that the `service-overview` all-stream
+drill-down contained records excluded by its five source-specific targets.
+For the selected `agentgateway` service, the exact selector for records without
+a nonempty `container` label and without a recognized `signal` matched 90 lines
+over six hours and 482 over 24 hours. The six-hour comparison returned 18 span
+lines, 144 conformance lines, and no access-log lines. These point-in-time line
+counts show that a selected unclassified category has records to expose; they
+are not health measures and do not identify the producer or explain missing
+classification. The Overview change adds this category with disjoint selectors.
+Its deployment and Grafana read-back remain pending, so live acceptance is not
+claimed.
+
 The conformance dashboard source configures the latest-state query and table
 transformations for an intended one-row-per-service-and-step view, with status
 color mapping scoped to the numeric state field. Its latest-state query remains
@@ -1521,10 +1838,18 @@ count; only known non-journald drivers produce unsupported. A zero-container
 listing, malformed or failed container inspect, or uncertain Alloy state refuses
 the survey with a fixed category rather than issuing a partial result. For
 verified journald containers, a failed read is unreadable, while timeout or
-malformed metadata is unverified. The implementation and focused tests are source
-evidence only; no Semaphore survey run or receiver result is claimed. Keep task 7.4 open until
-the reviewed Dev source survey and dashboard readback establish container-log
-source support or document its limitation. The survey does not explain or fix
+malformed metadata is unverified. Dev-bound read-only Semaphore task 5282 at
+reviewed Dev revision `4ed33fa8` observed seven running o11y containers using
+journald, 219 bounded metadata entries, and no readable read-only Alloy journal
+source established. The entry count is a capped sample, not total log volume.
+An existing mount with a missing or unreadable directory can produce the same
+source result; a separate mount readback is needed to distinguish that case. Dashboard
+verifier task 5281 found no `agentgateway` container or access records in its
+six-hour window. The dashboard JSON is unchanged between the receiver checkout
+revision reported by that task and the current reviewed Dev revision, so a
+dashboard-only redeploy has no evidenced source fix. Keep task 7.4 open until
+the independent, reviewed journal collector is deployed through Semaphore and
+fresh container records are verified in Loki. The survey does not explain or fix
 gateway OTLP access records: their `signal="access-log"` discriminator remains
 owned by the separate gateway change and must be verified there.
 
@@ -1536,3 +1861,522 @@ snapshots and long error bodies dominate the separate history panel. Keep that
 workflow-context/dashboard correction separate from the container log-source
 survey. Operator-confirmed Grafana Authentik sign-in succeeds; this narrows the
 authentication symptom but does not establish a cause for the missing streams.
+Read-only Dev-bound verifier task 5286 on 2026-10-13 found data for four
+conformance panels over 24 hours, including 33 latest service/step status
+series. It did not inspect table rendering or report the count of failed
+steps; the earlier browser counts must not be treated as current values.
+
+## 2026-10-17 production dashboard defaults and backup readiness
+
+The Service conformance exact query showed 19 tracked services, 5 failed steps,
+5 services not yet run, and 57 inventory markers in the last 45 minutes. Service
+Overview UID `service-overview` was version 9; selected `agentgateway`
+Prometheus minimum `up` was 1. These are point-in-time observations only.
+Agentgateway appeared in both metric and log selectors, so the provisioned
+dashboard saves it as each independent selector's current value. The evaluator
+regression plans representative metrics and log panels without variable
+overrides; this checks query interpolation only, not backend availability or
+Grafana rendering.
+
+## 2026-10-20 conformance failure specificity
+
+Read-only Dev-bound dashboard observations 7727 and 7728 used controller
+revision `fad68aea3330230afc1908c4523b14f030df8150` and receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. The Overview observation returned
+data for four queried panels. The conformance query-data check passed four
+panels and classified current workflow failures as present, the inventory
+marker as fresh, and 36 workflow completion-age series as known. These are
+query observations, not proof that the dashboard rendered in a browser, and
+the failure count does not identify which service and step failed.
+
+The bounded verifier now reads only the exact provisioned "Latest step status
+by service" query, validates service names against public component directories
+and step names against the workflow registry, and emits at most 50 sorted
+service/step pairs plus categorical unknown and truncation counts. It discards
+all other Loki labels and sample values. The query's 45-minute `last_over_time`
+reduction represents current recorded state: a newer pass or skip replaces an
+older failure. A full 1000-task history window remains marked
+`history_incomplete`; retained state may have no task ID or completion time.
+The source change has not yet run through Dev-bound Semaphore. The historical
+failed-task panel remains outside this readback because its query returns log
+bodies. Keep workflow task 7.5 open until the changed verifier is read back,
+NetBox writes and the single-writer gate have evidence, and the rendered matrix
+is checked.
+
+Read-only production Semaphore tasks 6594, 6599, 6600, and 6603 reported:
+SMART category `passed` for the selected disk, with no serial-to-chassis
+comparison; six non-PBS artifact candidates across three active
+backup-capable non-PBS stores; no selected artifact and backup inclusion false;
+three off-source storage candidates with reported capacity and an unused VMID
+candidate, neither reserved; one of three jobs including o11y and a running
+scheduler; no successful target-VMID backup within 26 hours; a bounded
+`no_space` hint without job attribution; and an active backup-capable selected
+destination below 10% free. Immutability and isolated restore remain
+unverified. These read-only, point-in-time receipts authorize no PBS
+allocation, VM growth, or retention change, and do not close the backup/restore
+gate.
+
+### 2026-10-17 seven-day capacity survey
+
+The Dev-bound read-only survey task 6631 at merged SHA `4e7159157471d5ecd07a91dca4ef46013e47fcb5` returned `status=insufficient`. The exact source query returned two series: one historical series with 16 points carrying the sample timestamp 2026-10-15 20:52:54Z and last evaluated at 2026-10-15 22:09:54Z, and the current series with 521 points starting at 2026-10-15 22:10:25Z and continuing through 2026-10-17 16:52:06Z. The survey may have refused at its single-series guard before assessing duration; the single-series requirement remains unchanged. The current series cannot span seven days before about 2026-10-22 22:10:25Z, and the historical series may remain in the eight-day query window until about 2026-10-23 22:09Z. The source change defines fixed refusal categories and keeps labels, values, stderr, URLs, and addresses out of receipts; reviewed Dev deployment/readback remains pending. Budget task 6630 succeeded, but it is a point-in-time observation rather than a forecast. The seven-day forecast, backup/restore, and retention gates remain closed.
+
+Backup readiness tasks 6599, 6600, and 6603 are also point-in-time reads: zero PBS stores, six non-PBS candidates, one of three jobs includes o11y, latest successful backup within 26 hours was false, and the selected destination was below 10% free. Immutability and isolated restore remain unverified. API SMART health passed, but physical disk identity remains unverified. This evidence authorizes no capacity expansion or retention change and does not close the backup/restore gate.
+
+### 2026-10-17 Caddy admin API read diagnosis
+
+Dev-bound read-only Caddy audit task 6679 at exact SHA
+`a665c8b0252ab3c79de4ee7b2d0c88feed59a467` failed closed at the runtime
+config-read gate. The protected `podman exec caddy wget -q -O -` command
+returned rc 0 with an empty body, so the receipt did not establish the HTTP
+status or explain the response. The audit now captures wget response metadata
+and body under `no_log`, requiring one parseable HTTP 200 with a non-empty
+body and reporting only fixed refusal categories for empty responses, malformed
+or ambiguous metadata, and other statuses. This is source-level evidence only;
+it has not run on Dev. No Caddy configuration or runtime state was changed.
+At task 6679, task 5.8 remained open pending a reviewed Dev deployment, a
+sanitized admin-API read receipt, and the remaining route, logger, marker, and
+retention evidence.
+
+Dev-bound read-only Caddy audit task 6692 succeeded at merged SHA
+`786d69cbed585bdb1ece59c3862dd11999bde485`. It classified one declared site,
+zero declared log directives, and one runtime server/route/upstream; the HTTPS
+probe completed. The receipt reported `access_logging=disabled`, `sink=none`,
+`retention=not_applicable`, and marker status not applicable. This completes the
+bounded query-parameter audit with the explicit finding that access logging was
+disabled for this route. It does not prove that Caddy access logging works, or
+that all routes and privacy behavior are covered. No Caddy state changed.
+
+## 2026-10-18 production trace-rule readback and PBS allocation preflight
+
+PR #707 merged to Dev at `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`.
+Dev-bound Deploy o11y check task 6963 and normal non-destructive deploy task
+6965 succeeded at that merged revision. Grafana readback found rule
+`agentgateway_trace_silent` with the exact expression
+`sum(increase(agentgateway_requests_total{job="agentgateway"}[30m])) >= 100 and on() sum(rate(tempo_distributor_spans_received_total{job="tempo"}[30m])) == 0`
+and `is_paused=true`. This confirms the deployed expression and paused state;
+it does not establish that agentgateway is the exclusive sender to Tempo.
+Keep Agentgateway observability OpenSpec task 8.2 open until the exclusive
+sender and trace-path review is complete.
+
+The separate `Preflight o11y PBS Thick-LVM Allocation (Dev)` workflow reuses
+the existing GET-only physical-storage payload. It requires an exact private
+`proxmox_pbs_backing_disk_serial` or supported
+`proxmox_pbs_backing_disk_wwn` inventory pin (both must match when both are
+declared), exact declared storage/config/status/VG/PV linkage, one direct
+top-level disk-path join with `used=LVM`, SMART category `passed`, and at least
+30% reported VG capacity remaining after the proposed 512-GiB disk. It reports
+only fixed status and booleans and leaves allocation, device safety, PBS and
+filesystem readiness, and write authorization false. A match against the
+private pin is API drift detection only: the operator's local hardware
+attestation is not independently compared with a chassis or BMC identity.
+This preflight does not create a VM, disk, filesystem, or PBS instance and does
+not change retention. It cannot pass until the private site-config inventory
+contains a reviewed pin; this repository contains no such private value.
+
+### 2026-10-18 pinned PBS allocation preflight receipt
+
+PR #708 merged to Dev at `c746856af51d63dff645cf699d194f1069d6f1a7` after
+an independent final-head review and green CI. The scoped Semaphore publisher
+check task 6982 and apply task 6984 succeeded; readback confirmed the new
+`Preflight o11y PBS Thick-LVM Allocation (Dev)` template binds to the declared
+Dev repository, playbook, inventory, environment, and reviewed-SHA survey.
+Private site-config PR #107 merged at `44439b29f5bd7e10849bf1ebbb092d06c32223a1`.
+The operator-side inventory sync passed check mode, applied one update, and an
+API readback matched the exact merged inventory bytes without displaying the
+private disk identity.
+
+Semaphore check task 6988 refused as designed: the imported physical-storage
+survey requires a normal run even though its Proxmox requests are GET-only.
+Normal Dev-bound task 6992 succeeded at the exact public merge revision. Its
+fixed sanitized result confirmed that the private identity pin matched the
+selected API disk, the direct LVM disk-path lineage matched, SMART reported
+`passed`, and a proposed 512-GiB data disk left at least 30% reported VG
+headroom. Allocation, device safety, filesystem and PBS readiness, and write
+authorization remain **false**. The identity pin detects API-observed drift;
+it does not independently establish the disk's physical chassis origin. No
+VM, disk, filesystem, or PBS instance was created and no retention changed.
+
+### 2026-10-18 PBS VM census and static IP reservation
+
+PR #710 merged to Dev at `ae35a0ec626725a2c56ae4352c3606a850c219de`
+after one independent review, removal of private placement from every
+introduced commit, and green final-head CI. Semaphore publisher check task
+7020 and apply task 7022 succeeded; readback confirmed the new
+`Survey PBS VM Census (Dev)` template binds to the reviewed Dev repository,
+declared playbook, inventory, environment, and exact-SHA survey. GET-only
+task 7023 succeeded at that merge revision. Its fixed sanitized receipt
+reported 11 visible nodes (7 online), 31 visible QEMU VMs, 2 visible
+templates, 1 visible cloud-init template, 6 visible stores (4 image-capable,
+3 backup-capable), and **zero templates with proven Debian image provenance**.
+Inventory visibility remains explicitly unverified because Proxmox can filter
+list results by the token's permissions; the next-ID observation is only
+absence from those visible rows. The exact candidate VMID must be checked
+again before any write.
+
+The existing NetBox allocation workflow first refused task 7007 when its
+optional assignment list was omitted; PR #710 made an omitted list default to
+empty. Report task 7008 then found 10 free static-IP candidates. A live
+pfSense DHCP check in check-mode task 7010 accepted candidate index 0 without
+reserving it. Normal Dev-bound task 7025 reserved that candidate in NetBox;
+its post-write authority readback showed exactly one record with the intended
+PBS description. The address value stays in private automation output and
+has not yet been declared in private site-config. No PBS template, VM, or
+data disk was created, and retention is unchanged.
+
+The follow-on public implementation adds three Dev-bound workflows: a GET-only
+candidate survey, a pinned Debian cloud-template publisher, and a PBS-specific
+entry point to the shared VM provisioner. The candidate survey selects two
+distinct VMIDs only after Proxmox's exact-ID checks and reports storage
+capabilities only in private Semaphore output. The publisher pins an official
+dated Debian 13 QCOW2 image by SHA-512 and requires an active file-based
+`import` store; the artifact has no detached signature. The VM path checks
+the NetBox reservation and actual Proxmox config before mutation, resumes
+provable partial clones, and preserves an exact later `scsi1` data disk on
+completed reruns. This is source and local-test evidence only until review,
+merge, private inventory reconciliation, and Dev-bound readback. No template
+or PBS VM exists by virtue of these source changes.
+
+The VM preflight accepts only the exact unassigned NetBox reservation. It
+refuses an active address assignment because the current NetBox response does
+not prove the assigned object's Proxmox VMID. If discovery activates the
+record, a later provisioning rerun stops before writes until a reviewed
+identity mapping is available; ordinary PBS operations do not depend on
+rerunning VM provisioning.
+
+PR #711 merged the publisher, VM workflow, and GET-only candidate survey to
+`dev` as `bab2eea0736deee2832ee33998c7f6c5e3ed7386` after independent
+review and final-head CI. Semaphore task 7060 safely refused a request to
+create three templates at once; the publisher permits one new Dev template per
+run. Task 7061 passed the scoped check-mode preview, and task 7063 published
+the candidate survey template. Its readback proved the intended Dev repository,
+private inventory and environment bindings, and survey playbook. GET-only task
+7064 then refused before querying Proxmox: its launch-override guard also
+rejected the standard OpenBao connection fields supplied by the Semaphore
+environment. The follow-up binds the OpenBao URL to the single private
+inventory declaration and accepts those standard credential fields while
+refusing launch-supplied `service_url` and placement overrides. No template
+VM, PBS VM, or data disk has been created; retention remains unchanged.
+
+The read-only PBS candidate survey, Dev-bound task 7081, found two exact free
+VMID candidates, three active image stores, one active directory image store,
+and **zero active stores with `import` content**. Before publishing the pinned
+Debian template, declare a separate `proxmox_pbs_import_storage_id` beside the
+private `proxmox_pbs_storage_node`; do not reuse the VM image store identity,
+which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
+workflow checks the exact node and active file-store status, preserves the
+existing content list, applies the `import` union with Proxmox's observed digest,
+and reads the config back. Its check mode is read-only. Task 7081 made no
+Proxmox config change. The physical-disk origin remains operator-attested; the
+serial-to-chassis match is not independently verified. No template VM, PBS VM,
+or data disk has been created.
+
+Production Semaphore task 7106 refused before issuing any Proxmox request: the
+workflow's initial inventory URL assertion required HTTPS, while the shared
+OpenBao transport guard explicitly permits internal RFC1918 HTTP. The public
+workflow now requires a nonempty private inventory URL, still requires exact
+equality with Semaphore's OpenBao URL, and delegates transport policy to the
+shared guard before the AppRole lookup. Task 7106 made no Proxmox read or write;
+the later reviewed rerun closed that gate.
+
+At reviewed Dev `a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`, scoped
+Semaphore template publisher tasks 7124 and 7125 succeeded and verified the
+import-content template declaration. Import-content task 7128 confirmed in
+read-only check mode that `import` was absent; task 7129 applied the
+observed-digest union and verified readback; task 7131 confirmed a second run
+was unchanged. GET-only candidate survey task 7132 then found active import
+candidates, two free VMID candidates, and an available declared VM image store.
+NetBox allocator task 7140 found 32 free addresses on the declared network;
+a live pfSense DHCP boundary check left seven eligible. Task 7143 checked the
+selected address in read-only mode, and task 7145 reserved it with the exact
+PBS description and verified NetBox readback. Address and VMID values remain
+private. Template publication awaits the separate PBS host declaration,
+reviewed private inventory merge, Semaphore sync, and exact inventory readback.
+No template VM, PBS VM, or data disk has been created; retention is unchanged.
+
+The first scoped Semaphore publisher check, task 7152, refused because the
+Debian template workflow did not yet exist as a Semaphore template; it made no
+configuration change. The documented one-template creation path then passed
+check mode in task 7155. Task 7156 created only `Provision PBS Debian Cloud
+Template (Dev)` and read back its exact Dev repository, inventory, environment,
+and playbook bindings at reviewed Dev
+`a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`. It did not run the playbook or
+create a Proxmox template. That run still awaits the reviewed private PBS host
+declaration and inventory sync.
+
+PR #715 added the separate Dev-bound PBS guest-disk attachment source workflow
+for OpenSpec task 3.1. It verifies the exact declared guest, network, OS disk,
+and data-disk slot; an already matching `scsi1` is a safe rerun without another
+capacity allocation. If `scsi1` is absent, it reuses the pinned backing survey
+and 512-GiB headroom preflight, re-reads the VM config, and sends one
+digest-protected Proxmox API request. Check mode performs reads only. PR #715
+passed final CI and CodeRabbit review and merged to `dev` at
+`621396b660c120056fc835900d70a38618f87535` (reviewed head
+`bc0ca6d3b29ee1db8ef78bcfccf8a0e0e7f75451bc`). Its initial allocation request
+does not set the required `ac-pbs-data-<vm_vmid>` serial. A serial-aware
+bootstrap enhancement must land and be read back before any live disk
+allocation. The Dev task has not been published/read back here and no live disk
+was allocated; tasks 3.2 and 3.3 remain open.
+
+### PBS guest filesystem and service source integration (2026-10-20)
+
+The reviewed guest filesystem head `05acf2269081cf9e273fb77c0a5d1ffbd66ad280`
+and service head `4b4ef07c7bee21adee14ec55900de56ba5a76d28` are integrated by
+normal merge commits `c07a91e5` and `72f7a24b` after PR #715's exact head,
+retaining its transport-test and visible-token assertions. PR #715 subsequently
+merged to Dev at `621396b660c120056fc835900d70a38618f87535` after final CI and
+CodeRabbit approval. The guest workflow identifies the one 512-GiB whole
+virtual disk by the Proxmox serial `ac-pbs-data-<vm_vmid>` (at most 18 ASCII
+bytes for the six-digit VMID), formats only a proven blank disk as ext4, and
+mounts it by UUID at `/srv/pbs-data` with `noatime`. Service configuration
+independently re-proves serial, size, UUID, mount, and fstab state before
+package or datastore writes. It verifies the installed shared helper against
+the exact reviewed checkout, then uses its no-follow containment checks to
+require the datastore as a real direct child on the pinned filesystem and
+reject symlinks and nested mounts, including for registered datastores. The
+helper and disk contract are source dependencies; no receipt or marker is
+treated as proof.
+
+Two Dev-only Semaphore catalog definitions were added with the guest and
+service source integration. Each
+targets the `agent-cloud dev` repository, requires only
+`expected_repository_sha`, and names the matching guest or service playbook.
+The service's Proxmox repository channel remains an explicit private-inventory
+choice: enterprise needs an already-active subscription before changes, while
+no-subscription requires explicit operator acceptance and is not an automatic
+fallback. Safe enterprise subscription-key provisioning remains a separate
+dependency. Task 4.1 creates no Linux root password or PBS API token; the
+datastore-scoped PVE identity and OpenBao token lifecycle belongs to task 4.2.
+
+Source validation in the integration checkout: 277 focused tests passed, and
+the three synthetic guest task-sequence cases also passed in a separate,
+scoped-escalation run: normal mode with the current helper, check mode with the
+helper absent, and check mode with an outdated helper. Both PBS playbooks passed
+Ansible syntax checks (with the expected absent-private-inventory `pbs_svc`
+warning). Ruff passed. Full
+`ansible-lint platform/playbooks/ platform/semaphore/` passed with zero fatal
+failures and three existing unrelated Jinja-spacing warnings; YAML lint exited
+0 with existing line-length warnings. Strict OpenSpec validation from the local
+`plan/development/openspec` root reports this change valid. These are source-only
+results. The Dev
+Semaphore entries have not been published or read back, and no template VM,
+PBS VM, data disk, filesystem, mount, or PBS service has been observed live.
+Task 3.2 remains open. The source implementation for 3.3 and 4.1 is recorded
+separately from their original acceptance checkboxes; those remain open until
+the guest preservation, mount, and PBS health receipts are collected.
+
+### PBS backup access source integration (2026-10-20)
+
+The independently reviewed and fix-verified PBS backup-access head
+`9f6b041a4f85ef56b92f7fe14cc7001c1b9c1fd5` is merged into the bootstrap
+integration branch by normal merge commit `4f02fdc0`. It adds the
+OpenBao-backed PBS token lifecycle, exact non-propagating
+`DatastoreBackup` grants at `/datastore/o11y`, PVE PBS storage registration,
+and checks that the existing backup jobs and storage remain unchanged. The
+Dev-only `Configure PBS Backup Access (Dev)` catalog entry requires only
+`expected_repository_sha`; host, storage, and secret values remain private
+inventory/OpenBao inputs. The reviewed Dev merge `f259e2a77515115306563f0dcb96db1142060519`
+(PR #723) is also integrated by normal merge commit `88736a8d`; it carries the
+gateway access-discriminator source and is unrelated to PBS live state.
+
+The third Dev-only Semaphore catalog definition, `Configure PBS Backup Access
+(Dev)`, binds `platform/playbooks/configure-pbs-backup-access.yml` to the
+`agent-cloud dev` repository and requires only the exact reviewed SHA. The
+source implementation does not create a PBS user/token, grant an ACL,
+register PVE storage, or redirect any backup job until its guarded Dev-bound
+workflow is explicitly executed. No live PBS identity, OpenBao credential,
+ACL, PVE target, or backup has been observed. Tasks 3.3, 4.1, and 4.2 have
+reviewed source workflows; their original acceptance items remain open until
+the separate live receipts recorded in OpenSpec task subtasks. Tasks 3.2, 4.3,
+and 4.4 also remain open. This source branch is not yet merged to Dev, so the
+catalog workflows are not published or runnable from Dev.
+
+The combined integration validation was rerun after merging the reviewed
+backup-access branch and Dev PR #723. The focused PBS bootstrap/service/access
+and OpenBao-guard suite passed **331 tests**, including the three synthetic
+Ansible selector task sequences (normal mode/current helper, check mode/absent
+helper, and check mode/outdated helper); 18 subtests passed. All four PBS
+attachment, guest filesystem, service, and backup-access playbooks passed
+Ansible syntax check, with the expected missing-private-inventory `pbs_svc`
+warning on guest-targeted playbooks. Repository Ruff passed. Full Ansible lint
+processed 368 files with zero fatal failures and three existing Jinja-spacing
+warnings. Repository YAML lint exited 0 with existing line-length warnings.
+Strict OpenSpec validation passed. These checks prove source behavior against
+synthetic fixtures only; no Semaphore API, Proxmox API, PBS guest, OpenBao, or
+live storage was contacted.
+
+### PBS verify-only paths and restore-target preflight (2026-10-20)
+
+The source integration adds `verify`-tagged read-only paths for guest disk,
+PBS service, backup access, and restore-target preflight. These paths inspect
+existing state and refuse missing components; they do not prepare a disk,
+install packages, change service state, create secrets, grant ACLs, register
+storage, or reserve a restore VMID. PBS service verification uses the package
+path `/usr/sbin/proxmox-backup-manager` and read-only API/CLI health checks.
+
+OpenSpec tasks 3.3, 4.1, 4.2, and 5.1 distinguish checked source subtasks
+from still-open live acceptance. Task 3.3 still needs the guest rerun and data
+preservation receipt; 4.1 needs live UUID mount and PBS health readback; 4.2
+needs actual identity, token, ACL, and PVE storage verification; 5.1 needs the
+private target/artifact declaration and live exact-artifact preflight. The
+serial-aware bootstrap change must be published and read back from Dev before
+any live disk allocation. No PBS VM, disk, filesystem, mount, service,
+credential, ACL, PVE storage, or restore target has been validated live.
+
+The source-only restore preflight is merged from reviewed head
+`9099a421b01016226cb806560c43a6d6da819d69` by merge `64ed7ae0`. The target is
+still disconnected and undeclared. Current VMID availability authority is
+required; ACL census visibility is explicitly unverified. Capacity and
+retention remain blocked by the separate seven-day capacity gate.
+
+The separate read-only Seven-Day Capacity History survey, task 7710, ran from
+reviewed controller Dev `f259e2a77515115306563f0dcb96db1142060519` against
+expected and measured receiver source
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. It refused with
+`source_series_ambiguous`. The receipt proves no capacity gate pass or
+forecast, and it made no state mutation. The cause remains unconfirmed; the
+next step is a bounded diagnostic to distinguish duplicate collectors from a
+label migration. Do not prune/reset data or relax the single-source guard.
+Retention changes and VM growth remain blocked pending a successful seven-day
+capacity gate.
+
+Final integrated source validation on the bootstrap branch ran 116 focused
+tests, followed by four separately escalated synthetic Ansible task-sequence
+cases; all passed. The latter cover guest selector behavior and backup-access
+refusal assertions using disposable fixtures. They do not exercise live
+OpenBao, PBS, PVE, or Semaphore requests. `--list-tasks --tags verify` confirms
+tag selection but does not expand dynamic includes; the included transport
+guard's `apply.tags` and read-only child task were inspected separately. All
+four playbooks passed syntax check. Ruff passed; full Ansible lint reported
+zero failures and three existing Jinja-spacing warnings; YAML lint exited 0
+with existing line-length warnings; strict OpenSpec validation passed. These
+are source checks only and do not close the live acceptance items above.
+
+### 2026-10-24 isolated restore and cleanup source
+
+The isolated restore executor and separately launched cleanup are implemented
+in the feature worktree described by
+[`isolated-restore-executor.md`](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor.md)
+and its [operator runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor-runbook.md).
+The source authenticates the four prerequisite task outputs in order and uses
+the copy-readiness receipt's closed `normalized_restore_locator` as the dynamic
+artifact location. Static source/copy/target hosts, nodes, and storage IDs stay
+in private inventory; a caller or legacy protected-copy selector is refused.
+Before using the copy, restore compares fresh destination PVE content and the
+PBS manifest to readiness, verifies the dedicated destination restore Reader
+identity and current PVE storage configuration fingerprints, then validates
+the exact artifact config before reservation. The Reader
+`o11y-copy-restore@pbs!pve-restore` is separate from the destination copy
+Manager and is the only PBS identity used by restore-side manifest reads. The
+artifact gate admits only the reviewed provisioner-shaped cloud-init config,
+the provisioner's exact `serial0: socket`, and canonical PVE
+`meta: creation-qemu=<version>,ctime=<epoch>`; arbitrary serial settings and
+unknown or malformed metadata are refused in artifact and target validation.
+Its regenerated target auxiliary is checked separately from included backup
+disks, and source cloud-init and NIC identity/network data is scrubbed before
+boot. The shared fixed-mode receipt validator and journal cover restore,
+isolation, start, guest execution, stop, and cleanup writes. The guest checker
+runs only through QGA and emits a bounded private receipt. Cleanup derives that
+receipt from authenticated task output and proves the full journal/version and
+exact target state before deletion. Its current private pin is verified
+independently from the historical restore pin, allowing unrelated private
+inventory changes while requiring the declared target and artifact evidence to
+remain unchanged.
+
+This is source implementation only. Independent component reviews of the PBS,
+restore, and capability scopes are complete; actionable findings were fixed and
+verified. Final combined-head CI and publication/readback for the integrated
+PBS/restore source remain pending. Scoped policy catalog publication task 8650
+created only `Apply Policy - Semaphore (Dev)` (template 351, repository 5,
+environment 2, inventory 2, `apply-policy-semaphore.yml`, no survey); the
+existing main-bound policy template 50 bindings were unchanged. No policy apply
+or effective-capability verification ran. Private target declaration, actual
+Reader and ACL readback, all-writer drain, protected-copy restore while primary
+PBS is unavailable, and live restore/cleanup remain open. Keep OpenSpec 5.2,
+the seven-day capacity forecast, and the separate 90d/45d/45d retention
+decision open; no live restore, cleanup, or storage change was performed for
+this source work.
+
+### 2026-10-24 limited observability and backup probes
+
+Sanitized task 8632 ran at controller `482a81c72cdf8b36e9f1245b7b07c3437b932cf3`
+with receiver revision `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. The dashboard
+probe reported five failed workflow steps; all five had unknown completion
+age. Three series/identities were unclassified, with no unknown label-shape or
+sample records. This is a limited dashboard observation, not proof that a
+restore or PBS workflow ran successfully.
+
+Sanitized backup inspection task 8634 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3`. It verified that the selected
+backup job is enabled and includes o11y, but found no successful backup within
+26 hours. The selected destination was reported low on free space. A separate
+node task log produced a `no_space` hint, but its task identity did not match
+the selected job, so that hint cannot be attributed to that job. No fresh PBS
+artifact or PBS-side verification was established.
+
+Sanitized task 8638 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3` with receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; its selected agentgateway scrape
+returned one series with values. This establishes scrape visibility only. It
+does not prove application health, service-level conformance, or fleet-wide
+coverage.
+
+Capacity refresh task 8623 had one source series and one series at the latest
+evaluation, no overlapping source events/evaluations, and no unknown label
+keys. It clears the earlier duplicate-source ambiguity for that read, but its
+source history is too short to provide a seven-day forecast or pass the
+capacity gate. The task used controller `391a4f7c168a51cf753d0a7cce202724a89b3b95`
+and expected receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`.
+
+None of these probes validates the private PBS placement, protected-copy
+failover with primary PBS unavailable, effective OpenBao role capabilities,
+writer drain, restore-target availability, or isolated restore/cleanup. They
+do not close OpenSpec 4.3, 4.4b/c, 5.1b, 5.2, 5.3, the seven-day forecast, or
+the separate 90d/45d/45d retention gate.
+
+Two later read-only observations further bound readiness. Service overview
+task 8645 used the same controller and receiver revisions. The Logvolume result
+was partial: 3 of 6 targets had data. Recent gateway access records were empty,
+so that verifier returned `ERROR`; recent container logs were expected to be
+empty. The absence of query errors is not proof of delivery or application
+health. The selected agentgateway scrape observation remains limited to its
+single series and roughly six-hour window.
+
+Configuration census task 8647 completed at controller commit
+`06ad8c32358518a1dc52181fde10439a8d431980`: 31 candidates, 9 declared
+targets, 31 unverified targets, 0 duplicate identities, and an inventory
+revision was present. Coverage was incomplete for 9 targets and unverified for
+22; signal states were incomplete for 3 and undeclared for 33; there were no
+missing template references. Its launch deliberately supplied no receipt task
+IDs, and it did not prove receiver coverage. This is a current configuration
+census, not evidence that telemetry is absent, applications are healthy, or
+fleet coverage is verified. All target receipt gates remain open.
+
+Scoped catalog publication task 8650 succeeded at Dev commit
+`06ad8c32358518a1dc52181fde10439a8d431980`. It created only the
+`Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
+5, environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
+survey fields. Existing main-bound policy template 50's bindings remained
+unchanged. The task published the policy-application mechanism only; no policy
+apply or effective-capability verification was run, so guarded-writer
+activation remains blocked.
+
+Capacity task 8658 at Dev commit `e68ca3de948914cb5ba820c92e12627277d468d6`
+ended with `source_history_too_short`: it evaluated 2,305 points (at least
+2,017 expected), saw 16 canonical source events (at least 8 expected), but the
+observed event span was 604,701 seconds, 99 seconds short of the 604,800-second
+window. The separate seven-day forecast gate remains open; elapsed time alone
+does not extend the observed source-event span.
+
+Conformance task 8659 at the same controller revision queried both exact
+service-conformance panels successfully over 24 hours. Categorical age data was
+available, but the identity join remained unverified: five failed pairs had
+unknown age, and the age-map diagnostics reported three registry-unknown rows.
+The map was rejected; per-pair missing/unavailable counters were zero. This is
+not application-health or delivery proof and does not close service conformance.
+
+These observations do not change the prior acceptance boundary: they do not
+prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
+effective role capabilities, writer drain, or isolated restore/cleanup. The
+capacity source ambiguity is cleared for the observed refresh only; its history
+remains too short for the separate seven-day forecast.

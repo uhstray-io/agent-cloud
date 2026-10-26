@@ -105,7 +105,7 @@ PYSCRIPT
 }
 
 @test "runner-group: the exact private-repo declaration includes site-config and excludes agent-cloud" {
-  grep -qF "github_runner_repos | default(['zerds', 'atlas', 'zerds-website', 'weft', 'scientific-business', 'site-config'])" "$PLAYBOOK"
+  grep -qF "github_runner_repos | default(['zerds', 'atlas', 'zerds-website', 'weft', 'scientific-business', 'site-config', 'skynet'])" "$PLAYBOOK"
   # agent-cloud must not appear in the default declaration at all.
   ! grep -qE "default\(\['.*agent-cloud" "$PLAYBOOK"
 }

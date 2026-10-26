@@ -8,6 +8,11 @@
 # "collector_otlp_url does not match" message, while task 2853 — same template, same
 # inputs — had parsed its inventory and passed. Name the real cause first.
 #
+# A known cause on Semaphore: concurrent tasks share one inventory file under
+# /tmp/semaphore/project_<n>/ (inventory_<id>.yml); a task that finishes removes it before
+# another task has parsed it (local tasks 5583/5585, prod task 3878 "Unable to parse
+# /tmp/semaphore/project_1/inventory_2.yml"). Re-running the task alone is the remedy.
+#
 # Usage, as the first task of a play whose work depends on inventory groups:
 #
 #   - name: "Require the inventory to have parsed"
@@ -22,6 +27,8 @@
       - groups.get('all', []) | length > 0
     fail_msg: >-
       The inventory could not be parsed or contained no hosts, so every inventory group
-      is empty; refusing to evaluate group-dependent guards against it{{
+      is empty; refusing to continue on guards that depend on it{{
       (' (target group: ' ~ require_parsed_inventory_group ~ ')') if require_parsed_inventory_group is defined else '' }}.
+      A known cause on Semaphore is concurrent tasks sharing one inventory file, which
+      the first task to finish removes before another has parsed it; re-run this task on its own.
     quiet: true

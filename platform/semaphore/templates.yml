@@ -27,6 +27,16 @@
 
 templates:
   # ── Deployment ─────────────────────────────────────────────────
+  - name: Reconcile Semaphore API URL (Dev)
+    playbook: platform/playbooks/reconcile-semaphore-api-url.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+
   - name: Audit o11y Containers
     playbook: platform/playbooks/audit-o11y-containers.yml
     dev_variant: true
@@ -86,12 +96,14 @@ templates:
         required: true
       - name: journal_collector_action
         title: "Collector action"
-        description: "Survey journal and positions metadata, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
+        description: "Stage the exact reviewed Dev checkout, survey metadata or the bounded cursor read-only, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
         type: enum
         required: true
         default_value: survey
         values:
+          - { name: "Stage reviewed checkout", value: "stage" }
           - { name: "Survey journal paths", value: "survey" }
+          - { name: "Survey journal cursor read-only", value: "survey-cursor" }
           - { name: "Repair positions root ownership", value: "repair-positions" }
           - { name: "Apply pilot", value: "apply" }
           - { name: "Stop pilot", value: "stop" }
@@ -122,6 +134,12 @@ templates:
         type: string
         required: false
         default_value: "true"
+      - name: expected_log_signal
+        title: "Log signal"
+        description: "Optional Loki signal label the recent log line must carry, e.g. span; empty accepts any"
+        type: string
+        required: false
+        default_value: ""
       - name: expect_traces
         title: "Expect recent traces"
         description: "true to require a service.name trace in Tempo from the last hour"
@@ -144,6 +162,12 @@ templates:
         description: "Exact Dev commit required on the Semaphore controller"
         type: string
         required: true
+      - name: receipt_task_ids
+        title: "Transient receipt task IDs (JSON)"
+        description: "Optional one-run target-to-signal task ID map; IDs are not written to inventory"
+        type: string
+        required: false
+        default_value: ""
 
   - name: Verify o11y Target Receipt
     playbook: platform/playbooks/verify-o11y-service.yml
@@ -181,6 +205,7 @@ templates:
           - { name: "Metrics", value: "metrics" }
           - { name: "Health", value: "health" }
           - { name: "Traces", value: "traces" }
+          - { name: "Profiles", value: "profiles" }
       - name: signal_selector
         title: "Exact signal selector"
         description: "Selector declared in private inventory and containing the bounded target_id label"
@@ -237,6 +262,12 @@ templates:
   - name: Provision o11y Watcher Token
     playbook: platform/playbooks/provision-o11y-watcher-token.yml
     dev_variant: true
+
+  # Dev source; preserve the existing production inventory ID 2; no service deployment.
+  # Provisions the MCP Grafana Editor account and verifies/promotes its staged token.
+  - name: Provision o11y MCP Grafana Token (Dev)
+    playbook: platform/playbooks/provision-o11y-mcp-grafana-token.yml
+    repository: agent-cloud dev
 
   - name: Verify o11y Metrics Target (Dev)
     playbook: platform/playbooks/verify-o11y-metrics-target.yml
@@ -375,6 +406,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy Semaphore
     playbook: platform/playbooks/deploy-semaphore.yml
@@ -395,6 +432,18 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount). This stops the orb-agent: run Deploy Orb Agent afterwards"
+        type: string
+        required: false
+        default_value: "false"
+      - name: netbox_force_rebuild
+        title: "Force plugin image rebuild"
+        description: "true to rebuild the NetBox plugin image even when its build inputs match (takes a newer Diode plugin release; the rebuilt image recreates the stack and stops the orb-agent)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Audit NetBox Runtime
     playbook: platform/playbooks/audit-netbox-runtime.yml
@@ -726,6 +775,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy WisBot
     playbook: platform/playbooks/deploy-wisbot.yml
@@ -747,6 +802,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
@@ -868,7 +929,7 @@ templates:
     survey_vars:
       - name: client
         title: "Client identity"
-        description: "Name from agw_clients (rotate) or a name already removed from it (revoke)"
+        description: "Name in the merged identity list (rotate) or a name already removed from it (revoke)"
         type: string
         required: true
       - name: action
@@ -888,11 +949,35 @@ templates:
 
   # Conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1/2.2):
   # the same cases to the gateway and to vLLM from the gateway VM, then the comparison. Keys are
-  # read from OpenBao by the runner and placed as 0600 files for the run only; no survey, because
-  # every input is inventory. Introduced on dev, so the (Dev) variant runs before promotion.
+  # read from OpenBao by the runner and placed as 0600 files for the run only. Every input is
+  # inventory except two opt-in survey vars: the long-stream case (tasks 2.3/2.4) lasts minutes on
+  # each side, so a default run stays the fourteen quick cases, and its saturation count makes that
+  # stream queue so vLLM's keep-alive comments appear (it loads the shared upstream, so it is off
+  # by default). Introduced on dev, so the (Dev) variant runs before promotion.
   - name: Run agentgateway Conformance
     playbook: platform/playbooks/run-agw-conformance.yml
     dev_variant: true
+    survey_vars:
+      - name: agw_conformance_long_stream
+        title: "Long-stream case"
+        description: "Add the stream-long case: one streamed request past 130 s through the gateway and straight to vLLM (minutes of generation on each side). Leave false for the fourteen quick cases"
+        type: enum
+        required: false
+        default_value: "false"
+        values:
+          - { name: "No (fourteen quick cases)", value: "false" }
+          - { name: "Yes (add stream-long, minutes)", value: "true" }
+      - name: agw_conformance_long_stream_saturate
+        title: "Filler streams to make the long stream queue"
+        description: "Long-stream case only: filler streams started per side so the stream queues and vLLM sends keep-alives. 8 fills its 8 slots. Real load on the shared DGX, about 45 s per side"
+        type: enum
+        required: false
+        default_value: "0"
+        values:
+          - { name: "0 (none; keep-alives stay unproven)", value: "0" }
+          - { name: "8 (fills vLLM's 8 slots)", value: "8" }
+          - { name: "12", value: "12" }
+          - { name: "16 (the maximum)", value: "16" }
 
   # Read-only drill for gateway tasks 6.1 and 6.4: how the production TLS listener treats a client
   # with no certificate and a client leaf that is on no allowlist, with no key and with an invalid
@@ -907,6 +992,32 @@ templates:
         type: string
         required: true
 
+  # Read-only gate probe for the route switch (gateway tasks 4.5 and 6.4): keyless and invalid-key
+  # /v1/models must each be 401, and keyless /health is recorded (does a public /health survive
+  # gateway mode). No survey, no OpenBao call, no key material. Dev-bound until promotion.
+  - name: Probe agentgateway Gate (Dev)
+    playbook: platform/playbooks/probe-agentgateway-gate.yml
+    repository: agent-cloud dev
+
+  # Encoded proof of gateway task 4.5 "One client cannot exceed its share": drive one low-budget
+  # identity to HTTP 429 budget_exceeded and show a second identity is still served 200. Real
+  # (tiny) completions; refuses an identity whose budget is above 1000 tokens/hour. Reads the two
+  # client keys from OpenBao in no_log tasks, never prints one. Dev-bound until promotion.
+  - name: Probe agentgateway Isolation (Dev)
+    playbook: platform/playbooks/probe-agentgateway-isolation.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: agw_isolation_burst
+        title: "Burst identity"
+        description: "A dedicated probe identity declared in agw_clients with agw_client_policies.<name>.tokens_per_hour of at most 1000 (the probe drives it past its budget)"
+        type: string
+        required: true
+      - name: agw_isolation_control
+        title: "Control identity"
+        description: "The identity that must stay served (leave blank for the first other declared identity)"
+        type: string
+        required: false
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
@@ -917,6 +1028,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy Postiz
     playbook: platform/playbooks/deploy-postiz.yml
@@ -933,6 +1050,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
@@ -1582,6 +1705,14 @@ templates:
         type: string
         default_value: "false"
 
+  - name: Rotate Semaphore Operator Token
+    playbook: platform/playbooks/rotate-semaphore-api-token.yml
+    dev_variant: true
+    isolated_environment: Semaphore token rotation inputs
+    seed_inputs: [SEMAPHORE_OLD_TOKEN, SEMAPHORE_NEW_TOKEN]
+    # Both values are staged as encrypted environment inputs by the operator
+    # rotation command. They are never survey fields or task extra vars.
+
   - name: Reconcile pfSense API Key
     playbook: platform/playbooks/reconcile-pfsense-api-key.yml
     dev_variant: true
@@ -1670,6 +1801,12 @@ templates:
         type: string
         default_value: dev
         required: true
+      - name: seed_replace_auth
+        title: "Replace existing AppRole inputs"
+        description: "true only after Semaphore's encryption key changed (inputs present but undecryptable)"
+        type: string
+        default_value: "false"
+        required: false
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
@@ -1825,8 +1962,9 @@ templates:
         description: "Exact current receiver revision, checked before the drill"
         type: string
         required: true
-    # Exercises an already-active production rule/contact with one failed
-    # scrape. Recovery removes only its generated scrape and reloads Prometheus.
+    # Exercises an already-active production rule/contact with two failed scrape
+    # targets sharing one service label. Marker-based recovery removes its generated
+    # scrape and reloads Prometheus, including after an interrupted drill.
 
   - name: Recover o11y Active Alert Drill (Dev)
     playbook: platform/playbooks/recover-o11y-active-alert-drill.yml
@@ -1857,6 +1995,44 @@ templates:
         description: "Exact current receiver revision to measure"
         type: string
         required: true
+
+  - name: Survey o11y Seven-Day Capacity History (Dev)
+    playbook: platform/playbooks/survey-o11y-seven-day-capacity.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only history survey"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact receiver revision whose Prometheus history is measured"
+        type: string
+        required: true
+
+  - name: Survey o11y Scrape Baseline (Dev)
+    playbook: platform/playbooks/survey-o11y-scrape-baseline.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only scrape baseline survey"
+        type: string
+        required: true
+    # Reports fixed public job categories, 24-hour sample and stored-series label maxima,
+    # plus point-in-time response bytes. Private selectors, URLs, labels and bodies stay protected.
+
+  - name: Survey o11y Expected Metrics Targets (Dev)
+    playbook: platform/playbooks/survey-o11y-expected-metrics-targets.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only expected-target comparison"
+        type: string
+        required: true
+    # Reports only fixed statuses/reasons and bounded counts; target identities stay protected.
 
   - name: Diagnose o11y Host Storage (Dev)
     playbook: platform/playbooks/diagnose-o11y-host-storage.yml
@@ -1926,6 +2102,105 @@ templates:
     # are shown. A VMID is not reserved;
     # missing protection stays unknown, and this task never writes PVE.
 
+  - name: Capture o11y Backup Artifact Catalog (Dev)
+    playbook: platform/playbooks/capture-o11y-backup-artifacts.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the GET-only capture and private catalog branch"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config base branch"
+        description: "Exact private integration branch name whose tip equals the reviewed base SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config base SHA"
+        description: "Full commit ID of the private integration branch tip"
+        type: string
+        required: true
+
+  - name: Propose o11y Backup Artifact Selector (Dev)
+    playbook: platform/playbooks/propose-o11y-backup-artifact.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the GET-only census and selector proposal"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config base branch"
+        description: "Exact private integration branch name whose tip equals the reviewed base SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config base SHA"
+        description: "Full commit ID recorded in the capture catalog and equal to the current private branch tip"
+        type: string
+        required: true
+      - name: capture_commit_sha
+        title: "Private capture commit SHA"
+        description: "Full site-config capture commit containing the fixed artifact catalog"
+        type: string
+        required: true
+      - name: artifact_row
+        title: "Explicit artifact row number"
+        description: "One-based row number from the sanitized capture report"
+        type: string
+        required: true
+
+  - name: Survey PBS VM Census (Dev)
+    playbook: platform/playbooks/survey-pbs-vm-census.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Proxmox VM and storage census"
+        type: string
+        required: true
+    # Emits counts and fixed status only. Debian names and guest type are hints;
+    # image provenance requires a trusted build receipt and is not inferred here.
+
+  - name: Provision PBS Debian Cloud Template (Dev)
+    playbook: platform/playbooks/provision-pbs-debian-template.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for pinned Debian cloud template publication"
+        type: string
+        required: true
+    # VM identity, node, stage storage and destination storage are private inventory
+    # declarations. The publication play refuses check mode and never starts a VM.
+
+  - name: Survey PBS Provisioning Candidates (Dev)
+    playbook: platform/playbooks/survey-pbs-provisioning-candidates.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only PBS identity and storage survey"
+        type: string
+        required: true
+    # The exact free VMIDs and active storage capabilities are shown only in this
+    # private Semaphore task output. No Proxmox or storage configuration is changed.
+
+  - name: Enable PBS Import Storage Content (Dev)
+    playbook: platform/playbooks/enable-o11y-pbs-import-content.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the inventory-pinned Proxmox import-content update"
+        type: string
+        required: true
+    # Storage content is cluster-wide. The playbook updates only the distinct private
+    # import-store declaration, preserves its current content list, and uses Proxmox's
+    # digest concurrency guard. Check mode is read-only.
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev
@@ -1939,6 +2214,302 @@ templates:
     # host. Reports coarse aggregate counts/bands only; no node, device, storage,
     # capacity value, or private identifier is visible. No selection or writes.
 
+  - name: Identify o11y PBS Storage Candidate (Dev)
+    playbook: platform/playbooks/survey-o11y-pbs-storage-candidate.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only storage-candidate selector"
+        type: string
+        required: true
+    # Reuses the protected physical-storage survey. Reports only the candidate
+    # storage ID for private review; no selection is written and no Proxmox API
+    # mutation is performed.
+
+  - name: Identify o11y PBS Backing Disk Identity (Dev)
+    playbook: platform/playbooks/identify-o11y-pbs-backing-identity.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for private backing-disk identity capture"
+        type: string
+        required: true
+    # Reuses protected GET responses after the private declaration exactly
+    # matches. Serial and optional WWN are for private operator review only;
+    # reported identity does not prove physical locality or authorize writes.
+
+  - name: Preflight o11y PBS Thick-LVM Allocation (Dev)
+    playbook: platform/playbooks/preflight-o11y-pbs-thick-lvm-allocation.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only PBS allocation preflight"
+        type: string
+        required: true
+    # Reads the existing protected survey payload and private inventory identity
+    # pin. It emits fixed status only and authorizes no allocation or writes.
+
+  - name: Attach PBS Data Disk (Dev)
+    playbook: platform/playbooks/attach-pbs-data-disk.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the guarded PBS virtual-disk attachment"
+        type: string
+        required: true
+    # The target VM, node, and thick-LVM store come from private inventory. The
+    # workflow re-runs the pinned host-storage preflight and writes only scsi1.
+
+  - name: Prepare PBS Guest Data Disk (Dev)
+    playbook: platform/playbooks/prepare-pbs-guest-data-disk.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS guest filesystem preparation"
+        type: string
+        required: true
+    # Selects and formats only the VMID-derived serial-pinned virtual disk,
+    # mounts it by UUID, and verifies filesystem and mount readback.
+
+  - name: Configure PBS Service (Dev)
+    playbook: platform/playbooks/configure-pbs.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS service configuration"
+        type: string
+        required: true
+    # Repository channel and explicit risk acceptance are private inventory;
+    # this task adds no PBS API token or Linux root password.
+
+  - name: Configure PBS Backup Access (Dev)
+    playbook: platform/playbooks/configure-pbs-backup-access.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for PBS backup access configuration"
+        type: string
+        required: true
+    # PBS/OpenBao/PVE identity state comes from the declared private inventory
+    # and OpenBao. No credential or target values are launch-time survey input.
+
+  - name: Configure o11y PBS Copy Access (Dev)
+    playbook: platform/playbooks/configure-o11y-pbs-copy-access.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the separate PBS copy identities"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+    # Source Reader, destination Manager and destination restore Reader are
+    # fixed in code; all secret material comes from OpenBao.
+
+  - name: Register o11y PBS Restore Storage (Dev)
+    playbook: platform/playbooks/register-o11y-pbs-restore-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for protected PBS restore storage registration"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+    # Static PVE placement is private inventory; PVE API and the dedicated PBS
+    # restore token are sourced from OpenBao. This workflow never uses Manager.
+
+  - name: Preflight o11y Restore Target (Dev)
+    playbook: platform/playbooks/preflight-o11y-restore-target.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only restore-target preflight"
+        type: string
+        required: true
+    # Reads private target/artifact declarations and Proxmox state only. It
+    # reserves no VMID, creates no VM, and emits no private identity values.
+
+  - name: Backup o11y to PBS (Dev)
+    playbook: platform/playbooks/backup-o11y-to-pbs.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the o11y PBS backup"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+
+  - name: Verify o11y PBS Artifact (Dev)
+    playbook: platform/playbooks/verify-o11y-pbs-artifact.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS artifact verification"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+
+  - name: Sync o11y Protected PBS Copy (Dev)
+    playbook: platform/playbooks/sync-o11y-protected-pbs-copy.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for destination initiated protected-copy sync"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+      - name: verify_task_id
+        title: "Successful PBS verification task ID"
+        description: "Exact completed Verify o11y PBS Artifact task ID"
+        type: integer
+        required: true
+
+  - name: Verify o11y Protected PBS Copy Readiness (Dev)
+    playbook: platform/playbooks/verify-o11y-protected-pbs-copy.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for protected-copy readback"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+      - name: verify_task_id
+        title: "Successful PBS verification task ID"
+        description: "Exact completed Verify o11y PBS Artifact task ID"
+        type: integer
+        required: true
+      - name: sync_task_id
+        title: "Successful copy sync task ID"
+        description: "Exact completed Sync o11y Protected PBS Copy task ID"
+        type: integer
+        required: true
+
+  - name: Restore o11y from Protected PBS Copy (Dev)
+    playbook: platform/playbooks/restore-o11y-isolated.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the isolated restore"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+      - name: pbs_verify_task_id
+        title: "Successful PBS verification task ID"
+        description: "Exact completed Verify o11y PBS Artifact task ID"
+        type: integer
+        required: true
+      - name: copy_sync_task_id
+        title: "Successful copy sync task ID"
+        description: "Exact completed Sync o11y Protected PBS Copy task ID"
+        type: integer
+        required: true
+      - name: copy_ready_task_id
+        title: "Successful copy readiness task ID"
+        description: "Exact completed Verify o11y Protected PBS Copy Readiness task ID"
+        type: integer
+        required: true
+    # The private selector, target, protected endpoint and credentials are all
+    # inventory/OpenBao sourced. The task emits a private receipt only on success.
+
+  - name: Cleanup o11y Isolated Restore (Dev)
+    playbook: platform/playbooks/cleanup-o11y-isolated-restore.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for authenticated cleanup"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Current private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this cleanup run"
+        type: string
+        required: true
+      - name: expected_restore_repository_sha
+        title: "Reviewed restore commit SHA"
+        description: "Exact Dev commit recorded by the successful isolated restore task"
+        type: string
+        required: true
+      - name: restore_task_id
+        title: "Successful restore task ID"
+        description: "Exact successful isolated restore task that printed the private receipt"
+        type: integer
+        required: true
+
+  # Read-only activation gate: verify the injected AppRole's exact effective
+  # capabilities and the stored policy before enabling guarded writers.
+  - name: Verify o11y Restore Coordination Capabilities (Dev)
+    playbook: platform/playbooks/verify-o11y-restore-coordination-capabilities.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for policy and capability verification"
+        type: string
+        required: true
+
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
     repository: agent-cloud dev
@@ -1950,6 +2521,117 @@ templates:
         required: true
     # Reports fixed driver/source categories and counts only; no logs, paths,
     # addresses, container identities, or stderr are exposed.
+
+  - name: Survey o11y Alloy Health (Dev)
+    playbook: platform/playbooks/survey-o11y-alloy-health.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Alloy health survey"
+        type: string
+        required: true
+    # Reports fixed Alloy state fields only; inspect JSON, logs, paths, addresses,
+    # command details, and subprocess output remain private.
+
+  - name: Verify o11y Profile Pilot Candidates (Dev)
+    playbook: platform/playbooks/verify-o11y-profile-pilot.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact reviewed public revision required on the controller"
+        type: string
+        required: true
+    # Public SHA is guarded; the receipt fingerprints rendered candidates and reports
+    # private inventory revision as unverified for separate reviewed comparison.
+
+  - name: Accept o11y Profile Pilot (Dev)
+    playbook: platform/playbooks/accept-o11y-profile-pilot.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact Dev checkout revision required for this acceptance run"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Reviewed deployed receiver commit SHA"
+        description: "Exact source revision currently deployed on the Dev receiver"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config integration branch"
+        description: "Private inventory branch used by the provenance comparison"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config commit SHA"
+        description: "Exact private inventory revision required before activation"
+        type: string
+        required: true
+    # Revalidates provenance, candidates, and live resource headroom before touching
+    # only the existing Alloy config inode; the operation restores the disabled config.
+
+  - name: Prove o11y Pyroscope Restart Durability (Dev)
+    playbook: platform/playbooks/restart-o11y-pyroscope-durability.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact Dev checkout revision required for this proof"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Reviewed deployed receiver commit SHA"
+        description: "Exact receiver revision bound by the accepted sample"
+        type: string
+        required: true
+      - name: expected_acceptance_sha
+        title: "Reviewed acceptance commit SHA"
+        description: "Exact agent-cloud revision recorded by the successful acceptance task"
+        type: string
+        required: true
+      - name: o11y_profile_acceptance_task_id
+        title: "Successful profile acceptance task ID"
+        description: "Semaphore task whose exact successful receipt defines the historical query window"
+        type: string
+        required: true
+    # Reads a prior exact acceptance receipt, then re-queries its historical sample
+    # around a restart of only Pyroscope; it changes no config or volume.
+
+  - name: Survey o11y Profile Pilot Inventory Provenance (Dev)
+    playbook: platform/playbooks/survey-o11y-inventory-provenance.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact reviewed Dev revision required on the controller"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config integration branch"
+        description: "Private branch whose current tip must equal the supplied reviewed SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config commit SHA"
+        description: "Exact private integration commit whose production inventory is compared"
+        type: string
+        required: true
+    # GET-only comparison; output contains only fixed status/reason and the two reviewed SHAs.
+
+  - name: Survey o11y Receiver Capabilities (Dev)
+    playbook: platform/playbooks/survey-o11y-receiver-capabilities.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only receiver capability survey"
+        type: string
+        required: true
+    # Linux/systemd/cgroup and declared receiver-user categories only; no
+    # Podman-store access, service mutation, paths, IDs, command output, or stderr.
 
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml
@@ -1987,14 +2669,32 @@ templates:
     dev_variant: true
     # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
     # the CF token + R2 keys from OpenBao, runs tofu against the R2 backend.
-    # tofu_action=plan (safe, default) or apply (gated change; run after review).
+    # tofu_action=plan (safe, default) or apply (generic reviewed change).
     survey_vars:
       - name: tofu_action
         title: "Action"
-        description: "plan (read-only, default) or apply (gated change)"
+        description: "plan (read-only, default) or apply a reviewed Cloudflare change"
         type: string
         required: false
         default_value: "plan"
+
+  - name: Apply Grafana API Cloudflare Tofu (Dev)
+    playbook: platform/playbooks/apply-cloudflare-grafana-api-tofu.yml
+    repository: agent-cloud dev
+    # The wrapper fixes the internal Grafana guard mode; only this Dev operation
+    # accepts the reviewed-plan digest and enforces the exact saved-plan contract.
+    survey_vars:
+      - name: tofu_action
+        title: "Action"
+        description: "plan (read-only, default) or apply the exact Grafana API rule insertion or zero-diff rerun"
+        type: string
+        required: false
+        default_value: "plan"
+      - name: reviewed_plan_digest
+        title: "Reviewed plan digest"
+        description: "SHA-256 receipt from a reviewed Grafana API plan; required for apply"
+        type: string
+        required: false
 
   - name: Publish Semaphore Template Surveys
     playbook: platform/playbooks/publish-semaphore-templates.yml
@@ -2054,6 +2754,8 @@ templates:
 
   - name: Apply Policy - Semaphore
     playbook: platform/playbooks/apply-policy-semaphore.yml
+    # Publish this policy from reviewed Dev before activating Dev-bound guard writers.
+    dev_variant: true
 
   - name: Apply Policy - NemoClaw
     playbook: platform/playbooks/apply-policy-nemoclaw.yml
@@ -2288,6 +2990,16 @@ templates:
         type: string
         required: false
 
+  - name: Provision PBS VM (Dev)
+    playbook: platform/playbooks/provision-pbs-vm.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).
   - name: Configure Host Network
@@ -2344,6 +3056,21 @@ templates:
         type: string
         required: false
         default_value: "true"
+
+  - name: Grant GitHub Runner App Repository (Dev)
+    playbook: platform/playbooks/grant-github-runner-app-repository.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed Dev commit SHA"
+        description: "Exact clean Dev revision containing the reviewed grant playbook"
+        type: string
+        required: true
+      - name: github_app_client_id
+        title: "Runner App client id"
+        description: "JWT issuer for uhstray-io-runner-automation"
+        type: string
+        required: true
 
   - name: Deploy GitHub Runner
     playbook: platform/playbooks/deploy-github-runner.yml

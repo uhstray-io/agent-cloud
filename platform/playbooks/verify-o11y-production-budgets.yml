@@ -143,6 +143,78 @@
       changed_when: false
       check_mode: false
 
+    # Daily ingestion and TSDB growth (inference-telemetry-production 4.1). Read-only instant
+    # queries through the same exec path as the head-series read. Loop over the clean input;
+    # the figures are folded into one mapping below. An empty vector is a metric gap, not a
+    # failure: it is reported as `unavailable`, the receipt does not start failing on it.
+    - name: Read daily Loki ingestion and Prometheus TSDB growth
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - curl
+          - -fsSG
+          - --data-urlencode
+          - "query={{ item.query }}"
+          - http://prometheus:9090/api/v1/query
+      loop:
+        - name: loki_ingested_bytes_24h
+          query: 'sum(increase(loki_distributor_bytes_received_total{job="loki"}[24h]))'
+        - name: loki_ingested_lines_24h
+          query: 'sum(increase(loki_distributor_lines_received_total{job="loki"}[24h]))'
+        - name: prometheus_samples_appended_24h
+          query: 'sum(increase(prometheus_tsdb_head_samples_appended_total{job="prometheus"}[24h]))'
+        - name: prometheus_tsdb_blocks_bytes
+          query: 'sum(prometheus_tsdb_storage_blocks_bytes{job="prometheus"})'
+        - name: prometheus_tsdb_blocks_bytes_change_24h
+          query: 'sum(delta(prometheus_tsdb_storage_blocks_bytes{job="prometheus"}[24h]))'
+      loop_control:
+        label: "{{ item.name }}"
+      register: _daily_ingestion_reads
+      changed_when: false
+      check_mode: false
+
+    # Seven-day inference usage peak (inference-telemetry-production 4.2): the rate figures the
+    # route-switch gate needs to judge whether the `legacy-shared` identity fits 2,000,000
+    # tokens/hour and the 120 requests/minute global ceiling. Whole-estate vLLM traffic (every
+    # client, shared key and gateway), so by scope each figure is an upper bound for that one
+    # identity. Subqueries evaluate at step-aligned instants, so the 5m (tokens) and 1m (rate,
+    # gauges) steps make each figure a near-rolling peak; a coarser step would understate it.
+    # request_success counts requests by completion time, not arrival, so aborts and 429s do
+    # not appear in it. Query semantics are pinned here as text; CI does not evaluate them.
+    # Same exec path, read-only, and `unavailable` semantics as the daily ingestion read above.
+    - name: Read seven-day inference usage peak from vLLM
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - curl
+          - -fsSG
+          - --data-urlencode
+          - "query={{ item.query }}"
+          - http://prometheus:9090/api/v1/query
+      loop:
+        - name: peak_tokens_per_hour
+          query: >-
+            max_over_time((sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1h])) +
+            sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h])))[7d:5m])
+        - name: peak_generation_tokens_per_hour
+          query: 'max_over_time(sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h]))[7d:5m])'
+        - name: peak_requests_per_minute
+          decimals: 1
+          query: 'max_over_time((sum(rate(vllm:request_success_total{job="dgx-spark-vllm"}[1m])) * 60)[7d:1m])'
+        - name: peak_running_requests
+          query: 'max_over_time(sum(vllm:num_requests_running{job="dgx-spark-vllm"})[7d:1m])'
+        - name: peak_waiting_requests
+          query: 'max_over_time(sum(vllm:num_requests_waiting{job="dgx-spark-vllm"})[7d:1m])'
+      loop_control:
+        label: "{{ item.name }}"
+      register: _inference_peak_reads
+      changed_when: false
+      check_mode: false
+
     - name: Read current guest root filesystem capacity
       ansible.builtin.command:
         argv: [df, --block-size=1, "--output=size,avail", /]
@@ -263,6 +335,34 @@
       changed_when: false
       check_mode: false
 
+    # A figure is a whole number, or the string `unavailable` for an empty vector or a
+    # non-numeric value (NaN, an error body). increase() and delta() return fractions.
+    - name: Fold the daily ingestion readings into named figures
+      ansible.builtin.set_fact:
+        _daily_ingestion: >-
+          {%- set figures = {} -%}
+          {%- for read in _daily_ingestion_reads.results -%}
+          {%- set series = ((read.stdout | from_json).get('data') or {}).get('result') or [] -%}
+          {%- set raw = (series[0].value[1] | string) if series | length > 0 else '' -%}
+          {%- set number = raw is match('^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$') -%}
+          {%- set _ = figures.update({read.item.name: (raw | float | round | int) if number else 'unavailable'}) -%}
+          {%- endfor -%}
+          {{- figures }}
+
+    - name: Fold the inference peak readings into named figures
+      ansible.builtin.set_fact:
+        _inference_peak: >-
+          {%- set figures = {} -%}
+          {%- for read in _inference_peak_reads.results -%}
+          {%- set series = ((read.stdout | from_json).get('data') or {}).get('result') or [] -%}
+          {%- set raw = (series[0].value[1] | string) if series | length > 0 else '' -%}
+          {%- set number = raw is match('^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$') -%}
+          {%- set places = read.item.get('decimals', 0) -%}
+          {%- set rounded = (raw | float | round(places)) if places > 0 else (raw | float | round | int) -%}
+          {%- set _ = figures.update({read.item.name: rounded if number else 'unavailable'}) -%}
+          {%- endfor -%}
+          {{- figures }}
+
     - name: Report sanitized sample-limit and series diagnostics
       ansible.builtin.debug:
         msg: "{{ _budget_readback_diagnostics.stdout | from_json }}"
@@ -292,3 +392,5 @@
           guest_memory_headroom_percent: "{{ _guest_memory_headroom.stdout | float }}"
           o11y_volume_capacity: "{{ _volume_capacity.stdout | from_json }}"
           o11y_container_memory_mib: "{{ (_container_memory.stdout | from_json).containers }}"
+          daily_ingestion: "{{ _daily_ingestion }}"
+          inference_peak_7d: "{{ _inference_peak }}"

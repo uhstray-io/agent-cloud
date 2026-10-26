@@ -11,9 +11,29 @@
 # isolation control here; what is enforced is the workspace wipe below, the unprivileged
 # account, and the host's egress denial.
 #
-# The hooks shell out to a `docker` binary, which on this host is the podman shim
-# installed by install-podman.yml.
+# The hooks shell out to a `docker` binary, found on the runner's PATH: /usr/bin/docker,
+# Docker's CLI client (docker-ce-cli, installed by install-podman.yml with
+# podman_docker_api_client). It is only a client: every call goes to the API socket below,
+# served by this account's rootless podman (its podman.socket user unit). There is no
+# Docker engine on this host.
 ACTIONS_RUNNER_CONTAINER_HOOKS={{ github_runner_home }}/_hooks/index.js
+
+# The engine the hooks' docker talks to: this account's rootless podman API socket.
+# The hooks start `docker` with only the job's variables (HOME=/github/home among them)
+# plus the DOCKER_* variables of the runner, which they pass through on purpose
+# (runner-container-hooks v0.8.1, utils.ts optionsWithDockerEnvs). So this value reaches
+# every hook call, while the job's HOME never reaches podman: the API service runs with
+# the account's own environment. Run as a CLI with the job's HOME, podman failed every
+# container job with `cannot resolve /github/home` (docs/MISTAKES.md 10.25, 10.29).
+# Every host step inherits this too, so a plain step's `docker` uses the same engine and
+# image store as the hooks. The runner reads this file only when it starts, so the
+# deploy restarts it on a change.
+DOCKER_HOST=unix:///run/user/{{ github_runner_uid }}/podman/podman.sock
+
+# Runs before EVERY job. Creates the directories the runner bind-mounts into a job
+# container: podman, unlike Docker, refuses a bind mount whose source is missing.
+# The runner reads this file only when it starts, so the deploy restarts it on a change.
+ACTIONS_RUNNER_HOOK_JOB_STARTED={{ github_runner_home }}/job-started.sh
 
 # Runs after EVERY job — success, failure, or cancellation — and destroys the job's
 # workspace and containers. Second layer on purpose: the container boundary above is a

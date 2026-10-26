@@ -87,6 +87,10 @@
     _probe_textfile_dir: /var/lib/node_exporter/textfile
     _probe_user: "{{ ansible_user | default('deploy') }}"
     _probe_unit_dir: /etc/systemd/system
+    _capacity_textfile_dir: /var/lib/node_exporter/textfile
+    _capacity_user: "{{ ansible_user | default('deploy') }}"
+    _capacity_libexec_dir: /usr/local/libexec/o11y
+    _capacity_sampler: /usr/local/libexec/o11y/collect-o11y-capacity.py
     # Gateway client identity (optional): the probe presents this internal-CA client leaf
     # straight to the gateway's mutual-TLS listener instead of using the public hostname.
     # Empty (the default) leaves the probe on its plain public path.
@@ -131,15 +135,21 @@
           if _probe_enabled | bool else []) }}
 
   tasks:
-    - name: "Require a capacity receipt and nonzero Prometheus cap for retention expansion"
+    - name: Refuse an unverified profile pilot operation before o11y mutation
+      ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
+
+    - name: "Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
         that:
           - o11y_prom_retention_size | default('0B') | string | trim is match('^[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB)$')
           - o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - o11y_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')
         fail_msg: >-
           Production retention differs from the approved 15d / 7d / 168h baseline.
-          A nonzero Prometheus size cap and a numeric o11y_capacity_receipt_id that
-          references a separately reviewed successful capacity receipt are required.
+          A nonzero Prometheus size cap, a numeric o11y_capacity_receipt_id that
+          references a separately reviewed successful capacity receipt, and a numeric
+          o11y_backup_restore_receipt_id are required. The numeric backup/restore ID is
+          only a reference; this gate does not inspect its evidence or prove a live restore.
           The receipt cannot be earned until receiver host metrics,
           seven-day backend growth/CPU/memory history, measured forecast, and the guest
           growth/backup path are verified.
@@ -198,6 +208,9 @@
         fail_msg: "Production o11y needs its declared DNS zone and one Caddy origin IP; local test URLs are refused."
       when: not (local_mode | default(false) | bool)
 
+    - name: "Validate production scrape budgets before placement or rendering"
+      ansible.builtin.include_tasks: tasks/assert-o11y-scrape-limits.yml
+
     - name: "Inspect an unfinished production alert canary"
       ansible.builtin.stat:
         path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
@@ -239,7 +252,7 @@
         (o11y_trace_derived_metrics_enabled | default(false) | bool) or
         (not (local_mode | default(false) | bool) and
          groups.get('agentgateway_svc', []) | length == 1 and
-         hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0)
+         hostvars[groups['agentgateway_svc'][0]].agw_otlp_traces | default(false) | bool)
 
     - name: "Require complete DGX scrape settings when scraping is enabled"
       ansible.builtin.assert:
@@ -305,11 +318,11 @@
           - (o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) in ['local', 'dev', 'prod']
         fail_msg: "Production o11y requires a declared o11y_cluster label containing only letters, digits, dots, underscores, or hyphens."
 
-    - name: "Require numeric capacity and backup/restore receipts before enabling Tempo-derived metrics"
+    - name: "Require numeric capacity and common backup/restore receipt references before enabling Tempo-derived metrics"
       ansible.builtin.assert:
         that:
           - o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')
-          - o11y_trace_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - o11y_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')
         fail_msg: >-
           Tempo-derived metrics are opt-in. Production enablement requires numeric
           capacity and backup/isolated-restore Semaphore receipt IDs; the shared trace
@@ -411,6 +424,108 @@
               leaf_name {{ _probe_leaf_name }} after Deploy step-ca (Dev) has the leaf's SANs.
             quiet: true
 
+    - name: Select the reviewed expected-target alert mode privately
+      ansible.builtin.set_fact:
+        _o11y_expected_target_mode: "{{ o11y_expected_metrics_targets_mode | default('grouped') }}"
+      no_log: true
+
+    - name: Validate the reviewed expected-target declaration before placement
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+          - --validate-expected-targets
+        stdin: >-
+          {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+              'targets': o11y_expected_metrics_targets | default([]),
+              'retired_uids': o11y_expected_metrics_targets_retired_uids | default([])} | to_json }}
+      delegate_to: localhost
+      register: _o11y_expected_target_validation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Require a safe expected-target declaration before placement
+      ansible.builtin.assert:
+        that: >-
+          _o11y_expected_target_validation.rc == 0 and
+          (_o11y_expected_target_validation.stdout | from_json).status == 'valid'
+        fail_msg: "The reviewed expected-target declaration is invalid; no o11y files were placed."
+        quiet: true
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Build validated expected-target groups privately for alert rendering
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+          - --group-expected-targets
+        stdin: >-
+          {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+              'targets': o11y_expected_metrics_targets | default([]),
+              'retired_uids': o11y_expected_metrics_targets_retired_uids | default([])} | to_json }}
+      delegate_to: localhost
+      register: _o11y_expected_target_groups_result
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Retain validated expected-target groups privately for alert rendering
+      ansible.builtin.set_fact:
+        _o11y_expected_target_groups: >-
+          {{ (_o11y_expected_target_groups_result.stdout | from_json).groups }}
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Compile the in-memory provisioned alert rules for UID checks
+      ansible.builtin.set_fact:
+        _o11y_expected_target_preflight_document: >-
+          {{ lookup('ansible.builtin.template', playbook_dir ~ '/../services/o11y/deployment/templates/alerts.yml.j2') | from_yaml }}
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Refuse expected-target UIDs that collide with provisioned rules
+      ansible.builtin.assert:
+        that:
+          - _o11y_expected_target_preflight_document.groups | map(attribute='rules') | flatten | map(attribute='uid') | list | length == (_o11y_expected_target_preflight_document.groups | map(attribute='rules') | flatten | map(attribute='uid') | list | unique | length)
+          - (o11y_expected_metrics_targets_retired_uids | default([]) | intersect(_o11y_expected_target_preflight_document.groups | map(attribute='rules') | flatten | map(attribute='uid') | list) | length) == 0
+        fail_msg: "An expected-target UID collides with another provisioned rule; no o11y files were placed."
+        quiet: true
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Validate previous expected-target ownership before placement
+      ansible.builtin.include_tasks: tasks/o11y-prepare-expected-target-transition.yml
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -480,6 +595,69 @@
         state: absent
       register: _agentgateway_scrape_absent
       when: agentgateway_metrics_address is not defined
+
+    # Production installs the capacity source; local mode needs these units only
+    # for the optional probe, whose cleanup owns only its own files.
+    - name: "Install the read-only o11y capacity sampler"
+      when: not (local_mode | default(false) | bool)
+      become: true
+      block:
+        - name: Create the shared node-exporter textfile directory
+          ansible.builtin.file:
+            path: "{{ _capacity_textfile_dir }}"
+            state: directory
+            owner: "{{ _capacity_user }}"
+            mode: "0755"
+
+        - name: Create the o11y capacity helper directory
+          ansible.builtin.file:
+            path: "{{ _capacity_libexec_dir }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Install the exact named-volume inspector used by the budget receipt
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/inspect-o11y-volume-capacity.py"
+            dest: "{{ _capacity_libexec_dir }}/inspect-o11y-volume-capacity.py"
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Install the atomic capacity sampler
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/capacity/collect-o11y-capacity.py"
+            dest: "{{ _capacity_sampler }}"
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Render the daily capacity sampling service
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/capacity/o11y-capacity-sample.service.j2"
+            dest: "{{ _probe_unit_dir }}/o11y-capacity-sample.service"
+            owner: root
+            group: root
+            mode: "0644"
+          register: _capacity_service_unit
+
+        - name: Install the daily capacity sampling timer
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/capacity/o11y-capacity-sample.timer"
+            dest: "{{ _probe_unit_dir }}/o11y-capacity-sample.timer"
+            owner: root
+            group: root
+            mode: "0644"
+          register: _capacity_timer_unit
+
+        - name: Enable and start the daily capacity sampling timer
+          ansible.builtin.systemd_service:
+            name: o11y-capacity-sample.timer
+            enabled: true
+            state: started
+            daemon_reload: "{{ _capacity_service_unit.changed or _capacity_timer_unit.changed }}"
+          when: not ansible_check_mode
 
     # The gateway client-identity path's two host inputs, shared with the leaf's renewal
     # proof: the internal CA bundle beside the leaf directory (where renew-internal-certs.yml
@@ -605,9 +783,8 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        # The inference probe's overlay adds node_exporter's textfile collector.
-        # Empty when the probe is off, which is the pre-probe command line.
-        COMPOSE_OVERLAYS: "{{ 'probe/compose.textfile.yml' if (o11y_inference_probe_enabled | default(false) | bool) else '' }}"
+        # Production always scrapes capacity; local mode enables textfiles for the probe only.
+        COMPOSE_OVERLAYS: "{{ 'capacity/compose.textfile.yml' if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else '' }}"
         # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
         # and image matches — clears a stale bind mount a running container still holds.
         FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
@@ -620,6 +797,16 @@
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
         var: _deploy.stdout_lines
+
+    - name: Take a complete capacity sample after the stack is available
+      ansible.builtin.systemd_service:
+        name: o11y-capacity-sample.service
+        state: started
+      become: true
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
 # ── Phase 3: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 3: Verify o11y"
@@ -710,7 +897,7 @@
           - wget
           - -qO-
           - >-
-            http://127.0.0.1:9090/api/v1/query?query=%7Bjob%3D%22receiver-host%22%2Cservice%3D%22o11y%2Freceiver-host%22%2C__name__%3D~%22node_cpu_seconds_total%7Cnode_memory_MemAvailable_bytes%7Cnode_memory_MemTotal_bytes%7Cnode_load1%7Cnode_filesystem_size_bytes%7Cnode_filesystem_avail_bytes%22%7D
+            http://127.0.0.1:9090/api/v1/query?query=%7Bjob%3D%22receiver-host%22%2Cservice%3D%22o11y%2Freceiver-host%22%2Ctarget_id%3D%22service%3Ao11y%22%2C__name__%3D~%22node_cpu_seconds_total%7Cnode_memory_MemAvailable_bytes%7Cnode_memory_MemTotal_bytes%7Cnode_load1%7Cnode_filesystem_size_bytes%7Cnode_filesystem_avail_bytes%22%7D
       register: _receiver_host_metrics
       changed_when: false
       check_mode: false
@@ -964,6 +1151,14 @@
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.queries | selectattr('name', 'equalto', 'Span calls') | selectattr('query', 'equalto', 'sum(rate(traces_spanmetrics_calls_total{$__tags}[5m]))') | list | length == 1
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.datasourceUid == 'loki'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service') | list | length == 1
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanStartTimeShift == '-2s'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanEndTimeShift == '2s'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterByTraceID == false
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterBySpanID == false
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.customQuery == true
+          - >-
+            (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.query
+            == '{${__tags}} | json | (traceid=~"0*${__trace.traceId}" or body=~".*(^|[[:space:]])tid=0*${__trace.traceId}([[:space:]]|$).*")'
           - (_tempo_datasource_config.stdout | from_json).jsonData.serviceMap.datasourceUid == 'prometheus'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.datasourceUid == 'pyroscope'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.profileTypeId == 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'
@@ -1168,6 +1363,131 @@
         fail_msg: "Grafana did not provision the complete Agentgateway client-view dashboard."
       when: not ansible_check_mode
 
+    - name: Read the provisioned service conformance dashboard
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/dashboards/uid/service-conformance
+      register: _service_conformance_dashboard
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _service_conformance_dashboard.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require truthful conformance freshness and failure history panels
+      ansible.builtin.assert:
+        that:
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.uid == 'service-conformance'
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest inventory marker age') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age by service and step') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Workflow completion and task provenance') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest step status by service') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Recent failed task snapshots') | list | length == 1
+          - "'completed_at_seconds' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'label_format age_seconds=' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age by service and step') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age by service and step') | map(attribute='transformations') | map('map', attribute='id') | map('list') | first == ['labelsToFields', 'merge', 'organize', 'renameByRegex']
+          - "'task_id, completed_at_seconds' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Workflow completion and task provenance') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'last_over_time' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest step status by service') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Recent failed task snapshots') | map(attribute='timeFrom') | list == ['7d']
+        fail_msg: "Grafana's service conformance dashboard is missing separate workflow freshness, provenance, or bounded historical failure evidence."
+      when: not ansible_check_mode
+
+    - name: Read the provisioned service overview dashboard
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/dashboards/uid/service-overview
+      register: _service_overview_dashboard
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _service_overview_dashboard.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require selected identities and explicit per-source observations
+      ansible.builtin.assert:
+        that:
+          - (_service_overview_dashboard.stdout | from_json).dashboard.uid == 'service-overview'
+          - (_service_overview_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'service') | selectattr('label', 'equalto', 'Metrics service') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'log_service') | selectattr('label', 'equalto', 'Logs service') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected service identities') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Scrape target health') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Log volume by source') | list | length == 1
+          - >-
+            (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Recent unclassified records') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'All Loki streams (mixed-source drill-down)') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | list | length == 6
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten | list | length == 6
+          - >-
+            '{service=~"$log_service", container!~".+", signal!~"^(container|access-log|span)$", job!="agent-cloud-conformance"}'
+            in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Recent unclassified records') | map(attribute='targets')
+            | flatten | map(attribute='expr') | join(' ')
+          - "'or on() vector(0)' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'container=~\".+\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'signal=\"container\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'signal=\"access-log\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'signal=\"span\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'job=\"agent-cloud-conformance\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - >-
+            (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'match', '^Unclassified') | list | length == 1
+          - >-
+            (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | list | length == 1
+          - >-
+            'service=~"$log_service"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'container!~".+"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'signal!~"^(container|access-log|span)$"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'job!="agent-cloud-conformance"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Log volume by source') | map(attribute='targets') | flatten
+            | selectattr('legendFormat', 'match', '^Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'service=~"$log_service"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'container!~".+"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'signal!~"^(container|access-log|span)$"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
+          - >-
+            'job!="agent-cloud-conformance"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels
+            | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets')
+            | flatten | selectattr('legendFormat', 'equalto', 'Unclassified') | map(attribute='expr') | join(' ')
+        fail_msg: "Grafana's service overview dashboard is missing selected service identities or explicit source-presence indicators."
+      when: not ansible_check_mode
+
     # Every committed dashboard file must be live by its own uid: the asserts above
     # check three dashboards' contents, this checks that none of the rest is missing.
     - name: Verify every provisioned dashboard is live
@@ -1219,10 +1539,8 @@
               {{ _dashboard_docs.results | map(attribute='content') | map('b64decode')
                  | map('from_json') | map(attribute='uid') | select | list }}
 
-    - name: Verify enabled Grafana alert provisioning after a real deploy
-      when:
-        - o11y_alerts_enabled | default(false) | bool
-        - not ansible_check_mode
+    - name: Verify Grafana alert provisioning after every real deploy
+      when: not ansible_check_mode
       block:
         - name: Read live o11y alert rules
           ansible.builtin.command:
@@ -1237,6 +1555,7 @@
                 curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
           register: _active_rules
           changed_when: false
+          no_log: true
           retries: 6
           delay: 5
           until: _active_rules.rc == 0
@@ -1266,6 +1585,7 @@
                 curl -fsS --config - 'http://127.0.0.1:3000/api/folders?limit=1000'
           register: _live_folders
           changed_when: false
+          no_log: true
 
         # The live set must MIRROR the provisioned file: the rules Grafana holds in the
         # file's folder+group scope are exactly the file's rules, each paused and routed
@@ -1292,19 +1612,45 @@
             that:
               - _o11y_expected_rules | length > 0
               - _o11y_rules | map(attribute='uid') | list == _o11y_expected_rules | map(attribute='uid') | list
-              - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == 1
               - _active_rules.stdout | from_json | map(attribute='uid') | select('in', _o11y_withdrawn_uids) | list | length == 0
             fail_msg: "Live Grafana alert rules do not match the provisioned rules file (missing, extra or withdrawn)."
 
+        - name: Require the live agentgateway trace-silence query to equal its provisioned expression
+          ansible.builtin.assert:
+            that:
+              - _o11y_trace_silence_expected | length == 1
+              - _o11y_trace_silence_live | length == 1
+              - _o11y_trace_silence_live[0].data[0].model.expr == _o11y_trace_silence_expected[0].data[0].model.expr
+            fail_msg: "Live agentgateway trace-silence rule is missing or its Prometheus expression differs from the provisioned file."
+          vars:
+            _o11y_trace_silence_expected: "{{ _o11y_expected_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
+            _o11y_trace_silence_live: "{{ _o11y_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
+
         # Same uid order on both sides (asserted above), so each field compares rule by
-        # rule; an absent or null notification_settings, or field, compares as ''. The
-        # durations are strings in the 11.4 AlertRuleNotificationSettings schema.
-        - name: Require each live rule's pause and routing to equal the provisioned rule's
+        # rule; absent or null maps compare as empty maps. The durations are strings in
+        # the 11.4 AlertRuleNotificationSettings schema.
+        - name: Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's
           ansible.builtin.assert:
             that:
               - _o11y_rules | map(attribute='isPaused', default='') | list == _o11y_expected_rules | map(attribute='isPaused', default='') | list
+              - >-
+                _o11y_rules | map(attribute='labels', default={}) | map('default', {}, true) | list ==
+                _o11y_expected_rules | map(attribute='labels', default={}) | map('default', {}, true) |
+                map('to_json') | map('replace', '$$', '$') | map('from_json') | list
+              - >-
+                _o11y_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list ==
+                _o11y_expected_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list
+              - _o11y_rules | map(attribute='for', default='') | list ==
+                _o11y_expected_rules | map(attribute='for', default='') | list
+            fail_msg: >-
+              Live Grafana rules differ from the provisioned file in pause state,
+              labels, annotations or duration.
+
+        - name: Require each live rule's notification settings to equal the provisioned rule's
+          ansible.builtin.assert:
+            that:
               - _live_settings | map(attribute=item, default='') | list == _file_settings | map(attribute=item, default='') | list
-            fail_msg: "Live Grafana rules differ from the provisioned file in isPaused or notification_settings.{{ item }}."
+            fail_msg: "Live Grafana rules differ from the provisioned file in notification_settings.{{ item }}."
           vars:
             _live_settings: "{{ _o11y_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"
             _file_settings: "{{ _o11y_expected_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"
@@ -1338,11 +1684,22 @@
                  selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length }}
           no_log: true
 
-        - name: Require the o11y Discord contact point to be active
+        - name: Require the o11y Discord contact point to match the alert gate
           ansible.builtin.assert:
-            that: _o11y_contact_count | int == 1
-            fail_msg: "The o11y Discord contact point is absent or duplicated after alert enablement."
+            that: _o11y_contact_count | int == (1 if o11y_alerts_enabled | default(false) | bool else 0)
+            fail_msg: "The o11y Discord contact point does not match the configured alert gate."
+
+    - name: Report the verified alert rule count without identities
+      ansible.builtin.debug:
+        msg: "Grafana alert provisioning verified: {{ _o11y_expected_rules | length }} rules."
+      when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:
         msg: "o11y healthy — Grafana, Prometheus, Loki, and Tempo answering; Alloy collector healthy."
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy

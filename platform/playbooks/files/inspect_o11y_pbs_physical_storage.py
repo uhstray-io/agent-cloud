@@ -11,7 +11,13 @@ from collections.abc import Mapping
 NODE_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
 STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 VG_NAME = re.compile(r"[A-Za-z0-9+_.-]{1,127}")
+CONTENT_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}")
 PATH = re.compile(r"/[A-Za-z0-9._/+:-]{1,255}")
+DEVICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}")
+WWN = re.compile(r"(?:0[xX])?(?:[0-9A-Fa-f]{16}|[0-9A-Fa-f]{32})")
+LVM_CAPACITY_ROUNDING_BYTES = 16 * 1024**2
+PBS_PROPOSED_DISK_BYTES = 512 * 1024**3
+MINIMUM_RESIDUAL_HEADROOM_PERCENT = 30
 SIZE_BANDS = ((100 * 1024**3, "under-100-GiB"), (1024**4, "100-GiB-to-under-1-TiB"))
 PROPOSED_DISK_SIZES = (256, 512, 1024)
 SAFE_REFUSALS = {
@@ -41,6 +47,8 @@ SAFE_REFUSALS = {
     "Proxmox returned inconsistent thick-LVM capacity.",
 }
 FALLBACK_REFUSAL = "Physical-storage survey refused because Proxmox returned invalid data."
+SELECTOR_REFUSAL = "No unique thick-LVM storage candidate with complete visible mapping and lineage was identified."
+ALLOCATION_PREFLIGHT_REFUSAL = "The 512-GiB PBS allocation preflight could not confirm all declared constraints."
 
 
 def _require(ok: bool, message: str) -> None:
@@ -71,6 +79,16 @@ def _size_band_counts() -> dict[str, int]:
 
 def _headroom_band_counts() -> dict[str, int]:
     return {"under-30-percent": 0, "30-to-under-70-percent": 0, "at-least-70-percent": 0, "unknown": 0}
+
+
+def _smart_health_class(value: object) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        return "unknown"
+    if value in {"PASSED", "OK"}:
+        return "passed"
+    if value in {"FAILED", "FAILED!"}:
+        return "failed"
+    return "unknown"
 
 
 def _api_data(value: object, *, section: str, expected: type = list) -> object:
@@ -106,6 +124,24 @@ def _storage_applies_to_node(config: Mapping, target_node: str) -> bool:
         "Proxmox returned a malformed cluster storage node scope.",
     )
     return target_node in node_names
+
+
+def _comma_separated_set(value: object, token_pattern: re.Pattern[str]) -> set[str] | None:
+    if not isinstance(value, str):
+        return None
+    tokens = value.split(",")
+    if (
+        any(
+            not token
+            or token != token.strip()
+            or token_pattern.fullmatch(token) is None
+            or (token_pattern is NODE_NAME and token in {".", ".."})
+            for token in tokens
+        )
+        or len(set(tokens)) != len(tokens)
+    ):
+        return None
+    return set(tokens)
 
 
 def validate_node(payload: object) -> dict[str, object]:
@@ -265,6 +301,12 @@ def _headroom_band(total: int, available: int) -> str:
     if available * 10 < total * 7:
         return "30-to-under-70-percent"
     return "at-least-70-percent"
+
+
+def _reported_vg_headroom(group: Mapping, size_gib: int) -> bool:
+    total, free = group["size"], group["free"]
+    remaining = free - size_gib * 1024**3
+    return remaining >= 0 and remaining * 10 >= total * 3
 
 
 def _directory_facts(rows: list[object]) -> dict[str, object]:
@@ -519,7 +561,7 @@ def _thick_lvm_facts(
     status_rows: list[object], config_response: object, lvm_data: Mapping,
     target_node: str, disk_rows: list[object], declared_storage_id: str,
     declared_config_response: object,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], list[tuple[Mapping, Mapping]]]:
     """Report visible non-shared thick-LVM image-store headroom only."""
     config_rows = _api_data(config_response, section="cluster storage config")
     _require(
@@ -688,30 +730,48 @@ def _thick_lvm_facts(
     declared_config_detail = _api_data(
         declared_config_response, section="declared storage config", expected=Mapping
     )
+    declared_candidate_in_visible_eligible_set = declared_candidate is not None
+    required_config_fields_match = False
+    optional_config_fields_match = False
+    status_content_matches_config = False
     declared_candidate_exact_match = False
     if declared_candidate is not None:
         candidate_config, candidate_status, _ = declared_candidate
-        required_config_fields_match = all(
-            declared_config_detail.get(field) == candidate_config.get(field)
-            for field in ("type", "content", "vgname")
+        detail_content = _comma_separated_set(
+            declared_config_detail.get("content"), CONTENT_TOKEN
         )
-        optional_config_fields_match = all(
-            (field in declared_config_detail) == (field in candidate_config)
-            and declared_config_detail.get(field) == candidate_config.get(field)
-            for field in ("nodes", "disable")
+        configured_content = _comma_separated_set(candidate_config.get("content"), CONTENT_TOKEN)
+        status_content = _comma_separated_set(candidate_status.get("content"), CONTENT_TOKEN)
+        required_config_fields_match = (
+            declared_config_detail.get("type") == candidate_config.get("type")
+            and declared_config_detail.get("vgname") == candidate_config.get("vgname")
+            and detail_content is not None
+            and detail_content == configured_content
         )
-        configured_content = candidate_config.get("content")
-        status_content = candidate_status.get("content")
-        content_matches = (
-            isinstance(configured_content, str)
-            and isinstance(status_content, str)
-            and set(configured_content.split(",")) == set(status_content.split(","))
+        nodes_match = ("nodes" in declared_config_detail) == ("nodes" in candidate_config)
+        if nodes_match and "nodes" in candidate_config:
+            detail_nodes = _comma_separated_set(declared_config_detail.get("nodes"), NODE_NAME)
+            configured_nodes = _comma_separated_set(candidate_config.get("nodes"), NODE_NAME)
+            nodes_match = (
+                detail_nodes is not None
+                and configured_nodes is not None
+                and detail_nodes == configured_nodes
+            )
+        optional_config_fields_match = (
+            nodes_match
+            and ("disable" in declared_config_detail) == ("disable" in candidate_config)
+            and declared_config_detail.get("disable") == candidate_config.get("disable")
+        )
+        status_content_matches_config = (
+            configured_content is not None
+            and status_content is not None
+            and configured_content == status_content
         )
         declared_candidate_exact_match = (
             declared_config_detail.get("type") == "lvm"
             and required_config_fields_match
             and optional_config_fields_match
-            and content_matches
+            and status_content_matches_config
         )
 
     result: dict[str, object] = {
@@ -725,6 +785,10 @@ def _thick_lvm_facts(
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
+        "declared_thick_lvm_candidate_in_visible_eligible_set": declared_candidate_in_visible_eligible_set,
+        "declared_thick_lvm_required_config_fields_match": required_config_fields_match,
+        "declared_thick_lvm_optional_config_fields_match": optional_config_fields_match,
+        "declared_thick_lvm_status_content_matches_config": status_content_matches_config,
         "declared_thick_lvm_candidate_exact_match": declared_candidate_exact_match,
         "declared_thick_lvm_reported_vg_headroom_passes_256_gib": False,
         "declared_thick_lvm_reported_vg_headroom_passes_512_gib": False,
@@ -733,10 +797,8 @@ def _thick_lvm_facts(
         "thick_lvm_allocation_authorized": False,
     }
     for status, group in candidates:
-        total, free = group["size"], group["free"]
         for size_gib in PROPOSED_DISK_SIZES:
-            remaining = free - size_gib * 1024**3
-            if remaining >= 0 and remaining * 10 >= total * 3:
+            if _reported_vg_headroom(group, size_gib):
                 result[f"thick_lvm_reported_vg_headroom_candidate_count_{size_gib}_gib"] += 1
                 if (
                     declared_candidate_exact_match
@@ -744,7 +806,7 @@ def _thick_lvm_facts(
                     and status["storage"] == declared_storage_id
                 ):
                     result[f"declared_thick_lvm_reported_vg_headroom_passes_{size_gib}_gib"] = True
-    return result | _thick_lvm_pv_lineage_facts(candidates, disk_rows)
+    return result | _thick_lvm_pv_lineage_facts(candidates, disk_rows), candidates
 
 
 def _thick_lvm_pv_lineage_facts(
@@ -810,7 +872,9 @@ def _thick_lvm_pv_lineage_facts(
     }
 
 
-def inspect(payload: object) -> dict[str, object]:
+def _inspection(
+    payload: object,
+) -> tuple[dict[str, object], list[tuple[Mapping, Mapping]], list[object]]:
     _require(isinstance(payload, Mapping), "Proxmox returned an incomplete disk inventory.")
     declared_storage_id = payload.get("declared_storage_id")
     _require(
@@ -848,21 +912,322 @@ def inspect(payload: object) -> dict[str, object]:
             payload.get("visible_volumes"),
             thin_rows,
         ),
-        **_thick_lvm_facts(
-            storage_rows, storage_config_rows, lvm_data, target_node, disk_rows,
-            declared_storage_id, payload.get("storage_config"),
-        ),
+    }
+    thick_lvm_facts, thick_lvm_candidates = _thick_lvm_facts(
+        storage_rows, storage_config_rows, lvm_data, target_node, disk_rows,
+        declared_storage_id, payload.get("storage_config"),
+    )
+    report.update(thick_lvm_facts)
+    report.update({
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,
         "pbs_suitability_verified": False,
         "pbs_readiness_verified": False,
         "write_authorized": False,
+    })
+    return report, thick_lvm_candidates, disk_rows
+
+
+def inspect(payload: object) -> dict[str, object]:
+    return _inspection(payload)[0]
+
+
+def select_thick_lvm_candidate(payload: object) -> dict[str, str]:
+    report, candidates, disk_rows = _inspection(payload)
+    _require(report["thick_lvm_config_vg_mappings_complete"] is True, SELECTOR_REFUSAL)
+
+    eligible: list[str] = []
+    for status, group in candidates:
+        lineage = _thick_lvm_pv_lineage_facts([(status, group)], disk_rows)
+        pv_count = lineage["thick_lvm_candidate_pv_count"]
+        mapped_pv_count = (
+            lineage["thick_lvm_pv_direct_disk_path_join_count"]
+            + lineage["thick_lvm_pv_partition_parent_disk_path_join_count"]
+        )
+        _require(
+            lineage["thick_lvm_candidate_vg_pv_inventory_incomplete_count"] == 0
+            and pv_count > 0
+            and mapped_pv_count == pv_count
+            and lineage["thick_lvm_pv_path_join_unknown_used_count"] == 0
+            and lineage["thick_lvm_pv_missing_disk_path_join_count"] == 0
+            and lineage["thick_lvm_pv_unverifiable_disk_path_join_count"] == 0,
+            SELECTOR_REFUSAL,
+        )
+        if _reported_vg_headroom(group, 1024):
+            eligible.append(status["storage"])
+
+    _require(len(eligible) == 1, SELECTOR_REFUSAL)
+    return {"candidate_storage_id": eligible[0]}
+
+
+def identify_thick_lvm_backing_identity(payload: object) -> dict[str, object]:
+    """Return one declared candidate's reported disk identity for private review."""
+    report, candidates, disk_rows = _inspection(payload)
+    declared_storage_id = payload["declared_storage_id"]
+    _require(
+        report["thick_lvm_config_vg_mappings_complete"] is True
+        and report["declared_thick_lvm_candidate_exact_match"] is True
+        and report["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is True
+        and len(candidates) == 1
+        and candidates[0][0].get("storage") == declared_storage_id,
+        SELECTOR_REFUSAL,
+    )
+
+    _, group = candidates[0]
+    children = group.get("children")
+    _require(
+        isinstance(children, list)
+        and len(children) == 1
+        and isinstance(children[0], Mapping)
+        and isinstance(children[0].get("name"), str)
+        and PATH.fullmatch(children[0]["name"]) is not None,
+        SELECTOR_REFUSAL,
+    )
+    pv_path = children[0]["name"]
+    disks_by_path = {row["devpath"]: row for row in disk_rows}
+    disk = disks_by_path.get(pv_path)
+    _require(
+        isinstance(disk, Mapping)
+        and "parent" not in disk
+        and disk.get("used") == "LVM",
+        SELECTOR_REFUSAL,
+    )
+    _require(not pv_path.startswith("/dev/vd"), SELECTOR_REFUSAL)
+    for attribute in ("model", "vendor"):
+        value = disk.get(attribute)
+        _require(value is None or isinstance(value, str), SELECTOR_REFUSAL)
+        _require(
+            value is None
+            or not any(marker in value.casefold() for marker in ("qemu", "virtio", "vmware", "virtual")),
+            SELECTOR_REFUSAL,
+        )
+
+    serial = disk.get("serial")
+    _require(
+        isinstance(serial, str)
+        and serial == serial.strip()
+        and DEVICE_ID.fullmatch(serial) is not None,
+        SELECTOR_REFUSAL,
+    )
+    raw_wwn = disk.get("wwn")
+    _require(raw_wwn is None or isinstance(raw_wwn, str), SELECTOR_REFUSAL)
+    wwn = raw_wwn.strip() if isinstance(raw_wwn, str) else None
+    if wwn == "":
+        wwn = None
+    _require(
+        wwn is None
+        or (wwn == raw_wwn and DEVICE_ID.fullmatch(wwn) is not None),
+        SELECTOR_REFUSAL,
+    )
+    serial_matches = 0
+    wwn_matches = 0
+    for row in disk_rows:
+        row_serial = row.get("serial")
+        if row_serial is not None and row_serial != "":
+            _require(
+                isinstance(row_serial, str)
+                and row_serial == row_serial.strip()
+                and DEVICE_ID.fullmatch(row_serial) is not None,
+                SELECTOR_REFUSAL,
+            )
+            serial_matches += row_serial.casefold() == serial.casefold()
+        row_wwn = row.get("wwn")
+        _require(row_wwn is None or isinstance(row_wwn, str), SELECTOR_REFUSAL)
+        if row_wwn is None or row_wwn.strip() == "":
+            continue
+        _require(
+            row_wwn == row_wwn.strip()
+            and DEVICE_ID.fullmatch(row_wwn) is not None,
+            SELECTOR_REFUSAL,
+        )
+        if wwn is not None and row_wwn.casefold() == wwn.casefold():
+            wwn_matches += 1
+    _require(serial_matches == 1, SELECTOR_REFUSAL)
+    _require(wwn is None or wwn_matches == 1, SELECTOR_REFUSAL)
+
+    return {
+        "candidate_storage_id": declared_storage_id,
+        "backing_disk_serial": serial,
+        "backing_disk_wwn": wwn,
+        "backing_disk_health": _smart_health_class(disk.get("health")),
     }
-    return report
+
+
+def preflight_thick_lvm_allocation(payload: object) -> dict[str, object]:
+    """Check a pinned disk identity and reported headroom without authorizing writes."""
+    _require(isinstance(payload, Mapping), ALLOCATION_PREFLIGHT_REFUSAL)
+    survey = payload.get("survey")
+    report, candidates, disk_rows = _inspection(survey)
+    declared_storage_id = survey["declared_storage_id"]
+    _require(
+        report["thick_lvm_config_vg_mappings_complete"] is True
+        and report["declared_thick_lvm_candidate_exact_match"] is True
+        and report["declared_thick_lvm_reported_vg_headroom_passes_512_gib"] is True
+        and len(candidates) == 1
+        and candidates[0][0].get("storage") == declared_storage_id,
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+
+    serial_pin, wwn_pin = payload.get("backing_disk_serial"), payload.get("backing_disk_wwn")
+    _require(serial_pin is not None or wwn_pin is not None, ALLOCATION_PREFLIGHT_REFUSAL)
+    _require(
+        serial_pin is None or (
+            isinstance(serial_pin, str)
+            and serial_pin == serial_pin.strip()
+            and DEVICE_ID.fullmatch(serial_pin) is not None
+            and serial_pin.casefold() != "unknown"
+        ),
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+    _require(
+        wwn_pin is None or (
+            isinstance(wwn_pin, str)
+            and WWN.fullmatch(wwn_pin) is not None
+        ),
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+    canonical_wwn_pin = _canonical_wwn(wwn_pin) if wwn_pin is not None else None
+
+    _, group = candidates[0]
+    children = group.get("children")
+    _require(
+        isinstance(children, list)
+        and len(children) == 1
+        and isinstance(children[0], Mapping)
+        and isinstance(children[0].get("name"), str)
+        and PATH.fullmatch(children[0]["name"]) is not None,
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+    pv_path = children[0]["name"]
+    disks_by_path = {row.get("devpath"): row for row in disk_rows if isinstance(row, Mapping)}
+    disk = disks_by_path.get(pv_path)
+    _require(
+        isinstance(disk, Mapping)
+        and "parent" not in disk
+        and disk.get("used") == "LVM"
+        and not pv_path.startswith("/dev/vd"),
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+    pv = children[0]
+    vg_size, vg_free = group.get("size"), group.get("free")
+    pv_size, pv_free, disk_size = pv.get("size"), pv.get("free"), disk.get("size")
+    _require(
+        all(_integer(value, positive=True) for value in (vg_size, pv_size, disk_size))
+        and all(_integer(value) for value in (vg_free, pv_free))
+        and vg_free <= vg_size
+        and pv_free <= pv_size
+        and disk_size + LVM_CAPACITY_ROUNDING_BYTES >= pv_size
+        and pv_size + LVM_CAPACITY_ROUNDING_BYTES >= vg_size
+        and vg_size + LVM_CAPACITY_ROUNDING_BYTES >= pv_size
+        and pv_free + LVM_CAPACITY_ROUNDING_BYTES >= vg_free
+        and vg_free + LVM_CAPACITY_ROUNDING_BYTES >= pv_free
+        and pv_free - PBS_PROPOSED_DISK_BYTES
+        >= (vg_size * MINIMUM_RESIDUAL_HEADROOM_PERCENT + 99) // 100
+        and vg_free - PBS_PROPOSED_DISK_BYTES
+        >= (vg_size * MINIMUM_RESIDUAL_HEADROOM_PERCENT + 99) // 100,
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+    for attribute in ("model", "vendor"):
+        value = disk.get(attribute)
+        _require(value is None or isinstance(value, str), ALLOCATION_PREFLIGHT_REFUSAL)
+        _require(
+            value is None
+            or not any(marker in value.casefold() for marker in ("qemu", "virtio", "vmware", "virtual")),
+            ALLOCATION_PREFLIGHT_REFUSAL,
+        )
+
+    _require(_smart_health_class(disk.get("health")) == "passed", ALLOCATION_PREFLIGHT_REFUSAL)
+    if serial_pin is not None:
+        _require(
+            _usable_device_identity(disk.get("serial"))
+            and disk.get("serial") == serial_pin,
+            ALLOCATION_PREFLIGHT_REFUSAL,
+        )
+    if wwn_pin is not None:
+        _require(
+            _canonical_wwn(disk.get("wwn")) == canonical_wwn_pin,
+            ALLOCATION_PREFLIGHT_REFUSAL,
+        )
+
+    serial_matches, wwn_matches = [], []
+    for row in disk_rows:
+        if not isinstance(row, Mapping):
+            continue
+        row_serial, row_wwn = row.get("serial"), row.get("wwn")
+        if _usable_device_identity(row_serial):
+            _require(
+                isinstance(row_serial, str)
+                and row_serial == row_serial.strip()
+                and DEVICE_ID.fullmatch(row_serial) is not None,
+                ALLOCATION_PREFLIGHT_REFUSAL,
+            )
+        canonical_row_wwn = None
+        if _usable_device_identity(row_wwn):
+            _require(
+                isinstance(row_wwn, str)
+                and row_wwn == row_wwn.strip()
+                and DEVICE_ID.fullmatch(row_wwn) is not None,
+                ALLOCATION_PREFLIGHT_REFUSAL,
+            )
+            if WWN.fullmatch(row_wwn) is not None:
+                canonical_row_wwn = _canonical_wwn(row_wwn)
+        if (
+            serial_pin is not None
+            and _usable_device_identity(row_serial)
+            and isinstance(row_serial, str)
+            and row_serial.casefold() == serial_pin.casefold()
+        ):
+            serial_matches.append(row)
+        if (
+            canonical_wwn_pin is not None
+            and canonical_row_wwn == canonical_wwn_pin
+        ):
+            wwn_matches.append(row)
+    _require(
+        (serial_pin is None or len(serial_matches) == 1 and serial_matches[0] is disk)
+        and (wwn_pin is None or len(wwn_matches) == 1 and wwn_matches[0] is disk),
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+
+    return {
+        "status": "preflight_passed",
+        "backing_identity_matches": True,
+        "direct_lvm_disk_lineage": True,
+        "smart_health": "passed",
+        "reported_vg_headroom_passes_512_gib": True,
+        "allocation_authorized": False,
+        "device_safety_verified": False,
+        "filesystem_readiness_verified": False,
+        "pbs_readiness_verified": False,
+        "write_authorized": False,
+    }
+
+
+def _usable_device_identity(value: object) -> bool:
+    """Return whether a reported device identity is present and available."""
+    return value not in (None, "") and not (
+        isinstance(value, str) and value.casefold() == "unknown"
+    )
+
+
+def _canonical_wwn(value: object) -> str | None:
+    """Validate and normalize a supported WWN, mapping unavailable values to None."""
+    if value is None or value == "" or (
+        isinstance(value, str) and value.casefold() == "unknown"
+    ):
+        return None
+    _require(
+        isinstance(value, str)
+        and value == value.strip()
+        and WWN.fullmatch(value) is not None,
+        ALLOCATION_PREFLIGHT_REFUSAL,
+    )
+    return value.removeprefix("0x").removeprefix("0X").casefold()
 
 
 def main() -> int:
+    operation = ""
     try:
         operation = sys.argv[1]
         payload = json.load(sys.stdin)
@@ -870,10 +1235,26 @@ def main() -> int:
             result = validate_node(payload)
         elif operation == "inspect":
             result = inspect(payload)
+        elif operation == "select-thick-lvm-candidate":
+            result = select_thick_lvm_candidate(payload)
+        elif operation == "identify-thick-lvm-backing-identity":
+            result = identify_thick_lvm_backing_identity(payload)
+        elif operation == "preflight-thick-lvm-allocation":
+            result = preflight_thick_lvm_allocation(payload)
         else:
             raise ValueError("Unsupported physical-storage survey operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        print(json.dumps({"refusal": _safe_refusal(exc)}, separators=(",", ":")))
+        refusal = (
+            ALLOCATION_PREFLIGHT_REFUSAL
+            if operation == "preflight-thick-lvm-allocation"
+            else SELECTOR_REFUSAL
+            if operation in {
+                "select-thick-lvm-candidate",
+                "identify-thick-lvm-backing-identity",
+            }
+            else _safe_refusal(exc)
+        )
+        print(json.dumps({"refusal": refusal}, separators=(",", ":")))
         return 2
     print(json.dumps(result, separators=(",", ":")))
     return 0

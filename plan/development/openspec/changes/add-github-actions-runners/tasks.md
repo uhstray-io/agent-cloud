@@ -14,26 +14,67 @@
 
 ## 1. Settle the container runtime question before anything installs
 
-- [ ] 1.1 On a scratch host (or a throwaway VM on crabnebula), install rootless podman
+- [x] 1.1 On a scratch host (or a throwaway VM on crabnebula), install rootless podman
       via `platform/playbooks/install-podman.yml` and enable the rootless
       Docker-compatible API socket for an unprivileged user with lingering enabled.
-- [ ] 1.2 Download `actions/runner-container-hooks` v0.8.1 and run its docker hook
+      **Done 2026-10-18 as a local container, not a VM**, so the spike is repeatable by
+      anyone with podman and touches no host: `platform/services/github-runner/deployment/
+      hooks-smoke/` builds Ubuntu 24.04 with its podman 4.9.3, uidmap and Docker's CLI
+      client, makes the runner account with the runner home, and starts that account's
+      rootless API service. The host-side socket and lingering are the deploy's
+      (`tasks/podman-user-docker-socket.yml`, `tasks/enable-linger.yml`).
+- [x] 1.2 Download `actions/runner-container-hooks` v0.8.1 and run its docker hook
       against that rootless socket with a trivial job payload. Record verbatim what
       works and what fails — in particular container create, exec, volume mount of the
       work directory, and cleanup.
-- [ ] 1.3 Write the outcome into `design.md` under D4 as a resolved decision (replacing
+      **Findings (2026-10-12), from the live runners and upstream source.** On both
+      runners (rootless podman 4.9.3 through podman-docker, hooks v0.8.1, runner 2.336.0)
+      container create failed three ways, recorded in `docs/MISTAKES.md` 10.24 and 10.25:
+      (a) `cannot resolve /github/home: lstat /github: no such file or directory`: the
+      hooks give `docker create` only the job's variables, with HOME=/github/home and no
+      XDG directory;
+      (b) `statfs .../_work/_actions: no such file or directory`: podman refuses a missing
+      bind source (fix: `job-started.sh`);
+      (c) `statfs /var/run/docker.sock: permission denied`: the hardcoded socket mount led
+      to root's socket (fix: the account's own podman socket at that path).
+      **Result (2026-10-18), `hooks-smoke/run.sh`, hooks v0.8.1 digest-verified, the
+      runner's full mount set and HOME=/github/home.** Through a podman-docker style shim
+      (podman as a CLI): `prepare_job` fails at `docker create` with (a), verbatim, as on
+      the runners. Through Docker's CLI client 29.9.1 with `DOCKER_HOST` at the account's
+      rootless API socket (it negotiates API 1.41 with podman 4.9.3): `prepare_job`
+      (network create, pull, create, start) passes; `run_script_step` passes, its step
+      reports `HOME=/github/home`, the job image and the mounted Docker socket, and writes
+      a marker the host sees in the work directory; `cleanup_job` removes the container
+      and the network, leaving none. (a) is therefore a property of running podman as a
+      CLI in the job's environment, not of rootless podman: the API service runs with the
+      account's own environment. The interim fix for (a), the `_bin/docker` wrapper of
+      #556, is replaced by the client and removed (`docs/MISTAKES.md` 10.29). Still to
+      observe: the same cycle on the live hosts (1.5).
+- [x] 1.3 Write the outcome into `design.md` under D4 as a resolved decision (replacing
       the "unverified" wording) — either "rootless podman compatibility socket works,
       platform norm holds" or "rootless podman insufficient because <verbatim failure>;
       this host declares the Docker engine, which the platform already supports for
       NetBox for the same class of reason".
-- [ ] 1.4 If podman is insufficient, confirm `platform/playbooks/install-docker.yml`
+      **Done 2026-10-18:** "rootless podman compatibility socket works, platform norm
+      holds", through a Docker CLI client of the socket (D4, "Runtime feasibility,
+      RESOLVED").
+- [x] 1.4 If podman is insufficient, confirm `platform/playbooks/install-docker.yml`
       covers the runner host's needs unchanged; if it does not, extend it generically
       rather than adding a runner-only step.
+      **Not needed: podman is sufficient (1.2).** The client install is a generic opt-in
+      in `install-podman.yml` (`podman_docker_api_client`), and Docker's apt repository is
+      one shared task (`tasks/add-docker-apt-repo.yml`) used by both install playbooks.
 - [ ] 1.5 Validation gate — the container hook demonstrably forces a job payload into a
       container on the chosen runtime with no workflow-side request, proving spec
       scenario **"Isolation does not depend on the workflow asking for it"** is
       achievable on the chosen engine, and D4 in `design.md` no longer says
       "unverified".
+      **Partly superseded, partly open.** D4's CORRECTED decision records that the hooks
+      do not force an undeclared job into a container on any engine, so that half of the
+      gate cannot be met by a runtime choice; it belongs to the ephemeral-runner work (12).
+      D4 no longer says "unverified". Open: a job that DECLARES `container:` runs end to
+      end on both live runners after the runbook deploy (the service CLAUDE.md,
+      "Container jobs under rootless podman", Verify on the live hosts).
 
 ## 2. Close the shared-mechanism gaps (before any host depends on them)
 
@@ -57,6 +98,11 @@
       API socket for a named unprivileged user, as an opt-in var (default off), reusing
       `platform/playbooks/tasks/enable-linger.yml` for the session lingering rather than
       re-implementing it.
+      **Status 2026-10-18:** the per-account socket is the shared task
+      `tasks/podman-user-docker-socket.yml`, called by the runner deploy after lingering,
+      rather than a var on `install-podman.yml` (whose BATS suite pins that it enables no
+      API socket host-wide). The client side is the opt-in `podman_docker_api_client` on
+      `install-podman.yml`, default off.
 - [ ] 2.5 Add BATS coverage for the socket extension, including the default-off case.
 - [ ] 2.6 Prove the no-op WITHOUT touching a live service host. Running the shared
       firewall playbook against an existing host is the single highest-lockout-risk
@@ -161,6 +207,12 @@
 - [ ] 5.7 Declare the access list as configuration: exactly `zerds`, `atlas`,
       `zerds-website`, `weft`, `scientific-business`. `agent-cloud` is absent, with a
       comment stating why (public repo; fork PRs; see design D2).
+      **Note (2026-10-19, operator decision):** `skynet` (private) added to the declared
+      list because its GitHub-hosted jobs stopped starting. Convergence (`Manage GitHub
+      Runner Group` with `dry_run=false`) waits on the GitHub App repository-access
+      re-grant recorded in `service-deployment-workflow` task 2.5. Its workflows are to
+      switch `runs-on` to `[self-hosted, linux, x64, uhstray-lan]` in the skynet
+      repository. Nothing in this task is ticked.
 - [ ] 5.8 Inspect the organisation's current runner groups with the new credential
       before the first convergence, so a removal is not a surprise (design Open
       Question 2), then run the convergence.
@@ -305,3 +357,43 @@
       `verify-github-runners.yml`, and spec scenarios **"Two hosts installed at
       different times match"** and **"The running version does not drift"** are verified
       (both hosts report the declared pinned version with self-update disabled).
+
+## 11. Dedicated runner App administration credential follow-up
+
+The runner App installation grant must not reuse `secret/services/github:pat`: that
+shared credential also serves GHCR, and a scope change could disrupt package pulls.
+Keep the grant-only `installation_admin_token` in `secret/services/github-runner`; the
+helper accepts only a dedicated `ghp_` classic PAT with the `repo` scope and refuses to
+write unless its user has admin permission on the private target repository. Keep the
+shared `secret/services/github:pat` unchanged for GHCR.
+
+- [ ] 11.1 After the reviewed code merges into Dev, seed only the dedicated classic PAT as
+      `installation_admin_token` into `secret/services/github-runner` through the governed
+      `seed-openbao-key.yml` flow, using `scripts/semaphore-seed-input.py` with an encrypted
+      isolated Semaphore environment. Do not seed a CLI OAuth token or replace/rewrite
+      `secret/services/github:pat`.
+- [ ] 11.2 Run the reviewed Dev grant template in check mode; confirm it previews the
+      fixed repository without a PUT and emits no credential material.
+- [ ] 11.3 Run the reviewed Dev grant template normally; confirm the additive grant and
+      fresh installation-token readback report `site-config` present.
+- [ ] 11.4 Run the `site-config` runner CI workflow and confirm it completes on the
+      declared self-hosted runner group.
+
+## 12. Future work — per-job ephemeral runners
+
+The accepted interim boundary is that the six permitted private repositories share the
+runner trust boundary, and jobs can leave processes behind.
+2026-10-19: the declared list is now seven (`skynet` added, operator decision; see the 5.7 note), and
+all seven share this boundary. Per-job isolation is agent-cloud #716 (ephemeral runners, in review).
+
+- [ ] 12.1 Migrate to per-job ephemeral runners. `--ephemeral` registration alone is
+      insufficient: isolate and destroy the runner process and filesystem after every
+      job, including failed or cancelled jobs.
+- [ ] 12.2 Acceptance: in each of two cases, have the first job from one permitted
+      private repository write a unique workspace marker and start a uniquely identifiable
+      background process; fail it in one case and cancel it in the other. After each
+      outcome, run a job from a different permitted private repository on the same runner
+      host and prove it cannot read the marker or observe or attach to the process. Preserve
+      the runner group access limits and
+      `agent-cloud`'s public-repository exclusion. Deploy through reviewed config-as-code
+      and Semaphore changes, with final-head CI and review green before rollout.

@@ -1,0 +1,310 @@
+# Read-only, Dev-bound observation of active scrape load and its 24-hour sample maxima.
+# The receiver-side helper keeps target URLs, Prometheus responses, and probe bodies private.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed source and survey helper bytes
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/summarize-o11y-scrape-baseline.py
+      - platform/playbooks/filter_plugins/o11y_scrape_budget.py
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Validate the reviewed production survey context
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _survey_root: "{{ playbook_dir | dirname | dirname }}"
+    _survey_o11y_hosts: "{{ groups.get('o11y_svc', []) }}"
+  tasks:
+    - name: Require one production o11y target and the reviewed Dev revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _survey_o11y_hosts | length == 1
+          - not (local_mode | default(false) | bool)
+        fail_msg: "The scrape baseline survey requires one production o11y target and an exact reviewed Dev revision."
+        quiet: true
+
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _survey_root }}"
+      register: _survey_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the controller to match the reviewed Dev revision
+      ansible.builtin.assert:
+        that: _survey_revision.stdout | trim == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision; no baseline was produced."
+        quiet: true
+
+- name: Read and reduce the production scrape baseline
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _survey_engine: "{{ container_engine | default('') }}"
+    _baseline_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+    _survey_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _survey_scrape_config_dir: "{{ _survey_monorepo_dir }}/{{ monorepo_deploy_path }}/config/scrape.d"
+    _survey_public_jobs:
+      - alloy
+      - agentgateway
+      - dgx-spark
+      - grafana
+      - host-node
+      - loki
+      - prometheus
+      - pyroscope
+      - receiver-host
+      - tempo
+    _survey_helper_fixed_reasons:
+      - ambiguous_metric
+      - ambiguous_series
+      - ambiguous_targets
+      - curl_unsupported
+      - malformed_samples
+      - malformed_series
+      - malformed_targets
+      - missing_probe_data
+      - missing_samples
+      - missing_series
+      - no_active_targets
+      - probe_compressed
+      - probe_http_status
+      - probe_timeout
+      - probe_too_large
+      - probe_unavailable
+      - query_unavailable
+      - series_unavailable
+      - survey_unavailable
+      - unhealthy_target
+      - unsafe_target_url
+      - unrecognized_job
+  tasks:
+    - name: Require the supported receiver runtime
+      ansible.builtin.assert:
+        that: _survey_engine == 'podman'
+        fail_msg: "The scrape baseline survey requires an explicitly declared Podman receiver."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Collect and sanitize the active scrape baseline on the receiver
+      ansible.builtin.script:
+        cmd: "{{ _baseline_helper }}"
+      register: _baseline_run
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      environment:
+        O11Y_SCRAPE_CONFIG_DIR: "{{ _survey_scrape_config_dir }}"
+      when: not ansible_check_mode
+
+    - name: Parse and classify the helper response
+      no_log: true
+      when: not ansible_check_mode
+      block:
+        - name: Parse the helper's bounded public projection
+          ansible.builtin.set_fact:
+            _scrape_survey_result: "{{ _baseline_run.stdout | from_json }}"
+          no_log: true
+
+        - name: Validate the helper success envelope
+          ansible.builtin.set_fact:
+            _scrape_helper_envelope_valid: >-
+              {{ _scrape_survey_result is mapping
+                 and (_scrape_survey_result.keys() | list | sort) == ['alert_input_availability', 'baseline', 'loaded_limit_readback', 'source_limit_readback']
+                 and _scrape_survey_result.get('baseline') is mapping
+                 and _scrape_survey_result.get('loaded_limit_readback') is mapping
+                 and _scrape_survey_result.get('source_limit_readback') is mapping
+                 and _scrape_survey_result.get('alert_input_availability') is mapping }}
+          no_log: true
+
+        - name: Classify the helper response envelope
+          ansible.builtin.set_fact:
+            _scrape_helper_receipt:
+              status: "{{ 'observed' if _scrape_helper_envelope_valid else 'unavailable' }}"
+              reason: >-
+                {{ 'complete_receipt' if _scrape_helper_envelope_valid else
+                   _scrape_survey_result.get('reason') if _scrape_survey_result is mapping
+                   and (_scrape_survey_result.keys() | list | sort) == ['reason', 'status']
+                   and _scrape_survey_result.get('status') == 'unavailable'
+                   and _scrape_survey_result.get('reason') in _survey_helper_fixed_reasons
+                   else 'malformed_helper_response' }}
+          no_log: true
+      rescue:
+        - name: Replace an unparsable helper response with a fixed refusal
+          ansible.builtin.set_fact:
+            _scrape_survey_result: {}
+            _scrape_helper_receipt:
+              status: unavailable
+              reason: malformed_helper_response
+          no_log: true
+
+    - name: Require a complete helper response envelope
+      ansible.builtin.assert:
+        that:
+          - _scrape_helper_receipt.status == 'observed'
+        fail_msg: >-
+          The scrape baseline helper returned status={{ _scrape_helper_receipt.status }}
+          reason={{ _scrape_helper_receipt.reason }}; no baseline receipt is available.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Keep the active scrape baseline separate from loaded-limit evidence
+      ansible.builtin.set_fact:
+        _scrape_baseline_receipt: "{{ _scrape_survey_result.baseline }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require a complete and bounded baseline receipt
+      ansible.builtin.assert:
+        that:
+          - _scrape_baseline_receipt.status == 'observed'
+          - _scrape_baseline_receipt.active_target_count is integer
+          - _scrape_baseline_receipt.active_target_count > 0
+          - _scrape_baseline_receipt.jobs is sequence
+          - _scrape_baseline_receipt.jobs | length > 0
+          - _scrape_baseline_receipt.jobs | length <= _scrape_baseline_receipt.active_target_count
+          - (_scrape_baseline_receipt.jobs | map(attribute='job') | list | difference(_survey_public_jobs) | length) == 0
+          - (_scrape_baseline_receipt.jobs | selectattr('active_target_count', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | selectattr('health.healthy', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | selectattr('health.unhealthy', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='health.unhealthy') | max) == 0
+          - (_scrape_baseline_receipt.jobs | selectattr('max_scrape_samples_scraped_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_scrape_samples_scraped_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | selectattr('max_scrape_response_body_bytes_point_in_time', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_scrape_response_body_bytes_point_in_time') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_scrape_response_body_bytes_point_in_time') | max) <= 167772160
+          - (_scrape_baseline_receipt.jobs | selectattr('max_stored_series_label_count_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_count_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_count_24h') | max) <= 16777216
+          - (_scrape_baseline_receipt.jobs | selectattr('max_stored_series_label_name_bytes_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_name_bytes_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_name_bytes_24h') | max) <= 16777216
+          - (_scrape_baseline_receipt.jobs | selectattr('max_stored_series_label_value_bytes_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_value_bytes_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_value_bytes_24h') | max) <= 16777216
+        fail_msg: "The scrape baseline is unavailable, unhealthy, ambiguous, or outside the bounded public receipt schema."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Compute the source-only candidate budget preview
+      ansible.builtin.set_fact:
+        _scrape_budget_candidate_preview: >-
+          {{ _scrape_baseline_receipt | o11y_scrape_budget_preview(
+            o11y_scrape_limits | default({}),
+            o11y_scrape_limits_reviewed | default(false),
+            o11y_scrape_sample_limit | default(2000)
+          ) }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Compute bounded loaded inline scrape-limit coverage
+      ansible.builtin.set_fact:
+        _scrape_loaded_limit_coverage: >-
+          {{ _scrape_survey_result.loaded_limit_readback | o11y_loaded_scrape_limit_coverage(
+            _scrape_baseline_receipt,
+            o11y_scrape_limits | default({}),
+            o11y_scrape_limits_reviewed | default(false),
+            o11y_scrape_sample_limit | default(2000)
+          ) }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Compute bounded on-disk split scrape-limit coverage
+      ansible.builtin.set_fact:
+        _scrape_source_limit_coverage: >-
+          {{ _scrape_survey_result.source_limit_readback | o11y_source_scrape_limit_coverage(
+            o11y_scrape_limits | default({}),
+            o11y_scrape_limits_reviewed | default(false)
+          ) }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Keep alert-input availability independent and bounded
+      ansible.builtin.set_fact:
+        _scrape_alert_input_availability: "{{ _scrape_survey_result.alert_input_availability }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Validate the fixed alert-input availability projection
+      ansible.builtin.assert:
+        that:
+          - _scrape_alert_input_availability.status == 'observed'
+          - _scrape_alert_input_availability | length == 2
+          - _scrape_alert_input_availability.families is sequence
+          - _scrape_alert_input_availability.families | length == 6
+          - (_scrape_alert_input_availability.families | selectattr('family', 'defined') | list | length) == 6
+          - (_scrape_alert_input_availability.families | selectattr('status', 'defined') | list | length) == 6
+          - (_scrape_alert_input_availability.families | selectattr('reason', 'defined') | list | length) == 6
+          - (_scrape_alert_input_availability.families | map('length') | select('equalto', 3) | list | length) == 6
+          - (_scrape_alert_input_availability.families | map(attribute='family') | list) == ['otelcol_receiver_refused_log_records_total', 'otelcol_receiver_refused_spans_total', 'otelcol_exporter_enqueue_failed_spans_total', 'otelcol_exporter_send_failed_spans_total', 'loki_discarded_samples_total', 'tempo_discarded_spans_total']
+          - (_scrape_alert_input_availability.families | selectattr('status', 'in', ['observed_zero', 'observed_nonzero', 'missing_or_stale', 'unavailable']) | list | length) == 6
+          - (_scrape_alert_input_availability.families | selectattr('reason', 'in', ['samples_present', 'no_samples', 'malformed_response', 'malformed_sample', 'ambiguous_target', 'ambiguous_series', 'target_unavailable', 'api_unavailable']) | list | length) == 6
+        fail_msg: "The alert-input availability receipt is outside its fixed public schema."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Report the source-only candidate budget preview
+      ansible.builtin.debug:
+        msg: "{{ _scrape_budget_candidate_preview | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Report loaded inline scrape-limit coverage
+      ansible.builtin.debug:
+        msg: "{{ _scrape_loaded_limit_coverage | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Report on-disk split scrape-limit coverage
+      ansible.builtin.debug:
+        msg: "{{ _scrape_source_limit_coverage | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Report bounded alert-input availability
+      ansible.builtin.debug:
+        msg: "{{ _scrape_alert_input_availability | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Report the bounded baseline receipt
+      ansible.builtin.debug:
+        msg: "{{ _scrape_baseline_receipt | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Mark check-mode results as unverified
+      ansible.builtin.debug:
+        msg:
+          baseline:
+            status: check_mode_unverified
+            reason: "Prometheus queries and direct HTTP probes are skipped in check mode."
+          candidate_preview:
+            status: check_mode_unverified
+            reason: "Candidate comparison is skipped in check mode."
+          loaded_limits:
+            status: check_mode_unverified
+            reason: "Prometheus status APIs are skipped in check mode."
+            jobs: []
+          source_limits:
+            status: check_mode_unverified
+            reason: "Receiver split scrape files are not read in check mode."
+            jobs: []
+          alert_input_availability:
+            status: check_mode_unverified
+            reason: "Prometheus alert-input queries are skipped in check mode."
+            families: []
+      when: ansible_check_mode

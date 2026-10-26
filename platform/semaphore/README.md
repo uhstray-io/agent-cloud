@@ -103,6 +103,7 @@ scripted path exist and are recorded here so it is built once, deliberately:
    inside the controller (see the publisher section). A workstation token is an
    operator-held value — provisioned into the workstation environment, never
    into a repo, a survey parameter or a launch argument.
+
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
    as a JSON string of the survey values. Semaphore v2.17.31 merges EVERY key of that
@@ -119,11 +120,58 @@ scripted path exist and are recorded here so it is built once, deliberately:
    shape is unverified, allows only the template's declared survey fields, fills a
    declared field left unset with its declared `default_value` as the web form does,
    and refuses while the template already has a running task, all before the POST.
+   Survey fields declared `integer` or `int` are sent as JSON integers, including
+   string defaults. Use canonical decimal `--set` values such as `limit=0`,
+   `limit=42`, or `offset=-7`; leading zeros, negative zero, a plus sign,
+   whitespace, decimals, and exponent notation are refused before submission
+   with the field name only. String and enum survey values remain strings.
    Its read-back-and-stop after the POST is only a tripwire for a changed server; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
    the `/api/project/{id}/...` prefix the committed playbooks already use;
    confirm against the running version before scripting.
+
+### Operator token rotation
+
+`scripts/semaphore-rotate-token.py` rotates the calling user's workstation token.
+It reads the current backup only from stdin; the mode-`0600` recovery state
+holds both token values until revocation is confirmed, then is removed. The
+replacement is written atomically to the local backup with mode `0600`. The
+command requires the authenticated server's
+`/api/info` version to be exactly `2.19.11`, the version whose token create,
+list, and prefix-delete behavior this workflow has reviewed. It refuses
+wildcard-bearing or ambiguous token IDs and rechecks the complete user-token
+inventory before deletion. It never prints a token or ID prefix.
+
+Run the script from a reviewed checkout after publishing the Dev-bound
+`Rotate Semaphore Operator Token (Dev)` template and provisioning its isolated
+environment. Keep the old token file unchanged as stdin until the command
+completes. Example shape (replace only the non-secret values and file paths):
+
+```sh
+python3 scripts/semaphore-rotate-token.py \
+  --url https://semaphore.example \
+  --project 1 \
+  --expected-user-id 1 \
+  --inventory 1 \
+  --backup "$HOME/.config/semaphore/operator-token" \
+  --state "$HOME/.config/semaphore/operator-token.rotation" \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+The command verifies the replacement token, runs the guarded Dev playbook, and
+replaces the workstation backup before it attempts to revoke the old token. The
+playbook updates `secret/services/semaphore:api_token` only when its protected
+current value exactly matches the old operator token; a different controller
+token stays unchanged. The state file makes acknowledged create and later steps
+resumable, including a retry after the backup already contains the replacement.
+If the create request has an unknown outcome, the state
+file blocks another create because the API does not return an existing token's
+full value; reconcile that inventory manually before starting a new rotation.
+The command holds a private local lock beside the backup and rechecks the
+inventory before revocation. Run it during an exclusive token-change window:
+the API has no server-side compare-and-delete, so another operator changing
+tokens outside this command cannot honor the local lock.
 
 Until an operator token is provisioned, the honest state is: **operator launches
 from the UI; the agent hands over the exact template name, survey values and the
@@ -251,6 +299,11 @@ An environment provisioned before 2026-09-25 carries an `openbao_addr` pin. Publ
 refuses it until **Provision Seed Environment** runs again, which removes the pin and keeps
 the AppRole inputs.
 
+If a task launch fails with `cannot decrypt access key, perhaps encryption key was changed`,
+Semaphore's encryption key changed under existing inputs. Run **Provision Seed Environment**
+for that seed template with `seed_replace_auth=true`: it overwrites the two AppRole inputs in
+place from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
+
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
    with `seed_template` set to the declared base name, plus the verified
    `semaphore_project_id`, `semaphore_inventory_id` and `semaphore_source_environment_id`
@@ -325,6 +378,7 @@ The projection is a local copy, not a new source of truth.
 | Survey readback or repository binding fails | Stop; inspect the declared and live values before another write |
 | A token that just worked gets an empty-body 401 on every endpoint, and the UI login says "Failed to create session" | Semaphore's own database before the credential. `api/auth.go` (v2.19.11) answers any error from the token or user lookup with 401, so a stopped Postgres reads exactly like a revoked token. Check the Postgres container and the host's disk. That check needs recovery access to the Semaphore host, which requires the operator's authorization |
 | A task fails within milliseconds, with no output and no checked-out commit | The Semaphore host (disk, runner) before the task's own inputs |
+| `Unable to parse /tmp/semaphore/project_<n>/inventory_<id>.yml`, or `The inventory could not be parsed or contained no hosts` | Concurrent tasks share that one inventory file and the first to finish removes it before another has parsed it (prod task 3878 on 2026-10-09; local tasks 5583 and 5585 on 2026-10-12). Re-run the task on its own, and do not launch it at a scheduled collector minute (the conformance collector runs every 15 minutes). `tasks/runtime-access.yml` checks the inventory first whenever the run was given one with `-i`, as every Semaphore task is, so a lost file now fails with this message and not with "Refusing to send secret material … invalid endpoint". An operator-side tool started with no `-i` is not asked for an inventory |
 
 The 2026-09-26 outage matched both rows: the host's 15 GB root filesystem filled, and
 Postgres exited at 22:41:59 UTC when WAL recovery could not extend a file. Growing

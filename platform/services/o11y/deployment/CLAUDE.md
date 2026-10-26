@@ -42,12 +42,14 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   `o11y_svc` inventory must then declare the reviewed `o11y_journal_directory` as that
   actual directory.
   The playbook checks that directory and a recent exact `CONTAINER_NAME=o11y-alloy` entry,
-  then mounts only that directory read-only. It sends only `service=o11y/alloy` and
-  `signal=container` through the existing private OTLP receiver. It does not read the
-  engine socket or alter receiver volumes. The Compose service has no dependencies;
+  then mounts only that directory read-only. It sends `service=o11y/alloy`,
+  `signal=container`, and `target_id=service:o11y` through the existing private OTLP
+  receiver. It does not read the engine socket or alter receiver volumes. The
+  Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
-  Compose named `journal-collector-state` volume mounted at `/alloy-state`; Alloy's
+  fresh Compose named `journal-collector-state-v3` volume mounted at `/alloy-state`
+  with long-syntax `volume.nocopy: true`; Alloy's
   `--storage.path` and exact live-mount/rollback checks use that same root-level path.
   This avoids traversing the image's `/var/lib/alloy` directory, which the pinned
   [Alloy v1.9.2 Dockerfile](https://github.com/grafana/alloy/blob/v1.9.2/Dockerfile)
@@ -64,14 +66,48 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
   The explicit `survey` action resolves the positions volume from the receiver
-  Compose project and `journal-collector-state` identity, including when the pilot
+  Compose project and `journal-collector-state-v3` identity, including when the pilot
   container is absent. New volumes carry the explicit `com.docker.compose.volume`
   label; an existing volume remains compatible when that label is absent only if
   its exact expected name and project label match. Conflicting labels or names refuse.
-  Survey reads bounded owner/mode and direct-child metadata in the rootless Podman
+  The legacy `journal-collector-state` (v1) and `journal-collector-state-v2` volumes
+  remain untouched for later independent forensic/disposition review; the new pilot
+  never inspects, mounts, repairs or deletes either. All journal helper actions resolve
+  only v3. First
+  bootstrap requires v3 to be absent. Unexpected existing v3 state without a valid
+  cursor refuses the start gate. A fresh start can replay only Alloy's supported
+  `max_age` window, not older journal entries. Use the explicit Dev-bound `stage`
+  action to place the exact `expected_repository_sha` through the shared
+  `place-monorepo.yml` task; it refuses check mode and does not start/recreate a
+  container or inspect, mount, or change either positions volume. The required
+  order is `stage` -> read-only `survey` -> separate `apply`. Survey never places
+  the checkout. Stage, survey, and apply first require installed target `HEAD` to
+  equal `expected_repository_sha`, then run the installed `podman-compose config`
+  parser under `no_log` and require the resolved v3 source,
+  `/alloy-state` destination, and `nocopy: true`; this does not prove the runtime
+  applied the option. Check mode skips provider runtime reads and reports
+  `check_mode_unverified`; stage refuses check mode. Survey reads bounded owner/mode
+  and direct-child metadata in the rootless Podman
   namespace; it does not mount or initialize the volume and never reads
-  positions-file content. Review this survey before choosing
-  `repair-positions`, which is a separate action. Both repair paths require an
+  positions-file content. For an existing v3 volume with safe
+  layout but unknown cursor validity, use `survey-cursor`. That action reads only a safe exact
+  positions file through the bounded parser and reports fixed valid/unavailable
+  categories; it does not mount, mutate or start the collector. A valid cursor
+  alone does not clear a pending initialization flag or authorize apply. A
+  separately reviewed pre-start exception may admit a populated v3 volume when
+  the cursor is parsed, metadata and capacity are safe, Podman reports
+  `NeedsChown=false` and `NeedsCopyUp=true`, no collector/users/mounts exist,
+  and the local Podman client is the reviewed 4.9.3 release. Podman 4.9.3
+  skips copy-up into a nonempty volume even if podman-compose omits `nocopy`;
+  the resolved Compose setting alone does not prove runtime preservation.
+  Every condition is rechecked immediately before Compose mounts the volume.
+  For this plain local volume, Podman 4.9.3's `MountCount` stays zero even while
+  the collector has its one exact named-volume bind mount; live verification
+  checks both facts separately. The first apply refused on the old count-one
+  expectation and removed only the collector, preserving the volume.
+  Review
+  the metadata survey before choosing `repair-positions`, which is a separate
+  action. Both repair paths require an
   unused unique local volume, no ACL or mount ambiguity, only direct regular
   single-link files owned by collector identity `0:0`, a root owner mismatch,
   and owner mode bits sufficient for access after the root-only change. Free-byte
@@ -96,25 +132,24 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   check mode. Apply accepts `bootstrap_allowed` only at the pre-apply and
   immediately-before-start gates. For a missing volume, bounded volume inventory
   must prove the exact expected project name is unused and an all-container query
-  must prove the named collector is absent, including stopped containers. An
-  existing empty volume qualifies only with unique exact identity, zero consumers
-  and mounts, actual boolean `NeedsChown` and `NeedsCopyUp` values, and a read-only
-  metadata result proving root `0:0`, owner RWX, no group/other write or special
-  bits, no ACL or nested mount, and no contents. `podman-compose up` is the only
-  create/initialization action. The immediate pre-start check is outside the
+  must prove the named collector is absent, including stopped containers. Only
+  a proven-missing v3 volume can bootstrap. `podman-compose up` is the only
+  create/initialization action. Any existing v3 volume requires strict identity,
+  access, layout, and a valid parsed cursor before it can start. Empty or
+  cursorless pending state, absent cursor, and invalid, unreadable, or unknown
+  cursor evidence refuse. A populated pending volume is admitted only by the
+  narrow reviewed 4.9.3 pre-start exception above. There
+  is no cursorless pre-start retry. The immediate pre-start check is outside the
   rollback block, so a refusal before startup cannot remove an already-running
-  collector. The pre-start `verify` gates also permit a bounded cursorless retry
-  only when an observed volume has both initialization flags false, the collector
-  absent from all containers, zero consumers and mounts, safe `0:0` root and
-  allowlisted layout, proven absent `positions.yml`, successful access/ACL/mount
-  checks, and sufficient GraphRoot and volume capacity. This `ready` result
-  authorizes a start attempt only. Present invalid/unreadable or unknown cursor
-  evidence refuses. After startup, the playbook calls separate `verify-live`, which
+  collector. After startup, the playbook calls separate `verify-live`, which
   must return strict `ready`, including the parsed expected journal cursor in
   `positions.yml`; the cursor is mandatory for post-start success. Runtime checks also prove the actual RW volume source/destination,
   UID mapping, effective write/rename access, health, unchanged receiver containers,
-  and exact Loki delivery. The bounded live layout permits optional `alloy_seed.json`
-  and the source's `loki.source.journal.o11y_alloy/` directory; post-start acceptance
+  and exact Loki delivery. The bounded live layout permits optional `alloy_seed.json`,
+  the source's `loki.source.journal.o11y_alloy/` directory, and at most one exact
+  `remotecfg` directory only when descriptor-pinned checks prove it empty, owner `0:0`,
+  owner-RWX, free of group/other write and special bits, ACL-free, mount-clear, and
+  stable. All other extra directories remain refused. Post-start acceptance
   still requires its valid cursor evidence. The separate repair action still refuses
   directory children.
   Health, seven-container preservation, Loki receipt, and rollback gates still apply.
@@ -132,10 +167,12 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
 | Variable | Effect |
 |---|---|
 | `dgx_spark_scrape_enabled` | Renders `config/scrape.d/dgx-spark.yml` and the `inference-failing`, `telemetry-missing`, `memory-thermal` and `benchmark-gate` alert groups; off lists those rules under `deleteRules` |
-| `o11y_inference_probe_enabled` | Installs the five-minute probe timer, its textfile collector and the two probe rules; off removes any leftover artefacts |
+| `o11y_inference_probe_enabled` | Installs the five-minute probe timer and two probe rules; off removes only the probe artefacts. The shared textfile collector remains active for daily capacity samples |
 | `o11y_inference_probe_client_leaf` | With the probe enabled, sends it straight to the gateway's mutual-TLS listener as a gateway client identity, presenting this declared internal-CA client leaf; places the CA bundle beside the leaf and maps the gateway's name on this host (README, "Gateway client identity") |
 | `o11y_alerts_enabled` | Unpauses the rendered rules and routes them to the Discord contact point, except the `benchmark-gate` placeholder, which stays paused and unrouted (`templates/alerts.yml.j2:340-349,428-432`) |
+| `o11y_expected_metrics_targets_reviewed` | Defaults false; enables production per-target missing-telemetry rules only with alerts enabled and a reviewed bounded five-label target declaration. See README, “Expected metrics target contract.” |
 | `o11y_gateway_span_logs_enabled` | Also writes one Loki line per gateway span |
+| `o11y_inference_queue_waiting_warn` | Threshold (default 6) for the `inference_queue_depth_high` warning: requests waiting on vLLM for 10 minutes. A number, not a switch; the rule renders only with `dgx_spark_scrape_enabled` |
 
 ## Conventions specific to this service
 
@@ -146,11 +183,13 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
 - Retention defaults are Prometheus `15d`, Loki `7d`, Tempo `168h`; the Prometheus size
   cap defaults to `1GB` in local mode and `0B` (no cap) otherwise (`templates/env.j2:26-30`).
   In production, any retention other than that baseline is refused unless the run has a
-  nonzero Prometheus cap and a numeric `o11y_capacity_receipt_id`
-  (`deploy-o11y.yml:132-146`), the named volumes resolve with at least 30% headroom
-  (`:156-178`), and the capacity readback reports an acceptable state (`:180-186`). The
-  retention gate does not check a backup or restore receipt; that receipt is required only
-  for Tempo-derived metrics (`:306-310`).
+  nonzero Prometheus cap and numeric `o11y_capacity_receipt_id` and
+  `o11y_backup_restore_receipt_id` references (`deploy-o11y.yml:134-150`), the named
+  volumes resolve with at least 30% headroom (`:169-180`), and the capacity readback
+  reports an acceptable state (`:182-188`). The backup/restore check validates only that
+  inventory contains a positive numeric reference; it does not inspect independent receipt
+  evidence or prove a live restore. Tempo-derived metrics use the same common receipt
+  variable (`:312-323`). These reference checks do not authorize retention expansion.
 - `config/scrape.d/host-<group>.yml` (rendered from `templates/scrape-host-node.yml.j2`) is
   written by `instrument-host-o11y.yml`, the service deployment workflow's instrument-host
   step, never by `deploy-o11y.yml`, which neither writes nor removes it.

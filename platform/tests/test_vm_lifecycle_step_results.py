@@ -69,9 +69,14 @@ def _run(tmp_path, harness, check=False, inventory=None, extra=(), step=None, en
 def _run_all(tmp_path, harness, check=False, inventory=None, extra=(), env_extra=None):
     play_file = tmp_path / "play.yml"
     play_file.write_text(yaml.safe_dump(_emit_absolute(copy.deepcopy(harness)), sort_keys=False))
+    files = tmp_path / "files"
+    files.mkdir(exist_ok=True)
+    for name in ("guard_o11y_restore_target.py", "o11y_restore_coordination.py"):
+        shutil.copy2(PLAYBOOKS / "files" / name, files / name)
     inv = tmp_path / "inv.yml"
     inv.write_text(yaml.safe_dump(inventory or {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
     env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+           "BAO_ROLE_ID": "synthetic-role", "BAO_SECRET_ID": "synthetic-secret",
            **(env_extra or {})}
     done = harness_sandbox.run(
         ["ansible-playbook", "-i", str(inv), str(play_file), *(["--check"] if check else []), *extra],
@@ -87,14 +92,24 @@ class FakeProxmox:
     is logged, so a test can say which writes a run made."""
 
     def __init__(self, routes):
-        self.routes, self.seen = routes, []
+        self.routes, self.seen, self.bao_seen = routes, [], []
         fake = self
 
         class Handler(DrainingHandler):
             def _reply(self):
-                fake.seen.append((self.command, self.path))
-                status, data = fake.routes.get((self.command, self.path), (404, None))
-                body = json.dumps({"data": data}).encode()
+                if self.command in {"POST", "PUT"}:
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if self.path.startswith("/v1/"):
+                    fake.bao_seen.append((self.command, self.path))
+                    if self.path == "/v1/auth/approle/login" and self.command == "POST":
+                        status, payload = 200, {"auth": {"client_token": "synthetic-openbao-token"}}
+                    else:
+                        status, payload = 404, {"errors": ["synthetic OpenBao record absent"]}
+                else:
+                    fake.seen.append((self.command, self.path))
+                    status, data = fake.routes.get((self.command, self.path), (404, None))
+                    payload = {"data": data}
+                body = json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -196,8 +211,16 @@ RESIZE_TASKS = ("Decide the rightsize step", "Record the step result",
                 "Fail when the VM does not match its declared spec")
 
 
+def _resize_play():
+    matches = [play for play in _plays("resize-vm.yml")
+               if any(task.get("name") == RESIZE_TASKS[0]
+                      for task in playbook_yaml.tasks(play.get("tasks", [])))]
+    assert len(matches) == 1, "expected one resize play with its rightsize decision task"
+    return matches[0]
+
+
 def _resize(tmp_path, cfg, needs_restart=False, allow_reboot=False):
-    play = _plays("resize-vm.yml")[0]
+    play = _resize_play()
     harness = [{"hosts": "localhost", "gather_facts": False,
                 "vars": {"_want_cores": "4", "_want_memory": "8192", "_want_disk_gb": "32",
                          "_disk_device": "scsi0", "_needs_restart": needs_restart,
@@ -302,7 +325,7 @@ def _template_play(tmp_path, cfg, check=False):
     play = next(p for p in _plays("provision-template.yml") if p.get("tasks"))
     fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, cfg)})
     try:
-        result, rc = _run(tmp_path, [play], check=check,
+        result, rc = _run(tmp_path, [play], check=check, inventory=_lifecycle_inventory(fake.url),
                           extra=["-e", json.dumps({"pve_host": fake.url, "pve_token_id": "automation@pve!fixture",
                                                      "pve_token_secret": "x"})])
     finally:
@@ -341,9 +364,6 @@ class LookupModule(LookupBase):
             out.append(store[path][field] if field else store[path])
         return out
 """
-BAO = "https://bao.invalid"
-
-
 def _fake_store(tmp_path, proxmox):
     coll = tmp_path / "collections/ansible_collections/community/hashi_vault"
     (coll / "plugins/lookup").mkdir(parents=True)
@@ -359,6 +379,12 @@ def _fake_store(tmp_path, proxmox):
             "BAO_SECRET_ID": "synthetic-role-secret"}
 
 
+def _lifecycle_inventory(bao_url):
+    return {"all": {"hosts": {"localhost": {"ansible_connection": "local"}},
+                    "vars": {"openbao_addr": bao_url},
+                    "children": {"openbao_svc": {"hosts": {"openbao-test": {"service_url": bao_url}}}}}}
+
+
 def _store_reads(tmp_path):
     log = tmp_path / "bao.log"
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -371,7 +397,7 @@ def _template_play_from_store(tmp_path, record):
     fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit"})})
     env = _fake_store(tmp_path, {"url": fake.url, "api_token": "synthetic", **record})
     try:
-        result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({"openbao_addr": BAO})], env_extra=env)
+        result, rc = _run(tmp_path, [play], inventory=_lifecycle_inventory(fake.url), env_extra=env)
     finally:
         fake.close()
     return result, rc, fake
@@ -381,7 +407,7 @@ def test_the_template_play_takes_the_token_id_from_the_store(tmp_path):
     result, rc, fake = _template_play_from_store(tmp_path, {"token_id": "automation@pve!fixture"})
     assert (result["status"], rc) == ("pass", 0), result
     assert ("GET", TEMPLATE_CFG) in fake.seen
-    assert {"path": "secret/data/services/proxmox", "url": BAO} in _store_reads(tmp_path)
+    assert {"path": "secret/data/services/proxmox", "url": fake.url} in _store_reads(tmp_path)
 
 
 def test_the_template_play_refuses_a_store_without_a_token_id_and_sends_nothing(tmp_path):
@@ -414,13 +440,14 @@ CLUSTER = {
 def _whole_template_playbook(tmp_path, record, check=False):
     fake = FakeProxmox(CLUSTER)
     inv = tmp_path / "inv.yml"
-    inv.write_text(yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
+    inv.write_text(yaml.safe_dump(_lifecycle_inventory(fake.url)))
     env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+           "BAO_ROLE_ID": "synthetic-role", "BAO_SECRET_ID": "synthetic-role-secret",
            **_fake_store(tmp_path, {"url": fake.url, "api_token": "synthetic", **record})}
     try:
         done = harness_sandbox.run(
             ["ansible-playbook", "-i", str(inv), str(PLAYBOOKS / "provision-template.yml"),
-             "-e", json.dumps({"openbao_addr": BAO}), *(["--check"] if check else [])],
+             *(["--check"] if check else [])],
             tmp_path, cwd=ROOT, env=env)
     finally:
         fake.close()
@@ -436,7 +463,7 @@ def test_the_whole_template_playbook_reaches_proxmox_from_the_store_in_every_pla
     # validation, the template play's own read and read-back, post-validation
     assert fake.seen.count(("GET", TEMPLATE_CFG)) == 4
     assert fake.writes() == []
-    assert {r["url"] for r in _store_reads(tmp_path)} == {BAO}
+    assert {r["url"] for r in _store_reads(tmp_path)} == {fake.url}
 
 
 def test_the_whole_template_playbook_refuses_a_store_without_a_token_id_before_any_request(tmp_path):
@@ -486,7 +513,11 @@ def _provision_play(tmp_path, cfg, name="dns"):
     record = next(p for p in plays if p.get("name") == "Record the provision-vm step result")
     verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
     try:
-        results, rc = _run_all(tmp_path, [prov, record, verdict], inventory=PV_INVENTORY, extra=["-e", json.dumps({
+        inventory = copy.deepcopy(PV_INVENTORY)
+        inventory["all"].setdefault("vars", {})["openbao_addr"] = fake.url
+        inventory["all"]["children"]["openbao_svc"] = {
+            "hosts": {"openbao-test": {"service_url": fake.url}}}
+        results, rc = _run_all(tmp_path, [prov, record, verdict], inventory=inventory, extra=["-e", json.dumps({
             "_pve_host": fake.url, "_pve_secret": "x", "_pve_token_id": "t", "_ssh_pub": "ssh-ed25519 AAAA",
             "target_service": "dns", "ci_user": "u"})])
     finally:
@@ -519,9 +550,13 @@ def test_a_hard_failure_in_the_provisioning_play_is_still_recorded(tmp_path):
 
 
 def test_a_hard_failure_in_resize_is_still_recorded(tmp_path):
-    play = _plays("resize-vm.yml")[0]
-    result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({
-        "_pve_host": "http://pve.invalid", "target_vmid": 1, "target_node": "n", "openbao_addr": "x"})])
+    play = _resize_play()
+    fake = FakeProxmox({})
+    try:
+        result, rc = _run(tmp_path, [play], inventory=_lifecycle_inventory(fake.url), extra=["-e", json.dumps({
+            "_pve_host": "http://pve.invalid", "target_vmid": 1, "target_node": "n"})])
+    finally:
+        fake.close()
     assert (result["step"], result["status"], rc != 0) == ("vm-rightsize", "fail", True)
     assert result["error"].startswith("Require HTTPS for the Proxmox API:")
     assert result["evidence"] == {"cores": None, "memory_mb": None, "disk_gb": None}

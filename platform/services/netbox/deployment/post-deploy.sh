@@ -81,6 +81,10 @@ restart_discovery_services
 info "Verifying service health..."
 verify_services "${NETBOX_URL}"
 
+# Record that the application setup finished: deploy.sh removes this before it recreates the
+# stack, and deploy-netbox.yml runs post-deploy again while it is absent.
+touch "${SCRIPT_DIR}/${NETBOX_POST_DEPLOY_MARKER}"
+
 info ""
 info "=== Post-deploy complete ==="
 echo "  Admin login:"

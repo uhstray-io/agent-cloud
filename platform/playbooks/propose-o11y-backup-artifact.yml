@@ -1,0 +1,13 @@
+---
+- name: Refuse internal extra vars
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Propose one explicit private artifact selector
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    operation: propose
+  tasks:
+    - name: Verify capture, recensus, and propose the explicit inventory row
+      ansible.builtin.include_tasks: tasks/o11y-private-artifact-operation.yml

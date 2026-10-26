@@ -45,6 +45,44 @@
     - _sc_staged.rc != 0
   changed_when: true
 
+- name: "Recheck the reviewed integration tip before a guarded push"
+  ansible.builtin.command:
+    argv: [git, ls-remote, --heads, origin, "refs/heads/{{ _sc_guarded_base_branch }}"]
+    chdir: "{{ _sc_clone }}"
+  environment: "{{ _sc_git_env }}"
+  register: _sc_before_push_base
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - _sc_guarded_base_branch is defined
+    - _sc_staged.rc != 0
+
+- name: "Check that the guarded branch is still absent"
+  ansible.builtin.command:
+    argv: [git, ls-remote, --heads, origin, "refs/heads/{{ _sc_branch }}"]
+    chdir: "{{ _sc_clone }}"
+  environment: "{{ _sc_git_env }}"
+  register: _sc_before_push_branch
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - _sc_guarded_base_branch is defined
+    - _sc_staged.rc != 0
+
+- name: "Require unchanged integration tip and absent proposal branch"
+  ansible.builtin.assert:
+    that:
+      - _sc_before_push_base.stdout_lines | length == 1
+      - _sc_before_push_base.stdout.split() | length == 2
+      - _sc_before_push_base.stdout.split()[0] == _sc_reviewed_base_sha
+      - _sc_before_push_base.stdout.split()[1] == 'refs/heads/' ~ _sc_guarded_base_branch
+      - _sc_before_push_branch.stdout | length == 0
+    fail_msg: "The site-config base changed or the proposal branch already exists."
+  when:
+    - not ansible_check_mode
+    - _sc_guarded_base_branch is defined
+    - _sc_staged.rc != 0
+
 - name: "Push the branch"
   ansible.builtin.command:
     cmd: "git push origin {{ _sc_branch }}"
@@ -54,6 +92,43 @@
     - not ansible_check_mode
     - _sc_staged.rc != 0
   changed_when: true
+
+- name: "Read the proposal commit for guarded push verification"
+  ansible.builtin.command:
+    argv: [git, rev-parse, HEAD]
+    chdir: "{{ _sc_clone }}"
+  register: _sc_push_head
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - _sc_guarded_base_branch is defined
+    - _sc_staged.rc != 0
+
+- name: "Verify guarded branch and integration tip after push"
+  ansible.builtin.command:
+    argv: [git, ls-remote, --heads, origin, "refs/heads/{{ item.ref }}"]
+    chdir: "{{ _sc_clone }}"
+  environment: "{{ _sc_git_env }}"
+  loop:
+    - {ref: "{{ _sc_branch }}"}
+    - {ref: "{{ _sc_guarded_base_branch | default('') }}"}
+  register: _sc_after_push_refs
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - _sc_guarded_base_branch is defined
+    - _sc_staged.rc != 0
+
+- name: "Require exact guarded push readback"
+  ansible.builtin.assert:
+    that:
+      - (_sc_after_push_refs.results[0].stdout.split() | first | default('')) == _sc_push_head.stdout
+      - (_sc_after_push_refs.results[1].stdout.split() | first | default('')) == _sc_reviewed_base_sha
+    fail_msg: "The guarded site-config push could not be verified against its reviewed base."
+  when:
+    - not ansible_check_mode
+    - _sc_guarded_base_branch is defined
+    - _sc_staged.rc != 0
 
 - name: "Report"
   ansible.builtin.debug:

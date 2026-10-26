@@ -115,9 +115,18 @@ groups:
 {% endif %}
 {# The local inventory generated before this rollout still needs the Caddy pilot
    contract; a declared inventory list overrides this default. #}
-{% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}
+{% set _expected_targets_reviewed = o11y_expected_metrics_targets_reviewed | default(false) | bool %}
+{% if local_mode | default(false) | bool %}
+{% set _missing_targets = o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'job': 'caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021', 'cluster': o11y_cluster | default('agent-cloud-local'), 'environment': o11y_environment | default('local')}]) %}
+{% elif _expected_targets_reviewed and o11y_alerts_enabled | default(false) | bool %}
+{% set _missing_targets = o11y_expected_metrics_targets | default([]) %}
+{% else %}
+{% set _missing_targets = [] %}
+{% endif %}
+{% if local_mode | default(false) | bool or _o11y_expected_target_mode | default(o11y_expected_metrics_targets_mode | default('legacy')) == 'legacy' %}
+{% for target in _missing_targets %}
       - uid: {{ target.uid }}
-        title: Missing telemetry for {{ target.service }} at {{ target.instance }}
+        title: {{ ('Missing telemetry for ' ~ target.service ~ ' at ' ~ target.instance) | to_json }}
         condition: B
         data:
           - refId: A
@@ -125,7 +134,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])'
+              expr: {{ ('absent_over_time(up{job=' ~ ((target.job | default('caddy')) | to_json) ~ ',instance=' ~ (target.instance | to_json) ~ ',service=' ~ (target.service | to_json) ~ ',cluster=' ~ ((target.cluster | default(o11y_cluster | default('agent-cloud-local'))) | to_json) ~ ',environment=' ~ ((target.environment | default(o11y_environment | default('local' if local_mode | default(false) | bool else 'prod'))) | to_json) ~ '}[5m])') | to_json }}
               instant: true
               range: false
               intervalMs: 1000
@@ -149,17 +158,264 @@ groups:
         execErrState: Alerting
         for: 2m
         annotations:
-          summary: Expected metrics have disappeared for {{ target.service }}.
-          dashboard_url: /d/service-overview?var-service={{ target.service }}
+          summary: {{ ('Expected metrics have disappeared for ' ~ target.service ~ ' at ' ~ target.instance ~ '.') | to_json }}
+          dashboard_url: {{ ('/d/service-overview?var-service=' ~ target.service) | to_json }}
           description: Check the declared metrics target and its service onboarding receipt.
         labels:
           severity: critical
-          service: '{{ target.service }}'
+          job: {{ (target.job | default('caddy')) | to_json }}
+          instance: {{ target.instance | to_json }}
+          service: {{ target.service | to_json }}
+          owner: platform-operations
+          environment: {{ target.environment | default(o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) | to_json }}
+          cluster: {{ target.cluster | default(o11y_cluster | default('agent-cloud-local')) | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined and (local_mode | default(false) | bool or _o11y_expected_target_mode | default(o11y_expected_metrics_targets_mode | default('legacy')) == 'legacy') %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endfor %}
+{% else %}
+{% for target_group in (_o11y_expected_target_groups | default([])) %}
+      - uid: {{ target_group.uid }}
+        title: {{ ('Missing telemetry group (' ~ target_group.uid ~ ')') | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ target_group.expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: {{ 'Expected metrics have disappeared for {{ $labels.service }} at {{ $labels.instance }}.' | to_json }}
+          dashboard_url: {{ ('/d/service-overview?var-service=' ~ target_group.service) | to_json }}
+          description: Check the declared metrics target and its service onboarding receipt.
+        labels:
+          severity: critical
+          job: {{ '{{ $$labels.job }}' | to_json }}
+          instance: {{ '{{ $$labels.instance }}' | to_json }}
+          service: {{ target_group.service | to_json }}
+          owner: platform-operations
+          environment: {{ target_group.environment | to_json }}
+          cluster: {{ target_group.cluster | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and _expected_targets_reviewed and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and _expected_targets_reviewed and o11y_alert_canary_service is not defined %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endfor %}
+{% endif %}
+{# Grafana keeps omitted rules; retain validated owners and retired UID tombstones. #}
+{% if not (local_mode | default(false) | bool) %}
+{% for tombstone in (_o11y_expected_target_tombstones | default([])) %}
+      - uid: {{ tombstone.uid }}
+        title: {{ tombstone.title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: vector(0)
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: OK
+        for: 0s
+        annotations:
+          summary: {{ tombstone.summary | to_json }}
+          description: {{ tombstone.description | to_json }}
+        labels:
+          severity: {{ tombstone.labels.severity | to_json }}
+{% if tombstone.labels.job is defined %}
+          job: {{ tombstone.labels.job | to_json }}
+          instance: {{ tombstone.labels.instance | to_json }}
+          service: {{ tombstone.labels.service | to_json }}
+          cluster: {{ tombstone.labels.cluster | to_json }}
+{% elif tombstone.labels.service is defined %}
+          service: {{ tombstone.labels.service | to_json }}
+          cluster: {{ tombstone.labels.cluster | to_json }}
+{% endif %}
+          owner: platform-operations
+          environment: {{ tombstone.labels.environment | to_json }}
+        isPaused: true
+{% endfor %}
+{% endif %}
+{% set _receiver_loss_active = o11y_alerts_enabled | default(false) | bool
+    and o11y_receiver_loss_alerts_reviewed | default(false) | bool
+    and not (local_mode | default(false) | bool)
+    and o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') == 'prod'
+    and o11y_alert_canary_service is not defined %}
+{% for loss_rule in [
+  {'uid': 'o11y_alloy_receiver_refused', 'title': 'Alloy receiver refused telemetry',
+   'expr': '(sum(increase(otelcol_receiver_refused_log_records_total{job="alloy"}[5m])) or vector(0)) + (sum(increase(otelcol_receiver_refused_spans_total{job="alloy"}[5m])) or vector(0))',
+   'summary': 'Alloy refused log records or spans before accepting them.'},
+  {'uid': 'o11y_tempo_exporter_enqueue_failed', 'title': 'Tempo exporter queue lost spans',
+   'expr': 'sum(increase(otelcol_exporter_enqueue_failed_spans_total{job="alloy"}[5m])) or vector(0)',
+   'summary': 'Alloy could not enqueue spans for the Tempo exporter; queued spans were lost.'},
+  {'uid': 'o11y_tempo_exporter_send_failed', 'title': 'Tempo exporter send failures sustained',
+   'expr': 'sum(rate(otelcol_exporter_send_failed_spans_total{job="alloy"}[5m])) or vector(0)',
+   'summary': 'Alloy observed sustained final Tempo exporter-operation errors after retry handling; backend receipt or loss is unverified.',
+   'for': '10m'}
+] %}
+      - uid: {{ loss_rule.uid }}
+        title: {{ loss_rule.title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ loss_rule.expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: {{ loss_rule.get('for', '2m') }}
+        annotations:
+          summary: {{ loss_rule.summary | to_json }}
+          dashboard_url: /d/o11y-self-monitoring
+          description: Review the Alloy receiver and Tempo exporter health; alert values contain no telemetry payload.
+        labels:
+          severity: warning
+          service: 'o11y/alloy'
           owner: platform-operations
           environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
           cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
-        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined else 'true' }}
-{% if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+        isPaused: {{ 'false' if _receiver_loss_active else 'true' }}
+{% if _receiver_loss_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endfor %}
+{% set _backend_drop_active = o11y_alerts_enabled | default(false) | bool
+    and o11y_backend_drop_alerts_reviewed | default(false) | bool
+    and not (local_mode | default(false) | bool)
+    and o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') == 'prod'
+    and o11y_alert_canary_service is not defined %}
+{% for drop_rule in [
+  {'uid': 'o11y_loki_discarded_samples', 'title': 'Loki discarded log lines',
+   'expr': 'sum(increase(loki_discarded_samples_total{job="loki"}[5m])) or vector(0)',
+   'service': 'o11y/loki', 'summary': 'Loki discarded log lines during the last five minutes.'},
+  {'uid': 'o11y_tempo_discarded_spans', 'title': 'Tempo discarded spans',
+   'expr': 'sum(increase(tempo_discarded_spans_total{job="tempo"}[5m])) or vector(0)',
+   'service': 'o11y/tempo', 'summary': 'Tempo discarded spans during the last five minutes.'}
+] %}
+      - uid: {{ drop_rule.uid }}
+        title: {{ drop_rule.title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ drop_rule.expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: {{ drop_rule.summary | to_json }}
+          dashboard_url: /d/o11y-self-monitoring
+          description: Review backend ingestion limits and receiver health; alert values contain no telemetry payload.
+        labels:
+          severity: warning
+          service: '{{ drop_rule.service }}'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if _backend_drop_active else 'true' }}
+{% if _backend_drop_active %}
         notification_settings:
           receiver: agent-cloud-ops
           group_by: [service, environment, cluster, alertname]
@@ -173,6 +429,59 @@ groups:
    schema they match is in the o11y README ("Scheduled jobs and internal CA expiry").
    Each is ONE rule over every series, so a declaration change rewrites an expression
    and never strands a provisioned rule. #}
+{# Tempo's received-span counter is global to this receiver. Keep this rule paused
+   unless inventory explicitly reviews agentgateway as its exclusive span sender. #}
+{% set _trace_silence_gateway_hosts = groups.get('agentgateway_svc', []) if groups is defined else [] %}
+{% set _trace_silence_gateway = hostvars[_trace_silence_gateway_hosts[0]] if hostvars is defined and _trace_silence_gateway_hosts | length == 1 else {} %}
+{% set _trace_silence_active = o11y_alerts_enabled | default(false) | bool
+     and not (local_mode | default(false) | bool)
+     and o11y_environment | default('') == 'prod'
+     and o11y_alert_canary_service is not defined
+     and _trace_silence_gateway_hosts | length == 1
+     and _trace_silence_gateway.agw_otlp_traces | default(false) | bool
+     and o11y_tempo_gateway_exclusive_sender_reviewed | default(false) | bool %}
+  - orgId: 1
+    name: agentgateway-traces
+    folder: agent-cloud
+    interval: 60s
+    rules:
+      - uid: agentgateway_trace_silent
+        title: Agentgateway requests without received traces
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1800, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: 'sum(increase(agentgateway_requests_total{job="agentgateway"}[30m])) >= 100 and on() sum(rate(tempo_distributor_spans_received_total{job="tempo"}[30m])) == 0'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: Agentgateway has received at least 100 requests in 30 minutes without Tempo receiving spans.
+          description: Check the declared gateway trace switch and the Tempo receiver path. This rule is enabled only after inventory review confirms agentgateway is the exclusive Tempo span sender.
+          dashboard_url: /d/agentgateway-traffic
+        labels:
+          severity: critical
+          service: agentgateway
+          owner: platform-operations
+          environment: prod
+          cluster: {{ o11y_cluster | default('agent-cloud-prod') | to_json }}
+        isPaused: {{ 'false' if _trace_silence_active else 'true' }}
+{% if _trace_silence_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
 {% set _loki_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
 {% set _scheduled_jobs = o11y_scheduled_jobs | default([{'job': 'renew-internal-certs', 'max_silence_hours': 36}]) %}
 {% macro loki_rule(uid, title, expr, evaluator, threshold, from_, for_, severity, service, summary, description) %}
@@ -287,7 +596,7 @@ groups:
 {# The synthetic probe rules read the probe's textfile samples, scraped by the
    receiver-host job, so they follow o11y_inference_probe_enabled instead of the
    DGX scrape; turning the probe off deletes them the same way. #}
-{% set _inference_uids = ['inference_queue_stalled', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
 {% set _probe_uids = ['inference_probe_failing', 'inference_probe_stale'] %}
 {% set _dgx_on = dgx_spark_scrape_enabled | default(false) | bool %}
 {% set _probe_on = o11y_inference_probe_enabled | default(false) | bool %}
@@ -361,6 +670,18 @@ groups:
      'vLLM has queued requests and has generated no tokens for five minutes.',
      'Health can still answer while inference is stuck. Check the head and worker ranks and the lifecycle state before restarting anything.',
      '/d/inference-latency-capacity') }}
+{# Capacity warning from the measured baseline: over the production 7-day window
+   (receipt task 5349) waiting requests peaked at 3 while running peaked at 8, the
+   serving slot count. The default of 6 is twice that waiting peak; override it per
+   inventory with o11y_inference_queue_waiting_warn when the baseline moves. The
+   alert text renders the threshold in use, so it never states a stale number. #}
+{% set _queue_warn = o11y_inference_queue_waiting_warn | default(6) | int %}
+{{ inference_rule('inference_queue_depth_high', 'vLLM request queue deeper than the measured baseline',
+     'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"})',
+     'gt', _queue_warn, '10m', 'warning', 'vllm',
+     'More than ' ~ _queue_warn ~ ' requests have been waiting for a vLLM slot for ten minutes.',
+     'Requests are queueing for a vLLM slot: the queue has stayed over the configured threshold of ' ~ _queue_warn ~ ' for ten minutes. Clients see first-token latency grow; check for a load test or a runaway client before changing capacity. Never restart on this alert.',
+     '/d/inference-latency-capacity') }}
 {% endif %}
 {% if _probe_on %}
 {# The probe samples every five minutes and rewrites the same gauge, so 5m of
@@ -431,8 +752,8 @@ groups:
      'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
      '/d/inference-placement-comparison', paused=true) }}
 {% endif %}
-{# One deleteRules key for every withdrawn rule: the inference rules when the scrape
-   is off, the silent-job rule when no scheduled job is declared. #}
+{# Expected-target retirement stays as a generic inert tombstone; it is never
+   deleted because Grafana may preserve omitted provisioned rules. #}
 {% set _deleted_uids = ([] if _dgx_on else _inference_uids)
      + ([] if _probe_on else _probe_uids)
      + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent']) %}

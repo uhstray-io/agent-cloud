@@ -1,0 +1,33 @@
+---
+# Extract and validate one exact PBS VM configuration; emits protected facts only.
+- name: Extract the occupied disk buses and intended scsi1 value
+  ansible.builtin.set_fact:
+    _disk_keys: >-
+      {{ _vm_config.json.data | dict2items
+         | selectattr('key', 'match', _disk_keys_pattern)
+         | map(attribute='key') | list }}
+    _scsi1: "{{ _vm_config.json.data.scsi1 | default('') }}"
+    _os_disk: "{{ _vm_config.json.data.scsi0 | default('') }}"
+    _vm_config_digest: "{{ _vm_config.json.data.digest | default('') }}"
+  no_log: true
+
+- name: Refuse VM identity, layout, bus, or storage drift before any write
+  ansible.builtin.assert:
+    that:
+      - _vm_config.json.data.name | default('') == _name
+      - _vm_config.json.data.description | default('') == _vm_description
+      - _vm_config.json.data.template | default(0) | int == 0
+      - _vm_config.json.data.ostype | default('') == 'l26'
+      - _vm_config.json.data.scsihw | default('') == 'virtio-scsi-pci'
+      - _vm_config.json.data.ide2 | default('') is search('cloudinit')
+      - _vm_config.json.data.net0 | default('') is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
+      - _vm_config.json.data.ipconfig0 | default('') == ('ip=' ~ _ip ~ '/' ~ (_netmask | string) ~ ',gw=' ~ _gw)
+      - _vm_config.json.data.cores | default(0) | int == _cores | int
+      - _vm_config.json.data.memory | default(0) | int == _memory | int
+      - _os_disk is search('^' ~ (_decl.vm_disk_storage | default('')) ~ ':')
+      - _os_disk is search('(^|,)size=' ~ (_decl.vm_disk | default('')) ~ '(,|$)')
+      - _vm_config_digest is match('^[0-9a-f]{40}$')
+      - _disk_keys | difference(['scsi0', 'scsi1', 'ide2']) | length == 0
+      - _scsi1 | length == 0 or _scsi1 is search(_expected_disk_pattern)
+    fail_msg: "The PBS VM configuration does not match its declaration or contains a conflicting disk. No disk was allocated."
+    quiet: true

@@ -34,7 +34,7 @@
         "x": 0,
         "y": 0
       },
-      "description": "Count of unique service and step pairs whose newest state in the last 45 minutes is fail. This is current recorded state, not a count of new failure events. When valid inventory markers exist but no step is currently failed, the fallback returns one unlabeled zero; with no recent inventory marker (no valid marker within 45 minutes) the panel shows No recent data.",
+      "description": "Count of unique service and step pairs whose newest state across all statuses in the last 45 minutes is fail. The state is reduced first; a later pass or skip replaces an older failure. This is current recorded workflow state, not a count of new failure events or overall service health. With valid inventory markers and no currently failed steps, the fallback returns an unlabeled zero; with no recent inventory marker the panel shows no data.",
       "fieldConfig": {
         "defaults": {
           "noValue": "No recent data",
@@ -163,9 +163,9 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 18,
-        "y": 0
+        "w": 24,
+        "x": 0,
+        "y": 5
       },
       "description": "Inventoried services whose newest valid collector marker reports no workflow history. No matching rows means no service currently reports no history; no valid marker remains no data.",
       "targets": [
@@ -206,9 +206,9 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 10
       },
-      "description": "One row per service and workflow step. State is the newest report in the last 45 minutes and is shown as fail, pass, or skip. The collector re-emits retained state, so a recent collection gap does not erase the latest pass, fail, or skip. An empty result means no step state was reported in that window. Services that have not run any step are listed in \"Services not yet run\", not here. Error and task context appears separately in historical failed task snapshots; those snapshots can repeat across collector runs and are not joined to these current rows.",
+      "description": "One row per service and workflow step. State is the newest report in the last 45 minutes, reduced across pass, fail, and skip before any failure filtering, and is shown as fail, pass, or skip. The collector re-emits retained state, so a recent collection gap does not erase the latest status. Services that have not run are listed separately. Workflow completion age and task provenance are shown in separate panels; historical failure snapshots are displayed separately and are not joined to these current rows or current service health.",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -307,15 +307,16 @@
         "uid": "loki"
       },
       "gridPos": {
-        "h": 12,
+        "h": 10,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 22
       },
-      "description": "Failed task records received during the selected dashboard time range, including the error and Semaphore task id. The collector can repeat the same historical failure in later snapshots, so these rows are not new-event counts and may not match the latest state above. Use the task id to identify the workflow run.",
+      "description": "Bounded history of failed workflow task records received in the last seven days, including an error excerpt of at most 180 Unicode characters and the Semaphore task ID when present. The full original record remains stored and can be queried in Loki Explore. Exact dedup compares adjacent returned lines only: interleaved repeats can remain, and hidden duplicates do not cause replacement lines to be fetched; the 100-line limit still applies. The collector may repeat a historical failure across snapshots; these rows are historical workflow evidence, not current service health; they are not new-event counts. Use Latest step status by service for current recorded workflow state.",
       "options": {
         "showLabels": true,
         "wrapLogMessage": false,
+        "dedupStrategy": "exact",
         "sortOrder": "Descending"
       },
       "targets": [
@@ -326,10 +327,11 @@
             "uid": "loki"
           },
           "queryType": "range",
-          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"}",
+          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"} | json | line_format \"{{.service}}/{{.step}} task={{.task_id}}: {{printf \\\"%.180s\\\" .error}}\" | keep job, service, step, status",
           "maxLines": 100
         }
-      ]
+      ],
+      "timeFrom": "7d"
     },
     {
       "title": "History incomplete",
@@ -342,7 +344,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 44
       },
       "description": "Services whose workflow history the collector could not read in full: a template's history filled the 1000-task window, so a step missing here may be older, not absent. NetBox keeps that step's last recorded status.",
       "targets": [
@@ -369,6 +371,154 @@
               "Value": true
             }
           }
+        }
+      ]
+    },
+    {
+      "title": "Latest workflow completion age",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "description": "Smallest age in seconds among each service and step's newest completion record observed in the last 45 minutes. Unknown timestamps replace older known values before reduction, then are excluded from this newest-known aggregate. This measures workflow completion, not collector freshness.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown completion time"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "min(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step) > -1)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "title": "Latest workflow completion age by service and step",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "description": "Age in seconds for each service and step's newest completion record observed in the last 45 minutes. Match service and step with Latest step status by service to correlate state and age. Unknown or missing completion timestamps remain visible as Unknown; collector marker age is shown separately.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "Unknown",
+                  "color": "gray"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step)"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^Value(?: #.*)?$",
+            "renamePattern": "Age"
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "title": "Workflow completion and task provenance",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "description": "Collector snapshots of the latest workflow result by service and step, received in the last 45 minutes. Inspect task_id and completed_at_seconds in each record body: numeric values identify the workflow run and its completion time; retained state and missing or invalid completion times are explicitly unknown. Snapshot receipt time is not workflow completion time, and these records do not describe current service health.",
+      "timeFrom": "45m",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "range",
+          "maxLines": 100,
+          "expr": "{job=\"agent-cloud-conformance\", step!=\"none\"} | json task_id, completed_at_seconds"
         }
       ]
     }

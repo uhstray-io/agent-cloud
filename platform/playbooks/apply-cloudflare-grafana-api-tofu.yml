@@ -1,0 +1,10 @@
+---
+# Dedicated Dev-bound entry point for the reviewed Grafana API challenge-skip rule.
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Apply the guarded Grafana API Cloudflare change"
+  ansible.builtin.import_playbook: apply-cloudflare-tofu.yml
+  vars:
+    _extra_var_guard_nested: true
+    _cloudflare_grafana_guard: true

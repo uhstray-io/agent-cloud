@@ -19,6 +19,8 @@
 #   printf '%s' "$REG_TOKEN" | ./deploy.sh configure
 #   ./deploy.sh install                          (install or upgrade to the declared versions)
 #   ./deploy.sh start | stop | status | remove   (remove reads a REMOVE token on stdin)
+#   ./deploy.sh procs     (read-only: the runner's Listener and Worker processes)
+#   ./deploy.sh quiesce   (drain, stop, and empty the unit's cgroup before a start)
 #
 # Upgrades: raising RUNNER_VERSION or HOOKS_VERSION and re-running converges the host on
 # the new version. Lowering one is refused unless RUNNER_ALLOW_DOWNGRADE=1.
@@ -366,6 +368,200 @@ cmd_status() {
   fi
 }
 
+# ── the runner's processes ────────────────────────────────────────────────────
+# The unit's main process is run.sh, not the runner: run.sh starts run-helper.sh, which
+# starts bin/Runner.Listener, which holds the session and starts one Runner.Worker per
+# job. Until 2026-10-12 every restart signalled run.sh alone and left the old Listener
+# serving (docs/MISTAKES.md 10.27), so these commands look at the Listener and the Worker
+# themselves, read from the kernel.
+UNIT="actions-runner.service"
+# Overridable only so the tests can hand in a fabricated tree.
+PROC_ROOT="${RUNNER_PROC_ROOT:-/proc}"
+CGROUP_ROOT="${RUNNER_CGROUP_ROOT:-/sys/fs/cgroup}"
+
+count() { echo "$#"; }
+
+# Every pid of this account whose command name is $1. "Runner.Listener" is 15
+# characters, the kernel's limit for a command name, so it is never truncated.
+account_pids() {
+  local name="$1" uid d
+  uid=$(id -u)
+  for d in "$PROC_ROOT"/[0-9]*; do
+    if [ "$(cat "$d/comm" 2>/dev/null)" = "$name" ] \
+       && [ "$(awk '$1 == "Uid:" { print $2 }' "$d/status" 2>/dev/null)" = "$uid" ]; then
+      echo "${d##*/}"
+    fi
+  done
+}
+
+# A file's modification time in epoch seconds (GNU stat, else BSD stat).
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
+}
+
+# Prints one line about process $2 in role $1 and adds it to the counts cmd_procs
+# reports. A process that exited after it was listed is skipped.
+describe_proc() {
+  local role="$1" pid="$2" st ticks start cg nnp ns
+  st=$(cat "$PROC_ROOT/$pid/stat" 2>/dev/null) || return 0
+  # Field 22 of /proc/<pid>/stat is the start time in clock ticks after boot (proc(5)).
+  # The fields after the command name start at field 3, so it is the 20th of them.
+  st=${st##*) }
+  # shellcheck disable=SC2086
+  set -- $st
+  ticks=${20}
+  start=$((_btime + ticks / _hz))
+  cg=$(sed -n 's/^0:://p' "$PROC_ROOT/$pid/cgroup" 2>/dev/null || true)
+  nnp=$(awk '$1 == "NoNewPrivs:" { print $2 }' "$PROC_ROOT/$pid/status" 2>/dev/null || true)
+  ns=private
+  if [ "$(readlink "$PROC_ROOT/$pid/ns/user" 2>/dev/null)" = "$_host_ns" ]; then ns=host; fi
+  echo "$role pid=$pid start=$start cgroup=$cg NoNewPrivs=${nnp:-unknown} userns=$ns"
+  if [ "$nnp" != 0 ]; then _nnp=$((_nnp + 1)); fi
+  if [ "$ns" != host ]; then _private=$((_private + 1)); fi
+  case "$role" in
+    listener)
+      _listeners=$((_listeners + 1))
+      if [ -z "$_unit_cg" ] || [ "$cg" != "$_unit_cg" ]; then _outside=$((_outside + 1)); fi
+      # To the second: the deploy writes .env many seconds before it starts the runner.
+      if [ "$start" -lt "$_env_mtime" ]; then _stale=$((_stale + 1)); fi
+      ;;
+    worker) _workers=$((_workers + 1)) ;;
+  esac
+}
+
+# Read-only. Reports the unit's main process and every Listener and Worker of this
+# account, then one verdict per line, which the deploy compares exactly:
+#   listeners          Runner.Listener processes of this account (want 1)
+#   outside_cgroup     of those, not in the unit's cgroup (want 0)
+#   started_before_env of those, started before .env was last written (want 0)
+#   no_new_privs       main process, Listeners and Workers with NoNewPrivs set (want 0)
+#   private_userns     the same, in a user namespace other than the host's (want 0)
+#   run_sh_traps       whether run.sh honours RUNNER_MANUALLY_TRAP_SIG (want yes)
+cmd_procs() {
+  local main pid
+  _unit_cg=$(systemctl --user show --property=ControlGroup --value "$UNIT")
+  main=$(systemctl --user show --property=MainPID --value "$UNIT")
+  _env_mtime=$(file_mtime "${RUNNER_HOME}/.env")
+  _btime=$(awk '$1 == "btime" { print $2 }' "$PROC_ROOT/stat")
+  _hz=$(getconf CLK_TCK)
+  _host_ns=$(readlink "$PROC_ROOT/self/ns/user")
+  _listeners=0 _workers=0 _outside=0 _stale=0 _nnp=0 _private=0
+  echo "unit_cgroup=$_unit_cg"
+  echo "env_mtime=$_env_mtime"
+  if [ "${main:-0}" -gt 0 ]; then describe_proc main "$main"; fi
+  for pid in $(account_pids Runner.Listener); do describe_proc listener "$pid"; done
+  for pid in $(account_pids Runner.Worker); do describe_proc worker "$pid"; done
+  echo "listeners=$_listeners"
+  echo "workers=$_workers"
+  echo "outside_cgroup=$_outside"
+  echo "started_before_env=$_stale"
+  echo "no_new_privs=$_nnp"
+  echo "private_userns=$_private"
+  if grep -q 'RUNNER_MANUALLY_TRAP_SIG' "${RUNNER_HOME}/run.sh" 2>/dev/null; then
+    echo "run_sh_traps=yes"
+  else
+    echo "run_sh_traps=no"
+  fi
+}
+
+# The pids among $@ that are still a Runner.Listener.
+live_listeners() {
+  local p
+  for p in "$@"; do
+    if [ "$(cat "$PROC_ROOT/$p/comm" 2>/dev/null)" = Runner.Listener ]; then echo "$p"; fi
+  done
+}
+
+# Brings the runner to a stop that leaves nothing behind, so the next start makes the
+# only Listener. In order:
+#   1. Wait up to RUNNER_DRAIN_SECONDS for no Worker to run, so a job in flight can
+#      finish. Any stop cancels a running job (the Listener cancels it through the Worker
+#      on shutdown, JobDispatcher.cs ShutdownAsync), so waiting is the only way to let
+#      one finish. Bounded, because a busy runner may never be idle.
+#   2. Stop the unit with the configuration systemd has loaded.
+#   3. SIGINT every Listener of this account, in the unit's cgroup or not: the ones a
+#      stop under KillMode=process left behind. SIGINT is the Listener's own graceful stop (Ctrl-C,
+#      Runner.cs CtrlCHandler): it cancels its job through the Worker, reports it, and
+#      deletes its session. Wait up to RUNNER_STOP_GRACE_SECONDS for them to exit.
+#   4. SIGKILL whatever is still in the cgroup and any Listener that survived, and
+#      require both to be gone.
+cmd_quiesce() {
+  local drain="${RUNNER_DRAIN_SECONDS:-600}" grace="${RUNNER_STOP_GRACE_SECONDS:-300}"
+  local uid deadline rc=0 cg procs="" listeners="" left stray
+  uid=$(id -u)
+
+  deadline=$((SECONDS + drain))
+  while [ -n "$(account_pids Runner.Worker)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 10; done
+  if [ -n "$(account_pids Runner.Worker)" ]; then echo "drained=no"; else echo "drained=yes"; fi
+
+  # rc 5: the unit is not loaded, which is a first deploy.
+  systemctl --user stop "$UNIT" || rc=$?
+  case "$rc" in
+    0 | 5) ;;
+    *) error "systemctl --user stop $UNIT failed (rc=$rc)" ;;
+  esac
+
+  cg=$(systemctl --user show --property=ControlGroup --value "$UNIT")
+  if [ -n "$cg" ]; then
+    procs="$CGROUP_ROOT$cg/cgroup.procs"
+  else
+    # An inactive unit may not report its cgroup, while leftover processes keep the
+    # directory in place under the account's user manager.
+    procs=$(find "$CGROUP_ROOT/user.slice/user-$uid.slice/user@$uid.service" \
+      -path "*/$UNIT/cgroup.procs" -type f 2>/dev/null | head -n 1 || true)
+  fi
+  # No cgroup found means an empty, removed cgroup, or a layout the search above does not
+  # know. The cgroup sweep is then skipped; the Listeners below are found from /proc
+  # either way.
+  if [ -n "$procs" ] && [ ! -r "$procs" ]; then procs=""; fi
+
+  # Every Listener of this account, in the unit's cgroup or not. The account exists only
+  # for this runner, so any Listener of it is this runner's registration, and one left
+  # running beside the next start would hold the session (the 2026-10-12 state).
+  listeners=$(account_pids Runner.Listener | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  echo "signalled=$(count $listeners)"
+  if [ -n "$listeners" ]; then
+    # shellcheck disable=SC2086
+    kill -INT $listeners 2>/dev/null || true
+    deadline=$((SECONDS + grace))
+    # shellcheck disable=SC2086
+    while [ -n "$(live_listeners $listeners)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 2; done
+  fi
+
+  left=""
+  if [ -n "$procs" ]; then
+    # A Listener's run-helper.sh exits once the Listener has; give the scripts a moment.
+    deadline=$((SECONDS + 10))
+    while [ -n "$(cat "$procs" 2>/dev/null || true)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
+    left=$(cat "$procs" 2>/dev/null | tr '\n' ' ' || true)
+  fi
+  # Listeners that survived SIGINT, wherever they are, join the SIGKILL.
+  # shellcheck disable=SC2086
+  stray=$(live_listeners $listeners | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  echo "killed=$(count $left $stray)"
+  if [ -n "$left$stray" ]; then
+    # shellcheck disable=SC2086
+    kill -KILL $left $stray 2>/dev/null || true
+    deadline=$((SECONDS + 30))
+    # shellcheck disable=SC2086
+    while { [ -n "$procs" ] && [ -n "$(cat "$procs" 2>/dev/null || true)" ]; } \
+          || [ -n "$(live_listeners $stray)" ]; do
+      [ "$SECONDS" -lt "$deadline" ] || break
+      sleep 1
+    done
+  fi
+  left=""
+  if [ -n "$procs" ]; then left=$(cat "$procs" 2>/dev/null | tr '\n' ' ' || true); fi
+  # shellcheck disable=SC2086
+  stray=$(live_listeners $stray | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  echo "remaining=$(count $left $stray)"
+  [ -z "$left" ] || error "still in the cgroup of $UNIT after SIGKILL: $left"
+  [ -z "$stray" ] || error "Listeners of this account still running after SIGKILL: $stray"
+}
+
 case "${1:-}" in
   install)   cmd_install ;;
   configure) cmd_configure ;;
@@ -373,5 +569,7 @@ case "${1:-}" in
   start)     user_systemctl enable --now actions-runner.service; info "started" ;;
   stop)      stop_runner ;;
   status)    cmd_status ;;
-  *)         error "usage: $0 {install|configure|remove|start|stop|status}" ;;
+  procs)     cmd_procs ;;
+  quiesce)   cmd_quiesce ;;
+  *)         error "usage: $0 {install|configure|remove|start|stop|status|procs|quiesce}" ;;
 esac

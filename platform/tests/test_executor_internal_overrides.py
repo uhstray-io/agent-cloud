@@ -20,6 +20,7 @@ import forgeries
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import ansible_python, needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -28,9 +29,6 @@ REGISTRY = REPO / "platform/workflows/service-onboarding/registry.yml"
 CATALOG = REPO / "platform/semaphore/templates.yml"
 LOCAL_CATALOG = REPO / "platform/semaphore/templates-local.yml"
 PER_SERVICE = "Deploy {service}"
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None,
-                                   reason="ansible-playbook not installed")
 
 
 def _executors() -> list[Path]:
@@ -357,8 +355,7 @@ def test_the_alias_list_is_what_the_installed_plugins_read():
         "for m, opt in ((a, 'become_pass'), (b, 'become_pass'), (c, 'become_pass'), (d, 'password')):\n"
         "    names |= {v['name'] for v in yaml.safe_load(m.DOCUMENTATION)['options'][opt].get('vars', [])}\n"
         "print(' '.join(sorted(names)))")
-    python = Path(shutil.which("ansible-playbook")).read_text().splitlines()[0].removeprefix("#!").strip()
-    out = subprocess.run([python, "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    out = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True).stdout.split()
     assert sorted(out) == sorted(PASSWORD_ALIASES)
 
 
@@ -572,7 +569,8 @@ def _destroy_only(tmp_path: Path) -> Path:
     kept = [p for p in plays if p.get("name") != "Fresh deploy"]
     assert len(kept) == len(plays) - 1
     text = yaml.safe_dump(kept)
-    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml", "tasks/assert-reset-confirmed.yml"):
+    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml", "tasks/assert-reset-confirmed.yml",
+                "tasks/assert-o11y-profile-pilot-operation.yml"):
         assert rel in text
         text = text.replace(rel, str(PLAYBOOKS / rel))
     out = tmp_path / "destroy-only.yml"
