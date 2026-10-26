@@ -531,7 +531,8 @@ PYTHON
   local block
   block=$(sed -n '/^    - name: "Drain, stop and empty the runner.s unit"$/,/^    - name: "Reload the account/p' "$PB")
   assert_contains "$block" 'ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh quiesce"'
-  assert_contains "$block" 'when: _runner_restart | bool and not ansible_check_mode'
+  # Persistent only: on the ephemeral lifecycle the supervisor starts each runner.
+  assert_contains "$block" "when: _lifecycle == 'persistent' and _runner_restart | bool and not ansible_check_mode"
   assert_contains "$block" "RUNNER_DRAIN_SECONDS: \"{{ github_runner_drain_seconds | default(600) }}\""
   # A restart is also due when the processes are not in the promised state, so a run
   # after a failed one converges, not only one that changed a file.

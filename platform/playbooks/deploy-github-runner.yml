@@ -18,6 +18,10 @@
 # Usage (via Semaphore):
 #   -e target_service=github_runner_svc
 #   -e github_app_client_id=...        (installation id is discovered, not declared)
+#   github_runner_lifecycle (inventory): `persistent` (default, one long-lived registration)
+#     or `ephemeral` (one just-in-time runner per job, the runner account's processes and
+#     files destroyed between jobs; openspec add-ephemeral-github-runners and
+#     tasks/github-runner-lifecycle.yml)
 #   App private key: read from OpenBao at
 #   secret/services/github-runner:app_private_key. NOT from an environment secret and
 #   never a survey var — Semaphore persists survey values, and one authoritative channel
@@ -96,6 +100,7 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _hver: "{{ github_runner_hooks_version | default('0.8.1') }}"
+    _lifecycle: "{{ github_runner_lifecycle | default('persistent') }}"
     # The verdict lines `deploy.sh procs` prints for a runner in the state this deploy
     # promises: one Listener, in the unit's cgroup, started after .env was last written,
     # and no no_new_privs or private user namespace on the main process, the Listener or
@@ -123,6 +128,7 @@
           # outside the checkout. Reject an absolute path and any parent traversal.
           - not (monorepo_deploy_path | default('') is match('^/'))
           - "'..' not in ((monorepo_deploy_path | default('')).split('/'))"
+          - _lifecycle in ['persistent', 'ephemeral']
         fail_msg: >-
           Need the OpenBao address, the App's client id (or app id), and this host's
           github_runner_name / github_runner_labels / github_runner_group in inventory.
@@ -131,8 +137,9 @@
           group, which may admit repositories this plane must not serve.
           monorepo_deploy_path is the path WITHIN the repo to this service's deploy.sh —
           relative, and with no `..` component: it is concatenated onto the repo root and
-          the result is executed.
-        success_msg: "Declaration complete for {{ github_runner_name }}."
+          the result is executed. github_runner_lifecycle is `persistent` (the default) or
+          `ephemeral`.
+        success_msg: "Declaration complete for {{ github_runner_name }} ({{ _lifecycle }} lifecycle)."
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -513,6 +520,9 @@
       become: false
       no_log: true
       check_mode: false
+      # The ephemeral lifecycle registers nothing here: its runners come from just-in-time
+      # configurations minted by tasks/github-runner-jit-stock.yml.
+      when: _lifecycle == 'persistent'
 
     # ── diagnosing a credential failure without printing the credential ────
     # Surfacing the helper's stderr is deliberate and safe: it emits only fixed
@@ -542,6 +552,7 @@
              else 'the App lacks organisation self-hosted-runners write' if ('could not obtain a runner' in (_regtoken.stderr | default('')))
              else 'unclassified failure' }}
       no_log: true
+      when: _lifecycle == 'persistent'
 
     - name: "Report the credential outcome (verdict and shapes only)"
       ansible.builtin.debug:
@@ -551,6 +562,7 @@
           lines={{ _pem_lines }} (a 2048-bit RSA PEM is ~27 lines; 1 means the
           newlines were lost in transit).
           Helper stderr: {{ (_regtoken.stderr | default('')) | trim }}
+      when: _lifecycle == 'persistent'
 
     - name: "Fail if no registration token was minted"
       ansible.builtin.assert:
@@ -559,6 +571,14 @@
           - (_regtoken.stdout | default('')) | length > 0
         fail_msg: "No registration token: {{ _mint_verdict }}."
         success_msg: "Registration token minted."
+      when: _lifecycle == 'persistent'
+
+    # ── lifecycle: on a host that is or was ephemeral, nothing runs while the home is
+    # rebuilt, and the home is built from nothing (tasks/github-runner-lifecycle.yml) ──
+    - name: "Prepare the runner lifecycle"
+      ansible.builtin.include_tasks: tasks/github-runner-lifecycle.yml
+      vars:
+        grl_phase: prepare
 
     # ── configuration (visible: these must stay diagnosable) ───────────────
     - name: "Render the runner's configuration"
@@ -580,6 +600,7 @@
         _tpl_org: "{{ _org }}"
         _tpl_rver: "{{ _rver }}"
         _tpl_hver: "{{ _hver }}"
+        _tpl_lifecycle: "{{ _lifecycle }}"
 
     - name: "Resolve the runner account's uid"
       # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
@@ -640,6 +661,7 @@
         mode: "0644"
       vars:
         github_runner_home: "{{ _tpl_home }}"
+        github_runner_lifecycle: "{{ _tpl_lifecycle }}"
       register: _runner_unit
 
     # ── install + register ─────────────────────────────────────────────────
@@ -667,7 +689,21 @@
       changed_when: (_configured.stdout | default('')) is search('registered|installed runner|installed container hooks|upgraded ')
       failed_when: false
       no_log: true
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _lifecycle == 'persistent'
+
+    - name: "Install the runner without registering it (ephemeral lifecycle)"
+      # The ephemeral home holds no registration: each job's runner gets its identity from a
+      # just-in-time configuration when the supervisor starts it.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh install"
+      environment:
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      become: true
+      become_user: "{{ _account }}"
+      register: _installed
+      # Always a fresh extraction into the reset home; the deploy's change is judged on the
+      # seed instead (see the service-deploy result).
+      changed_when: false
+      when: not ansible_check_mode and _lifecycle == 'ephemeral'
 
     # Same reasoning as the mint: no_log belongs on the step the token crosses, but a
     # no_log step that merely fails is undiagnosable. The script never echoes the token
@@ -679,6 +715,7 @@
           register rc={{ _configured.rc | default('?') }}
           {{ ('stdout: ' ~ ((_configured.stdout | default('')) | trim)) if (_configured.stdout | default('')) | length > 0 else '' }}
           {{ ('stderr: ' ~ ((_configured.stderr | default('')) | trim)) if (_configured.stderr | default('')) | length > 0 else '' }}
+      when: _lifecycle == 'persistent'
 
     - name: "Fail if the runner did not register"
       ansible.builtin.assert:
@@ -691,7 +728,7 @@
       # The register step is skipped under --check, so it leaves no rc to judge. Without
       # this guard every dry run stopped here (Semaphore task 4631), before the read-only
       # service checks below, which do run in check mode.
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _lifecycle == 'persistent'
 
     - name: "Remove the docker wrapper an earlier deploy installed"
       # PR #556 put a `docker` wrapper in _bin and listed _bin first on the runner's PATH.
@@ -742,6 +779,8 @@
       # `procs`. The decision below then reads no lines and reports a restart.
       failed_when: _procs_before.rc != 0 and not ansible_check_mode
       check_mode: false
+      # Ephemeral: the supervisor starts the runner; this play never restarts one.
+      when: _lifecycle == 'persistent'
 
     - name: "Decide whether the runner must be restarted"
       # When the unit or .env changed: a running process keeps the properties it was
@@ -755,6 +794,7 @@
              or ('runner-dotenv.j2' in (_runner_files.results | default([])
                  | selectattr('changed') | map(attribute='item.src') | list))
              or (_runner_converged | difference(_procs_before.stdout_lines) | length > 0) }}
+      when: _lifecycle == 'persistent'
 
     - name: "Report the runner's processes and the restart decision"
       ansible.builtin.debug:
@@ -762,6 +802,7 @@
           restart={{ _runner_restart }}; procs rc={{ _procs_before.rc }};
           {{ _procs_before.stdout_lines | join('; ') }}
           {{ (_procs_before.stderr | default('')) | trim }}
+      when: _lifecycle == 'persistent'
 
     - name: "Drain, stop and empty the runner's unit"
       # deploy.sh quiesce: waits up to github_runner_drain_seconds for no Worker to run
@@ -782,16 +823,19 @@
         RUNNER_DRAIN_SECONDS: "{{ github_runner_drain_seconds | default(600) }}"
       register: _quiesce
       changed_when: true
-      when: _runner_restart | bool and not ansible_check_mode
+      when: _lifecycle == 'persistent' and _runner_restart | bool and not ansible_check_mode
 
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
         name: actions-runner.service
         scope: user
         daemon_reload: true
-        enabled: true
+        # Ephemeral: never enabled or started here. The supervisor starts it once per job,
+        # with that job's just-in-time configuration; enabled, the user manager would start
+        # it with none at every reset.
+        enabled: "{{ _lifecycle == 'persistent' }}"
         # Never `restarted`: a restart is the quiesce above, then this start.
-        state: started
+        state: "{{ 'started' if _lifecycle == 'persistent' else 'stopped' }}"
       become: true
       become_user: "{{ _account }}"
       environment:
@@ -812,6 +856,7 @@
       # success for a runner serving nothing.
       failed_when: "(_active.stdout | default('') | trim) != 'active'"
       check_mode: false
+      when: _lifecycle == 'persistent'
 
     - name: "Confirm the installed runner is the declared version"
       # Read from the binary, not from the declaration: the final report states this
@@ -861,6 +906,7 @@
       retries: 12
       delay: 5
       check_mode: false
+      when: _lifecycle == 'persistent'
 
     - name: "Require one Listener, in the unit's cgroup, started after .env, with no no_new_privs"
       # Read from the kernel, for the processes that run jobs. The check this replaces
@@ -881,7 +927,7 @@
           {{ _runner_converged | difference(_procs.stdout_lines) | join(', ') }}.
           Read: {{ _procs.stdout_lines | join('; ') }}
         success_msg: "One Listener, in the unit's cgroup, started after .env; no no_new_privs on it, its Worker or run.sh."
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _lifecycle == 'persistent'
 
     - name: "Confirm rootless podman maps the account's ranges from inside the user manager"
       # Exercises newuidmap/newgidmap for real, in a transient unit of the SAME user
@@ -1006,11 +1052,19 @@
       # It creates and removes a container, so a dry run skips it.
       when: not ansible_check_mode
 
+    - name: "Activate the runner lifecycle"
+      # Ephemeral: seed, reset, stock and start the supervisor, then verify a runner online.
+      # Leaving ephemeral: remove the supervisor, its stock and its runner records.
+      ansible.builtin.include_tasks: tasks/github-runner-lifecycle.yml
+      vars:
+        grl_phase: activate
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          {{ github_runner_name }} installed (runner v{{ _installed_version.stdout | trim }}, hooks v{{ _installed_hooks.stdout | default('') | trim }}),
-          service {{ _active.stdout | trim }}, labels
+          {{ github_runner_name }} installed (runner v{{ _installed_version.stdout | trim }}, hooks v{{ _installed_hooks.stdout | default('') | trim }},
+          {{ _lifecycle }} lifecycle),
+          service {{ (_active.stdout | default('started per job by the supervisor')) | trim }}, labels
           {{ (github_runner_labels | default([])) | join(',') }}, group
           {{ github_runner_group }}, one Listener started after .env with no_new_privs
           off, rootless
@@ -1029,10 +1083,16 @@
     - name: "Gather this host's service-deploy result"
       ansible.builtin.set_fact:
         _service_deploy_result:
-          skipped: "{{ _configured is not defined or _configured is skipped }}"
+          skipped: >-
+            {{ (_configured is not defined or _configured is skipped)
+               and (_installed is not defined or _installed is skipped) }}
+          # Ephemeral: the home is rebuilt from nothing on every deploy, so its files always
+          # "change"; what changed is whether the seed every job starts from, or the
+          # supervisor, differs from before (tasks/github-runner-lifecycle.yml).
           changed: >-
-            {{ (_configured.changed | default(false)) or (_runner_unit.changed | default(false))
-               or (_runner_files.changed | default(false)) }}
+            {{ (_grl_changed | default(false)) if (_lifecycle | default('persistent')) == 'ephemeral'
+               else ((_configured.changed | default(false)) or (_runner_unit.changed | default(false))
+                     or (_runner_files.changed | default(false))) }}
 
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
