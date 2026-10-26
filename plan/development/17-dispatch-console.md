@@ -32,7 +32,7 @@ through review comments. The product brief, design system and prototype are save
 4. **Scope is implicit.** Nothing makes the tenant, org, site, environment or group being
    acted on explicit and consistent across tools.
 
-## Decisions (D1–D10 settled 2026-10-20; D11–D15 settled 2026-10-25; D16 settled 2026-10-26)
+## Decisions (D1–D10 settled 2026-10-20; D11–D15 settled 2026-10-25; D16–D21 settled 2026-10-26)
 
 | # | Decision | Alternatives rejected | Why |
 |---|---|---|---|
@@ -52,13 +52,17 @@ through review comments. The product brief, design system and prototype are save
 | D14 | **Preferences in SQLite** through `rusqlite` (bundled), in `/data/prefs.db` on the `console-data` named volume, one row per subject | None recorded | Decided by Joseph on 2026-10-25. The console stores only the profile preferences, the one exception in D9 |
 | D15 | **Phase 1 tenants and scope tree come from the inventory declaration.** The `console_tenants` variable renders to `scope.json`, and example data is labelled as example. Live NetBox and Proxmox reads wait for Phase 3 | Reading NetBox or Proxmox in Phase 1 (deferred to Phase 3, not rejected) | Decided by Joseph on 2026-10-25. The real tenant values stay in site-config |
 | D16 | **The tenant is the hard isolation boundary.** Organizations inside a tenant share it; nothing crosses from one tenant to another | The organization as the boundary (the PRINCIPLES.md wording before Phase 0) | Decided by Joseph on 2026-10-26; PRINCIPLES.md amended to match |
+| D17 | **Phase 2 work source = Semaphore tasks, joined to the workflow registry.** A task launched by skynet carries the message `skynet <workflow_id> <step_id>` (skynet repository, `src/skynet/orchestrator/service_onboarding.py:285`), which gives the run id and the step id. The owning role is the registry step's `owner` (`platform/workflows/service-onboarding/registry.yml`, `steps[].id`, `order` and `owner`). Skynet is not read in Phase 2 | Reading skynet in Phase 2: it has no list route, no read-only credential and no timestamps (skynet repository, `src/skynet/server.py:199-247`). A console-owned work store (rejected in D9) | Semaphore is the executor and holds every task. A skynet read API is proposed to the skynet repository (O3), not assumed |
+| D18 | **Phase 2 live updates = polling.** The server polls Semaphore every 10 s into an in-memory cache; the client re-fetches `/v1/work` every 10 s and pauses while the tab is hidden. Closes O4 | Server-sent events now, the O4 default. Deferred: Phase 2 has no push source (contract, D18), so an event stream would sit on top of the same poll. WebSocket, named in O4, with no reason recorded for rejecting it | SSE returns once a push source exists. Until then the poll meets the Phase 2 acceptance line |
+| D19 | **`/v1/work*` answers only callers in group `platform-admins`** (403 `{"error":"forbidden"}` for anyone else). Phase 2 is admin-only until Phase 3 | Showing Semaphore work to tenant members. Semaphore tasks are platform-wide and carry no tenant, so a tenant member would see work across the hard boundary (D16). Per-tenant work arrives in Phase 3, when tasks map to inventory | The tenant boundary (D16) and API-enforced RBAC from Authentik groups (D8). The group is declared in `platform/services/authentik/deployment/blueprints/platform-groups.yaml:18` |
+| D20 | **The console's Semaphore credential is a dedicated user, `svc-console`, at project role `guest`** (read-only). Its token is stored at `secret/services/console:semaphore_api_token` (with `semaphore_password`). Never the controller token at `secret/services/semaphore` | The controller token, and any project role that can launch tasks. Launch rights are runner rights (`platform/semaphore/README.md:72`). Guest is read-only: upstream Semaphore v2.19.11 `db/ProjectUser.go` gives guest no write permissions, and `api/projects/project.go:97` lets project members read through GET (contract citations; the upstream files are not in this repository and were not re-read in this session) | Least privilege: the console reads and never launches. The controller credential stays with the executor |
+| D21 | **The console in production runs on its own VM** (host group `console_svc`). Production steps are in "Production site-config checklist" below | None recorded | Decided by Joseph on 2026-10-26 |
 
 ### Open decisions (owner: Joseph A. Wisneski IV)
 
 | # | Question | How it gets decided |
 |---|---|---|
-| O3 | skynet API contract for plans, work state, role assignment and Q&A | Agree with the skynet repository (the plan-15 graph already holds the state) |
-| O4 | Live updates: server-sent events, WebSocket or polling | Phase 2; default to SSE from the API service |
+| O3 | skynet read API (list runs, read-only token) — proposal to the skynet repo | Agree with the skynet repository (the plan-15 graph already holds the state) |
 | O5 | Where business-domain tags are stored (Products, Professional Services, Automation, Administration, IT) | Edited in Organization settings; storage (NetBox tag vs inventory field) decided in Phase 3 |
 | O6 | The real developer agents and workflows on the development gateway | Operator to list; prototype entries are examples |
 
@@ -168,11 +172,22 @@ verify step passes; an unauthenticated request to the API answers 401.
 
 ### Phase 2 — Work (read-only)
 
-- Work lanes, filters (asset, group, domain), red badges, details panel with the vertical
-  stepper, summary rail, scope banner, SSE updates.
+- Work source: Semaphore tasks, the executor, joined to the workflow registry (D17). A task
+  launched by skynet is recognised by its `skynet <workflow_id> <step_id>` message, and its
+  owning role is the registry step's `owner`. Skynet is not read in Phase 2.
+- Live updates by polling (D18): the server polls Semaphore every 10 s into an in-memory cache,
+  and the client re-fetches `/v1/work` every 10 s, pausing while the tab is hidden. No SSE.
+- Admin only (D19): `/v1/work*` answers callers in `platform-admins` alone, until Phase 3. Any
+  other signed-in caller gets a 403, and the console shows an empty state that explains why.
+- Semaphore reads use the read-only `svc-console` user at project role `guest` (D20).
+- Work lanes (queued, running, awaiting, blocked, failed, done; done collapsed by default) of
+  strips showing title, role chip, status label and age. Filters for role, lane and text
+  (service or template). A red badge on Active Work counts blocked and failed items.
+- Scope banner "N running", labelled tenant-wide in Phase 2. Details panel with the vertical
+  stepper for skynet runs, minimizable to a summary rail. Every item links its Semaphore receipt.
 
-**Acceptance:** live work from skynet and Semaphore appears within one update interval; every
-item shows its owning role and a Semaphore receipt link when one exists.
+**Acceptance:** live work from Semaphore appears within one 10 s poll; skynet-launched items show
+run, step and owning role; every item links its Semaphore receipt.
 
 ### Phase 3 — Scope and inventory (read-only)
 
@@ -215,6 +230,50 @@ chart renders in the console.
   validation, then promotion to production through the branch workflow.
 
 **Acceptance:** the validation table below passes on `dev`; promotion PR merged.
+
+### Production site-config checklist
+
+The console runs in production on its own VM (D21). This checklist lists what must exist before the
+first production deploy, in the order it is needed. It names variables, playbooks and templates
+only. No address, token or tenant value belongs in this document: real values stay in the private
+site-config repository. A step marked **[TARGET]** is not built yet.
+
+1. **VM declaration.** Declare the console VM in `site-config/proxmox/vm-specs.yml`, the file that
+   `resize-vm.yml` reads its desired state from (`platform/tests/test_resize_vm.bats:32-35`).
+2. **Address reservation.** Reserve the static address with `netbox-allocate-ip.yml` run with
+   `-e reserve=true` and the explicit address. Reservation never picks the next free address
+   (`AGENTS.md`, Independent Workflows table).
+3. **Provision.** Run `provision-vm.yml`. Pass `-e target_host=` when the group declares more than
+   one host (`AGENTS.md`, Independent Workflows table).
+4. **Per-service SSH key.** Run `generate-service-ssh-key.yml` with `site_config_dir` pointing at a
+   clone, so the pair also reaches site-config (`AGENTS.md`, step 8 of Adding a New Service).
+5. **Distribute, verify, harden.** Run `distribute-ssh-keys.yml`, then `verify-host-access.yml`, then
+   `harden-ssh.yml`. Hardening follows a passing key-only verify, never the reverse.
+6. **Inventory group `console_svc`.** One host in this group, with the host vars `service_name`,
+   `monorepo_deploy_path`, `container_engine`, `console_bind`, `console_port`, `console_base_url`,
+   `console_oidc_issuer` and `console_tenants`. The consumers are `platform/playbooks/deploy-console.yml`
+   (`hosts: console_svc`, and `config/scope.json` rendered at line 54), and the templates `env.j2`
+   and `scope.json.j2`. The Semaphore connection variables `console_semaphore_api_url`,
+   `console_semaphore_ui_url` and `console_semaphore_project` are **[TARGET]** for Phase 2. No
+   playbook in this repository reads them yet.
+7. **Authentik.** Set the production host vars `console_redirect_uri` and `console_launch_url`.
+   Add `console` to `authentik_apps`; `deploy-authentik.yml:223` uses that list when it is defined.
+   The catalog entry is `platform/services/authentik/deployment/app-catalog.yml:112-113`
+   (`prod_required` and `verify_redirect`). The promotion guard in `deploy-authentik.yml:234-270`
+   refuses a value that still resolves to an `agent-cloud.test` default or to an unresolved template.
+   The blueprint is `platform/services/authentik/deployment/blueprints/console-oidc.yaml`.
+8. **Caddy route.** Add the console hostname block to `caddy_managed_sites` in site-config and run
+   `Manage Caddy Sites` (`platform/playbooks/manage-caddy-sites.yml:24`). If a hand-maintained block
+   already serves that hostname, retire it through `caddy_retire_sites` in the same run, because
+   Caddy rejects a hostname defined twice (`AGENTS.md`, Caddy routes are readable).
+9. **Semaphore project team.** Declare `svc-console` at role `guest` in `semaphore_project_members`
+   (top-level `all.vars` in site-config), then run `Manage Semaphore Access`
+   (`platform/playbooks/manage-semaphore-access.yml:15`; `platform/semaphore/README.md:77`).
+10. Run the remaining workflows in this order: **Deploy Authentik**, **Manage Caddy Sites**,
+    **Manage Semaphore Access**, **Provision Console Semaphore Access** **[TARGET]**, then
+    **Deploy console** (the template in `platform/semaphore/templates.yml`, the one that deploys
+    `platform/playbooks/deploy-console.yml`). The Provision step places the `svc-console` user and
+    its token (D20). No template of that name exists in `platform/semaphore/templates.yml` yet.
 
 ## Requirements traceability
 
@@ -291,3 +350,4 @@ The 22 requirements from the 2026-10-20 brief, mapped to where the design meets 
 | 2026-10-21 | Added profile, tenant/org settings, proposal queue, services ask and service requests from final review comments; O5 answered: Organization settings owns business-domain tags |
 | 2026-10-25 | Phase 0: O1 decided as Dioxus 0.7.10 fullstack (D11); O2 decided as `platform/services/console/` in this repository (D12); D13–D15 recorded (host-built image, SQLite preferences, inventory scope tree); architecture note on the single binary; plan renumbered from 16 to 17 because `16-plane-work-management.md` holds 16; PRINCIPLES.md identity amended so that tenant sits above organization; OpenSpec change `add-dispatch-console` added |
 | 2026-10-26 | D16: the tenant is the hard isolation boundary (PRINCIPLES.md amended). Build-only tools in the image builder, `binaryen` (apt) and `esbuild` (npm tarball, sha512-checked), accepted by Joseph alongside the D13 host build |
+| 2026-10-26 | Phase 2 decisions: D17 (work source is Semaphore tasks joined to the workflow registry), D18 (polling, which closes O4), D19 (`/v1/work*` admin-only until Phase 3), D20 (read-only `svc-console` credential). D21: the console runs in production on its own VM. O3 reworded to a proposal to the skynet repository. Phase 2 bullets and acceptance line matched to the decisions. Production site-config checklist added. RBAC group names are labels, and the group tuple and per-project access level are structured site-config data (plan 04 and plan 12) |
