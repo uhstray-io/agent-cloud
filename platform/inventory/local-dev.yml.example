@@ -153,6 +153,8 @@ all:
             - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
             # tududi uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
             - { host: "todo.agent-cloud.test", upstream: "tududi:3002" }
+            # console uses NATIVE OIDC (not forward_auth) - plain reverse_proxy, like tududi.
+            - { host: "console.agent-cloud.test", upstream: "console:8080" }
             # honcho: /v3 API is JWT-authenticated in-app; only the human /docs
             # surface is Authentik-gated (path-scoped forward_auth).
             - { host: "memory.agent-cloud.test", upstream: "honcho-api:8000", forward_auth: "authentik-server:9000", forward_auth_paths: ["/docs*", "/redoc*", "/openapi.json"] }
@@ -277,6 +279,36 @@ all:
           # is also the default — set this only if you map a project you own
           # through your OIDC login instead.
           tududi_sync_user_email: admin@agent-cloud.test
+    # console — the Dispatch Console (Rust/Dioxus app; SQLite preferences on a named volume). Native
+    # OIDC to Authentik (client `console`), behind Caddy at console.agent-cloud.test. The image is
+    # built on this host from platform/services/console (no registry). Deploy: make local-deploy-console.
+    console_svc:
+      hosts:
+        console-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: console
+          monorepo_deploy_path: platform/services/console/deployment
+          container_engine: podman
+          console_bind: 127.0.0.1
+          console_port: 3410   # host debug port; Caddy reaches the container :8080 by name
+          # The local podman client sends its own default seccomp path to the podman-machine engine,
+          # which has the profile only at this path ON THE ENGINE. Without it the image build's RUN
+          # steps fail "opening seccomp profile failed" (the NetBox build hit this 2026-09-22).
+          console_build_seccomp: /usr/share/containers/seccomp.json
+          # Example scope only: no real tenants, sites or addresses. Production declares its own in
+          # site-config. Sites and environments here are names, not hosts.
+          console_scope_is_example: true
+          console_tenants:
+            - id: uhstray
+              name: "Uhstray (example)"
+              orgs:
+                - id: uhstray-io
+                  name: uhstray-io
+                  sites:
+                    - { id: site-hq, name: HQ, envs: [prod, dev] }
+                    - { id: do-nyc1, name: DigitalOcean NYC1, envs: [prod] }
+                    - { id: cloudflare, name: Cloudflare, envs: [prod] }
     # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
     # per-client API keys + limits) in front of the model API. Locally the
     # upstream is the PUBLIC edge, https://inference.uhstray.io/v1 (prod's route to

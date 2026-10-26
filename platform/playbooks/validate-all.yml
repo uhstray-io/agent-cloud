@@ -133,6 +133,22 @@
       ansible.builtin.debug:
         msg: "tududi: {{ 'HEALTHY' if _tududi_health is succeeded else 'UNHEALTHY' }}"
 
+- name: "Validate console"
+  hosts: console_svc
+  gather_facts: false
+  tasks:
+    - name: Check console health (probe /healthz -> 200, inside the container)
+      # Same probe the deploy verifies with: the binary's own subcommand, run in the container.
+      ansible.builtin.command: "{{ container_engine | default('podman') }} exec console /usr/local/app/server probe /healthz 200"
+      register: _console_health
+      ignore_errors: true
+      changed_when: false
+      check_mode: false
+
+    - name: Report console status
+      ansible.builtin.debug:
+        msg: "console: {{ 'HEALTHY' if _console_health is succeeded else 'UNHEALTHY' }}"
+
 - name: "Validate honcho"
   hosts: honcho_svc
   gather_facts: false

@@ -1,0 +1,6 @@
+# Rendered per deploy by deploy-console.yml (manage-secrets templates .env; config/scope.json is
+# templated from the inventory). Gitignored so the place-monorepo rsync --delete leaves them alone
+# (it honours each directory's .gitignore), and so a rendered secret cannot be committed.
+.env
+config/
+certs/

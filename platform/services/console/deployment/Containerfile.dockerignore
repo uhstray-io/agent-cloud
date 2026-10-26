@@ -1,0 +1,9 @@
+# Build context is the console service directory (the parent of deployment/). Keep the per-deploy
+# rendered files out of it — .env holds the OIDC client secret, config/ and certs/ are rendered
+# per deploy — and keep Cargo's target/ out. The engine would be sent them even when the
+# Containerfile never COPYs them. Patterns are relative to the context root. Podman 5.8.2 reads
+# this file next to the Containerfile; a Docker host reads it under the same name (unverified).
+deployment/.env
+deployment/config
+deployment/certs
+app/target
