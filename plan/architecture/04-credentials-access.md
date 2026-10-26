@@ -294,7 +294,7 @@ Rules that fall out of the table:
 
 **[TARGET] / NOT BUILT:** the provisioning automation (Authentik groups -> per-service roles) and the full group schema above are **not implemented yet**. Do not reason as if role-based provisioning already holds. Today's reality:
 
-- **`platform-admins` is the sole admin group**, **being renamed `uhstray-uhstray-io-admins`** (the Admin tier of the uhstray-io org in the uhstray tenant, above).
+- **`platform-admins` is the sole admin group today.** It stays as the cross-tenant operator group (it spans tenants and sees every tenant; the Dispatch Console relies on it). `uhstray-uhstray-io-admins`, the Admin tier of the uhstray-io org in the uhstray tenant, is added beside it rather than replacing it. (The earlier proposal to rename `platform-admins` is withdrawn: once the tenant became the hard isolation boundary on 2026-10-26, a tenant-scoped name could no longer carry cross-tenant administration.)
 - **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as such, not the foundational fix. The foundational fix is the provisioning mechanism here: derive `stray`'s admin flag from `uhstray-uhstray-io-admins` membership instead of hand-setting it.
 - No Department/Team/Role decomposition is wired into Authentik groups yet, and no automated (tuple -> per-service role) mapper. Until it ships, downstream roles are set by hand and this section is the design target they converge to.
 
