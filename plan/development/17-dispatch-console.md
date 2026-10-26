@@ -32,7 +32,7 @@ through review comments. The product brief, design system and prototype are save
 4. **Scope is implicit.** Nothing makes the tenant, org, site, environment or group being
    acted on explicit and consistent across tools.
 
-## Decisions (D1–D10 settled 2026-10-20; D11–D15 settled 2026-10-25)
+## Decisions (D1–D10 settled 2026-10-20; D11–D15 settled 2026-10-25; D16 settled 2026-10-26)
 
 | # | Decision | Alternatives rejected | Why |
 |---|---|---|---|
@@ -51,6 +51,7 @@ through review comments. The product brief, design system and prototype are save
 | D13 | **The image is built on the host at deploy time.** `deploy.sh` builds it with the container engine. A CI build pushed to GHCR with a digest pin is deferred to Phase 7 | A CI build pushed to GHCR with a digest pin, now (deferred, not rejected) | The Phase 1 contract has no registry. The NetBox deploy calls `build_netbox_image` (`platform/services/netbox/deployment/deploy.sh:128`, defined at `platform/services/netbox/deployment/lib/common.sh:446`) |
 | D14 | **Preferences in SQLite** through `rusqlite` (bundled), in `/data/prefs.db` on the `console-data` named volume, one row per subject | None recorded | Decided by Joseph on 2026-10-25. The console stores only the profile preferences, the one exception in D9 |
 | D15 | **Phase 1 tenants and scope tree come from the inventory declaration.** The `console_tenants` variable renders to `scope.json`, and example data is labelled as example. Live NetBox and Proxmox reads wait for Phase 3 | Reading NetBox or Proxmox in Phase 1 (deferred to Phase 3, not rejected) | Decided by Joseph on 2026-10-25. The real tenant values stay in site-config |
+| D16 | **The tenant is the hard isolation boundary.** Organizations inside a tenant share it; nothing crosses from one tenant to another | The organization as the boundary (the PRINCIPLES.md wording before Phase 0) | Decided by Joseph on 2026-10-26; PRINCIPLES.md amended to match |
 
 ### Open decisions (owner: Joseph A. Wisneski IV)
 
@@ -289,3 +290,4 @@ The 22 requirements from the 2026-10-20 brief, mapped to where the design meets 
 | 2026-10-20 | Initial plan from the design session; Dispatch layout chosen; decisions D1–D10, open O1–O6 |
 | 2026-10-21 | Added profile, tenant/org settings, proposal queue, services ask and service requests from final review comments; O5 answered: Organization settings owns business-domain tags |
 | 2026-10-25 | Phase 0: O1 decided as Dioxus 0.7.10 fullstack (D11); O2 decided as `platform/services/console/` in this repository (D12); D13–D15 recorded (host-built image, SQLite preferences, inventory scope tree); architecture note on the single binary; plan renumbered from 16 to 17 because `16-plane-work-management.md` holds 16; PRINCIPLES.md identity amended so that tenant sits above organization; OpenSpec change `add-dispatch-console` added |
+| 2026-10-26 | D16: the tenant is the hard isolation boundary (PRINCIPLES.md amended). Build-only tools in the image builder, `binaryen` (apt) and `esbuild` (npm tarball, sha512-checked), accepted by Joseph alongside the D13 host build |
