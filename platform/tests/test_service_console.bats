@@ -98,24 +98,6 @@ PY
   refute_grep -qE '^CONSOLE_OIDC_CLIENT_SECRET=[^{]' "$f"
 }
 
-# --- Deploy ---"
-# section covers the deployment path: an env-parameterized single-container compose with a named
-# preferences volume, an exec-form probe healthcheck (the runtime image is distroless, so there is
-# no shell for CMD-SHELL), a container-lifecycle deploy.sh that builds the image on the host behind
-# an inputs-digest skip, a non-secret env and scope template, and a composable deploy playbook that
-# runs the OpenBao transport guard before it places anything. The OIDC client secret is shared-read
-# from authentik, never stored by the console. No hardcoded IPs or credentials.
-#
-# Structural only (grep/file asserts) — no live deploy.
-# Run: bats platform/tests/test_service_console.bats
-
-setup() {
-  REPO_ROOT=$(git rev-parse --show-toplevel)
-  DEPLOY_DIR="$REPO_ROOT/platform/services/console/deployment"
-  PLAYBOOK="$REPO_ROOT/platform/playbooks/deploy-console.yml"
-  CLEAN_PLAYBOOK="$REPO_ROOT/platform/playbooks/clean-deploy-console.yml"
-}
-
 # --- Deploy ---
 
 @test "console: compose env-parameterizes image + bind/port" {
