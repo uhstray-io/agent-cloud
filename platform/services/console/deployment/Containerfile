@@ -14,11 +14,23 @@
 # ---- build ---------------------------------------------------------------
 FROM docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS build
 
-# binaryen provides wasm-opt. dx runs it on every release web build; with
-# NO_DOWNLOADS=1 it must come from PATH instead of a GitHub download.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends binaryen \
- && rm -rf /var/lib/apt/lists/*
+# wasm-opt 129 (binaryen). dx runs it on every release web build; with NO_DOWNLOADS=1
+# it must come from PATH. Not the bookworm binaryen package (108), which is too old for
+# this build's wasm. dx's own download has no checksum, so this fetches the official
+# release tarball for this architecture and checks it against the sha256 pinned here
+# (from the release's .sha256 asset) before installing wasm-opt.
+# hadolint ignore=DL4006
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64) bn=x86_64; bn_sha=50b9fa62b9abea752da92ec57e0c555fee578760cd237c40107957715d2976ba ;; \
+      aarch64) bn=aarch64; bn_sha=81d46b86b10876ab615eec67e09fcc5615115a7b189cfe3d466725ee36c46ac2 ;; \
+      *) echo "unsupported architecture" >&2; exit 1 ;; esac; \
+    curl -fsSL -o /tmp/binaryen.tgz "https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-$bn-linux.tar.gz"; \
+    printf '%s  %s\n' "$bn_sha" /tmp/binaryen.tgz | sha256sum -c -; \
+    tar -xzf /tmp/binaryen.tgz -C /tmp binaryen-version_129/bin/wasm-opt; \
+    install -m 0755 /tmp/binaryen-version_129/bin/wasm-opt /usr/local/bin/wasm-opt; \
+    rm -rf /tmp/binaryen.tgz /tmp/binaryen-version_129; \
+    wasm-opt --version | grep -q 'version 129'
 
 # Client target. Local rustup has it approved; the image installs it explicitly.
 RUN rustup target add wasm32-unknown-unknown
@@ -73,10 +85,22 @@ RUN install -d -m 0750 -o 65532 -g 65532 /data
 # NO_DOWNLOADS=1: dx takes wasm-bindgen and wasm-opt from PATH, and verifies
 # the wasm-bindgen version, instead of fetching unchecksummed binaries from GitHub.
 WORKDIR /src/app
+# dx does not fail the build when wasm-opt fails. It logs the error and ships the
+# unoptimized wasm, exit 0 (dioxus-cli v0.7.10 wasm_opt.rs, optimize()). So the log is
+# checked for that message. dx logs no success message, so this gate is negative only:
+# exit 0 and no failure text. The check is an `if`, not `! grep`, because POSIX ignores
+# -e for a pipeline that starts with `!`.
 # target/ is deleted in the same RUN: only /out is kept in the layer.
-RUN NO_DOWNLOADS=1 dx bundle --web --release --out-dir /out \
- && ls -la /out /out/public \
- && rm -rf /src/app/target "$CARGO_HOME/registry" "$CARGO_HOME/git"
+RUN set -eux; \
+    rc=0; NO_DOWNLOADS=1 dx bundle --web --release --out-dir /out > /tmp/dx.log 2>&1 || rc=$?; \
+    cat /tmp/dx.log; \
+    test "$rc" -eq 0; \
+    if grep -q 'wasm-opt failed with status code' /tmp/dx.log; then \
+      echo "wasm-opt failed: the wasm would ship unoptimized" >&2; exit 1; \
+    fi; \
+    rm -f /tmp/dx.log; \
+    ls -la /out /out/public; \
+    rm -rf /src/app/target "$CARGO_HOME/registry" "$CARGO_HOME/git"
 
 # ---- runtime -------------------------------------------------------------
 # distroless cc: glibc and libgcc, no shell, no package manager. nonroot runs as 65532.
