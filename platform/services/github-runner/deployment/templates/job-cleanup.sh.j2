@@ -27,15 +27,16 @@ if [ -d "$WORKDIR" ]; then
   log "workspace cleared"
 fi
 
-# Containers and volumes this job created. `docker` here is the podman shim; both the
-# container and volume prunes are scoped to what is already stopped/unused, so a
-# concurrently running job on this host is unaffected.
+# Containers and volumes this job created. `docker` here is Docker's CLI client, and the
+# runner's DOCKER_HOST (.env) points it at this account's rootless podman API, the engine
+# the job's containers ran on. Both the container and volume prunes are scoped to what is
+# already stopped/unused, so a concurrently running job on this host is unaffected.
 if command -v docker >/dev/null 2>&1; then
   docker container prune -f >/dev/null 2>&1 || log "WARNING: container prune failed"
   docker volume prune -f    >/dev/null 2>&1 || log "WARNING: volume prune failed"
   log "containers and volumes pruned"
 else
-  log "WARNING: no docker shim on PATH — per-job containers were NOT pruned"
+  log "WARNING: no docker client on PATH; per-job containers were NOT pruned"
 fi
 
 exit 0

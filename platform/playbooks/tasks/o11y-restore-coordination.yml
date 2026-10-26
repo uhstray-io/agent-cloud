@@ -1,0 +1,246 @@
+---
+# Fixed-path CAS coordination only. This include never contacts Proxmox and
+# never performs a restore, stop, or delete operation.
+#
+# Caller supplies a request with the private target reference, owner nonce, and
+# complete expected prior record/version, plus protected OpenBao URL and token
+# include vars. The expected state and nonce must come from a prior successful
+# readback held in protected controller state; a fresh GET here is comparison
+# only and must never be adopted. For a separate cleanup invocation, expected
+# state must come from the authenticated restore task output. The caller must
+# refuse these input names as extra vars before including this task. This shared
+# task validates structure but cannot authenticate caller-supplied values.
+
+- name: "Restore coordination: validate caller inputs"
+  ansible.builtin.assert:
+    that:
+      - o11y_restore_coordination_request is mapping
+      - _o11y_restore_coordination_bao_url is string and _o11y_restore_coordination_bao_url | length > 0
+      - _o11y_restore_coordination_bao_token is string and _o11y_restore_coordination_bao_token | length > 0
+    fail_msg: "Restore coordination inputs are incomplete."
+    quiet: true
+  no_log: true
+
+- name: "Restore coordination: refuse an unsafe OpenBao endpoint"
+  ansible.builtin.include_tasks: assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ _o11y_restore_coordination_bao_url }}"
+
+- name: "Restore coordination: read fixed record metadata"
+  ansible.builtin.uri:
+    url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/metadata/coordination/o11y-restore-target"
+    method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _o11y_restore_coordination_bao_token }}"
+    status_code: [200, 404]
+  register: _o11y_rc_metadata
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "Restore coordination: read fixed record data"
+  ansible.builtin.uri:
+    url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
+    method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _o11y_restore_coordination_bao_token }}"
+    status_code: [200, 404]
+  register: _o11y_rc_secret
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "Restore coordination: plan the strict transition"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y_restore_coordination.py"
+    stdin: "{{ {'mode': 'plan', 'metadata_status': _o11y_rc_metadata.status, 'metadata': _o11y_rc_metadata.json.data | default(none), 'data_status': _o11y_rc_secret.status, 'secret': _o11y_rc_secret.json | default(none), 'request': o11y_restore_coordination_request} | to_json }}"
+  register: _o11y_rc_plan_result
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Restore coordination: refuse an invalid or stale transition"
+  ansible.builtin.assert:
+    that:
+      - _o11y_rc_plan_result is defined
+      - _o11y_rc_plan_result.rc is defined
+      - _o11y_rc_plan_result.rc == 0
+    fail_msg: "Restore coordination refused the requested transition."
+    quiet: true
+
+- name: "Restore coordination: retain the validated plan in controller memory"
+  ansible.builtin.set_fact:
+    _o11y_rc_plan: "{{ _o11y_rc_plan_result.stdout | from_json }}"
+  no_log: true
+
+- name: "Restore coordination: report check-mode result"
+  ansible.builtin.debug:
+    msg: "check mode: coordination transition validated; no OpenBao write was made."
+  when:
+    - ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: write the complete record with version CAS"
+  ansible.builtin.uri:
+    url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
+    method: POST
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _o11y_restore_coordination_bao_token }}"
+    body_format: json
+    body: "{{ _o11y_rc_plan.payload }}"
+    status_code: [200, 400, 412]
+  register: _o11y_rc_write
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: require CAS success"
+  ansible.builtin.assert:
+    that:
+      - _o11y_rc_write is defined
+      - _o11y_rc_write.status is defined
+      - _o11y_rc_write.status == 200
+    fail_msg: "Restore coordination CAS did not succeed; stop and retain the claim."
+    quiet: true
+  when:
+    - not ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: read back written metadata"
+  ansible.builtin.uri:
+    url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/metadata/coordination/o11y-restore-target"
+    method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _o11y_restore_coordination_bao_token }}"
+    status_code: [200, 404]
+  register: _o11y_rc_after_metadata
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: read back written data"
+  ansible.builtin.uri:
+    url: "{{ _o11y_restore_coordination_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
+    method: GET
+    validate_certs: true
+    use_netrc: false
+    use_proxy: false
+    ca_path: null
+    client_cert: null
+    client_key: null
+    url_username: null
+    url_password: null
+    force_basic_auth: false
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _o11y_restore_coordination_bao_token }}"
+    status_code: [200, 404]
+  register: _o11y_rc_after_secret
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: verify exact readback and KV version"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y_restore_coordination.py"
+    stdin: "{{ {'mode': 'readback', 'plan': _o11y_rc_plan, 'metadata_status': _o11y_rc_after_metadata.status, 'metadata': _o11y_rc_after_metadata.json.data | default(none), 'data_status': _o11y_rc_after_secret.status, 'secret': _o11y_rc_after_secret.json | default(none)} | to_json }}"
+  register: _o11y_rc_verify
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: require verified readback"
+  ansible.builtin.assert:
+    that:
+      - _o11y_rc_verify is defined
+      - _o11y_rc_verify.rc is defined
+      - _o11y_rc_verify.rc == 0
+    fail_msg: "Restore coordination readback did not match the CAS write; stop and retain the claim."
+    quiet: true
+  when:
+    - not ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: report verified transition"
+  ansible.builtin.debug:
+    msg: "coordination transition stored and verified."
+  when:
+    - not ansible_check_mode
+    - _o11y_rc_plan.result == 'write'
+
+- name: "Restore coordination: report idempotent cleaned operation"
+  ansible.builtin.debug:
+    msg: "coordination record is already cleaned for this exact operation; no write was made."
+  when:
+    - _o11y_rc_plan.result == 'unchanged'

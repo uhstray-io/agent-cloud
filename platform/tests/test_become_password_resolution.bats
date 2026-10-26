@@ -87,18 +87,71 @@ setup() {
   # Selected on the CONDITION (escalates at play level), never on the presence of
   # the fix — selecting on the fix made this vacuous, because deleting the include
   # dropped the file out of scope and the test passed.
-  for f in "$PBDIR"/*.yml; do
-    grep -qE '^  become: true' "$f" || continue
-    [ "$(basename "$f")" = "$KNOWN_GAP" ] && continue
-    local first
-    first=$(awk '/^  tasks:/{t=1;next} t&&/^    - name:/{n++; if(n>1) exit} t&&n==1{print}' "$f")
-    [ -n "$first" ]
-    if ! printf '%s' "$first" | grep -qE 'tasks/resolve-become-password\.yml|become_password'; then
-      echo "first task of $(basename "$f") does not make escalation possible:" >&2
-      printf '%s\n' "$first" >&2
-      return 1
-    fi
-  done
+  python3 - "$PBDIR" "$KNOWN_GAP" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+playbook_dir, known_gap = Path(sys.argv[1]), sys.argv[2]
+failures = []
+
+
+def resolves_password(value):
+    if isinstance(value, str):
+        return "resolve-become-password.yml" in value or "become_password" in value
+    if isinstance(value, dict):
+        return any(resolves_password(nested) for nested in value.values())
+    if isinstance(value, list):
+        return any(resolves_password(nested) for nested in value)
+    return False
+
+
+def invalid_become_plays(plays):
+    invalid = []
+    for play in plays:
+        if not isinstance(play, dict) or play.get("become") is not True:
+            continue
+        tasks = play.get("tasks") or []
+        first = tasks[0] if tasks else {}
+        if play.get("gather_facts", True) is not False or not resolves_password(first):
+            invalid.append((play.get("name", "unnamed play"), first))
+    return invalid
+
+
+for path in sorted(playbook_dir.glob("*.yml")):
+    if path.name == known_gap:
+        continue
+    try:
+        plays = yaml.safe_load(path.read_text()) or []
+    except yaml.YAMLError:
+        continue
+    failures.extend((path.name, name, first) for name, first in invalid_become_plays(plays))
+
+# Keep the regression targeted at multi-play files: an earlier localhost
+# preamble must not hide a broken later privileged play.
+synthetic_preamble = [
+    {"name": "localhost preamble", "hosts": "localhost", "become": False, "tasks": [{"name": "ok"}]},
+    {"name": "privileged service", "hosts": "pbs_svc", "become": True, "gather_facts": False, "tasks": [{"name": "missing resolver"}]},
+]
+if len(invalid_become_plays(synthetic_preamble)) != 1:
+    failures.append(("synthetic", "localhost preamble masked missing second-play resolver", {}))
+
+synthetic_gather_first = [{
+    "name": "gathering before resolver",
+    "hosts": "pbs_svc",
+    "become": True,
+    "gather_facts": True,
+    "tasks": [{"ansible.builtin.include_tasks": "tasks/resolve-become-password.yml"}],
+}]
+if len(invalid_become_plays(synthetic_gather_first)) != 1:
+    failures.append(("synthetic", "gather_facts before resolver was accepted", {}))
+if failures:
+    for filename, play_name, first in failures:
+        print(f"first task of play {play_name!r} in {filename} does not resolve escalation:", file=sys.stderr)
+        print(first, file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 @test "become: gathering, where it happens at all, happens after escalation is possible" {

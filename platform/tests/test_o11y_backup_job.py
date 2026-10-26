@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
+import forgeries
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -23,7 +27,7 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     TASK_LOG_MAX_LINES,
     _safe_refusal,
     assert_unchanged,
-    inspect_candidates,
+    inspect_selected_job,
     main,
     plan_history_pages,
     plan_node_failure_log_page,
@@ -126,8 +130,9 @@ def test_default_enabled_state_follows_the_proxmox_api_contract():
     assert plan["changed"] is True
 
 
-def test_inspection_lists_sanitized_candidates_without_raw_membership_or_other_fields():
-    result = inspect_candidates({
+def test_inspection_links_private_selection_without_returning_identity_or_config():
+    result = inspect_selected_job({
+        "job_id": "nightly-o11y",
         "vmid": "200",
         "jobs": [
             job() | {"comment": "private operator note"},
@@ -138,53 +143,135 @@ def test_inspection_lists_sanitized_candidates_without_raw_membership_or_other_f
     })
 
     assert result["candidate_count"] == 4
-    assert result["candidates"] == [
-        {
-            "id": "nightly-o11y",
-            "type": "vzdump",
-            "enabled": "enabled",
-            "selector": "explicit-vmid",
-            "member_count": 2,
-            "includes_declared_o11y_vmid": False,
-            "schedule": "02:00",
-        },
-        {
-            "id": "all-vms",
-            "type": "vzdump",
-            "enabled": "enabled",
-            "selector": "all",
-            "member_count": None,
-            "includes_declared_o11y_vmid": None,
-            "schedule": "03:00",
-        },
-        {
-            "id": "disabled",
-            "type": "vzdump",
-            "enabled": "disabled",
-            "selector": "explicit-vmid",
-            "member_count": 2,
-            "includes_declared_o11y_vmid": False,
-            "schedule": "02:00",
-        },
-        {
-            "id": "pooled",
-            "type": "vzdump",
-            "enabled": "enabled",
-            "selector": "pool",
-            "member_count": None,
-            "includes_declared_o11y_vmid": None,
-            "schedule": "02:00",
-        },
-    ]
+    assert result["selected_job"] == {
+        "match": "unique",
+        "enabled": True,
+        "enabled_state": "enabled",
+        "selector": "explicit-vmid",
+        "includes_o11y": False,
+        "selection_unverified": False,
+    }
+    assert "nightly-o11y" not in str(result)
     assert "100,101" not in str(result)
+    assert "02:00" not in str(result)
     assert "private operator note" not in str(result)
 
 
-def test_inspection_refuses_duplicate_or_malformed_backup_job_ids():
-    with pytest.raises(ValueError, match="duplicate backup-job IDs"):
-        inspect_candidates({"vmid": "200", "jobs": [job(), job()]})
+@pytest.mark.parametrize(
+    ("job_id", "jobs", "match"),
+    [
+        ("absent", [job()], "missing"),
+        ("nightly-o11y", [job(), job()], "ambiguous"),
+        ("bad id", [job()], "missing"),
+    ],
+)
+def test_inspection_reports_missing_ambiguous_and_malformed_selected_identity(job_id, jobs, match):
+    result = inspect_selected_job({"job_id": job_id, "vmid": "200", "jobs": jobs})
+    assert result["selected_job"]["match"] == match
+    assert result["selected_job"]["includes_o11y"] is None
+    assert result["selected_job"]["selection_unverified"] is True
+
+
+def test_inspection_keeps_disabled_state_and_does_not_infer_unsupported_selector_membership():
+    disabled = inspect_selected_job({
+        "job_id": "nightly-o11y", "vmid": "200", "jobs": [job(enabled=False, vmid="100,200")],
+    })["selected_job"]
+    assert disabled == {
+        "match": "unique", "enabled": False, "enabled_state": "disabled",
+        "selector": "explicit-vmid", "includes_o11y": True, "selection_unverified": False,
+    }
+
+    for selector in ({"all": True}, {"pool": "private-pool"}, {"exclude": "200"}):
+        selected = inspect_selected_job({
+            "job_id": "nightly-o11y", "vmid": "200", "jobs": [job(**selector)],
+        })["selected_job"]
+        assert selected["includes_o11y"] is None
+        assert selected["selection_unverified"] is True
+        assert selected["selector"] in {"all", "pool", "exclude"}
+
+    malformed = inspect_selected_job({
+        "job_id": "nightly-o11y", "vmid": "200", "jobs": [job(vmid="100,,200")],
+    })["selected_job"]
+    assert malformed["selector"] == "malformed-or-unspecified"
+    assert malformed["includes_o11y"] is None
+    assert malformed["selection_unverified"] is True
+
+
+def test_inspection_refuses_malformed_backup_job_identity():
     with pytest.raises(ValueError, match="malformed ID"):
-        inspect_candidates({"vmid": "200", "jobs": [job(id="unsafe id")]})
+        inspect_selected_job({"vmid": "200", "jobs": [job(id="unsafe id")]})
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_inspect_yaml_handoff_uses_private_job_and_never_echoes_it(tmp_path):
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml").read_text())
+    play = next(item for item in playbook if item.get("name") == "Reconcile the declared o11y backup job")
+    names = {
+        "Build a sanitized backup-job candidate report",
+        "Require safe backup-job inspection data",
+        "Keep the sanitized selected-job inspection private to this run",
+        "Report sanitized selected backup-job status",
+    }
+    private_job_id = "private-nightly-job"
+    selected_tasks = [task for task in play["tasks"] if task.get("name") in names]
+    assert {task["name"] for task in selected_tasks} == names
+    synthetic = [{
+        "name": "Synthetic selected-job inspection handoff",
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "vars": {
+            "_planner": str(ROOT / "platform/playbooks/files/reconcile_proxmox_backup_job.py"),
+            "_backup_job_id": private_job_id,
+            "_vmid": "200",
+            "_inspect_only": True,
+            "_backup_jobs": {"json": {"data": [
+                job(id=private_job_id, vmid="100,200"),
+                job(id="other-private-job", vmid=None, all=True),
+                job(id="pooled-private-job", vmid="", pool="private-pool"),
+            ]}},
+            "_backup_history_summary": {"outcome": "unknown"},
+            "_backup_node_history_summary": {"outcome": "unknown"},
+            "_backup_node_failure_diagnostic": {"outcome": "unknown"},
+            "_backup_node_failure_identity": {"attribution": "unavailable"},
+            "_backup_selected_destination": {"destination_state": "unknown"},
+            "_backup_scheduler_state_summary": {"active": None},
+        },
+        "tasks": selected_tasks,
+    }]
+    fixture = tmp_path / "selected-job-inspection.yml"
+    fixture.write_text(yaml.safe_dump(synthetic))
+    env = {key: value for key, value in os.environ.items() if key != "ANSIBLE_CONFIG"}
+    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
+    result = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", str(fixture)],
+        cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert private_job_id not in result.stdout + result.stderr
+    assert "other-private-job" not in result.stdout + result.stderr
+    assert "pooled-private-job" not in result.stdout + result.stderr
+    assert "selected_backup_job" in result.stdout
+    assert "'includes_o11y': True" in result.stdout or '"includes_o11y": true' in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize(
+    "forge",
+    forgeries.templated_forgeries("_backup_job_id", "honest-id", "forged-id"),
+)
+def test_full_playbook_refuses_forged_private_backup_job_id_before_api_reads(tmp_path, forge):
+    playbook = ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml"
+    env = {key: value for key, value in os.environ.items() if key != "ANSIBLE_CONFIG"}
+    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
+    result = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", str(playbook), "-e", forge(tmp_path)],
+        cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=120,
+    )
+    assert result.returncode != 0
+    assert "Refusing to run: _backup_job_id set from outside the playbook" in result.stdout
+    assert "Read Proxmox backup-job list before inspection" not in result.stdout
+    assert "forged-id" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1419,6 +1506,7 @@ def test_node_history_summarizes_complete_multi_page_response():
 
 def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     plays = yaml.safe_load((ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml").read_text())
+    assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
     play = next(item for item in plays if item.get("name") == "Reconcile the declared o11y backup job")
     tasks = play["tasks"]
     by_name = {task["name"]: (index, task) for index, task in enumerate(tasks)}
@@ -1445,21 +1533,22 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     names = list(by_name)
     assert names.index("Build a sanitized backup-job candidate report") < names.index(
         "Require safe backup-job inspection data"
-    ) < names.index("Keep the sanitized backup-job candidate report private to this run") < names.index(
+    ) < names.index("Keep the sanitized selected-job inspection private to this run") < names.index(
         "Read the privately selected backup-job detail for inspection"
     ) < names.index("Read storage available to the declared node for destination inspection") < names.index(
-        "Report backup-job candidates for inventory selection"
+        "Report sanitized selected backup-job status"
     ) < names.index("End after read-only backup-job inspection") < names.index(
         "Require one exact private selected backup job"
     ) < names.index("Read the selected backup-job detail")
     assert by_name["End after read-only backup-job inspection"][1]["when"] == "_inspect_only"
+    inspect_handoff = by_name["Build a sanitized backup-job candidate report"][1]
+    assert "'job_id': _backup_job_id" in inspect_handoff["ansible.builtin.command"]["stdin"]
     selected_detail = by_name["Read the privately selected backup-job detail for inspection"][1]
     assert selected_detail["ansible.builtin.uri"]["method"] == "GET"
     assert "/api2/json/cluster/backup/{{ _backup_job_id }}" in selected_detail["ansible.builtin.uri"]["url"]
     assert selected_detail["when"] == [
         "_inspect_only",
-        "_backup_job_id is match('^[A-Za-z0-9._-]{1,64}$')",
-        "(_backup_inspection.candidates | selectattr('id', 'equalto', _backup_job_id) | list | length) == 1",
+        "_backup_inspection.selected_job.match == 'unique'",
     ]
     assert selected_detail["no_log"] is True and selected_detail["check_mode"] is False
     storage_get = by_name["Read storage available to the declared node for destination inspection"][1]
@@ -1545,22 +1634,21 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
         "Plan bounded node-wide archived vzdump history inspection"
     ) < names.index("Read the first node-wide archived vzdump task page") < names.index(
-        "Report backup-job candidates for inventory selection"
+        "Report sanitized selected backup-job status"
     )
     assert "proxmox_node_task_history" in by_name[
-        "Report backup-job candidates for inventory selection"
+        "Report sanitized selected backup-job status"
     ][1]["ansible.builtin.debug"]["msg"]
     assert "proxmox_node_task_failure_diagnostic" in by_name[
-        "Report backup-job candidates for inventory selection"
+        "Report sanitized selected backup-job status"
     ][1]["ansible.builtin.debug"]["msg"]
-    report = by_name["Report backup-job candidates for inventory selection"][1]["ansible.builtin.debug"]["msg"]
+    report = by_name["Report sanitized selected backup-job status"][1]["ansible.builtin.debug"]["msg"]
     assert "proxmox_node_task_identity" in report and "selected_backup_destination" in report
-    assert "verified_o11y_vmid" not in by_name[
-        "Report backup-job candidates for inventory selection"
-    ][1]["ansible.builtin.debug"]["msg"]
+    assert "candidates" not in report and "job_id" not in str(report)
+    assert "verified_o11y_vmid" not in report
     assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
         "Read pvescheduler state after verified node-scoped permission"
-    ) < names.index("Report backup-job candidates for inventory selection")
+    ) < names.index("Report sanitized selected backup-job status")
     history_tasks = [
         task for task in tasks
         if task.get("name", "").startswith((
@@ -1618,6 +1706,12 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert all(task.get("no_log") is True for task in api)
     assert all(task.get("check_mode") is False for task in api if task["ansible.builtin.uri"]["method"] == "GET")
     assert not any(task.get("check_mode") is False for task in api if task["ansible.builtin.uri"]["method"] == "PUT")
+    inspect_end_index = names.index("End after read-only backup-job inspection")
+    assert all(
+        index > inspect_end_index
+        for index, task in enumerate(tasks)
+        if task.get("ansible.builtin.uri", {}).get("method") in {"POST", "PUT", "DELETE"}
+    )
 
     helper_assertions = {
         "Require safe backup-job inspection data": "_backup_inspection_result",

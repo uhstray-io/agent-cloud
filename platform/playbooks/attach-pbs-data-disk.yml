@@ -5,6 +5,11 @@
 
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: Require the exact reviewed checkout
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
@@ -12,11 +17,16 @@
     _reviewed_checkout_payload_paths:
       - platform/playbooks/attach-pbs-data-disk.yml
       - platform/playbooks/refuse-internal-extra-vars.yml
+      - platform/playbooks/preflight-o11y-restore-target-inputs.yml
+      - platform/playbooks/tasks/preflight-o11y-restore-target.yml
       - platform/playbooks/tasks/o11y-pbs-physical-storage-survey.yml
       - platform/playbooks/tasks/preflight-o11y-pbs-thick-lvm-allocation.yml
       - platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml
       - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/tasks/guard-o11y-restore-target.yml
       - platform/playbooks/files/inspect_o11y_pbs_physical_storage.py
+      - platform/playbooks/files/guard_o11y_restore_target.py
+      - platform/playbooks/files/o11y_restore_coordination.py
       - platform/semaphore/templates.yml
 
 - name: Attach the declared PBS guest data disk
@@ -33,8 +43,8 @@
     _openbao_host: "{{ _openbao_hosts[0] if (_openbao_hosts | length == 1) else '' }}"
     _openbao_inventory_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
     _bao_url: "{{ _openbao_inventory_url }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
     _decl_hosts: "{{ groups['pbs_svc'] | default([]) }}"
     _decl_host: "{{ _decl_hosts[0] if (_decl_hosts | length == 1) else '' }}"
     _decl: "{{ hostvars[_decl_host] | default({}) }}"
@@ -60,9 +70,12 @@
     _cores: "{{ _decl.vm_cores | default('') }}"
     _memory: "{{ _decl.vm_memory | default('') }}"
     _vm_description: "Managed by agent-cloud; target_service=pbs; declaration=private inventory"
-    _expected_disk_pattern: "^{{ _storage }}:vm-{{ _vmid }}-disk-[0-9]+,size=512G(,|$)"
+    _expected_disk_serial: "ac-pbs-data-{{ _vmid }}"
+    # Match the volume prefix, then require size and serial as independent comma-delimited
+    # options. Proxmox option order is not an identity signal and may change on readback.
+    _expected_disk_pattern: "^{{ _storage }}:vm-{{ _vmid }}-disk-[0-9]+(?=,|$)(?=.*(?:^|,)size=512G(?:,|$))(?=.*(?:^|,)serial={{ _expected_disk_serial }}(?:,|$))"
     _disk_keys_pattern: "^(scsi|sata|virtio)[0-9]+$|^ide[013]$|^unused[0-9]+$"
-    _disk_request: "{{ _storage }}:512"
+    _disk_request: "{{ _storage }}:512,serial={{ _expected_disk_serial }}"
 
   tasks:
     - name: Require an exact reviewed Dev write run
@@ -188,6 +201,12 @@
           PBS data disk: {{ 'already attached and matches the pinned 512-GiB scsi1 declaration' if _scsi1 | length > 0
           else 'check mode: would allocate one 512-GiB scsi1 virtual disk on the pinned thick-LVM store'
           if ansible_check_mode else 'validated; allocating one 512-GiB scsi1 virtual disk on the pinned thick-LVM store' }}.
+
+    - name: Guard PBS VMID before allocation
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+      tags: [always]
 
     - name: Allocate exactly one virtual data disk through the Proxmox API
       ansible.builtin.uri:

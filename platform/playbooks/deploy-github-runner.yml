@@ -159,6 +159,33 @@
         state: present
         update_cache: true
 
+    - name: "Read which package provides the docker the hooks will run"
+      # Read-only, so a dry run reports it too.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        echo "owner=$(dpkg-query -S /usr/bin/docker 2>/dev/null | cut -d: -f1 || true)"
+      args:
+        executable: /bin/bash
+      register: _docker_owner
+      changed_when: false
+      check_mode: false
+
+    - name: "Require Docker's CLI client, not the podman-docker shim"
+      # The container hooks run `docker` with only the job's variables, HOME=/github/home
+      # among them. The podman-docker shim runs podman as a CLI in that environment, and
+      # rootless podman resolves its configuration from HOME on the host: every container
+      # job failed with `cannot resolve /github/home`. Docker's CLI client sends the same
+      # calls to the account's podman API service (DOCKER_HOST, .env), which runs with the
+      # account's own environment (design D4; docs/MISTAKES.md 10.29). The runtime install
+      # owns the package, so this deploy only checks it.
+      ansible.builtin.assert:
+        that: "'owner=docker-ce-cli' in _docker_owner.stdout_lines"
+        fail_msg: >-
+          /usr/bin/docker is not Docker's CLI client (read: {{ _docker_owner.stdout | trim }}).
+          Declare podman_docker_api_client: true (and not podman_docker_cli) for this group
+          and run Install Podman against it first.
+        success_msg: "/usr/bin/docker is Docker's CLI client (docker-ce-cli)."
+
     - name: "Create the unprivileged runner account"
       # No sudo entry, ever. This account is what makes the spec's "a job cannot
       # escalate to host administration" true, and it is deliberately NOT ansible_user,
@@ -549,6 +576,19 @@
         _tpl_rver: "{{ _rver }}"
         _tpl_hver: "{{ _hver }}"
 
+    - name: "Resolve the runner account's uid"
+      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
+      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
+      # host where accounts were created in a different order. Resolved before the templates
+      # because .env names the account's podman API socket, /run/user/<uid>/podman.
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ _account }}"
+
+    - name: "Record the uid and the user bus it implies"
+      ansible.builtin.set_fact:
+        _runner_uid: "{{ getent_passwd[_account][1] }}"
+
     - name: "Template the runner's declaration, job env and job hooks"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/{{ item.src }}"
@@ -565,6 +605,7 @@
         github_org: "{{ _tpl_org }}"
         github_runner_version: "{{ _tpl_rver }}"
         github_runner_hooks_version: "{{ _tpl_hver }}"
+        github_runner_uid: "{{ _runner_uid }}"
       loop:
         - { src: "runner.env.j2", dest: "{{ _home }}/config/runner.env", mode: "0640" }
         - { src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }
@@ -639,55 +680,26 @@
       # service checks below, which do run in check mode.
       when: not ansible_check_mode
 
-    - name: "Resolve the runner account's uid"
-      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
-      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
-      # host where accounts were created in a different order.
-      ansible.builtin.getent:
-        database: passwd
-        key: "{{ _account }}"
-
-    - name: "Record the uid and the user bus it implies"
-      ansible.builtin.set_fact:
-        _runner_uid: "{{ getent_passwd[_account][1] }}"
-
-    - name: "Create the directory for the runner's own docker wrapper"
-      # Not the runner's bin/: that holds the runner's own binaries, from its archive.
+    - name: "Remove the docker wrapper an earlier deploy installed"
+      # PR #556 put a `docker` wrapper in _bin and listed _bin first on the runner's PATH.
+      # The hooks' docker is now Docker's CLI client against the account's podman API
+      # socket, and .env no longer sets PATH, so the wrapper is unused; removed so that no
+      # second `docker` lingers in the runner's home (docs/MISTAKES.md 10.29).
       ansible.builtin.file:
         path: "{{ _home }}/_bin"
-        state: directory
-        owner: "{{ _account }}"
-        group: "{{ _account }}"
-        mode: "0750"
-
-    - name: "Install the docker wrapper the container hooks run"
-      # The hooks start `docker` with only the job's environment variables, which include
-      # HOME=/github/home and no XDG_* directories, so rootless podman looked for its
-      # configuration and its image store under a path that exists only inside the job
-      # container. Every container job failed in "Initialize containers" with `cannot
-      # resolve /github/home`. The wrapper sets the account's own directories and runs
-      # podman unchanged; the runner's PATH (.env) lists _bin first. Templated after the
-      # uid lookup because XDG_RUNTIME_DIR is /run/user/<uid>. The full reasoning is in
-      # docker-wrapper.sh.j2 and the service CLAUDE.md, "Container jobs under rootless
-      # podman".
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/docker-wrapper.sh.j2"
-        dest: "{{ _home }}/_bin/docker"
-        owner: "{{ _account }}"
-        group: "{{ _account }}"
-        mode: "0750"
-      vars:
-        github_runner_home: "{{ _tpl_home }}"
-        github_runner_uid: "{{ _runner_uid }}"
+        state: absent
 
     - name: "Give job containers the runner account's own podman socket, never root's"
-      # The runner mounts /var/run/docker.sock into every job container; the path is
-      # hardcoded upstream and no setting removes it (see the task file). podman-docker
-      # links it to root's socket, which the account cannot reach, so every container job
-      # failed in "Initialize containers". Pointed at the account's rootless socket, a job
-      # container gets what a plain job on this host already has (it runs as this
-      # account), and no account gets root's socket. Options weighed and isolation
-      # reasoning: the service CLAUDE.md, "Container jobs under rootless podman".
+      # Two consumers of one socket. (1) The hooks' docker: Docker's CLI client reaches
+      # the account's rootless podman API through DOCKER_HOST in .env, so this task's
+      # podman.socket user unit is what every container job runs on. (2) The runner mounts
+      # /var/run/docker.sock into every job container; the path is hardcoded upstream and
+      # no setting removes it (see the task file). podman-docker linked it to root's
+      # socket, which the account cannot reach, and without podman-docker nothing creates
+      # the path at all. Pointed at the account's rootless socket, a job container gets
+      # what a plain job on this host already has (it runs as this account), and no
+      # account gets root's socket. Options weighed and isolation reasoning: the service
+      # CLAUDE.md, "Container jobs under rootless podman".
       ansible.builtin.include_tasks: tasks/podman-user-docker-socket.yml
       vars:
         pds_user: "{{ _account }}"
@@ -876,22 +888,20 @@
       # started, then removed. `_ping` on the mounted socket path must reach the account's
       # own podman.
       #
-      # Hook-shaped in ENVIRONMENT too, not only in arguments. The hooks resolve `docker`
-      # with the runner's PATH and then start it with the job's variables only
-      # (runner-container-hooks v0.8.1, utils.ts optionsWithDockerEnvs): `create` gets
-      # HOME=/github/home and nothing else of the runner's, while `pull` gets no HOME at
-      # all. The first version of this probe ran `docker` with the user manager's own
-      # environment, passed, and every container job still failed with `cannot resolve
-      # /github/home` (docs/MISTAKES.md 10.25). So `docker` is resolved from the PATH in
-      # the deployed .env and must be the wrapper; the import runs under `env -i` as the
+      # Hook-shaped in ENVIRONMENT too, not only in arguments (docs/MISTAKES.md 10.25). The
+      # hooks resolve `docker` with the runner's PATH and then start it with the job's
+      # variables plus the runner's DOCKER_* variables only (runner-container-hooks v0.8.1,
+      # utils.ts optionsWithDockerEnvs): `create` gets HOME=/github/home and DOCKER_HOST,
+      # while `pull` gets DOCKER_HOST alone. So `docker` is resolved from this unit's PATH,
+      # which is the user manager's, as the runner's is (.env sets none), and must be
+      # Docker's CLI client; DOCKER_HOST is read from the deployed .env and must be the
+      # account's podman API socket; the import runs under `env -i DOCKER_HOST=...` as the
       # hooks' pull does; the create runs under `env -i HOME=/github/home
-      # GITHUB_ACTIONS=true CI=true` with `-e HOME`, and must find the imported image, so
-      # both calls use one store; and the created container must carry HOME=/github/home,
-      # so the wrapper did not change the job's HOME. No second `system migrate` here:
-      # it stops running containers, so it could stop a job that started after the
-      # uid-map check. The cost: this probe joins the pause process that check left, so
-      # it does not exercise the wrapper's PATH for newuidmap; the bats test of the
-      # rendered wrapper covers that PATH.
+      # GITHUB_ACTIONS=true CI=true DOCKER_HOST=...` with `-e HOME`, and must find the
+      # imported image; and the created container must carry HOME=/github/home. Under the
+      # podman-docker shim this exact create failed with `cannot resolve /github/home`
+      # (docs/MISTAKES.md 10.29). No second `system migrate` here: it stops running
+      # containers, so it could stop a job that started after the uid-map check.
       ansible.builtin.shell: |
         set -euo pipefail
         nnp=$(systemctl --user show --property=NoNewPrivileges --value actions-runner.service)
@@ -902,21 +912,23 @@
         H={{ _home | quote }}
         W="$H/_work"
         "$H/job-started.sh"
-        runner_path=$(sed -n 's/^PATH=//p' "$H/.env")
-        dk=$(PATH="$runner_path" command -v docker)
+        dk=$(command -v docker)
         echo "docker=$dk"
-        [ "$dk" = "$H/_bin/docker" ]
+        echo "client=$(dpkg-query -S "$dk" | cut -d: -f1)"
+        dh=$(sed -n 's/^DOCKER_HOST=//p' "$H/.env")
+        echo "docker_host=$dh"
+        [ "$dh" = "unix:///run/user/$(id -u)/podman/podman.sock" ]
         probe="gh-runner-mount-probe-$$"
         img="localhost/$probe:latest"
         src=$(mktemp -d)
-        trap 'env -i "$dk" rm -f "$probe" >/dev/null 2>&1 || true; env -i "$dk" rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
+        trap 'env -i DOCKER_HOST="$dh" "$dk" rm -f "$probe" >/dev/null 2>&1 || true; env -i DOCKER_HOST="$dh" "$dk" rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
         mkdir "$src/root"
         : > "$src/root/.probe"
         tar -C "$src/root" -cf "$src/rootfs.tar" .
-        env -i "$dk" import "$src/rootfs.tar" "$img" >/dev/null
-        env -i "$dk" image exists "$img"
+        env -i DOCKER_HOST="$dh" "$dk" import "$src/rootfs.tar" "$img" >/dev/null
+        env -i DOCKER_HOST="$dh" "$dk" image inspect "$img" >/dev/null
         echo "import=ok"
-        env -i HOME=/github/home GITHUB_ACTIONS=true CI=true "$dk" create --name "$probe" \
+        env -i HOME=/github/home GITHUB_ACTIONS=true CI=true DOCKER_HOST="$dh" "$dk" create --name "$probe" \
           -e HOME -e GITHUB_ACTIONS=true -e CI=true \
           -v=/var/run/docker.sock:/var/run/docker.sock \
           -v="$W":/__w \
@@ -928,7 +940,7 @@
           -v="$W/_temp/_github_workflow":/github/workflow \
           --entrypoint tail "$img" -f /dev/null >/dev/null
         echo "create=ok"
-        cfg=$(env -i "$dk" inspect "$probe")
+        cfg=$(env -i DOCKER_HOST="$dh" "$dk" inspect "$probe")
         if grep -qF '"HOME=/github/home"' <<<"$cfg"; then
           echo "home=job"
         fi
@@ -944,7 +956,9 @@
       changed_when: false
       failed_when: >-
         _mountprobe.rc != 0
-        or ('docker=' ~ _home ~ '/_bin/docker') not in _mountprobe.stdout_lines
+        or 'docker=/usr/bin/docker' not in _mountprobe.stdout_lines
+        or 'client=docker-ce-cli' not in _mountprobe.stdout_lines
+        or ('docker_host=unix:///run/user/' ~ _runner_uid ~ '/podman/podman.sock') not in _mountprobe.stdout_lines
         or 'import=ok' not in _mountprobe.stdout_lines
         or 'create=ok' not in _mountprobe.stdout_lines
         or 'home=job' not in _mountprobe.stdout_lines
@@ -963,9 +977,9 @@
           containers mapped from inside the user manager
           ({{ _uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1 }}
           uid map lines), a job container created with the runner's mounts and the
-          account's own podman socket, through the runner's docker wrapper with the
-          hooks' own environment. Confirm it is ONLINE at the organisation with
-          verify-github-runners.yml before routing work to it.
+          account's own podman socket, through Docker's CLI client against the account's
+          podman API with the hooks' own environment. Confirm it is ONLINE at the
+          organisation with verify-github-runners.yml before routing work to it.
 
     # Last: every verify task above passed. The per-host result carries only the flags the
     # shared task reads, never _configured, whose task is no_log because it handled the

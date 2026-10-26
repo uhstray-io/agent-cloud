@@ -709,6 +709,11 @@
       - the operator seeds `secret/services/agentgateway:vllm_api_key` with `Seed OpenBao Key`;
       - the operator runs Deploy agentgateway (Dev), then Rollback Inference Route (Dev) in `restore` mode.
       Not ticked.
+      2026-10-24: the agent-cloud side is complete. Follow-up (2) of 2026-10-14 landed in #631
+      (`3fd86bb6`): when the vLLM key no longer matches the recorded fingerprint, the grace-period
+      probe is skipped instead of failing. The retirement date, 2026-11-13, is now recorded in
+      `context/architecture.md`, "Shared-key retirement". Left: the rotation itself (dgx-spark and the
+      operator, on or after 2026-11-13) and the `vllm_api_allowed_cidr` narrowing. Not ticked.
 - [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record

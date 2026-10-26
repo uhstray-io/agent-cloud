@@ -372,6 +372,8 @@ def count_guard(tasks, source, stack, overrides=None):
             continue
         for key in ("ansible.builtin.import_tasks", "ansible.builtin.include_tasks", "import_tasks", "include_tasks"):
             target = task.get(key)
+            if isinstance(target, dict):
+                target = target.get("file")
             if not isinstance(target, str) or "{{" in target:
                 continue
             resolved = (source.parent / target).resolve()
@@ -430,6 +432,24 @@ if mutated_guard_count != 0 or survey_playbook.name in ratchet:
     errors = ["transport guard check did not detect removal of the extracted survey's nested guard"]
 else:
     errors = []
+
+# Dynamic include mappings are used to propagate verify tags to child tasks.
+# Count their file target, while refusing malformed mappings with no file value.
+mapping_guard = count_guard(
+    [{"ansible.builtin.include_tasks": {
+        "file": "tasks/assert-bao-transport.yml",
+        "apply": {"tags": ["verify"]},
+    }}],
+    survey_playbook,
+    {survey_playbook.resolve()},
+)
+malformed_mapping_guard = count_guard(
+    [{"ansible.builtin.include_tasks": {"apply": {"tags": ["verify"]}}}],
+    survey_playbook,
+    {survey_playbook.resolve()},
+)
+if mapping_guard != 1 or malformed_mapping_guard != 0:
+    errors.append("guard discovery must count a mapping-form include file and ignore a malformed mapping")
 
 errors += [f"NEW unguarded play not in the ratchet: {name}" for name in sorted(unguarded - ratchet)]
 errors += [f"{name} is now guarded — remove it from the ratchet" for name in sorted(ratchet - unguarded)]

@@ -158,7 +158,8 @@
       ansible.builtin.command:
         argv: [python3, "{{ _planner }}", inspect]
         stdin: >-
-          {{ {'vmid': _vmid, 'jobs': _backup_jobs.json.data} | to_json }}
+          {{ {'job_id': _backup_job_id, 'vmid': _vmid,
+              'jobs': _backup_jobs.json.data} | to_json }}
       register: _backup_inspection_result
       failed_when: false
       changed_when: false
@@ -173,7 +174,7 @@
           {{ ((_backup_inspection_result.stdout | from_json).refusal
               | default('Proxmox returned invalid inspection data.')) }}
 
-    - name: Keep the sanitized backup-job candidate report private to this run
+    - name: Keep the sanitized selected-job inspection private to this run
       ansible.builtin.set_fact:
         _backup_inspection: "{{ _backup_inspection_result.stdout | from_json }}"
       no_log: true
@@ -191,8 +192,7 @@
       no_log: true
       when:
         - _inspect_only
-        - _backup_job_id is match('^[A-Za-z0-9._-]{1,64}$')
-        - "(_backup_inspection.candidates | selectattr('id', 'equalto', _backup_job_id) | list | length) == 1"
+        - _backup_inspection.selected_job.match == 'unique'
 
     - name: Read storage available to the declared node for destination inspection
       ansible.builtin.uri:
@@ -207,8 +207,7 @@
       no_log: true
       when:
         - _inspect_only
-        - _backup_job_id is match('^[A-Za-z0-9._-]{1,64}$')
-        - "(_backup_inspection.candidates | selectattr('id', 'equalto', _backup_job_id) | list | length) == 1"
+        - _backup_inspection.selected_job.match == 'unique'
 
     - name: Summarize the selected job destination without exposing its identity
       ansible.builtin.command:
@@ -611,12 +610,12 @@
         _backup_node_failure_diagnostic: "{{ _backup_node_failure_summary_result.stdout | from_json }}"
       when: _inspect_only
 
-    - name: Report backup-job candidates for inventory selection
+    - name: Report sanitized selected backup-job status
       ansible.builtin.debug:
         msg:
           backup_job_reconciliation: inspect_only
           candidate_count: "{{ _backup_inspection.candidate_count }}"
-          candidates: "{{ _backup_inspection.candidates }}"
+          selected_backup_job: "{{ _backup_inspection.selected_job }}"
           backup_task_history: "{{ _backup_history_summary }}"
           proxmox_node_task_history: "{{ _backup_node_history_summary }}"
           proxmox_node_task_failure_diagnostic: "{{ _backup_node_failure_diagnostic }}"

@@ -30,7 +30,12 @@ and the image comes from the [v1.5.0 release](https://github.com/agentgateway/ag
 read-only receipt that requires the checkout to match the requested reviewed SHA,
 the running input label to match the current rendered files, readiness, and the
 running image ID to match the resolved v1.5.0 image ID. It reports the checkout
-revision and two sampling values read from the rendered file as separate metadata.
+revision, two sampling values, and bounded metadata describing whether the rendered
+`frontendPolicies.accessLog.otlp` block is present and whether its fixed service and
+signal fields match. The access-log metadata reports config shape only; it does not
+prove receiver delivery or Loki records. A checkout mismatch emits only bounded
+observed/expected SHA metadata marked unverified, then still fails the exact-revision
+guard.
 Because `.env` and `config.yaml` are gitignored render outputs without a source
 revision stamp, this receipt does not prove which checkout produced them. It
 reports only metadata; hashes and rendered file contents are not displayed.
