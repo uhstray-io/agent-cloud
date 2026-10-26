@@ -59,6 +59,7 @@ pub enum Route {
 
 pub fn app() -> Element {
     rsx! {
+        document::Title { "Dispatch Console" }
         document::Stylesheet { href: asset!("/assets/main.css") }
         Router::<Route> {}
     }
