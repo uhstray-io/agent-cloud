@@ -388,10 +388,11 @@ converges the host on the declared versions:
   `deploy.sh` writes `_hooks/.hooks-version` beside the files it places; a host without the
   marker reinstalls the declared hooks once (they are stateless).
 
-**An upgrade interrupts an in-flight job.** The unit uses `KillMode=process`, so stopping it
-signals `run.sh` alone; `deploy.sh` then sends SIGINT to any `Runner.Listener` left running
-and waits up to 60 s. If one survives, the swap is refused and the old install stays as it
-was. Run upgrades while the runners are idle.
+**An upgrade interrupts an in-flight job.** The unit uses `KillMode=mixed`, so stopping it
+ends every process in its cgroup. `deploy.sh` also sends SIGINT to any `Runner.Listener` still
+running, as one left by an older `KillMode=process` unit would be, and waits up to
+`RUNNER_STOP_WAIT` seconds (default 60). If one survives, the swap is refused and the old
+install stays as it was. Run upgrades while the runners are idle.
 
 After the deploy, the playbook reads the binary's version and the hooks marker back and
 fails unless both match the pin. The final report states those read-back values.

@@ -145,8 +145,9 @@ runner_pids() {
 }
 
 # Stop the service AND wait for the runner's own processes to go. The unit uses
-# KillMode=process, so stopping it signals run.sh alone and can leave Runner.Listener
-# (and a Runner.Worker with a job) alive. Those are asked to shut down with SIGINT, the
+# KillMode=mixed, so the stop empties its cgroup, but a host still on an older
+# KillMode=process unit can leave Runner.Listener (and a Runner.Worker with a job)
+# alive. Any left are asked to shut down with SIGINT, the
 # runner's graceful-stop signal; an in-flight job is cancelled, which is why an upgrade
 # is best run while the runner is idle. If they outlive RUNNER_STOP_WAIT the swap is
 # refused: starting a second listener beside a live one fights over one registration.
