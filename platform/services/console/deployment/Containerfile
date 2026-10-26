@@ -45,6 +45,10 @@ RUN set -eux; \
 # NO_DOWNLOADS=1 dx needs it on PATH. dx's own fetch has no checksum, so this
 # takes the same @esbuild tarball from the npm registry and checks it against
 # the registry's sha512 integrity field before installing it.
+# The pipes below need no pipefail: each one's output feeds a `test -n` or a
+# comparison that follows it, so a failed stage leaves an empty value that aborts
+# the step. The pragma keeps hadolint's DL4006 (pipefail under /bin/sh) quiet.
+# hadolint ignore=DL4006
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in amd64) ep=linux-x64 ;; arm64) ep=linux-arm64 ;; \
       *) echo "unsupported architecture" >&2; exit 1 ;; esac; \
