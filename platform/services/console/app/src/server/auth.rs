@@ -131,8 +131,12 @@ pub async fn callback(
     };
 
     if let Some(idp_error) = query.error {
-        // The IdP error code is not a secret; the user just returns to the start page.
-        eprintln!("console: login ended at the identity provider: {idp_error}");
+        // The callback query is attacker-controlled text, so it is escaped and capped
+        // before it reaches the log: a raw newline could forge a second log line.
+        eprintln!(
+            "console: login ended at the identity provider: {}",
+            log_safe(&idp_error)
+        );
         return found("/");
     }
     let (Some(expected_state), Some(verifier), Some(nonce), Some(code), Some(returned_state)) =
@@ -234,6 +238,13 @@ async fn take(
     session.remove::<String>(key).await
 }
 
+/// Untrusted text as one log field: at most 64 characters, debug-escaped, so
+/// quotes, control characters and newlines cannot break or forge a log line.
+pub fn log_safe(text: &str) -> String {
+    let shown: String = text.chars().take(64).collect();
+    format!("{shown:?}")
+}
+
 /// 302 to `location`. axum's `Redirect` offers 303/307/308 only, and the contract says 302.
 fn found(location: &str) -> Response {
     (
@@ -260,5 +271,14 @@ mod tests {
     fn group_claim_defaults_to_empty() {
         let claim: GroupsClaim = serde_json::from_str("{}").expect("missing groups is fine");
         assert!(claim.groups.is_empty());
+    }
+
+    #[test]
+    fn logged_idp_error_is_escaped_and_capped() {
+        let forged = "access_denied\nconsole: forged line";
+        assert_eq!(log_safe(forged), "\"access_denied\\nconsole: forged line\"");
+        let long = "x".repeat(200);
+        // 64 characters plus the two quotes the debug form adds.
+        assert_eq!(log_safe(&long).chars().count(), 66);
     }
 }

@@ -68,6 +68,7 @@
     _console_example_tenants:
       - id: uhstray
         name: "Uhstray (example)"
+        groups: [platform-admins, platform-developers]
         orgs:
           - id: uhstray-io
             name: uhstray-io

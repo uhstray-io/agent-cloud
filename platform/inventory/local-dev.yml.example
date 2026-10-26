@@ -302,6 +302,8 @@ all:
           console_tenants:
             - id: uhstray
               name: "Uhstray (example)"
+              # Authentik groups that may see this tenant (platform-admins sees every tenant).
+              groups: [platform-admins, platform-developers]
               orgs:
                 - id: uhstray-io
                   name: uhstray-io

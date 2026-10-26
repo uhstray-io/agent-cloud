@@ -170,11 +170,18 @@ mod tests {
     use std::net::{SocketAddr, TcpStream};
     use std::time::Duration;
 
+    /// `acme` is visible to group `ops`. `initech` is visible to `finance` only, so an
+    /// `ops` member must not see it. Neither lists `platform-admins`, so admins see both.
     const SCOPE: &str = r#"{
         "example": true,
-        "tenants": [{"id": "acme", "name": "Acme", "orgs": [
-            {"id": "ops", "name": "Ops", "sites": [{"id": "dc1", "name": "DC 1", "envs": ["prod"]}]}
-        ]}]
+        "tenants": [
+            {"id": "acme", "name": "Acme", "groups": ["ops"], "orgs": [
+                {"id": "ops", "name": "Ops", "sites": [{"id": "dc1", "name": "DC 1", "envs": ["prod"]}]}
+            ]},
+            {"id": "initech", "name": "Initech", "groups": ["finance"], "orgs": [
+                {"id": "lab", "name": "Lab", "sites": [{"id": "hq", "name": "HQ", "envs": ["dev"]}]}
+            ]}
+        ]
     }"#;
 
     /// The OIDC cell stays empty, so /auth/* answers 503 in these tests.
@@ -196,20 +203,20 @@ mod tests {
         })
     }
 
-    /// Test-only route that signs a fixed user in, so authenticated paths run
-    /// without an identity provider.
-    fn test_login_route() -> Router {
+    /// Test-only route that signs a user in with `groups`, so authenticated paths
+    /// run without an identity provider.
+    fn test_login_route(path: &'static str, groups: &'static [&'static str]) -> Router {
         use dioxus::server::axum::routing::get;
         use tower_sessions::Session;
         Router::new().route(
-            "/test/login",
-            get(|session: Session| async move {
+            path,
+            get(move |session: Session| async move {
                 let user = auth::CurrentUser {
                     sub: "user-1".into(),
                     email: Some("ada@example.test".into()),
                     name: Some("Ada".into()),
                     username: Some("ada".into()),
-                    groups: vec!["ops".into()],
+                    groups: groups.iter().map(|group| group.to_string()).collect(),
                 };
                 session
                     .insert(auth::KEY_USER, &user)
@@ -341,7 +348,7 @@ mod tests {
     #[tokio::test]
     async fn signed_in_api_round_trip() {
         let app = api_router(test_state())
-            .merge(test_login_route())
+            .merge(test_login_route("/test/login", &["ops"]))
             .layer(session_layer());
         let addr = serve(app).await;
 
@@ -439,6 +446,87 @@ mod tests {
         let unmatched = call(addr, "GET", "/v1/nope", Some(cookie), "").await;
         assert_eq!(unmatched.status, 404);
         assert_eq!(unmatched.body, r#"{"error":"not_found"}"#);
+    }
+
+    /// Serves the API with a session for a user in `groups`, and returns the
+    /// address and that session's cookie.
+    async fn signed_in(groups: &'static [&'static str]) -> (SocketAddr, String) {
+        let app = api_router(test_state())
+            .merge(test_login_route("/test/login", groups))
+            .layer(session_layer());
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.expect("session cookie set on login");
+        (addr, cookie)
+    }
+
+    #[tokio::test]
+    async fn member_sees_only_the_tenants_naming_their_group() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+
+        let list = call(addr, "GET", "/v1/tenants", Some(cookie.clone()), "").await;
+        assert_eq!(list.status, 200);
+        assert_eq!(
+            list.body,
+            r#"{"example":true,"tenants":[{"id":"acme","name":"Acme"}]}"#
+        );
+
+        let own = call(
+            addr,
+            "GET",
+            "/v1/tenants/acme/tree",
+            Some(cookie.clone()),
+            "",
+        )
+        .await;
+        assert_eq!(own.status, 200);
+        assert!(
+            !own.body.contains("groups"),
+            "group lists leaked: {}",
+            own.body
+        );
+
+        // initech exists, but this caller holds none of its groups: it must answer
+        // exactly as a tenant that does not exist, byte for byte.
+        let hidden = call(
+            addr,
+            "GET",
+            "/v1/tenants/initech/tree",
+            Some(cookie.clone()),
+            "",
+        )
+        .await;
+        let unknown = call(addr, "GET", "/v1/tenants/globex/tree", Some(cookie), "").await;
+        assert_eq!(hidden.status, 404);
+        assert_eq!(hidden.body, r#"{"error":"unknown_tenant"}"#);
+        assert_eq!(hidden.body, unknown.body);
+    }
+
+    #[tokio::test]
+    async fn platform_admin_sees_every_tenant() {
+        let (addr, cookie) = signed_in(&["platform-admins"]).await;
+
+        let list = call(addr, "GET", "/v1/tenants", Some(cookie.clone()), "").await;
+        assert_eq!(
+            list.body,
+            r#"{"example":true,"tenants":[{"id":"acme","name":"Acme"},{"id":"initech","name":"Initech"}]}"#
+        );
+
+        let tree = call(addr, "GET", "/v1/tenants/initech/tree", Some(cookie), "").await;
+        assert_eq!(tree.status, 200);
+    }
+
+    #[tokio::test]
+    async fn near_miss_group_name_gets_no_tenant() {
+        let (addr, cookie) = signed_in(&["platform-admins-old", "users"]).await;
+
+        let list = call(addr, "GET", "/v1/tenants", Some(cookie.clone()), "").await;
+        assert_eq!(list.status, 200);
+        assert_eq!(list.body, r#"{"example":true,"tenants":[]}"#);
+
+        let tree = call(addr, "GET", "/v1/tenants/acme/tree", Some(cookie), "").await;
+        assert_eq!(tree.status, 404);
+        assert_eq!(tree.body, r#"{"error":"unknown_tenant"}"#);
     }
 
     #[tokio::test]

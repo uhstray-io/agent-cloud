@@ -143,12 +143,37 @@ fn SignIn() -> Element {
 
 #[component]
 fn Workspace(account: Account) -> Element {
+    let ctx = use_context::<Ctx>();
+    let no_access = has_no_tenant_access(&ctx.tenants.read());
+    // The outlet stays in both cases, so the profile still works without a tenant.
     rsx! {
         div { class: "app",
             Sidebar { account: account.clone() }
             div { class: "workspace",
-                ScopeBar {}
+                if no_access {
+                    NoTenantAccess {}
+                } else {
+                    ScopeBar {}
+                }
                 main { class: "page", Outlet::<Route> {} }
+            }
+        }
+    }
+}
+
+/// True when the caller is signed in and the server lists no tenant for them.
+pub fn has_no_tenant_access(tenants: &Loaded<TenantList>) -> bool {
+    matches!(tenants, Loaded::Ready(list) if list.tenants.is_empty())
+}
+
+/// Signed in, but no tenant names one of the caller's groups. It replaces the
+/// scope bar, so no tenant-scoped control is offered.
+#[component]
+fn NoTenantAccess() -> Element {
+    rsx! {
+        header { class: "top",
+            p { class: "muted", role: "status",
+                "No tenant access \u{2014} ask a platform admin to add one of your Authentik groups to a tenant."
             }
         }
     }
@@ -379,6 +404,26 @@ mod tests {
         assert_eq!(initials("  Ada   Lovelace   Byron "), "AB");
         assert_eq!(initials("ada"), "AD");
         assert_eq!(initials("   "), "?");
+    }
+
+    #[test]
+    fn no_tenant_access_means_signed_in_with_an_empty_list() {
+        let empty = TenantList {
+            example: false,
+            tenants: vec![],
+        };
+        let one = TenantList {
+            example: false,
+            tenants: vec![NamedRef {
+                id: "acme".into(),
+                name: "Acme".into(),
+            }],
+        };
+        assert!(has_no_tenant_access(&Loaded::Ready(empty)));
+        assert!(!has_no_tenant_access(&Loaded::Ready(one)));
+        // Not yet loaded, or failed: that is not the same as "no access".
+        assert!(!has_no_tenant_access(&Loaded::Loading));
+        assert!(!has_no_tenant_access(&Loaded::Failed));
     }
 
     #[test]

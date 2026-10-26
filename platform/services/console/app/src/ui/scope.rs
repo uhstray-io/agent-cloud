@@ -196,7 +196,8 @@ pub fn default_choices(tree: Option<&Tree>, current: &str) -> Vec<Choice> {
 }
 
 /// The scope bar. It reads the loaded tenant list and tree, and shows the
-/// example badge whenever either carries the example flag.
+/// example badge whenever either carries the example flag. `Workspace` does not
+/// render it for a caller with no tenant, so it never sees an empty list.
 #[component]
 pub fn ScopeBar() -> Element {
     let ctx = use_context::<Ctx>();
@@ -206,9 +207,6 @@ pub fn ScopeBar() -> Element {
         || matches!(&tree, Loaded::Ready(t) if t.example);
 
     let fields = match (&tenants, &tree) {
-        (Loaded::Ready(list), _) if list.tenants.is_empty() => {
-            rsx! { p { class: "muted", "No tenants in scope." } }
-        }
         (_, Loaded::Ready(tree)) => rsx! { ScopeSelects { tree: tree.clone() } },
         (Loaded::Failed, _) | (_, Loaded::Failed) => {
             rsx! { p { class: "muted", "Scope is unavailable." } }
