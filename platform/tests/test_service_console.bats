@@ -308,3 +308,205 @@ PY
   grep -qx 'deployment/certs' "$f"
   grep -qx 'app/target' "$f"
 }
+
+# --- Deploy: Semaphore access (Phase 2, plan 17 D17-D20) ---
+# The console's read-only Semaphore identity is provisioned by its own play (svc-console, guest), and
+# deploy-console only READS the token it stores. These tests pin the properties that make the identity
+# read-only and the probes honest. Structural (grep / YAML), like the rest of this file.
+
+@test "console: compose binds config/workflow.json read-only at /etc/console/workflow.json" {
+  assert_grep -qF '      - ./config/workflow.json:/etc/console/workflow.json:ro' "$DEPLOY_DIR/compose.yml"
+}
+
+@test "console: env carries the Semaphore URLs, project and token by reference, and the workflow path" {
+  local f="$DEPLOY_DIR/templates/env.j2"
+  assert_grep -qF 'CONSOLE_SEMAPHORE_API_URL={{ console_semaphore_api_url | default(' "$f"
+  assert_grep -qF 'CONSOLE_SEMAPHORE_UI_URL={{ console_semaphore_ui_url | default(' "$f"
+  assert_grep -qF 'CONSOLE_SEMAPHORE_PROJECT={{ console_semaphore_project | default(' "$f"
+  # The token is a Jinja reference into the secrets namespace, never a literal.
+  assert_grep -qxF 'CONSOLE_SEMAPHORE_TOKEN={{ secrets.semaphore_api_token }}' "$f"
+  refute_grep -qE '^CONSOLE_SEMAPHORE_TOKEN=[^{]' "$f"
+  assert_grep -qxF 'CONSOLE_WORKFLOW_FILE=/etc/console/workflow.json' "$f"
+}
+
+@test "console: workflow template renders the registry steps as id, order, owner, label, sorted by order" {
+  local f="$DEPLOY_DIR/templates/workflow.json.j2"
+  [ -f "$f" ]
+  assert_grep -qF "sort(attribute='order')" "$f"
+  assert_grep -qF "'label': step.diagram_label" "$f"
+  assert_grep -qF "'owner': step.owner" "$f"
+  assert_grep -qF '| to_nice_json' "$f"
+}
+
+@test "console: deploy playbook reads the Semaphore token as existing, never generates it, and has no URL-only workaround" {
+  assert_grep -qF '{ name: semaphore_api_token, type: existing }' "$PLAYBOOK"
+  assert_grep -qF '_required_existing_secrets: [semaphore_api_token]' "$PLAYBOOK"
+  refute_grep -qE 'semaphore_api_token.*type: (random|django)' "$PLAYBOOK"
+  # The store step had nothing to merge before the token existed; _service_url is gone now.
+  refute_grep -qE '^    _service_url:' "$PLAYBOOK"
+}
+
+@test "console: deploy playbook renders config/workflow.json from the service-onboarding registry on the controller" {
+  assert_grep -qF 'src: workflow.json.j2, dest: config/workflow.json' "$PLAYBOOK"
+  assert_grep -qF "playbook_dir ~ '/../workflows/service-onboarding/registry.yml'" "$PLAYBOOK"
+  [ -f "$REPO_ROOT/platform/workflows/service-onboarding/registry.yml" ]
+}
+
+@test "console: deploy.sh refuses to start without config/workflow.json and hashes it into both up branches" {
+  local f="$DEPLOY_DIR/deploy.sh"
+  assert_grep -qF 'config/workflow.json not found. Run Ansible deploy-console.yml first.' "$f"
+  # The local overlay branch and the base branch both pass the file as a recreate input.
+  [ "$(grep -cF 'compose_up_if_changed config/scope.json config/workflow.json' "$f")" -eq 2 ]
+}
+
+@test "console: provision play is a separate localhost play that refuses extra vars setting internal names" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  [ -f "$p" ]
+  assert_grep -qF 'import_playbook: refuse-internal-extra-vars.yml' "$p"
+  assert_grep -qE '^  hosts: localhost$' "$p"
+}
+
+@test "console: provision play guards the OpenBao transport before its first OpenBao request" {
+  assert_guard_precedes_first_uri "$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+}
+
+@test "console: provision play talks only to the controller's loopback Semaphore API, override refused" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  assert_grep -qF '_semaphore_url: "http://127.0.0.1:3000"' "$p"
+  assert_grep -qF "(semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'" "$p"
+}
+
+@test "console: svc-console is a non-admin, non-external account at project role guest" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  python3 - "$p" <<'PY'
+import sys, yaml
+play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+vars_ = play["vars"]
+assert vars_["_svc_user"] == "svc-console", vars_["_svc_user"]
+assert vars_["_svc_role"] == "guest", vars_["_svc_role"]
+def tasks(seq):
+    for t in seq or []:
+        if isinstance(t, dict):
+            yield t
+            for sec in ("block", "rescue", "always"):
+                yield from tasks(t.get(sec))
+hits = [t for t in tasks(play["tasks"]) if t.get("name") == "Create the svc-console account (non-admin, not external: it logs in to mint its token)"]
+assert len(hits) == 1, len(hits)
+body = hits[0]["ansible.builtin.uri"]["body"]
+assert body["admin"] is False and body["external"] is False, body
+assert body["username"] == "{{ _svc_user }}", body
+assert body["password"] == "{{ _svc_password }}", body
+PY
+}
+
+@test "console: every header-bearing or password-bearing uri and every secret set_fact in the provision play is no_log" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  python3 - "$p" <<'PY'
+import sys, yaml
+play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+AUTH = ("Authorization", "X-Vault-Token", "Cookie")
+SECRET_FACTS = ("_svc_password", "_minted_token", "_stored_token", "_stored_password", "_svc_token", "_bm_token")
+def tasks(seq):
+    for t in seq or []:
+        if isinstance(t, dict):
+            yield t
+            for sec in ("block", "rescue", "always"):
+                yield from tasks(t.get(sec))
+bad = []
+checked = 0
+for t in tasks(play["tasks"]):
+    name = t.get("name", "?")
+    if "ansible.builtin.uri" in t:
+        args = t["ansible.builtin.uri"]
+        headers = args.get("headers") or {}
+        if any(h in headers for h in AUTH) or "password" in str(args.get("body", "")):
+            checked += 1
+            if t.get("no_log") is not True:
+                bad.append(name)
+    if "ansible.builtin.set_fact" in t:
+        text = str(t["ansible.builtin.set_fact"])
+        if any(v in text for v in SECRET_FACTS):
+            checked += 1
+            if t.get("no_log") is not True:
+                bad.append(name)
+assert checked >= 8, checked
+assert not bad, bad
+PY
+}
+
+@test "console: the token mint is POST-only, and no task lists tokens to reuse one" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  python3 - "$p" <<'PY'
+import sys, yaml
+play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+def tasks(seq):
+    for t in seq or []:
+        if isinstance(t, dict):
+            yield t
+            for sec in ("block", "rescue", "always"):
+                yield from tasks(t.get(sec))
+token_calls = [t["ansible.builtin.uri"] for t in tasks(play["tasks"])
+               if "ansible.builtin.uri" in t and "api/user/tokens" in str(t["ansible.builtin.uri"].get("url", ""))]
+assert token_calls, "no token call"
+for c in token_calls:
+    # Listing ids is refused: GET /api/user/tokens cuts each id to 8 characters (api/user.go:62).
+    assert c.get("method") == "POST", c
+PY
+}
+
+@test "console: the read-only proof reads tasks/last (200) and proves refused launch with template -1 (403)" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  assert_grep -qF '_probe_read.status == 200' "$p"
+  assert_grep -qF '_probe_launch.status == 403' "$p"
+  assert_grep -qE '^          template_id: -1$' "$p"
+  python3 - "$p" <<'PY'
+import sys, yaml
+play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+def tasks(seq):
+    for t in seq or []:
+        if isinstance(t, dict):
+            yield t
+            for sec in ("block", "rescue", "always"):
+                yield from tasks(t.get(sec))
+hits = [t for t in tasks(play["tasks"]) if "ansible.builtin.uri" in t
+        and t["ansible.builtin.uri"].get("method") == "POST"
+        and str(t["ansible.builtin.uri"].get("url", "")).endswith("/tasks")]
+assert len(hits) == 1, len(hits)
+# A write attempt, even a refused one, is never sent under --check.
+assert "not ansible_check_mode" in str(hits[0].get("when")), hits[0].get("when")
+PY
+}
+
+@test "console: a stored token is reused only when GET /api/user proves svc-console, non-admin" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  assert_grep -qF "_stored_ok:" "$p"
+  assert_grep -qF "(_stored_proof.json | default({})).get('username', '') == _svc_user" "$p"
+  assert_grep -qF "(_stored_proof.json | default({})).get('admin', true) | bool) == false" "$p"
+}
+
+@test "console: the provision template is registered as a Dev twin in templates.yml and as a Local one" {
+  python3 - "$REPO_ROOT/platform/semaphore/templates.yml" "$REPO_ROOT/platform/semaphore/templates-local.yml" <<'PY'
+import sys, yaml
+shared = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+local = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+def items(doc):
+    return doc["templates"] if isinstance(doc, dict) else doc
+play = "platform/playbooks/provision-console-semaphore-access.yml"
+hit = [t for t in items(shared) if t.get("playbook") == play]
+assert len(hit) == 1, hit
+assert hit[0].get("dev_variant") is True, hit[0]
+loc = [t for t in items(local) if t.get("playbook") == play]
+assert len(loc) == 1, loc
+PY
+}
+
+@test "console: the provision play is listed in AGENTS.md Independent Workflows" {
+  assert_grep -qF '| Provision Console Semaphore Access | `provision-console-semaphore-access.yml` |' "$REPO_ROOT/AGENTS.md"
+}
+
+@test "console: local inventory and bootstrap declare the console's Semaphore URLs and project" {
+  assert_grep -qF 'console_semaphore_api_url: https://semaphore.agent-cloud.test' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
+  assert_grep -qF 'console_semaphore_project: 1' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
+  assert_grep -qF 'console_semaphore_ui_url=https://semaphore.{{ _dev_zone }}:{{ _edge_https_port }}' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+  assert_grep -qF 'console_semaphore_project=1' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+}

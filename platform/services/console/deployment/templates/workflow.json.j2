@@ -1,0 +1,11 @@
+{#
+  console workflow file — rendered by deploy-console.yml from the service-onboarding registry
+  (platform/workflows/service-onboarding/registry.yml, the one definition of the workflow's steps).
+  The console labels each step of a skynet run with it: [{id, order, owner, label}], sorted by order;
+  label is the registry's diagram_label. Not a secret. Do NOT edit by hand.
+#}
+{% set _steps = [] %}
+{% for step in _workflow_registry.steps | sort(attribute='order') %}
+{% set _ = _steps.append({'id': step.id, 'order': step.order, 'owner': step.owner, 'label': step.diagram_label}) %}
+{% endfor %}
+{{ _steps | to_nice_json }}

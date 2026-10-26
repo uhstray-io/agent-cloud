@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # console — the Dispatch Console: image build on this host, then container lifecycle only.
 #
-# Ansible's deploy-console.yml renders .env (non-secret config; the OIDC client secret is
-# shared-read from authentik) and config/scope.json BEFORE this runs. This script does NOT
+# Ansible's deploy-console.yml renders .env (config; the OIDC client secret is shared-read from
+# authentik; the Semaphore API token is read from OpenBao), config/scope.json and config/workflow.json
+# BEFORE this runs. This script does NOT
 # generate or read secrets. It builds the image from the committed sources when those changed
 # (there is no registry), starts the single container, and waits for it to report healthy.
 #
@@ -86,10 +87,11 @@ build_console_image() {
 }
 
 step_verify_inputs() {
-  info "Step 1: Verifying the templated .env and scope file are present..."
+  info "Step 1: Verifying the templated .env, scope and workflow files are present..."
   [ -f "${SCRIPT_DIR}/.env" ] || error "${SCRIPT_DIR}/.env not found. Run Ansible deploy-console.yml first."
   [ -f "${SCRIPT_DIR}/config/scope.json" ] || error "${SCRIPT_DIR}/config/scope.json not found. Run Ansible deploy-console.yml first."
-  info "  .env and config/scope.json present."
+  [ -f "${SCRIPT_DIR}/config/workflow.json" ] || error "${SCRIPT_DIR}/config/workflow.json not found. Run Ansible deploy-console.yml first."
+  info "  .env, config/scope.json and config/workflow.json present."
 }
 
 step_build() {
@@ -105,9 +107,9 @@ step_start() {
   # only when that digest or the image ID changed. A rebuilt image has a new ID, so it is picked
   # up; an unchanged re-run recreates nothing and prints DEPLOY_CHANGED=true|false.
   if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
-    compose_up_if_changed config/scope.json certs/step-ca-bundle.crt
+    compose_up_if_changed config/scope.json config/workflow.json certs/step-ca-bundle.crt
   else
-    compose_up_if_changed config/scope.json
+    compose_up_if_changed config/scope.json config/workflow.json
   fi
 }
 

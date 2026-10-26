@@ -1,0 +1,473 @@
+---
+# provision-console-semaphore-access.yml — the Dispatch Console's own read-only Semaphore identity
+# (plan/development/17-dispatch-console.md, D20).
+#
+# Why. The console lists Semaphore tasks for /v1/work (Phase 2). It needs a credential for that, and
+# the credential must not be able to launch a task: launch rights are runner rights
+# (manage-semaphore-access.yml). So the console gets a dedicated user, svc-console, at project role
+# guest, and never the controller's token (secret/services/semaphore). Guest holds no run permission:
+# the role table gives ProjectGuest 0 (upstream db/ProjectUser.go:22-26), and the task-create route
+# requires CanRunProjectTasks (upstream api/router.go:286-287, GetMustCanMiddleware at
+# api/projects/project.go:88-105).
+#
+# What. Each step is idempotent and re-runnable:
+#   1. The OpenBao transport guard, the controller's Semaphore token (tasks/runtime-access.yml), then
+#      an AppRole login to OpenBao.
+#   2. The console's stored credentials at secret/services/console, read once.
+#   3. The password. The stored one is reused. A new one is generated only when none is stored.
+#   4. The account svc-console: non-admin and NOT external, because it logs in to mint its own token.
+#      Absent: the new password is stored first, then the account is created with it
+#      (upstream api/users.go:65-112). Present with no stored password: the password is reset to the
+#      new one by an admin (api/users.go:243-288, which exempts an admin from the current password),
+#      then stored. Present with a stored password: left alone.
+#   5. Project membership at role guest: added when absent (api/projects/users.go:78-117, 204, 409 when
+#      already a member), re-roled when another role (api/projects/users.go:160-206), then read back.
+#   6. The API token. The stored secret/services/console:semaphore_api_token is reused only when
+#      GET /api/user with it answers username svc-console, non-admin (api/user.go:30-48). Otherwise
+#      svc-console logs in (api/login.go:286-382) and mints one (api/user.go:70-104), which is stored at
+#      once. An admin token cannot mint for svc-console, because the mint uses the calling user. Listing
+#      tokens is not used for reuse: GET /api/user/tokens cuts each id to 8 characters
+#      (api/user.go:51-64), so a listed id cannot authenticate.
+#   7. Proof with the token itself: GET /api/project/{p}/tasks/last answers 200, and GET /api/user
+#      answers svc-console, non-admin. POST /api/project/{p}/tasks with an invalid template id answers
+#      403. That POST cannot launch anything, whichever way the gate behaves: template -1 does not
+#      exist, and a guest is refused before any template is read (api/projects/tasks.go:40-49).
+#
+# Order with deploy-console.yml: run this play first. Deploy console reads semaphore_api_token and
+# stops before any write when it is absent. Manage Semaphore Access refuses a declared team member that
+# has no Semaphore account yet (playbooks/filter_plugins/semaphore_access.py), so run this play before
+# declaring svc-console in semaphore_project_members.
+#
+# Check mode: reads run; every write is skipped (account, password, membership, login, mint, store).
+#
+# Unverified here: whether production Semaphore accepts password login for svc-console. The code path
+# is read at v2.19.11 (api/login.go:286-382), but no live run has been made from this change.
+#
+# Usage: the "Provision Console Semaphore Access" Semaphore template (and its (Dev) and (Local) twins).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Provision the Dispatch Console's read-only Semaphore identity (svc-console, guest)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # The controller's own API, loopback only. This play holds an admin token, so the URL is fixed.
+    _semaphore_url: "http://127.0.0.1:3000"
+    _pid: "{{ console_semaphore_project | default(1) }}"
+    _svc_user: "svc-console"
+    _svc_role: "guest"
+    _svc_email: "svc-console@{{ dev_zone | default('agent-cloud.test') }}"
+    _store_path: "services/console"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Every HTTP status, so a probe or write answers to a visible assert with its code, not to a
+    # censored uri failure (no_log hides the message of a failed task).
+    _any_status: "{{ range(100, 600) | list }}"
+
+  tasks:
+    - name: "Refuse a controller API destination override before authentication"
+      ansible.builtin.assert:
+        # Both the public override and the URL the requests actually use (as manage-semaphore-access.yml).
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        fail_msg: "Console access provisioning may only use the controller's fixed loopback API."
+
+    # Before the first OpenBao request: the AppRole secret_id, the client token and the password all
+    # cross that connection.
+    - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Semaphore runtime access (injected token, or the controller AppRole)"
+      ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
+
+    - name: "Log in to OpenBao with the controller AppRole"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        follow_redirects: none
+        status_code: [200]
+      register: _bao_login
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: "Read the console's stored Semaphore credentials (OpenBao)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ _store_path }}"
+        headers:
+          X-Vault-Token: "{{ _bao_login.json.auth.client_token }}"
+        unredirected_headers: [X-Vault-Token]
+        follow_redirects: none
+        status_code: [200, 404]
+      register: _bao_store
+      check_mode: false
+      no_log: true
+
+    - name: "Hold the stored credentials in Ansible memory"
+      ansible.builtin.set_fact:
+        _stored_password: "{{ (_bao_store.json.data.data | default({})).get('semaphore_password', '') }}"
+        _stored_token: "{{ (_bao_store.json.data.data | default({})).get('semaphore_api_token', '') }}"
+      no_log: true
+
+    - name: "Hold the console's password in Ansible memory (the stored one, or a new one)"
+      ansible.builtin.set_fact:
+        _password_is_new: "{{ (_stored_password | length) == 0 }}"
+        _svc_password: "{{ _stored_password if (_stored_password | length > 0) else lookup('password', '/dev/null length=40 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    # ── The account ─────────────────────────────────────────────────────────
+    - name: "Read the Semaphore accounts (admin token)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/users"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        status_code: [200]
+      register: _sem_users
+      check_mode: false
+      no_log: true
+
+    - name: "Hold whether the svc-console account exists, and its id when it does"
+      ansible.builtin.set_fact:
+        _svc_exists: "{{ (_sem_users.json | selectattr('username', 'equalto', _svc_user) | list | length) > 0 }}"
+        _svc_id: "{{ (_sem_users.json | selectattr('username', 'equalto', _svc_user) | map(attribute='id') | list + [none]) | first }}"
+      no_log: true
+
+    # The new password reaches OpenBao BEFORE an account is created with it: a failed store then leaves
+    # no account holding a password the store does not have.
+    - name: "Store the new password before the account is created"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_login.json.auth.client_token }}"
+        _bm_path: "{{ _store_path }}"
+        _bm_data:
+          semaphore_password: "{{ _svc_password }}"
+      when: _password_is_new and not _svc_exists and not ansible_check_mode
+
+    - name: "Create the svc-console account (non-admin, not external: it logs in to mint its token)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body:
+          name: "Dispatch Console"
+          username: "{{ _svc_user }}"
+          email: "{{ _svc_email }}"
+          password: "{{ _svc_password }}"
+          admin: false
+          external: false
+        status_code: "{{ _any_status }}"
+      register: _svc_create
+      when: not _svc_exists and not ansible_check_mode
+      no_log: true
+
+    - name: "Require the account create to answer 201"
+      ansible.builtin.assert:
+        that: _svc_create.status == 201
+        fail_msg: "Creating the {{ _svc_user }} account answered HTTP {{ _svc_create.status }}, not 201."
+      when: _svc_create is not skipped
+
+    # The account exists but the store had no password: an admin sets the new one, then it is stored.
+    - name: "Reset the existing svc-console password to the new one (admin write; the store had none)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/users/{{ _svc_id }}/password"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body:
+          password: "{{ _svc_password }}"
+        status_code: "{{ _any_status }}"
+      register: _svc_reset
+      when: _svc_exists and _password_is_new and not ansible_check_mode
+      no_log: true
+
+    - name: "Require the password reset to answer 204"
+      ansible.builtin.assert:
+        that: _svc_reset.status == 204
+        fail_msg: "Resetting the {{ _svc_user }} password answered HTTP {{ _svc_reset.status }}, not 204."
+      when: _svc_reset is not skipped
+
+    - name: "Store the reset password (after the account holds it)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_login.json.auth.client_token }}"
+        _bm_path: "{{ _store_path }}"
+        _bm_data:
+          semaphore_password: "{{ _svc_password }}"
+      when: _svc_exists and _password_is_new and not ansible_check_mode
+
+    # Created accounts have their id only after a fresh read.
+    - name: "Read the Semaphore accounts again (the id of a new account)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/users"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        status_code: [200]
+      register: _sem_users_after
+      check_mode: false
+      no_log: true
+
+    - name: "Hold the svc-console account id"
+      ansible.builtin.set_fact:
+        _svc_id: "{{ (_sem_users_after.json | selectattr('username', 'equalto', _svc_user) | map(attribute='id') | list + [none]) | first }}"
+      no_log: true
+
+    # ── Project membership ──────────────────────────────────────────────────
+    - name: "Read the project team (admin token)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        status_code: [200]
+      register: _team
+      check_mode: false
+      no_log: true
+
+    - name: "Hold svc-console's current project role (empty when not a member)"
+      ansible.builtin.set_fact:
+        _team_roles: "{{ _team.json | selectattr('username', 'equalto', _svc_user) | map(attribute='role') | list }}"
+      no_log: true
+
+    - name: "Add svc-console to the project team at role guest"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body:
+          user_id: "{{ _svc_id }}"
+          role: "{{ _svc_role }}"
+        status_code: "{{ _any_status }}"
+      register: _member_add
+      when: _team_roles | length == 0 and _svc_id is not none and not ansible_check_mode
+      no_log: true
+
+    - name: "Require the team add to answer 204"
+      ansible.builtin.assert:
+        that: _member_add.status == 204
+        fail_msg: "Adding {{ _svc_user }} to project {{ _pid }} answered HTTP {{ _member_add.status }}, not 204."
+      when: _member_add is not skipped
+
+    - name: "Set svc-console's project role to guest (the team had another role)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users/{{ _svc_id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        body_format: json
+        body:
+          role: "{{ _svc_role }}"
+        status_code: "{{ _any_status }}"
+      register: _member_role
+      when: _team_roles | length > 0 and _team_roles[0] != _svc_role and _svc_id is not none and not ansible_check_mode
+      no_log: true
+
+    - name: "Require the role change to answer 200 or 204"
+      ansible.builtin.assert:
+        that: _member_role.status in [200, 204]
+        fail_msg: "Setting {{ _svc_user }} to {{ _svc_role }} in project {{ _pid }} answered HTTP {{ _member_role.status }}."
+      when: _member_role is not skipped
+
+    - name: "Read the project team back"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/users"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        status_code: [200]
+      register: _team_after
+      check_mode: false
+      no_log: true
+
+    - name: "Hold svc-console's project roles after the convergence"
+      ansible.builtin.set_fact:
+        _team_roles_after: "{{ _team_after.json | selectattr('username', 'equalto', _svc_user) | map(attribute='role') | list }}"
+      no_log: true
+
+    - name: "Require svc-console to hold role guest in the project (read back)"
+      ansible.builtin.assert:
+        that: _team_roles_after == [_svc_role]
+        fail_msg: "{{ _svc_user }} does not hold role {{ _svc_role }} in project {{ _pid }} after convergence."
+      when: not ansible_check_mode
+
+    # ── The API token ───────────────────────────────────────────────────────
+    - name: "Prove the stored API token: GET /api/user must answer svc-console, non-admin"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/user"
+        headers:
+          Authorization: "Bearer {{ _stored_token }}"
+        status_code: [200, 401]
+      register: _stored_proof
+      when: _stored_token | length > 0
+      check_mode: false
+      no_log: true
+
+    - name: "Hold whether the stored token is the svc-console token"
+      ansible.builtin.set_fact:
+        _stored_ok: >-
+          {{ (_stored_token | length > 0)
+             and (_stored_proof.status | default(0)) == 200
+             and (_stored_proof.json | default({})).get('username', '') == _svc_user
+             and ((_stored_proof.json | default({})).get('admin', true) | bool) == false }}
+      no_log: true
+
+    - name: "Log in as svc-console and mint its API token"
+      when: not _stored_ok and not ansible_check_mode
+      block:
+        - name: "Log in as svc-console with its password"
+          ansible.builtin.uri:
+            url: "{{ _semaphore_url }}/api/auth/login"
+            method: POST
+            body_format: json
+            body:
+              auth: "{{ _svc_user }}"
+              password: "{{ _svc_password }}"
+            status_code: [204]
+          register: _svc_login
+          changed_when: false
+          no_log: true
+
+        - name: "Mint the svc-console API token (POST /api/user/tokens with its session)"
+          ansible.builtin.uri:
+            url: "{{ _semaphore_url }}/api/user/tokens"
+            method: POST
+            headers:
+              Cookie: "{{ _svc_login.cookies_string }}"
+            status_code: [201]
+          register: _svc_minted
+          no_log: true
+
+        - name: "Hold the minted token in Ansible memory"
+          ansible.builtin.set_fact:
+            _minted_token: "{{ (_svc_minted.json | default({})).get('id', '') }}"
+          no_log: true
+
+        # Visible on purpose: the assert prints its expression and fail_msg, never the token.
+        - name: "Refuse to store an empty token"
+          ansible.builtin.assert:
+            that: _minted_token | length > 0
+            fail_msg: "Semaphore answered the token mint without an id. Nothing was stored."
+
+        - name: "Store the minted token (OpenBao merge, siblings preserved)"
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_login.json.auth.client_token }}"
+            _bm_path: "{{ _store_path }}"
+            _bm_data:
+              semaphore_api_token: "{{ _minted_token }}"
+      rescue:
+        - name: "Explain the login, mint or store refusal without exposing the response"
+          ansible.builtin.fail:
+            msg: >-
+              svc-console could not log in with the stored password, Semaphore refused the
+              token mint, or the OpenBao store refused the token. The account and
+              secret/services/console may disagree. Check the svc-console account and its
+              stored password, then rerun. No secret is printed here.
+
+    - name: "Hold the svc-console token in Ansible memory for the proof"
+      ansible.builtin.set_fact:
+        _svc_token: "{{ _minted_token if ((_minted_token | default('')) | length > 0) else (_stored_token if _stored_ok else '') }}"
+      no_log: true
+
+    # ── Proof with the token itself ─────────────────────────────────────────
+    - name: "Probe the token's identity: GET /api/user"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/user"
+        headers:
+          Authorization: "Bearer {{ _svc_token }}"
+        status_code: "{{ _any_status }}"
+      register: _probe_identity
+      when: _svc_token | length > 0
+      check_mode: false
+      no_log: true
+
+    - name: "Hold whether the token authenticates as svc-console, non-admin"
+      ansible.builtin.set_fact:
+        _identity_ok: >-
+          {{ (_probe_identity.status | default(0)) == 200
+             and (_probe_identity.json | default({})).get('username', '') == _svc_user
+             and ((_probe_identity.json | default({})).get('admin', true) | bool) == false }}
+        _identity_status: "{{ _probe_identity.status | default(0) }}"
+      when: _svc_token | length > 0
+      no_log: true
+
+    - name: "Require the token to authenticate as svc-console, non-admin"
+      ansible.builtin.assert:
+        that: _identity_ok
+        fail_msg: "The token answered HTTP {{ _identity_status }} on GET /api/user, or it is not the non-admin {{ _svc_user }} account."
+      when: _svc_token | length > 0
+
+    - name: "Probe the token's read: GET /api/project/{p}/tasks/last"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks/last"
+        headers:
+          Authorization: "Bearer {{ _svc_token }}"
+        status_code: "{{ _any_status }}"
+      register: _probe_read
+      when: _svc_token | length > 0
+      check_mode: false
+      no_log: true
+
+    - name: "Require the token to read the project's tasks (200)"
+      ansible.builtin.assert:
+        that: _probe_read.status == 200
+        fail_msg: "GET /api/project/{{ _pid }}/tasks/last answered HTTP {{ _probe_read.status }}, not 200."
+      when: _svc_token | length > 0
+
+    # Template -1 names no template. A guest is refused by the permission gate before any template is
+    # read; if the gate were ever bypassed, the request would still find no template -1 and launch
+    # nothing (upstream api/projects/tasks.go:45-49). The probe is skipped under --check: it is a write
+    # attempt, even a refused one.
+    - name: "Probe the token cannot launch: POST /api/project/{p}/tasks with template -1"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _pid }}/tasks"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _svc_token }}"
+        body_format: json
+        body:
+          template_id: -1
+        status_code: "{{ _any_status }}"
+      register: _probe_launch
+      when: _svc_token | length > 0 and not ansible_check_mode
+      no_log: true
+
+    - name: "Require the launch probe to answer 403 (read-only: guest cannot run tasks)"
+      ansible.builtin.assert:
+        that: _probe_launch.status == 403
+        fail_msg: "POST /api/project/{{ _pid }}/tasks answered HTTP {{ _probe_launch.status }}, not 403. The console token is not read-only."
+      when: _svc_token | length > 0 and not ansible_check_mode
+
+    - name: "Report the console's Semaphore access (names and states only)"
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Account {{ _svc_user }}: {{ 'present before this run' if _svc_exists else 'absent before this run' }};
+            password {{ 'reused from the store' if not _password_is_new else 'generated for this run' }}.
+          - >-
+            Project {{ _pid }} role: {{ _team_roles_after | default(_team_roles) | first | default('none') }};
+            target {{ _svc_role }}.
+          - >-
+            API token: {{ 'reused from the store' if _stored_ok
+              else ('minted and stored' if ((_minted_token | default('')) | length > 0)
+              else 'none in this run (check mode, or nothing proven)') }}.
+          - >-
+            Read-only proof: {{ 'ran; the asserts passed' if (_svc_token | length > 0)
+              else 'skipped: no token in this run' }}.

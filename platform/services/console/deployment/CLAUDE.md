@@ -10,7 +10,8 @@ Composable pattern, copied from `deploy-tududi.yml`:
 Semaphore "Deploy console" (or "Deploy console (Local)")
   └─ platform/playbooks/deploy-console.yml
      ├─ Phase 1  transport guard → place-monorepo → mkdir config/ → manage-secrets
-     │           (env.j2 → .env, scope.json.j2 → config/scope.json)
+     │           (env.j2 → .env, scope.json.j2 → config/scope.json,
+     │            workflow.json.j2 → config/workflow.json from the service-onboarding registry)
      │           → distribute-ca-root (local only) → ~/console symlink
      ├─ Phase 2  deploy.sh: build the image on this host (skipped when it matches its inputs)
      │           → compose_up_if_changed → wait healthy
@@ -42,12 +43,40 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_OIDC_ISSUER`, `CONSOLE_OIDC_CLIENT_ID=console` | `console_oidc_issuer`; the client id is fixed |
 | `CONSOLE_OIDC_CLIENT_SECRET` | `secrets.console_oidc_client_secret`, a shared read from `secret/services/authentik` |
 | `CONSOLE_DATA_DIR=/data`, `CONSOLE_SCOPE_FILE=/etc/console/scope.json` | fixed paths in the container |
+| `CONSOLE_SEMAPHORE_API_URL`, `CONSOLE_SEMAPHORE_UI_URL`, `CONSOLE_SEMAPHORE_PROJECT` | `console_semaphore_api_url` (default `https://semaphore.agent-cloud.test`), `console_semaphore_ui_url` (default `https://semaphore.agent-cloud.test:8443`), `console_semaphore_project` (default `1`) |
+| `CONSOLE_SEMAPHORE_TOKEN` | `secrets.semaphore_api_token`, read from `secret/services/console` (see "Semaphore access") |
+| `CONSOLE_WORKFLOW_FILE=/etc/console/workflow.json` | fixed path; the file is `config/workflow.json` |
 
 `config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
-**OpenBao.** The console owns no secret, so `_secret_definitions` is empty. The deploy still stores one non-secret value: `url` at `secret/services/console`, from `_service_url`. This is required because `bao-merge-keys.yml` refuses an empty merge, and the store step has nothing else to merge. `comfyui` and `hunyuan3d` set `_service_url` the same way.
+`config/workflow.json` (rendered from `templates/workflow.json.j2`, mode 0644) is the service-onboarding workflow's steps, `[{id, order, owner, label}]` sorted by `order`, read from `platform/workflows/service-onboarding/registry.yml` on the controller (`label` is the registry's `diagram_label`). It is rendered, never hand-written, so the console has no second copy of the step list. It is not a secret.
 
-**Order.** Deploy Authentik before Deploy console. Authentik must hold `console_oidc_client_secret` in `secret/services/authentik`. Without it, the shared read stops Phase 1 and names the missing key.
+**OpenBao.** The console's only secret is its Semaphore API token, at `secret/services/console:semaphore_api_token`. Deploy declares it `type: existing` (manage-secrets never generates it) and lists it in `_required_existing_secrets`, so a missing token stops the play before any write. manage-secrets words that failure generically (`Required OpenBao secret console:semaphore_api_token is missing.`); the play that creates it is **Provision Console Semaphore Access**. The store step merges the token back unchanged; the merge keeps its siblings (`url`, from an earlier revision, and any future key).
+
+**Order.** Deploy Authentik before Deploy console. Authentik must hold `console_oidc_client_secret` in `secret/services/authentik`. Without it, the shared read stops Phase 1 and names the missing key. Run **Provision Console Semaphore Access** before Deploy console, for the token. (Declaring `svc-console` in `semaphore_project_members` is a later step, after the account exists; see below.)
+
+## Semaphore access (Phase 2)
+
+The console's `/v1/work` lists Semaphore tasks, joined to the workflow registry (plan 17, D17-D20). It needs a credential, and that credential must not be able to launch a task: launch rights are runner rights (`manage-semaphore-access.yml`). So it is a dedicated Semaphore identity, never the controller's token (`secret/services/semaphore`).
+
+`platform/playbooks/provision-console-semaphore-access.yml` (Semaphore **Provision Console Semaphore Access**; **(Dev)** and **(Local)** twins) creates it, idempotently:
+
+| Piece | What | Why |
+|-------|------|-----|
+| User `svc-console` | non-admin, not external, password `secret/services/console:semaphore_password` (generated once, stored before the account is created) | Non-admin: `semaphore_admin_roster` never derives it. Not external: it logs in with that password to mint its own token. |
+| Project role | `guest` in project `console_semaphore_project` | Upstream gives guest no run permission (`db/ProjectUser.go`, `ProjectGuest: 0`), and task creation needs `CanRunProjectTasks`. |
+| Token | `secret/services/console:semaphore_api_token` | Reused only when `GET /api/user` with it answers `svc-console`, non-admin. Otherwise svc-console logs in and mints one. |
+
+The play proves the token with itself, at the end: `GET /api/project/{p}/tasks/last` answers 200, and `POST /api/project/{p}/tasks` with template `-1` answers 403. The POST cannot launch anything whatever the gate does: `-1` names no template, and a guest is refused before any template is read. Under `--check`, reads run and every write is skipped, and the POST is never sent.
+
+Two facts the play depends on, both at upstream v2.19.11:
+
+- **Listing tokens cannot reuse one.** `GET /api/user/tokens` cuts every id to 8 characters (`api/user.go:51-64`), so a listed id does not authenticate. The stored token is the only reuse path.
+- **An admin cannot mint for svc-console.** The mint uses the calling user (`api/user.go:70-104`). The play logs in as svc-console itself.
+
+**Ordering with Manage Semaphore Access.** `filter_plugins/semaphore_access.py` refuses the whole run when a declared team member has no Semaphore account. So: provision the account first, then declare `svc-console: guest` in `semaphore_project_members`. Production declares that in site-config, which this repo does not hold. Until it does, the next real **Manage Semaphore Access** run removes `svc-console` from the team, and the console's read fails.
+
+**Unverified.** Whether production Semaphore accepts password login for `svc-console` is not yet proven by a live run. The code path is read (`api/login.go:286-382`).
 
 ## Active Work (Semaphore, read-only)
 
@@ -104,8 +133,9 @@ deployment/
 ├── compose.yml             single container, env-parameterized image/bind/port, console-data volume
 ├── compose.local.yml       local overlay: local-dev network, step-ca bundle, CONSOLE_EXTRA_CA_FILE
 ├── templates/
-│   ├── env.j2              .env (non-secret config + shared OIDC secret)
-│   └── scope.json.j2       config/scope.json from console_tenants
+│   ├── env.j2              .env (non-secret config + shared OIDC secret + Semaphore token)
+│   ├── scope.json.j2       config/scope.json from console_tenants
+│   └── workflow.json.j2    config/workflow.json from the service-onboarding registry
 ├── .gitignore              .env, config/, certs/ (rendered per deploy)
 ├── AGENTS.md -> CLAUDE.md
 └── README.md
@@ -120,6 +150,7 @@ The `Containerfile` is part of this change. It sits next to this file and builds
 - Don't add `--force-recreate` to `deploy.sh`. Recreate only on a change, through `compose_up_if_changed`.
 - Don't put a real tenant, site or address in `console_tenants` in this repo. Production's scope lives in site-config. The local example is fictional.
 - Don't commit `.env` or `config/`. Both are gitignored because they are rendered per deploy.
+- Don't generate the Semaphore token in `deploy-console.yml`, and don't give the console the controller's token. The token belongs to the svc-console account and is provisioned by `provision-console-semaphore-access.yml`.
 
 ## Open items
 
