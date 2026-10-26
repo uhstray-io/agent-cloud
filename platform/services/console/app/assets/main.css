@@ -1,0 +1,27 @@
+/* Placeholder styling for the Dispatch Console slice. The real shell replaces it. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1d1d1f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111114;
+    --fg: #f2f2f5;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111114;
+  --fg: #f2f2f5;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+.shell {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
