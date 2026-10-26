@@ -259,14 +259,19 @@ owner_predicate() {
 # mount point (the account's /run/user/<uid> while it is still mounted), is never listed:
 # each mounted filesystem is swept as its own root.
 owned_paths() {
-  local root p pred=()
-  mapfile -t pred < <(owner_predicate)
+  local root p line pred=()
+  # A read loop, not mapfile: macOS ships bash 3.2, which has no mapfile, and the suite runs
+  # there on pre-push. The ${pred[@]+...} form because bash 3.2 rejects "${pred[@]}" on an
+  # empty array under set -u. An empty predicate lists every path: the caller's verification
+  # then sees the leftovers and quarantines. It must not die here instead: this runs in a
+  # subshell, and a die reads as "nothing left" to that verification.
+  while IFS= read -r line; do pred+=("$line"); done < <(owner_predicate)
   while read -r root; do
     [ -d "$root" ] || continue
     while IFS= read -r -d '' p; do
       if command -v mountpoint >/dev/null 2>&1 && mountpoint -q -- "$p"; then continue; fi
       printf '%s\0' "$p"
-    done < <(find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o "${pred[@]}" -print0 -prune 2>/dev/null || true)
+    done < <(find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o ${pred[@]+"${pred[@]}"} -print0 -prune 2>/dev/null || true)
   done < <(sweep_roots)
 }
 
