@@ -136,7 +136,7 @@ Review and accept this document alongside plan 17 and the PRINCIPLES.md Tenant-t
 
 ### Phase 2 — Apply in the build
 
-Each plan-16 phase is reviewed against the validation table below before it merges.
+Each plan-17 phase is reviewed against the validation table below before it merges.
 
 **Acceptance:** every merged console PR records the checklist result in its description.
 

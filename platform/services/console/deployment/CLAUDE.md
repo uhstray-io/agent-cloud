@@ -1,6 +1,6 @@
 # CLAUDE.md — platform/services/console/deployment
 
-The Dispatch Console: a Rust/Dioxus app (source in `../app`, image built from `Containerfile` in this directory) served behind central Caddy. It signs users in through Authentik (native OIDC, client `console`), keeps non-secret preferences in SQLite, and shows the tenant, org and site tree declared in the inventory. Plan: `plan/development/16-dispatch-console.md`.
+The Dispatch Console: a Rust/Dioxus app (source in `../app`, image built from `Containerfile` in this directory) served behind central Caddy. It signs users in through Authentik (native OIDC, client `console`), keeps non-secret preferences in SQLite, and shows the tenant, org and site tree declared in the inventory. Plan: `plan/development/17-dispatch-console.md`.
 
 ## What this deploy does
 
@@ -85,7 +85,7 @@ deployment/
 └── README.md
 ```
 
-The `Containerfile` is not in this change. Another worker writes it next to this file together with `../app`.
+The `Containerfile` is part of this change. It sits next to this file and builds the crate in `../app`.
 
 ## What not to do
 
@@ -97,14 +97,14 @@ The `Containerfile` is not in this change. Another worker writes it next to this
 
 ## Open items
 
-- **Authentik side** (not in this change): the `console` provider and application blueprint, and `console_oidc_client_secret` in `secret/services/authentik`. Until both exist, the Phase 1 shared read fails.
-- **Containerfile and `../app`** (not in this change): the Containerfile must copy only the paths it needs. `deployment/Containerfile.dockerignore` keeps `.env`, `config/`, `certs/` and `app/target` out of the build context; podman 5.8.2 honors it (verified with a scratch build). A Containerfile with `COPY . ` would still bake in whatever remains.
-- **AppRole.** `plan/development/16-dispatch-console.md` names `manage-approle.yml` for a scoped AppRole. This deploy does not provision one.
+- **Authentik side** (in this change): the `console` OAuth2 provider and application are declared in `platform/services/authentik/deployment/blueprints/console-oidc.yaml`, and `console_oidc_client_secret` is a generated secret in `platform/playbooks/vars/secret-declarations/authentik.yml`. Deploy Authentik before the console, otherwise the Phase 1 shared read fails.
+- **Containerfile and `../app`** (in this change): the Containerfile must copy only the paths it needs. `deployment/Containerfile.dockerignore` keeps `.env`, `config/`, `certs/` and `app/target` out of the build context; podman 5.8.2 honors it (verified with a scratch build). A Containerfile with `COPY . .` would still bake in whatever remains.
+- **AppRole.** `plan/development/17-dispatch-console.md` names `manage-approle.yml` for a scoped AppRole. This deploy does not provision one.
 - **Step-result registration.** `platform/tests/test_service_deploy_step_result.py` (`WAVE`, `RECREATE_AWARE`) does not list the console. Its tests pass without it.
 
 ## Related
 
 - Model: [`../../../playbooks/deploy-tududi.yml`](../../../playbooks/deploy-tududi.yml). Playbook: [`../../../playbooks/deploy-console.yml`](../../../playbooks/deploy-console.yml), [`../../../playbooks/clean-deploy-console.yml`](../../../playbooks/clean-deploy-console.yml)
-- Plan: [`../../../../plan/development/16-dispatch-console.md`](../../../../plan/development/16-dispatch-console.md)
+- Plan: [`../../../../plan/development/17-dispatch-console.md`](../../../../plan/development/17-dispatch-console.md)
 - Onboarding checklist: [`../../../../plan/architecture/02-service-onboarding.md`](../../../../plan/architecture/02-service-onboarding.md)
 - Root conventions: [`../../../../AGENTS.md`](../../../../AGENTS.md)

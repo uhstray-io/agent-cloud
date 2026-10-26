@@ -1,3 +1,5 @@
+<!doctype html>
+<meta charset="utf-8">
 <title>Atlas Console</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <!--
@@ -91,7 +93,7 @@ function scopeInspector({ label, node }) {
       <div class="row wrap">${st(s, null, true)}${f ? `<span class="tag mono">${esc(f.path.join(" › "))}</span>` : ""}</div>
       ${f?.h.why ? `<div class="why-box ${s}">${ic(s === "crit" ? "octagon-x" : "triangle-alert")}<span>${esc(f.h.why)}</span></div>` : ""}
       <p class="muted" style="margin:0;font-size:13px">Work you ask for now targets this ${esc(kind.toLowerCase())}. Type it in the ask bar above the map.</p></div>`, "", "div")}
-    ${K.grafanaLinks("service", s.name)}`;
+    ${K.grafanaLinks(kind.toLowerCase(), name)}`;
 }
 const EDGE_LABEL = { api: "API", oidc: "OIDC", mcp: "MCP", logs: "Logs", metrics: "Metrics", traces: "Traces · planned" };
 
@@ -116,7 +118,7 @@ function inspector(id) {
       ${s.why ? `<div class="why-box ${s.st}">${ic(s.st === "crit" ? "octagon-x" : "triangle-alert")}<span>${esc(s.why)}</span></div>` : ""}
       <div class="row wrap" style="margin-top:4px">${s.st !== "ok" ? `<button class="btn primary" data-fix="${esc(s.name)}: ${esc(s.why)}. Fix it.">${ic("sparkles")}Fix with skynet</button>` : ""}<button class="btn" data-queue="${id}">${ic("plus")}Queue work</button><button class="btn ghost" data-grafana>${ic("external-link")}Grafana</button></div>
     </div>`, "", "div")}
-    ${K.grafanaLinks(kind.toLowerCase(), name)}
+    ${K.grafanaLinks("service", s.name)}
     ${comp("B.integrations", "Integrations in/out with types", `<div><span class="label">Integrations · ${ins.length + outs.length}</span><ul class="list integ">
       ${outs.map((e) => `<li><span class="eline ${e[2]}"></span><span class="tag">${EDGE_LABEL[e[2]]}</span><span class="grow">→ <b>${esc(D.svc(e[1]).name)}</b> <span class="faint">${esc(e[3])}</span></span></li>`).join("")}
       ${ins.map((e) => `<li><span class="eline ${e[2]}"></span><span class="tag">${EDGE_LABEL[e[2]]}</span><span class="grow">← <b>${esc(D.svc(e[0]).name)}</b> <span class="faint">${esc(e[3])}</span></span></li>`).join("")}</ul></div>`, "", "div")}
