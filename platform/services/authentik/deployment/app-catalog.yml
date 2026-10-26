@@ -104,6 +104,13 @@ authentik_app_catalog:
     provider: tududi
     prod_required: [tududi_redirect_uri, tududi_launch_url]
     verify_redirect: tududi_redirect_uri
+  console:
+    file: console-oidc.yaml
+    type: oidc
+    tier: member
+    provider: console
+    prod_required: [console_redirect_uri, console_launch_url]
+    verify_redirect: console_redirect_uri
   honcho-docs:
     file: honcho-docs-forward-auth.yaml
     type: forward_auth

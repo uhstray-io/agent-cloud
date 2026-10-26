@@ -42,6 +42,7 @@ _static_secret_definitions:
   - { name: semaphore_oidc_client_secret, type: random, length: 40 }
   - { name: openbao_oidc_client_secret, type: random, length: 40 }
   - { name: tududi_oidc_client_secret, type: random, length: 40 }
+  - { name: console_oidc_client_secret, type: random, length: 40 }
   - { name: postiz_oidc_client_secret, type: random, length: 40 }
   - { name: agentgateway_oidc_client_secret, type: random, length: 40 }
   # Platform service account API token (rendered into platform-admins.yaml for the
