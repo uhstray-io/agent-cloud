@@ -80,7 +80,7 @@ names, never values; fewest steps; planned and example are labelled.
 flowchart LR
     U["Operator / tenant admin<br/>(browser)"] --> SPA["Dispatch Console SPA<br/>Rust → WASM"]
     SPA -->|"OIDC login"| AK["Authentik"]
-    SPA -->|"JSON API + SSE<br/>(OpenAPI contract)"| API["Console API<br/>Rust service (BFF)"]
+    SPA -->|"JSON API, polled (D18)<br/>(OpenAPI contract)"| API["Console API<br/>Rust service (BFF)"]
     API -->|"token introspection, groups"| AK
     subgraph READ["Read (cached, never owned)"]
         NB["NetBox<br/>inventory · IPAM · step status"]
@@ -129,7 +129,7 @@ flowchart LR
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/v1/tenants` · `/v1/tenants/{t}/tree` | Tenants the caller may see; scope tree with rollups |
-| GET | `/v1/work?scope=…&domain=…&group=…` | Work in scope, with lane, owning role, steps |
+| GET | `/v1/work` | Work from Semaphore with lane, owning role, run and step (Phase 2: `platform-admins` only, D19; scope filters arrive with Phase 3 inventory) |
 | GET | `/v1/work/{key}` | Detail: plan steps, OPA decision, receipts, log tail |
 | POST | `/v1/proposals` | Natural-language or structured request → skynet plan (returns the plan, nothing runs) |
 | POST | `/v1/work/{key}/approve` · `/pause` · `/resume` · `/retry` | Lifecycle actions; each is re-checked by OPA |
@@ -142,7 +142,7 @@ flowchart LR
 | GET · PUT | `/v1/me` | The caller's profile: OIDC claims read-only, preferences writable |
 | GET | `/v1/tenants/{t}/settings` · `/v1/orgs/{o}/settings` | Settings read models; changes go through `POST /v1/proposals` |
 | GET | `/v1/catalog` · POST `/v1/service-requests` | Approved services; request one into a scope, or a new one for onboarding |
-| GET | `/v1/events` | Server-sent events for work and status changes |
+| GET | `/v1/events` | Server-sent events for work and status changes. Deferred (D18) until a push source exists |
 
 ## Implementation Phases
 
@@ -226,7 +226,7 @@ chart renders in the console.
 
 ### Phase 7 — Harden and promote
 
-- Accessibility audit, error and permission-denied states, load test of the API and SSE, `dev`
+- Accessibility audit, error and permission-denied states, load test of the API (and of server-sent events, if D18 has been revisited by then), `dev`
   validation, then promotion to production through the branch workflow.
 
 **Acceptance:** the validation table below passes on `dev`; promotion PR merged.
@@ -330,7 +330,7 @@ The 22 requirements from the 2026-10-20 brief, mapped to where the design meets 
   the worst case of a compromised console session is a proposal that OPA and an approver must
   still pass.
 - **Exposure:** served behind Caddy with TLS; API and SPA on one origin; CSRF protection on
-  state-changing requests; SSE authenticated like every other route.
+  state-changing requests; any future event stream is authenticated like every other route.
 - **Audit:** every proposal, approval and lifecycle action is a work item with its requester,
   decision and receipts.
 
