@@ -43,7 +43,7 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_OIDC_CLIENT_SECRET` | `secrets.console_oidc_client_secret`, a shared read from `secret/services/authentik` |
 | `CONSOLE_DATA_DIR=/data`, `CONSOLE_SCOPE_FILE=/etc/console/scope.json` | fixed paths in the container |
 
-`config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with orgs, each org with sites and their `envs`) and `console_scope_is_example`. It is not a secret.
+`config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
 **OpenBao.** The console owns no secret, so `_secret_definitions` is empty. The deploy still stores one non-secret value: `url` at `secret/services/console`, from `_service_url`. This is required because `bao-merge-keys.yml` refuses an empty merge, and the store step has nothing else to merge. `comfyui` and `hunyuan3d` set `_service_url` the same way.
 

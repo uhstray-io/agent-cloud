@@ -27,7 +27,7 @@ The Authentik client is created first, because the sign-in routes need its secre
 ## 3. Tenants and scope tree
 
 - [ ] 3.1 Render `templates/scope.json.j2` from the inventory variable `console_tenants`. The `example` flag comes from `console_scope_is_example`, with a default of false. Example tenants in the inventory are labelled as example. Real values stay in site-config.
-- [ ] 3.2 Implement `GET /v1/tenants`, which lists the tenants in the scope file, and `GET /v1/tenants/{t}/tree`, which returns the tenant's organizations, sites and environments. An unknown tenant answers 404.
+- [ ] 3.2 Implement `GET /v1/tenants`, which lists the scope-file tenants the caller is a member of (a shared Authentik group with the tenant's `groups`; `platform-admins` see every tenant), and `GET /v1/tenants/{t}/tree`, which returns the tenant's organizations, sites and environments. An unknown tenant, or one the caller cannot see, answers 404.
 - [ ] 3.3 Validation gate: scenarios "Tenant list reads the inventory declaration", "Scope tree for a tenant", "Unknown tenant is not found", "Example data is labelled" and "Every /v1 route answers 401 without a session" hold.
 
 ## 4. Profile, preferences and SPA shell
