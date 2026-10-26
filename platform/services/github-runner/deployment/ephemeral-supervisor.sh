@@ -305,7 +305,7 @@ sweep_files() {
 
 # ── reset ─────────────────────────────────────────────────────────────────────
 do_reset() {
-  local left
+  local left out
   kill_account || return 1
   sweep_ipc
   # The keyrings are cleared by a process of the account, which the second kill removes.
@@ -313,17 +313,25 @@ do_reset() {
   kill_account || return 1
   sweep_files
 
-  left=$(account_pids | tr '\n' ' ')
+  # Each check fails closed. A lister that cannot run is not an empty listing: under
+  # "do_reset || quarantine" set -e is off, so the lister's status is tested here, not left to
+  # errexit. head stays outside the checked command, so its SIGPIPE cannot read as a failure.
+  if ! out=$(account_pids); then log "reset: cannot list processes"; return 1; fi
+  left=$(printf '%s\n' "$out" | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
     log "reset: processes remain: $left"
     return 1
   fi
-  left=$(ipc_owned | tr '\n' ' ')
+  if ! out=$(ipc_owned); then log "reset: cannot list IPC objects"; return 1; fi
+  left=$(printf '%s\n' "$out" | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
     log "reset: IPC objects remain: $left"
     return 1
   fi
-  left=$(owned_paths | tr '\0' '\n' | head -n 20 | tr '\n' ' ')
+  # NUL-separated in, newline-separated out: a command substitution would drop the NULs. The
+  # status is owned_paths', through the script's set -o pipefail.
+  if ! out=$(owned_paths | tr '\0' '\n'); then log "reset: cannot list files"; return 1; fi
+  left=$(head -n 20 <<<"$out" | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
     log "reset: files remain: $left"
     return 1

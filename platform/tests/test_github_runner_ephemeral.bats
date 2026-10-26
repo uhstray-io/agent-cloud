@@ -153,6 +153,41 @@ name@" ]
   [ -z "$output" ]
 }
 
+# do_reset's three checks each fail closed. The stubs make the earlier steps no-ops, so only the
+# check under test can end the reset: a lister that cannot run must not read as an empty listing
+# and let the reset report a clean account.
+reset_with() {
+  sup "check_config; kill_account() { :; }; clear_keyrings() { :; }; sweep_ipc() { :; }; sweep_files() { :; }; $1; do_reset"
+}
+
+@test "ephemeral: a reset whose process listing fails is an error, not a clean account" {
+  run reset_with 'account_pids() { return 1; }'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "reset: cannot list processes"
+  refute_contains "$output" "remain"
+}
+
+@test "ephemeral: a reset whose IPC listing fails is an error, not a clean account" {
+  run reset_with 'ipc_owned() { return 1; }'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "reset: cannot list IPC objects"
+  refute_contains "$output" "remain"
+}
+
+@test "ephemeral: a reset whose file listing fails is an error, not a clean account" {
+  run reset_with 'owned_paths() { return 1; }'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "reset: cannot list files"
+  refute_contains "$output" "remain"
+}
+
+@test "ephemeral: a reset whose listings are all empty passes every check" {
+  run reset_with ':'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "cannot list"
+  refute_contains "$output" "remain"
+}
+
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {
   printf 'OLD' >"$T/state/gh/jit/gh-runner-01-jit-a.jit"
   printf 'MID' >"$T/state/gh/jit/gh-runner-01-jit-b.jit"
