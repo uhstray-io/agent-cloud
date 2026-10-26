@@ -1,0 +1,4 @@
+{# console scope file — rendered by deploy-console.yml from the inventory (console_tenants,
+   console_scope_is_example). The console shows only what this declares: tenants, their orgs,
+   and each org's sites with the environments of each. Not a secret. Do NOT edit by hand. #}
+{{ {"example": console_scope_is_example | default(false) | bool, "tenants": console_tenants | default([])} | to_nice_json }}
