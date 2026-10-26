@@ -32,10 +32,10 @@ sup() {
     RUNNER_HOME="${HOME_OVERRIDE:-$T/homes/runner}" \
     RUNNER_SEED="${SEED_OVERRIDE:-$T/seeds/runner}" \
     RUNNER_STATE_DIR="$T/state/gh" \
-    RUNNER_PROC_ROOT="$T/proc" \
+    RUNNER_PROC_ROOT="${PROC_OVERRIDE-$T/proc}" \
     RUNNER_SUBUID_FILE="$T/subuid" \
     RUNNER_SYSVIPC_ROOT="$T/sysvipc" \
-    RUNNER_SWEEP_ROOTS="$T/tmp" \
+    RUNNER_SWEEP_ROOTS="${SWEEP_OVERRIDE-$T/tmp}" \
     RUNNER_RUNTIME_ROOT="$T/run" \
     RUNNER_JIT_MAX_AGE_MINUTES=60 \
     bash -c ". '$SUP'; $1"
@@ -168,6 +168,7 @@ reset_with() {
 }
 
 @test "ephemeral: a reset whose IPC listing fails is an error, not a clean account" {
+  prod_fixtures
   run reset_with 'ipc_owned() { return 1; }'
   [ "$status" -ne 0 ]
   assert_contains "$output" "reset: cannot list IPC objects"
@@ -175,6 +176,7 @@ reset_with() {
 }
 
 @test "ephemeral: a reset whose file listing fails is an error, not a clean account" {
+  prod_fixtures
   run reset_with 'owned_paths() { return 1; }'
   [ "$status" -ne 0 ]
   assert_contains "$output" "reset: cannot list files"
@@ -182,10 +184,76 @@ reset_with() {
 }
 
 @test "ephemeral: a reset whose listings are all empty passes every check" {
+  prod_fixtures
   run reset_with ':'
   [ "$status" -eq 0 ]
   refute_contains "$output" "cannot list"
   refute_contains "$output" "remain"
+}
+
+# The real listers, on fixtures that are complete and empty: /proc holds one process that is not
+# the account's (init), and each SysV table is present with its header and no rows. Each test
+# below breaks one real lister and runs do_reset as cmd_loop does, where a failed reset is a
+# quarantine.
+prod_fixtures() {
+  fake_proc 1 0 0 0 0
+  printf '%s\n' '       key      shmid perms size uid gid cuid cgid' >"$T/sysvipc/shm"
+  printf '%s\n' '       key      msqid perms cbytes qnum lspid lrpid uid gid cuid cgid' >"$T/sysvipc/msg"
+  printf '%s\n' '       key      semid perms nsems uid gid cuid cgid' >"$T/sysvipc/sem"
+}
+
+# Stubbed: the steps that act on the live host (kill, keyring clear, IPC removal). Real: the
+# three checks and their listers, and the file sweep, which can only reach the test's directories.
+reset_prod() {
+  sup "check_config; kill_account() { :; }; clear_keyrings() { :; }; sweep_ipc() { :; }; $1; do_reset || echo QUARANTINED"
+}
+
+@test "ephemeral: a reset whose sweep roots cannot be listed quarantines, and leaves the files" {
+  prod_fixtures
+  : >"$T/tmp/leftover"
+  SWEEP_OVERRIDE= run reset_prod 'findmnt() { return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+  [ -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a findmnt that lists no sweepable root, and succeeds, quarantines the reset" {
+  prod_fixtures
+  : >"$T/tmp/leftover"
+  SWEEP_OVERRIDE= run reset_prod "findmnt() { printf '%s %s\\n' /proc proc; }"
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+  [ -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a reset whose process table is missing quarantines" {
+  prod_fixtures
+  PROC_OVERRIDE=/nonexistent run reset_prod ':'
+  assert_contains "$output" "reset: cannot list processes"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a reset whose SysV IPC table is unreadable quarantines" {
+  prod_fixtures
+  chmod 000 "$T/sysvipc/msg"
+  run reset_prod ':'
+  assert_contains "$output" "reset: cannot list IPC objects"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a SysV table that fails to read is not masked by the table after it" {
+  prod_fixtures
+  run reset_prod 'awk() { case "$*" in *sysvipc/msg) return 2 ;; *) command awk "$@" ;; esac; }'
+  assert_contains "$output" "reset: cannot list IPC objects"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a reset over real empty listers and an empty sweep root passes" {
+  prod_fixtures
+  run reset_prod ':'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" QUARANTINED
+  refute_contains "$output" "cannot list"
 }
 
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {

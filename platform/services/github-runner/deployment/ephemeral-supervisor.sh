@@ -141,15 +141,19 @@ owned_id() {
 # from /proc, not from a cgroup: a job's processes are in the runner unit's cgroup, in scopes
 # rootless podman asks the user manager for, or anywhere else the account could start them.
 account_pids() {
-  local d tag r e s f
+  local d tag r e s f seen=0
   for d in "$PROC_ROOT"/[0-9]*; do
     [ -r "$d/status" ] || continue
+    seen=$((seen + 1))
     read -r tag r e s f < <(grep '^Uid:' "$d/status" 2>/dev/null || true) || true
     [ "${tag:-}" = "Uid:" ] || continue
     if owned_id "$r" || owned_id "$e" || owned_id "$s" || owned_id "$f"; then
       echo "${d##*/}"
     fi
   done
+  # A process table with no readable entry is missing or unreadable, not empty: this process is
+  # always in /proc. An unexpanded glob (no table at all) lands here too.
+  [ "$seen" -gt 0 ] || return 1
 }
 
 as_user() {
@@ -187,7 +191,10 @@ ipc_owned() {
   local kind f
   for kind in shm msg sem; do
     f="$SYSVIPC_ROOT/$kind"
-    [ -r "$f" ] || continue
+    # A table that cannot be read is a failure, not an empty table: it would list nothing and
+    # read as a clean host. Each table's status is checked, so a failure on an earlier kind is
+    # not hidden by the loop's last iteration.
+    [ -r "$f" ] || return 1
     awk -v k="$kind" 'NR == 1 {
         for (i = 1; i <= NF; i++) {
           if (!idc && $i ~ /id$/ && $i != "uid" && $i != "cuid") idc = i
@@ -198,7 +205,7 @@ ipc_owned() {
       }
       idc && uc && cc { print k, $idc, $uc, $cc }' "$f" | while read -r k id u cu; do
       if owned_id "$u" || owned_id "$cu"; then echo "$k $id"; fi
-    done
+    done || return 1
   done
 }
 
@@ -257,22 +264,27 @@ owner_predicate() {
 # and a name with a newline in it must not split into two paths. A matched directory is pruned:
 # it is removed whole, so listing its contents adds nothing. A sweep root itself, and any
 # mount point (the account's /run/user/<uid> while it is still mounted), is never listed:
-# each mounted filesystem is swept as its own root.
+# each mounted filesystem is swept as its own root. Returns non-zero when the roots cannot be
+# listed or a root cannot be walked: a failed listing is not an empty one.
 owned_paths() {
-  local root p line pred=()
+  local root p line roots pred=()
   # A read loop, not mapfile: macOS ships bash 3.2, which has no mapfile, and the suite runs
   # there on pre-push. The ${pred[@]+...} form because bash 3.2 rejects "${pred[@]}" on an
   # empty array under set -u. An empty predicate lists every path: the caller's verification
   # then sees the leftovers and quarantines. It must not die here instead: this runs in a
   # subshell, and a die reads as "nothing left" to that verification.
   while IFS= read -r line; do pred+=("$line"); done < <(owner_predicate)
-  while read -r root; do
+  roots=$(sweep_roots) || return 1
+  # With no configured roots, findmnt must name at least one: every host has a root filesystem.
+  [ -n "$SWEEP_ROOTS" ] || [ -n "$roots" ] || return 1
+  while IFS= read -r root; do
     [ -d "$root" ] || continue
-    while IFS= read -r -d '' p; do
-      if command -v mountpoint >/dev/null 2>&1 && mountpoint -q -- "$p"; then continue; fi
-      printf '%s\0' "$p"
-    done < <(find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o ${pred[@]+"${pred[@]}"} -print0 -prune 2>/dev/null || true)
-  done < <(sweep_roots)
+    find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o ${pred[@]+"${pred[@]}"} -print0 -prune 2>/dev/null \
+      | while IFS= read -r -d '' p; do
+          if command -v mountpoint >/dev/null 2>&1 && mountpoint -q -- "$p"; then continue; fi
+          printf '%s\0' "$p"
+        done || return 1
+  done <<<"$roots"
 }
 
 file_owner() { stat -c %u -- "$1" 2>/dev/null || stat -f %u -- "$1"; }
@@ -328,8 +340,9 @@ do_reset() {
     log "reset: IPC objects remain: $left"
     return 1
   fi
-  # NUL-separated in, newline-separated out: a command substitution would drop the NULs. The
-  # status is owned_paths', through the script's set -o pipefail.
+  # NUL-separated in, newline-separated out: a command substitution would drop the NULs, so tr
+  # stays in the checked command. Under the script's set -o pipefail the pipeline fails when
+  # owned_paths does, and owned_paths returns non-zero when it cannot list.
   if ! out=$(owned_paths | tr '\0' '\n'); then log "reset: cannot list files"; return 1; fi
   left=$(head -n 20 <<<"$out" | tr '\n' ' ')
   if [ -n "${left// /}" ]; then
