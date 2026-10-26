@@ -260,6 +260,23 @@ owner_predicate() {
   printf '%s\n' ')'
 }
 
+# Where the sweep's temporary listings go. Never TMPDIR or /tmp: the runner account can fill
+# /tmp, and a reset that cannot write its listing quarantines the host, so a job could take the
+# pool out of service. Under the unit, systemd sets RUNTIME_DIRECTORY to the directory the unit
+# declares: RuntimeDirectory= creates it below /run, and RuntimeDirectoryMode=0700 keeps it
+# root-only (systemd.exec(5): https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+# The deploy also runs reset as root outside the unit, where RUNTIME_DIRECTORY is unset, so the
+# fallback is /run. UAPI.9 describes /run as a tmpfs, "generally writable for privileged programs
+# only" (https://uapi-group.org/specifications/specs/linux_file_system_hierarchy/). It states no
+# mode for /run, so the root-only reading of /run is unverified on a host. /run/user/<uid> is the
+# account's own runtime directory, usually a separate tmpfs; it is never the fallback.
+# RUNNER_STATE_DIR is not used: check_config does not check its owner or mode, the repository
+# declares no mount that keeps it off the disk the job's home is on, so a job could fill it.
+spool_dir() {
+  local d="${RUNTIME_DIRECTORY%%:*}"
+  printf '%s\n' "${d:-/run}"
+}
+
 # Paths owned by the account outside the home, NUL-terminated: a job chooses its file names,
 # and a name with a newline in it must not split into two paths. A matched directory is pruned:
 # it is removed whole, so listing its contents adds nothing. A sweep root itself, and any
@@ -269,7 +286,7 @@ owner_predicate() {
 # a path that vanishes during the walk (find's "No such file or directory"). /tmp is busy, and a
 # reset that quarantined on one would take the runner out of service. Any other find error fails.
 owned_paths() {
-  local root p line roots err list fst other pred=()
+  local root p line roots spool err list fst bad pred=()
   # A read loop, not mapfile: macOS ships bash 3.2, which has no mapfile, and the suite runs
   # there on pre-push. The ${pred[@]+...} form because bash 3.2 rejects "${pred[@]}" on an
   # empty array under set -u. An empty predicate lists every path: the caller's verification
@@ -284,18 +301,26 @@ owned_paths() {
     [ -d "$root" ] || continue
     # find writes to a file, not a pipe, so its status is its own; its stderr is kept to tell a
     # vanished path from a real failure. LC_ALL=C keeps find's messages in English, which the
-    # match below depends on. The supervisor runs as root, so these files are not the account's
-    # and the sweep never lists them.
-    err=$(mktemp) || return 1
-    list=$(mktemp) || { rm -- "$err"; return 1; }
+    # match below depends on. The files live in the root-only spool (spool_dir), so they are
+    # never the account's and the sweep never lists them.
+    spool=$(spool_dir)
+    err=$(mktemp "$spool/sweep.XXXXXX") || { log "cannot create a sweep listing in $spool"; return 1; }
+    list=$(mktemp "$spool/sweep.XXXXXX") || { rm -- "$err"; log "cannot create a sweep listing in $spool"; return 1; }
     fst=0
     LC_ALL=C find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o ${pred[@]+"${pred[@]}"} -print0 -prune >"$list" 2>"$err" || fst=$?
     if [ "$fst" -ne 0 ]; then
-      other=$(awk '!/No such file or directory/ { print substr($0, 1, 200); exit }' "$err")
-      # Only a failure over vanished paths is tolerated. A failure that printed nothing is not
-      # that, so it fails too.
-      if [ -n "$other" ] || [ ! -s "$err" ]; then
-        log "cannot walk $root: ${other:-find exited $fst without a message}"
+      # Only a failure over vanished paths is tolerated, and only a line that ends in exactly that
+      # message counts as one: a line that merely contains it, or a blank line, is a real error.
+      # The decision is awk's exit status (0 = a real error was found), not its output, so no
+      # line can hide a later one.
+      if bad=$(awk '!/: No such file or directory$/ { print substr($0, 1, 200); bad = 1; exit } END { exit !bad }' "$err"); then
+        log "cannot walk $root: $bad"
+        rm -- "$err" "$list"
+        return 1
+      fi
+      # A failure that printed nothing is not vanished paths either.
+      if [ ! -s "$err" ]; then
+        log "cannot walk $root: find exited $fst without a message"
         rm -- "$err" "$list"
         return 1
       fi

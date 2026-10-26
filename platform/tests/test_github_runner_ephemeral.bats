@@ -20,7 +20,7 @@ setup() {
   T=$(cd "$BATS_TEST_TMPDIR" && pwd -P)
   ME=$(id -un)
   MYUID=$(id -u)
-  mkdir -p "$T/proc" "$T/sysvipc" "$T/tmp" "$T/run/$MYUID" "$T/state/gh/jit" "$T/homes" "$T/seeds"
+  mkdir -p "$T/proc" "$T/sysvipc" "$T/tmp" "$T/run/$MYUID" "$T/state/gh/jit" "$T/homes" "$T/seeds" "$T/rt"
   printf '%s:165536:65536\n' "$ME" >"$T/subuid"
 }
 
@@ -36,6 +36,9 @@ sup() {
     RUNNER_SUBUID_FILE="$T/subuid" \
     RUNNER_SYSVIPC_ROOT="$T/sysvipc" \
     RUNNER_SWEEP_ROOTS="${SWEEP_OVERRIDE-$T/tmp}" \
+    RUNTIME_DIRECTORY="${RUNTIME_OVERRIDE-$T/rt}" \
+    TMPDIR="${TMPDIR_OVERRIDE:-${TMPDIR:-/tmp}}" \
+    TEST_DIR="$T" \
     RUNNER_RUNTIME_ROOT="$T/run" \
     RUNNER_JIT_MAX_AGE_MINUTES=60 \
     bash -c ". '$SUP'; $1"
@@ -290,6 +293,39 @@ reset_prod() {
   assert_contains "$output" QUARANTINED
 }
 
+@test "ephemeral: the sweep's listings are spooled in RUNTIME_DIRECTORY and removed after" {
+  run sup 'check_config; find() { ls -A "$RUNTIME_DIRECTORY" >"$TEST_DIR/seen"; command find "$@"; }; owned_paths >/dev/null'
+  [ "$status" -eq 0 ]
+  assert_grep -q '^sweep\.' "$T/seen"
+  [ -z "$(ls -A "$T/rt")" ]
+}
+
+@test "ephemeral: a sweep whose TMPDIR is unwritable still lists, from RUNTIME_DIRECTORY" {
+  prod_fixtures
+  mkdir -p "$T/ro"
+  chmod 0500 "$T/ro"
+  : >"$T/tmp/leftover"
+  TMPDIR_OVERRIDE="$T/ro" run reset_prod ':'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "cannot"
+  refute_contains "$output" QUARANTINED
+  [ ! -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a path whose name contains the vanished-path message is still a refused walk" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /tmp/a: No such file or directory/b: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a blank stderr line does not hide a refused walk after it" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; printf "\n%s\n" "find: /x: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {
   printf 'OLD' >"$T/state/gh/jit/gh-runner-01-jit-a.jit"
   printf 'MID' >"$T/state/gh/jit/gh-runner-01-jit-b.jit"
@@ -351,6 +387,14 @@ reset_prod() {
   run sup 'check_config; cmd_loop'
   [ "$status" -eq 3 ]
   grep -q '^RestartPreventExitStatus=3$' "$BATS_TEST_DIRNAME/../services/github-runner/deployment/templates/github-runner-ephemeral.service.j2"
+}
+
+@test "ephemeral: the supervisor unit gives the sweep a root-only spool directory" {
+  local unit="$BATS_TEST_DIRNAME/../services/github-runner/deployment/templates/github-runner-ephemeral.service.j2"
+  assert_grep -qx 'RuntimeDirectory=github-runner-supervisor' "$unit"
+  assert_grep -qx 'RuntimeDirectoryMode=0700' "$unit"
+  # The unit runs the supervisor as root, so systemd makes the directory root's.
+  refute_grep -qE '^(User|Group)=' "$unit"
 }
 
 @test "ephemeral: the seed never carries a registration, a workspace or an image store" {
