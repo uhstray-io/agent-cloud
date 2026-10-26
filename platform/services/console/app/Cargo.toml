@@ -1,0 +1,37 @@
+[package]
+name = "console"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Dispatch Console server core: Dioxus fullstack, OIDC session, /v1 API, SQLite preferences"
+
+# Own workspace root: the crate must not be absorbed by a parent Cargo.toml.
+[workspace]
+
+[dependencies]
+# Exact pin: dx (dioxus-cli) must match this version. Image installs dioxus-cli 0.7.10.
+dioxus = { version = "=0.7.10", features = ["fullstack", "router"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Server-only (enabled by the `server` feature). The `web` build must not compile them.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"], optional = true }
+openidconnect = { version = "=4.0.1", optional = true }
+tower-sessions = { version = "=0.15.0", features = ["memory-store"], optional = true }
+rusqlite = { version = "=0.41.0", features = ["bundled"], optional = true }
+# Same reqwest that openidconnect 4.0.1 uses (oauth2 5 -> reqwest 0.12). default-features off keeps OpenSSL out.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+
+[features]
+default = []
+# dx bundle --web builds the client with this feature (wasm32).
+web = ["dioxus/web"]
+# dx bundle --web also builds the host server with this feature (fullstack auto-detected).
+server = [
+    "dioxus/server",
+    "dep:tokio",
+    "dep:openidconnect",
+    "dep:tower-sessions",
+    "dep:rusqlite",
+    "dep:reqwest",
+]
