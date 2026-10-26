@@ -8,7 +8,7 @@
 **Context:** Product truth for the agent-cloud administration console, captured during the
 2026-10-20 design session. Three layout prototypes were compared and the **Dispatch**
 (work-board) layout was chosen and refined through review comments. The build plan is
-[`plan/development/16-dispatch-console.md`](../../development/16-dispatch-console.md); the
+[`plan/development/17-dispatch-console.md`](../../development/17-dispatch-console.md); the
 UI principles are [`plan/architecture/09-console-ui-principles.md`](../../architecture/09-console-ui-principles.md).
 
 ## Platform

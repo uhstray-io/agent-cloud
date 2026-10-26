@@ -182,7 +182,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [O11Y-DEPLOYMENT.md](../development/O11Y-DEPLOYMENT.md) | PROPOSED | Minimal local observability stack (Grafana + Prometheus + Loki + Alloy), composable + local-first; OpenBao-audit→Loki + orb-agent OTel consumers; Mimir/Tempo/MinIO/Alertmanager are prod additions. |
 
 | [15-service-deployment-workflow-agents.md](../development/15-service-deployment-workflow-agents.md) | PROPOSED | The 22-step service deployment workflow as code: step registry, step-result and proposal contracts, four skynet agent roles (OPA identities), OPA-only gate, collector + NetBox custom fields + Loki + Grafana tracking; agentgateway backfill → estate sweep → greenfield pilot. |
-| [16-dispatch-console.md](../development/16-dispatch-console.md) | PROPOSED | Dispatch Console build plan: all-Rust WASM SPA + console API (BFF), API-first, proposals-only change path (skynet → OPA → Semaphore), bounded context per authority, phases 0–7 and traceability to the 22 console requirements; design in `plan/product/dispatch-console/`. |
+| [17-dispatch-console.md](../development/17-dispatch-console.md) | PROPOSED | Dispatch Console build plan: all-Rust WASM SPA + console API (BFF), API-first, proposals-only change path (skynet → OPA → Semaphore), bounded context per authority, phases 0–7 and traceability to the 22 console requirements; design in `plan/product/dispatch-console/`. |
 
 ### Archived Plans
 
