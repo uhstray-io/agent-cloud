@@ -163,21 +163,25 @@ as_user() {
 # The user manager first, so its units (the runner, podman's API service, any unit or timer a
 # job created) stop through systemd and their cgroups are killed whole; then SIGKILL, from
 # /proc, to whatever is left, until nothing is.
+# Returns non-zero when the account's processes cannot be listed, or survive SIGKILL. A listing
+# that fails is not "no processes": the caller stops before any sweep (do_reset).
 kill_account() {
-  local n pids
+  local n out pids
   loginctl terminate-user "$RUNNER_ACCOUNT" >/dev/null 2>&1 || true
   systemctl stop "user@${UID_}.service" >/dev/null 2>&1 || true
   systemctl kill --signal=SIGKILL "user-${UID_}.slice" >/dev/null 2>&1 || true
   # Unmounts /run/user/<uid>, so the sweep below does not meet a busy mount point.
   systemctl stop "user-runtime-dir@${UID_}.service" >/dev/null 2>&1 || true
   for n in 1 2 3 4 5 6 7 8 9 10; do
-    pids=$(account_pids | tr '\n' ' ')
+    if ! out=$(account_pids); then log "cannot list processes of $RUNNER_ACCOUNT"; return 1; fi
+    pids=$(printf '%s\n' "$out" | tr '\n' ' ')
     [ -n "${pids// /}" ] || return 0
     # shellcheck disable=SC2086
     kill -KILL $pids 2>/dev/null || true
     sleep "0.$n"
   done
-  pids=$(account_pids | tr '\n' ' ')
+  if ! out=$(account_pids); then log "cannot list processes of $RUNNER_ACCOUNT"; return 1; fi
+  pids=$(printf '%s\n' "$out" | tr '\n' ' ')
   [ -n "${pids// /}" ] || return 0
   log "processes of $RUNNER_ACCOUNT survived SIGKILL: $pids"
   return 1

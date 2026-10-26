@@ -349,6 +349,21 @@ reset_prod() {
   assert_contains "$output" QUARANTINED
 }
 
+# The real kill_account, with the system tools it calls stubbed: on a host with systemd these
+# would stop the account's user manager, and on a CI runner that is the job's own session.
+@test "ephemeral: a kill step that cannot list the account's processes returns non-zero" {
+  PROC_OVERRIDE=/nonexistent run sup 'check_config; loginctl() { :; }; systemctl() { :; }; kill_account'
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "cannot list processes"
+}
+
+@test "ephemeral: a reset whose kill step cannot list the account's processes sweeps nothing" {
+  PROC_OVERRIDE=/nonexistent run sup 'check_config; loginctl() { :; }; systemctl() { :; }; sweep_ipc() { :; }; clear_keyrings() { :; }; sweep_files() { : >"$TEST_DIR/swept"; }; do_reset || echo QUARANTINED'
+  assert_contains "$output" QUARANTINED
+  assert_contains "$output" "cannot list processes"
+  [ ! -e "$T/swept" ]
+}
+
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {
   printf 'OLD' >"$T/state/gh/jit/gh-runner-01-jit-a.jit"
   printf 'MID' >"$T/state/gh/jit/gh-runner-01-jit-b.jit"
