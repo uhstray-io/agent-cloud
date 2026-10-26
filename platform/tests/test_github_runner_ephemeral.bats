@@ -256,6 +256,40 @@ reset_prod() {
   refute_contains "$output" "cannot list"
 }
 
+# find wrappers for the walk. Each lists the real tree as find does, then fails with the stderr
+# given. The wrapper is a function, so owned_paths' LC_ALL=C find call reaches it.
+@test "ephemeral: a path that vanishes mid-walk does not quarantine the reset" {
+  prod_fixtures
+  : >"$T/tmp/leftover"
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /x: No such file or directory" >&2; return 1; }'
+  [ "$status" -eq 0 ]
+  refute_contains "$output" QUARANTINED
+  refute_contains "$output" "cannot list"
+  [ ! -e "$T/tmp/leftover" ]
+}
+
+@test "ephemeral: a walk that is refused with Permission denied quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; echo "find: /x: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "Permission denied"
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a walk with a vanished path and a refused one quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; printf "%s\n" "find: /x: No such file or directory" "find: /y: Permission denied" >&2; return 1; }'
+  assert_contains "$output" "reset: cannot list files"
+  assert_contains "$output" QUARANTINED
+}
+
+@test "ephemeral: a walk that fails without saying why quarantines the reset" {
+  prod_fixtures
+  run reset_prod 'find() { command find "$@" 2>/dev/null; return 1; }'
+  assert_contains "$output" "without a message"
+  assert_contains "$output" QUARANTINED
+}
+
 @test "ephemeral: the oldest stocked configuration is taken and an expired one is discarded" {
   printf 'OLD' >"$T/state/gh/jit/gh-runner-01-jit-a.jit"
   printf 'MID' >"$T/state/gh/jit/gh-runner-01-jit-b.jit"

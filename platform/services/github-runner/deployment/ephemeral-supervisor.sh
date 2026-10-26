@@ -265,9 +265,11 @@ owner_predicate() {
 # it is removed whole, so listing its contents adds nothing. A sweep root itself, and any
 # mount point (the account's /run/user/<uid> while it is still mounted), is never listed:
 # each mounted filesystem is swept as its own root. Returns non-zero when the roots cannot be
-# listed or a root cannot be walked: a failed listing is not an empty one.
+# listed or a root cannot be walked: a failed listing is not an empty one. The one exception is
+# a path that vanishes during the walk (find's "No such file or directory"). /tmp is busy, and a
+# reset that quarantined on one would take the runner out of service. Any other find error fails.
 owned_paths() {
-  local root p line roots pred=()
+  local root p line roots err list fst other pred=()
   # A read loop, not mapfile: macOS ships bash 3.2, which has no mapfile, and the suite runs
   # there on pre-push. The ${pred[@]+...} form because bash 3.2 rejects "${pred[@]}" on an
   # empty array under set -u. An empty predicate lists every path: the caller's verification
@@ -280,11 +282,29 @@ owned_paths() {
   [ -n "$SWEEP_ROOTS" ] || [ -n "$roots" ] || return 1
   while IFS= read -r root; do
     [ -d "$root" ] || continue
-    find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o ${pred[@]+"${pred[@]}"} -print0 -prune 2>/dev/null \
-      | while IFS= read -r -d '' p; do
-          if command -v mountpoint >/dev/null 2>&1 && mountpoint -q -- "$p"; then continue; fi
-          printf '%s\0' "$p"
-        done || return 1
+    # find writes to a file, not a pipe, so its status is its own; its stderr is kept to tell a
+    # vanished path from a real failure. LC_ALL=C keeps find's messages in English, which the
+    # match below depends on. The supervisor runs as root, so these files are not the account's
+    # and the sweep never lists them.
+    err=$(mktemp) || return 1
+    list=$(mktemp) || { rm -- "$err"; return 1; }
+    fst=0
+    LC_ALL=C find "$root" -xdev -mindepth 1 -path "$RUNNER_HOME" -prune -o ${pred[@]+"${pred[@]}"} -print0 -prune >"$list" 2>"$err" || fst=$?
+    if [ "$fst" -ne 0 ]; then
+      other=$(awk '!/No such file or directory/ { print substr($0, 1, 200); exit }' "$err")
+      # Only a failure over vanished paths is tolerated. A failure that printed nothing is not
+      # that, so it fails too.
+      if [ -n "$other" ] || [ ! -s "$err" ]; then
+        log "cannot walk $root: ${other:-find exited $fst without a message}"
+        rm -- "$err" "$list"
+        return 1
+      fi
+    fi
+    while IFS= read -r -d '' p; do
+      if command -v mountpoint >/dev/null 2>&1 && mountpoint -q -- "$p"; then continue; fi
+      printf '%s\0' "$p"
+    done <"$list" || { rm -- "$err" "$list"; return 1; }
+    rm -- "$err" "$list"
   done <<<"$roots"
 }
 
