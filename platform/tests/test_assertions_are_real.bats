@@ -56,7 +56,7 @@ load assert_helpers
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   # Lower this whenever assertions are converted. Never raise it.
-  BASELINE=53
+  BASELINE=46
   RATCHET="$REPO_ROOT/platform/tests/known_inert_assertions.txt"
 }
 

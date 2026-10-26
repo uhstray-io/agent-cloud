@@ -63,7 +63,7 @@ and why.
 | 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | 1 | Test (`test_no_line_window_assertions.bats` + ratchet) |
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | 1 | Convention |
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | 3 | Test (`test_no_line_window_assertions.bats` + ratchet) |
-| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
+| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 2 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
@@ -1226,6 +1226,15 @@ surfaced this, on a branch whose author believed the suite had verified these ve
 properties.
 
 **Status 2026-10-02.** `platform/tests/test_assertions_are_real.bats` now also scans for `grep -v -q` and `|| true` assertions, with known instances in the shrink-only `platform/tests/known_inert_assertions.txt` (PR #392).
+
+**Occurrence 2 — 2026-10-26 (Dispatch Console, PR #742).** A worker wrote eight `! grep`
+assertions in the middle of test bodies in `platform/tests/test_service_console.bats`; the
+full BATS suite passed and the PR cited it. CodeRabbit flagged two of them; all were converted
+to `refute_grep`, and one conversion was mutation-checked (a live `source .env` in `deploy.sh`
+turned the new test red while the old form stayed green). Why the ratchet did not fire: its
+`BASELINE` (53) had not been lowered as other files were cleaned up, so the repository total
+sat below it and the eight new offenders fit inside the slack. Fix: `BASELINE` lowered to the
+measured total, 46. The ratchet only holds if every conversion also lowers the number.
 
 
 ### 2.10 §2.9 repeated — a no-op negative assertion, written while fixing that class
