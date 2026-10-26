@@ -1,8 +1,9 @@
 ---
 # deploy-console.yml — the Dispatch Console deploy (composable).
 #
-# Phase 1: Transport guard on the OpenBao endpoint, then place the repo, create config/, and
-#          manage-secrets. The console's own secret is its Semaphore API token, which this play
+# Phase 1: Production guard on the console_svc host vars (skipped for local_mode), transport guard on
+#          the OpenBao endpoint, then place the repo, create config/, and manage-secrets. The console's
+#          own secret is its Semaphore API token, which this play
 #          reads and never generates: Provision Console Semaphore Access (provision-console-semaphore-access.yml)
 #          creates it, and this play stops before any write when it is absent. The OIDC client secret
 #          is shared-read from authentik, which owns it. Template .env, config/scope.json and
@@ -65,8 +66,33 @@
       - { src: workflow.json.j2, dest: config/workflow.json, mode: "0644" }
     # The service-onboarding workflow registry: the one definition of the steps (read on the controller).
     _workflow_registry: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}"
+    # The console_svc host vars a production console cannot run without. The guard task below checks them.
+    _console_prod_required:
+      - console_base_url
+      - console_oidc_issuer
+      - console_semaphore_api_url
+      - console_semaphore_ui_url
+      - console_semaphore_project
 
   tasks:
+    # GUARD: refuse a production deploy before anything is written, when a console_svc host var is unset,
+    # empty or still an agent-cloud.test (local-dev) value. Mirrors the Authentik promotion guard in
+    # deploy-authentik.yml. Skipped for local_mode: local-dev runs on the agent-cloud.test defaults.
+    # Brace check: an unrendered "{{ ... }}" value would pass the other two checks with its braces intact.
+    - name: "Production guard: the console's host vars are set and not local-dev defaults"
+      ansible.builtin.assert:
+        that:
+          - "(lookup('vars', item, default='')) | string | length > 0"
+          - "'agent-cloud.test' not in (lookup('vars', item, default='') | string)"
+          - "('{' ~ '{') not in (lookup('vars', item, default='') | string)"
+        fail_msg: >-
+          Production guard: console_svc host var '{{ item }}' must be set to a production value
+          (in site-config), not empty, not an agent-cloud.test default and not an unresolved
+          template. Refusing to deploy the console.
+        quiet: true
+      loop: "{{ _console_prod_required }}"
+      when: not (local_mode | default(false) | bool)
+
     # Read-only check of the credential path before anything is written: a refused run must not
     # have already placed the repo or written a secret (deploy-skynet.yml pattern).
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"

@@ -94,7 +94,7 @@ Environment, read by the server (`app/src/server/config.rs`):
 
 The four Semaphore variables are all-or-none. A partial set fails startup and names the first missing one. None set means `source: "unconfigured"`.
 
-**Not wired yet.** This change adds the server code only. `templates/env.j2`, the OpenBao field `secret/services/console:semaphore_api_token`, the rendered registry file and its compose mount are separate changes. Until they land, the running console answers `unconfigured`.
+The console answers `unconfigured` only when none of the four Semaphore variables is set.
 
 Routes (platform admins only, plan 17 D19):
 

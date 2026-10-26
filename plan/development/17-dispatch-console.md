@@ -252,10 +252,13 @@ site-config repository. A step marked **[TARGET]** is not built yet.
 6. **Inventory group `console_svc`.** One host in this group, with the host vars `service_name`,
    `monorepo_deploy_path`, `container_engine`, `console_bind`, `console_port`, `console_base_url`,
    `console_oidc_issuer` and `console_tenants`. The consumers are `platform/playbooks/deploy-console.yml`
-   (`hosts: console_svc`, and `config/scope.json` rendered at line 54), and the templates `env.j2`
-   and `scope.json.j2`. The Semaphore connection variables `console_semaphore_api_url`,
-   `console_semaphore_ui_url` and `console_semaphore_project` are **[TARGET]** for Phase 2. No
-   playbook in this repository reads them yet.
+   (`hosts: console_svc`; it renders `config/scope.json` from the `scope.json.j2` entry in
+   `_env_templates`) and the templates under `platform/services/console/deployment/templates/`
+   (`env.j2`, `scope.json.j2`). The Semaphore connection variables `console_semaphore_api_url`,
+   `console_semaphore_ui_url` and `console_semaphore_project` are **required** host vars on this
+   host too. `deploy-console.yml` refuses a production run that lacks any of them, or that still
+   carries an `agent-cloud.test` value, before it writes anything. `provision-console-semaphore-access.yml`
+   reads `console_semaphore_project` from this host.
 7. **Authentik.** Set the production host vars `console_redirect_uri` and `console_launch_url`.
    Add `console` to `authentik_apps`; `deploy-authentik.yml:223` uses that list when it is defined.
    The catalog entry is `platform/services/authentik/deployment/app-catalog.yml:112-113`
@@ -270,10 +273,11 @@ site-config repository. A step marked **[TARGET]** is not built yet.
    (top-level `all.vars` in site-config), then run `Manage Semaphore Access`
    (`platform/playbooks/manage-semaphore-access.yml:15`; `platform/semaphore/README.md:77`).
 10. Run the remaining workflows in this order: **Deploy Authentik**, **Manage Caddy Sites**,
-    **Manage Semaphore Access**, **Provision Console Semaphore Access** **[TARGET]**, then
+    **Manage Semaphore Access**, **Provision Console Semaphore Access**, then
     **Deploy console** (the template in `platform/semaphore/templates.yml`, the one that deploys
     `platform/playbooks/deploy-console.yml`). The Provision step places the `svc-console` user and
-    its token (D20). No template of that name exists in `platform/semaphore/templates.yml` yet.
+    its token (D20). Its template is `Provision Console Semaphore Access` in
+    `platform/semaphore/templates.yml`, and it runs `platform/playbooks/provision-console-semaphore-access.yml`.
 
 ## Requirements traceability
 

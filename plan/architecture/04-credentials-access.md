@@ -228,11 +228,11 @@ Axis 2 - HOW MUCH (privilege):  Admin > Maintainer > Developer > User   (highest
 - **The tenant is the hard isolation boundary.** A tenant is a tier above Organization (tenant -> org -> site -> env), and the organizations inside one tenant share its boundary. An identity in tenant A can never see tenant B's secrets, projects, or infrastructure. Organization, Department, Team and Role only place a person *within* a tenant; they are not isolation boundaries (`PRINCIPLES.md` §3; `plan/development/17-dispatch-console.md` D16, decided 2026-10-26).
 - Applied **per tenant and per project**: a person carries a (tenant, org, department, team, role, access-level) tuple, and Access Level resolves per project (User on project X, Maintainer on project Y).
 
-### Authentik Is the Source of Truth
+### Site-config Is the Source of Truth; Authentik Groups Are Derived
 
-**Authentik groups are the single source of truth** for the (tenant, org, department, team, role, access-level) tuple. A **provisioning mechanism** reads an identity's groups and derives its per-service roles — no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
+**site-config is the authority** for the (tenant, org, department, team, role, access-level) tuple. Authentik groups are **derived**: they are rendered from that declaration, the same way `platform_admins` is rendered into the `platform-admins` group (issue #604, below). A **provisioning mechanism** then derives each identity's per-service roles from those groups, with no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
 
-Group-schema convention (encoding the tuple in Authentik group names):
+Group-name convention (labels rendered from the declaration; the decision below says they are not parsed):
 
 ```
 <tenant>-<org>-<department>-<team>-<role>   # placement (Axis 1)
@@ -256,7 +256,7 @@ A group name is a label that people read; provisioning never parses it. The fiel
 name can split more than one way (tenant `a` with org `b-c`, and tenant `a-b` with org `c`, both give
 `a-b-c-admins`). The `(tenant, org, department, team, role, access-level)` tuple lives in structured
 data that provisioning reads. The carrier is an inventory declaration in site-config. Authentik group
-attributes are a candidate carrier, pending verification: no file under
+attributes are a candidate rendering target, pending verification: no file under
 `platform/services/authentik` sets group attributes, and `platform-groups.yaml:16-37` sets only
 `is_superuser` on each group. This design does not depend on Authentik storing or returning attributes.
 

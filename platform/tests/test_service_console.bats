@@ -4,9 +4,12 @@
 # declaration, worker env line, app-catalog entry, blueprint) comes first; the
 # console's own deploy-side tests are appended below their own marker.
 #
-# Structural only (grep / YAML asserts) — no live Authentik. Assertions use the
-# helpers in assert_helpers.bash (refute_grep / assert_grep), never `! grep` or
-# `|| true`, so each one can actually fail (CONTRIBUTING.md "Writing BATS Tests").
+# Structural (grep / YAML asserts) — no live Authentik, Semaphore or OpenBao. The
+# guard and project-resolution tests at the end also run the real assert and
+# set_fact tasks under a local ansible-playbook against a scratch inventory, so
+# they touch no service. Assertions use the helpers in assert_helpers.bash
+# (refute_grep / assert_grep), never `! grep` or `|| true`, so each one can
+# actually fail (CONTRIBUTING.md "Writing BATS Tests").
 #
 # Run: bats platform/tests/test_service_console.bats
 
@@ -339,11 +342,21 @@ PY
 }
 
 @test "console: deploy playbook reads the Semaphore token as existing, never generates it, and has no URL-only workaround" {
-  assert_grep -qF '{ name: semaphore_api_token, type: existing }' "$PLAYBOOK"
-  assert_grep -qF '_required_existing_secrets: [semaphore_api_token]' "$PLAYBOOK"
-  refute_grep -qE 'semaphore_api_token.*type: (random|django)' "$PLAYBOOK"
-  # The store step had nothing to merge before the token existed; _service_url is gone now.
-  refute_grep -qE '^    _service_url:' "$PLAYBOOK"
+  python3 - "$PLAYBOOK" <<'PY'
+import sys, yaml
+# Scoped to the Phase 1 play's vars: the play that declares _secret_definitions.
+plays = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+         if isinstance(p, dict) and "_secret_definitions" in (p.get("vars") or {})]
+assert len(plays) == 1, len(plays)
+v = plays[0]["vars"]
+assert {"name": "semaphore_api_token", "type": "existing"} in v["_secret_definitions"], v["_secret_definitions"]
+assert v["_required_existing_secrets"] == ["semaphore_api_token"], v["_required_existing_secrets"]
+generated = [e for e in v["_secret_definitions"]
+             if e.get("name") == "semaphore_api_token" and e.get("type") in ("random", "django")]
+assert not generated, generated
+# The store step had nothing to merge before the token existed; _service_url is gone now.
+assert "_service_url" not in v, sorted(v)
+PY
 }
 
 @test "console: deploy playbook renders config/workflow.json from the service-onboarding registry on the controller" {
@@ -456,9 +469,6 @@ PY
 
 @test "console: the read-only proof reads tasks/last (200) and proves refused launch with template -1 (403)" {
   local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
-  assert_grep -qF '_probe_read.status == 200' "$p"
-  assert_grep -qF '_probe_launch.status == 403' "$p"
-  assert_grep -qE '^          template_id: -1$' "$p"
   python3 - "$p" <<'PY'
 import sys, yaml
 play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
@@ -468,7 +478,23 @@ def tasks(seq):
             yield t
             for sec in ("block", "rescue", "always"):
                 yield from tasks(t.get(sec))
-hits = [t for t in tasks(play["tasks"]) if "ansible.builtin.uri" in t
+all_tasks = list(tasks(play["tasks"]))
+def one(name):
+    hits = [t for t in all_tasks if t.get("name") == name]
+    assert len(hits) == 1, (name, len(hits))
+    return hits[0]
+def conditions(t):
+    x = t["ansible.builtin.assert"]["that"]
+    return x if isinstance(x, list) else [x]
+# Each status is checked by its own assert task, scoped by name.
+read = one("Require the token to read the project's tasks (200)")
+assert any("_probe_read.status == 200" in c for c in conditions(read)), conditions(read)
+refused = one("Require the launch probe to answer 403 (read-only: guest cannot run tasks)")
+assert any("_probe_launch.status == 403" in c for c in conditions(refused)), conditions(refused)
+# The launch probe sends template -1, and only that task does.
+launch = one("Probe the token cannot launch: POST /api/project/{p}/tasks with template -1")
+assert launch["ansible.builtin.uri"]["body"]["template_id"] == -1, launch["ansible.builtin.uri"]["body"]
+hits = [t for t in all_tasks if "ansible.builtin.uri" in t
         and t["ansible.builtin.uri"].get("method") == "POST"
         and str(t["ansible.builtin.uri"].get("url", "")).endswith("/tasks")]
 assert len(hits) == 1, len(hits)
@@ -479,9 +505,23 @@ PY
 
 @test "console: a stored token is reused only when GET /api/user proves svc-console, non-admin" {
   local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
-  assert_grep -qF "_stored_ok:" "$p"
-  assert_grep -qF "(_stored_proof.json | default({})).get('username', '') == _svc_user" "$p"
-  assert_grep -qF "(_stored_proof.json | default({})).get('admin', true) | bool) == false" "$p"
+  python3 - "$p" <<'PY'
+import sys, yaml
+play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+def tasks(seq):
+    for t in seq or []:
+        if isinstance(t, dict):
+            yield t
+            for sec in ("block", "rescue", "always"):
+                yield from tasks(t.get(sec))
+hits = [t for t in tasks(play["tasks"])
+        if t.get("name") == "Hold whether the stored token is the svc-console token"]
+assert len(hits) == 1, len(hits)
+# Scoped to the set_fact that decides the reuse: the value is a folded string, and each check sits on one source line.
+expr = str(hits[0]["ansible.builtin.set_fact"]["_stored_ok"])
+assert "(_stored_proof.json | default({})).get('username', '') == _svc_user" in expr, expr
+assert "(_stored_proof.json | default({})).get('admin', true) | bool) == false" in expr, expr
+PY
 }
 
 @test "console: the provision template is registered as a Dev twin in templates.yml and as a Local one" {
@@ -509,4 +549,138 @@ PY
   assert_grep -qF 'console_semaphore_project: 1' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
   assert_grep -qF 'console_semaphore_ui_url=https://semaphore.{{ _dev_zone }}:{{ _edge_https_port }}' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
   assert_grep -qF 'console_semaphore_project=1' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+}
+
+# --- Review of PR #747: production guard, and the project the provision play binds ---
+
+# Write a runnable play to $1: the play of $2 whose vars hold key $3, with only the tasks named in $5.. (kept in
+# playbook order, each exactly once), run against hosts $4. The play's own vars are copied, so the kept tasks
+# evaluate as they do in the real playbook. A debug task prints _pid, so the caller can read the resolved project.
+_wrap_play() {
+  python3 - "$@" <<'PY'
+import sys, yaml
+out, pb, key, hosts, *names = sys.argv[1:]
+plays = [p for p in yaml.safe_load(open(pb, encoding="utf-8"))
+         if isinstance(p, dict) and key in (p.get("vars") or {})]
+assert len(plays) == 1, len(plays)
+play = plays[0]
+kept = [t for t in play["tasks"] if isinstance(t, dict) and t.get("name") in names]
+assert sorted(t["name"] for t in kept) == sorted(names), [t.get("name") for t in kept]
+kept.append({"name": "Show the resolved project",
+             "ansible.builtin.debug": {"msg": "PID={{ _pid | default('unset') }}"}})
+wrap = {"hosts": hosts, "connection": "local", "gather_facts": False, "vars": play["vars"], "tasks": kept}
+with open(out, "w", encoding="utf-8") as f:
+    yaml.safe_dump([wrap], f, sort_keys=False)
+PY
+}
+
+@test "console: production guard is one assert, first in Phase 1, skipped under local_mode, naming each console_svc var" {
+  python3 - "$PLAYBOOK" <<'PY'
+import sys, yaml
+plays = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+         if isinstance(p, dict) and "_console_prod_required" in (p.get("vars") or {})]
+assert len(plays) == 1, len(plays)
+play = plays[0]
+# The five host vars a production console cannot run without.
+want = ["console_base_url", "console_oidc_issuer", "console_semaphore_api_url",
+        "console_semaphore_ui_url", "console_semaphore_project"]
+assert sorted(play["vars"]["_console_prod_required"]) == sorted(want), play["vars"]["_console_prod_required"]
+tasks = [t for t in play["tasks"] if isinstance(t, dict)]
+names = [t.get("name") for t in tasks]
+guard_name = "Production guard: the console's host vars are set and not local-dev defaults"
+assert names.count(guard_name) == 1, names
+guard = tasks[names.index(guard_name)]
+assert "ansible.builtin.assert" in guard, sorted(guard)
+assert guard.get("when") == "not (local_mode | default(false) | bool)", guard.get("when")
+assert guard.get("loop") == "{{ _console_prod_required }}", guard.get("loop")
+assert "{{ item }}" in guard["ansible.builtin.assert"]["fail_msg"], guard["ansible.builtin.assert"]["fail_msg"]
+conditions = guard["ansible.builtin.assert"]["that"]
+assert any("'agent-cloud.test' not in" in c for c in conditions), conditions
+assert any("length > 0" in c for c in conditions), conditions
+# First task of the play: before the repo is placed and before any secret is written.
+assert names.index(guard_name) == 0, names[:3]
+PY
+}
+
+@test "console: production guard refuses an agent-cloud.test value and names it; local_mode skips it" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local wrap="$BATS_TEST_TMPDIR/guard.yml" inv="$BATS_TEST_TMPDIR/hosts.ini"
+  _wrap_play "$wrap" "$PLAYBOOK" _console_prod_required console_svc \
+    "Production guard: the console's host vars are set and not local-dev defaults"
+  printf '[console_svc]\nconsole-test ansible_connection=local console_base_url=https://console.agent-cloud.test:8443 console_oidc_issuer=https://auth.example.org/application/o/console/ console_semaphore_api_url=https://semaphore.example.org console_semaphore_ui_url=https://semaphore.example.org:8443 console_semaphore_project=7\n' > "$inv"
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=false
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "console_base_url"
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=true
+  [ "$status" -eq 0 ]
+}
+
+@test "console: production guard passes when every var is set, and refuses a console_svc with no Semaphore project" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local wrap="$BATS_TEST_TMPDIR/guard.yml" inv="$BATS_TEST_TMPDIR/hosts.ini"
+  _wrap_play "$wrap" "$PLAYBOOK" _console_prod_required console_svc \
+    "Production guard: the console's host vars are set and not local-dev defaults"
+  printf '[console_svc]\nconsole-test ansible_connection=local console_base_url=https://console.example.org console_oidc_issuer=https://auth.example.org/application/o/console/ console_semaphore_api_url=https://semaphore.example.org console_semaphore_ui_url=https://semaphore.example.org:8443 console_semaphore_project=7\n' > "$inv"
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=false
+  [ "$status" -eq 0 ]
+  printf '[console_svc]\nconsole-test ansible_connection=local console_base_url=https://console.example.org console_oidc_issuer=https://auth.example.org/application/o/console/ console_semaphore_api_url=https://semaphore.example.org console_semaphore_ui_url=https://semaphore.example.org:8443\n' > "$inv"
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=false
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "console_semaphore_project"
+}
+
+@test "console: provision play resolves the project before its first Semaphore or OpenBao request" {
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  python3 - "$p" <<'PY'
+import sys, yaml
+play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+# _pid is no longer a play var: the resolve task is its only source.
+assert "_pid" not in play["vars"], sorted(play["vars"])
+names = [t.get("name") for t in play["tasks"] if isinstance(t, dict)]
+refuse = names.index("Refuse a production run with no declared Semaphore project for the console")
+resolve = names.index("Resolve the Semaphore project the console is bound to")
+first_uri = [i for i, t in enumerate(play["tasks"])
+             if isinstance(t, dict) and "ansible.builtin.uri" in t][0]
+assert refuse < resolve < first_uri, (refuse, resolve, first_uri)
+guard = play["tasks"][refuse]
+assert guard.get("when") == "not (local_mode | default(false) | bool)", guard.get("when")
+assert play["tasks"][resolve]["ansible.builtin.set_fact"]["_pid"], play["tasks"][resolve]
+PY
+}
+
+@test "console: provision play reads the project the console_svc host declares when no extra var is passed" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  local wrap="$BATS_TEST_TMPDIR/provision.yml" inv="$BATS_TEST_TMPDIR/hosts.ini"
+  _wrap_play "$wrap" "$p" _console_svc_project localhost \
+    "Refuse a production run with no declared Semaphore project for the console" \
+    "Resolve the Semaphore project the console is bound to"
+  printf 'localhost ansible_connection=local\n[console_svc]\nconsole-test ansible_connection=local console_semaphore_project=7\n' > "$inv"
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=false
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "PID=7"
+  refute_contains "$output" "PID=unset"
+}
+
+@test "console: provision play falls back to the extra var only when no console_svc host declares a project" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  local wrap="$BATS_TEST_TMPDIR/provision.yml" inv="$BATS_TEST_TMPDIR/hosts.ini"
+  _wrap_play "$wrap" "$p" _console_svc_project localhost \
+    "Refuse a production run with no declared Semaphore project for the console" \
+    "Resolve the Semaphore project the console is bound to"
+  # A console_svc host with no project, and a production run: the extra var is the only declaration.
+  printf 'localhost ansible_connection=local\n[console_svc]\nconsole-test ansible_connection=local\n' > "$inv"
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=false -e console_semaphore_project=9
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "PID=9"
+  # Neither declared, production: refused before any login, never bound to project 1.
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=false
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "No Semaphore project is declared"
+  # Local-dev with nothing declared keeps the local default, project 1.
+  printf 'localhost ansible_connection=local\n' > "$inv"
+  run ansible-playbook -i "$inv" "$wrap" -e local_mode=true
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "PID=1"
 }
