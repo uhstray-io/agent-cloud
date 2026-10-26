@@ -5,6 +5,7 @@ pub mod auth;
 pub mod config;
 pub mod prefs;
 pub mod scope;
+pub mod sessions;
 
 use std::fs;
 use std::sync::Arc;
@@ -15,13 +16,14 @@ use dioxus::server::axum::Router;
 use tower_sessions::cookie::time::Duration as CookieDuration;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::session::Expiry;
-use tower_sessions::{MemoryStore, SessionManagerLayer};
+use tower_sessions::SessionManagerLayer;
 
 use crate::ui;
 use auth::OidcClient;
 use config::Config;
 use prefs::Prefs;
 use scope::Scope;
+use sessions::SqliteStore;
 
 pub struct AppState {
     pub config: Config,
@@ -126,9 +128,9 @@ pub fn spawn_discovery(state: SharedState) {
 }
 
 /// Session cookie `console_session`: Secure, HttpOnly, SameSite=Lax, 8h of inactivity.
-/// The memory store logs everyone out on restart (accepted for Phase 1).
-pub fn session_layer() -> SessionManagerLayer<MemoryStore> {
-    SessionManagerLayer::new(MemoryStore::default())
+/// Sessions live in the preferences database (`sessions.rs`), so a restart keeps them.
+pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
+    SessionManagerLayer::new(store)
         .with_name("console_session")
         .with_secure(true)
         .with_http_only(true)
@@ -157,9 +159,10 @@ pub fn api_router(state: SharedState) -> Router {
 /// Everything the process serves: the Dioxus app, the API, and the session
 /// layer over both. The layer is applied last so every route sees it.
 pub fn router(state: SharedState) -> Router {
+    let sessions = session_layer(state.prefs.session_store());
     dioxus::server::router(ui::app)
         .merge(api_router(state))
-        .layer(session_layer())
+        .layer(sessions)
 }
 
 #[cfg(test)]
@@ -186,6 +189,10 @@ mod tests {
 
     /// The OIDC cell stays empty, so /auth/* answers 503 in these tests.
     fn test_state() -> SharedState {
+        state_with_prefs(Prefs::in_memory().expect("in-memory prefs"))
+    }
+
+    fn state_with_prefs(prefs: Prefs) -> SharedState {
         Arc::new(AppState {
             config: Config {
                 base_url: "https://console.test".into(),
@@ -199,8 +206,16 @@ mod tests {
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
             scope: Scope::parse(SCOPE).expect("test scope"),
-            prefs: Prefs::in_memory().expect("in-memory prefs"),
+            prefs,
         })
+    }
+
+    /// A session store over a throwaway in-memory database. Tests that do not
+    /// reopen a file use it; the production store shares the state's prefs connection.
+    fn memory_sessions() -> SqliteStore {
+        Prefs::in_memory()
+            .expect("in-memory sessions")
+            .session_store()
     }
 
     /// Test-only route that signs a user in with `groups`, so authenticated paths
@@ -310,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn unauthenticated_v1_routes_answer_401_json() {
-        let addr = serve(api_router(test_state()).layer(session_layer())).await;
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
         for path in [
             "/v1/me",
             "/v1/tenants",
@@ -331,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_answers_ok_without_session() {
-        let addr = serve(api_router(test_state()).layer(session_layer())).await;
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
         let reply = call(addr, "GET", "/healthz", None, "").await;
         assert_eq!(reply.status, 200);
         assert_eq!(reply.body, "ok");
@@ -339,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_login_is_503_until_discovery_is_ready() {
-        let addr = serve(api_router(test_state()).layer(session_layer())).await;
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
         let reply = call(addr, "GET", "/auth/login", None, "").await;
         assert_eq!(reply.status, 503);
         assert_eq!(reply.body, r#"{"error":"oidc_unavailable"}"#);
@@ -349,7 +364,7 @@ mod tests {
     async fn signed_in_api_round_trip() {
         let app = api_router(test_state())
             .merge(test_login_route("/test/login", &["ops"]))
-            .layer(session_layer());
+            .layer(session_layer(memory_sessions()));
         let addr = serve(app).await;
 
         let login = call(addr, "GET", "/test/login", None, "").await;
@@ -453,7 +468,7 @@ mod tests {
     async fn signed_in(groups: &'static [&'static str]) -> (SocketAddr, String) {
         let app = api_router(test_state())
             .merge(test_login_route("/test/login", groups))
-            .layer(session_layer());
+            .layer(session_layer(memory_sessions()));
         let addr = serve(app).await;
         let login = call(addr, "GET", "/test/login", None, "").await;
         let cookie = login.cookie.expect("session cookie set on login");
@@ -530,8 +545,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_survives_a_restart_over_the_same_database() {
+        let path = std::env::temp_dir().join(format!("console-restart-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        // Sign in through a server built on the database file.
+        let first = state_with_prefs(Prefs::open(&path).expect("open"));
+        let app = api_router(first.clone())
+            .merge(test_login_route("/test/login", &["ops"]))
+            .layer(session_layer(first.prefs.session_store()));
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.expect("session cookie set on login");
+
+        // A new connection and a new store over the same file, as after a restart.
+        // The route has no login step, so a 200 can only come from the stored session.
+        let second = state_with_prefs(Prefs::open(&path).expect("reopen"));
+        let app = api_router(second.clone()).layer(session_layer(second.prefs.session_store()));
+        let addr = serve(app).await;
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(me.status, 200, "{}", me.body);
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        assert_eq!(me_json["claims"]["sub"], "user-1");
+    }
+
+    #[tokio::test]
     async fn probe_helper_reads_live_healthz() {
-        let addr = serve(api_router(test_state()).layer(session_layer())).await;
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
         let text = tokio::task::spawn_blocking(move || {
             http_get_raw(addr, "/healthz", Duration::from_secs(5))
         })

@@ -52,8 +52,8 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 ## Runtime notes
 
 - **Healthcheck is exec form, not CMD-SHELL.** The runtime image is distroless (`cc-debian12`, no `/bin/sh`), so `CMD-SHELL` cannot run. The probe is the server binary's own subcommand: `/usr/local/app/server probe /healthz 200`. Other services' comments say podman-compose mis-quotes `["CMD", ...]` lists. podman-compose 1.6.0 turns the list into a JSON `--health-cmd` (`podman_compose.py`, the `CMD` branch). Whether the engine then runs it as exec is **unverified** on this machine. The live deploy is the proof: `wait_for_healthy` fails if the container never reports healthy.
-- **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
-- **Sessions** are in memory: a restart signs everyone out. This is the contract's accepted trade-off.
+- **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`: preferences and login sessions). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
+- **Sessions** are rows in the same `prefs.db` (table `sessions`, one connection shared with preferences). A restart keeps every unexpired session. Expired rows are swept at startup and at most hourly. The cookie `console_session` expires after 8h of inactivity.
 - **Local-dev overlay** (`compose.local.yml`, `LOCAL_MODE=true`): joins the `local-dev` network so central Caddy reaches `console:8080` by name, mounts `certs/step-ca-bundle.crt`, and sets `CONSOLE_EXTRA_CA_FILE` to it for OIDC calls to the internal IdP. Prod's IdP uses a public chain, so the overlay is not applied there.
 - **Probes** run inside the container with `podman exec`, so they do not depend on the published port or on Caddy.
 

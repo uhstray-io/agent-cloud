@@ -23,7 +23,7 @@ services:
       # Loopback-only by default; central Caddy proxies in. Prod sets a host bind + port via .env.
       - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-3410}:8080"
     volumes:
-      # SQLite preferences database (/data/prefs.db). The image's nonroot uid must own /data.
+      # SQLite database (/data/prefs.db): preferences and login sessions. The image's nonroot uid must own /data.
       - console-data:/data
       # Which tenants, orgs and sites the console shows. Rendered from the inventory; read-only.
       - ./config/scope.json:/etc/console/scope.json:ro
