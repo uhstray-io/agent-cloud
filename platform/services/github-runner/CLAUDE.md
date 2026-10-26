@@ -365,7 +365,7 @@ A registration token is single use, so it is minted **per host**. Nothing here i
 
 | Playbook | Purpose |
 |---|---|
-| `deploy-github-runner.yml` | Install, register, start. Idempotent: a re-run leaves an existing registration intact. |
+| `deploy-github-runner.yml` | Install or upgrade to the pinned versions, register, start. Idempotent: a re-run leaves an existing registration intact, and an unchanged pin changes nothing. |
 | `manage-github-runner-group.yml` | Converge the group's repository access list. Read-only unless `-e dry_run=false`. |
 | `stock-github-runner-jit.yml` | Ephemeral hosts only: keep the just-in-time stock full, delete runner records that can no longer take a job, and fail while a host's supervisor is stopped or quarantined. Scheduled as Stock GitHub Runner JIT (Dev). |
 | `grant-github-runner-app-repository.yml` | Add only private `uhstray-io/site-config` to the runner App installation. Directly Dev-bound in Semaphore; reads the dedicated repo-scoped administration token and App key from `secret/services/github-runner`, previews in check mode, and verifies a grant with a fresh App token. |
@@ -379,6 +379,50 @@ resolve `site-config`. The grant is additive and never removes access. Check mod
 Host lifecycle reuses the platform's existing playbooks unchanged: `provision-vm.yml`,
 `verify-host-access.yml`, `distribute-ssh-keys.yml`, `harden-ssh.yml`,
 `apply-firewall.yml`, `install-podman.yml` (with `podman_docker_api_client` declared).
+
+## Upgrading the runner
+
+The runners are registered with `--disableupdate`, so the declared version is the running
+version and two hosts never drift apart. The cost: GitHub requires a runner with updates
+disabled to be updated "within 30 days of a new version being made available", and "if you
+do not perform a software update within 30 days, the GitHub Actions service will not queue
+jobs to your runner" ([Self-hosted runners reference, "Runner software updates on
+self-hosted runners"](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)).
+Watch [actions/runner releases](https://github.com/actions/runner/releases) and move the pin
+within that window.
+
+An upgrade is a declaration change: raise `github_runner_version` (or
+`github_runner_hooks_version`) in site-config, merge, then run the deploy. `deploy.sh install`
+converges the host on the declared versions:
+
+- **Same version: no-op.** The installed version is read from the binary
+  (`bin/Runner.Listener --version`), never from a record of the last deploy. Nothing is
+  downloaded or stopped.
+- **Different version: swap.** The new tarball is fetched and its digest verified, then
+  extracted into a staging directory and checked: it must report the declared version and
+  must not ship any host-owned name (`.runner`, `.credentials`, `.credentials_rsaparams`,
+  `.env`, `.path`, `config/`, `_hooks/`, `_work/`, `_diag/`, `job-cleanup.sh`, `.config/`).
+  Only then is the service stopped, and the release's own entries (`bin/`, `externals/`,
+  `config.sh`, `env.sh`, `run.sh`, `safe_sleep.sh`, the run-helper templates) are moved
+  aside and replaced. The registration is never touched, so the host stays registered under
+  the same name. The service is started again, the binary is re-read, and only then is
+  "upgraded runner A -> B" logged, with the version the binary reports. A failure mid-swap
+  restores the previous files.
+- **Lower version: refused.** A declared version below the installed one is usually a stale
+  declaration, not an intent, and silently acting on it could push a host behind the 30-day
+  window. A real rollback passes `-e github_runner_allow_downgrade=true`.
+- **Container hooks** follow the same rules. Their archive carries no readable version, so
+  `deploy.sh` writes `_hooks/.hooks-version` beside the files it places; a host without the
+  marker reinstalls the declared hooks once (they are stateless).
+
+**An upgrade interrupts an in-flight job.** The unit uses `KillMode=mixed`, so stopping it
+ends every process in its cgroup. `deploy.sh` also sends SIGINT to any `Runner.Listener` still
+running, as one left by an older `KillMode=process` unit would be, and waits up to
+`RUNNER_STOP_WAIT` seconds (default 60). If one survives, the swap is refused and the old
+install stays as it was. Run upgrades while the runners are idle.
+
+After the deploy, the playbook reads the binary's version and the hooks marker back and
+fails unless both match the pin. The final report states those read-back values.
 
 ## Declaration
 
@@ -399,7 +443,8 @@ directory. Reading `monorepo_deploy_path` as the root instead — an earlier bug
 yields `<deploy-path>/<deploy-path>/deploy.sh` and `rc=127`.
 
 Key vars: pinned `github_runner_version` / `github_runner_hooks_version` (an upgrade is a
-declaration change and a review, never something that happens because time passed),
+declaration change and a review, never something that happens because time passed; see
+"Upgrading the runner" above),
 `github_runner_labels`, `github_runner_group`, `github_runner_account`,
 `podman_docker_api_client: true` with a pinned `podman_docker_api_client_version` (Docker's
 CLI client against the account's podman API; never `podman_docker_cli`, which the hooks
