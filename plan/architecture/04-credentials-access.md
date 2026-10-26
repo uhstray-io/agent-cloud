@@ -225,8 +225,8 @@ Axis 2 - HOW MUCH (privilege):  Admin > Maintainer > Developer > User   (highest
 
 - **Role = job function** (e.g. `platform-engineer`, `network-operator`, `data-analyst`) — *what a person does*.
 - **Access Level = privilege tier** — *how much they may do*. **Orthogonal** to Role: the same Role can hold different Access Levels in different projects, and the same Access Level spans many Roles.
-- **Organization is the hard tenant-isolation boundary** — **tenants are orgs**. An identity in org A can never see org B's secrets, projects, or infrastructure. Department/Team/Role only place a person *within* their org; they are not isolation boundaries.
-- Applied **per tenant and per project**: a person carries an (org, department, team, role, access-level) tuple, and Access Level resolves per project (User on project X, Maintainer on project Y).
+- **The tenant is the hard isolation boundary.** A tenant is a tier above Organization (tenant -> org -> site -> env), and the organizations inside one tenant share its boundary. An identity in tenant A can never see tenant B's secrets, projects, or infrastructure. Organization, Department, Team and Role only place a person *within* a tenant; they are not isolation boundaries (`PRINCIPLES.md` §3; `plan/development/17-dispatch-console.md` D16, decided 2026-10-26).
+- Applied **per tenant and per project**: a person carries a (tenant, org, department, team, role, access-level) tuple, and Access Level resolves per project (User on project X, Maintainer on project Y).
 
 ### Authentik Is the Source of Truth
 
