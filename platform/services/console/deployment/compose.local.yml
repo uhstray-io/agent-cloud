@@ -1,0 +1,27 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+# Image and published bind/port are env-parameterized in the BASE (.env). This overlay carries
+# only what overlays can add: a memory cap, the SELinux opt (the podman-machine VM enforces
+# SELinux on named-volume mounts), the extra `local-dev` network so central Caddy reaches the
+# console by name (console:8080 for console.agent-cloud.test), and the step-ca trust bundle for
+# the server-side OIDC discovery and token calls to the internal IdP.
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  console:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
+    networks:
+      - default
+      - local-dev
+    # The bundle is distributed into ./certs by tasks/distribute-ca-root.yml in local_mode only;
+    # deploy.sh passes it to compose_up_if_changed as a digest input. Prod's IdP chain is public.
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      CONSOLE_EXTRA_CA_FILE: /etc/ssl/certs/step-ca-bundle.crt

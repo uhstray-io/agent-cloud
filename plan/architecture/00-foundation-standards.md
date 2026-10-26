@@ -140,6 +140,7 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards. A
 | [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md) | ACTIVE | Security testing standards for code, playbooks, templates, and configuration. |
 | [skills-recommendation.md](skills-recommendation.md) | ACTIVE | Maps Claude Code skills to agent-cloud development activities. |
 | [08-ansible-automation-standards.md](08-ansible-automation-standards.md) | ACTIVE | Ansible standards from the official docs, each rule linked: check mode as the dry run, the three check-mode task classes, `--tags verify`, `set_stats` for machine-read results, recorded deviations. |
+| [09-console-ui-principles.md](09-console-ui-principles.md) | PROPOSED | Console UI principles: through the platform never around it, work first, single-sourced scope, red explains itself, vertical owned plans, Grafana for per-asset telemetry, secret names never values; the console interaction loop and how operators work with agent-cloud through it. |
 | [WEBSITE-BUILDING-AGENT.md](WEBSITE-BUILDING-AGENT.md) | ACTIVE | WebSmith agent integration: position in 4-layer model, SPEC → service handoff, agent-cloud preset, second-site recipe. |
 
 ---
@@ -181,6 +182,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [O11Y-DEPLOYMENT.md](../development/O11Y-DEPLOYMENT.md) | PROPOSED | Minimal local observability stack (Grafana + Prometheus + Loki + Alloy), composable + local-first; OpenBao-audit→Loki + orb-agent OTel consumers; Mimir/Tempo/MinIO/Alertmanager are prod additions. |
 
 | [15-service-deployment-workflow-agents.md](../development/15-service-deployment-workflow-agents.md) | PROPOSED | The 22-step service deployment workflow as code: step registry, step-result and proposal contracts, four skynet agent roles (OPA identities), OPA-only gate, collector + NetBox custom fields + Loki + Grafana tracking; agentgateway backfill → estate sweep → greenfield pilot. |
+| [17-dispatch-console.md](../development/17-dispatch-console.md) | PROPOSED | Dispatch Console build plan: all-Rust Dioxus fullstack (WASM client + JSON `/v1` API in one binary), API-first, proposals-only change path (skynet → OPA → Semaphore), bounded context per authority, phases 0–7 and traceability to the 22 console requirements; design in `plan/product/dispatch-console/`. |
 
 ### Archived Plans
 

@@ -225,24 +225,42 @@ Axis 2 - HOW MUCH (privilege):  Admin > Maintainer > Developer > User   (highest
 
 - **Role = job function** (e.g. `platform-engineer`, `network-operator`, `data-analyst`) — *what a person does*.
 - **Access Level = privilege tier** — *how much they may do*. **Orthogonal** to Role: the same Role can hold different Access Levels in different projects, and the same Access Level spans many Roles.
-- **Organization is the hard tenant-isolation boundary** — **tenants are orgs**. An identity in org A can never see org B's secrets, projects, or infrastructure. Department/Team/Role only place a person *within* their org; they are not isolation boundaries.
-- Applied **per tenant and per project**: a person carries an (org, department, team, role, access-level) tuple, and Access Level resolves per project (User on project X, Maintainer on project Y).
+- **The tenant is the hard isolation boundary.** A tenant is a tier above Organization (tenant -> org -> site -> env), and the organizations inside one tenant share its boundary. An identity in tenant A can never see tenant B's secrets, projects, or infrastructure. Organization, Department, Team and Role only place a person *within* a tenant; they are not isolation boundaries (`PRINCIPLES.md` §3; `plan/development/17-dispatch-console.md` D16, decided 2026-10-26).
+- Applied **per tenant and per project**: a person carries a (tenant, org, department, team, role, access-level) tuple, and Access Level resolves per project (User on project X, Maintainer on project Y).
 
 ### Authentik Is the Source of Truth
 
-**Authentik groups are the single source of truth** for the (org, department, team, role, access-level) tuple. A **provisioning mechanism** reads an identity's groups and derives its per-service roles — no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
+**Authentik groups are the single source of truth** for the (tenant, org, department, team, role, access-level) tuple. A **provisioning mechanism** reads an identity's groups and derives its per-service roles — no per-person hand-grant downstream. This is the no-monkey-patch rule (PRINCIPLES.md Section 2) applied to people: the *second* user inherits the first's recipe.
 
 Group-schema convention (encoding the tuple in Authentik group names):
 
 ```
-<org>-<department>-<team>-<role>       # placement (Axis 1)
-<org>-<access-level>                   # privilege within the org (Axis 2)
+<tenant>-<org>-<department>-<team>-<role>   # placement (Axis 1)
+<tenant>-<org>-<access-level>               # privilege within the org (Axis 2)
 
 Examples:
-  uhstray-platform-infra-engineer      # WHO: uhstray / platform dept / infra team / engineer role
-  uhstray-admins                       # HOW MUCH: Admin tier for the uhstray org
-  uhstray-developers                   # HOW MUCH: Developer tier for the uhstray org
+  uhstray-uhstray-io-platform-infra-engineer   # WHO: uhstray tenant / uhstray-io org / platform dept / infra team / engineer role
+  uhstray-uhstray-io-admins                    # HOW MUCH: Admin tier for the uhstray-io org in the uhstray tenant
+  uhstray-uhstray-io-developers                # HOW MUCH: Developer tier for the uhstray-io org in the uhstray tenant
 ```
+
+The tenant leads every tenant-scoped group name because the tenant is the hard isolation boundary:
+two tenants may use the same organization identifier, and the name has to say which tenant a group
+belongs to. The platform-wide operator groups (`platform-admins`, `platform-developers`,
+`platform-business`; plan 12) sit outside this convention: they span tenants, and `platform-admins`
+sees every tenant.
+
+**Open — names that can be parsed.** The fields are joined with `-`, and identifiers may contain
+`-` themselves (org `uhstray-io`, role `platform-engineer`). So a name can split more than one way
+(tenant `a` + org `b-c` and tenant `a-b` + org `c` both give `a-b-c-admins`), and a provisioning
+mechanism cannot read the tuple back from the name alone. A separator identifiers cannot contain,
+hyphen-free identifiers, or the tuple held as structured group data instead of in the name is still
+to be chosen (`plan/development/12-rbac-user-provisioning.md`).
+
+**Open — per-project access levels.** The Axis 2 group above is per organization, so it cannot yet
+give one identity a different access level on different projects, which the "applied per tenant and
+per project" rule requires. A project-scoped group or claim, or an authoritative per-project binding
+with a precedence rule, is still to be designed (`plan/development/12-rbac-user-provisioning.md`).
 
 The provisioning mechanism is the hinge between identity and access: it reads the two-axis identity from Authentik groups and derives concrete per-service roles, so no downstream service is hand-granted. The flow:
 
@@ -268,7 +286,7 @@ The provisioning mechanism maps each Access Level to concrete per-service roles.
 
 Rules that fall out of the table:
 
-- **Admin is fully derived, never hand-granted.** Any identity in the org's Admin group (`uhstray-admins`) is provisioned the Semaphore `admin` flag **and** all-project visibility **automatically** — no per-service "make this person admin" click. Granting admin by hand is a defect, not a shortcut.
+- **Admin is fully derived, never hand-granted.** Any identity in an Admin group is provisioned admin rights **and** all-project visibility **automatically**. Semaphore's `admin` flag is global, so it is derived from the cross-tenant `platform_admins` list, which is rendered into the `platform-admins` group (issue #604, below), not from a tenant-scoped group such as `uhstray-uhstray-io-admins` — no per-service "make this person admin" click. Granting admin by hand is a defect, not a shortcut.
 - **Role scopes *which* projects/services; Access Level scopes *what* you may do in them.** A `network-operator` Role with Developer Access Level gets Project-Manager rights on the NetBox/network projects their team owns — not on unrelated projects.
 - **User is genuinely least-privilege:** no direct OpenBao path, run-only or read-only in Semaphore/NetBox.
 
@@ -276,8 +294,8 @@ Rules that fall out of the table:
 
 **[TARGET] / NOT BUILT:** the provisioning automation (Authentik groups -> per-service roles) and the full group schema above are **not implemented yet**. Do not reason as if role-based provisioning already holds. Today's reality:
 
-- **`platform-admins` is the sole admin group**, **being renamed `uhstray-admins`** (the uhstray-org Admin tier above).
-- **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as such, not the foundational fix. The foundational fix is the provisioning mechanism here: derive `stray`'s admin flag from `uhstray-admins` membership instead of hand-setting it.
+- **`platform-admins` is the sole admin group today.** It stays as the cross-tenant operator group (it spans tenants and sees every tenant; the Dispatch Console relies on it). `uhstray-uhstray-io-admins`, the Admin tier of the uhstray-io org in the uhstray tenant, is added beside it rather than replacing it. (The earlier proposal to rename `platform-admins` is withdrawn: once the tenant became the hard isolation boundary on 2026-10-26, a tenant-scoped name could no longer carry cross-tenant administration.)
+- **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as such, not the foundational fix. The foundational fix is the provisioning mechanism here: derive `stray`'s admin flag from the `platform_admins` list (built as issue #604, below) instead of hand-setting it.
 - No Department/Team/Role decomposition is wired into Authentik groups yet, and no automated (tuple -> per-service role) mapper. Until it ships, downstream roles are set by hand and this section is the design target they converge to.
 
 **[BUILT 2026-10-18, issue #604] Semaphore Admin tier: derived from the declared administrator list.** A second platform admin signed in to Semaphore through SSO and saw no projects. Their Authentik account was in `platform-admins`, but Semaphore's admin roster was a second, hand-kept list (`semaphore_admin_users`) that nobody had updated, so the OIDC sign-in created a plain user with no project membership. Two lists for one fact had drifted.

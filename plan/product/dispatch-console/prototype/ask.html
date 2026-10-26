@@ -1,0 +1,129 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ask Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!--
+THESIS: The home screen is a request, not a dashboard. You say what you need, agent-cloud answers with a policy-checked plan, and one click queues it. Refuses the wall-of-tiles admin home.
+OWN-WORLD: Control-room HMI greys, color only for state, one process-blue for actions; flight-strip work rows; shape+label status chips.
+STORY: A tenant admin sees what is red, asks for the fix in plain words, approves, and watches the agent work.
+FIRST VIEWPORT: Left two-thirds = request composer with scope chip, then the live proposal pipeline, then recent requests. Right third = Needs attention, In flight, Health by scope. Icon rail far left.
+FORM: Prototype A of 3 (layout comparison, shared system). concept-seed returned no roll (degraded); structure pinned by the brief.
+-->
+<link rel="stylesheet" href="shared.css">
+<style>
+  .app { display: grid; grid-template-columns: 60px 1fr; min-height: 100%; }
+  .rail { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 0; padding-left: env(safe-area-inset-left, 0px); position: sticky; top: 0; height: 100vh; }
+  .mark { width: 34px; height: 34px; border-radius: 9px; background: var(--fg); color: var(--bg); display: grid; place-items: center; font: 700 13px var(--mono); margin-bottom: 10px; letter-spacing: -.04em; }
+  .rail a { position: relative; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 9px; color: var(--fg2); }
+  .rail a:hover { background: var(--line); color: var(--fg); }
+  .rail a[aria-current="page"] { background: var(--raised); color: var(--accent); box-shadow: var(--shadow); }
+  .rail a .tipl { position: absolute; left: 48px; background: var(--fg); color: var(--bg); font-size: 12px; padding: 3px 8px; border-radius: 5px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 30; }
+  .rail a:hover .tipl, .rail a:focus-visible .tipl { opacity: 1; }
+  .rail .spacer { flex: 1; }
+  .top { display: flex; align-items: center; gap: 10px; padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+  .top .scope { flex: 1; }
+  .search { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--raised); color: var(--fg3); font-size: 13px; width: 220px; cursor: text; }
+  #view { padding-block: 22px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); max-width: 1440px; width: 100%; margin: 0 auto; }
+  @media (max-width: 1080px) { .search { display: none; } }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; }
+    .rail { flex-direction: row; height: auto; position: static; overflow-x: auto; padding: 6px max(16px, env(safe-area-inset-left, 0px)); justify-content: flex-start; border-right: 0; border-bottom: 1px solid var(--line); }
+    .rail .tipl, .rail .spacer { display: none; }
+    .mark { margin: 0 6px 0 0; flex: none; }
+    .rail a { flex: none; }
+  }
+</style>
+
+<div class="app">
+  <nav class="rail" id="rail" aria-label="Main"></nav>
+  <div style="min-width:0">
+    <header class="top">
+      <div id="scope" class="scope"></div>
+      <div class="search" role="button" tabindex="0" aria-label="Search">
+        <i data-lucide="search"></i><span class="grow">Search or jump</span><span class="kbd">⌘K</span>
+      </div>
+      <span class="synthetic" title="Every tenant, person and figure here is an example"><i data-lucide="flask-conical"></i>Synthetic data</span>
+      <button class="btn sm ghost" id="tagsBtn" aria-pressed="true"><i data-lucide="tags"></i>Tags</button>
+      <button class="btn sm" id="picksBtn"><i data-lucide="heart"></i>Kept <b data-picks-count>0</b></button>
+      <button class="iconbtn" id="themeBtn" aria-label="Toggle theme"><i data-lucide="sun-moon"></i></button>
+    </header>
+    <main id="view"></main>
+  </div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js" integrity="sha384-m/CoPp6wBQz6MoZXP+VveuxfvSx0NGXiQyyakzXVOVHgG1fP5bM/UiO4pSNPV6PT" crossorigin="anonymous"></script>
+<script src="data.js"></script>
+<script src="kit.js"></script>
+<script>
+const { D, ic, esc, st, comp } = K;
+let SCOPE = ["Uhstray.io", "Platform", "site-hq", "prod"];
+window.onScopeChange = (s) => { SCOPE = s; K.dash.state.target = null; route(); K.toast(`Scope: ${s.join(" › ")}`, "crosshair"); };
+window.onQueueHere = (label) => {
+  K.dash.state.target = label; document.querySelector(".drawer")?.remove();
+  if ((location.hash || "#home") !== "#home") location.hash = "home";
+  setTimeout(() => { route(); document.getElementById("askText").focus(); }, 30);
+};
+
+function rail(cur) {
+  document.getElementById("rail").innerHTML = `<div class="mark" aria-label="agent-cloud">ac</div>` +
+    K.NAV.map(([id, label, icon], i) => `<a href="#${id}" ${id === cur ? 'aria-current="page"' : ""} aria-label="${label}">${ic(icon)}<span class="tipl">${label}</span></a>${i === 0 ? '<span style="height:8px"></span>' : ""}`).join("") +
+    `<span class="spacer"></span><a href="#access" aria-label="Your account"><span class="av human" style="background:#15191e;width:28px;height:28px">JW</span><span class="tipl">Signed in via Authentik · platform-admins</span></a>`;
+}
+
+const home = () => K.dash.html();
+
+function route() {
+  const id = (location.hash || "#home").slice(1);
+  const v = K.NAV.some((n) => n[0] === id) ? id : "home";
+  rail(v);
+  document.getElementById("scope").outerHTML = `<div id="scope" class="scope">${K.scope(SCOPE)}</div>`;
+  document.getElementById("view").innerHTML = v === "home" ? home() : K.V[v]();
+  if (v === "topology") K.bindTopology(document.getElementById("view"), (id) => id && K.openService(id));
+  K.after(document.getElementById("view"));
+  window.scrollTo(0, 0);
+}
+
+function submitAsk(text) {
+  if ((location.hash || "#home") !== "#home") location.hash = "home";
+  setTimeout(() => K.dash.submit(text), 30);
+}
+
+document.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (e.target.dataset.form === "add-user") K.toast("Queued: add dana@kestrel.example through the Authentik blueprint");
+  if (e.target.dataset.form === "key") K.toast("Proposal created: provision research-team key. Waiting on Admin approval.", "sparkles");
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); location.hash = "home"; setTimeout(() => document.getElementById("askText")?.focus(), 40); }
+  if (e.key === "Enter" && e.target.matches(".strip")) e.target.click();
+});
+document.addEventListener("click", (e) => {
+  const fix = e.target.closest("[data-fix]"); if (fix) { document.querySelector(".drawer")?.remove(); submitAsk(fix.dataset.fix); return; }
+  if (e.target.closest("[data-grafana]")) { K.toast("Opens Grafana Explore filtered to this service", "external-link"); return; }
+  const s = e.target.closest(".strip"); if (s) { const w = D.work.find((x) => x.key === s.dataset.key); if (w) K.drawer(w.key, K.drill(w)); return; }
+  const a = e.target.closest("[data-act]"); if (!a) return;
+  const act = a.dataset.act;
+  if (act === "approve") {
+    const w = D.work.find((x) => x.key === a.dataset.key);
+    if (w) { w.state = "queued"; w.steps.forEach((st) => st[1] === "wait" && (st[1] = "done")); }
+    document.querySelector(".drawer")?.remove(); route();
+    K.toast(`${a.dataset.key} approved and queued. skynet picks it up next.`);
+  }
+  if (act === "queue-svc") { location.hash = "home"; setTimeout(() => { const t = document.getElementById("askText"); t.value = `On ${D.svc(a.dataset.svc).name}: `; t.focus(); }, 40); }
+  if (act === "retry") K.toast("skynet will re-plan AC-1169 with the anti-lockout failure attached.", "rotate-ccw");
+  if (act === "policy") K.proposePolicy(a.dataset.key);
+  if (act === "pause") K.toast("Will pause after the current Semaphore task finishes.", "circle-pause");
+  if (act === "edit") K.toast("Plan editing opens the task list inline.", "pencil");
+});
+document.addEventListener("click", (e) => {
+  const lv = e.target.closest("[data-level]"); if (lv) lv.parentElement.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b === lv));
+});
+document.getElementById("tagsBtn").onclick = (e) => { const on = document.body.classList.toggle("notags"); e.currentTarget.setAttribute("aria-pressed", !on); };
+document.getElementById("picksBtn").onclick = () => K.picksDrawer();
+document.getElementById("themeBtn").onclick = () => { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = dark ? "light" : "dark"; };
+window.onWorkCreated = (w) => { dispatchEvent(new HashChangeEvent("hashchange")); K.drawer(w.key, K.drill(w)); };
+addEventListener("hashchange", route);
+route();
+K.initPicks("A");
+</script>

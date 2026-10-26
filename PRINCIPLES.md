@@ -192,9 +192,10 @@ As-built: `nemoclaw-read.hcl` grants the wildcard to an AI agent - tighten it, a
 **Human access is provisioned by role, never granted by hand.** Identity decomposes as
 **Organization > Department > Team > Role**, with an orthogonal **Access Level** privilege tier -
 highest-to-lowest **Admin -> Maintainer -> Developer -> User** - applied per tenant and per project.
-Organization is the hard tenant-isolation boundary (tenants are orgs); Department/Team/Role place a
-person within an org; Access Level is how much they may do. Authentik groups are the source of truth;
-a provisioning mechanism maps an identity's (org, department, team, role, access-level) to per-service
+A tenant is a tier above Organization (tenant -> org -> site -> env), and the **tenant is the hard
+isolation boundary**; organizations inside one tenant share it. Department/Team/Role place a person within an org;
+Access Level is how much they may do. Authentik groups are the source of truth;
+a provisioning mechanism maps an identity's (tenant, org, department, team, role, access-level) to per-service
 roles - Semaphore admin-flag vs project owner/manager/task_runner/guest, NetBox permissions, etc. Any
 Admin-level user is provisioned with admin rights and all-project visibility automatically - never a
 per-service hand-grant.
@@ -203,8 +204,9 @@ it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identi
 "user type") lets access be derived from real org structure instead of bespoke per-person grants.
 **[TARGET]** the provisioning automation + the group schema are not built yet - the operator's Semaphore user
 was hand-set to admin (a stopgap, superseded by the Semaphore admin flag now derived from the declared
-administrator list, issue #604), and `platform-admins` is today's sole admin group, with a proposed rename to
-`uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
+administrator list, issue #604), and `platform-admins` is today's sole admin group. It stays as the cross-tenant
+operator group, and `uhstray-uhstray-io-admins` (the Admin tier of the uhstray-io org in the uhstray tenant) is
+added beside it. The exact group-naming + (identity -> per-service role)
 mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based
 provisioning already holds.*
 

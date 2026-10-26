@@ -63,7 +63,7 @@ and why.
 | 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | 1 | Test (`test_no_line_window_assertions.bats` + ratchet) |
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | 1 | Convention |
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | 3 | Test (`test_no_line_window_assertions.bats` + ratchet) |
-| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
+| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 2 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
@@ -114,7 +114,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 4 | Pre-push hook |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 5 | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -1226,6 +1226,15 @@ surfaced this, on a branch whose author believed the suite had verified these ve
 properties.
 
 **Status 2026-10-02.** `platform/tests/test_assertions_are_real.bats` now also scans for `grep -v -q` and `|| true` assertions, with known instances in the shrink-only `platform/tests/known_inert_assertions.txt` (PR #392).
+
+**Occurrence 2 — 2026-10-26 (Dispatch Console, PR #742).** A worker wrote eight `! grep`
+assertions in the middle of test bodies in `platform/tests/test_service_console.bats`; the
+full BATS suite passed and the PR cited it. CodeRabbit flagged two of them; all were converted
+to `refute_grep`, and one conversion was mutation-checked (a live `source .env` in `deploy.sh`
+turned the new test red while the old form stayed green). Why the ratchet did not fire: its
+`BASELINE` (53) had not been lowered as other files were cleaned up, so the repository total
+sat below it and the eight new offenders fit inside the slack. Fix: `BASELINE` lowered to the
+measured total, 46. The ratchet only holds if every conversion also lowers the number.
 
 
 ### 2.10 §2.9 repeated — a no-op negative assertion, written while fixing that class
@@ -2970,6 +2979,17 @@ the read said. It returned CLEAN, so nothing merged that should not have. Why th
 fire: it is written about commits and suites, and a merge after a state read did not register
 as the same shape; it is. Any action that a read is meant to decide is issued after reading
 it, in a separate command.
+
+**Occurrence 2026-10-25 (merge-conflict resolution, console branch).** Resolved an add/add
+conflict in `platform/tests/test_service_console.bats` by script, then ran
+`bats ... > log; echo rc=$?; grep -c '^not ok' log; git add ... && git commit` in one command.
+The output said `rc=1` and `6` failing tests, and the merge commit (`7dbaa800`) ran anyway,
+because the commit was chained to `git add`, not to the test result. Cause of the red: the
+splice keyed on the marker text `# --- Deploy ---`, which also appears inside the second file's
+header comment, so a second `setup()` overrode the first. Fixed in the next commit (`41b8f032`)
+before any push. Why the rule did not fire: the merge felt like bookkeeping rather than a
+change, and the test run was there as a report, not as a gate. The pre-push hook is still the
+mechanical backstop; the rule stands as written.
 
 ### 5.3 Merging while the review was rate-limited
 
