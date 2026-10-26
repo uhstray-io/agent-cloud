@@ -139,6 +139,27 @@ _agw_mcp_problems: >-
     {%- endfor -%}
   {%- endif -%}
   {{ out }}
+# Budget tiers (config.yaml.j2): agw_tier_tokens_per_hour maps a tier name to a positive hourly token
+# figure, and agw_client_policies.<name>.tier names a tier in that map. One sentence per problem, empty
+# when nothing is; the deploy refuses a non-empty list before anything is rendered. A tier name with no
+# figure would silently render the global default instead, so a typo is refused here, by name.
+_agw_tier_problems: >-
+  {%- set out = [] -%}
+  {%- set tiers = agw_tier_tokens_per_hour | default({}) -%}
+  {%- if tiers is not mapping -%}
+    {%- if out.append('agw_tier_tokens_per_hour must be a mapping of tier name to hourly token figure') -%}{%- endif -%}
+  {%- else -%}
+    {%- for t, n in tiers.items() -%}
+      {%- if not ((n | string) is match('^[1-9][0-9]*$'))
+             and out.append('agw_tier_tokens_per_hour.' ~ t ~ ' must be a positive whole number of tokens') -%}{%- endif -%}
+    {%- endfor -%}
+    {%- for name, pol in (agw_client_policies | default({})).items() -%}
+      {%- if pol is mapping and pol.get('tier') is not none and pol.get('tier') not in tiers
+             and out.append('agw_client_policies.' ~ name ~ '.tier names ' ~ pol.get('tier')
+                            ~ ', which has no figure in agw_tier_tokens_per_hour') -%}{%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {{ out }}
 # The skynet orchestration route (agentgateway task 3.3, render half): a `/skynet/` path on the `default`
 # gateway, admitted only to the declared route identities by a strict key policy (the caller's key is the
 # gate), with backendAuth swapping that key for skynet's own token before the request reaches skynet. What is

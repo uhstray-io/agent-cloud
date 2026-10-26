@@ -42,6 +42,7 @@ const MODEL_PROFILES: ReadonlyMap<string, ModelProfile> = new Map<string, ModelP
   ["mistralai/mistral-large-4-0", { contextWindow: 1048576, maxTokens: 131072, developerRole: false }],
   ["z-ai/glm-5.3", { contextWindow: 1048576, maxTokens: 131072, developerRole: false }],
   ["anthropic/claude-opus-5.5", { contextWindow: 1000000, maxTokens: 128000 }],
+  ["moonshotai/kimi-k3.1-pro", { contextWindow: 1048576, maxTokens: 131072, developerRole: false }],
 ]);
 const DEFAULT_PROFILE: ModelProfile = { contextWindow: 131072, maxTokens: 16384 };
 /** Ids reach a terminal and a request body: keep a conservative alphabet and bound the list. */

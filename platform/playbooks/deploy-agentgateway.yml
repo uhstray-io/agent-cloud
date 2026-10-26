@@ -53,7 +53,9 @@
 #                          `agw_identity` if set, else its `username`. Merged with agw_clients into
 #                          agw_identities (vars/secret-declarations/agentgateway.yml); a name in both
 #                          is one identity (the same client_<name>), reported as an overlap
-#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
+#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N, tier: T}}
+#   agw_tier_tokens_per_hour  (optional) {tier: N}: hourly budget per tier; platform_admins identities
+#                          are tier `admin`, others join with agw_client_policies.<name>.tier
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
 #                          shared vLLM key is enrolled as identity `legacy-shared` (budget from
@@ -220,6 +222,14 @@
       ansible.builtin.assert:
         that: _agw_mcp_problems | length == 0
         fail_msg: "agw_mcp_enabled cannot be rendered: {{ _agw_mcp_problems | join('; ') }}."
+        quiet: true
+
+    # Budget tiers: every agw_client_policies.<name>.tier must name a figure in agw_tier_tokens_per_hour
+    # (vars/secret-declarations/agentgateway.yml, _agw_tier_problems), refused before anything is rendered.
+    - name: "Refuse a budget tier with no figure"
+      ansible.builtin.assert:
+        that: _agw_tier_problems | length == 0
+        fail_msg: "The budget tiers cannot be rendered: {{ _agw_tier_problems | join('; ') }}."
         quiet: true
 
     # The skynet route (agentgateway task 3.3): its backend, identities and reserved names are checked before

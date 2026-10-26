@@ -73,6 +73,7 @@ limits", "MCP (change `agentgateway-mcp`, gateway side)", "Operator operations")
 | `agw_loopback_port` | `4002` | The loopback gateway's container port, never published; the MCP target calls `/v1` here |
 | `agw_mcp_openapi_targets` | none | List of `{name, schema}`; `schema` is a `*.json` file in `deployment/mcp-schemas/`. Anything else on an entry is refused |
 | `agw_client_policies.mcp-self.tokens_per_hour` | none | The aggregate hourly token cap on every model request made through MCP; required while `agw_mcp_enabled` is true, with `mcp-self` in `agw_clients` |
+| `agw_tier_tokens_per_hour` | none | Hourly token budget per tier, e.g. `{admin: N, developer: N, business: N}`. Identities derived from `platform_admins` are tier `admin`; any other identity joins one with `agw_client_policies.<name>.tier`. Precedence: the identity's own `tokens_per_hour`, then its tier, then `agw_rate_tokens_per_hour`. A tier with no figure is refused |
 | `agw_openrouter_identities`, `agw_openrouter_admins` | empty, `false` | Who may call `provider: openrouter` models (`agentgateway-openrouter`); the union must not be empty while one is declared |
 
 Declared admin list, as of this change: the list itself lives in site-config (private); this repository

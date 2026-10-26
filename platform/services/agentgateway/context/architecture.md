@@ -199,6 +199,7 @@ per-client layer. Everything is inventory-driven code (design §10):
 |---|---|
 | Add a client | Add the name to `agw_clients` (site-config / local inventory), or declare the admin in `platform_admins`, and deploy: manage-secrets mints `client_<name>` once and reuses it; the config enrols its sha256 hash |
 | Per-client policy | `agw_client_policies.<name>.allowed_models` and `.tokens_per_hour` render `allowedModels` and the budget amount |
+| Budget tiers | `agw_tier_tokens_per_hour` maps `admin`, `developer`, `business` to hourly figures; `platform_admins` identities are `admin`, others set `agw_client_policies.<name>.tier`. Own `tokens_per_hour` wins, then the tier, then `agw_rate_tokens_per_hour` |
 | Rotate | Semaphore `Manage agentgateway Client Key`, `client=<name> action=rotate` (name must be declared); merges a new value, re-renders, reloads |
 | Revoke | Remove the name from `agw_clients` and `platform_admins` FIRST, then `action=revoke`: deletes the field (KV-v2 merge-patch null), re-renders, reloads; the old key is 401 |
 | Hand out | `Back Up Credentials to site-config` with `credential_service=agentgateway credential_fields=client_<name>`: a site-config branch, names only in the task output |
