@@ -49,6 +49,32 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 
 **Order.** Deploy Authentik before Deploy console. Authentik must hold `console_oidc_client_secret` in `secret/services/authentik`. Without it, the shared read stops Phase 1 and names the missing key.
 
+## Active Work (Semaphore, read-only)
+
+The server reads Semaphore's task list and serves it at `/v1/work` (plan 17 D17-D20). Read it with the code, not this section: `app/src/server/work.rs` (joins, lanes) and `app/src/server/semaphore.rs` (the one read).
+
+Environment, read by the server (`app/src/server/config.rs`):
+
+| Variable | Meaning |
+|----------|---------|
+| `CONSOLE_SEMAPHORE_API_URL` | Server-side Semaphore origin. Only the poller calls it |
+| `CONSOLE_SEMAPHORE_UI_URL` | Browser-facing origin. Receipt links are built from it |
+| `CONSOLE_SEMAPHORE_PROJECT` | Project id, a positive integer |
+| `CONSOLE_SEMAPHORE_TOKEN` | API token of the Semaphore user `svc-console` (plan 17 D20). Never logged, never printed by `Debug` |
+| `CONSOLE_WORKFLOW_FILE` | Registry steps JSON (`[{id, order, owner, label}]`), rendered from `registry.yml`. Optional: without it, roles and run steps are empty |
+
+The four Semaphore variables are all-or-none. A partial set fails startup and names the first missing one. None set means `source: "unconfigured"`.
+
+**Not wired yet.** This change adds the server code only. `templates/env.j2`, the OpenBao field `secret/services/console:semaphore_api_token`, the rendered registry file and its compose mount are separate changes. Until they land, the running console answers `unconfigured`.
+
+Routes (platform admins only, plan 17 D19):
+
+- `GET /v1/work` returns `{source, error, updated_at, items}`, newest task first. `source` is `ok`, `unconfigured` or `error`. Under `error`, `items` are the last good poll and `error` gives the reason. Before the first poll, `source` is `ok` with no items and `updated_at: null`.
+- `GET /v1/work/{key}` returns `{item, run}`. `run` is `null` unless the task was launched by skynet, in which case it lists the registry steps in order with each step's latest lane or `not_started`. An unknown key is `404 {"error":"unknown_work"}`.
+- No session is `401`. A session without `platform-admins` is `403 {"error":"forbidden"}`, the same for an existing key and a missing one.
+
+The poller reads every 10 s. It sends the token only in the `Authorization` header. Its errors name a status code or a failure class, never a URL, body or header. Tasks are ordered by Semaphore id, not by `created`, because Semaphore's timestamp strings are not safely comparable as text. `launched_by` is `skynet` when the task message is exactly `skynet <run_id> <step_id>`, else the Semaphore user name, else `unknown`. The only field read from a task's environment is `target_service`.
+
 ## Runtime notes
 
 - **Healthcheck is exec form, not CMD-SHELL.** The runtime image is distroless (`cc-debian12`, no `/bin/sh`), so `CMD-SHELL` cannot run. The probe is the server binary's own subcommand: `/usr/local/app/server probe /healthz 200`. Other services' comments say podman-compose mis-quotes `["CMD", ...]` lists. podman-compose 1.6.0 turns the list into a JSON `--health-cmd` (`podman_compose.py`, the `CMD` branch). Whether the engine then runs it as exec is **unverified** on this machine. The live deploy is the proof: `wait_for_healthy` fails if the container never reports healthy.

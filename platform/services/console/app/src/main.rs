@@ -48,6 +48,7 @@ fn run_server() -> ! {
         let state = state.clone();
         async move {
             server::spawn_discovery(state.clone());
+            server::work::spawn_poller(state.clone());
             Ok(server::router(state))
         }
     })
