@@ -264,7 +264,7 @@ frontendPolicies:
       # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L905-L910
       # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L1104-L1109
       http.path: request.path
-{% if agw_otlp_host | default('') %}
+{% if agw_otlp_host | default('') and agw_otlp_logs | default(false) | bool %}
     # Access logs share Alloy's OTLP receiver with traces. The service field
     # becomes Loki's bounded service label; stdout logging stays available.
     otlp:
@@ -273,16 +273,18 @@ frontendPolicies:
         add:
           service: '"agentgateway"'
           identity: apiKey.name
+          signal: '"access-log"'
           # OTLP has its own field overrides; keep the same-name replacement explicit.
           http.path: request.path
 {% endif %}
-{% if agw_otlp_host | default('') %}
+{% if agw_otlp_host | default('') and agw_otlp_traces | default(false) | bool %}
   tracing:
     # The receiver is Alloy, which batches these spans to Tempo. Bound both
     # newly started and client-propagated traces; no prompt/completion fields.
     host: {{ agw_otlp_host }}
-    randomSampling: {{ agw_trace_sampling | default(0.05) }}
-    clientSampling: {{ agw_trace_sampling | default(0.05) }}
+    randomSampling: {{ agw_trace_sampling | default(0.1) }}
+    # Do not let an incoming traceparent opt a request into tracing.
+    clientSampling: false
     resources:
       service.name: '"agentgateway"'
     # Spans filter same-name defaults, then append CEL attributes (trc.rs:288-294,
@@ -354,7 +356,7 @@ llm:
       stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true}) : llmRequest.stream_options'
 {% else %}
   # The gateway's model name equals the upstream's served name unless
-  # `upstream_model` remaps it (local-dev: gpt-oss-20b -> openai/gpt-oss-20b).
+  # `upstream_model` remaps it (e.g. a short client name for a longer served name).
   - name: {{ m.name }}
     provider:
       custom:
@@ -438,4 +440,27 @@ mcp:
 {% endfor %}
   policies:
 {{ apikey_policy((_agw_admin_identities | default([]) | map(attribute='name') | list) | reject('in', _internal_ids) | list, false, false) | trim('\n') }}
+{% endif %}
+{% set _skynet = agw_skynet_route_enabled | default(false) | bool %}
+{% if _skynet %}
+# The skynet orchestration route (agentgateway task 3.3, render half): `/skynet/...` on the default gateway,
+# admitted only to the declared route identities. It has its own strict key policy, built by the same macro as
+# /v1 minus the budgets and model lists (it is not an LLM surface), so a key the route does not name gets 401
+# here and never reaches skynet. backendAuth.key is the env reference $SKYNET_API_TOKEN, which REPLACES the
+# caller's Authorization on the upstream call, so skynet sees only its own bearer and never the caller's key
+# (proven on the pinned v1.5.0 image 2026-10-19). No path rewrite: skynet serves under /skynet/ itself.
+# Disabled, there is no `routes:` key at all, so a disabled render is what it was before this route existed.
+routes:
+- name: skynet
+  # Pinned to the external listener: never the `ui` listener or the MCP self-call's `loopback` one
+  # (`gateways` on a route is accepted by v1.5.0, validated 2026-10-19).
+  gateways: [default]
+  matches:
+  - path: {pathPrefix: /skynet/}
+  policies:
+{{ apikey_policy(agw_skynet_route_identities | default([]), false, false) | trim('\n') }}
+    backendAuth:
+      key: $SKYNET_API_TOKEN
+  backends:
+  - host: {{ agw_skynet_backend }}
 {% endif %}

@@ -1,0 +1,31 @@
+---
+# clean-deploy-skynet.yml — Destroy and redeploy skynet from scratch.
+#
+# WARNING: Destroys ALL skynet data — the skynet Postgres volume (its run and
+#          workflow state). A fresh deploy starts that database empty. The api_token and
+#          db_password are reused from OpenBao, so the gateway's /skynet/ route keeps its
+#          backend token and the database password still matches. Local-dev shares one
+#          deploy tree, so the clone is NOT removed (clean-service.yml branches on
+#          local_mode).
+#
+# Uses composable tasks/clean-service.yml then runs deploy-skynet.yml.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Clean skynet deployment"
+  hosts: skynet_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-skynet.yml
+  vars:
+    _extra_var_guard_nested: true

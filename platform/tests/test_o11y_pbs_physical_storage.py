@@ -1833,7 +1833,7 @@ def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():
     playbook = ROOT / "platform/playbooks/survey-o11y-pbs-physical-storage.yml"
     plays = yaml.safe_load(playbook.read_text())
     play = next(item for item in plays if item.get("name") == "Survey declared PBS-node storage without mutation")
-    tasks = play["tasks"]
+    tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-pbs-physical-storage-survey.yml").read_text())
     api_reads = [task for task in tasks if "ansible.builtin.uri" in task]
     assert len(api_reads) == 10
     assert all(task["ansible.builtin.uri"]["method"] == "GET" for task in api_reads)
@@ -2251,13 +2251,14 @@ def test_allocation_preflight_playbook_reuses_protected_get_only_survey_and_priv
     assert plays[1]["ansible.builtin.import_playbook"] == "survey-o11y-pbs-physical-storage.yml"
     assert plays[1]["vars"]["_extra_var_guard_nested"] is True
     play = plays[2]
+    tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/preflight-o11y-pbs-thick-lvm-allocation.yml").read_text())
     assert play["hosts"] == "localhost"
-    assert not any("ansible.builtin.uri" in task for task in play["tasks"])
-    command = next(task for task in play["tasks"] if task.get("name", "").startswith("Evaluate the pinned identity"))
+    assert not any("ansible.builtin.uri" in task for task in tasks)
+    command = next(task for task in tasks if task.get("name", "").startswith("Evaluate the pinned identity"))
     assert command["ansible.builtin.command"]["argv"][-1] == "preflight-thick-lvm-allocation"
     assert command["ansible.builtin.command"]["stdin"] == "{{ _allocation_preflight_payload }}"
     assert command["no_log"] is True and command["changed_when"] is False and command["check_mode"] is False
-    protected = next(task for task in play["tasks"] if task.get("name") == "Build the protected preflight input")
+    protected = next(task for task in tasks if task.get("name") == "Build the protected preflight input")
     assert protected["no_log"] is True
     assert "_pinned_serial" in str(protected)
     assert "_pinned_wwn" in str(protected)
@@ -2266,7 +2267,7 @@ def test_allocation_preflight_playbook_reuses_protected_get_only_survey_and_priv
     assert "default(none)" in str(play["vars"])
     assert "default(none, true)" not in str(play["vars"])
     report = next(
-        task for task in play["tasks"]
+        task for task in tasks
         if task.get("name") == "Report the read-only allocation preflight result"
     )
     assert "serial" not in report["ansible.builtin.debug"]["msg"].lower()

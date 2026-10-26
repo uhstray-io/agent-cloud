@@ -1,0 +1,29 @@
+---
+# Read-only proof of the injected Semaphore role and stored policy for the fixed
+# isolated-restore coordination record. This does not read or write the record.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed Dev checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/verify-o11y-restore-coordination-capabilities.yml
+      - platform/playbooks/tasks/verify-o11y-restore-coordination-capabilities.yml
+      - platform/playbooks/files/verify_o11y_restore_capabilities.py
+      - platform/playbooks/require-reviewed-checkout.yml
+      - platform/playbooks/files/reviewed-checkout.py
+      - platform/playbooks/tasks/preflight-o11y-restore-target.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/semaphore/templates.yml
+      - platform/services/openbao/deployment/config/policies/semaphore-read.hcl
+
+- name: Verify fixed restore-coordination access from the protected Semaphore role
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Verify policy and effective capabilities without reading coordination state
+      ansible.builtin.include_tasks: tasks/verify-o11y-restore-coordination-capabilities.yml

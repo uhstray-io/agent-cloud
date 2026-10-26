@@ -193,7 +193,11 @@ def test_write_guards_preflight_url_and_token_with_version_cas_and_preserves_sib
     assert "items2dict" in guard_expr
     assert guard["no_log"] is True
     cas_write = next(t for t in helper if t["name"] == "Write a guarded update at the version just read")
-    assert "_bm_guard_values is defined or _bm_guard_key is defined" in cas_write["when"]
+    assert cas_write["when"][1] == (
+        "_bm_guard_values is defined or _bm_guard_key is defined or "
+        "(_bm_guard_absent_keys | default([]) | length) > 0"
+    )
+    assert cas_write["when"][1] != "_bm_guard_values is defined or _bm_guard_key is defined"
     assert cas_write["ansible.builtin.uri"]["body"]["options"]["cas"] == (
         "{{ _bm_existing.json.data.metadata.version }}"
     )

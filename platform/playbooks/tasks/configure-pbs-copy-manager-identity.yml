@@ -1,0 +1,255 @@
+# Establish a separately managed destination API identity. It is distinct from
+# both the PVE backup identity and the primary PBS read-only source identity.
+# DatastoreReader is granted only on /datastore/o11y so the manager can read
+# back the protected copy's manifest without using the source Reader token.
+- name: Create the passwordless PBS copy-manager user when absent
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - create
+      - o11y-copy-manager@pbs
+      - --enable
+      - "1"
+      - --expire
+      - "0"
+      - --comment
+      - "o11y protected copy API manager"
+  when:
+    - not ansible_check_mode
+    - _pbs_manager_identity_action == 'create'
+  changed_when: true
+  no_log: true
+
+- name: Mint the stable destination copy-manager token without ACLs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - generate-token
+      - o11y-copy-manager@pbs
+      - copy-api
+      - --enable
+      - "1"
+      - --expire
+      - "0"
+      - --comment
+      - "o11y protected copy API manager"
+  register: _pbs_manager_generated_token
+  when:
+    - not ansible_check_mode
+    - _pbs_manager_identity_action == 'create'
+  changed_when: true
+  no_log: true
+
+- name: Parse the generated copy manager token using its documented result envelope
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", parse-generated-token]
+    stdin: >-
+      {{ {'stdout': _pbs_manager_generated_token.stdout,
+          'expected_token_id': 'o11y-copy-manager@pbs!copy-api'} | to_json }}
+  register: _pbs_manager_generated_token_parsed
+  when: _pbs_manager_identity_action == 'create'
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Retain the generated manager token only in protected task state
+  ansible.builtin.set_fact:
+    _pbs_manager_token_secret: "{{ (_pbs_manager_generated_token_parsed.stdout | from_json).value }}"
+    _pbs_manager_token_record:
+      user: o11y-copy-manager@pbs
+      token_id: o11y-copy-manager@pbs!copy-api
+      secret: "{{ (_pbs_manager_generated_token_parsed.stdout | from_json).value }}"
+      datastore: o11y
+      fingerprint: "{{ _pbs_manager_certificate_fingerprint }}"
+  when: _pbs_manager_identity_action == 'create'
+  no_log: true
+
+- name: Reuse the OpenBao-owned destination manager token
+  ansible.builtin.set_fact:
+    _pbs_manager_token_secret: "{{ hostvars['localhost']._pbs_manager_saved_record.secret }}"
+    _pbs_manager_token_record: "{{ hostvars['localhost']._pbs_manager_saved_record }}"
+  when: _pbs_manager_identity_action == 'reuse'
+  no_log: true
+
+- name: Persist the destination manager token with guarded OpenBao CAS before ACL grants
+  ansible.builtin.include_tasks:
+    file: bao-merge-keys.yml
+    apply:
+      become: false
+  vars:
+    _bm_url: "{{ _pbs_manager_bao_url }}"
+    _bm_token: "{{ hostvars['localhost']._bao_token }}"
+    _bm_path: services/pbs
+    _bm_data:
+      o11y_copy_manager_user: o11y-copy-manager@pbs
+      o11y_copy_manager_token_id: o11y-copy-manager@pbs!copy-api
+      o11y_copy_manager_token_secret: "{{ _pbs_manager_token_secret }}"
+      o11y_copy_manager_datastore: o11y
+      o11y_copy_manager_fingerprint: "{{ _pbs_manager_certificate_fingerprint }}"
+    _bm_guard_absent_keys:
+      - o11y_copy_manager_user
+      - o11y_copy_manager_token_id
+      - o11y_copy_manager_token_secret
+      - o11y_copy_manager_datastore
+      - o11y_copy_manager_fingerprint
+  when: _pbs_manager_identity_action == 'create'
+
+- name: Read the authoritative destination manager token from OpenBao
+  ansible.builtin.uri:
+    url: "{{ _pbs_manager_bao_url }}/v1/secret/data/services/pbs"
+    method: GET
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ hostvars['localhost']._bao_token }}"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  register: _pbs_manager_token_readback
+  no_log: true
+  check_mode: false
+
+- name: Require the stable destination manager credential fields
+  ansible.builtin.assert:
+    that:
+      - _pbs_manager_token_readback.json.data.data.o11y_copy_manager_user == 'o11y-copy-manager@pbs'
+      - _pbs_manager_token_readback.json.data.data.o11y_copy_manager_token_id == 'o11y-copy-manager@pbs!copy-api'
+      - _pbs_manager_token_readback.json.data.data.o11y_copy_manager_datastore == 'o11y'
+      - _pbs_manager_token_readback.json.data.data.o11y_copy_manager_fingerprint == _pbs_manager_certificate_fingerprint
+      - _pbs_manager_token_readback.json.data.data.o11y_copy_manager_token_secret == _pbs_manager_token_secret
+    fail_msg: "OpenBao does not hold the exact destination copy-manager credential fields."
+    quiet: true
+  no_log: true
+
+- name: Authenticate the manager token over fingerprint-pinned TLS
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", probe]
+    stdin: >-
+      {{ {'url': _pbs_manager_api_url,
+          'fingerprint': _pbs_manager_certificate_fingerprint,
+          'auth_id': 'o11y-copy-manager@pbs!copy-api',
+          'secret': _pbs_manager_token_secret} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: _pbs_manager_auth_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the pinned destination manager authentication probe
+  ansible.builtin.assert:
+    that: _pbs_manager_auth_probe.rc == 0
+    fail_msg: "The stored PBS destination manager token failed certificate-pinned authentication."
+    quiet: true
+
+- name: Read manager permissions and destination ACLs before grants
+  ansible.builtin.command:
+    argv: "{{ item.argv }}"
+  loop:
+    - key: user_permissions
+      argv: [proxmox-backup-manager, user, permissions, o11y-copy-manager@pbs, --output-format, json]
+    - key: token_permissions
+      argv: [proxmox-backup-manager, user, permissions, "o11y-copy-manager@pbs!copy-api", --output-format, json]
+    - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
+  loop_control:
+    label: "PBS copy-manager {{ item.key }}"
+  register: _pbs_manager_access_reads
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Assemble the protected destination manager permission snapshot
+  ansible.builtin.set_fact:
+    _pbs_manager_access_data: >-
+      {{ dict(_pbs_manager_access_reads.results | map(attribute='item.key')
+        | zip(_pbs_manager_access_reads.results | map(attribute='stdout') | map('from_json'))) }}
+  no_log: true
+
+- name: Refuse unexpected destination grants before adding manager ACLs
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-manager-acl-plan]
+    stdin: >-
+      {{ {'user_permissions': _pbs_manager_access_data.user_permissions,
+          'token_permissions': _pbs_manager_access_data.token_permissions,
+          'acl_rows': _pbs_manager_access_data.acls,
+          'remote_id': hostvars['localhost']._pbs_copy_remote_id} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: _pbs_manager_acl_plan
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require only exact copy-object grants before ACL writes
+  ansible.builtin.assert:
+    that: _pbs_manager_acl_plan.rc == 0
+    fail_msg: "Destination copy-manager already has broad or unsupported permissions; no ACL was changed."
+    quiet: true
+  no_log: true
+
+- name: Retain only the validated destination manager ACL additions
+  ansible.builtin.set_fact:
+    _pbs_manager_missing_acl_grants: "{{ (_pbs_manager_acl_plan.stdout | from_json).missing }}"
+  no_log: true
+
+- name: Grant only the exact remote and destination datastore roles
+  ansible.builtin.include_tasks:
+    file: tasks/grant-pbs-copy-manager-acl.yml
+  loop: "{{ _pbs_manager_missing_acl_grants }}"
+  loop_control:
+    loop_var: _pbs_manager_acl_grant
+    label: "Grant exact destination copy access"
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Read final destination manager permissions and ACLs
+  ansible.builtin.command:
+    argv: "{{ item.argv }}"
+  loop:
+    - key: user_permissions
+      argv: [proxmox-backup-manager, user, permissions, o11y-copy-manager@pbs, --output-format, json]
+    - key: token_permissions
+      argv: [proxmox-backup-manager, user, permissions, "o11y-copy-manager@pbs!copy-api", --output-format, json]
+    - {key: acls, argv: [proxmox-backup-manager, acl, list, --output-format, json]}
+  loop_control:
+    label: "PBS copy-manager final {{ item.key }}"
+  register: _pbs_manager_final_reads
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Assemble the protected final destination manager permission snapshot
+  ansible.builtin.set_fact:
+    _pbs_manager_final_data: >-
+      {{ dict(_pbs_manager_final_reads.results | map(attribute='item.key')
+        | zip(_pbs_manager_final_reads.results | map(attribute='stdout') | map('from_json'))) }}
+  no_log: true
+
+- name: Verify exact non-destructive manager permissions
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-manager-permissions]
+    stdin: >-
+      {{ {'user_permissions': _pbs_manager_final_data.user_permissions,
+          'token_permissions': _pbs_manager_final_data.token_permissions,
+          'acl_rows': _pbs_manager_final_data.acls,
+          'remote_id': hostvars['localhost']._pbs_copy_remote_id} | to_json }}
+  delegate_to: localhost
+  become: false
+  register: _pbs_manager_permission_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact destination manager grants
+  ansible.builtin.assert:
+    that: _pbs_manager_permission_check.rc == 0
+    fail_msg: "Destination copy-manager permissions do not match the fixed protected-copy ACL contract."
+    quiet: true
+  no_log: true

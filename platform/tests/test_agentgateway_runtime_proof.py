@@ -36,8 +36,8 @@ RENDERED_CONFIG = (
     "    add:\n"
     "      identity: apiKey.name\n"
     "  tracing:\n"
-    "    randomSampling: 0.05\n"
-    "    clientSampling: 0.05\n"
+    "    randomSampling: 0.1\n"
+    "    clientSampling: false\n"
 )
 
 
@@ -874,7 +874,8 @@ def test_rendered_config_inspector_emits_only_pinned_image_sampling_revision_and
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "pass"
     assert report["image"] == "cr.agentgateway.dev/agentgateway:v1.5.0"
-    assert report["random_sampling"] == report["client_sampling"] == 0.05
+    assert report["random_sampling"] == 0.1
+    assert report["client_sampling"] is False
     assert report["checkout_revision"] == "a" * 40
     assert "do-not-print-this" not in json.dumps(report)
     assert "config.yaml" not in json.dumps(report)
@@ -908,6 +909,9 @@ def test_rendered_config_inspector_rejects_sampling_or_image_drift(tmp_path, cap
         ("randomSampling", "0"),
         ("randomSampling", "0.2"),
         ("randomSampling", "true"),
+        ("clientSampling", "true"),
+        ("clientSampling", "0.05"),
+        ("clientSampling", "0.1"),
         ("clientSampling", "0.2"),
         ("clientSampling", "0.03"),
     ],
@@ -917,7 +921,8 @@ def test_rendered_config_inspector_rejects_invalid_sampling_values(tmp_path, cap
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
-    config.write_text(RENDERED_CONFIG.replace(f"{field}: 0.05", f"{field}: {value}"))
+    safe_value = "0.1" if field == "randomSampling" else "false"
+    config.write_text(RENDERED_CONFIG.replace(f"{field}: {safe_value}", f"{field}: {value}"))
     import sys
     from unittest.mock import patch
 
@@ -928,26 +933,29 @@ def test_rendered_config_inspector_rejects_invalid_sampling_values(tmp_path, cap
     assert "do-not-print-this" not in json.dumps(report)
 
 
-def test_rendered_config_inspector_accepts_inclusive_sampling_limit(tmp_path, capsys):
+def test_rendered_config_inspector_accepts_inclusive_random_sampling_limit(tmp_path, capsys):
     helper = _load_helper()
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
-    config.write_text(
-        RENDERED_CONFIG.replace("randomSampling: 0.05", "randomSampling: 0.1").replace(
-            "clientSampling: 0.05", "clientSampling: 0.1"
-        )
-    )
+    config.write_text(RENDERED_CONFIG)
     from unittest.mock import patch
 
     with patch.object(sys, "stdin", open_json_input(env, config)):
         assert helper.main() == 0
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "pass"
-    assert report["random_sampling"] == report["client_sampling"] == 0.1
+    assert report["random_sampling"] == 0.1
+    assert report["client_sampling"] is False
 
 
-def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsys):
+@pytest.mark.parametrize(
+    ("sampling", "expected_random_sampling", "logs_enabled"),
+    [(None, 0.1, False), (0.05, 0.05, True)],
+)
+def test_actual_config_template_render_passes_sampling_inspector(
+    tmp_path, capsys, sampling, expected_random_sampling, logs_enabled
+):
     env = Environment(trim_blocks=True, lstrip_blocks=True)
     env.filters.update(
         bool=bool,
@@ -956,12 +964,13 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
         hash=lambda value, algorithm="sha256": hashlib.new(algorithm, str(value).encode()).hexdigest(),
         to_json=lambda value: json.dumps(value),
     )
-    rendered = env.from_string(CONFIG_TEMPLATE.read_text()).render(
+    template_vars = dict(
         agw_ui_enabled=False,
         agw_listener_tls=False,
         internal_leaves=[],
         agw_otlp_host="alloy.example:4317",
-        agw_trace_sampling=0.05,
+        agw_otlp_logs=logs_enabled,
+        agw_otlp_traces=True,
         agw_clients=["test-client"],
         agw_client_policies={},
         agw_plaintext_keys=False,
@@ -971,6 +980,9 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
         agw_models=[{"name": "test-model"}],
         agw_upstream_base_url="https://model.example/v1",
     )
+    if sampling is not None:
+        template_vars["agw_trace_sampling"] = sampling
+    rendered = env.from_string(CONFIG_TEMPLATE.read_text()).render(**template_vars)
     yaml.safe_load(rendered)
     env_file = tmp_path / ".env"
     config = tmp_path / "config.yaml"
@@ -984,9 +996,234 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
         assert helper.main() == 0
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "pass"
-    assert report["random_sampling"] == report["client_sampling"] == 0.05
+    assert report["random_sampling"] == expected_random_sampling
+    assert report["client_sampling"] is False
+    assert report["access_log_otlp"] == {
+        "state": "present" if logs_enabled else "absent",
+        "service_field_matches": logs_enabled,
+        "signal_field_matches": logs_enabled,
+    }
     assert "test-only-client-key" not in json.dumps(report)
     assert "test-only-upstream-key" not in json.dumps(report)
+
+
+def test_access_log_otlp_inspector_classifies_mismatches_without_echoing_values(tmp_path, capsys):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    secret_like_value = "private-config-value-should-not-appear"
+    rendered = RENDERED_CONFIG.replace(
+        "    add:\n      identity: apiKey.name\n",
+        "    add:\n      identity: apiKey.name\n"
+        "    otlp:\n"
+        "      host: private-endpoint.example:4317\n"
+        "      fields:\n"
+        "        add:\n"
+        f"          service: {secret_like_value}\n"
+        "          signal: '\"access-log\"'\n",
+    )
+    config.write_text(rendered)
+    from unittest.mock import patch
+
+    with patch.object(sys, "stdin", open_json_input(env, config)):
+        assert helper.main() == 0
+    output = capsys.readouterr().out
+    report = json.loads(output)
+    assert report["access_log_otlp"] == {
+        "state": "present",
+        "service_field_matches": False,
+        "signal_field_matches": True,
+    }
+    assert secret_like_value not in output
+    assert "private-endpoint.example" not in output
+
+
+def test_access_log_otlp_unknown_metadata_never_echoes_alias_or_raw_value(tmp_path, capsys):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    secret_like_alias = "private-alias-must-not-appear"
+    rendered = RENDERED_CONFIG.replace(
+        "  accessLog:\n    add:\n      identity: apiKey.name\n",
+        f"  accessLog:\n    otlp: *{secret_like_alias}\n",
+    )
+    config.write_text(rendered)
+    from unittest.mock import patch
+
+    with patch.object(sys, "stdin", open_json_input(env, config)):
+        assert helper.main() == 0
+    output = capsys.readouterr().out
+    report = json.loads(output)
+    assert report["access_log_otlp"] == {
+        "state": "unknown",
+        "service_field_matches": None,
+        "signal_field_matches": None,
+    }
+    assert secret_like_alias not in output
+    assert "private-config-value" not in output
+
+
+def test_access_log_otlp_inspector_fails_closed_on_unparsed_yaml_shapes(tmp_path, capsys):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    enabled = RENDERED_CONFIG.replace(
+        "  accessLog:\n    add:\n      identity: apiKey.name\n",
+        "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+        "          service: '\"agentgateway\"'\n"
+        "          signal: '\"access-log\"'\n",
+    )
+    cases = {
+        "quoted-duplicate-parent": enabled + (
+            '"frontendPolicies":\n'
+            "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n"
+            "          signal: '\"access-log\"'\n"
+        ),
+        "merge-alias": RENDERED_CONFIG.replace(
+            "  accessLog:\n    add:\n      identity: apiKey.name\n",
+            "  accessLog:\n    <<: *private-exporter\n    add:\n      identity: apiKey.name\n",
+        ),
+        "orphan-fields": RENDERED_CONFIG.replace(
+            "  accessLog:\n    add:\n      identity: apiKey.name\n",
+            "  accessLog:\n    fields:\n      add:\n"
+            "        signal: 'private-signal-value'\n",
+        ),
+        "scalar-continuation": enabled.replace(
+            "          signal: '\"access-log\"'\n",
+            "          signal: '\"access-log\"'\n"
+            "            private-invalid-continuation\n",
+        ),
+    }
+
+    from unittest.mock import patch
+
+    for case, rendered in cases.items():
+        config.write_text(rendered)
+        with patch.object(sys, "stdin", open_json_input(env, config)):
+            assert helper.main() == 0
+        output = capsys.readouterr().out
+        report = json.loads(output)
+        assert report["access_log_otlp"] == {
+            "state": "unknown",
+            "service_field_matches": None,
+            "signal_field_matches": None,
+        }, case
+        for private_value in (
+            "private-exporter", "private-signal-value", "private-invalid-continuation"
+        ):
+            assert private_value not in output, case
+
+
+@pytest.mark.parametrize(
+    "access_log_block",
+    [
+        "  accessLog: *private-alias\n",
+        "  accessLog:\n    otlp: *private-alias\n",
+        "  accessLog:\n    otlp:\n      fields: null\n",
+        (
+            "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n          signal: *private-alias\n"
+        ),
+        (
+            "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n          signal: '\"access-log\"'\n"
+            "          signal: '\"access-log\"'\n"
+        ),
+        "  accessLog:\n    otlp:\n      service: '\"agentgateway\"'\n      signal: '\"access-log\"'\n",
+        (
+            "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n          signal: '\"access-log\"'\n"
+            "    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n          signal: '\"access-log\"'\n"
+        ),
+        (
+            " accessLog:\n    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n          signal: '\"access-log\"'\n"
+        ),
+        (
+            "  accessLog:\n    otlp:\n      fields:\n        add:\n"
+            "          service: '\"agentgateway\"'\n        signal: '\"access-log\"'\n"
+        ),
+    ],
+)
+def test_access_log_otlp_inspector_reports_ambiguous_shapes_as_unknown(access_log_block):
+    helper = _load_helper()
+    config = RENDERED_CONFIG.replace(
+        "  accessLog:\n    add:\n      identity: apiKey.name\n",
+        access_log_block,
+    )
+    assert helper.parse_access_log_otlp(config) == {
+        "state": "unknown",
+        "service_field_matches": None,
+        "signal_field_matches": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "misplaced_block",
+    [
+        "  otlp:\n    fields:\n      add:\n        service: 'irrelevant'\n",
+        "  fields:\n    add:\n      signal: 'irrelevant'\n",
+        "  service: 'irrelevant'\n",
+    ],
+)
+def test_access_log_otlp_inspector_does_not_treat_orphan_fields_as_absent(misplaced_block):
+    helper = _load_helper()
+    config = "frontendPolicies:\n" + misplaced_block + "  tracing:\n    randomSampling: 0.1\n"
+    assert helper.parse_access_log_otlp(config) == {
+        "state": "unknown",
+        "service_field_matches": None,
+        "signal_field_matches": None,
+    }
+
+
+def test_runtime_revision_mismatch_diagnostic_is_bounded_and_does_not_accept_old_head():
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    tasks = gateway["tasks"]
+    diagnostic = next(
+        task for task in tasks
+        if task.get("name") == "Report a bounded checkout mismatch without accepting it"
+    )
+    assertion = next(task for task in tasks if task.get("name") == "Require the reviewed Dev revision")
+    assert tasks.index(diagnostic) < tasks.index(assertion)
+    assert set(diagnostic["ansible.builtin.debug"]["msg"]) == {
+        "status", "revision_comparison", "observed_checkout_sha", "expected_checkout_sha"
+    }
+    assert diagnostic["ansible.builtin.debug"]["msg"]["status"] == "observed_unverified"
+    assert assertion["ansible.builtin.assert"]["that"] == (
+        "_agw_revision.stdout | trim == expected_repository_sha"
+    )
+
+    environment = Environment()
+    environment.tests["match"] = lambda value, pattern: re.fullmatch(pattern, str(value)) is not None
+    inputs = {
+        "_agw_revision": {"stdout": "raw-private-path-and-invalid-sha"},
+        "expected_repository_sha": "a" * 40,
+    }
+    rendered = {
+        key: environment.from_string(value).render(**inputs)
+        for key, value in diagnostic["ansible.builtin.debug"]["msg"].items()
+    }
+    assert rendered == {
+        "status": "observed_unverified",
+        "revision_comparison": "unknown",
+        "observed_checkout_sha": "unknown",
+        "expected_checkout_sha": "a" * 40,
+    }
+    assert "raw-private-path-and-invalid-sha" not in json.dumps(rendered)
+
+    inputs["_agw_revision"]["stdout"] = "b" * 40
+    mismatch = {
+        key: environment.from_string(value).render(**inputs)
+        for key, value in diagnostic["ansible.builtin.debug"]["msg"].items()
+    }
+    assert mismatch["revision_comparison"] == "mismatch"
+    assert mismatch["observed_checkout_sha"] == "b" * 40
 
 
 def test_actual_env_template_pin_passes_checker_and_deploy_preflight(tmp_path):
@@ -1059,14 +1296,14 @@ def test_rendered_config_inspector_accepts_disabled_client_sampling(tmp_path, ca
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
-    config.write_text(RENDERED_CONFIG.replace("clientSampling: 0.05", "clientSampling: false"))
+    config.write_text(RENDERED_CONFIG)
     import sys
     from unittest.mock import patch
 
     with patch.object(sys, "stdin", open_json_input(env, config)):
         assert helper.main() == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["random_sampling"] == 0.05
+    assert report["random_sampling"] == 0.1
     assert report["client_sampling"] is False
 
 
@@ -1192,7 +1429,8 @@ def test_dev_template_is_read_only_and_requires_the_expected_revision():
     assert "_agw_running_image_id.stdout" in str(running_image_check["ansible.builtin.assert"]["that"])
     report = next(task for task in receipt_tasks if task.get("name") == "Report the reviewed Dev runtime metadata")
     assert set(report["ansible.builtin.debug"]["msg"]) == {
-        "status", "image", "random_sampling", "client_sampling", "checkout_revision", "running_image_id"
+        "status", "image", "random_sampling", "client_sampling", "access_log_otlp",
+        "checkout_revision", "running_image_id"
     }
     assert "rendered_config_sha256" not in report["ansible.builtin.debug"]["msg"]
 

@@ -312,191 +312,60 @@ setup() {
   assert_contains "$block" "'ping=OK' not in _mountprobe.stdout_lines"
 }
 
-@test "gh-runner: the hooks find the runner's docker wrapper first on the runner's PATH" {
-  # The hooks resolve `docker` with the runner's own PATH (@actions/exec looks the tool up
-  # with the hook process's PATH, not the child's). The runner is started by run.sh, which
-  # does not read .path, so the PATH line in .env is what puts _bin first.
+@test "gh-runner: the hooks' docker reaches the account's podman API through DOCKER_HOST, and .env sets no PATH" {
+  # Design D4: Docker's CLI client against the account's rootless podman API socket. The
+  # hooks pass DOCKER_* through to every `docker` they start (runner-container-hooks
+  # v0.8.1, utils.ts optionsWithDockerEnvs), so DOCKER_HOST in .env reaches each call,
+  # while the job's HOME=/github/home never reaches podman (docs/MISTAKES.md 10.29).
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
-  assert_grep -qxF 'PATH={{ github_runner_home }}/_bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin' \
-    "$D/templates/runner-dotenv.j2"
+  local E="$D/templates/runner-dotenv.j2"
+  assert_grep -qxF 'DOCKER_HOST=unix:///run/user/{{ github_runner_uid }}/podman/podman.sock' "$E"
+  # The #556 wrapper and its PATH line are gone: the runner's PATH is the user manager's,
+  # where /usr/bin/docker is Docker's client.
+  grep -vE '^[[:space:]]*#' "$E" > "$BATS_TEST_TMPDIR/dotenv-code"
+  refute_grep -qE '^PATH=' "$BATS_TEST_TMPDIR/dotenv-code"
+  refute_grep -qF '_bin' "$BATS_TEST_TMPDIR/dotenv-code"
+  [ ! -e "$D/templates/docker-wrapper.sh.j2" ]
+  # Rendered, the line names the uid the deploy looked up.
+  sed -e 's#{{ github_runner_home }}#/opt/r#g' -e 's#{{ github_runner_uid }}#1001#g' "$E" \
+    > "$BATS_TEST_TMPDIR/dotenv"
+  refute_grep -qF '{{' "$BATS_TEST_TMPDIR/dotenv"
+  assert_grep -qxF 'DOCKER_HOST=unix:///run/user/1001/podman/podman.sock' "$BATS_TEST_TMPDIR/dotenv"
+  # The template task hands the template the looked-up uid, so the lookup comes first.
+  local t
+  t=$(task_block "$PB" "Template the runner's declaration, job env and job hooks")
+  [ -n "$t" ]
+  assert_contains "$t" 'github_runner_uid: "{{ _runner_uid }}"'
+  assert_contains "$t" '{ src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }'
+  assert_precedes "$PB" '_runner_uid: "\{\{ getent_passwd' "name: \"Template the runner's declaration, job env and job hooks\""
   # The runner applies .env only when it starts; a .env change already restarts it.
   assert_grep -qF "or ('runner-dotenv.j2' in (_runner_files.results | default([])" "$PB"
-  local t
-  t=$(task_block "$PB" 'Install the docker wrapper the container hooks run')
-  [ -n "$t" ]
-  assert_contains "$t" 'docker-wrapper.sh.j2"'
-  assert_contains "$t" 'dest: "{{ _home }}/_bin/docker"'
-  assert_contains "$t" 'mode: "0750"'
-  assert_contains "$t" 'github_runner_uid: "{{ _runner_uid }}"'
-  # Not the runner's own bin/, which holds the runner's binaries from its archive.
-  refute_contains "$t" '{{ _home }}/bin/'
-  # After the uid is known (XDG_RUNTIME_DIR is /run/user/<uid>), and in place before the
-  # runner restarts with the new PATH.
-  assert_precedes "$PB" '_runner_uid: "\{\{ getent_passwd' 'name: "Install the docker wrapper the container hooks run"'
-  assert_precedes "$PB" 'name: "Install the docker wrapper the container hooks run"' 'name: "Reload the account.s systemd and start the runner"'
 }
 
-@test "gh-runner: the docker wrapper gives podman the account's directories and keeps the job's HOME" {
-  # The hooks start `docker create` with exactly the job's variables: HOME=/github/home
-  # and no PATH or XDG_* directory. Podman then resolved HOME on the host and failed with
-  # `cannot resolve /github/home`, and would have used a different image store from the
-  # one `docker pull` (no HOME) wrote to. Rendered and run, not grepped.
-  local T="$D/templates/docker-wrapper.sh.j2"
-  assert_grep -qxF 'exec /usr/bin/podman "$@"' "$T"
-  local home="$BATS_TEST_TMPDIR/home" stub="$BATS_TEST_TMPDIR/podman" w="$BATS_TEST_TMPDIR/docker"
-  mkdir -p "$home"
-  # The stub prints what it was GIVEN (/usr/bin/env), not what a shell would assume: a
-  # shell sets itself an unexported default PATH when it receives none.
-  cat > "$stub" <<'STUB'
-#!/bin/sh
-/usr/bin/env
-for a in "$@"; do echo "arg=$a"; done
-STUB
-  chmod +x "$stub"
-  sed -e "s#{{ github_runner_home }}#$home#g" -e 's#{{ github_runner_uid }}#1001#g' \
-      -e "s#^exec /usr/bin/podman #exec $stub #" "$T" > "$w"
-  refute_grep -qF '{{' "$w"
-  assert_grep -qxF "exec $stub \"\$@\"" "$w"
-  # As the hooks run `create`: the job's variables only.
-  local sys='PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
-  run env -i HOME=/github/home GITHUB_ACTIONS=true CI=true /bin/sh "$w" create -e HOME --name 'a b' img
-  [ "$status" -eq 0 ]
-  assert_contains "$output" 'HOME=/github/home'
-  assert_contains "$output" "XDG_CONFIG_HOME=$home/.config"
-  assert_contains "$output" "XDG_DATA_HOME=$home/.local/share"
-  assert_contains "$output" 'XDG_RUNTIME_DIR=/run/user/1001'
-  # An exported PATH, so podman can find newuidmap/newgidmap.
-  assert_contains "$output" "$sys"
-  # Arguments pass through unchanged, one per word, including one with a space.
-  assert_contains "$output" "$(printf 'arg=create\narg=-e\narg=HOME\narg=--name\narg=a b\narg=img')"
-  # As the hooks run `pull`: no HOME at all. The wrapper must not invent one, and the
-  # store directory is the same as for `create`.
-  run env -i /bin/sh "$w" pull img
-  [ "$status" -eq 0 ]
-  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/pull"
-  refute_grep -qE '^HOME=' "$BATS_TEST_TMPDIR/pull"
-  assert_contains "$output" "XDG_DATA_HOME=$home/.local/share"
-  # A caller's directories and PATH are replaced: the wrapper's own _bin can never be
-  # found again, and a job-chosen store is never used.
-  run env -i PATH="$BATS_TEST_TMPDIR:/usr/bin" XDG_DATA_HOME=/job/data \
-    XDG_CONFIG_HOME=/job/config XDG_RUNTIME_DIR=/tmp/r /bin/sh "$w" info
-  [ "$status" -eq 0 ]
-  assert_contains "$output" "$sys"
-  assert_contains "$output" "XDG_DATA_HOME=$home/.local/share"
-  assert_contains "$output" "XDG_CONFIG_HOME=$home/.config"
-  assert_contains "$output" 'XDG_RUNTIME_DIR=/run/user/1001'
-  # And no code line assigns HOME: `-e HOME` must hand the container the job's home.
-  grep -vE '^[[:space:]]*#' "$T" > "$BATS_TEST_TMPDIR/code"
-  refute_grep -qE '(^|[[:space:];])(export[[:space:]]+)?HOME=' "$BATS_TEST_TMPDIR/code"
-}
-
-@test "gh-runner: the docker wrapper hands a job its own PATH and XDG values, and no others change" {
-  # The hooks pass each job variable as a bare `-e NAME`, and the engine fills that from
-  # its own environment, which the wrapper replaces. A job's PATH or XDG_* value must
-  # still reach its container; a bare -e of one the job did not set is dropped, as
-  # docker drops a bare -e of an unset variable. The stub records argv NUL-separated, so
-  # the comparison is byte for byte.
-  local T="$D/templates/docker-wrapper.sh.j2"
-  local stub="$BATS_TEST_TMPDIR/podman" w="$BATS_TEST_TMPDIR/docker" out="$BATS_TEST_TMPDIR/argv"
-  cat > "$stub" <<STUB
-#!/bin/sh
-printf '%s\0' "\$@" > "$out"
-/usr/bin/printenv XDG_DATA_HOME
-STUB
-  chmod +x "$stub"
-  sed -e "s#{{ github_runner_home }}#/opt/r#g" -e 's#{{ github_runner_uid }}#1001#g' \
-      -e "s#^exec /usr/bin/podman #exec $stub #" "$T" > "$w"
-  refute_grep -qF '{{' "$w"
-  # (a) every form, for all four names; a value with a space and one ending in a newline.
-  run env -i HOME=/github/home PATH=/job/bin:/usr/bin XDG_CONFIG_HOME='/job/c fg' \
-    XDG_DATA_HOME=$'/job/d\n' XDG_RUNTIME_DIR=/job/r /bin/sh "$w" create \
-    -e PATH --env XDG_CONFIG_HOME -e=XDG_DATA_HOME --env=XDG_RUNTIME_DIR -e HOME \
-    --name 'a b' -e 'K=v=w x' -e=OTHER --env-file f -v=/x:/y img cmd -e
-  [ "$status" -eq 0 ]
-  # The engine itself still gets the account's store.
-  [ "$output" = '/opt/r/.local/share' ]
-  printf '%s\0' create -e PATH=/job/bin:/usr/bin --env 'XDG_CONFIG_HOME=/job/c fg' \
-    -e $'XDG_DATA_HOME=/job/d\n' --env XDG_RUNTIME_DIR=/job/r -e HOME \
-    --name 'a b' -e 'K=v=w x' -e=OTHER --env-file f -v=/x:/y img cmd -e > "$BATS_TEST_TMPDIR/want"
-  cmp "$BATS_TEST_TMPDIR/want" "$out"
-  # (b) names the caller did not set: the pair is dropped, everything else kept.
-  run env -i HOME=/github/home /bin/sh "$w" create -e PATH --env=XDG_DATA_HOME \
-    --env XDG_RUNTIME_DIR -e=XDG_CONFIG_HOME -e HOME --name 'a b' img
-  [ "$status" -eq 0 ]
-  printf '%s\0' create -e HOME --name 'a b' img > "$BATS_TEST_TMPDIR/want"
-  cmp "$BATS_TEST_TMPDIR/want" "$out"
-  # (c) a call with no -e of these names passes through byte for byte.
-  run env -i /bin/sh "$w" pull 'img:x y' --format='{{.ID}} a=b' ''
-  [ "$status" -eq 0 ]
-  printf '%s\0' pull 'img:x y' --format='{{.ID}} a=b' '' > "$BATS_TEST_TMPDIR/want"
-  cmp "$BATS_TEST_TMPDIR/want" "$out"
-}
-
-@test "gh-runner: the docker wrapper rewrites only the options before the image, never the container's command" {
-  # Podman reads everything from the IMAGE (CONTAINER for exec) on as the container's
-  # command (SetInterspersed(false)), so `echo -e PATH` there must reach podman as-is.
-  # The rewrite is limited to create/run/exec and stops at the first positional
-  # argument; an option it does not know ends it early (fail safe).
-  local T="$D/templates/docker-wrapper.sh.j2"
-  local stub="$BATS_TEST_TMPDIR/podman" w="$BATS_TEST_TMPDIR/docker" out="$BATS_TEST_TMPDIR/argv"
-  cat > "$stub" <<STUB
-#!/bin/sh
-printf '%s\0' "\$@" > "$out"
-STUB
-  chmod +x "$stub"
-  sed -e "s#{{ github_runner_home }}#/opt/r#g" -e 's#{{ github_runner_uid }}#1001#g' \
-      -e "s#^exec /usr/bin/podman #exec $stub #" "$T" > "$w"
-  local want="$BATS_TEST_TMPDIR/want"
-  # Hooks' create shape (container.ts containerCreate), from a real job log, plus a
-  # command after the image that contains `-e PATH`.
-  run env -i HOME=/github/home PATH=/job/bin /bin/sh "$w" create \
-    --label=a1b2 --network=github_network_1 --name job_c -p 8080:80 -e PATH -e HOME \
-    -e GITHUB_ACTIONS=true -e CI=true -v=/var/run/docker.sock:/var/run/docker.sock \
-    -v=/w:/__w:ro --entrypoint tail img:1 -f /dev/null -e PATH --env=PATH
-  [ "$status" -eq 0 ]
-  printf '%s\0' create \
-    --label=a1b2 --network=github_network_1 --name job_c -p 8080:80 -e PATH=/job/bin -e HOME \
-    -e GITHUB_ACTIONS=true -e CI=true -v=/var/run/docker.sock:/var/run/docker.sock \
-    -v=/w:/__w:ro --entrypoint tail img:1 -f /dev/null -e PATH --env=PATH > "$want"
-  cmp "$want" "$out"
-  # Hooks' run shape (containerRun): `-v` with a separate value, a boolean, a command.
-  run env -i PATH=/job/bin /bin/sh "$w" run --rm --name step_1 --workdir=/__w/r \
-    -e PATH -v /a:/b --entrypoint sh img echo -e PATH
-  [ "$status" -eq 0 ]
-  printf '%s\0' run --rm --name step_1 --workdir=/__w/r \
-    -e PATH=/job/bin -v /a:/b --entrypoint sh img echo -e PATH > "$want"
-  cmp "$want" "$out"
-  # Hooks' exec shape (containerExecStep): rewritten before the CONTAINER only; an unset
-  # name is dropped; the hooks' own `-e PATH=...` is untouched.
-  run env -i PATH='/job bin' /bin/sh "$w" exec -i --workdir=/__w/r -e PATH -e XDG_DATA_HOME \
-    -e PATH=/pre:/usr/bin cid0 sh -e PATH
-  [ "$status" -eq 0 ]
-  printf '%s\0' exec -i --workdir=/__w/r -e 'PATH=/job bin' \
-    -e PATH=/pre:/usr/bin cid0 sh -e PATH > "$want"
-  cmp "$want" "$out"
-  # A boolean right before the CONTAINER must not swallow it: the command that follows
-  # (here one starting with -e) stays untouched.
-  run env -i PATH=/job/bin /bin/sh "$w" exec -i cid0 -e PATH
-  [ "$status" -eq 0 ]
-  printf '%s\0' exec -i cid0 -e PATH > "$want"
-  cmp "$want" "$out"
-  # Fail safe: an unknown option without `=`, a combined short form, or `--` ends the
-  # rewrite; what follows passes through unchanged.
-  local stop
-  for stop in --not-a-podman-flag -it --; do
-    run env -i PATH=/job/bin /bin/sh "$w" create --name n "$stop" -e PATH img
-    [ "$status" -eq 0 ]
-    printf '%s\0' create --name n "$stop" -e PATH img > "$want"
-    cmp "$want" "$out" || { echo "rewrote after $stop"; false; }
-  done
-  # Any other subcommand passes through unchanged, even with a job PATH set.
-  local sub
-  for sub in start pull logs; do
-    run env -i PATH=/job/bin /bin/sh "$w" "$sub" -e PATH x
-    [ "$status" -eq 0 ]
-    printf '%s\0' "$sub" -e PATH x > "$want"
-    cmp "$want" "$out" || { echo "rewrote for $sub"; false; }
-  done
+@test "gh-runner: the deploy requires Docker's CLI client and removes the old wrapper" {
+  # The runtime install (install-podman.yml, podman_docker_api_client) owns the package;
+  # the deploy refuses a host where /usr/bin/docker is still the podman-docker shim, which
+  # fails every container job, before it registers or restarts anything.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local r a
+  r=$(task_block "$PB" 'Read which package provides the docker the hooks will run')
+  [ -n "$r" ]
+  assert_contains "$r" 'dpkg-query -S /usr/bin/docker'
+  assert_contains "$r" 'check_mode: false'
+  assert_contains "$r" 'changed_when: false'
+  a=$(task_block "$PB" "Require Docker's CLI client, not the podman-docker shim")
+  [ -n "$a" ]
+  assert_contains "$a" "that: \"'owner=docker-ce-cli' in _docker_owner.stdout_lines\""
+  refute_contains "$a" 'when:'
+  assert_precedes "$PB" "name: \"Require Docker's CLI client, not the podman-docker shim\"" 'name: "Install and register the runner"'
+  # A host deployed by #556 carries _bin/docker; the deploy removes it.
+  local w
+  w=$(task_block "$PB" 'Remove the docker wrapper an earlier deploy installed')
+  [ -n "$w" ]
+  assert_contains "$w" 'path: "{{ _home }}/_bin"'
+  assert_contains "$w" 'state: absent'
+  grep -vE '^[[:space:]]*#' "$PB" > "$BATS_TEST_TMPDIR/pb-code"
+  refute_grep -qF 'docker-wrapper.sh.j2' "$BATS_TEST_TMPDIR/pb-code"
 }
 
 @test "gh-runner: the deploy probe runs docker the way the hooks do, environment included" {
@@ -506,31 +375,62 @@ STUB
   local block
   block=$(sed -n '/^    - name: "Confirm a job container can be created with the runner.s mounts/,/^    - name: "Report"$/p' "$PB")
   [ -n "$block" ]
-  # `docker` is found the way the hooks find it, and it is the wrapper.
-  assert_contains "$block" "runner_path=\$(sed -n 's/^PATH=//p' \"\$H/.env\")"
-  assert_contains "$block" 'dk=$(PATH="$runner_path" command -v docker)'
-  assert_contains "$block" '[ "$dk" = "$H/_bin/docker" ]'
-  # `pull`-shaped calls: no environment at all. And no `system migrate`: it stops running
+  # `docker` is found the way the hooks find it, it is Docker's client, and DOCKER_HOST
+  # is the deployed .env's, which must be the account's own podman API socket.
+  assert_contains "$block" 'dk=$(command -v docker)'
+  assert_contains "$block" 'echo "client=$(dpkg-query -S "$dk" | cut -d: -f1)"'
+  assert_contains "$block" "dh=\$(sed -n 's/^DOCKER_HOST=//p' \"\$H/.env\")"
+  assert_contains "$block" '[ "$dh" = "unix:///run/user/$(id -u)/podman/podman.sock" ]'
+  # `pull`-shaped calls: DOCKER_HOST alone. And no `system migrate`: it stops running
   # containers, so it could stop a job that started after the uid-map check.
   printf '%s\n' "$block" | grep -vE '^[[:space:]]*#' > "$BATS_TEST_TMPDIR/probe-code"
   refute_grep -qF 'system migrate' "$BATS_TEST_TMPDIR/probe-code"
-  assert_contains "$block" 'env -i "$dk" import "$src/rootfs.tar" "$img"'
-  assert_contains "$block" 'env -i "$dk" image exists "$img"'
-  # The `create`: the job's variables only, with -e HOME, on the same image.
-  assert_contains "$block" 'env -i HOME=/github/home GITHUB_ACTIONS=true CI=true "$dk" create --name "$probe"'
+  assert_contains "$block" 'env -i DOCKER_HOST="$dh" "$dk" import "$src/rootfs.tar" "$img"'
+  assert_contains "$block" 'env -i DOCKER_HOST="$dh" "$dk" image inspect "$img"'
+  # The `create`: the job's variables plus DOCKER_HOST, with -e HOME, on the same image.
+  assert_contains "$block" 'env -i HOME=/github/home GITHUB_ACTIONS=true CI=true DOCKER_HOST="$dh" "$dk" create --name "$probe"'
   assert_contains "$block" '-e HOME -e GITHUB_ACTIONS=true -e CI=true'
   assert_contains "$block" "grep -qF '\"HOME=/github/home\"' <<<\"\$cfg\""
-  # No engine call in the probe body runs outside the hooks' environment.
+  # Every engine call in the probe body runs under `env -i`, never in the unit's own
+  # environment.
   printf '%s\n' "$block" > "$BATS_TEST_TMPDIR/block"
   refute_grep -qE '^[[:space:]]*(docker|podman|"\$dk")[[:space:]]' "$BATS_TEST_TMPDIR/block"
+  grep -F '"$dk" ' "$BATS_TEST_TMPDIR/probe-code" | grep -vF 'dpkg-query' > "$BATS_TEST_TMPDIR/dk-calls"
+  [ -s "$BATS_TEST_TMPDIR/dk-calls" ]
+  run awk '!/env -i /' "$BATS_TEST_TMPDIR/dk-calls"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
   local r
-  for r in "('docker=' ~ _home ~ '/_bin/docker') not in _mountprobe.stdout_lines" \
+  for r in "'docker=/usr/bin/docker' not in _mountprobe.stdout_lines" \
+           "'client=docker-ce-cli' not in _mountprobe.stdout_lines" \
+           "('docker_host=unix:///run/user/' ~ _runner_uid ~ '/podman/podman.sock') not in _mountprobe.stdout_lines" \
            "'import=ok' not in _mountprobe.stdout_lines" \
            "'create=ok' not in _mountprobe.stdout_lines" \
            "'home=job' not in _mountprobe.stdout_lines" \
            "'ping=OK' not in _mountprobe.stdout_lines"; do
     assert_contains "$block" "$r"
   done
+}
+
+@test "gh-runner: the hooks smoke harness reproduces the shim failure and requires the client's full cycle" {
+  # hooks-smoke/ is the D4 spike as code: the real hooks, podman 4.9.3, both `docker`s.
+  # Its pass means nothing unless it also sees the shim fail the way the runners did.
+  local S="$D/hooks-smoke"
+  [ -x "$S/run.sh" ]
+  [ -x "$S/hooks-cycle.sh" ]
+  assert_grep -qF "want 'RESULT shim prepare_job=failed'" "$S/hooks-cycle.sh"
+  assert_grep -qF "grep -qF 'cannot resolve /github/home' /tmp/prepare-shim.log" "$S/hooks-cycle.sh"
+  assert_grep -qF 'for r in prepare_job=ok run_script_step=ok step_home=job workspace_mount=ok cleanup_job=ok containers_left=0; do' "$S/hooks-cycle.sh"
+  assert_grep -qF 'cycle client "$SYS_PATH" "DOCKER_HOST=unix://$SOCK"' "$S/hooks-cycle.sh"
+  # The hooks are verified against the release's published digest, never a constant.
+  assert_grep -qF 'refusing to run unverified hooks' "$S/run.sh"
+  assert_grep -qF 'if [ "$got" != "$want" ]; then' "$S/run.sh"
+  # Same client pin as install-podman.yml, so the harness tests what the hosts get.
+  local pin
+  pin=$(sed -n "s/.*podman_docker_api_client_version | default('\([^']*\)').*/\1/p" \
+    "$BATS_TEST_DIRNAME/../playbooks/install-podman.yml")
+  [ -n "$pin" ]
+  assert_grep -qF "DOCKER_CLI_VERSION=\"\${DOCKER_CLI_VERSION:-$pin}\"" "$S/run.sh"
 }
 
 # ── restarts reach the Listener (docs/MISTAKES.md 10.27) ─────────────────────────
@@ -558,8 +458,71 @@ STUB
 
 @test "gh-runner: the deploy never restarts the unit in place; it quiesces it, then starts it" {
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
-  grep -vE '^[[:space:]]*#' "$PB" > "$BATS_TEST_TMPDIR/pb"
-  refute_grep -qE "(state: *restarted|'restarted')" "$BATS_TEST_TMPDIR/pb"
+  # Structural, not textual. A line grep missed `state: "restarted"` and could not tell the
+  # runner's unit from another one. Every task in every play (blocks, rescue, always and
+  # handlers included) that restarts a unit, by a service module or by systemctl in a shell,
+  # must name exactly systemd-binfmt.service: the one restart this playbook makes, which
+  # registers the arm64 emulator ("Register the arm64 binfmt handler now"). The runner's own
+  # unit is never restarted in place, because a restart stops the Listener holding a job; it
+  # goes through the quiesce, then the start. The walk must reach that start task, or it has
+  # checked nothing.
+  python3 - "$PB" <<'PYTHON'
+import re
+import sys
+
+import yaml
+
+ALLOWED_RESTART_UNITS = {"systemd-binfmt.service"}
+RUNNER_UNIT = "actions-runner.service"
+SERVICE_MODULES = {"systemd_service", "systemd", "service"}
+SHELL_MODULES = {"command", "shell"}
+
+
+def short(key):
+    for prefix in ("ansible.builtin.", "ansible.legacy."):
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return key
+
+
+def walk(tasks):
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        yield task
+        for section in ("block", "rescue", "always"):
+            yield from walk(task.get(section))
+
+
+with open(sys.argv[1]) as source:
+    plays = yaml.safe_load(source)
+
+tasks = []
+for play in plays:
+    for section in ("pre_tasks", "tasks", "post_tasks", "handlers"):
+        tasks.extend(walk(play.get(section)))
+
+failures = []
+reached_runner_unit = False
+for task in tasks:
+    for key, args in task.items():
+        module = short(key)
+        if module in SERVICE_MODULES and isinstance(args, dict):
+            if args.get("name") == RUNNER_UNIT:
+                reached_runner_unit = True
+            if args.get("state") == "restarted" and args.get("name") not in ALLOWED_RESTART_UNITS:
+                failures.append(f"{task.get('name')!r} restarts {args.get('name')!r} in place")
+        if module in SHELL_MODULES:
+            cmd = args if isinstance(args, str) else (args or {}).get("cmd", "")
+            if re.search(r"systemctl\b.*\brestart\b", str(cmd)):
+                failures.append(f"{task.get('name')!r} restarts a unit from a shell command")
+
+if not reached_runner_unit:
+    failures.append(f"the walk never reached the {RUNNER_UNIT} task, so nothing was checked")
+if failures:
+    print("\n".join(failures), file=sys.stderr)
+    sys.exit(1)
+PYTHON
   local q s
   q=$(grep -nF '    - name: "Drain, stop and empty the runner'"'"'s unit"' "$PB" | cut -d: -f1)
   s=$(grep -nF '    - name: "Reload the account'"'"'s systemd and start the runner"' "$PB" | cut -d: -f1)
@@ -571,7 +534,8 @@ STUB
   local block
   block=$(sed -n '/^    - name: "Drain, stop and empty the runner.s unit"$/,/^    - name: "Reload the account/p' "$PB")
   assert_contains "$block" 'ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh quiesce"'
-  assert_contains "$block" 'when: _runner_restart | bool and not ansible_check_mode'
+  # Persistent only: on the ephemeral lifecycle the supervisor starts each runner.
+  assert_contains "$block" "when: _lifecycle == 'persistent' and _runner_restart | bool and not ansible_check_mode"
   assert_contains "$block" "RUNNER_DRAIN_SECONDS: \"{{ github_runner_drain_seconds | default(600) }}\""
   # A restart is also due when the processes are not in the promised state, so a run
   # after a failed one converges, not only one that changed a file.

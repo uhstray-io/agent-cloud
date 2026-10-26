@@ -101,3 +101,79 @@ def test_a_dry_run_says_when_the_bundle_would_change(tmp_path):
              check=True)
     assert r.returncode == 0 and "would be rewritten" in r.stdout, r.stdout
     assert bundle.read_text() == "an old root\n"
+
+
+# ── Combined bundle: step-ca root + intermediate, then the play host's public roots ───────────
+# SSL_CERT_FILE replaces a consumer's whole trust store, so the local gateway (whose upstream is
+# a public-CA host) names this file. The stand-in public roots are PEM blocks named PUB<n>, so a
+# test can tell them from the CA's MIIB<n> certificates.
+
+
+def _combined(deploy: Path, system: list[str], engine: Path) -> dict:
+    combined = str(deploy / "certs" / "ca-bundle-combined.crt")
+    return {"_ca_root_dest_dir": str(deploy), "_ca_root_combined_dest": combined,
+            "_ca_root_system_bundles": system, "_ca_engine": str(engine)}
+
+
+def _public_roots(path: Path, certs: int = 2) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(PEM.format(n=f"PUB{i}") for i in range(certs)) + "\n")
+    return path
+
+
+def test_the_combined_bundle_is_the_ca_root_and_intermediate_then_the_public_roots(tmp_path):
+    deploy = tmp_path / "deploy"
+    public = _public_roots(tmp_path / "system" / "ca-certificates.crt", certs=3)
+    consumer = _combined(deploy, [str(public)], _engine(tmp_path, "local"))
+    r = _run(tmp_path, consumer)
+    assert r.returncode == 0, r.stdout + r.stderr
+    combined = deploy / "certs" / "ca-bundle-combined.crt"
+    assert combined.read_text() == (deploy / "certs" / "step-ca-bundle.crt").read_text() + public.read_text()
+    assert combined.read_text().count("-----BEGIN CERTIFICATE-----") == 5
+    assert combined.stat().st_mode & 0o777 == 0o644
+    # The step-ca-only bundle is still written, unchanged, for the other consumers.
+    assert (deploy / "certs" / "step-ca-bundle.crt").read_text().count("BEGIN CERTIFICATE") == 2
+
+
+def test_the_first_public_root_path_that_exists_is_the_one_read(tmp_path):
+    deploy = tmp_path / "deploy"
+    present = _public_roots(tmp_path / "pki" / "ca-bundle.crt", certs=1)
+    consumer = _combined(deploy, [str(tmp_path / "absent.crt"), str(present)], _engine(tmp_path, "local"))
+    r = _run(tmp_path, consumer)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (deploy / "certs" / "ca-bundle-combined.crt").read_text().count("-----BEGIN CERTIFICATE-----") == 3
+
+
+def test_a_combined_bundle_with_no_public_roots_on_the_play_host_is_refused(tmp_path):
+    deploy = tmp_path / "deploy"
+    consumer = _combined(deploy, [str(tmp_path / "absent.crt")], _engine(tmp_path, "local"))
+    r = _run(tmp_path, consumer)
+    assert r.returncode != 0 and "no public trust roots" in r.stdout, r.stdout
+    assert not (deploy / "certs" / "ca-bundle-combined.crt").exists()
+
+
+def test_without_a_combined_destination_no_public_roots_are_read(tmp_path):
+    deploy = tmp_path / "deploy"
+    consumer = {"_ca_root_dest_dir": str(deploy), "_ca_root_system_bundles": [str(tmp_path / "absent.crt")],
+                "_ca_engine": str(_engine(tmp_path, "local"))}
+    r = _run(tmp_path, consumer)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (deploy / "certs" / "ca-bundle-combined.crt").exists()
+
+
+def test_a_second_combined_run_changes_nothing(tmp_path):
+    deploy = tmp_path / "deploy"
+    public = _public_roots(tmp_path / "system" / "ca-certificates.crt")
+    consumer = _combined(deploy, [str(public)], _engine(tmp_path, "local"))
+    assert _run(tmp_path, consumer).returncode == 0
+    r = _run(tmp_path, consumer)
+    assert r.returncode == 0 and "changed=0" in r.stdout, r.stdout
+
+
+def test_a_dry_run_reads_the_public_roots_but_writes_no_combined_bundle(tmp_path):
+    deploy = tmp_path / "deploy"
+    public = _public_roots(tmp_path / "system" / "ca-certificates.crt")
+    consumer = _combined(deploy, [str(public)], _engine(tmp_path, "local"))
+    r = _run(tmp_path, consumer, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (deploy / "certs" / "ca-bundle-combined.crt").exists()

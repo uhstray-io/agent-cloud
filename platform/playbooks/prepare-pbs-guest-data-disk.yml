@@ -1,0 +1,634 @@
+---
+# Format and mount only the identity-pinned new PBS virtual disk inside its guest.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/prepare-pbs-guest-data-disk.yml
+      - platform/playbooks/files/prepare_pbs_guest_disk.py
+      - platform/playbooks/attach-pbs-data-disk.yml
+      - platform/playbooks/tasks/validate-pbs-data-disk-vm-config.yml
+      - platform/playbooks/tasks/read-pbs-guest-disk-inventory.yml
+
+- name: Require the private PBS declaration and exact Dev revision
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Refuse non-Dev and ambiguous executions
+      ansible.builtin.assert:
+        that:
+          - groups['pbs_svc'] | default([]) | length == 1
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not (local_mode | default(false) | bool)
+          - hostvars[groups['pbs_svc'][0]].vm_vmid | default('') | string is match('^[1-9][0-9]{2,5}$')
+          - hostvars[groups['pbs_svc'][0]].vm_name | default('') is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - hostvars[groups['pbs_svc'][0]].pbs_data_disk_size | default('') == '512G'
+        fail_msg: "Guest disk preparation requires one private PBS VM, its declared 512-GiB disk, and the exact reviewed Dev revision."
+        quiet: true
+
+- name: Require the PBS guest declaration for verification
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_svc
+    preflight_group_expected: pbs_svc
+  tags: [verify]
+
+- name: Re-read and validate the Proxmox PBS VM disk identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ _openbao_hosts[0] if (_openbao_hosts | length == 1) else '' }}"
+    _openbao_inventory_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_url: "{{ _openbao_inventory_url }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _pbs_hosts: "{{ groups['pbs_svc'] | default([]) }}"
+    _pbs_host: "{{ _pbs_hosts[0] if (_pbs_hosts | length == 1) else '' }}"
+    _decl: "{{ hostvars[_pbs_host] | default({}) }}"
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ _o11y_hosts[0] if (_o11y_hosts | length == 1) else '' }}"
+    _o11y_decl: "{{ hostvars[_o11y_host] | default({}) }}"
+    _vmid: "{{ _decl.vm_vmid | default('') }}"
+    _node: "{{ _decl.vm_node | default('') }}"
+    _storage: "{{ _o11y_decl.proxmox_pbs_vm_storage_id | default('') }}"
+    _target_node: "{{ _o11y_decl.proxmox_pbs_storage_node | default('') }}"
+    _name: "{{ _decl.vm_name | default('') }}"
+    _ip: "{{ _decl.vm_ip | default('') }}"
+    _gw: "{{ _decl.vm_gateway | default('') }}"
+    _netmask: "{{ _decl.vm_netmask | default(24) }}"
+    _bridge: "{{ _decl.vm_net_bridge | default('vmbr0') }}"
+    _cores: "{{ _decl.vm_cores | default('') }}"
+    _memory: "{{ _decl.vm_memory | default('') }}"
+    _expected_disk_serial: "ac-pbs-data-{{ _vmid }}"
+    _vm_description: "Managed by agent-cloud; target_service=pbs; declaration=private inventory"
+    _expected_disk_pattern: "^{{ _storage }}:vm-{{ _vmid }}-disk-[0-9]+(?=,|$)(?=.*(?:^|,)size=512G(?:,|$))(?=.*(?:^|,)serial={{ _expected_disk_serial }}(?:,|$))"
+    _disk_keys_pattern: "^(scsi|sata|virtio)[0-9]+$|^ide[013]$|^unused[0-9]+$"
+  tasks:
+    - name: Refuse launch-time identity, endpoint, and TLS overrides
+      ansible.builtin.assert:
+        that: _pbs_forgeries | length == 0
+        fail_msg: "PBS VM identity, Proxmox endpoint, and TLS settings are private inventory inputs."
+        quiet: true
+      vars:
+        _pbs_forbidden_extra_vars:
+          - proxmox_validate_certs
+          - service_url
+          - pbs_svc
+          - target_host
+          - target_vmid
+          - target_node
+          - ansible_host
+          - ansible_connection
+          - ansible_user
+          - vmid
+          - vm_node
+          - vm_ip
+          - proxmox_pbs_storage_node
+          - proxmox_pbs_vm_storage_id
+          - pbs_data_disk_storage
+          - pbs_data_disk_size
+        _pbs_forgeries: "{{ _pbs_forbidden_extra_vars | intersect('' | extra_var_names) }}"
+
+    - name: Require the exact declared guest identity and virtual-disk contract
+      ansible.builtin.assert:
+        that:
+          - _pbs_hosts | length == 1
+          - _o11y_hosts | length == 1
+          - _openbao_hosts | length == 1
+          - _openbao_inventory_url | string | length > 0
+          - openbao_addr | default('') == _openbao_inventory_url
+          - _vmid | string is match('^[1-9][0-9]{2,5}$')
+          - _node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _node == _target_node
+          - _name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _decl.vm_ip | default('') | string is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+          - _decl.ansible_host | default(_pbs_host) == _decl.vm_ip
+          - _decl.pbs_data_disk_storage | default('') == _storage
+          - _decl.pbs_data_disk_size | default('') == '512G'
+          - _storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+          - _ip == _decl.vm_ip
+          - _gw | length > 0
+          - _cores | int > 0
+          - _memory | int > 0
+          - _expected_disk_serial | length <= 20
+        fail_msg: "The exact PBS VM, guest connection address, node, store, and 512-GiB disk must match private inventory."
+        quiet: true
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Keep Proxmox API credentials private
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token | default('') }}"
+      no_log: true
+
+    - name: Require complete HTTPS Proxmox credentials from OpenBao
+      ansible.builtin.assert:
+        that:
+          - _pve_host is match('^https://')
+          - _pve_token_id | length > 0
+          - _pve_secret | length > 0
+        fail_msg: "OpenBao must provide complete HTTPS Proxmox API credentials."
+        quiet: true
+      no_log: true
+
+    - name: Re-read exact PBS VM config immediately before guest validation
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _vm_config
+      no_log: true
+      check_mode: false
+
+    - name: Reuse the exact PBS VM and scsi1 serial validator
+      ansible.builtin.include_tasks: tasks/validate-pbs-data-disk-vm-config.yml
+
+- name: Prepare only the declared PBS guest's data disk
+  hosts: pbs_svc
+  become: true
+  gather_facts: false
+  serial: 1
+  vars:
+    _vmid: "{{ vm_vmid | default('') }}"
+    _expected_serial: "ac-pbs-data-{{ _vmid }}"
+    _mountpoint: /srv/pbs-data
+    _datastore_path: /srv/pbs-data/datastore
+    _expected_bytes: 549755813888
+    _controller_helper: "{{ playbook_dir }}/files/prepare_pbs_guest_disk.py"
+    _helper: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
+  tasks:
+    - name: Resolve the bootstrap sudo password before privileged disk preparation
+      ansible.builtin.include_tasks:
+        file: tasks/resolve-become-password.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Refuse launch-time identity or filesystem overrides
+      ansible.builtin.assert:
+        that: _pbs_forgeries | length == 0
+        fail_msg: "PBS VM identity, virtual-disk identity, mount path, and filesystem come from private inventory and the reviewed workflow."
+        quiet: true
+      vars:
+        _pbs_guest_names:
+          - pbs_svc
+          - vm_vmid
+          - vm_name
+          - pbs_data_disk_size
+          - pbs_data_disk_serial
+          - pbs_data_mount
+          - pbs_data_filesystem
+          - ansible_host
+          - ansible_connection
+          - ansible_user
+        _pbs_forgeries: "{{ _pbs_guest_names | intersect('' | extra_var_names) }}"
+
+    - name: Require expected virtual disk identity contract
+      ansible.builtin.assert:
+        that:
+          - vm_vmid | default('') | string is match('^[1-9][0-9]{2,5}$')
+          - pbs_data_disk_size | default('') == '512G'
+        fail_msg: "The private PBS declaration must match the single Proxmox scsi1 serial, ext4 format, and fixed mount contract."
+        quiet: true
+
+    - name: Read the reviewed helper checksum from the controller checkout
+      ansible.builtin.stat:
+        path: "{{ _controller_helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: _controller_helper_stat
+      changed_when: false
+      check_mode: false
+
+    - name: Require a regular checked-out helper source
+      ansible.builtin.assert:
+        that:
+          - _controller_helper_stat.stat.isreg | default(false)
+          - not (_controller_helper_stat.stat.islnk | default(false))
+          - _controller_helper_stat.stat.checksum | default('') is match('^[0-9a-f]{64}$')
+        fail_msg: "The reviewed guest guard source is unavailable or is not a regular file."
+        quiet: true
+
+    - name: Inspect the bounded guest helper destination without following links
+      ansible.builtin.stat:
+        path: "{{ _helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      register: _existing_helper_stat
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse a non-regular existing helper destination
+      ansible.builtin.assert:
+        that:
+          - not _existing_helper_stat.stat.exists or _existing_helper_stat.stat.isreg
+          - not (_existing_helper_stat.stat.islnk | default(false))
+        fail_msg: "The bounded guest helper destination is not a regular file."
+        quiet: true
+
+    - name: Transfer the reviewed guest guard to its bounded root-owned path
+      ansible.builtin.copy:
+        src: "{{ _controller_helper }}"
+        dest: "{{ _helper }}"
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Read back the installed guest helper checksum and ownership
+      ansible.builtin.stat:
+        path: "{{ _helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      register: _guest_helper_stat
+      changed_when: false
+      check_mode: false
+
+    - name: Require the installed helper to match the reviewed controller source
+      ansible.builtin.assert:
+        that:
+          - _guest_helper_stat.stat.isreg | default(false)
+          - not (_guest_helper_stat.stat.islnk | default(false))
+          - _guest_helper_stat.stat.checksum == _controller_helper_stat.stat.checksum
+          - _guest_helper_stat.stat.pw_name == 'root'
+          - _guest_helper_stat.stat.gr_name == 'root'
+          - _guest_helper_stat.stat.mode == '0700'
+        fail_msg: "The guest helper does not match the reviewed controller source and root-owned mode."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Capture guest block-device inventory with the canonical helper schema
+      ansible.builtin.include_tasks: tasks/read-pbs-guest-disk-inventory.yml
+
+    - name: Select the unique disk carrying the declared Proxmox serial
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _controller_helper if ansible_check_mode else _helper }}"
+          - --expected-serial
+          - "{{ _expected_serial }}"
+          - --expected-size
+          - "{{ _expected_bytes }}"
+          - --mountpoint
+          - "{{ _mountpoint }}"
+        stdin: "{{ _pbs_lsblk_inventory.stdout }}"
+        stdin_add_newline: true
+      register: _disk_selection
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+      delegate_to: "{{ ('localhost' if ansible_check_mode else inventory_hostname) | default(inventory_hostname) }}"
+      become: "{{ not ansible_check_mode }}"
+
+    - name: Require successful unique guest-disk identity validation
+      ansible.builtin.assert:
+        that: _disk_selection.rc == 0
+        fail_msg: "The declared Proxmox virtual disk is missing, ambiguous, or mismatched in the guest."
+        quiet: true
+
+    - name: Save selected disk state without displaying raw device inventory
+      ansible.builtin.set_fact:
+        _pbs_disk: "{{ _disk_selection.stdout | from_json }}"
+
+    - name: Refuse an existing unrelated mount at the PBS mountpoint
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - --noheadings
+          - --mountpoint
+          - "{{ _mountpoint }}"
+          - --output
+          - SOURCE,FSTYPE
+      register: _mount_before
+      changed_when: false
+      failed_when: _mount_before.rc not in [0, 1]
+      check_mode: false
+
+    - name: Require an existing mount to be the selected ext4 virtual disk
+      ansible.builtin.assert:
+        that:
+          - _pbs_disk.state == 'existing'
+          - _mount_before.stdout.split() | length == 2
+          - _mount_before.stdout.split()[0] == _pbs_disk.device
+          - _mount_before.stdout.split()[1] == 'ext4'
+        fail_msg: "The PBS mountpoint is already occupied by a different filesystem; refusing to replace it."
+        quiet: true
+      when: _mount_before.rc == 0
+
+    - name: Refuse signatures on the new disk before formatting
+      ansible.builtin.command:
+        argv:
+          - wipefs
+          - --noheadings
+          - --output
+          - TYPE
+          - "{{ _pbs_disk.device }}"
+      register: _signatures
+      changed_when: false
+      when: _pbs_disk.state == 'blank'
+      check_mode: false
+
+    - name: Require a proven blank disk and unoccupied mountpoint
+      ansible.builtin.assert:
+        that:
+          - _signatures.stdout | trim == ''
+          - _mount_before.rc == 1
+        fail_msg: "The uniquely identified guest disk or mountpoint contains existing storage metadata; refusing filesystem creation."
+        quiet: true
+      when: _pbs_disk.state == 'blank'
+
+    - name: Inspect the existing mountpoint before mounting over it
+      ansible.builtin.stat:
+        path: "{{ _mountpoint }}"
+        follow: false
+      register: _mountpoint_info
+      when: _pbs_disk.state != 'existing'
+
+    - name: Require any existing mountpoint path to be a directory
+      ansible.builtin.assert:
+        that:
+          - not _mountpoint_info.stat.exists or _mountpoint_info.stat.isdir
+          - not _mountpoint_info.stat.islnk | default(false)
+        fail_msg: "The PBS data mountpoint exists as a non-directory path; refusing to replace it."
+        quiet: true
+      when: _pbs_disk.state != 'existing'
+
+    - name: Inspect existing mountpoint contents before mounting over them
+      ansible.builtin.find:
+        paths: "{{ _mountpoint }}"
+        recurse: false
+        hidden: true
+        file_type: any
+      register: _mountpoint_contents
+      when:
+        - _pbs_disk.state != 'existing'
+        - _mountpoint_info.stat.isdir | default(false)
+
+    - name: Require an empty pre-existing mountpoint
+      ansible.builtin.assert:
+        that: _mountpoint_contents.matched | default(0) | int == 0
+        fail_msg: "The PBS data mountpoint contains files before the disk is mounted; refusing to hide them."
+        quiet: true
+      when: _pbs_disk.state != 'existing'
+
+    - name: Explain the guest-disk action in check mode
+      ansible.builtin.debug:
+        msg: "{{ 'check mode: would create ext4 only on the unique blank declared virtual disk and mount it by UUID' if ansible_check_mode and _pbs_disk.state == 'blank' else 'the declared ext4 virtual disk is already mounted; existing data is preserved' if _pbs_disk.state == 'existing' else 'resuming the workflow-created labeled ext4 filesystem by UUID' if _pbs_disk.state == 'existing_unmounted' else 'validated: preparing the unique blank declared virtual disk' }}."
+
+    - name: Create ext4 on the proven blank guest virtual disk
+      ansible.builtin.command:
+        argv:
+          - mkfs.ext4
+          - -m
+          - "0"
+          - -L
+          - pbs-data
+          - "{{ _pbs_disk.device }}"
+      when:
+        - not ansible_check_mode
+        - _pbs_disk.state == 'blank'
+
+    - name: Read the filesystem UUID from the selected guest disk
+      ansible.builtin.command:
+        argv:
+          - blkid
+          - --probe
+          - --match-tag
+          - UUID
+          - --output
+          - value
+          - "{{ _pbs_disk.device }}"
+      register: _filesystem_uuid
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Require a valid UUID readback
+      ansible.builtin.assert:
+        that: _filesystem_uuid.stdout | trim is match('^[0-9a-fA-F-]{36}$')
+        fail_msg: "The declared guest data filesystem did not return a valid UUID."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Ensure the stable PBS data mountpoint exists
+      ansible.builtin.file:
+        path: "{{ _mountpoint }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      when: not ansible_check_mode
+
+    - name: Mount the guest filesystem by UUID and persist it in fstab
+      ansible.posix.mount:
+        path: "{{ _mountpoint }}"
+        src: "UUID={{ _filesystem_uuid.stdout | trim }}"
+        fstype: ext4
+        opts: defaults,noatime
+        dump: "0"
+        passno: "2"
+        state: mounted
+      when: not ansible_check_mode
+
+    - name: Create or verify the datastore directory without following paths outside the mount
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _helper }}"
+          - --ensure-datastore-path
+          - --mountpoint
+          - "{{ _mountpoint }}"
+          - --datastore-path
+          - "{{ _datastore_path }}"
+      register: _datastore_path_validation
+      when: not ansible_check_mode
+      failed_when: false
+      changed_when: _datastore_path_validation.rc == 0 and (_datastore_path_validation.stdout | from_json).created
+
+    - name: Require safe datastore path validation and creation
+      ansible.builtin.assert:
+        that: _datastore_path_validation.rc == 0
+        fail_msg: "PBS datastore path is not a real directory on the selected data filesystem."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Inspect the datastore directory without following symlinks
+      ansible.builtin.stat:
+        path: "{{ _datastore_path }}"
+        follow: false
+      register: _datastore_info
+      when: not ansible_check_mode
+
+    - name: Inspect the selected filesystem mount root
+      ansible.builtin.stat:
+        path: "{{ _mountpoint }}"
+        follow: false
+      register: _mount_root_info
+      when: not ansible_check_mode
+
+    - name: Require the datastore directory to remain on the selected mounted filesystem
+      ansible.builtin.assert:
+        that:
+          - _datastore_info.stat.exists
+          - _datastore_info.stat.isdir
+          - not _datastore_info.stat.islnk | default(false)
+          - _datastore_info.stat.dev == _mount_root_info.stat.dev
+          - (_datastore_path_validation.stdout | from_json).datastore_path == 'validated'
+        fail_msg: "PBS datastore path is not a real directory on the selected data filesystem."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Read back the mounted UUID and filesystem
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - --noheadings
+          - --output
+          - SOURCE,FSTYPE,UUID,TARGET
+          - --target
+          - "{{ _mountpoint }}"
+      register: _mount_after
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Verify UUID mount and datastore path
+      ansible.builtin.assert:
+        that:
+          - _mount_after.stdout.split() | length == 4
+          - _mount_after.stdout.split()[1] == 'ext4'
+          - _mount_after.stdout.split()[2] == _filesystem_uuid.stdout | trim
+          - _mount_after.stdout.split()[3] == _mountpoint
+          - _mount_after.stdout.split()[0] == _pbs_disk.device
+        fail_msg: "PBS data filesystem mount readback does not match the selected virtual disk UUID."
+        quiet: true
+      when: not ansible_check_mode
+
+- name: Verify the mounted PBS data disk without changing it
+  hosts: pbs_svc
+  become: false
+  gather_facts: false
+  vars:
+    _vmid: "{{ vm_vmid | default('') | string }}"
+    _expected_serial: "ac-pbs-data-{{ _vmid }}"
+    _expected_bytes: 549755813888
+    _mountpoint: /srv/pbs-data
+    _controller_helper: "{{ playbook_dir }}/files/prepare_pbs_guest_disk.py"
+    _helper: /usr/local/lib/agent-cloud-prepare-pbs-guest-disk.py
+  tags: [verify]
+  tasks:
+    - name: Require the private VM and disk contract for verification
+      ansible.builtin.assert:
+        that:
+          - _vmid is match('^[1-9][0-9]{2,5}$')
+          - pbs_data_disk_size | default('') == '512G'
+          - pbs_data_disk_serial | default('') == _expected_serial
+          - pbs_data_mount | default('') == _mountpoint
+          - pbs_data_filesystem | default('') == 'ext4'
+        fail_msg: "Verification requires the exact declared PBS VM disk and mount contract."
+        quiet: true
+
+    - name: Require the previously installed reviewed disk helper
+      ansible.builtin.stat:
+        path: "{{ _helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      register: _pbs_verify_helper
+      changed_when: false
+      become: true
+
+    - name: Read the reviewed disk helper checksum from the controller
+      ansible.builtin.stat:
+        path: "{{ _controller_helper }}"
+        follow: false
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: _pbs_verify_controller_helper
+      changed_when: false
+
+    - name: Refuse verification with a missing or stale guest helper
+      ansible.builtin.assert:
+        that:
+          - _pbs_verify_controller_helper.stat.isreg | default(false)
+          - not (_pbs_verify_controller_helper.stat.islnk | default(false))
+          - _pbs_verify_helper.stat.checksum == _pbs_verify_controller_helper.stat.checksum
+        fail_msg: "The installed PBS guest helper differs from the reviewed source."
+        quiet: true
+
+    - name: Refuse verification when the guest helper is absent or unsafe
+      ansible.builtin.assert:
+        that:
+          - _pbs_verify_helper.stat.isreg | default(false)
+          - not (_pbs_verify_helper.stat.islnk | default(false))
+        fail_msg: "The installed PBS guest disk helper is missing or is not a regular file."
+        quiet: true
+
+    - name: Capture guest block-device inventory with the canonical helper schema
+      ansible.builtin.include_tasks:
+        file: tasks/read-pbs-guest-disk-inventory.yml
+        apply:
+          tags: [verify]
+
+    - name: Require the serial-pinned disk to be an existing formatted disk
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _helper }}"
+          - --expected-serial
+          - "{{ _expected_serial }}"
+          - --expected-size
+          - "{{ _expected_bytes }}"
+          - --mountpoint
+          - "{{ _mountpoint }}"
+        stdin: "{{ _pbs_lsblk_inventory.stdout }}"
+      register: _pbs_verify_disk
+      changed_when: false
+      check_mode: false
+      no_log: true
+      become: true
+
+    - name: Require the selected data disk to be formatted already
+      ansible.builtin.assert:
+        that: (_pbs_verify_disk.stdout | from_json).state == 'existing'
+        fail_msg: "The declared PBS data disk is not already formatted and mounted; verification will not prepare it."
+        quiet: true
+
+    - name: Read back the UUID mount and fstab contract
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/files/assert_pbs_data_mount.py --vmid {{ _vmid | quote }}"
+      register: _pbs_verify_mount
+      changed_when: false
+      check_mode: false
+
+    - name: Require exact mounted disk and filesystem identity
+      ansible.builtin.assert:
+        that:
+          - (_pbs_verify_mount.stdout | from_json).target == _mountpoint
+          - (_pbs_verify_mount.stdout | from_json).fstype == 'ext4'
+          - (_pbs_verify_mount.stdout | from_json).uuid | length > 0
+        fail_msg: "PBS UUID mount verification did not match the serial-pinned disk."
+        quiet: true

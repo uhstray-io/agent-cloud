@@ -1,0 +1,210 @@
+---
+# github-runner-jit-stock.yml: keep one ephemeral runner host's stock of just-in-time runner
+# configurations full (openspec add-ephemeral-github-runners, design D3).
+#
+# The App key stays on the orchestrator, as in the persistent design: the configurations
+# are minted HERE, on the controller, and only the configurations reach the host, as
+# root-only 0600 files that the supervisor consumes one per job. A host never mints, so a
+# compromised host can use at most the configurations in its stock, each good for one job,
+# and cannot register a runner with another name, label set or group.
+#
+# Modes (one per include):
+#   default          prune, then mint up to github_runner_jit_stock and write them to the host
+#                    (grs_retire: also delete the named persistent registration)
+#   grs_prune_only   delete every ephemeral runner record of this host (leaving ephemeral)
+#   grs_verify_only  require the runner named grs_expect to be online or busy
+#
+# Reads the play's _bao_url, _bao_role_id, _bao_secret_id, _app_id and _org, and the host's
+# github_runner_name / github_runner_group / github_runner_labels. Registered names start
+# with _grs_ (refuse-internal-extra-vars.yml).
+
+- name: "JIT stock: record this host's prefix, stock size and paths"
+  ansible.builtin.set_fact:
+    _grs_prefix: "{{ github_runner_name }}-jit-"
+    _grs_target: "{{ github_runner_jit_stock | default(6) | int }}"
+    _grs_dir: "{{ github_runner_state_dir | default('/var/lib/github-runner') }}/jit"
+    _grs_max_age: "{{ github_runner_jit_max_age_minutes | default(1200) | int }}"
+    _grs_mode: >-
+      {{ 'verify' if (grs_verify_only | default(false) | bool)
+         else 'prune' if (grs_prune_only | default(false) | bool)
+         else 'stock' }}
+
+- name: "JIT stock: require a stock size the supervisor can use"
+  ansible.builtin.assert:
+    that:
+      - _grs_target | int >= 1
+      - _grs_target | int <= 50
+      - _grs_max_age | int >= 10
+      # GitHub removes an ephemeral runner that has not connected for a day.
+      - _grs_max_age | int < 1440
+    fail_msg: >-
+      github_runner_jit_stock must be 1..50 and github_runner_jit_max_age_minutes 10..1439
+      (an ephemeral runner that has not connected for a day is removed by GitHub).
+
+- name: "JIT stock: read the host's stock and the runner it is running"
+  # Names only: the configurations themselves are never read back. A configuration older
+  # than the declared age is not counted; the supervisor discards it before it starts one.
+  ansible.builtin.shell: |
+    set -euo pipefail
+    d={{ _grs_dir | quote }}
+    if [ -d "$d" ]; then
+      find "$d" -maxdepth 1 -type f -name '*.jit' -mmin -{{ _grs_max_age | int }} \
+        -printf 'have=%f\n' | sed 's/\.jit$//'
+    fi
+    cur=$(cat {{ (_grs_dir | dirname ~ '/current') | quote }} 2>/dev/null || true)
+    if [ -n "$cur" ]; then echo "current=$cur"; fi
+  args:
+    executable: /bin/bash
+  become: true
+  register: _grs_host
+  changed_when: false
+  check_mode: false
+  when: _grs_mode == 'stock'
+
+- name: "JIT stock: record what the host holds"
+  ansible.builtin.set_fact:
+    _grs_have: >-
+      {{ (_grs_host.stdout_lines | default([])) | select('match', '^have=') | map('regex_replace', '^have=', '') | list }}
+    _grs_current: >-
+      {{ (_grs_host.stdout_lines | default([])) | select('match', '^current=') | map('regex_replace', '^current=', '') | list }}
+
+- name: "JIT stock: authenticate to OpenBao (AppRole)"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ _bao_role_id }}"
+      secret_id: "{{ _bao_secret_id }}"
+    status_code: [200]
+  register: _grs_bao_auth
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  check_mode: false
+
+- name: "JIT stock: read the App private key from OpenBao"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/github-runner"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _grs_bao_auth.json.auth.client_token }}"
+    status_code: [200]
+  register: _grs_app_secret
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "JIT stock: list, prune or retire this host's runner records"
+  # On the controller, key on stdin (never argv). prune-runners deletes only runners the
+  # service reports as ephemeral, offline, not busy, named with this host's prefix, not held
+  # in its stock or running (--keep), and minted more than 30 minutes ago: the stock was read
+  # before this call, and a concurrent run (the deploy and the schedule) may have minted and
+  # stocked a runner since. Leaving the lifecycle (prune mode) keeps no grace: the schedule
+  # skips a host that is no longer ephemeral. A dry run lists and deletes nothing.
+  ansible.builtin.command:
+    cmd: >-
+      {{ ansible_playbook_python }} {{ playbook_dir }}/../lib/github_app_token.py
+      {{ 'list-runners' if (_grs_mode == 'verify' or ansible_check_mode) else 'prune-runners' }}
+      --issuer {{ _app_id | quote }} --org {{ _org | quote }} --prefix {{ _grs_prefix | quote }}
+      {% for n in (_grs_have + _grs_current) %}--keep {{ n | quote }} {% endfor %}
+      --grace-minutes {{ 0 if _grs_mode == 'prune' else 30 }}
+      {% if _grs_mode == 'stock' and (grs_retire | default('') | length) > 0 and not ansible_check_mode %}--retire {{ grs_retire | quote }}{% endif %}
+      --key -
+    stdin: "{{ _grs_app_secret.json.data.data.app_private_key }}"
+  register: _grs_runners
+  changed_when: false
+  failed_when: false
+  # Verify: GitHub reports a runner online a few seconds after its Listener connects.
+  until: >-
+    _grs_mode != 'verify'
+    or ((_grs_runners.rc | default(1)) == 0
+        and grs_expect in ((_grs_runners.stdout | from_json).online + (_grs_runners.stdout | from_json).busy))
+  retries: "{{ 12 if _grs_mode == 'verify' else 0 }}"
+  delay: 5
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "JIT stock: record the runner states (names and counts only)"
+  ansible.builtin.set_fact:
+    _grs_state: "{{ _grs_runners.stdout | default('{}', true) | from_json if (_grs_runners.rc | default(1)) == 0 else {} }}"
+    _grs_runners_rc: "{{ _grs_runners.rc | default('?') }}"
+    # The helper's stderr carries only its own fixed diagnostics, never key or token
+    # material (github_app_token.py, die()); surfacing it keeps a failure diagnosable.
+    _grs_runners_err: "{{ (_grs_runners.stderr | default('')) | trim }}"
+
+- name: "JIT stock: fail if the runner records could not be read"
+  ansible.builtin.assert:
+    that:
+      - _grs_runners_rc | string == '0'
+    fail_msg: "Reading this host's runner records failed (rc={{ _grs_runners_rc }}): {{ _grs_runners_err }}"
+
+- name: "JIT stock: require the started runner to be online at the organisation"
+  ansible.builtin.assert:
+    that:
+      - grs_expect in ((_grs_state.online | default([])) + (_grs_state.busy | default([])))
+    fail_msg: >-
+      {{ grs_expect }} is not online at the organisation. Online: {{ _grs_state.online | default([]) }};
+      busy: {{ _grs_state.busy | default([]) }}; offline: {{ _grs_state.offline | default([]) }}.
+  when: _grs_mode == 'verify'
+
+- name: "JIT stock: mint the configurations the stock is missing"
+  ansible.builtin.command:
+    cmd: >-
+      {{ ansible_playbook_python }} {{ playbook_dir }}/../lib/github_app_token.py jit-config
+      --issuer {{ _app_id | quote }} --org {{ _org | quote }} --prefix {{ _grs_prefix | quote }}
+      --group {{ github_runner_group | quote }}
+      {% for l in github_runner_labels %}--label {{ l | quote }} {% endfor %}
+      --count {{ _grs_missing }} --key -
+    stdin: "{{ _grs_app_secret.json.data.data.app_private_key }}"
+  vars:
+    _grs_missing: "{{ [(_grs_target | int) - (_grs_have | length), 0] | max }}"
+  register: _grs_minted
+  changed_when: (_grs_minted.stdout_lines | default([])) | length > 0
+  failed_when: false
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: _grs_mode == 'stock' and not ansible_check_mode and (_grs_target | int) > (_grs_have | length)
+
+- name: "JIT stock: record the minting outcome (count and helper diagnostics only)"
+  ansible.builtin.set_fact:
+    _grs_mint_rc: "{{ _grs_minted.rc | default(0) }}"
+    _grs_mint_err: "{{ (_grs_minted.stderr | default('')) | trim }}"
+    _grs_mint_count: "{{ (_grs_minted.stdout_lines | default([])) | length }}"
+
+- name: "JIT stock: fail if minting failed"
+  ansible.builtin.assert:
+    that:
+      - _grs_mint_rc | string == '0'
+    fail_msg: "Minting just-in-time configurations failed (rc={{ _grs_mint_rc }}): {{ _grs_mint_err }}"
+
+- name: "JIT stock: write each configuration to the host's root-only stock"
+  # 0600 root in a 0700 root directory: the supervisor reads it, a job (the runner account)
+  # cannot. The copy is atomic within the directory, and the supervisor reads only *.jit.
+  ansible.builtin.copy:
+    content: "{{ (_grs_minted.stdout_lines[_grs_i] | from_json).encoded_jit_config }}"
+    dest: "{{ _grs_dir }}/{{ (_grs_minted.stdout_lines[_grs_i] | from_json).name }}.jit"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ range(_grs_mint_count | int) | list }}"
+  loop_control:
+    loop_var: _grs_i
+  become: true
+  no_log: true
+  when: _grs_mode == 'stock' and not ansible_check_mode
+
+- name: "JIT stock: report"
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} [{{ _grs_mode }}]: stock held {{ _grs_have | length }}
+      of {{ _grs_target }}, minted {{ _grs_mint_count }}; running {{ _grs_current | join(',') or 'none' }};
+      deleted {{ _grs_state.deleted | default([]) | length }} stale record(s){{
+      (', retired ' ~ _grs_state.retired) if (_grs_state.retired | default(none)) else '' }};
+      online {{ _grs_state.online | default([]) | length }}, busy {{ _grs_state.busy | default([]) | length }},
+      offline {{ _grs_state.offline | default([]) | length }}.

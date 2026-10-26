@@ -238,8 +238,11 @@ the key nor its hash is printed. `legacy-shared` may not appear in `agw_clients`
 `VLLM_API_KEY` at vLLM and in OpenBao belongs to dgx-spark, which owns the key; the rollback
 `restore` mode does not rotate it either.
 
-Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch date + 14 days
-(task 4.7), recorded here when the route switches.
+Retirement date: **2026-11-13** (`legacy_shared_expires` in the production inventory, site-config #81;
+first set by task 4.7 as the route-switch date + 14 days, then moved from 2026-10-28). A deploy on or
+after that date drops `legacy-shared`, and fails until the vLLM key has been rotated (gateway task 5.1).
+If the key is rotated before the date, the grace-period probe is skipped rather than reporting a
+false failure (#631).
 
 ## Upstream
 
@@ -272,7 +275,7 @@ in place until that run reports them.
 
 | Environment | `agw_upstream_base_url` | Key |
 |---|---|---|
-| local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | LM Studio's API token, seeded as `vllm_api_key` with `seed-openbao-key.yml` (2026-09-17); before that, none — `params.apiKey` omitted |
+| local-dev | `https://inference.uhstray.io/v1`, the public edge, while the operator is off the LAN (2026-10-20); on the LAN, the DGX directly (address only in the gitignored local inventory). Until 2026-10-20: `http://host.containers.internal:1234/v1` (LM Studio) | the production `local-gateway` identity's key, seeded as `vllm_api_key` in local OpenBao |
 | prod | `http://<spark-1>:8000/v1` (site-config) | `secret/services/agentgateway:vllm_api_key`, seeded by a separate playbook |
 
 ## OpenRouter models (change `agentgateway-openrouter`)
@@ -325,10 +328,48 @@ agw_openrouter_admins: false          # true: also every admin-derived identity 
   system roots, so a local gateway cannot verify `openrouter.ai`'s certificate. The commented
   example in `platform/inventory/local-dev.yml.example` is off for that reason. Production sets no
   `SSL_CERT_FILE`, and the image ships public roots (`/etc/ssl/certs/ca-certificates.crt`).
+  - *2026-10-20:* the local upstream is now the public edge (`https://inference.uhstray.io/v1`,
+    Cloudflare-proxied, public certificate), which step-ca cannot sign. So `SSL_CERT_FILE` now names
+    `certs/ca-bundle-combined.crt`: step-ca's root and intermediate, then the play host's public
+    roots (the first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` that
+    exists; the play fails if neither does). `tasks/distribute-ca-root.yml` writes it beside the
+    step-ca-only `certs/step-ca-bundle.crt`, which other consumers still read. Local OpenRouter
+    models verify through the same bundle.
 - **Probes.** The conformance run, the isolation probe and the MCP verify's chat call never pick an
   OpenRouter model (`agw_conformance_model` still names one explicitly). `mcp-self` and
   `legacy-shared` can never be granted OpenRouter models, and a glob character in any model name is
   refused.
+
+## skynet orchestration route (workflow task 3.3, render half)
+
+With `agw_skynet_route_enabled`, the gateway serves skynet's orchestration API at `/skynet/...` on the
+`default` gateway. It is off by default: the render carries no `routes:` block and the deploy reads no
+skynet secret. The verify probes for this route are a later task.
+
+```yaml
+agw_skynet_route_enabled: true
+agw_skynet_backend: host.containers.internal:18556   # host:port only, the one fixed upstream
+agw_skynet_route_identities: [dev-local]             # declared identities; never mcp-self or legacy-shared
+```
+
+- **Admission.** The route has its own `apiKey` policy, strict, the same header location as `/v1`.
+  Its keys are the `client_<name>` hashes of the named identities only. It carries no budget and no
+  model list: it is not an LLM surface. A keyless call, or a key the route does not name, is 401 at
+  the gateway and never reaches skynet.
+- **Backend credential.** `backendAuth.key` is the env reference `$SKYNET_API_TOKEN`. It replaces the
+  caller's `Authorization` on the upstream call, so skynet receives only its own bearer. The value is
+  `secret/services/skynet:api_token`, shared-read from skynet (never generated here), and it is written
+  to `.env` only while the route is on. An empty value is refused; a missing key stops `manage-secrets`
+  by name, so skynet deploys first.
+- **No rewrite.** The path reaches skynet unchanged; skynet serves under `/skynet/` itself.
+- **Refusals before any restart.** `_agw_skynet_route_problems` (`vars/secret-declarations/agentgateway.yml`)
+  refuses a backend that is not `host:port`, an empty or non-list identity list, an undeclared, internal
+  or repeated name. The render check then requires the routes block to match the flag, to carry a strict
+  key policy, and to enrol exactly the declared identities.
+- **A route identity is also a `/v1` identity.** `config.yaml.j2` enrols every entry of `agw_identities`
+  in the `llm` key policy, so a key named here also passes `/v1`, under that identity's budget and
+  model list. The route narrows nothing about `/v1`. Naming an identity here is therefore a grant on
+  both surfaces. Checked against the template (`config.yaml.j2` `llm` policy); not run against the gateway.
 
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 

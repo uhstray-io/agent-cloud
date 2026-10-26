@@ -11,19 +11,24 @@
 # isolation control here; what is enforced is the workspace wipe below, the unprivileged
 # account, and the host's egress denial.
 #
-# The hooks shell out to a `docker` binary. They find it on the runner's PATH below,
-# which lists {{ github_runner_home }}/_bin first, so they run the deployed `docker`
-# wrapper (docker-wrapper.sh.j2) and not the podman shim in /usr/bin. The wrapper gives
-# rootless podman the account's own directories, which the hooks' environment does not
-# carry (the reason is in the wrapper). Every host step inherits this PATH too, so a
-# plain step's `docker` uses the same image store as the hooks.
+# The hooks shell out to a `docker` binary, found on the runner's PATH: /usr/bin/docker,
+# Docker's CLI client (docker-ce-cli, installed by install-podman.yml with
+# podman_docker_api_client). It is only a client: every call goes to the API socket below,
+# served by this account's rootless podman (its podman.socket user unit). There is no
+# Docker engine on this host.
 ACTIONS_RUNNER_CONTAINER_HOOKS={{ github_runner_home }}/_hooks/index.js
 
-# The runner's own PATH. The runner is started by its systemd unit through run.sh, which
-# does not read the runner's .path file, so this line is what sets it. It replaces the
-# user manager's default PATH, so the standard directories are listed after _bin. The
-# runner reads this file only when it starts, so the deploy restarts it on a change.
-PATH={{ github_runner_home }}/_bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+# The engine the hooks' docker talks to: this account's rootless podman API socket.
+# The hooks start `docker` with only the job's variables (HOME=/github/home among them)
+# plus the DOCKER_* variables of the runner, which they pass through on purpose
+# (runner-container-hooks v0.8.1, utils.ts optionsWithDockerEnvs). So this value reaches
+# every hook call, while the job's HOME never reaches podman: the API service runs with
+# the account's own environment. Run as a CLI with the job's HOME, podman failed every
+# container job with `cannot resolve /github/home` (docs/MISTAKES.md 10.25, 10.29).
+# Every host step inherits this too, so a plain step's `docker` uses the same engine and
+# image store as the hooks. The runner reads this file only when it starts, so the
+# deploy restarts it on a change.
+DOCKER_HOST=unix:///run/user/{{ github_runner_uid }}/podman/podman.sock
 
 # Runs before EVERY job. Creates the directories the runner bind-mounts into a job
 # container: podman, unlike Docker, refuses a bind mount whose source is missing.

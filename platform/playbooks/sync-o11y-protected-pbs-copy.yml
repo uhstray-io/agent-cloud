@@ -1,0 +1,501 @@
+---
+# Pull one independently verified PBS snapshot into the protected copy guest.
+# Vanished-item removal and pruning are explicitly disabled.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed source checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/sync-o11y-protected-pbs-copy.yml
+      - platform/playbooks/verify-o11y-pbs-artifact.yml
+      - platform/playbooks/backup-o11y-to-pbs.yml
+      - platform/playbooks/tasks/read-o11y-pbs-prior-task.yml
+      - platform/playbooks/tasks/emit-o11y-pbs-receipt.yml
+      - platform/playbooks/tasks/o11y-pbs-inventory-provenance.yml
+      - platform/playbooks/files/o11y_pbs_receipts.py
+      - platform/playbooks/files/o11y_pbs_operations.py
+      - platform/playbooks/files/inspect_pbs_backup_access.py
+      - platform/playbooks/files/inspect_o11y_pbs_provenance.py
+      - platform/playbooks/tasks/site-config-clone.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/files/reviewed-checkout.py
+
+- name: Require one o11y VM, primary PBS guest, and protected-copy PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the primary PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_svc
+    preflight_group_expected: pbs_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the protected-copy PBS guest
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: pbs_copy_svc
+    preflight_group_expected: pbs_copy_svc
+    _preflight_redact_hostnames: true
+
+- name: Read authenticated PBS task node names
+  hosts: pbs_svc:pbs_copy_svc
+  gather_facts: true
+  become: false
+  tasks:
+    - name: Retain this PBS node name for exact UPID status polling
+      ansible.builtin.set_fact:
+        _o11y_pbs_api_node: "{{ ansible_facts.hostname }}"
+      no_log: true
+
+- name: Refuse unsafe task chain and private endpoint overrides
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_o11y_host: "{{ groups['o11y_svc'][0] }}"
+    _pbs_source_host: "{{ groups['pbs_svc'][0] }}"
+    _pbs_copy_host: "{{ groups['pbs_copy_svc'][0] }}"
+    _pbs_vmid: "{{ hostvars[_pbs_o11y_host].vm_vmid | default('') | string }}"
+  tasks:
+    - name: Reject caller overrides for service or storage authority
+      ansible.builtin.assert:
+        that: _pbs_forged_names | length == 0
+        fail_msg: "PBS hosts, endpoints, storage IDs, AppRole values, and local mode come from protected inventory."
+        quiet: true
+      vars:
+        _pbs_private_names:
+          - pbs_api_host
+          - pbs_storage_id
+          - pbs_copy_remote_id
+          - pbs_copy_sync_job_id
+          - vm_vmid
+          - vm_node
+          - openbao_addr
+          - bao_role_id
+          - bao_secret_id
+          - local_mode
+        _pbs_forged_names: "{{ _pbs_private_names | intersect('' | extra_var_names) }}"
+
+    - name: Require the strict predecessor task chain and fixed IDs
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - site_config_base_sha is match('^[0-9a-f]{40}$')
+          - backup_task_id is integer and backup_task_id > 0
+          - verify_task_id is integer and verify_task_id > 0
+          - pbs_copy_remote_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - pbs_copy_sync_job_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _pbs_vmid is match('^[1-9][0-9]{0,8}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+        fail_msg: "Protected copy requires the exact completed backup and verification task IDs."
+        quiet: true
+      no_log: true
+
+- name: Prove exact private and runtime inventory provenance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Compare exact production inventory bytes
+      ansible.builtin.include_tasks: tasks/o11y-pbs-inventory-provenance.yml
+      vars:
+        _pbs_provenance_template_name: Sync o11y Protected PBS Copy (Dev)
+        _pbs_provenance_playbook: platform/playbooks/sync-o11y-protected-pbs-copy.yml
+
+- name: Authenticate backup and verification tasks before destination writes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+  tasks:
+    - name: Authenticate the exact backup task receipt
+      ansible.builtin.include_tasks: tasks/read-o11y-pbs-prior-task.yml
+      vars:
+        _pbs_task_id: "{{ backup_task_id | int }}"
+        _pbs_task_contract: o11y-pbs-backup/v1
+        _pbs_task_playbook: platform/playbooks/backup-o11y-to-pbs.yml
+        _pbs_task_bao_url: "{{ _bao_url }}"
+        _pbs_task_bao_role_id: "{{ _bao_role_id }}"
+        _pbs_task_bao_secret_id: "{{ _bao_secret_id }}"
+        _pbs_task_expected_launch:
+          expected_repository_sha: "{{ expected_repository_sha }}"
+          site_config_base_sha: "{{ site_config_base_sha }}"
+
+    - name: Retain the authenticated backup receipt
+      ansible.builtin.set_fact:
+        _pbs_backup_receipt: "{{ _pbs_task_validated.receipt }}"
+        _pbs_backup_receipt_task_id: "{{ _pbs_task_validated.task_metadata.id }}"
+      no_log: true
+
+    - name: Authenticate the exact verification task receipt
+      ansible.builtin.include_tasks: tasks/read-o11y-pbs-prior-task.yml
+      vars:
+        _pbs_task_id: "{{ verify_task_id | int }}"
+        _pbs_task_contract: o11y-pbs-verify/v1
+        _pbs_task_playbook: platform/playbooks/verify-o11y-pbs-artifact.yml
+        _pbs_task_bao_url: "{{ _bao_url }}"
+        _pbs_task_bao_role_id: "{{ _bao_role_id }}"
+        _pbs_task_bao_secret_id: "{{ _bao_secret_id }}"
+        _pbs_task_expected_artifact: "{{ _pbs_backup_receipt.artifact_fingerprint }}"
+        _pbs_task_expected_launch:
+          expected_repository_sha: "{{ expected_repository_sha }}"
+          site_config_base_sha: "{{ site_config_base_sha }}"
+          backup_task_id: "{{ backup_task_id | int }}"
+
+    - name: Retain the authenticated verification receipt
+      ansible.builtin.set_fact:
+        _pbs_verify_receipt: "{{ _pbs_task_validated.receipt }}"
+        _pbs_verify_receipt_task_id: "{{ _pbs_task_validated.task_metadata.id }}"
+      no_log: true
+
+    - name: Require exact equality across predecessor receipts and current inventory
+      ansible.builtin.assert:
+        that:
+          - _pbs_backup_receipt.inventory_fingerprint == _pbs_inventory_provenance.inventory_fingerprint
+          - _pbs_verify_receipt.inventory_fingerprint == _pbs_inventory_provenance.inventory_fingerprint
+          - _pbs_verify_receipt.source_fingerprint == _pbs_backup_receipt.source_fingerprint
+          - _pbs_verify_receipt.artifact_fingerprint == _pbs_backup_receipt.artifact_fingerprint
+          - _pbs_verify_receipt.evidence.backup_task_id == backup_task_id | int
+          - _pbs_verify_receipt.evidence.verification_status == 'OK'
+          - _pbs_verify_receipt.evidence.snapshot == _pbs_backup_receipt.evidence.snapshot
+        fail_msg: "Backup and verification receipts do not form the exact current PBS artifact chain."
+        quiet: true
+      no_log: true
+
+- name: Read the exact sync source, destination, and protected identities
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _pbs_source_host: "{{ groups['pbs_svc'][0] }}"
+    _pbs_copy_host: "{{ groups['pbs_copy_svc'][0] }}"
+    _pbs_source_api_host: "{{ hostvars[_pbs_source_host].pbs_api_host }}"
+    _pbs_copy_api_host: "{{ hostvars[_pbs_copy_host].pbs_api_host }}"
+    _pbs_copy_remote: "{{ hostvars[_pbs_copy_host].pbs_copy_remote_id }}"
+    _pbs_copy_job: "{{ hostvars[_pbs_copy_host].pbs_copy_sync_job_id }}"
+    _pbs_copy_store: "{{ hostvars[_pbs_copy_host].pbs_storage_id }}"
+    _pbs_backup_receipt: "{{ hostvars['localhost']._pbs_backup_receipt }}"
+    _pbs_verify_receipt: "{{ hostvars['localhost']._pbs_verify_receipt }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+  tasks:
+    - name: Refuse public cleartext OpenBao transport before reading PBS identities
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read protected source and destination credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pbs_source_record: >-
+          {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/pbs',
+            url=_bao_url, auth_method='approle', role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+      no_log: true
+
+    - name: Require fixed managed identities and declared destination identifiers
+      ansible.builtin.assert:
+        that:
+          - _pbs_source_record.o11y_copy_reader_user == 'o11y-copy-reader@pbs'
+          - _pbs_source_record.o11y_copy_reader_token_id == 'o11y-copy-reader@pbs!pbs-sync'
+          - _pbs_source_record.o11y_copy_reader_datastore == 'o11y'
+          - _pbs_source_record.o11y_copy_reader_token_secret | length > 0
+          - _pbs_source_record.o11y_copy_reader_fingerprint | length == 64
+          - _pbs_source_record.o11y_copy_manager_user == 'o11y-copy-manager@pbs'
+          - _pbs_source_record.o11y_copy_manager_token_id == 'o11y-copy-manager@pbs!copy-api'
+          - _pbs_source_record.o11y_copy_manager_datastore == 'o11y'
+          - _pbs_source_record.o11y_copy_manager_token_secret | length > 0
+          - _pbs_source_record.o11y_copy_manager_fingerprint | length == 64
+          - _pbs_source_api_host is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+          - _pbs_copy_api_host is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+          - _pbs_copy_store is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _pbs_copy_remote == hostvars[_pbs_copy_host].pbs_copy_remote_id
+          - _pbs_copy_job == hostvars[_pbs_copy_host].pbs_copy_sync_job_id
+          - hostvars[_pbs_copy_host]._o11y_pbs_api_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+        fail_msg: "The managed source Reader, destination manager, or copy endpoint is unavailable."
+        quiet: true
+      no_log: true
+
+    - name: Read current exact protected-copy remote and sync definitions
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': 'https://' ~ _pbs_copy_api_host ~ ':8007', 'expected_host': _pbs_copy_api_host,
+              'fingerprint': _pbs_source_record.o11y_copy_manager_fingerprint,
+              'auth_id': _pbs_source_record.o11y_copy_manager_token_id,
+              'secret': _pbs_source_record.o11y_copy_manager_token_secret,
+              'request': {'operation': 'remote-list'}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_remote_list_raw
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: Require a valid destination remote listing
+      ansible.builtin.assert:
+        that:
+          - _pbs_remote_list_raw.rc == 0
+          - (_pbs_remote_list_raw.stdout | from_json).data is sequence
+        fail_msg: "Destination PBS remote configuration could not be read over pinned TLS."
+        quiet: true
+      no_log: true
+
+    - name: Determine the exact declared remote state
+      ansible.builtin.set_fact:
+        _pbs_remote_matches: "{{ (_pbs_remote_list_raw.stdout | from_json).data | selectattr('id', 'equalto', _pbs_copy_remote) | list }}"
+      no_log: true
+
+    - name: Refuse duplicate declared remote entries
+      ansible.builtin.assert:
+        that: _pbs_remote_matches | length <= 1
+        fail_msg: "Destination PBS contains duplicate configured remote IDs."
+        quiet: true
+      no_log: true
+
+    - name: Create or update the one exact source Reader remote
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': 'https://' ~ _pbs_copy_api_host ~ ':8007', 'expected_host': _pbs_copy_api_host,
+              'fingerprint': _pbs_source_record.o11y_copy_manager_fingerprint,
+              'auth_id': _pbs_source_record.o11y_copy_manager_token_id,
+              'secret': _pbs_source_record.o11y_copy_manager_token_secret,
+              'request': {'operation': 'remote-' ~ ('update' if _pbs_remote_matches | length == 1 else 'create'),
+                'remote_id': _pbs_copy_remote, 'source_host': _pbs_source_api_host,
+                'source_fingerprint': _pbs_source_record.o11y_copy_reader_fingerprint,
+                'body': {'host': _pbs_source_api_host, 'port': 8007, 'auth-id': _pbs_source_record.o11y_copy_reader_token_id,
+                  'password': _pbs_source_record.o11y_copy_reader_token_secret,
+                  'fingerprint': _pbs_source_record.o11y_copy_reader_fingerprint,
+                  'comment': 'o11y protected copy source Reader'}}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_remote_write_raw
+      changed_when: true
+      when: not ansible_check_mode
+      failed_when: false
+      no_log: true
+
+    - name: Require the exact remote upsert
+      ansible.builtin.assert:
+        that: _pbs_remote_write_raw.rc == 0
+        fail_msg: "Destination PBS refused the fixed primary Reader remote configuration."
+        quiet: true
+      no_log: true
+
+    - name: Read the protected-copy sync definitions
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': 'https://' ~ _pbs_copy_api_host ~ ':8007', 'expected_host': _pbs_copy_api_host,
+              'fingerprint': _pbs_source_record.o11y_copy_manager_fingerprint,
+              'auth_id': _pbs_source_record.o11y_copy_manager_token_id,
+              'secret': _pbs_source_record.o11y_copy_manager_token_secret,
+              'request': {'operation': 'sync-list'}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_sync_list_raw
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: Require one exact protected-copy sync definition state
+      ansible.builtin.assert:
+        that:
+          - _pbs_sync_list_raw.rc == 0
+          - (_pbs_sync_list_raw.stdout | from_json).data is sequence
+        fail_msg: "Destination PBS sync configuration could not be read over pinned TLS."
+        quiet: true
+      no_log: true
+
+    - name: Determine the exact declared sync job state
+      ansible.builtin.set_fact:
+        _pbs_sync_matches: "{{ (_pbs_sync_list_raw.stdout | from_json).data | selectattr('id', 'equalto', _pbs_copy_job) | list }}"
+      no_log: true
+
+    - name: Refuse duplicate sync job entries
+      ansible.builtin.assert:
+        that: _pbs_sync_matches | length <= 1
+        fail_msg: "Destination PBS contains duplicate configured sync job IDs."
+        quiet: true
+      no_log: true
+
+    - name: Create or update one destination-initiated, verified-only, non-pruning sync job
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': 'https://' ~ _pbs_copy_api_host ~ ':8007', 'expected_host': _pbs_copy_api_host,
+              'fingerprint': _pbs_source_record.o11y_copy_manager_fingerprint,
+              'auth_id': _pbs_source_record.o11y_copy_manager_token_id,
+              'secret': _pbs_source_record.o11y_copy_manager_token_secret,
+              'request': {'operation': 'sync-' ~ ('update' if _pbs_sync_matches | length == 1 else 'create'),
+                'sync_job_id': _pbs_copy_job, 'remote_id': _pbs_copy_remote,
+                'body': {'id': _pbs_copy_job, 'store': 'o11y', 'remote-store': 'o11y',
+                  'remote': _pbs_copy_remote, 'owner': _pbs_source_record.o11y_copy_manager_token_id,
+                  'remove-vanished': false, 'verified-only': true,
+                  'sync-direction': 'pull', 'schedule': '',
+                  'comment': 'o11y verified protected copy'}}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_sync_write_raw
+      changed_when: true
+      when: not ansible_check_mode
+      failed_when: false
+      no_log: true
+
+    - name: Require the exact non-destructive sync job upsert
+      ansible.builtin.assert:
+        that: _pbs_sync_write_raw.rc == 0
+        fail_msg: "Destination PBS refused the fixed verified-only, no-prune pull job."
+        quiet: true
+      no_log: true
+
+    - name: Record exact sync operation start time
+      ansible.builtin.set_fact:
+        _pbs_sync_start: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+      no_log: true
+
+    - name: Start only the declared destination sync job
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': 'https://' ~ _pbs_copy_api_host ~ ':8007', 'expected_host': _pbs_copy_api_host,
+              'fingerprint': _pbs_source_record.o11y_copy_manager_fingerprint,
+              'auth_id': _pbs_source_record.o11y_copy_manager_token_id,
+              'secret': _pbs_source_record.o11y_copy_manager_token_secret,
+              'request': {'operation': 'sync-run', 'sync_job_id': _pbs_copy_job}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_sync_start_raw
+      changed_when: true
+      when: not ansible_check_mode
+      failed_when: false
+      no_log: true
+
+    - name: Retain and validate the exact destination sync UPID
+      ansible.builtin.set_fact:
+        _pbs_sync_upid: "{{ (_pbs_sync_start_raw.stdout | from_json).data }}"
+      no_log: true
+
+    - name: Validate destination sync UPID shape
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_operations.py"]
+        stdin: "{{ {'operation': 'validate_upid', 'upid': _pbs_sync_upid} | to_json }}"
+        stdin_add_newline: false
+      register: _pbs_sync_upid_check
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: Require the exact destination sync operation
+      ansible.builtin.assert:
+        that: _pbs_sync_start_raw.rc == 0 and _pbs_sync_upid_check.rc == 0
+        fail_msg: "Destination PBS did not accept the declared sync job."
+        quiet: true
+      no_log: true
+
+    - name: Poll only the exact destination sync UPID
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", copy-api-request]
+        stdin: >-
+          {{ {'url': 'https://' ~ _pbs_copy_api_host ~ ':8007', 'expected_host': _pbs_copy_api_host,
+              'fingerprint': _pbs_source_record.o11y_copy_manager_fingerprint,
+              'auth_id': _pbs_source_record.o11y_copy_manager_token_id,
+              'secret': _pbs_source_record.o11y_copy_manager_token_secret,
+              'request': {'operation': 'task-status',
+                'node': hostvars[_pbs_copy_host]._o11y_pbs_api_node,
+                'upid': _pbs_sync_upid}} | to_json }}
+        stdin_add_newline: false
+      register: _pbs_sync_status_raw
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      until: >-
+        _pbs_sync_status_raw.rc == 0 and
+        (_pbs_sync_status_raw.stdout | from_json).data.status == 'stopped'
+      retries: 720
+      delay: 60
+      no_log: true
+
+    - name: Require successful completion of the exact sync UPID
+      ansible.builtin.assert:
+        that:
+          - _pbs_sync_status_raw.rc == 0
+          - (_pbs_sync_status_raw.stdout | from_json).data.status == 'stopped'
+          - (_pbs_sync_status_raw.stdout | from_json).data.exitstatus == 'OK'
+        fail_msg: "The protected-copy sync task did not complete successfully."
+        quiet: true
+      no_log: true
+
+    - name: Read source and destination manifests for exact artifact equality
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/inspect_pbs_backup_access.py", snapshot-manifest]
+        stdin: >-
+          {{ {'url': 'https://' ~ item.api_host ~ ':8007', 'expected_host': item.api_host,
+              'fingerprint': item.fingerprint, 'auth_id': item.auth_id,
+              'secret': item.secret, 'backup_id': _pbs_backup_receipt.evidence.snapshot.backup_id,
+              'backup_time': _pbs_backup_receipt.evidence.snapshot.backup_time} | to_json }}
+        stdin_add_newline: false
+      loop:
+        - api_host: "{{ _pbs_source_api_host }}"
+          fingerprint: "{{ _pbs_source_record.o11y_copy_reader_fingerprint }}"
+          auth_id: "{{ _pbs_source_record.o11y_copy_reader_token_id }}"
+          secret: "{{ _pbs_source_record.o11y_copy_reader_token_secret }}"
+        - api_host: "{{ _pbs_copy_api_host }}"
+          fingerprint: "{{ _pbs_source_record.o11y_copy_manager_fingerprint }}"
+          auth_id: "{{ _pbs_source_record.o11y_copy_manager_token_id }}"
+          secret: "{{ _pbs_source_record.o11y_copy_manager_token_secret }}"
+      loop_control:
+        label: "pinned snapshot manifest read"
+      register: _pbs_sync_manifests
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: Require stable source and destination artifact fingerprints
+      ansible.builtin.assert:
+        that:
+          - _pbs_sync_manifests.results | length == 2
+          - _pbs_sync_manifests.results[0].rc == 0
+          - _pbs_sync_manifests.results[1].rc == 0
+          - (_pbs_sync_manifests.results[0].stdout | from_json).artifact_fingerprint == _pbs_backup_receipt.artifact_fingerprint
+          - (_pbs_sync_manifests.results[1].stdout | from_json).artifact_fingerprint == _pbs_backup_receipt.artifact_fingerprint
+        fail_msg: "The destination copy is missing or differs from the exact verified source artifact."
+        quiet: true
+      no_log: true
+
+    - name: Emit the chained protected-copy synchronization receipt
+      ansible.builtin.include_tasks: tasks/emit-o11y-pbs-receipt.yml
+      vars:
+        pbs_receipt_contract: o11y-pbs-copy-sync/v1
+        pbs_receipt_public_sha: "{{ expected_repository_sha }}"
+        pbs_receipt_private_sha: "{{ site_config_base_sha }}"
+        pbs_receipt_inventory_fingerprint: "{{ hostvars['localhost']._pbs_inventory_provenance.inventory_fingerprint }}"
+        pbs_receipt_source_fingerprint: "{{ hostvars['localhost']._pbs_backup_receipt.source_fingerprint }}"
+        pbs_receipt_artifact_fingerprint: "{{ hostvars['localhost']._pbs_backup_receipt.artifact_fingerprint }}"
+        pbs_receipt_observed_start: "{{ _pbs_sync_start }}"
+        pbs_receipt_observed_end: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        pbs_receipt_evidence:
+          backup_task_id: "{{ hostvars['localhost']._pbs_backup_receipt_task_id }}"
+          verify_task_id: "{{ hostvars['localhost']._pbs_verify_receipt_task_id }}"
+          backup_upid: "{{ hostvars['localhost']._pbs_backup_receipt.evidence.backup_upid }}"
+          verification_upid: "{{ hostvars['localhost']._pbs_verify_receipt.evidence.verification_upid }}"
+          sync_upid: "{{ _pbs_sync_upid }}"
+          verification_status: OK
+          snapshot: "{{ hostvars['localhost']._pbs_backup_receipt.evidence.snapshot }}"
+          artifact_fingerprint: "{{ hostvars['localhost']._pbs_backup_receipt.artifact_fingerprint }}"
+          remove_vanished: false
+          prune_enabled: false
+          playbook: platform/playbooks/sync-o11y-protected-pbs-copy.yml

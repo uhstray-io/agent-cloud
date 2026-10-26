@@ -12,6 +12,27 @@
 #                        runner container hooks do exactly that
 #                        (`exec.getExecOutput('docker', args)`), which is why a plain
 #                        rootless Podman install is not enough for a CI runner host.
+#                        The shim runs podman as a CLI in the CALLER's environment.
+#   podman_docker_api_client
+#                        install Docker's own CLI client (`docker-ce-cli` from Docker's
+#                        apt repository, nothing else: no Docker engine, no containerd)
+#                        and remove `podman-docker`. The client talks to an API socket
+#                        named by DOCKER_HOST, so a consumer points it at a podman API
+#                        service, which runs with its own account's environment, not
+#                        the caller's. The GitHub runner uses this (design D4 in
+#                        openspec add-github-actions-runners): the container hooks start
+#                        `docker` with only the job's variables, HOME=/github/home among
+#                        them, and podman run as a CLI with that HOME fails with
+#                        `cannot resolve /github/home` (docs/MISTAKES.md 10.25, 10.29).
+#                        This playbook enables no socket; the consumer enables the API
+#                        service for the account that owns it.
+#   podman_docker_api_client_version
+#                        the docker-ce-cli version to install, upstream form ("29.9.1").
+#                        Pinned: an upgrade is a declaration change and a review. A newer
+#                        package already on the host is moved back to the pin.
+#
+# The two Docker options both provide /usr/bin/docker and their packages conflict
+# (podman-docker declares `Conflicts: docker-ce-cli`), so at most one may be on.
 #
 # Usage: ansible-playbook install-podman.yml -e "target_service=uhhcraft_svc"
 
@@ -27,6 +48,8 @@
   vars:
     target_service: "ungrouped"
     _docker_cli: "{{ podman_docker_cli | default(false) | bool }}"
+    _docker_api_client: "{{ podman_docker_api_client | default(false) | bool }}"
+    _docker_api_client_version: "{{ podman_docker_api_client_version | default('29.9.1') }}"
 
   tasks:
     - name: "Resolve the sudo password (host may not be hardened yet)"
@@ -40,6 +63,18 @@
       # BEFORE the resolver above and escalated without a password, killing the
       # play at "Gathering Facts" — which is exactly what happened before this.
       ansible.builtin.setup:
+
+    - name: "Refuse both Docker options at once"
+      # Both put a `docker` at /usr/bin/docker and their packages conflict; apt would
+      # remove whichever was installed first, and the result would depend on task order.
+      # After the escalation and fact-gathering pair, which must open every play here
+      # (test_become_password_resolution.bats), and before anything is installed.
+      ansible.builtin.assert:
+        that: not (_docker_cli and _docker_api_client)
+        fail_msg: >-
+          podman_docker_cli and podman_docker_api_client are both true. Declare one: the
+          shim (podman as a CLI) or Docker's CLI client against a podman API socket.
+        quiet: true
 
     - name: "Wait for a freshly-booted host to accept package installs"
       ansible.builtin.include_tasks: tasks/wait-for-apt.yml
@@ -121,8 +156,80 @@
       failed_when: not _docker_shim.stat.exists
       when: _docker_cli
 
+    # ── Docker's CLI client against a podman API socket (opt-in). Same reasoning as the
+    # shim for living here: "a tool that shells out to `docker` but must not run podman in
+    # its own environment" is a general need, not a runner one.
+    - name: "Remove the podman-docker shim, which the Docker CLI client replaces"
+      # Explicit, so the swap does not depend on apt's conflict resolution. The package's
+      # tmpfiles.d link from /run/docker.sock to ROOT's podman socket goes with it; a
+      # consumer that needs that path links it itself (tasks/podman-user-docker-socket.yml).
+      ansible.builtin.apt:
+        name: podman-docker
+        state: absent
+      when: _docker_api_client
+
+    - name: "Remove the podman-docker banner marker"
+      # Only the shim reads it.
+      ansible.builtin.file:
+        path: /etc/containers/nodocker
+        state: absent
+      when: _docker_api_client
+
+    - name: "Add Docker's apt repository for the CLI client"
+      ansible.builtin.include_tasks: tasks/add-docker-apt-repo.yml
+      when: _docker_api_client
+
+    - name: "Install the pinned Docker CLI client, and nothing of the Docker engine"
+      # docker-ce-cli alone: no docker-ce, no containerd.io. Its Recommends are the buildx
+      # and compose plugins, which drive a Docker engine's BuildKit, so they are left out.
+      # The epoch `5:` is part of every docker-ce-cli version in that repository; the
+      # trailing `-*` matches the distribution suffix (`-1~ubuntu.24.04~noble`).
+      ansible.builtin.apt:
+        name: "docker-ce-cli=5:{{ _docker_api_client_version }}-*"
+        state: present
+        install_recommends: false
+        allow_downgrade: true
+        update_cache: true
+      # Under --check the repository task writes no key or source, so a fresh host has no
+      # candidate for this version. Ignore that failure in check mode only; a real run
+      # still fails when the client cannot be installed.
+      ignore_errors: "{{ ansible_check_mode }}"
+      when: _docker_api_client
+
+    - name: "Read which package owns /usr/bin/docker, its version, and any Docker engine"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        echo "owner=$(dpkg-query -S /usr/bin/docker 2>/dev/null | cut -d: -f1 || true)"
+        echo "version=$(dpkg-query -W -f='${Version}' docker-ce-cli 2>/dev/null || true)"
+        for p in docker-ce docker.io containerd.io; do
+          if dpkg-query -W -f='${db:Status-Abbrev}' "$p" 2>/dev/null | grep -q '^ii'; then
+            echo "engine=$p"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: _docker_api_client_state
+      changed_when: false
+      check_mode: false
+      when: _docker_api_client
+
+    - name: "Require Docker's CLI client at the pinned version, and no Docker engine"
+      ansible.builtin.assert:
+        that:
+          - "'owner=docker-ce-cli' in _docker_api_client_state.stdout_lines"
+          - (_docker_api_client_state.stdout_lines | select('match', '^version=5:' ~ (_docker_api_client_version | regex_escape) ~ '-') | list | length) == 1
+          - (_docker_api_client_state.stdout_lines | select('match', '^engine=') | list | length) == 0
+        fail_msg: >-
+          Expected /usr/bin/docker from docker-ce-cli 5:{{ _docker_api_client_version }}-*
+          and no Docker engine package. Read: {{ _docker_api_client_state.stdout_lines | join('; ') }}.
+        success_msg: "Docker CLI client {{ _docker_api_client_version }} installed; no Docker engine."
+      when:
+        - _docker_api_client
+        - not ansible_check_mode
+
     - name: "Podman ready"
       ansible.builtin.debug:
         msg: >-
           Podman installed; compose entrypoint: {{ _compose_check.stdout | trim }}.
           Docker CLI shim: {{ 'installed' if _docker_cli else 'not requested' }}.
+          Docker CLI client: {{ ('docker-ce-cli ' ~ _docker_api_client_version) if _docker_api_client else 'not requested' }}.

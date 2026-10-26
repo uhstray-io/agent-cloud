@@ -18,6 +18,10 @@
 # Usage (via Semaphore):
 #   -e target_service=github_runner_svc
 #   -e github_app_client_id=...        (installation id is discovered, not declared)
+#   github_runner_lifecycle (inventory): `persistent` (default, one long-lived registration)
+#     or `ephemeral` (one just-in-time runner per job, the runner account's processes and
+#     files destroyed between jobs; openspec add-ephemeral-github-runners and
+#     tasks/github-runner-lifecycle.yml)
 #   App private key: read from OpenBao at
 #   secret/services/github-runner:app_private_key. NOT from an environment secret and
 #   never a survey var — Semaphore persists survey values, and one authoritative channel
@@ -91,6 +95,7 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _hver: "{{ github_runner_hooks_version | default('0.8.1') }}"
+    _lifecycle: "{{ github_runner_lifecycle | default('persistent') }}"
     # The verdict lines `deploy.sh procs` prints for a runner in the state this deploy
     # promises: one Listener, in the unit's cgroup, started after .env was last written,
     # and no no_new_privs or private user namespace on the main process, the Listener or
@@ -118,6 +123,7 @@
           # outside the checkout. Reject an absolute path and any parent traversal.
           - not (monorepo_deploy_path | default('') is match('^/'))
           - "'..' not in ((monorepo_deploy_path | default('')).split('/'))"
+          - _lifecycle in ['persistent', 'ephemeral']
         fail_msg: >-
           Need the OpenBao address, the App's client id (or app id), and this host's
           github_runner_name / github_runner_labels / github_runner_group in inventory.
@@ -126,8 +132,9 @@
           group, which may admit repositories this plane must not serve.
           monorepo_deploy_path is the path WITHIN the repo to this service's deploy.sh —
           relative, and with no `..` component: it is concatenated onto the repo root and
-          the result is executed.
-        success_msg: "Declaration complete for {{ github_runner_name }}."
+          the result is executed. github_runner_lifecycle is `persistent` (the default) or
+          `ephemeral`.
+        success_msg: "Declaration complete for {{ github_runner_name }} ({{ _lifecycle }} lifecycle)."
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -158,6 +165,33 @@
         name: [curl, unzip, tar, ca-certificates, acl]
         state: present
         update_cache: true
+
+    - name: "Read which package provides the docker the hooks will run"
+      # Read-only, so a dry run reports it too.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        echo "owner=$(dpkg-query -S /usr/bin/docker 2>/dev/null | cut -d: -f1 || true)"
+      args:
+        executable: /bin/bash
+      register: _docker_owner
+      changed_when: false
+      check_mode: false
+
+    - name: "Require Docker's CLI client, not the podman-docker shim"
+      # The container hooks run `docker` with only the job's variables, HOME=/github/home
+      # among them. The podman-docker shim runs podman as a CLI in that environment, and
+      # rootless podman resolves its configuration from HOME on the host: every container
+      # job failed with `cannot resolve /github/home`. Docker's CLI client sends the same
+      # calls to the account's podman API service (DOCKER_HOST, .env), which runs with the
+      # account's own environment (design D4; docs/MISTAKES.md 10.29). The runtime install
+      # owns the package, so this deploy only checks it.
+      ansible.builtin.assert:
+        that: "'owner=docker-ce-cli' in _docker_owner.stdout_lines"
+        fail_msg: >-
+          /usr/bin/docker is not Docker's CLI client (read: {{ _docker_owner.stdout | trim }}).
+          Declare podman_docker_api_client: true (and not podman_docker_cli) for this group
+          and run Install Podman against it first.
+        success_msg: "/usr/bin/docker is Docker's CLI client (docker-ce-cli)."
 
     - name: "Create the unprivileged runner account"
       # No sudo entry, ever. This account is what makes the spec's "a job cannot
@@ -230,6 +264,71 @@
           {{ _account }} appears to have sudo rights. A runner executes
           repository-authored code; granting it host administration defeats every other
           control here. Remove the sudoers entry before deploying.
+
+    # ── arm64 image builds: user-mode qemu ─────────────────────────────────
+    # Multi-arch image builds on these hosts run arm64 binaries through qemu's user-mode
+    # emulator, registered with the kernel's binfmt_misc. Unconditional: the pool builds
+    # images for every listed repository, so every host needs the handler.
+    #
+    # Ubuntu 24.04 (noble) qemu-user-static ships /usr/lib/binfmt.d/qemu-aarch64.conf and no
+    # /usr/share/binfmts entries, so systemd-binfmt.service registers the handler and
+    # binfmt-support is not needed. "At boot, systemd-binfmt.service reads configuration
+    # files from the above directories to register in the kernel"
+    # (https://www.freedesktop.org/software/systemd/man/latest/binfmt.d.html).
+    # Whether the package's postinst also registers at install time is unverified; the
+    # conditional restart below covers both cases.
+    - name: "Install user-mode qemu for arm64 binaries"
+      ansible.builtin.apt:
+        name: qemu-user-static
+        state: present
+      register: _qemu_pkg
+
+    - name: "Read the arm64 binfmt handler's state before registering it"
+      # Read-only probe: check_mode false, so a dry run reads the kernel's real state. The
+      # status file's first line is `enabled` or `disabled`
+      # (https://www.kernel.org/doc/html/latest/admin-guide/binfmt-misc.html). An absent
+      # handler makes the command fail, with empty stdout.
+      ansible.builtin.command: cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+      register: _qemu_binfmt_before
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Register the arm64 binfmt handler now, not only at the next boot"
+      # restarted, not started: a oneshot unit that already ran at boot is active, and
+      # started does nothing to it. Gated on the handler not being enabled, so a converged
+      # host is not touched.
+      ansible.builtin.systemd_service:
+        name: systemd-binfmt.service
+        state: restarted
+      register: _qemu_restart
+      when: (_qemu_binfmt_before.stdout_lines | default([]) | first | default('')) != 'enabled'
+
+    - name: "Read the arm64 binfmt handler's state after registering it"
+      ansible.builtin.command: cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+      register: _qemu_binfmt
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Require the arm64 binfmt handler to be registered and enabled"
+      # The first line is compared exactly: a substring match would also pass a handler
+      # whose flags or interpreter line happens to contain the word. Under --check the assert
+      # is skipped only when the install or the restart would have changed the host, because
+      # then the handler cannot exist yet. The interpreter and flags lines are printed on
+      # success, so the first real run records the flags the package registered with.
+      ansible.builtin.assert:
+        that:
+          - (_qemu_binfmt.stdout_lines | default([]) | first | default('')) == 'enabled'
+        fail_msg: >-
+          The arm64 binfmt handler is not enabled: /proc/sys/fs/binfmt_misc/qemu-aarch64
+          reports "{{ _qemu_binfmt.stdout_lines | default([]) | first | default('absent') }}".
+          This runner cannot build linux/arm64 images. Check that binfmt_misc is mounted and
+          that systemd-binfmt.service loaded /usr/lib/binfmt.d/qemu-aarch64.conf.
+        success_msg: >-
+          arm64 binfmt handler enabled:
+          {{ _qemu_binfmt.stdout_lines | select('match', '^(interpreter|flags)') | join('; ') }}
+      when: not (ansible_check_mode and ((_qemu_pkg.changed | default(false)) or (_qemu_restart.changed | default(false))))
 
     # ── setuid surface a job can reach ─────────────────────────────────────
     # The runner unit cannot set no_new_privs (rootless podman needs the setuid
@@ -416,6 +515,9 @@
       become: false
       no_log: true
       check_mode: false
+      # The ephemeral lifecycle registers nothing here: its runners come from just-in-time
+      # configurations minted by tasks/github-runner-jit-stock.yml.
+      when: _lifecycle == 'persistent'
 
     # ── diagnosing a credential failure without printing the credential ────
     # Surfacing the helper's stderr is deliberate and safe: it emits only fixed
@@ -445,6 +547,7 @@
              else 'the App lacks organisation self-hosted-runners write' if ('could not obtain a runner' in (_regtoken.stderr | default('')))
              else 'unclassified failure' }}
       no_log: true
+      when: _lifecycle == 'persistent'
 
     - name: "Report the credential outcome (verdict and shapes only)"
       ansible.builtin.debug:
@@ -454,6 +557,7 @@
           lines={{ _pem_lines }} (a 2048-bit RSA PEM is ~27 lines; 1 means the
           newlines were lost in transit).
           Helper stderr: {{ (_regtoken.stderr | default('')) | trim }}
+      when: _lifecycle == 'persistent'
 
     - name: "Fail if no registration token was minted"
       ansible.builtin.assert:
@@ -462,6 +566,14 @@
           - (_regtoken.stdout | default('')) | length > 0
         fail_msg: "No registration token: {{ _mint_verdict }}."
         success_msg: "Registration token minted."
+      when: _lifecycle == 'persistent'
+
+    # ── lifecycle: on a host that is or was ephemeral, nothing runs while the home is
+    # rebuilt, and the home is built from nothing (tasks/github-runner-lifecycle.yml) ──
+    - name: "Prepare the runner lifecycle"
+      ansible.builtin.include_tasks: tasks/github-runner-lifecycle.yml
+      vars:
+        grl_phase: prepare
 
     # ── configuration (visible: these must stay diagnosable) ───────────────
     - name: "Render the runner's configuration"
@@ -483,6 +595,20 @@
         _tpl_org: "{{ _org }}"
         _tpl_rver: "{{ _rver }}"
         _tpl_hver: "{{ _hver }}"
+        _tpl_lifecycle: "{{ _lifecycle }}"
+
+    - name: "Resolve the runner account's uid"
+      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
+      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
+      # host where accounts were created in a different order. Resolved before the templates
+      # because .env names the account's podman API socket, /run/user/<uid>/podman.
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ _account }}"
+
+    - name: "Record the uid and the user bus it implies"
+      ansible.builtin.set_fact:
+        _runner_uid: "{{ getent_passwd[_account][1] }}"
 
     - name: "Template the runner's declaration, job env and job hooks"
       ansible.builtin.template:
@@ -500,6 +626,7 @@
         github_org: "{{ _tpl_org }}"
         github_runner_version: "{{ _tpl_rver }}"
         github_runner_hooks_version: "{{ _tpl_hver }}"
+        github_runner_uid: "{{ _runner_uid }}"
       loop:
         - { src: "runner.env.j2", dest: "{{ _home }}/config/runner.env", mode: "0640" }
         - { src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }
@@ -529,6 +656,7 @@
         mode: "0644"
       vars:
         github_runner_home: "{{ _tpl_home }}"
+        github_runner_lifecycle: "{{ _tpl_lifecycle }}"
       register: _runner_unit
 
     # ── install + register ─────────────────────────────────────────────────
@@ -550,7 +678,21 @@
       changed_when: "'registered' in (_configured.stdout | default(''))"
       failed_when: false
       no_log: true
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _lifecycle == 'persistent'
+
+    - name: "Install the runner without registering it (ephemeral lifecycle)"
+      # The ephemeral home holds no registration: each job's runner gets its identity from a
+      # just-in-time configuration when the supervisor starts it.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh install"
+      environment:
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      become: true
+      become_user: "{{ _account }}"
+      register: _installed
+      # Always a fresh extraction into the reset home; the deploy's change is judged on the
+      # seed instead (see the service-deploy result).
+      changed_when: false
+      when: not ansible_check_mode and _lifecycle == 'ephemeral'
 
     # Same reasoning as the mint: no_log belongs on the step the token crosses, but a
     # no_log step that merely fails is undiagnosable. The script never echoes the token
@@ -562,6 +704,7 @@
           register rc={{ _configured.rc | default('?') }}
           {{ ('stdout: ' ~ ((_configured.stdout | default('')) | trim)) if (_configured.stdout | default('')) | length > 0 else '' }}
           {{ ('stderr: ' ~ ((_configured.stderr | default('')) | trim)) if (_configured.stderr | default('')) | length > 0 else '' }}
+      when: _lifecycle == 'persistent'
 
     - name: "Fail if the runner did not register"
       ansible.builtin.assert:
@@ -572,57 +715,28 @@
       # The register step is skipped under --check, so it leaves no rc to judge. Without
       # this guard every dry run stopped here (Semaphore task 4631), before the read-only
       # service checks below, which do run in check mode.
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _lifecycle == 'persistent'
 
-    - name: "Resolve the runner account's uid"
-      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
-      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
-      # host where accounts were created in a different order.
-      ansible.builtin.getent:
-        database: passwd
-        key: "{{ _account }}"
-
-    - name: "Record the uid and the user bus it implies"
-      ansible.builtin.set_fact:
-        _runner_uid: "{{ getent_passwd[_account][1] }}"
-
-    - name: "Create the directory for the runner's own docker wrapper"
-      # Not the runner's bin/: that holds the runner's own binaries, from its archive.
+    - name: "Remove the docker wrapper an earlier deploy installed"
+      # PR #556 put a `docker` wrapper in _bin and listed _bin first on the runner's PATH.
+      # The hooks' docker is now Docker's CLI client against the account's podman API
+      # socket, and .env no longer sets PATH, so the wrapper is unused; removed so that no
+      # second `docker` lingers in the runner's home (docs/MISTAKES.md 10.29).
       ansible.builtin.file:
         path: "{{ _home }}/_bin"
-        state: directory
-        owner: "{{ _account }}"
-        group: "{{ _account }}"
-        mode: "0750"
-
-    - name: "Install the docker wrapper the container hooks run"
-      # The hooks start `docker` with only the job's environment variables, which include
-      # HOME=/github/home and no XDG_* directories, so rootless podman looked for its
-      # configuration and its image store under a path that exists only inside the job
-      # container. Every container job failed in "Initialize containers" with `cannot
-      # resolve /github/home`. The wrapper sets the account's own directories and runs
-      # podman unchanged; the runner's PATH (.env) lists _bin first. Templated after the
-      # uid lookup because XDG_RUNTIME_DIR is /run/user/<uid>. The full reasoning is in
-      # docker-wrapper.sh.j2 and the service CLAUDE.md, "Container jobs under rootless
-      # podman".
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/docker-wrapper.sh.j2"
-        dest: "{{ _home }}/_bin/docker"
-        owner: "{{ _account }}"
-        group: "{{ _account }}"
-        mode: "0750"
-      vars:
-        github_runner_home: "{{ _tpl_home }}"
-        github_runner_uid: "{{ _runner_uid }}"
+        state: absent
 
     - name: "Give job containers the runner account's own podman socket, never root's"
-      # The runner mounts /var/run/docker.sock into every job container; the path is
-      # hardcoded upstream and no setting removes it (see the task file). podman-docker
-      # links it to root's socket, which the account cannot reach, so every container job
-      # failed in "Initialize containers". Pointed at the account's rootless socket, a job
-      # container gets what a plain job on this host already has (it runs as this
-      # account), and no account gets root's socket. Options weighed and isolation
-      # reasoning: the service CLAUDE.md, "Container jobs under rootless podman".
+      # Two consumers of one socket. (1) The hooks' docker: Docker's CLI client reaches
+      # the account's rootless podman API through DOCKER_HOST in .env, so this task's
+      # podman.socket user unit is what every container job runs on. (2) The runner mounts
+      # /var/run/docker.sock into every job container; the path is hardcoded upstream and
+      # no setting removes it (see the task file). podman-docker linked it to root's
+      # socket, which the account cannot reach, and without podman-docker nothing creates
+      # the path at all. Pointed at the account's rootless socket, a job container gets
+      # what a plain job on this host already has (it runs as this account), and no
+      # account gets root's socket. Options weighed and isolation reasoning: the service
+      # CLAUDE.md, "Container jobs under rootless podman".
       ansible.builtin.include_tasks: tasks/podman-user-docker-socket.yml
       vars:
         pds_user: "{{ _account }}"
@@ -652,6 +766,8 @@
       # `procs`. The decision below then reads no lines and reports a restart.
       failed_when: _procs_before.rc != 0 and not ansible_check_mode
       check_mode: false
+      # Ephemeral: the supervisor starts the runner; this play never restarts one.
+      when: _lifecycle == 'persistent'
 
     - name: "Decide whether the runner must be restarted"
       # When the unit or .env changed: a running process keeps the properties it was
@@ -665,6 +781,7 @@
              or ('runner-dotenv.j2' in (_runner_files.results | default([])
                  | selectattr('changed') | map(attribute='item.src') | list))
              or (_runner_converged | difference(_procs_before.stdout_lines) | length > 0) }}
+      when: _lifecycle == 'persistent'
 
     - name: "Report the runner's processes and the restart decision"
       ansible.builtin.debug:
@@ -672,6 +789,7 @@
           restart={{ _runner_restart }}; procs rc={{ _procs_before.rc }};
           {{ _procs_before.stdout_lines | join('; ') }}
           {{ (_procs_before.stderr | default('')) | trim }}
+      when: _lifecycle == 'persistent'
 
     - name: "Drain, stop and empty the runner's unit"
       # deploy.sh quiesce: waits up to github_runner_drain_seconds for no Worker to run
@@ -692,16 +810,19 @@
         RUNNER_DRAIN_SECONDS: "{{ github_runner_drain_seconds | default(600) }}"
       register: _quiesce
       changed_when: true
-      when: _runner_restart | bool and not ansible_check_mode
+      when: _lifecycle == 'persistent' and _runner_restart | bool and not ansible_check_mode
 
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
         name: actions-runner.service
         scope: user
         daemon_reload: true
-        enabled: true
+        # Ephemeral: never enabled or started here. The supervisor starts it once per job,
+        # with that job's just-in-time configuration; enabled, the user manager would start
+        # it with none at every reset.
+        enabled: "{{ _lifecycle == 'persistent' }}"
         # Never `restarted`: a restart is the quiesce above, then this start.
-        state: started
+        state: "{{ 'started' if _lifecycle == 'persistent' else 'stopped' }}"
       become: true
       become_user: "{{ _account }}"
       environment:
@@ -722,6 +843,7 @@
       # success for a runner serving nothing.
       failed_when: "(_active.stdout | default('') | trim) != 'active'"
       check_mode: false
+      when: _lifecycle == 'persistent'
 
     # Rootless containers are proved in the context jobs actually run in. A check run
     # through become_user is a sudo session from the SSH login: it is not a descendant of
@@ -744,6 +866,7 @@
       retries: 12
       delay: 5
       check_mode: false
+      when: _lifecycle == 'persistent'
 
     - name: "Require one Listener, in the unit's cgroup, started after .env, with no no_new_privs"
       # Read from the kernel, for the processes that run jobs. The check this replaces
@@ -764,7 +887,7 @@
           {{ _runner_converged | difference(_procs.stdout_lines) | join(', ') }}.
           Read: {{ _procs.stdout_lines | join('; ') }}
         success_msg: "One Listener, in the unit's cgroup, started after .env; no no_new_privs on it, its Worker or run.sh."
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _lifecycle == 'persistent'
 
     - name: "Confirm rootless podman maps the account's ranges from inside the user manager"
       # Exercises newuidmap/newgidmap for real, in a transient unit of the SAME user
@@ -811,22 +934,20 @@
       # started, then removed. `_ping` on the mounted socket path must reach the account's
       # own podman.
       #
-      # Hook-shaped in ENVIRONMENT too, not only in arguments. The hooks resolve `docker`
-      # with the runner's PATH and then start it with the job's variables only
-      # (runner-container-hooks v0.8.1, utils.ts optionsWithDockerEnvs): `create` gets
-      # HOME=/github/home and nothing else of the runner's, while `pull` gets no HOME at
-      # all. The first version of this probe ran `docker` with the user manager's own
-      # environment, passed, and every container job still failed with `cannot resolve
-      # /github/home` (docs/MISTAKES.md 10.25). So `docker` is resolved from the PATH in
-      # the deployed .env and must be the wrapper; the import runs under `env -i` as the
+      # Hook-shaped in ENVIRONMENT too, not only in arguments (docs/MISTAKES.md 10.25). The
+      # hooks resolve `docker` with the runner's PATH and then start it with the job's
+      # variables plus the runner's DOCKER_* variables only (runner-container-hooks v0.8.1,
+      # utils.ts optionsWithDockerEnvs): `create` gets HOME=/github/home and DOCKER_HOST,
+      # while `pull` gets DOCKER_HOST alone. So `docker` is resolved from this unit's PATH,
+      # which is the user manager's, as the runner's is (.env sets none), and must be
+      # Docker's CLI client; DOCKER_HOST is read from the deployed .env and must be the
+      # account's podman API socket; the import runs under `env -i DOCKER_HOST=...` as the
       # hooks' pull does; the create runs under `env -i HOME=/github/home
-      # GITHUB_ACTIONS=true CI=true` with `-e HOME`, and must find the imported image, so
-      # both calls use one store; and the created container must carry HOME=/github/home,
-      # so the wrapper did not change the job's HOME. No second `system migrate` here:
-      # it stops running containers, so it could stop a job that started after the
-      # uid-map check. The cost: this probe joins the pause process that check left, so
-      # it does not exercise the wrapper's PATH for newuidmap; the bats test of the
-      # rendered wrapper covers that PATH.
+      # GITHUB_ACTIONS=true CI=true DOCKER_HOST=...` with `-e HOME`, and must find the
+      # imported image; and the created container must carry HOME=/github/home. Under the
+      # podman-docker shim this exact create failed with `cannot resolve /github/home`
+      # (docs/MISTAKES.md 10.29). No second `system migrate` here: it stops running
+      # containers, so it could stop a job that started after the uid-map check.
       ansible.builtin.shell: |
         set -euo pipefail
         nnp=$(systemctl --user show --property=NoNewPrivileges --value actions-runner.service)
@@ -837,21 +958,23 @@
         H={{ _home | quote }}
         W="$H/_work"
         "$H/job-started.sh"
-        runner_path=$(sed -n 's/^PATH=//p' "$H/.env")
-        dk=$(PATH="$runner_path" command -v docker)
+        dk=$(command -v docker)
         echo "docker=$dk"
-        [ "$dk" = "$H/_bin/docker" ]
+        echo "client=$(dpkg-query -S "$dk" | cut -d: -f1)"
+        dh=$(sed -n 's/^DOCKER_HOST=//p' "$H/.env")
+        echo "docker_host=$dh"
+        [ "$dh" = "unix:///run/user/$(id -u)/podman/podman.sock" ]
         probe="gh-runner-mount-probe-$$"
         img="localhost/$probe:latest"
         src=$(mktemp -d)
-        trap 'env -i "$dk" rm -f "$probe" >/dev/null 2>&1 || true; env -i "$dk" rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
+        trap 'env -i DOCKER_HOST="$dh" "$dk" rm -f "$probe" >/dev/null 2>&1 || true; env -i DOCKER_HOST="$dh" "$dk" rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
         mkdir "$src/root"
         : > "$src/root/.probe"
         tar -C "$src/root" -cf "$src/rootfs.tar" .
-        env -i "$dk" import "$src/rootfs.tar" "$img" >/dev/null
-        env -i "$dk" image exists "$img"
+        env -i DOCKER_HOST="$dh" "$dk" import "$src/rootfs.tar" "$img" >/dev/null
+        env -i DOCKER_HOST="$dh" "$dk" image inspect "$img" >/dev/null
         echo "import=ok"
-        env -i HOME=/github/home GITHUB_ACTIONS=true CI=true "$dk" create --name "$probe" \
+        env -i HOME=/github/home GITHUB_ACTIONS=true CI=true DOCKER_HOST="$dh" "$dk" create --name "$probe" \
           -e HOME -e GITHUB_ACTIONS=true -e CI=true \
           -v=/var/run/docker.sock:/var/run/docker.sock \
           -v="$W":/__w \
@@ -863,7 +986,7 @@
           -v="$W/_temp/_github_workflow":/github/workflow \
           --entrypoint tail "$img" -f /dev/null >/dev/null
         echo "create=ok"
-        cfg=$(env -i "$dk" inspect "$probe")
+        cfg=$(env -i DOCKER_HOST="$dh" "$dk" inspect "$probe")
         if grep -qF '"HOME=/github/home"' <<<"$cfg"; then
           echo "home=job"
         fi
@@ -879,7 +1002,9 @@
       changed_when: false
       failed_when: >-
         _mountprobe.rc != 0
-        or ('docker=' ~ _home ~ '/_bin/docker') not in _mountprobe.stdout_lines
+        or 'docker=/usr/bin/docker' not in _mountprobe.stdout_lines
+        or 'client=docker-ce-cli' not in _mountprobe.stdout_lines
+        or ('docker_host=unix:///run/user/' ~ _runner_uid ~ '/podman/podman.sock') not in _mountprobe.stdout_lines
         or 'import=ok' not in _mountprobe.stdout_lines
         or 'create=ok' not in _mountprobe.stdout_lines
         or 'home=job' not in _mountprobe.stdout_lines
@@ -887,20 +1012,28 @@
       # It creates and removes a container, so a dry run skips it.
       when: not ansible_check_mode
 
+    - name: "Activate the runner lifecycle"
+      # Ephemeral: seed, reset, stock and start the supervisor, then verify a runner online.
+      # Leaving ephemeral: remove the supervisor, its stock and its runner records.
+      ansible.builtin.include_tasks: tasks/github-runner-lifecycle.yml
+      vars:
+        grl_phase: activate
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }}),
-          service {{ _active.stdout | trim }}, labels
+          {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }},
+          {{ _lifecycle }} lifecycle),
+          service {{ (_active.stdout | default('started per job by the supervisor')) | trim }}, labels
           {{ (github_runner_labels | default([])) | join(',') }}, group
           {{ github_runner_group }}, one Listener started after .env with no_new_privs
           off, rootless
           containers mapped from inside the user manager
           ({{ _uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1 }}
           uid map lines), a job container created with the runner's mounts and the
-          account's own podman socket, through the runner's docker wrapper with the
-          hooks' own environment. Confirm it is ONLINE at the organisation with
-          verify-github-runners.yml before routing work to it.
+          account's own podman socket, through Docker's CLI client against the account's
+          podman API with the hooks' own environment. Confirm it is ONLINE at the
+          organisation with verify-github-runners.yml before routing work to it.
 
     # Last: every verify task above passed. The per-host result carries only the flags the
     # shared task reads, never _configured, whose task is no_log because it handled the
@@ -910,10 +1043,16 @@
     - name: "Gather this host's service-deploy result"
       ansible.builtin.set_fact:
         _service_deploy_result:
-          skipped: "{{ _configured is not defined or _configured is skipped }}"
+          skipped: >-
+            {{ (_configured is not defined or _configured is skipped)
+               and (_installed is not defined or _installed is skipped) }}
+          # Ephemeral: the home is rebuilt from nothing on every deploy, so its files always
+          # "change"; what changed is whether the seed every job starts from, or the
+          # supervisor, differs from before (tasks/github-runner-lifecycle.yml).
           changed: >-
-            {{ (_configured.changed | default(false)) or (_runner_unit.changed | default(false))
-               or (_runner_files.changed | default(false)) }}
+            {{ (_grl_changed | default(false)) if (_lifecycle | default('persistent')) == 'ephemeral'
+               else ((_configured.changed | default(false)) or (_runner_unit.changed | default(false))
+                     or (_runner_files.changed | default(false))) }}
 
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml

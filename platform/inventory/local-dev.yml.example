@@ -160,13 +160,13 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
-            # inference — the OpenAI-compatible vLLM edge (the DGX Spark pair in
-            # prod). inference_api renders the /v1 + /health allowlist with an edge
-            # 401 and 404-for-everything-else; the upstream is a stand-in on the Mac
-            # host (scripts/fake-inference-upstream.py) so the edge rules can be
-            # exercised without a GPU box. Prod points the same shape at spark-1 via
-            # site-config's caddy_managed_sites.
-            - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
+            # inference — the OpenAI-compatible edge, the same shape as prod: this route
+            # fronts the local agentgateway's default listener (/v1), which holds the
+            # per-client keys and budgets. inference_api renders the /v1 + /health
+            # allowlist with an edge 401 and 404-for-everything-else. In-network clients
+            # (skynet) reach it at https://inference.agent-cloud.test/v1 (port 443).
+            # The gateway's upstream is the public edge (agentgateway_svc below).
+            - { host: "inference.agent-cloud.test", upstream: "agentgateway:4000", inference_api: true }
             # agentgateway operator UI — the gateway runs its own OIDC login against
             # Authentik (ui.policies), so this is a plain proxy to its UI listener.
             - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
@@ -176,6 +176,11 @@ all:
             # 404). The upstream is the gateway's `default` listener (:4000), the one that
             # serves /mcp; the single-label host sits under the wildcard certificate.
             - { host: "mcp.agent-cloud.test", upstream: "agentgateway:4000", mcp_api: true }
+            # OPA — the decision API (platform/services/opa), over HTTPS so callers such as skynet
+            # verify its certificate via step-ca instead of trusting plain http on the shared network.
+            # A plain proxy with NO edge gate: OPA's Phase 1 stays unauthenticated, and this route
+            # adds server authentication only. Upstream opa:8181 is in-network plain HTTP.
+            - { host: "opa.agent-cloud.test", upstream: "opa:8181" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -274,9 +279,12 @@ all:
           tududi_sync_user_email: admin@agent-cloud.test
     # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
     # per-client API keys + limits) in front of the model API. Locally the
-    # upstream is LM Studio on the Mac host (host.containers.internal:1234, no
-    # key); prod points the same shape at vLLM on the DGX Spark head node via
-    # site-config. Deploy: make local-deploy-agentgateway.
+    # upstream is the PUBLIC edge, https://inference.uhstray.io/v1 (prod's route to
+    # vLLM on the DGX Spark head node), authenticated with the prod identity
+    # `local-gateway`: its key is seeded into local OpenBao (operator step). On the
+    # LAN the upstream is the DGX directly; that address stays in this gitignored
+    # file, never in the committed example. Prod points the same shape at vLLM
+    # via site-config. Deploy: make local-deploy-agentgateway.
     # Change: plan/development/openspec/changes/inference-gateway-agentgateway
     agentgateway_svc:
       hosts:
@@ -288,10 +296,13 @@ all:
           container_engine: podman
           # Local debug publishes (127.0.0.1:4400 api, :4401 readiness, :4402 metrics) are
           # literals in compose.local.yml; the UI is reachable only via Caddy + SSO.
-          agw_upstream_base_url: http://host.containers.internal:1234/v1
+          # LAN override (DGX directly, no public edge): http://<dgx-address>:<port>/v1 in your
+          # gitignored local-dev.yml. Placeholder text only; never commit a real address here.
+          agw_upstream_base_url: https://inference.uhstray.io/v1
           agw_models:
-            # The name clients send -> the model id LM Studio serves.
-            - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+            # The name clients send. No upstream_model: the upstream receives the same name, which
+            # is the name prod's gateway lists (plan/development/openspec/changes/inference-gateway-agentgateway).
+            - { name: qwen3.8-flash-next }
           # One API-key identity each; manage-secrets mints client_<name> once
           # into secret/services/agentgateway and reuses it on every deploy.
           agw_clients:
@@ -303,6 +314,14 @@ all:
             # on /v1 whether or not MCP is on; keep it AFTER the person identities (the deploy's verify
             # defaults to the first one).
             - mcp-self
+            # skynet's role identities (plan/development/15-service-deployment-workflow-agents.md,
+            # including the eval identity): one key each, enrolled on /v1 for skynet's agents.
+            - infra-agent
+            - security-agent
+            - o11y-agent
+            - service-agent
+            - network-agent
+            - skynet-eval
           # isolation-probe: local probe identity for "Probe agentgateway Isolation (Dev)", a budget
           # small enough to exhaust in two requests. Prod declares its own probe identity in site-config.
           agw_client_policies:
@@ -334,23 +353,32 @@ all:
           # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
           # playground lists them as saved keys. Never set in prod inventory.
           agw_plaintext_keys: true
-          # The upstream key is OPTIONAL here, not forbidden: the deploy stops requiring it,
-          # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
-          # Prod leaves this unset (true = refuse an empty key).
-          agw_upstream_requires_key: false
+          # true: the deploy refuses an empty upstream key, and the public edge refuses a keyless
+          # call. Seed secret/services/agentgateway:vllm_api_key with the local-gateway identity's
+          # key (operator step) before deploying.
+          agw_upstream_requires_key: true
           # OpenRouter models (change agentgateway-openrouter), OFF here: nothing below is declared
           # until you uncomment it. It is billed per token, so a model is listed by name with its
           # OpenRouter id and only the identities named in agw_openrouter_identities may call it
           # (every other identity is denied it in config.yaml). Needs
-          # secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key). A local gateway
-          # cannot verify openrouter.ai's certificate: compose.local.yml points SSL_CERT_FILE at the
-          # step-ca bundle only, so use this against production-shaped inventory, not here.
+          # secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key). The local gateway
+          # trusts public roots too (compose.local.yml's combined bundle), so openrouter.ai verifies here.
           #   agw_models:
-          #     - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+          #     - { name: qwen3.8-flash-next }
           #     - { name: or-mini, provider: openrouter, upstream_model: openai/gpt-4o-mini }
           #   agw_openrouter_identities: [dev-local]
           #   agw_openrouter_admins: false   # true: every admin-derived identity may call them too
           #   agw_verify_openrouter: false   # true: the deploy spends one 8-token completion to prove it
+          # skynet's orchestration API at /skynet/ (agentgateway task 3.3), OFF here. Enable it AFTER
+          # Deploy skynet (Local) has run once: this gateway reads skynet's api_token by shared read, so
+          # enabling it before skynet is deployed stops this deploy by name. Enabling it also needs a
+          # host:port backend and the identities allowed to call it. Those identities also pass /v1 (see
+          # the architecture doc, "skynet orchestration route"). Bootstrap forwards these three keys into
+          # the Semaphore inventory, so after editing them re-run `make local-bootstrap`, then Deploy
+          # agentgateway (Local).
+          #   agw_skynet_route_enabled: true
+          #   agw_skynet_backend: skynet:8080
+          #   agw_skynet_route_identities: [dev-local]
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs
@@ -365,6 +393,28 @@ all:
           container_engine: podman
           honcho_bind: 127.0.0.1
           honcho_port: 8400   # host debug port; Caddy reaches honcho-api:8000 by name
+
+    # skynet — the orchestration API (tier-2 image, CI-published by digest, plus its own Postgres).
+    # Its /skynet/ route is served by the local gateway once agw_skynet_route_enabled is set (see the
+    # agentgateway block). Deploy: the Deploy skynet (Local) Semaphore template.
+    skynet_svc:
+      hosts:
+        skynet-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: skynet
+          monorepo_deploy_path: platform/services/skynet/deployment
+          container_engine: podman
+          # skynet main 45fd8698 (2026-10-20); bump to the digest skynet CI prints in its publish job
+          # summary, never a tag. The deploy refuses a tag or any non-digest value.
+          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:d1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da
+          skynet_gateway_url: https://inference.agent-cloud.test
+          skynet_model: qwen3.8-flash-next
+          skynet_opa_url: https://opa.agent-cloud.test
+          skynet_semaphore_url: https://semaphore.agent-cloud.test
+          # id of the agent-cloud project in local Semaphore
+          skynet_semaphore_project: 1
+          skynet_semaphore_catalog: local
 
     # postiz — social-media scheduling and publishing. Five containers: the app
     # (the only one publishing), its own Postgres + Redis, and the Temporal
