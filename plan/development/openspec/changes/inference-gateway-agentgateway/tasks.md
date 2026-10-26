@@ -908,6 +908,23 @@
       - Caddy `/health` and the o11y `dgx-spark-vllm` scrape over HTTPS;
       - Rollback Inference Route `direct` mode gaining an HTTPS transport (a point from dgx-spark's review).
       Not started; not ticked.
+      2026-10-26 (dgx-spark handoff, operator-relayed): dgx-spark PR 38 (merged `76660cb`) made
+      the consumer account `vllm-tls` live on spark-1: key-only, admitted only from the Semaphore
+      host, keys read from a root-owned file, leaf directories under the account's `certs` directory. Done
+      here, with the operator's go for these two launches: `Generate Service SSH Key (Dev)`
+      `service_name=vllm-tls` (dry run 9407, real run 9408) and `Back Up Service SSH Key (Dev)`
+      (dry run 9409; branch pushed, site-config #116). The reply is prepared, NOT sent. It
+      carries the public half, confirms the Semaphore host as the issuance source, and
+      counter-proposes the server SAN. dgx-spark proposed `vllm.<site>.<zone>`. The reply
+      follows `internal-dns-naming` decision 14 instead: `vllm-primary.<site>.<zone>` plus
+      `dgx01.vllm-primary.<site>.<zone>`, with `lifecycle.vllm-primary.<site>.<zone>` for the
+      client leaf. Two additions the build side needs that the list above lacks:
+      (a) the inventory name `spark-1` is already taken by `dgx_drill_svc` as `o11y-drill`, so
+      the certificates host needs its own inventory name, which `internal_leaves[].host` names;
+      (b) issuance, renewal and `distribute-ca-root.yml` must connect with the `vllm-tls` key
+      from OpenBao, the way the fault drill does, because Semaphore's own key is not
+      authorized for that account. The build itself still waits on the operator's go. Not
+      ticked.
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
       gateway, proving scenario "A request without a client certificate is refused"; a
       throwaway client-profile leaf declared with a SAN on no allowlist entry (issued as in
