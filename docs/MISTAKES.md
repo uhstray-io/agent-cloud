@@ -114,7 +114,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 4 | Pre-push hook |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 5 | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -2970,6 +2970,17 @@ the read said. It returned CLEAN, so nothing merged that should not have. Why th
 fire: it is written about commits and suites, and a merge after a state read did not register
 as the same shape; it is. Any action that a read is meant to decide is issued after reading
 it, in a separate command.
+
+**Occurrence 2026-10-25 (merge-conflict resolution, console branch).** Resolved an add/add
+conflict in `platform/tests/test_service_console.bats` by script, then ran
+`bats ... > log; echo rc=$?; grep -c '^not ok' log; git add ... && git commit` in one command.
+The output said `rc=1` and `6` failing tests, and the merge commit (`7dbaa800`) ran anyway,
+because the commit was chained to `git add`, not to the test result. Cause of the red: the
+splice keyed on the marker text `# --- Deploy ---`, which also appears inside the second file's
+header comment, so a second `setup()` overrode the first. Fixed in the next commit (`41b8f032`)
+before any push. Why the rule did not fire: the merge felt like bookkeeping rather than a
+change, and the test run was there as a report, not as a gate. The pre-push hook is still the
+mechanical backstop; the rule stands as written.
 
 ### 5.3 Merging while the review was rate-limited
 
