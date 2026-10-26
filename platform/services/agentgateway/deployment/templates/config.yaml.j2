@@ -67,6 +67,32 @@
         if (agw_openrouter_admins | default(false) | bool) else []))
      | reject('in', ['mcp-self', 'legacy-shared']) | list %}
 {% set _all_names = agw_models | map(attribute='name') | list %}
+{# Budget tiers: agw_tier_tokens_per_hour maps a tier name (admin, developer, business) to an hourly
+   token figure. An identity derived from platform_admins is tier `admin`; any other identity joins a
+   tier with agw_client_policies.<name>.tier. An identity's budget is its own tokens_per_hour, else its
+   tier's figure, else agw_rate_tokens_per_hour. Undeclared, no tier has a figure and every budget is
+   what it was before. The deploy refuses a tier name absent from the map (_agw_tier_problems). #}
+{% set _tier_budgets = agw_tier_tokens_per_hour | default({}) %}
+{% set _admin_ids = _agw_admin_identities | default([]) | map(attribute='name') | list %}
+{# Shared model pools: an agw_models entry with `pool_identity: <name>` gets an hourly token cap shared by
+   every caller, because v1.5.0 budgets attach to API keys only, never to a model (crates/agentgateway/src/
+   http/budget/mod.rs, `Budget`: name, limit, window, action). The entry renders twice:
+   - its public name, served by a `custom` provider pointed at this gateway's own loopback listener under the
+     pool identity's key (an env reference), asking for `pool/<name>`;
+   - `pool/<name>`, the declared upstream, allowed to the pool identity ALONE.
+   So every call is charged twice: to the caller's own budget, and to the pool identity's, whose
+   agw_client_policies.<pool>.tokens_per_hour is the shared cap. Every other key entry has the `pool/` names
+   removed from its allowedModels, the legacy shared key included, so no key can skip the pool by asking for
+   the hidden name. The pool identity is allowed only `pool/` names, so a public-name call that lands on the
+   loopback cannot forward to itself. Measured on the v1.5.0 image 2026-10-26: the pool's 429 reaches the
+   caller as a 429, a direct call to `pool/<name>` with another key is 403, and the caller's own budget is
+   charged from the relayed usage. The deploy refuses a pool it cannot render safely (_agw_pool_problems). #}
+{% set _pool_prefix = 'pool/' %}
+{% set _pooled = agw_models | selectattr('pool_identity', 'defined') | list %}
+{% set _pool_names = _pooled | map(attribute='name') | map('regex_replace', '^', _pool_prefix) | list %}
+{% set _pool_ids = _pooled | map(attribute='pool_identity') | unique | list %}
+{# The loopback listener serves the MCP target's self-call and the pools' self-call alike. #}
+{% set _loopback = _mcp or (_pooled | length > 0) %}
 {% macro listener_tls() %}
     tls:
       cert: /certs/{{ agw_server_leaf | default('agw-server') }}/current/cert.pem
@@ -83,7 +109,7 @@
    but never charged or enforced (spike 1.4), a silent no-op that reads as a control, and the legacy shared key and the
    internal MCP self-call identity are never admitted there (design G2). Emits the whole `apiKey:` block at policy
    indent, ending with a newline: call it with `| trim('\n')` so the template's own newline closes the last line. #}
-{% set _internal_ids = ['mcp-self'] %}
+{% set _internal_ids = ['mcp-self'] + _pool_ids %}
 {% macro apikey_policy(identities, legacy, limits) %}
     apiKey:
       # strict: a request with no key or an unknown key is 401 here and never
@@ -113,6 +139,13 @@
 {% set _has_am = true %}
 {% set _am = (_am if _pol.allowed_models is defined else _all_names) | reject('in', _or_names) | list %}
 {% endif %}
+{% if c in _pool_ids %}
+{% set _has_am = true %}
+{% set _am = _pooled | selectattr('pool_identity', 'equalto', c) | map(attribute='name') | map('regex_replace', '^', _pool_prefix) | list %}
+{% elif _pool_names %}
+{% set _am = (_am if _has_am else _all_names) | reject('in', _pool_names) | list %}
+{% set _has_am = true %}
+{% endif %}
 {% if _has_am %}
         # Per-identity model allow-list (inventory agw_client_policies.<name>.allowed_models).
         allowedModels: {{ _am | to_json }}
@@ -127,14 +160,15 @@
         # carry usage on every chunk, so a stream is charged even when the client opts
         # out or disconnects early (task 2.3a). It is a spend guard, not a
         # hard cap; the hard admission control is the global request bucket below.
-        # Default figure from inventory (design §4); per-identity override in
-        # agw_client_policies.<name>.tokens_per_hour. The only per-identity control
-        # v1.5.0 offers, and the reason the db exists.
+        # Default figure from inventory (design §4), then the identity's tier
+        # figure, then its own agw_client_policies.<name>.tokens_per_hour. The only
+        # per-identity control v1.5.0 offers, and the reason the db exists.
+{% set _tier = 'admin' if c in _admin_ids else (_pol.tier | default('')) %}
         budgets:
         - name: hourly-tokens
           limit:
             unit: Tokens
-            amount: {{ _pol.tokens_per_hour | default(agw_rate_tokens_per_hour | default(2000000)) }}
+            amount: {{ _pol.tokens_per_hour | default(_tier_budgets[_tier] if _tier in _tier_budgets else (agw_rate_tokens_per_hour | default(2000000))) }}
           window:
             rolling: 1h
           onBudgetExceeded: Block
@@ -155,6 +189,10 @@
 {% set _has_am = true %}
 {% set _am = (_am if _lp.allowed_models is defined else _all_names) | reject('in', _or_names) | list %}
 {% endif %}
+{% if _pool_names %}
+{% set _am = (_am if _has_am else _all_names) | reject('in', _pool_names) | list %}
+{% set _has_am = true %}
+{% endif %}
 {% if _has_am %}
         allowedModels: {{ _am | to_json }}
 {% endif %}
@@ -162,7 +200,7 @@
         - name: hourly-tokens
           limit:
             unit: Tokens
-            amount: {{ _lp.tokens_per_hour | default(agw_rate_tokens_per_hour | default(2000000)) }}
+            amount: {{ _lp.tokens_per_hour | default(_tier_budgets[_lp.tier] if (_lp.tier | default('')) in _tier_budgets else (agw_rate_tokens_per_hour | default(2000000))) }}
           window:
             rolling: 1h
           onBudgetExceeded: Block
@@ -203,8 +241,9 @@ gateways:
 {% if _tls %}
 {{ listener_tls() }}
 {%- endif %}
-{% if _mcp %}
-  # The MCP target's own call to /v1 (agentgateway-mcp task 3.7): plain HTTP, attached to `llm` only,
+{% if _loopback %}
+  # The MCP target's own call to /v1 (agentgateway-mcp task 3.7), and a pooled model's call to its hidden
+  # `pool/<name>` entry (the shared model pools above): plain HTTP, attached to `llm` only,
   # never published. v1.5.0 gateways have no bind address, so this listener is on every container
   # interface; the rule below is what keeps it to the gateway process's own 127.0.0.1 (a neighbour
   # container is 403 with or without a key, spike 1.5). It needs no client certificate, so the
@@ -309,7 +348,7 @@ llm:
   # no second browser-reachable port. The OIDC policy above is scoped to the UI
   # routes: /v1 on :4001 is still apiKey-gated (401 without a key, verified
   # 2026-09-17), so the playground needs an enrolled client key pasted in.
-{% if _mcp %}
+{% if _loopback %}
   gateways: {{ '[default, ui, loopback]' if _ui else '[default, loopback]' }}
 {% else %}
   gateways: {{ '[default, ui]' if _ui else '[default]' }}
@@ -332,6 +371,25 @@ llm:
         fillInterval: 60s
   models:
 {% for m in agw_models %}
+{% if m.pool_identity is defined %}
+  # Shared pool (above): the public name relays to this gateway's own loopback listener as the pool
+  # identity, so the call is charged to the caller AND to the pool. The key is an env reference expanded
+  # from the 0600 .env; this file holds no credential. Streamed chat asks for usage so the caller's own
+  # budget is charged on this hop too.
+  - name: {{ m.name }}
+    provider:
+      custom:
+        formats:
+        - type: completions
+        - type: responses
+    params:
+      baseUrl: http://127.0.0.1:{{ _lb_port }}/v1
+      model: {{ _pool_prefix ~ m.name }}
+      apiKey: ${{ 'AGW_POOL_KEY_' ~ (m.pool_identity | upper | replace('-', '_')) }}
+    transformation:
+      stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true}) : llmRequest.stream_options'
+{% endif %}
+{% set _mname = (_pool_prefix ~ m.name) if m.pool_identity is defined else m.name %}
 {% if (m.provider | default('')) == 'openrouter' %}
   # OpenRouter model (agentgateway-openrouter): the native `openrouter` provider is a custom-provider
   # preset in v1.5.0 that supplies the base URL https://openrouter.ai/api/v1 (HTTPS, so backend TLS
@@ -341,7 +399,7 @@ llm:
   # gateway from the 0600 .env; this file holds no credential. The deploy refuses a wildcard name
   # and an empty upstream_model, so exactly the models listed here are reachable, and the key
   # entries above allow them only to agw_openrouter_identities.
-  - name: {{ m.name }}
+  - name: {{ _mname }}
     provider: openrouter
     params:
       model: {{ m.upstream_model }}
@@ -357,7 +415,7 @@ llm:
 {% else %}
   # The gateway's model name equals the upstream's served name unless
   # `upstream_model` remaps it (e.g. a short client name for a longer served name).
-  - name: {{ m.name }}
+  - name: {{ _mname }}
     provider:
       custom:
         # `responses` lets /v1/responses pass through to vLLM's own endpoint
@@ -370,8 +428,9 @@ llm:
         - type: responses
     params:
       baseUrl: {{ agw_upstream_base_url }}
-{% if m.upstream_model | default('') %}
-      model: {{ m.upstream_model }}
+{% if m.upstream_model | default('') or m.pool_identity is defined %}
+      # A pooled entry is listed as pool/<name>; the upstream still receives the declared name.
+      model: {{ m.upstream_model | default(m.name, true) }}
 {% endif %}
 {% if secrets.vllm_api_key | default('') %}
       apiKey: $VLLM_API_KEY

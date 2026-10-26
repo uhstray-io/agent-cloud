@@ -139,6 +139,79 @@ _agw_mcp_problems: >-
     {%- endfor -%}
   {%- endif -%}
   {{ out }}
+# Budget tiers (config.yaml.j2): agw_tier_tokens_per_hour maps a tier name to a positive hourly token
+# figure, and agw_client_policies.<name>.tier names a tier in that map. A platform_admins identity is always tier
+# admin, so a tier on one is refused, and a map that omits admin is refused while admin identities exist. One sentence per problem, empty
+# when nothing is; the deploy refuses a non-empty list before anything is rendered. A tier name with no
+# figure would silently render the global default instead, so a typo is refused here, by name.
+_agw_tier_problems: >-
+  {%- set out = [] -%}
+  {%- set tiers = agw_tier_tokens_per_hour | default({}) -%}
+  {%- if tiers is not mapping -%}
+    {%- if out.append('agw_tier_tokens_per_hour must be a mapping of tier name to hourly token figure') -%}{%- endif -%}
+  {%- else -%}
+    {%- for t, n in tiers.items() -%}
+      {%- if not ((n | string) is match('^[1-9][0-9]*$'))
+             and out.append('agw_tier_tokens_per_hour.' ~ t ~ ' must be a positive whole number of tokens') -%}{%- endif -%}
+    {%- endfor -%}
+    {%- set admins = _agw_admin_identities | map(attribute='name') | list -%}
+    {%- if tiers | length > 0 and admins | length > 0 and 'admin' not in tiers
+           and out.append('agw_tier_tokens_per_hour has no admin figure, so the platform_admins identities would '
+                          ~ 'silently fall back to agw_rate_tokens_per_hour') -%}{%- endif -%}
+    {%- for name, pol in (agw_client_policies | default({})).items() -%}
+      {%- if pol is mapping and pol.get('tier') is not none and name in admins
+             and out.append('agw_client_policies.' ~ name ~ '.tier is set on a platform_admins identity, '
+                            ~ 'which is always tier admin; use tokens_per_hour to override it') -%}{%- endif -%}
+      {%- if pol is mapping and pol.get('tier') is not none and pol.get('tier') not in tiers
+             and out.append('agw_client_policies.' ~ name ~ '.tier names ' ~ pol.get('tier')
+                            ~ ', which has no figure in agw_tier_tokens_per_hour') -%}{%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {{ out }}
+# Shared model pools (config.yaml.j2): an agw_models entry with `pool_identity` is capped for every caller
+# together by that identity's own budget. One sentence per problem, empty when nothing is; the deploy refuses a
+# non-empty list before anything is rendered. The pool identity is a service identity in agw_clients (so its key
+# is minted) that is nobody's personal key: never admin-derived, never an internal or reserved name, never on the
+# OpenRouter list, and not the identity the deploy verifies with (it may call only the hidden `pool/` names). Its
+# figure must be its own tokens_per_hour: a tier or the global default would silently set the shared cap. Its
+# allowed models are set by the pool, so declaring them is refused. `pool/` is reserved for the hidden entries.
+# The loopback port is checked here when MCP is off, because the MCP guard checks it only while MCP is on.
+_agw_pool_problems: >-
+  {%- set out = [] -%}
+  {%- set pols = agw_client_policies | default({}) -%}
+  {%- set admins = _agw_admin_identities | map(attribute='name') | list -%}
+  {%- set verify_id = agw_verify_client | default(agw_identities | first | default('')) -%}
+  {%- for m in agw_models | default([]) -%}
+    {%- if (m.name | default('') | string).startswith('pool/')
+           and out.append('agw_models entry ' ~ m.name ~ ': the pool/ prefix is reserved for shared-pool entries') -%}{%- endif -%}
+    {%- if m.pool_identity is defined -%}
+      {%- set p = m.pool_identity | string -%}
+      {%- set who = 'agw_models entry ' ~ m.name ~ ': pool_identity ' ~ p -%}
+      {%- set pol = pols.get(p) if pols.get(p) is mapping else {} -%}
+      {%- if p not in (agw_clients | default([]))
+             and out.append(who ~ ' must be declared in agw_clients, so its key is minted') -%}{%- endif -%}
+      {%- if p in admins
+             and out.append(who ~ ' is a personal admin identity; a pool identity is a service identity of its own') -%}{%- endif -%}
+      {%- if p in ['mcp-self', 'legacy-shared']
+             and out.append(who ~ ' is reserved for an internal identity') -%}{%- endif -%}
+      {%- if p in (agw_openrouter_identities | default([]))
+             and out.append(who ~ ' must not be in agw_openrouter_identities') -%}{%- endif -%}
+      {%- if p == verify_id
+             and out.append(who ~ ' is the identity the deploy verifies with; list it after a caller identity in agw_clients or set agw_verify_client') -%}{%- endif -%}
+      {%- if not ((pol.get('tokens_per_hour', '') | string) is match('^[1-9][0-9]*$'))
+             and out.append(who ~ ' needs agw_client_policies.' ~ p ~ '.tokens_per_hour, the shared hourly cap') -%}{%- endif -%}
+      {%- if (pol.get('allowed_models') is not none or pol.get('tier') is not none)
+             and out.append(who ~ ': agw_client_policies.' ~ p ~ ' must not set allowed_models or tier; the pool sets its models and its figure is tokens_per_hour') -%}{%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- if (agw_models | default([]) | selectattr('pool_identity', 'defined') | list | length > 0)
+         and not (agw_mcp_enabled | default(false) | bool) -%}
+    {%- set lp = agw_loopback_port | default(4002) -%}
+    {%- if not ((lp | string) is match('^[0-9]+$')) or (lp | int) < 1024 or (lp | int) > 65535 or (lp | int) in [4000, 4001, 15000, 19001, 19002] -%}
+      {%- if out.append('agw_loopback_port must be an integer from 1024 to 65535 other than the ports the gateway already binds (4000, 4001, 15000, 19001, 19002)') -%}{%- endif -%}
+    {%- endif -%}
+  {%- endif -%}
+  {{ out }}
 # The skynet orchestration route (agentgateway task 3.3, render half): a `/skynet/` path on the `default`
 # gateway, admitted only to the declared route identities by a strict key policy (the caller's key is the
 # gate), with backendAuth swapping that key for skynet's own token before the request reaches skynet. What is
@@ -214,10 +287,12 @@ _agw_openrouter_identities: >-
   {%- endif -%}
   {{ out }}
 # Identities the gateway renders for itself, never as a person or a client: `legacy-shared` (the shared
-# vLLM key, config.yaml.j2) and `mcp-self` (the MCP target's own call). OpenRouter spend can never be
-# granted to them; config.yaml.j2 keeps its own copy of `mcp-self` in `_internal_ids`, and a test
-# pins that this list covers it.
-_agw_internal_identities: ['legacy-shared', 'mcp-self']
+# vLLM key, config.yaml.j2) and `mcp-self` (the MCP target's own call), plus every shared-pool identity
+# (`_agw_pool_identities`: an agw_clients entry the gateway presents to itself, never handed out). OpenRouter
+# spend can never be granted to them, nor the skynet route; config.yaml.j2 keeps its own copy in
+# `_internal_ids`, and a test pins that this list covers it.
+_agw_pool_identities: "{{ agw_models | default([]) | selectattr('pool_identity', 'defined') | map(attribute='pool_identity') | unique | list }}"
+_agw_internal_identities: "{{ ['legacy-shared', 'mcp-self'] + _agw_pool_identities }}"
 # What is wrong with the OpenRouter declaration, one sentence per problem, empty when nothing is.
 # deploy-agentgateway.yml refuses a non-empty list before any restart or store write. Names only.
 _agw_openrouter_problems: >-

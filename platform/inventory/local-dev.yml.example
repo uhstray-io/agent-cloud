@@ -362,6 +362,12 @@ all:
             isolation-probe:
               tokens_per_hour: 50
             mcp-self: { tokens_per_hour: 500000 }
+          # Budget tiers: platform_admins identities are tier admin; another identity joins a tier with
+          # agw_client_policies.<name>.tier. Its own tokens_per_hour still wins.
+          agw_tier_tokens_per_hour:
+            admin: 1000000000
+            developer: 500000000
+            business: 250000000
           # MCP (agentgateway-mcp): the key-gated /mcp endpoint on the default gateway. OFF by default:
           # false renders no mcp block and no loopback gateway, and the verify asserts /mcp is not served.
           # /mcp admits the PERSONAL ADMIN identities only (derived from platform_admins), never an

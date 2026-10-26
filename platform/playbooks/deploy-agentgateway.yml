@@ -53,7 +53,11 @@
 #                          `agw_identity` if set, else its `username`. Merged with agw_clients into
 #                          agw_identities (vars/secret-declarations/agentgateway.yml); a name in both
 #                          is one identity (the same client_<name>), reported as an overlap
-#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
+#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N, tier: T}}
+#   agw_models[].pool_identity  (optional) a shared hourly cap on that model for every caller together: the
+#                          named agw_clients identity's tokens_per_hour (config.yaml.j2, "Shared model pools")
+#   agw_tier_tokens_per_hour  (optional) {tier: N}: hourly budget per tier; platform_admins identities
+#                          are tier `admin`, others join with agw_client_policies.<name>.tier
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
 #                          shared vLLM key is enrolled as identity `legacy-shared` (budget from
@@ -220,6 +224,22 @@
       ansible.builtin.assert:
         that: _agw_mcp_problems | length == 0
         fail_msg: "agw_mcp_enabled cannot be rendered: {{ _agw_mcp_problems | join('; ') }}."
+        quiet: true
+
+    # Budget tiers: every agw_client_policies.<name>.tier must name a figure in agw_tier_tokens_per_hour
+    # (vars/secret-declarations/agentgateway.yml, _agw_tier_problems), refused before anything is rendered.
+    - name: "Refuse a budget tier with no figure"
+      ansible.builtin.assert:
+        that: _agw_tier_problems | length == 0
+        fail_msg: "The budget tiers cannot be rendered: {{ _agw_tier_problems | join('; ') }}."
+        quiet: true
+
+    # Shared model pools: a pool identity must be a budgeted service identity of its own, and `pool/` is
+    # reserved (vars/secret-declarations/agentgateway.yml, _agw_pool_problems), refused before anything is rendered.
+    - name: "Refuse a shared model pool that cannot be rendered safely"
+      ansible.builtin.assert:
+        that: _agw_pool_problems | length == 0
+        fail_msg: "The shared model pools cannot be rendered: {{ _agw_pool_problems | join('; ') }}."
         quiet: true
 
     # The skynet route (agentgateway task 3.3): its backend, identities and reserved names are checked before
@@ -673,13 +693,16 @@
       ansible.builtin.assert:
         that:
           - _render.mcp | bool == (agw_mcp_enabled | default(false) | bool)
-          - _render.loopback | bool == (agw_mcp_enabled | default(false) | bool)
+          - _render.loopback | bool == _want_loopback | bool
         fail_msg: >-
           The rendered config.yaml has an mcp block: {{ _render.mcp }}, a loopback gateway: {{ _render.loopback }},
-          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }}; the two must agree.
+          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }} and a shared model pool is
+          {{ 'declared' if _pools else 'not declared' }}; the loopback gateway exists exactly when either does.
         quiet: true
       vars:
         _render: "{{ _agw_render_read.stdout | from_json }}"
+        _pools: "{{ agw_models | default([]) | selectattr('pool_identity', 'defined') | list | length > 0 }}"
+        _want_loopback: "{{ (agw_mcp_enabled | default(false) | bool) or (_pools | bool) }}"
       when: not ansible_check_mode
 
     - name: "Require the rendered mcp block to carry its own strict key policy"
