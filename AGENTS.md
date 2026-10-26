@@ -702,7 +702,7 @@ which does not exist — the content lives in the numbered architecture doc.)
 - `plan/architecture/04-credentials-access.md` — Secret generation, storage, rotation, and retirement
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 - `plan/architecture/08-ansible-automation-standards.md` — Ansible standards from the official docs: dry run is check mode (`--check`, never a `dry_run` variable), the three check-mode task classes (a `uri` probe without `check_mode: false` is silently skipped under `--check`), verify is `--tags verify`, machine-read results use `set_stats`
-- `plan/development/16-dispatch-console.md` — Dispatch Console build plan: the agent-cloud administration UI (all Rust, API-first, proposals-only: skynet plans, OPA decides, Semaphore executes; per-asset telemetry links to Grafana); brief, design system and reference prototype in `plan/product/dispatch-console/`
+- `plan/development/17-dispatch-console.md` — Dispatch Console build plan: the agent-cloud administration UI (all Rust, API-first, proposals-only: skynet plans, OPA decides, Semaphore executes; per-asset telemetry links to Grafana); brief, design system and reference prototype in `plan/product/dispatch-console/`
 - `plan/architecture/09-console-ui-principles.md` — Console UI principles and how operators work with agent-cloud through the console (interaction loop, information architecture, review checklist)
 
 ## Dependencies

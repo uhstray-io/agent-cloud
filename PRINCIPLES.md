@@ -192,8 +192,9 @@ As-built: `nemoclaw-read.hcl` grants the wildcard to an AI agent - tighten it, a
 **Human access is provisioned by role, never granted by hand.** Identity decomposes as
 **Organization > Department > Team > Role**, with an orthogonal **Access Level** privilege tier -
 highest-to-lowest **Admin -> Maintainer -> Developer -> User** - applied per tenant and per project.
-Organization is the hard tenant-isolation boundary (tenants are orgs); Department/Team/Role place a
-person within an org; Access Level is how much they may do. Authentik groups are the source of truth;
+A tenant is a tier above Organization (tenant -> org -> site -> env). Which tier is the hard
+tenant-isolation boundary is an open decision. Department/Team/Role place a person within an org;
+Access Level is how much they may do. Authentik groups are the source of truth;
 a provisioning mechanism maps an identity's (org, department, team, role, access-level) to per-service
 roles - Semaphore admin-flag vs project owner/manager/task_runner/guest, NetBox permissions, etc. Any
 Admin-level user is provisioned with admin rights and all-project visibility automatically - never a

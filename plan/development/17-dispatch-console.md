@@ -1,4 +1,4 @@
-# 16 — Dispatch Console (agent-cloud administration UI)
+# 17 — Dispatch Console (agent-cloud administration UI)
 
 **Date:** 2026-10-20
 **Status:** PROPOSED
@@ -32,7 +32,7 @@ through review comments. The product brief, design system and prototype are save
 4. **Scope is implicit.** Nothing makes the tenant, org, site, environment or group being
    acted on explicit and consistent across tools.
 
-## Decisions (settled 2026-10-20)
+## Decisions (D1–D10 settled 2026-10-20; D11–D15 settled 2026-10-25)
 
 | # | Decision | Alternatives rejected | Why |
 |---|---|---|---|
@@ -40,19 +40,22 @@ through review comments. The product brief, design system and prototype are save
 | D2 | **All Rust.** A client-side WASM SPA plus a Rust API service (backend-for-frontend) | Server-rendered + HTMX; a JS frontend | Operator's requirement; the API service keeps every authority credential server-side |
 | D3 | **API-first.** The console API is specified (OpenAPI) before UI code; the SPA is one client of it | UI-driven endpoints | Agents and scripts can use the same API; contracts are reviewable |
 | D4 | **The console never writes declared state.** Every mutation becomes a proposal that skynet plans, OPA decides and Semaphore executes, or a PR (plan 15 D3, D9) | Direct API writes to authorities | The platform rule: AI proposes, guardrails validate, automation executes |
-| D5 | **Tenant above Organization.** Tenant is chosen only in the sidebar; Org / Site / Env in the scope bar | Tenant = Org (current PRINCIPLES.md wording) | Operator's call; PRINCIPLES.md must be amended (Phase 0) |
+| D5 | **Tenant above Organization.** Tenant is chosen only in the sidebar; Org / Site / Env in the scope bar | Tenant = Org (the PRINCIPLES.md wording before Phase 0) | Operator's call; PRINCIPLES.md must be amended (Phase 0) |
 | D6 | **Per-asset telemetry lives in Grafana.** The console draws tenant / org / site / cluster rollups only and deep-links to Grafana for any single service, node, host or VM | Embedding panels | Grafana is the telemetry authority; duplicating panels drifts |
 | D7 | **skynet roles** are `infra-agent`, `security-agent`, `service-agent`, `o11y-agent` (plan 15 D7); `net-agent` is planned; NetClaw and NemoClaw are not used | Showing legacy agents | Matches the OPA identities and the step registry |
 | D8 | **Authentik OIDC for login; RBAC from Authentik groups**, enforced in the API, never only in the UI | Console-local users | PRINCIPLES.md identity model; plan 12 |
 | D9 | **Read models come from the authorities**: work from skynet and Semaphore; step status from NetBox custom fields written by Collect Service Conformance; inventory from NetBox and Proxmox; rollups from Prometheus and Loki | A console-owned database of record | One authority per concern (plan 03); the console caches, it does not own. The single exception is each user's own UI preferences (profile), which no other authority holds |
 | D10 | **The prototype is the visual reference, not code to port.** Tokens and components carry over; JavaScript does not | Porting the prototype | The prototype's data and logic are illustrative |
+| D11 | **Dioxus 0.7.10 fullstack.** The WASM client and the Rust axum server build from one crate and ship as one binary (see the Architecture note). D2 still holds: all Rust, and the server keeps every authority credential | Separate SPA and API services, the packaging D2 first described. No other framework is recorded as a candidate | Decided by Joseph on 2026-10-25 (O1). No O1 spike result is recorded in this document |
+| D12 | **Code home: `platform/services/console/` in this repository.** The Cargo crate is in `app/` and the deployment in `deployment/` | A new repository (the O2 alternative) | Decided by Joseph on 2026-10-25 (O2). The deployment lives in this repo either way, and AGENTS.md sets one codebase, no forks |
+| D13 | **The image is built on the host at deploy time.** `deploy.sh` builds it with the container engine. A CI build pushed to GHCR with a digest pin is deferred to Phase 7 | A CI build pushed to GHCR with a digest pin, now (deferred, not rejected) | The Phase 1 contract has no registry. The NetBox deploy calls `build_netbox_image` (`platform/services/netbox/deployment/deploy.sh:128`, defined at `platform/services/netbox/deployment/lib/common.sh:446`) |
+| D14 | **Preferences in SQLite** through `rusqlite` (bundled), in `/data/prefs.db` on the `console-data` named volume, one row per subject | None recorded | Decided by Joseph on 2026-10-25. The console stores only the profile preferences, the one exception in D9 |
+| D15 | **Phase 1 tenants and scope tree come from the inventory declaration.** The `console_tenants` variable renders to `scope.json`, and example data is labelled as example. Live NetBox and Proxmox reads wait for Phase 3 | Reading NetBox or Proxmox in Phase 1 (deferred to Phase 3, not rejected) | Decided by Joseph on 2026-10-25. The real tenant values stay in site-config |
 
 ### Open decisions (owner: Joseph A. Wisneski IV)
 
 | # | Question | How it gets decided |
 |---|---|---|
-| O1 | Rust UI framework for the WASM SPA | Phase 0 spike: build the Work page shell in the candidates; compare bundle size, component ergonomics, SSE support, testability |
-| O2 | Where the code lives: a new repository, or `platform/services/console/` here | Decide before Phase 1; the deployment (`deploy-console.yml`, templates) lives in this repo either way |
 | O3 | skynet API contract for plans, work state, role assignment and Q&A | Agree with the skynet repository (the plan-15 graph already holds the state) |
 | O4 | Live updates: server-sent events, WebSocket or polling | Phase 2; default to SSE from the API service |
 | O5 | Where business-domain tags are stored (Products, Professional Services, Automation, Administration, IT) | Edited in Organization settings; storage (NetBox tag vs inventory field) decided in Phase 3 |
@@ -94,6 +97,12 @@ flowchart LR
     API -.->|"deep links"| GF["Grafana"]
 ```
 
+> **Packaging (D11).** The SPA and the console API are not two services. Both build from one
+> Rust crate and ship as one Dioxus fullstack binary, and the image copies the client bundle beside
+> the server binary. The API routes stay plain JSON under `/v1`, so the routes in the API surface
+> table below are still HTTP routes any client can call. The diagram shows the logical split
+> between the browser client and the API.
+
 ### Bounded contexts
 
 | Context | Authority | Console reads | Console proposes |
@@ -134,9 +143,9 @@ flowchart LR
 
 ### Phase 0 — Decide and amend
 
-- Amend PRINCIPLES.md (identity: Tenant above Organization).
-- Run the O1 framework spike; decide O2 (code location).
-- Write the OpenSpec change for the console (`openspec propose`), carrying this plan.
+- Amend PRINCIPLES.md (identity: Tenant above Organization). Made in the Phase 0 commit.
+- O1 and O2 decided on 2026-10-25 (D11 and D12). No O1 spike result is recorded in this document.
+- Write the OpenSpec change `add-dispatch-console` (`plan/development/openspec/changes/add-dispatch-console/`), carrying this plan.
 
 **Acceptance:** PRINCIPLES.md amendment merged; O1 and O2 recorded in this document's revision
 history; OpenSpec change validates (`openspec validate --all --store agent-cloud`).
@@ -279,3 +288,4 @@ The 22 requirements from the 2026-10-20 brief, mapped to where the design meets 
 |---|---|
 | 2026-10-20 | Initial plan from the design session; Dispatch layout chosen; decisions D1–D10, open O1–O6 |
 | 2026-10-21 | Added profile, tenant/org settings, proposal queue, services ask and service requests from final review comments; O5 answered: Organization settings owns business-domain tags |
+| 2026-10-25 | Phase 0: O1 decided as Dioxus 0.7.10 fullstack (D11); O2 decided as `platform/services/console/` in this repository (D12); D13–D15 recorded (host-built image, SQLite preferences, inventory scope tree); architecture note on the single binary; plan renumbered from 16 to 17 because `16-plane-work-management.md` holds 16; PRINCIPLES.md identity amended so that tenant sits above organization; OpenSpec change `add-dispatch-console` added |

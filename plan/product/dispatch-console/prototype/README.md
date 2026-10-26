@@ -2,7 +2,7 @@
 
 Static HTML/CSS/JS prototypes of the agent-cloud administration console. **This is a design
 reference, not production code.** The production console is built in Rust per
-[`plan/development/16-dispatch-console.md`](../../../development/16-dispatch-console.md).
+[`plan/development/17-dispatch-console.md`](../../../development/17-dispatch-console.md).
 
 | File | Purpose |
 |---|---|

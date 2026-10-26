@@ -4,7 +4,7 @@
 **Status:** PROPOSED
 **Author:** Joseph A. Wisneski IV
 **Context:** The agent-cloud administration console (the "Dispatch Console",
-[`plan/development/16-dispatch-console.md`](../development/16-dispatch-console.md)) is the first
+[`plan/development/17-dispatch-console.md`](../development/17-dispatch-console.md)) is the first
 human interface that spans every authority on the platform. Without shared principles it would
 drift into a second control plane: a place that writes around Semaphore, shows secrets, or
 invents its own picture of the estate. This document states how the console looks and behaves,
@@ -130,9 +130,9 @@ implementation is `plan/product/dispatch-console/prototype/dispatch.html`.
 
 ### Phase 1 — Ratify
 
-Review and accept this document alongside plan 16 and the PRINCIPLES.md Tenant-tier amendment.
+Review and accept this document alongside plan 17 and the PRINCIPLES.md Tenant-tier amendment.
 
-**Acceptance:** status moves to ACTIVE; plan 16 links here as its principles.
+**Acceptance:** status moves to ACTIVE; plan 17 links here as its principles.
 
 ### Phase 2 — Apply in the build
 
@@ -168,7 +168,7 @@ that did not hold.
   console API (Authentik groups) and in OPA, both server-side.
 - **Proposals, not actions.** The console's blast radius is bounded by the proposal path: a
   compromised session can create a proposal, and OPA and an approver must still pass it.
-- **No secret display.** Principle 11 is a security property. Tests assert it (plan 16
+- **No secret display.** Principle 11 is a security property. Tests assert it (plan 17
   validation table).
 - **Truthful state.** A console that shows example data, stale data or "planned" capabilities
   as live misleads operators into unsafe actions. Principle 12 and the authority badge exist
@@ -176,7 +176,7 @@ that did not hold.
 
 ## Cross-references
 
-- [16 — Dispatch Console](../development/16-dispatch-console.md): the build plan
+- [17 — Dispatch Console](../development/17-dispatch-console.md): the build plan
 - [`plan/product/dispatch-console/`](../product/dispatch-console/): brief, design system, prototype
 - [01 — Automation model](01-automation-model.md) · [04 — Credentials & access](04-credentials-access.md) · [06 — Observability](06-observability-instrumentation.md)
 - [15 — Service Deployment Workflow & Agents](../development/15-service-deployment-workflow-agents.md): roles and the step registry
