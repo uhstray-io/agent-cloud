@@ -8,15 +8,18 @@ mod icons;
 mod profile;
 mod scope;
 mod shell;
+mod work;
+mod work_detail;
 
 use dioxus::prelude::*;
 
 use empty::{
-    Access, AiGateway, CiCd, Compute, Dashboard, Home, LlmAccess, NotFound, OrgSettings, Policy,
-    Secrets, Services, Telemetry, TenantSettings, Topology,
+    Access, AiGateway, CiCd, Compute, Dashboard, LlmAccess, NotFound, OrgSettings, Policy, Secrets,
+    Services, Telemetry, TenantSettings, Topology,
 };
 use profile::Profile;
 use shell::Shell;
+use work::Home;
 
 #[derive(Clone, Debug, PartialEq, Routable)]
 pub enum Route {

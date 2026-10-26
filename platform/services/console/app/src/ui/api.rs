@@ -143,6 +143,81 @@ pub async fn request(method: &str, path: &str, body: Option<Value>) -> Reply {
         .unwrap_or_else(|_| Reply::unreachable())
 }
 
+const WAIT_VISIBLE_SCRIPT: &str = r#"
+    if (document.visibilityState !== "visible") {
+        await new Promise((resolve) => {
+            const onVisible = () => {
+                if (document.visibilityState === "visible") {
+                    document.removeEventListener("visibilitychange", onVisible);
+                    resolve();
+                }
+            };
+            document.addEventListener("visibilitychange", onVisible);
+        });
+    }
+    dioxus.send(true);
+"#;
+
+/// Resolves once the tab is visible: at once if it is, else when it becomes so.
+pub async fn wait_visible() {
+    let mut eval = document::eval(WAIT_VISIBLE_SCRIPT);
+    let _ = eval.recv::<bool>().await;
+}
+
+/// The sleep script. `__MS__` is replaced by `sleep_script`, and nothing else is.
+const SLEEP_SCRIPT: &str = r#"
+    await new Promise((resolve) => {
+        const finish = () => {
+            clearTimeout(timer);
+            document.removeEventListener("visibilitychange", onChange);
+            resolve();
+        };
+        const onChange = () => {
+            if (document.visibilityState !== "visible") {
+                finish();
+            }
+        };
+        const timer = setTimeout(finish, __MS__);
+        document.addEventListener("visibilitychange", onChange);
+    });
+    dioxus.send(true);
+"#;
+
+/// The sleep script with `ms` filled in. `ms` is a number from this crate, never input.
+fn sleep_script(ms: u32) -> String {
+    SLEEP_SCRIPT.replace("__MS__", &ms.to_string())
+}
+
+/// Resolves after `ms`, or earlier when the tab is hidden, so the caller can
+/// wait for it to become visible again instead of polling while hidden.
+pub async fn sleep_unless_hidden(ms: u32) {
+    let mut eval = document::eval(&sleep_script(ms));
+    let _ = eval.recv::<bool>().await;
+}
+
+const NOW_SCRIPT: &str = r#"dioxus.send(Date.now());"#;
+
+/// The browser's clock in Unix milliseconds. `None` when the bridge fails.
+pub async fn now_ms() -> Option<i64> {
+    let mut eval = document::eval(NOW_SCRIPT);
+    eval.recv::<i64>().await.ok()
+}
+
+/// The focus script for `focus`. Runs through the same `document::eval` bridge
+/// as `request` (see the module doc). The id goes in as a JSON string literal,
+/// so no quote in it can end the literal, and no user input is run as script.
+fn focus_script(id: &str) -> String {
+    format!(
+        "document.getElementById({})?.focus();",
+        Value::String(id.to_string())
+    )
+}
+
+/// Moves keyboard focus to the element with `id`, if it is on the page.
+pub fn focus(id: &str) {
+    let _ = document::eval(&focus_script(id));
+}
+
 const THEME_SCRIPT: &str = r#"
     const theme = __THEME__;
     const root = document.documentElement;
@@ -275,5 +350,24 @@ mod tests {
         assert_eq!(segment("uhstray"), "uhstray");
         assert_eq!(segment("tenant_1.a-b~c"), "tenant_1.a-b~c");
         assert_eq!(segment("a/b c?"), "a%2Fb%20c%3F");
+    }
+
+    #[test]
+    fn focus_script_quotes_the_id_so_it_cannot_end_the_literal() {
+        assert_eq!(
+            focus_script("strip-sem-7"),
+            r#"document.getElementById("strip-sem-7")?.focus();"#
+        );
+        assert_eq!(
+            focus_script(r#"a");alert(1);("#),
+            r#"document.getElementById("a\");alert(1);(")?.focus();"#
+        );
+    }
+
+    #[test]
+    fn sleep_script_carries_only_the_number() {
+        let script = sleep_script(10_000);
+        assert!(script.contains("setTimeout(finish, 10000)"));
+        assert!(!script.contains("__MS__"));
     }
 }
