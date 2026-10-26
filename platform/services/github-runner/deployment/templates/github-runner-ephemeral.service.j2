@@ -1,0 +1,33 @@
+# github-runner-ephemeral.service: the ephemeral lifecycle's supervisor. Rendered by
+# deploy-github-runner.yml only when the host declares github_runner_lifecycle: ephemeral.
+# Design: plan/development/openspec/changes/add-ephemeral-github-runners/design.md.
+#
+# A SYSTEM unit running as root, because a reset kills processes of the runner account and
+# of its subordinate ids and removes files they own, and because the just-in-time stock it
+# reads is readable by root only. It executes nothing from the runner account's files: the
+# script is a root-owned copy under /usr/local/libexec, and the runner itself still runs as
+# the account's own user unit, under the account's user manager, exactly as in the
+# persistent lifecycle.
+[Unit]
+Description=GitHub Actions ephemeral runner supervisor ({{ github_runner_name }})
+After=network-online.target systemd-logind.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/github-runner/ephemeral.env
+ExecStart=/usr/local/libexec/github-runner/ephemeral-supervisor.sh loop
+# A crash restarts the loop, which adopts a runner that is still running its job instead of
+# resetting under it. Exit 3 is a quarantine (a reset that could not prove the account
+# clean, or runners that keep exiting without a job): the host stops taking jobs and stays
+# stopped until a deploy proves a clean reset. Retrying a reset that failed is how a
+# leftover from one job reaches the next.
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=3
+# The loop traps TERM and exits between steps; a reset in progress is safe to cut short,
+# because the next start begins with a full reset.
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

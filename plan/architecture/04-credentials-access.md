@@ -286,7 +286,7 @@ The provisioning mechanism maps each Access Level to concrete per-service roles.
 
 Rules that fall out of the table:
 
-- **Admin is fully derived, never hand-granted.** Any identity in the org's Admin group (`uhstray-uhstray-io-admins`) is provisioned the Semaphore `admin` flag **and** all-project visibility **automatically** — no per-service "make this person admin" click. Granting admin by hand is a defect, not a shortcut.
+- **Admin is fully derived, never hand-granted.** Any identity in an Admin group is provisioned admin rights **and** all-project visibility **automatically**. Semaphore's `admin` flag is global, so it is derived from the cross-tenant `platform-admins` list (issue #604, below), not from a tenant-scoped group such as `uhstray-uhstray-io-admins` — no per-service "make this person admin" click. Granting admin by hand is a defect, not a shortcut.
 - **Role scopes *which* projects/services; Access Level scopes *what* you may do in them.** A `network-operator` Role with Developer Access Level gets Project-Manager rights on the NetBox/network projects their team owns — not on unrelated projects.
 - **User is genuinely least-privilege:** no direct OpenBao path, run-only or read-only in Semaphore/NetBox.
 
@@ -295,8 +295,20 @@ Rules that fall out of the table:
 **[TARGET] / NOT BUILT:** the provisioning automation (Authentik groups -> per-service roles) and the full group schema above are **not implemented yet**. Do not reason as if role-based provisioning already holds. Today's reality:
 
 - **`platform-admins` is the sole admin group today.** It stays as the cross-tenant operator group (it spans tenants and sees every tenant; the Dispatch Console relies on it). `uhstray-uhstray-io-admins`, the Admin tier of the uhstray-io org in the uhstray tenant, is added beside it rather than replacing it. (The earlier proposal to rename `platform-admins` is withdrawn: once the tenant became the hard isolation boundary on 2026-10-26, a tenant-scoped name could no longer carry cross-tenant administration.)
-- **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as such, not the foundational fix. The foundational fix is the provisioning mechanism here: derive `stray`'s admin flag from `uhstray-uhstray-io-admins` membership instead of hand-setting it.
+- **Semaphore user `stray` was hand-set to `admin` as a stopgap** — a PRINCIPLES.md Section 2 monkey-patch explicitly called out as such, not the foundational fix. The foundational fix is the provisioning mechanism here: derive `stray`'s admin flag from the `platform-admins` list (built as issue #604, below) instead of hand-setting it.
 - No Department/Team/Role decomposition is wired into Authentik groups yet, and no automated (tuple -> per-service role) mapper. Until it ships, downstream roles are set by hand and this section is the design target they converge to.
+
+**[BUILT 2026-10-18, issue #604] Semaphore Admin tier: derived from the declared administrator list.** A second platform admin signed in to Semaphore through SSO and saw no projects. Their Authentik account was in `platform-admins`, but Semaphore's admin roster was a second, hand-kept list (`semaphore_admin_users`) that nobody had updated, so the OIDC sign-in created a plain user with no project membership. Two lists for one fact had drifted.
+
+The fix makes the Admin row of the table above hold for Semaphore without a hand grant:
+
+- **Source.** `platform_admins`, the one administrator list `deploy-authentik.yml` renders into the `platform-admins` group, is also the Semaphore admin roster. Every entry except the service account is a Semaphore admin under the same username (Semaphore names an OIDC account after the `preferred_username` claim, which is the Authentik username). `semaphore_admin_users` keeps only Semaphore-only admins, such as the local bootstrap account.
+- **Mechanism.** The filter `semaphore_admin_roster` (`platform/playbooks/filter_plugins/semaphore_access.py`) computes the roster. **Promote Semaphore Admins** grants the admin flag to every rostered account that lacks it and reads the accounts back. **Manage Semaphore Access** accepts every rostered admin and names those still to promote and those with no account yet. A new admin signs in once, then a Promote run converges the flag.
+- **Visibility.** Both plays run on implicit `localhost`, which receives no group's vars, so `platform_admins` must sit in the inventory's top-level `all.vars`. When the list is not visible, nothing is derived: the committed default in `vars/platform-admins.yml` holds local-dev placeholder names, and a placeholder must never become an admin.
+
+Why the declared list and not a live read of Authentik groups: the list is what Authentik's group is rendered from, so it is the source, not a copy; reading Authentik at run time would give the Semaphore controller an Authentik API credential it does not hold today; and launch rights are runner rights (`plan/development/01-secrets-credentials.md`), so who holds them must change only through a reviewed diff, not a group edit in the IdP console. Rejected alongside: a hand grant in the Semaphore UI (the monkey-patch this section forbids); adding the name to `semaphore_admin_users` (fixes one person and keeps the two lists that drifted); Semaphore-side group mapping (none in Semaphore 2.18.12, as `promote-semaphore-admins.yml` records).
+
+Still **[TARGET]**: the Maintainer, Developer and User rows. Non-admin Semaphore access is the explicit `semaphore_project_members` declaration (username to role) until the Authentik group schema for those tiers exists. The `stray` stopgap above is superseded once Promote Semaphore Admins has run with `platform_admins` visible: `stray` is on the list, so its flag is then derived.
 
 ---
 
