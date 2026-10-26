@@ -150,6 +150,15 @@ can launch:
 3. **Documented as a trust boundary.** The Semaphore operating guide and `AGENTS.md` state
    that launch rights are runner rights, so `task_runner` is granted only to someone trusted
    with the controller.
+4. **Admins derived from the administrator list (issue #604, 2026-10-18).** The admin
+   declaration is the filter `semaphore_admin_roster`: every `platform_admins` entry (the
+   list the Authentik deploy renders into `platform-admins`) except the service account, plus
+   `semaphore_admin_users` for Semaphore-only admins. Both access plays use it; Promote
+   Semaphore Admins grants the flag and reads it back. A second hand-kept roster had drifted
+   from the Authentik group, and a platform admin signed in to an empty Semaphore. Platform
+   admins are already trusted with the controller, so deriving the flag from their list widens
+   nothing; the list stays a reviewed inventory declaration, never a live IdP read. Decision
+   and rejected options: `plan/architecture/04-credentials-access.md`, "As-Built".
 
 Rejected: building OpenBao URLs inline (no effect against a templated extra var); a per-playbook
 extra-var allowlist (no list of extra vars exists to check); patching Semaphore to filter by
