@@ -1,3 +1,5 @@
+<!doctype html>
+<meta charset="utf-8">
 <title>Dispatch Console</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <!--
@@ -380,8 +382,9 @@ document.addEventListener("click", (e) => {
     const [kind, id] = ms.dataset.mapsel.split(":"), item = { kind, id }, has = mapPick.findIndex((m) => m.kind === kind && m.id === id);
     if (e.shiftKey) { if (has >= 0) mapPick.splice(has, 1); else mapPick.push(item); } else mapPick = [item];
     if (kind === "Host" && !e.shiftKey) imapNode = id;
+    if (!mapPick.length) topoSel = null; // clear before route(), or the re-render keeps the stale group
     route();
-    if (!mapPick.length) { topoSel = null; return; }
+    if (!mapPick.length) return;
     if (mapPick.length === 1) { const m = mapPick[0]; topoSelect(`${m.kind}: ${pickName(m)}`, m.kind === "VM" ? null : m.id); return; }
     const names = mapPick.map(pickName), name = `${names.length} resources (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""})`;
     topoSelect(`Group: ${name}`, null, { kind: "Group", name, members: mapPick.map((m) => ({ kind: m.kind, name: pickName(m) })) });

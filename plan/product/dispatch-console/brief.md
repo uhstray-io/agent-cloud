@@ -56,14 +56,14 @@ become proposals that pass guardrails before automation executes them.
 
 ## Capabilities and Constraints
 
-- Written entirely in Rust; client-side WASM SPA. The UI framework is not chosen yet.
+- Written entirely in Rust. The framework is Dioxus 0.7.10 fullstack (Phase 0 decision D11, 2026-10-25, in `plan/development/17-dispatch-console.md`): the WASM client and the Rust axum server build from one crate and ship as one binary.
 - API-first; domain-driven design with one bounded context per authority.
 - Authentication through the existing Authentik OIDC flow; RBAC derived from Authentik
   groups (PRINCIPLES.md identity model; `plan/development/12-rbac-user-provisioning.md`).
 - Red / amber / green status on every managed asset, always with a shape and a label.
-- **Open:** PRINCIPLES.md says Organization is the tenant boundary ("tenants are orgs"). The
-  console adopts a separate **Tenant tier above Organization**. PRINCIPLES.md needs amending
-  to match.
+- **Tenant tier above Organization** (Phase 0 decision D16, 2026-10-26): a tenant sits above the
+  organization, and the tenant is the hard isolation boundary. Organizations inside one tenant
+  share it, and nothing crosses from one tenant to another. PRINCIPLES.md is amended to match.
 
 ## Decisions made in review (2026-10-20)
 

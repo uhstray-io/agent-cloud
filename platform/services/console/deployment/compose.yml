@@ -8,7 +8,7 @@
 #
 # Behind central Caddy: the app serves plain HTTP on :8080 inside the container. The host publish
 # is env-parameterized (CONSOLE_BIND / CONSOLE_PORT in .env), loopback by default.
-# Plan: plan/development/16-dispatch-console.md (Phase 1 — skeleton, login and deployment path).
+# Plan: plan/development/17-dispatch-console.md (Phase 1 — skeleton, login and deployment path).
 
 name: console
 

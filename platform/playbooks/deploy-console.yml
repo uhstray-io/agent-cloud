@@ -14,7 +14,7 @@
 #
 # Order: Deploy Authentik must have run first. It owns `console_oidc_client_secret` in
 # secret/services/authentik; without it, the shared read below stops this play by name.
-# Plan: plan/development/16-dispatch-console.md (Phase 1 — skeleton, login and deployment path).
+# Plan: plan/development/17-dispatch-console.md (Phase 1 — skeleton, login and deployment path).
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
