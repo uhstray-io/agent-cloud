@@ -137,6 +137,10 @@ pub struct WorkItem {
     pub started: Option<String>,
     pub ended: Option<String>,
     pub receipt_url: String,
+    /// True on the newest run of its job in the list. Only these get a strip.
+    pub latest_in_stream: bool,
+    /// Runs of the job in the list. Above 1, the strip says how many.
+    pub stream_runs: u32,
 }
 
 /// Body of `GET /v1/work`. Items are newest first.
@@ -239,9 +243,22 @@ pub fn group_by_lane(items: &[WorkItem]) -> Vec<(Lane, Vec<WorkItem>)> {
         .collect()
 }
 
-/// How many items sit in `lane`.
+/// The items the board shows: the newest run of each job. Earlier runs stay in the
+/// list, where the details panel reads them, but get no strip of their own.
+pub fn board_items(items: &[WorkItem]) -> Vec<WorkItem> {
+    items
+        .iter()
+        .filter(|item| item.latest_in_stream)
+        .cloned()
+        .collect()
+}
+
+/// How many jobs' newest runs sit in `lane`. Earlier runs are not counted.
 pub fn lane_count(items: &[WorkItem], lane: Lane) -> usize {
-    items.iter().filter(|item| item.lane == lane).count()
+    items
+        .iter()
+        .filter(|item| item.latest_in_stream && item.lane == lane)
+        .count()
 }
 
 /// The count for the rail: every lane with its size, in board order.
@@ -252,9 +269,13 @@ pub fn lane_counts(items: &[WorkItem]) -> Vec<(Lane, usize)> {
         .collect()
 }
 
-/// Items that need a person: blocked or failed. The sidebar badge shows this.
+/// Jobs whose newest run is blocked or failed. The sidebar badge shows this. An
+/// earlier failed run of a job that has since succeeded does not count.
 pub fn attention_count(items: &[WorkItem]) -> usize {
-    lane_count(items, Lane::Blocked) + lane_count(items, Lane::Failed)
+    items
+        .iter()
+        .filter(|item| item.latest_in_stream && matches!(item.lane, Lane::Blocked | Lane::Failed))
+        .count()
 }
 
 /// The sidebar badge's count for a state. Zero until a list has arrived.
@@ -263,6 +284,11 @@ pub fn attention(state: &WorkState) -> usize {
         WorkState::Shown { list, .. } => attention_count(&list.items),
         _ => 0,
     }
+}
+
+/// The strip's run count, shown only when the job ran more than once in the window.
+pub fn runs_text(runs: u32) -> Option<String> {
+    (runs > 1).then(|| format!("\u{00d7}{runs} runs"))
 }
 
 /// The distinct roles on the board, sorted, for the role select.
@@ -282,15 +308,17 @@ pub fn find_item<'a>(state: &'a WorkState, key: &str) -> Option<&'a WorkItem> {
     }
 }
 
-/// What the details panel compares to decide whether to fetch the run again:
-/// the lane, the status and the step. A change in any of them can change the
-/// stepper.
+/// What the details panel compares to decide whether to fetch the run again: the
+/// lane, the status, the step, and the job's run count and newest-run flag. A change
+/// in any of them can change the stepper or the job's "Recent runs".
 pub fn item_stamp(item: &WorkItem) -> String {
     format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         item.lane.wire(),
         item.status,
-        item.step.as_deref().unwrap_or("")
+        item.step.as_deref().unwrap_or(""),
+        item.stream_runs,
+        item.latest_in_stream
     )
 }
 
@@ -565,18 +593,20 @@ fn Live(
     minimized: Signal<bool>,
     done_open: Signal<bool>,
 ) -> Element {
-    let running = lane_count(&list.items, Lane::Running);
-    let roles = roles_present(&list.items);
+    // One strip per job: the board, its filters, the banner and the rail all count and
+    // show the newest run of each job, never the earlier ones.
+    let board = board_items(&list.items);
+    let running = lane_count(&board, Lane::Running);
+    let roles = roles_present(&board);
     let current = filters.read().clone();
-    let shown: Vec<WorkItem> = list
-        .items
+    let shown: Vec<WorkItem> = board
         .iter()
         .filter(|item| in_filter(item, &current))
         .cloned()
         .collect();
-    let none_match = shown.is_empty() && !list.items.is_empty();
+    let none_match = shown.is_empty() && !board.is_empty();
     let groups = group_by_lane(&shown);
-    let counts = lane_counts(&list.items);
+    let counts = lane_counts(&board);
     let stale_line = stale
         .as_deref()
         .map(|reason| stale_text(now_ms, list.updated_at.as_deref(), reason));
@@ -597,10 +627,11 @@ fn Live(
         if none_match {
             p { class: "faint", role: "status", "No work matches these filters." }
         }
+        p { class: "faint", "One strip per job; earlier runs are in each job's details" }
         div { class: "{layout}",
             Board { groups, now_ms, selected, minimized, done_open }
             if panel_open {
-                Details { selected, minimized }
+                Details { selected, minimized, now_ms }
             } else {
                 Rail { counts, can_open, minimized }
             }
@@ -798,6 +829,7 @@ fn Strip(
     let label = item.lane.label();
     let is_selected = selected().as_deref() == Some(item.key.as_str());
     let age = item_age(now_ms, &item);
+    let runs = item.stream_runs;
     let open_key = item.key.clone();
     rsx! {
         button {
@@ -828,6 +860,13 @@ fn Strip(
                     if let Some(age) = age {
                         span { class: "faint", "{age}" }
                     }
+                    if let Some(text) = runs_text(runs) {
+                        span {
+                            class: "faint",
+                            aria_label: "{runs} runs of this job in the last 200 tasks",
+                            "{text}"
+                        }
+                    }
                 }
             }
         }
@@ -854,6 +893,17 @@ mod tests {
             started: None,
             ended: None,
             receipt_url: "https://semaphore.example.test/project/1/history?t=1".to_string(),
+            latest_in_stream: true,
+            stream_runs: 1,
+        }
+    }
+
+    /// One run of a job, as the server marks it: `latest` on the job's newest run only.
+    fn run(key: &str, lane: Lane, latest: bool, runs: u32) -> WorkItem {
+        WorkItem {
+            latest_in_stream: latest,
+            stream_runs: runs,
+            ..item(key, lane)
         }
     }
 
@@ -1153,7 +1203,8 @@ mod tests {
                     "key": "sem-9", "title": "Deploy", "lane": "running", "status": "running",
                     "role": "netclaw", "launched_by": "skynet", "run_id": "r1", "step": "apply",
                     "service": "netbox", "created": "2026-10-26T12:00:00Z", "started": null,
-                    "ended": null, "receipt_url": "https://semaphore.example.test/project/1/history?t=9"
+                    "ended": null, "receipt_url": "https://semaphore.example.test/project/1/history?t=9",
+                    "latest_in_stream": true, "stream_runs": 1
                 }]),
             ),
         );
@@ -1237,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn stamp_changes_with_lane_status_or_step() {
+    fn stamp_changes_with_lane_status_step_or_job_runs() {
         let mut task = item("sem-1", Lane::Queued);
         let before = item_stamp(&task);
         task.step = Some("apply".to_string());
@@ -1245,5 +1296,87 @@ mod tests {
         let after_step = item_stamp(&task);
         task.lane = Lane::Running;
         assert_ne!(item_stamp(&task), after_step);
+        let after_lane = item_stamp(&task);
+        task.stream_runs = 2;
+        assert_ne!(
+            item_stamp(&task),
+            after_lane,
+            "a new run of the job refreshes Recent runs"
+        );
+    }
+
+    #[test]
+    fn board_shows_only_the_newest_run_of_each_job() {
+        // Job A ran five times and failed each time; its newest run is sem-15.
+        // Job B failed once, then succeeded; its newest run is sem-17.
+        let items = vec![
+            run("sem-17", Lane::Done, true, 2),
+            run("sem-16", Lane::Failed, false, 2),
+            run("sem-15", Lane::Failed, true, 5),
+            run("sem-14", Lane::Failed, false, 5),
+            run("sem-13", Lane::Failed, false, 5),
+            run("sem-12", Lane::Failed, false, 5),
+            run("sem-11", Lane::Failed, false, 5),
+        ];
+        let board = board_items(&items);
+        assert_eq!(keys(&board), ["sem-17", "sem-15"]);
+        assert_eq!(lane_count(&board, Lane::Failed), 1);
+        assert_eq!(lane_count(&board, Lane::Done), 1);
+        assert_eq!(
+            group_by_lane(&board)[4].1.len(),
+            1,
+            "Failed lane holds one strip"
+        );
+    }
+
+    #[test]
+    fn badge_counts_jobs_whose_newest_run_is_blocked_or_failed() {
+        // Five failed repeats of one job count once. The other job failed earlier and
+        // succeeded since, so its newest run is done and it does not count.
+        let mut items = vec![
+            run("sem-30", Lane::Done, true, 2),
+            run("sem-29", Lane::Failed, false, 2),
+            run("sem-28", Lane::Failed, true, 5),
+            run("sem-27", Lane::Failed, false, 5),
+            run("sem-26", Lane::Failed, false, 5),
+            run("sem-25", Lane::Failed, false, 5),
+            run("sem-24", Lane::Failed, false, 5),
+        ];
+        assert_eq!(attention_count(&items), 1);
+        let shown = WorkState::Shown {
+            list: WorkList {
+                source: Source::Ok,
+                error: None,
+                updated_at: None,
+                items: items.clone(),
+            },
+            now_ms: None,
+            stale: None,
+        };
+        assert_eq!(attention(&shown), 1);
+        items.push(run("sem-40", Lane::Blocked, true, 1));
+        assert_eq!(
+            attention_count(&items),
+            2,
+            "a blocked newest run counts too"
+        );
+    }
+
+    #[test]
+    fn running_and_rail_counts_use_newest_runs_only() {
+        let items = vec![
+            run("sem-2", Lane::Running, true, 2),
+            run("sem-1", Lane::Running, false, 2),
+        ];
+        assert_eq!(lane_count(&items, Lane::Running), 1);
+        let total: usize = lane_counts(&items).iter().map(|(_, n)| n).sum();
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn runs_text_shows_a_count_only_for_repeat_runs() {
+        assert_eq!(runs_text(0), None);
+        assert_eq!(runs_text(1), None);
+        assert_eq!(runs_text(3).as_deref(), Some("\u{00d7}3 runs"));
     }
 }

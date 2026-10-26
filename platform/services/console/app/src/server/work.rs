@@ -7,6 +7,7 @@
 //! Semaphore's RFC3339 strings do not compare safely as text: Go drops trailing
 //! fractional zeros, so `…:00Z` would sort after `…:00.1Z`.
 
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::server::axum::extract::{Path, State};
@@ -57,7 +58,29 @@ pub struct WorkItem {
     pub started: Option<String>,
     pub ended: Option<String>,
     pub receipt_url: String,
+    /// The job this task repeats: template, plus service when known. See `stream_key`.
+    pub stream: String,
+    /// True on the newest task of its stream within the fetched window. Only these get a strip.
+    pub latest_in_stream: bool,
+    /// Tasks of the stream within the fetched window. The same value on each of them.
+    pub stream_runs: u32,
 }
+
+/// One earlier run of a job, as the details panel lists it under "Recent runs".
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HistoryEntry {
+    pub key: String,
+    pub lane: &'static str,
+    pub status: String,
+    pub launched_by: String,
+    pub created: String,
+    pub started: Option<String>,
+    pub ended: Option<String>,
+    pub receipt_url: String,
+}
+
+/// How many runs of one job `GET /v1/work/{key}` lists, the item's own run included.
+pub const HISTORY_LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -171,21 +194,96 @@ pub fn target_service(environment: &str) -> Option<String> {
         .filter(|service| !service.trim().is_empty())
 }
 
-/// Maps Semaphore tasks to items, newest first (highest id first).
+/// The stream a task belongs to: its template, and its service when one is known, so
+/// one job's repeat runs group together. A task with no template id is a stream of its
+/// own. Never keyed on the title: two templates can share one.
+pub fn stream_key(template_id: Option<i64>, service: Option<&str>, task_id: u64) -> String {
+    match (template_id, service) {
+        (Some(template), Some(service)) => format!("tpl-{template}:{service}"),
+        (Some(template), None) => format!("tpl-{template}"),
+        (None, _) => format!("task-{task_id}"),
+    }
+}
+
+/// Who launched a task, first match wins: a skynet message, a person (a non-empty user
+/// name), a schedule, an integration. Anything else is `unknown`.
+pub fn launcher(
+    skynet: bool,
+    user_name: Option<&str>,
+    schedule_id: Option<i64>,
+    integration_id: Option<i64>,
+) -> String {
+    if skynet {
+        "skynet".to_string()
+    } else if let Some(name) = user_name.filter(|name| !name.is_empty()) {
+        name.to_string()
+    } else if schedule_id.is_some() {
+        "schedule".to_string()
+    } else if integration_id.is_some() {
+        "integration".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+/// Maps Semaphore tasks to items, newest first (highest id first), with each item's
+/// stream marked within this list.
 pub fn build_items(
     mut tasks: Vec<Task>,
     steps: &[Step],
     config: &SemaphoreConfig,
 ) -> Vec<WorkItem> {
     tasks.sort_by_key(|task| std::cmp::Reverse(task.id));
-    tasks
+    let mut items: Vec<WorkItem> = tasks
         .iter()
         .map(|task| build_item(task, steps, &config.ui_url, config.project))
+        .collect();
+    mark_streams(&mut items);
+    items
+}
+
+/// Sets `stream_runs` and `latest_in_stream` on every item. Decided by id, not by the
+/// order of `items`: the highest id of a stream is its latest run.
+pub fn mark_streams(items: &mut [WorkItem]) {
+    let mut runs: HashMap<String, u32> = HashMap::new();
+    let mut newest: HashMap<String, u64> = HashMap::new();
+    for item in items.iter() {
+        *runs.entry(item.stream.clone()).or_insert(0) += 1;
+        newest
+            .entry(item.stream.clone())
+            .and_modify(|id| *id = (*id).max(item.id))
+            .or_insert(item.id);
+    }
+    for item in items.iter_mut() {
+        item.stream_runs = runs[&item.stream];
+        item.latest_in_stream = newest[&item.stream] == item.id;
+    }
+}
+
+/// Up to `limit` runs of `stream`, newest first, the item's own run among them. Sorted
+/// here by id, so the answer does not depend on the order `items` is in.
+pub fn stream_history(items: &[WorkItem], stream: &str, limit: usize) -> Vec<HistoryEntry> {
+    let mut members: Vec<&WorkItem> = items.iter().filter(|item| item.stream == stream).collect();
+    members.sort_by_key(|item| std::cmp::Reverse(item.id));
+    members
+        .into_iter()
+        .take(limit)
+        .map(|item| HistoryEntry {
+            key: item.key.clone(),
+            lane: item.lane,
+            status: item.status.clone(),
+            launched_by: item.launched_by.clone(),
+            created: item.created.clone(),
+            started: item.started.clone(),
+            ended: item.ended.clone(),
+            receipt_url: item.receipt_url.clone(),
+        })
         .collect()
 }
 
 /// One task as an item. A skynet-launched task gets its run, step and registry owner
-/// as role. Title is the template name, plus the service when one is known.
+/// as role. Title is the template name, plus the service when one is known. A lone
+/// item is its own stream's only and latest run; `build_items` corrects the counts.
 pub fn build_item(task: &Task, steps: &[Step], ui_url: &str, project: u32) -> WorkItem {
     let skynet = parse_skynet_message(task.message.as_deref().unwrap_or(""));
     let service = task.environment.as_deref().and_then(target_service);
@@ -194,14 +292,13 @@ pub fn build_item(task: &Task, steps: &[Step], ui_url: &str, project: u32) -> Wo
         Some(service) => format!("{template} — {service}"),
         None => template,
     };
-    let launched_by = if skynet.is_some() {
-        "skynet".to_string()
-    } else {
-        task.user_name
-            .clone()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "unknown".to_string())
-    };
+    let stream = stream_key(task.template_id, service.as_deref(), task.id);
+    let launched_by = launcher(
+        skynet.is_some(),
+        task.user_name.as_deref(),
+        task.schedule_id,
+        task.integration_id,
+    );
     let (run_id, step) = match skynet {
         Some((run_id, step)) => (Some(run_id), Some(step)),
         None => (None, None),
@@ -229,6 +326,9 @@ pub fn build_item(task: &Task, steps: &[Step], ui_url: &str, project: u32) -> Wo
             ui_url.trim_end_matches('/'),
             task.id
         ),
+        stream,
+        latest_in_stream: true,
+        stream_runs: 1,
     }
 }
 
@@ -325,9 +425,11 @@ pub async fn list_work(State(app): State<SharedState>, session: Session) -> Resp
 struct ItemBody<'a> {
     item: &'a WorkItem,
     run: Option<Run>,
+    stream_history: Vec<HistoryEntry>,
 }
 
-/// `GET /v1/work/{key}`: one item, and for a skynet run its registry steps.
+/// `GET /v1/work/{key}`: one item, its skynet run's registry steps when it has a run,
+/// and the newest runs of its job.
 pub async fn get_work_item(
     State(app): State<SharedState>,
     session: Session,
@@ -344,7 +446,13 @@ pub async fn get_work_item(
         .run_id
         .as_deref()
         .map(|run_id| run_detail(&cache.items, run_id, &app.workflow));
-    Json(ItemBody { item, run }).into_response()
+    let history = stream_history(&cache.items, &item.stream, HISTORY_LIMIT);
+    Json(ItemBody {
+        item,
+        run,
+        stream_history: history,
+    })
+    .into_response()
 }
 
 /// Starts the poll when Semaphore is configured. The first poll runs at once; a
@@ -611,6 +719,112 @@ mod tests {
         let run = run_detail(&items, "run-1", &[]);
         assert!(run.steps.is_empty());
         assert_eq!(run.service.as_deref(), Some("tududi"));
+    }
+
+    /// A failed task of one template, for the stream tests. No skynet message.
+    fn templated(id: u64, template_id: i64, environment: Option<&str>) -> WorkItem {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "status": "error",
+            "created": "2026-10-26T12:00:00Z",
+            "template_id": template_id,
+            "tpl_alias": "Check o11y Liveness (Dev)",
+            "environment": environment,
+        }))
+        .expect("task fixture");
+        build_item(&task, &registry(), "https://ui.test", 1)
+    }
+
+    #[test]
+    fn stream_key_is_template_and_service_and_a_lone_task_without_a_template() {
+        assert_eq!(stream_key(Some(3), Some("tududi"), 9), "tpl-3:tududi");
+        assert_eq!(stream_key(Some(3), None, 9), "tpl-3");
+        assert_eq!(stream_key(None, Some("tududi"), 9), "task-9");
+        assert_eq!(stream_key(None, None, 9), "task-9");
+    }
+
+    #[test]
+    fn launcher_takes_the_first_source_that_applies() {
+        assert_eq!(launcher(true, Some("stray"), Some(4), Some(2)), "skynet");
+        assert_eq!(launcher(false, Some("stray"), Some(4), Some(2)), "stray");
+        assert_eq!(
+            launcher(false, Some(""), Some(4), Some(2)),
+            "schedule",
+            "an empty user name is no user"
+        );
+        assert_eq!(launcher(false, None, None, Some(2)), "integration");
+        assert_eq!(launcher(false, None, None, None), "unknown");
+    }
+
+    #[test]
+    fn scheduled_task_is_labelled_schedule_not_unknown() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": 60,
+            "status": "success",
+            "template_id": 2,
+            "schedule_id": 4,
+            "user_name": null,
+        }))
+        .expect("task fixture");
+        let item = build_item(&task, &registry(), "https://ui.test", 1);
+        assert_eq!(item.launched_by, "schedule");
+        assert_eq!(
+            item.stream, "tpl-2",
+            "no service: keyed by the template alone"
+        );
+    }
+
+    #[test]
+    fn mark_streams_flags_the_highest_id_whatever_the_order() {
+        // Shuffled on purpose: the latest flag must follow the id, not the position.
+        let mut items = vec![
+            templated(12, 5, None),
+            templated(40, 6, None),
+            templated(7, 5, None),
+            templated(31, 5, None),
+            templated(22, 6, Some(r#"{"target_service":"tududi"}"#)),
+        ];
+        mark_streams(&mut items);
+        let by = |key: &str| items.iter().find(|item| item.key == key).expect("item");
+        for key in ["sem-12", "sem-7", "sem-31"] {
+            assert_eq!(by(key).stream, "tpl-5");
+            assert_eq!(by(key).stream_runs, 3, "{key}");
+            assert_eq!(by(key).latest_in_stream, key == "sem-31", "{key}");
+        }
+        assert_eq!(by("sem-40").stream, "tpl-6");
+        assert!(by("sem-40").latest_in_stream);
+        assert_eq!(by("sem-40").stream_runs, 1);
+        assert_eq!(
+            by("sem-22").stream,
+            "tpl-6:tududi",
+            "a service splits one template's stream"
+        );
+        assert!(by("sem-22").latest_in_stream);
+    }
+
+    #[test]
+    fn stream_history_is_newest_first_capped_and_one_stream_only() {
+        // Twelve runs of one job, interleaved with a second job, in no particular order.
+        let mut items: Vec<WorkItem> = Vec::new();
+        for id in [4, 1, 9, 12, 2, 7, 11, 3, 6, 10, 5, 8] {
+            items.push(templated(id, 5, None));
+        }
+        items.push(templated(50, 6, None));
+        items.push(templated(51, 6, None));
+        let history = stream_history(&items, "tpl-5", HISTORY_LIMIT);
+        let keys: Vec<&str> = history.iter().map(|entry| entry.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "sem-12", "sem-11", "sem-10", "sem-9", "sem-8", "sem-7", "sem-6", "sem-5", "sem-4",
+                "sem-3"
+            ]
+        );
+        assert_eq!(history[0].lane, "failed");
+        let other_job = stream_history(&items, "tpl-6", HISTORY_LIMIT);
+        let other: Vec<&str> = other_job.iter().map(|entry| entry.key.as_str()).collect();
+        assert_eq!(other, ["sem-51", "sem-50"]);
+        assert!(stream_history(&items, "tpl-9", HISTORY_LIMIT).is_empty());
     }
 
     #[test]

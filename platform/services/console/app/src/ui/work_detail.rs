@@ -11,13 +11,66 @@ use serde::Deserialize;
 use super::api;
 use super::icons::icon;
 use super::shell::Ctx;
-use super::work::{find_item, item_stamp, Lane, Tone, WorkItem};
+use super::work::{age_text, find_item, item_stamp, Lane, Tone, WorkItem};
 
 /// Body of `GET /v1/work/{key}`. `run` is null for a task no skynet run started.
+/// `stream_history` is the job's newest runs, newest first, this one included.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WorkDetail {
     pub item: WorkItem,
     pub run: Option<RunDetail>,
+    pub stream_history: Vec<HistoryEntry>,
+}
+
+/// One run of the job, as "Recent runs" draws it. The server sends more fields; the
+/// panel reads only these.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HistoryEntry {
+    pub key: String,
+    pub lane: Lane,
+    pub created: String,
+    pub started: Option<String>,
+    pub receipt_url: String,
+}
+
+/// One row of "Recent runs", decided here so the markup only draws it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecentRow {
+    pub key: String,
+    pub shape: &'static str,
+    pub tone: Tone,
+    pub word: &'static str,
+    pub age: Option<String>,
+    pub receipt_url: String,
+    /// True for the run this panel is open on.
+    pub current: bool,
+}
+
+/// The rows of "Recent runs" in the order given, which is newest first. The age counts
+/// from the start when there is one, else from creation, as the item's own age does.
+pub fn recent_rows(
+    history: &[HistoryEntry],
+    current_key: &str,
+    now_ms: Option<i64>,
+) -> Vec<RecentRow> {
+    history
+        .iter()
+        .map(|entry| {
+            let (shape, tone) = entry.lane.look();
+            RecentRow {
+                key: entry.key.clone(),
+                shape,
+                tone,
+                word: entry.lane.label(),
+                age: age_text(
+                    now_ms,
+                    entry.started.as_deref().unwrap_or(entry.created.as_str()),
+                ),
+                receipt_url: entry.receipt_url.clone(),
+                current: entry.key == current_key,
+            }
+        })
+        .collect()
 }
 
 /// One skynet run: its id, its service, and every registry step in order.
@@ -105,6 +158,16 @@ fn close_details(mut selected: Signal<Option<String>>, key: &str) {
     api::focus(&format!("strip-{key}"));
 }
 
+/// The "Recent runs" rows for a loaded panel. Empty unless the job ran more than once.
+fn recent_for(state: &DetailState, current_key: &str, now_ms: Option<i64>) -> Vec<RecentRow> {
+    match state {
+        DetailState::Ready(found) if found.stream_history.len() > 1 => {
+            recent_rows(&found.stream_history, current_key, now_ms)
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Fetches one item's run. An answer for an item that is no longer the one
 /// asked about (the selection moved, or its stamp changed) is dropped.
 async fn load_detail(
@@ -130,7 +193,11 @@ async fn load_detail(
 /// The details panel for the selected item. It is a labelled region that takes
 /// focus when it opens; Escape or Close deselects the item.
 #[component]
-pub fn Details(selected: Signal<Option<String>>, minimized: Signal<bool>) -> Element {
+pub fn Details(
+    selected: Signal<Option<String>>,
+    minimized: Signal<bool>,
+    now_ms: Option<i64>,
+) -> Element {
     let ctx = use_context::<Ctx>();
     let mut minimized = minimized;
     let mut fetched = use_signal(|| None::<Fetched>);
@@ -194,6 +261,8 @@ pub fn Details(selected: Signal<Option<String>>, minimized: Signal<bool>) -> Ele
             }
         },
     };
+
+    let recent = recent_for(&state, &key, now_ms);
 
     let close_key = key.clone();
     let escape_key = key.clone();
@@ -260,6 +329,42 @@ pub fn Details(selected: Signal<Option<String>>, minimized: Signal<bool>) -> Ele
                 div { class: "stack",
                     span { class: "label", "Run steps" }
                     {steps}
+                }
+                if !recent.is_empty() {
+                    RecentRuns { rows: recent }
+                }
+            }
+        }
+    }
+}
+
+/// "Recent runs": the job's newest runs, each with its lane, age and receipt link.
+/// The row for the open run is marked current.
+#[component]
+fn RecentRuns(rows: Vec<RecentRow>) -> Element {
+    rsx! {
+        div { class: "stack",
+            span { class: "label", "Recent runs" }
+            ol { class: "recent-runs", aria_label: "Recent runs of this job",
+                for row in rows {
+                    li {
+                        class: "recent-run",
+                        aria_current: if row.current { "true" } else { "false" },
+                        span { class: "st {row.tone.class()}", {icon(row.shape)} }
+                        span { class: "mono", "{row.key}" }
+                        span { class: "st {row.tone.class()}", "{row.word}" }
+                        if let Some(age) = &row.age {
+                            span { class: "faint", "{age}" }
+                        }
+                        a {
+                            class: "btn",
+                            href: "{row.receipt_url}",
+                            target: "_blank",
+                            rel: "noopener",
+                            aria_label: "Open receipt for {row.key} in Semaphore",
+                            "Receipt"
+                        }
+                    }
                 }
             }
         }
@@ -440,5 +545,78 @@ mod tests {
     fn dash_stands_in_for_a_null_field() {
         assert_eq!(or_dash(None), "\u{2014}");
         assert_eq!(or_dash(Some("sem-4")), "sem-4");
+    }
+
+    fn history(key: &str, lane: Lane, started: Option<&str>) -> HistoryEntry {
+        HistoryEntry {
+            key: key.to_string(),
+            lane,
+            created: "2026-10-26T12:00:00Z".to_string(),
+            started: started.map(str::to_string),
+            receipt_url: format!("https://semaphore.example.test/project/1/history?t={key}"),
+        }
+    }
+
+    fn loaded(history: Vec<HistoryEntry>) -> DetailState {
+        DetailState::Ready(Box::new(WorkDetail {
+            item: WorkItem {
+                key: "sem-21".to_string(),
+                title: "Deploy tududi".to_string(),
+                lane: Lane::Done,
+                status: "success".to_string(),
+                role: None,
+                launched_by: "schedule".to_string(),
+                run_id: None,
+                step: None,
+                service: Some("tududi".to_string()),
+                created: "2026-10-26T12:00:00Z".to_string(),
+                started: None,
+                ended: None,
+                receipt_url: "https://semaphore.example.test/project/1/history?t=21".to_string(),
+                latest_in_stream: false,
+                stream_runs: history.len() as u32,
+            },
+            run: None,
+            stream_history: history,
+        }))
+    }
+
+    #[test]
+    fn recent_rows_keep_order_mark_the_open_run_and_age_from_start_or_creation() {
+        use super::super::work::parse_rfc3339_ms;
+        let entries = vec![
+            history("sem-23", Lane::Failed, None),
+            history("sem-21", Lane::Done, Some("2026-10-26T12:05:00Z")),
+        ];
+        let now = parse_rfc3339_ms("2026-10-26T12:10:00Z");
+        let rows = recent_rows(&entries, "sem-21", now);
+        let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
+        assert_eq!(keys, ["sem-23", "sem-21"]);
+        assert_eq!(
+            rows[0].age.as_deref(),
+            Some("10m ago"),
+            "no start: age from creation"
+        );
+        assert_eq!(
+            rows[1].age.as_deref(),
+            Some("5m ago"),
+            "age from the start time"
+        );
+        let current: Vec<bool> = rows.iter().map(|row| row.current).collect();
+        assert_eq!(current, [false, true]);
+        assert_eq!((rows[0].word, rows[0].shape), ("Failed", "octagon-x"));
+        assert!(rows[1].receipt_url.ends_with("t=sem-21"));
+    }
+
+    #[test]
+    fn recent_runs_show_only_for_a_job_that_ran_more_than_once() {
+        let once = loaded(vec![history("sem-21", Lane::Done, None)]);
+        assert!(recent_for(&once, "sem-21", None).is_empty());
+        let twice = loaded(vec![
+            history("sem-23", Lane::Failed, None),
+            history("sem-21", Lane::Done, None),
+        ]);
+        assert_eq!(recent_for(&twice, "sem-21", None).len(), 2);
+        assert!(recent_for(&DetailState::Loading, "sem-21", None).is_empty());
     }
 }

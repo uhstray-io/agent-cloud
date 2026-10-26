@@ -15,6 +15,9 @@ use super::config::SemaphoreConfig;
 #[derive(Deserialize)]
 pub struct Task {
     pub id: u64,
+    /// The template the task ran. Names the stream a repeat run belongs to.
+    #[serde(default)]
+    pub template_id: Option<i64>,
     #[serde(default)]
     pub status: String,
     #[serde(default)]
@@ -29,6 +32,12 @@ pub struct Task {
     pub tpl_alias: Option<String>,
     #[serde(default)]
     pub user_name: Option<String>,
+    /// Set when a schedule launched the task. Only presence is read.
+    #[serde(default)]
+    pub schedule_id: Option<i64>,
+    /// Set when an integration (webhook or similar) launched the task. Only presence is read.
+    #[serde(default)]
+    pub integration_id: Option<i64>,
     #[serde(default)]
     pub environment: Option<String>,
 }
@@ -132,6 +141,7 @@ mod tests {
          "output": "log line with hunter2"},
         {"id": 11, "status": "running", "created": "2026-10-26T11:00:00Z",
          "start": null, "end": null, "message": null, "tpl_alias": "Check Secrets",
+         "template_id": 4, "schedule_id": 7, "integration_id": null,
          "user_name": null, "environment": null}
     ]"#;
 
@@ -172,6 +182,20 @@ mod tests {
         assert_eq!(tasks[0].tpl_alias.as_deref(), Some("Deploy tududi"));
         assert_eq!(tasks[1].environment, None);
         assert_eq!(tasks[1].start, None);
+        assert_eq!(tasks[0].template_id, Some(3));
+        assert_eq!(tasks[1].template_id, Some(4));
+        assert_eq!(tasks[0].schedule_id, None, "absent key reads as unset");
+        assert_eq!(tasks[1].schedule_id, Some(7));
+        assert_eq!(tasks[1].integration_id, None, "null reads as unset");
+    }
+
+    #[test]
+    fn launch_and_template_ids_default_to_unset_when_absent() {
+        let task: Task = serde_json::from_str(r#"{"id": 1, "integration_id": 5}"#).expect("task");
+        assert_eq!(
+            (task.template_id, task.schedule_id, task.integration_id),
+            (None, None, Some(5))
+        );
     }
 
     #[tokio::test]

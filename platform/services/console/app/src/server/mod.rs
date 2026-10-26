@@ -601,17 +601,21 @@ mod tests {
         assert_eq!(me_json["claims"]["sub"], "user-1");
     }
 
-    /// Active Work fixture: a skynet run (steps a and b) and one human task. Task 20's
+    /// Active Work fixture: a skynet run (steps a and b), a human task, and a scheduled
+    /// repeat (23) of task 21's job, so `sem-21` and `sem-23` share one stream. Task 20's
     /// environment carries a secret-shaped key, which must never reach a client.
     const WORK_TASKS: &str = r#"[
-        {"id": 20, "status": "success", "created": "2026-10-26T12:00:00Z",
+        {"id": 20, "status": "success", "created": "2026-10-26T12:00:00Z", "template_id": 1,
          "message": "skynet run-1 step-a", "tpl_alias": "Plan onboarding", "user_name": "svc-console",
          "environment": "{\"target_service\":\"tududi\",\"SECRET_TOKEN\":\"hunter2\"}"},
-        {"id": 21, "status": "running", "created": "2026-10-26T12:01:00Z",
+        {"id": 21, "status": "running", "created": "2026-10-26T12:01:00Z", "template_id": 2,
          "message": "skynet run-1 step-b", "tpl_alias": "Deploy tududi", "user_name": null,
          "environment": "{\"target_service\":\"tududi\"}"},
-        {"id": 22, "status": "error", "created": "2026-10-26T12:02:00Z",
-         "message": null, "tpl_alias": "Check Secrets", "user_name": "stray", "environment": null}
+        {"id": 22, "status": "error", "created": "2026-10-26T12:02:00Z", "template_id": 3,
+         "message": null, "tpl_alias": "Check Secrets", "user_name": "stray", "environment": null},
+        {"id": 23, "status": "error", "created": "2026-10-26T12:03:00Z", "template_id": 2,
+         "message": null, "tpl_alias": "Deploy tududi", "user_name": null, "schedule_id": 9,
+         "environment": "{\"target_service\":\"tududi\"}"}
     ]"#;
 
     const WORKFLOW: &str = r#"[
@@ -702,11 +706,43 @@ mod tests {
             .iter()
             .map(|item| item["key"].as_str().expect("key"))
             .collect();
-        assert_eq!(keys, ["sem-22", "sem-21", "sem-20"]);
+        assert_eq!(keys, ["sem-23", "sem-22", "sem-21", "sem-20"]);
+
+        // Streams: sem-23 is the newest run of sem-21's job; sem-21 is an earlier run.
+        let items = body["items"].as_array().expect("items");
+        let stream_of = |key: &str| {
+            items
+                .iter()
+                .find(|item| item["key"] == key)
+                .expect("item")
+                .clone()
+        };
+        assert_eq!(stream_of("sem-23")["stream"], "tpl-2:tududi");
+        assert_eq!(stream_of("sem-23")["latest_in_stream"], true);
+        assert_eq!(stream_of("sem-23")["stream_runs"], 2);
+        assert_eq!(stream_of("sem-23")["launched_by"], "schedule");
+        assert_eq!(stream_of("sem-21")["latest_in_stream"], false);
+        assert_eq!(stream_of("sem-21")["stream_runs"], 2);
+        assert_eq!(stream_of("sem-22")["stream"], "tpl-3");
+        assert_eq!(stream_of("sem-22")["latest_in_stream"], true);
+        assert_eq!(stream_of("sem-22")["stream_runs"], 1);
 
         let one = call(addr, "GET", "/v1/work/sem-21", Some(cookie.clone()), "").await;
         assert_eq!(one.status, 200);
         let detail: serde_json::Value = serde_json::from_str(&one.body).expect("json");
+        let history: Vec<&str> = detail["stream_history"]
+            .as_array()
+            .expect("stream_history")
+            .iter()
+            .map(|entry| entry["key"].as_str().expect("key"))
+            .collect();
+        assert_eq!(
+            history,
+            ["sem-23", "sem-21"],
+            "newest run first, own run included"
+        );
+        assert_eq!(detail["stream_history"][0]["lane"], "failed");
+        assert_eq!(detail["stream_history"][1]["lane"], "running");
         assert_eq!(detail["item"]["title"], "Deploy tududi — tududi");
         assert_eq!(detail["item"]["lane"], "running");
         assert_eq!(detail["item"]["role"], "service-agent");
