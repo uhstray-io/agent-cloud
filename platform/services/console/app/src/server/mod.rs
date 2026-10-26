@@ -615,9 +615,9 @@ mod tests {
     ]"#;
 
     const WORKFLOW: &str = r#"[
-        {"id": "step-a", "order": 1, "owner": "skynet", "label": "Plan"},
-        {"id": "step-b", "order": 2, "owner": "netclaw", "label": "Build"},
-        {"id": "step-c", "order": 3, "owner": "operator", "label": "Verify"}
+        {"id": "step-a", "order": 1, "owner": "infra-agent", "label": "Plan"},
+        {"id": "step-b", "order": 2, "owner": "service-agent", "label": "Build"},
+        {"id": "step-c", "order": 3, "owner": "security-agent", "label": "Verify"}
     ]"#;
 
     /// A state whose Active Work cache is already filled from the fixture, as after one poll.
@@ -709,7 +709,7 @@ mod tests {
         let detail: serde_json::Value = serde_json::from_str(&one.body).expect("json");
         assert_eq!(detail["item"]["title"], "Deploy tududi — tududi");
         assert_eq!(detail["item"]["lane"], "running");
-        assert_eq!(detail["item"]["role"], "netclaw");
+        assert_eq!(detail["item"]["role"], "service-agent");
         assert_eq!(detail["item"]["launched_by"], "skynet");
         assert_eq!(
             detail["item"]["receipt_url"],

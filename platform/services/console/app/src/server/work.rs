@@ -397,9 +397,9 @@ mod tests {
 
     fn registry() -> Vec<Step> {
         vec![
-            step("step-b", 2, "netclaw", "Build"),
-            step("step-a", 1, "skynet", "Plan"),
-            step("step-c", 3, "operator", "Verify"),
+            step("step-b", 2, "service-agent", "Build"),
+            step("step-a", 1, "infra-agent", "Plan"),
+            step("step-c", 3, "security-agent", "Verify"),
         ]
     }
 
@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(item.launched_by, "skynet");
         assert_eq!(item.run_id.as_deref(), Some("service_onboarding:abc"));
         assert_eq!(item.step.as_deref(), Some("step-b"));
-        assert_eq!(item.role.as_deref(), Some("netclaw"));
+        assert_eq!(item.role.as_deref(), Some("service-agent"));
         assert_eq!(item.service.as_deref(), Some("tududi"));
         assert_eq!(
             item.receipt_url,
@@ -584,7 +584,7 @@ mod tests {
             "run-2 task is not in run-1"
         );
         assert_eq!(run.steps[2].key, None);
-        assert_eq!(run.steps[2].owner, "operator");
+        assert_eq!(run.steps[2].owner, "security-agent");
     }
 
     #[test]
@@ -647,11 +647,11 @@ mod tests {
         let good = dir.join("workflow.json");
         std::fs::write(
             &good,
-            r#"[{"id":"step-a","order":1,"owner":"skynet","label":"Plan"}]"#,
+            r#"[{"id":"step-a","order":1,"owner":"infra-agent","label":"Plan"}]"#,
         )
         .expect("write");
         let steps = load_workflow(&good).expect("valid");
-        assert_eq!(steps[0].owner, "skynet");
+        assert_eq!(steps[0].owner, "infra-agent");
 
         let bad = dir.join("broken.json");
         std::fs::write(&bad, "[{").expect("write");

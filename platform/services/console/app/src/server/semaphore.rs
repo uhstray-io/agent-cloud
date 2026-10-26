@@ -231,7 +231,7 @@ mod tests {
         let steps = vec![Step {
             id: "step-1".into(),
             order: 1,
-            owner: "netclaw".into(),
+            owner: "service-agent".into(),
             label: "Plan".into(),
         }];
         let items = build_items(tasks, &steps, &config);
