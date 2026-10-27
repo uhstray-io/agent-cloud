@@ -913,7 +913,7 @@
       host, keys read from a root-owned file, leaf directories under the account's `certs` directory. Done
       here, with the operator's go for these two launches: `Generate Service SSH Key (Dev)`
       `service_name=vllm-tls` (dry run 9407, real run 9408) and `Back Up Service SSH Key (Dev)`
-      (dry run 9409; branch pushed, site-config #116). The reply is prepared, NOT sent. It
+      (dry run 9409; branch pushed, site-config #116). The operator sent the reply the same day. It
       carries the public half, confirms the Semaphore host as the issuance source, and
       counter-proposes the server SAN. dgx-spark proposed `vllm.<site>.<zone>`. The reply
       follows `internal-dns-naming` decision 14 instead: `vllm-primary.<site>.<zone>` plus

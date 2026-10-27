@@ -152,8 +152,8 @@ and `<site>` stay placeholders in this repository; their values live in site-con
 - [ ] 5.3 Hand the vLLM leaf's SANs (`dgx01.vllm-primary` and `vllm-primary`) to the
       dgx-spark session through the channel agreed in `production-internal-ca` open
       question 1
-      2026-10-26: dgx-spark's handoff proposed `vllm.<site>.<zone>`. A reply is prepared, NOT
-      sent (operator relays it). It counter-proposes `vllm-primary.<site>.<zone>` and
+      2026-10-26: dgx-spark's handoff proposed `vllm.<site>.<zone>`. The operator sent the
+      reply to the dgx-spark session the same day. It counter-proposes `vllm-primary.<site>.<zone>` and
       `dgx01.vllm-primary.<site>.<zone>` for the server leaf, and
       `lifecycle.vllm-primary.<site>.<zone>` for its client leaf. Ticked when dgx-spark
       accepts.
