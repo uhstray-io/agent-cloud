@@ -133,7 +133,7 @@ and why.
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
-| 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Convention (operator rule; no hook) |
+| 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s | Process | 1 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
@@ -3491,6 +3491,12 @@ as safe. Both amendments were reported, nothing amended was pushed. Since 2026-1
 PreToolUse hook proposed above (refuse `git commit --amend`, `git rebase` and `git push --force*` outside the
 secret-in-a-commit path) is the guard to build; it is a change to the operator's harness settings, so it waits
 on the operator.
+
+**Superseded 2026-10-26 by operator decision.** Asked whether to add a hook refusing `git commit --amend`,
+`git rebase` and force pushes, Joseph answered: "I believe these are safe actions, so I'm comfortable with
+keeping that capability for our agents." So no hook is added and briefs no longer forbid amending or rebasing
+unpushed local commits; this entry's rule ("history changes by new commits only") no longer applies. Force
+push stays governed by the operator's global instructions and the harness settings, unchanged by this note.
 
 ### 5.22 The `Python core` CI job outgrew its 30-minute timeout as the suite grew
 
