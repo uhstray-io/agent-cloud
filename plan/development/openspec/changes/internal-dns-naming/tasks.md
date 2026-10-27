@@ -153,10 +153,15 @@ and `<site>` stay placeholders in this repository; their values live in site-con
       dgx-spark session through the channel agreed in `production-internal-ca` open
       question 1
       2026-10-26: dgx-spark's handoff proposed `vllm.<site>.<zone>`. The operator sent the
-      reply to the dgx-spark session the same day. It counter-proposes `vllm-primary.<site>.<zone>` and
-      `dgx01.vllm-primary.<site>.<zone>` for the server leaf, and
-      `lifecycle.vllm-primary.<site>.<zone>` for its client leaf. Ticked when dgx-spark
-      accepts.
+      reply to the dgx-spark session the same day. It counter-proposes
+      `vllm-primary.<site>.<zone>` and `dgx01.vllm-primary.<site>.<zone>` for the server leaf,
+      per decision 14. It also proposes `lifecycle.vllm-primary.<site>.<zone>` for the vLLM
+      client leaf. That name is outside decision 14, which covers server leaves only.
+      Open question: the four name families (decision 2) define no client-leaf
+      name. The production client leaves (`verifier.gateway`, `probe.o11y`) and this proposal
+      put a role label under a service name, which matches no family and has no ordinal.
+      Decide whether client-leaf SANs get their own family or are documented as certificate
+      names that never get a DNS record. Ticked when dgx-spark accepts the server SANs.
 - [ ] 5.4 Validation gate: the declared leaf list in site-config carries the SANs of
       scenario "Leaf SANs follow the names" and the CA's issuance task accepts them (the
       CA change's own gate issues them)

@@ -908,17 +908,21 @@
       - Caddy `/health` and the o11y `dgx-spark-vllm` scrape over HTTPS;
       - Rollback Inference Route `direct` mode gaining an HTTPS transport (a point from dgx-spark's review).
       Not started; not ticked.
-      2026-10-26 (dgx-spark handoff, operator-relayed): dgx-spark PR 38 (merged `76660cb`) made
-      the consumer account `vllm-tls` live on spark-1: key-only, admitted only from the Semaphore
-      host, keys read from a root-owned file, leaf directories under the account's `certs` directory. Done
-      here, with the operator's go for these two launches: `Generate Service SSH Key (Dev)`
-      `service_name=vllm-tls` (dry run 9407, real run 9408) and `Back Up Service SSH Key (Dev)`
-      (dry run 9409; branch pushed, site-config #116). The operator sent the reply the same day. It
-      carries the public half, confirms the Semaphore host as the issuance source, and
-      counter-proposes the server SAN. dgx-spark proposed `vllm.<site>.<zone>`. The reply
-      follows `internal-dns-naming` decision 14 instead: `vllm-primary.<site>.<zone>` plus
-      `dgx01.vllm-primary.<site>.<zone>`, with `lifecycle.vllm-primary.<site>.<zone>` for the
-      client leaf. Two additions the build side needs that the list above lacks:
+      2026-10-26 (dgx-spark handoff, operator-relayed): dgx-spark PR 38 (merged `76660cb`)
+      created the consumer account `vllm-tls` on spark-1: key-only, admitted only from the
+      Semaphore host, keys read from a root-owned file, leaf directories under the account's
+      `certs` directory. It has no login until dgx-spark commits `keys/vllm-tls.pub` and
+      re-applies. Done here, with the operator's go for these launches: `Generate Service SSH
+      Key (Dev)` `service_name=vllm-tls` (dry run 9407, real run 9408) and `Back Up Service SSH
+      Key (Dev)` (dry run 9409, real run 9410; site-config #116). The operator sent the reply
+      the same day. It carries the public half, confirms the Semaphore host as the issuance
+      source, and counter-proposes the server SAN. dgx-spark proposed `vllm.<site>.<zone>`.
+      The reply follows `internal-dns-naming` decision 14 for the server leaf:
+      `vllm-primary.<site>.<zone>` plus `dgx01.vllm-primary.<site>.<zone>`. For the client
+      leaf it proposes `lifecycle.vllm-primary.<site>.<zone>`. Decision 14 does not cover that
+      name; it copies the shape of the existing client leaves (`verifier.gateway`,
+      `probe.o11y`), which the naming scheme does not define either (open question recorded on
+      naming task 5.3). Two additions the build side needs that the list above lacks:
       (a) the inventory name `spark-1` is already taken by `dgx_drill_svc` as `o11y-drill`, so
       the certificates host needs its own inventory name, which `internal_leaves[].host` names;
       (b) issuance, renewal and `distribute-ca-root.yml` must connect with the `vllm-tls` key
