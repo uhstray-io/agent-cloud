@@ -729,11 +729,13 @@ class MergeGuardTests(unittest.TestCase):
         self.assertTrue(any(dict(fields).get("page") == "2" for endpoint, fields in api.calls
                             if endpoint.endswith("check-runs")))
 
-    def test_successful_coderabbit_check_run_passes_and_other_external_runs_refuse(self):
+    def test_completed_coderabbit_check_run_passes_and_other_external_runs_refuse(self):
         api = FakeGitHub()
         coderabbit = {"id": 3000, "name": "CodeRabbit", "head_sha": HEAD, "status": "completed",
                       "conclusion": "success", "app": {"slug": "coderabbitai"}}
         api.checks = api.checks + [coderabbit]
+        self.assertTrue(guard.validate(api, PR, HEAD, None))
+        api.checks[-1] = dict(coderabbit, conclusion="neutral")  # review limit reached
         self.assertTrue(guard.validate(api, PR, HEAD, None))
         for override in ({"conclusion": "failure"}, {"status": "in_progress", "conclusion": None},
                          {"app": {"slug": "other-app"}}):
