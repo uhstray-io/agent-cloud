@@ -3496,7 +3496,8 @@ on the operator.
 `git rebase` and force pushes, Joseph answered: "I believe these are safe actions, so I'm comfortable with
 keeping that capability for our agents." So no hook is added and briefs no longer forbid amending or rebasing
 unpushed local commits; this entry's rule ("history changes by new commits only") no longer applies. Force
-push stays governed by the operator's global instructions and the harness settings, unchanged by this note.
+push stays governed by the operator's global instructions, the harness settings and the repository rulesets
+(`protect-main`, `protect-dev`), unchanged by this note.
 
 ### 5.22 The `Python core` CI job outgrew its 30-minute timeout as the suite grew
 

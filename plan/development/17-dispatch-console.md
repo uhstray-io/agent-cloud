@@ -270,6 +270,9 @@ site-config repository. A step marked **[TARGET]** is not built yet.
    already serves that hostname, retire it through `caddy_retire_sites` in the same run, because
    Caddy rejects a hostname defined twice (`AGENTS.md`, Caddy routes are readable).
 9. **Semaphore project team.** Three steps, in this order:
+   Before step a, sync the inventory that declares `console_svc` (item 6) into Semaphore
+   (`platform/semaphore/sync-inventory.yml`): the provisioning play reads `console_semaphore_project`
+   from that host and refuses a production run when it cannot.
    a. Run **Provision Console Semaphore Access** first. Its template is `Provision Console Semaphore Access`
       in `platform/semaphore/templates.yml`, and it runs `platform/playbooks/provision-console-semaphore-access.yml`.
       It places the `svc-console` user and its token (D20). It must come before the declaration:
@@ -282,7 +285,10 @@ site-config repository. A step marked **[TARGET]** is not built yet.
       `platform/semaphore/README.md:77`).
 10. Run **Deploy Authentik** and **Manage Caddy Sites**, then the three steps of item 9, then **Deploy
     console** (the template in `platform/semaphore/templates.yml`, the one that deploys
-    `platform/playbooks/deploy-console.yml`).
+    `platform/playbooks/deploy-console.yml`), then **Apply Cloudflare Tofu** (`tofu_action=plan`, then
+    `apply`) so the `console` record declared in `platform/infra/cloudflare/dns.tf` exists before the
+    public hostname is checked. Until the promotion, apply only through the `(Dev)` template: `main` and
+    `dev` share one OpenTofu state, so a `main`-bound apply would plan to delete the `console` record.
 
     Until the `dev` to `main` promotion lands, the console steps run their **(Dev)** twins in production.
     `Provision Console Semaphore Access`, `Manage Semaphore Access`, `Manage Caddy Sites` and `Deploy console`
