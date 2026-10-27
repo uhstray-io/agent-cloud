@@ -437,7 +437,8 @@ def check_job_evidence(api, number, sha, files):
         # reviewed, `neutral` when its review limit skipped the PR (#749). Neither is CI
         # evidence; the approval is enforced separately below. Identified by the GitHub-assigned
         # app slug, which another app cannot claim; any other state still refuses.
-        if (isinstance(run, dict) and run.get("app", {}).get("slug") == "coderabbitai"
+        if (isinstance(run, dict) and isinstance(run.get("app"), dict)
+                and run["app"].get("slug") == "coderabbitai"
                 and run.get("status") == "completed"
                 and run.get("conclusion") in ("success", "neutral")):
             continue

@@ -738,7 +738,7 @@ class MergeGuardTests(unittest.TestCase):
         api.checks[-1] = dict(coderabbit, conclusion="neutral")  # review limit reached
         self.assertTrue(guard.validate(api, PR, HEAD, None))
         for override in ({"conclusion": "failure"}, {"status": "in_progress", "conclusion": None},
-                         {"app": {"slug": "other-app"}}):
+                         {"app": {"slug": "other-app"}}, {"app": None}, {"app": "coderabbitai"}):
             api.checks[-1] = dict(coderabbit, **override)
             run_refusal(self, api, "Unknown external check policy: CodeRabbit")
 
