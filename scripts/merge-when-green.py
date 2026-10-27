@@ -433,6 +433,11 @@ def check_job_evidence(api, number, sha, files):
             raise Refusal("Exact-head check run has an invalid identity")
         by_id[str(run["id"])] = run
     for run in external:
+        # CodeRabbit posts a review check run beside its commit status. Identified by the
+        # GitHub-assigned app slug, which another app cannot claim; any other state still refuses.
+        if (isinstance(run, dict) and run.get("app", {}).get("slug") == "coderabbitai"
+                and run.get("status") == "completed" and run.get("conclusion") == "success"):
+            continue
         name = run.get("name", "<unnamed>") if isinstance(run, dict) else "<unnamed>"
         raise Refusal(f"Unknown external check policy: {name}")
     latest = workflow_runs(api, sha, number)

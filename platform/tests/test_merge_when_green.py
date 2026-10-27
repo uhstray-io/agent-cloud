@@ -729,6 +729,17 @@ class MergeGuardTests(unittest.TestCase):
         self.assertTrue(any(dict(fields).get("page") == "2" for endpoint, fields in api.calls
                             if endpoint.endswith("check-runs")))
 
+    def test_successful_coderabbit_check_run_passes_and_other_external_runs_refuse(self):
+        api = FakeGitHub()
+        coderabbit = {"id": 3000, "name": "CodeRabbit", "head_sha": HEAD, "status": "completed",
+                      "conclusion": "success", "app": {"slug": "coderabbitai"}}
+        api.checks = api.checks + [coderabbit]
+        self.assertTrue(guard.validate(api, PR, HEAD, None))
+        for override in ({"conclusion": "failure"}, {"status": "in_progress", "conclusion": None},
+                         {"app": {"slug": "other-app"}}):
+            api.checks[-1] = dict(coderabbit, **override)
+            run_refusal(self, api, "Unknown external check policy: CodeRabbit")
+
     def test_queued_rerun_supersedes_an_older_successful_workflow_run(self):
         api = FakeGitHub()
         api.runs.append({**api.runs[0], "id": 901, "run_number": 4, "run_attempt": 2,
