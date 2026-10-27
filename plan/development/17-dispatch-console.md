@@ -269,7 +269,7 @@ site-config repository. A step marked **[TARGET]** is not built yet.
    `Manage Caddy Sites` (`platform/playbooks/manage-caddy-sites.yml:24`). If a hand-maintained block
    already serves that hostname, retire it through `caddy_retire_sites` in the same run, because
    Caddy rejects a hostname defined twice (`AGENTS.md`, Caddy routes are readable).
-9. **Semaphore project team.** Three steps, in this order:
+9. **Semaphore project team.** An inventory sync, then three steps, in this order:
    Before step a, sync the inventory that declares `console_svc` (item 6) into Semaphore
    (`platform/semaphore/sync-inventory.yml`): the provisioning play reads `console_semaphore_project`
    from that host and refuses a production run when it cannot.
