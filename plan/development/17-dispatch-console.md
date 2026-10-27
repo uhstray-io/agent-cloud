@@ -269,15 +269,25 @@ site-config repository. A step marked **[TARGET]** is not built yet.
    `Manage Caddy Sites` (`platform/playbooks/manage-caddy-sites.yml:24`). If a hand-maintained block
    already serves that hostname, retire it through `caddy_retire_sites` in the same run, because
    Caddy rejects a hostname defined twice (`AGENTS.md`, Caddy routes are readable).
-9. **Semaphore project team.** Declare `svc-console` at role `guest` in `semaphore_project_members`
-   (top-level `all.vars` in site-config), then run `Manage Semaphore Access`
-   (`platform/playbooks/manage-semaphore-access.yml:15`; `platform/semaphore/README.md:77`).
-10. Run the remaining workflows in this order: **Deploy Authentik**, **Manage Caddy Sites**,
-    **Manage Semaphore Access**, **Provision Console Semaphore Access**, then
-    **Deploy console** (the template in `platform/semaphore/templates.yml`, the one that deploys
-    `platform/playbooks/deploy-console.yml`). The Provision step places the `svc-console` user and
-    its token (D20). Its template is `Provision Console Semaphore Access` in
-    `platform/semaphore/templates.yml`, and it runs `platform/playbooks/provision-console-semaphore-access.yml`.
+9. **Semaphore project team.** Three steps, in this order:
+   a. Run **Provision Console Semaphore Access** first. Its template is `Provision Console Semaphore Access`
+      in `platform/semaphore/templates.yml`, and it runs `platform/playbooks/provision-console-semaphore-access.yml`.
+      It places the `svc-console` user and its token (D20). It must come before the declaration:
+      `Manage Semaphore Access` refuses a declared team member that has no Semaphore account
+      (`platform/playbooks/filter_plugins/semaphore_access.py:87`), and it removes a live project member
+      that is not declared (`platform/playbooks/filter_plugins/semaphore_access.py:89-90`).
+   b. Declare `svc-console` at role `guest` in `semaphore_project_members` (top-level `all.vars` in
+      site-config), then sync the inventory into Semaphore (`platform/semaphore/sync-inventory.yml`).
+   c. Run **Manage Semaphore Access** (`platform/playbooks/manage-semaphore-access.yml:15`;
+      `platform/semaphore/README.md:77`).
+10. Run **Deploy Authentik** and **Manage Caddy Sites**, then the three steps of item 9, then **Deploy
+    console** (the template in `platform/semaphore/templates.yml`, the one that deploys
+    `platform/playbooks/deploy-console.yml`).
+
+    Until the `dev` to `main` promotion lands, the console steps run their **(Dev)** twins in production.
+    `Provision Console Semaphore Access`, `Manage Semaphore Access`, `Manage Caddy Sites` and `Deploy console`
+    each carry `dev_variant: true` in `platform/semaphore/templates.yml`, so the `(Dev)` copy is bound to the
+    `agent-cloud dev` record (`platform/semaphore/templates.yml:16-20`).
 
 ## Requirements traceability
 
