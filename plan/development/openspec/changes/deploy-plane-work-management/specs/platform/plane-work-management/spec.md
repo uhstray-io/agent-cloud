@@ -8,12 +8,12 @@ Provides the platform's work tracker. Plane links GitHub issues and pull request
 
 ### Requirement: Recorded findings gate the phases that depend on them
 
-Each unverified platform behaviour that a later phase depends on MUST be verified in Phase 0, and its dated finding MUST be recorded in the change's design document before the dependent phase starts. A phase that depends on an open finding MUST NOT start.
+Each unverified platform behaviour that a later phase depends on MUST be researched in Phase 0, and its dated finding MUST be recorded in the change's design document before the dependent phase starts. A finding that can only be confirmed against a running Plane instance MUST name a runtime check and the task that check gates. That task MUST NOT start until the check passes and its dated result is recorded. A task that depends on an open finding MUST NOT start.
 
 #### Scenario: Spike findings are recorded before dependent phases start
 
 - **WHEN** a phase depends on a Phase 0 spike
-- **THEN** the design document holds a dated finding for that spike, and no row of the Phase 0 table remains open
+- **THEN** the design document holds a dated finding for that spike, and every runtime check that gates one of the phase's tasks has passed before that task starts
 
 ### Requirement: Each environment runs the Plane tier it can validate
 
@@ -140,12 +140,12 @@ Interactive users SHALL sign in to Plane through the Authentik OIDC client. Self
 
 ### Requirement: Plane roles follow identity-provider groups
 
-Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Owner role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
+Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Admin role, Plane's top workspace role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
 
-#### Scenario: Administrator receives Owner
+#### Scenario: Administrator receives Admin
 
 - **WHEN** the reconcile playbook applies with `apply=true` for a member of `platform-admins`
-- **THEN** that member holds the Owner role in Plane
+- **THEN** that member holds the Admin role in Plane
 
 #### Scenario: Developer and business user receive Member
 

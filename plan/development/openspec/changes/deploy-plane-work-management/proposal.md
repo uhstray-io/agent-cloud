@@ -9,7 +9,7 @@ Plane replaces tududi as the work tracker. It gives the team one place where a G
 ## What Changes
 
 - **New platform service `plane`.** It is a composable Compose stack on its own VM in the `plane_svc` group, deployed, cleaned, backed up and restored through Semaphore playbooks. Its secrets come from OpenBao. Production runs the Commercial edition on the Pro plan, and local-dev runs the Commercial Free tier.
-- **Single sign-on and roles.** Users sign in through the Authentik OIDC client. A reconcile playbook maps Authentik groups to Plane roles: `platform-admins` to Owner, `platform-developers` and `platform-business` to Member, and `platform-user` is denied.
+- **Single sign-on and roles.** Users sign in through the Authentik OIDC client. A reconcile playbook maps Authentik groups to Plane roles: `platform-admins` to Admin (the top role; Plane has no Owner role), `platform-developers` and `platform-business` to Member, and `platform-user` is denied.
 - **Native GitHub integration.** A GitHub App named "Plane" carries issues, pull requests and the webhook. The trigger labels are `plane` for GitHub-to-Plane and `github` for Plane-to-GitHub. Pull requests that name a work item key link to it.
 - **Projects as code.** A generator reads each repository's OpenSpec `tasks.md` files and writes Plane modules and work items. It never writes status, so Plane owns status. A scheduled sync pushes the generated state.
 - **Plane MCP server for harnesses.** The MCP server runs in OAuth mode behind Caddy, so each edit is attributed to the signed-in user. weft uses a service identity, a personal access token held in OpenBao.
