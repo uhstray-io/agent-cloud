@@ -48,6 +48,37 @@
     _o11y_availability: "{{ _o11y_availability_validation.stdout | from_json }}"
   no_log: true
 
+- name: Check the receiver runtime interpreter and existing PyYAML dependency
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/env
+      - python3
+      - -c
+      - "import sys, yaml; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+  register: _o11y_receiver_python_prerequisite
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Require the existing receiver Python prerequisite for source readback
+  ansible.builtin.assert:
+    that: _o11y_receiver_python_prerequisite.rc == 0
+    fail_msg: >-
+      Receiver source readback requires Python 3.10 or newer with PyYAML; no
+      availability or producer-source change was placed.
+    quiet: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
 - name: Require a reviewed fixed Alloy self target when native probes are enabled
   ansible.builtin.assert:
     that:

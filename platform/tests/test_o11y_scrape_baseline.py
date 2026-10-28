@@ -2351,6 +2351,44 @@ def test_probe_refusal_output_is_fixed_and_does_not_echo_private_target(monkeypa
     assert "private-host" not in output.out
 
 
+def test_availability_prepare_checks_receiver_python_prerequisite_before_helper_calls():
+    tasks = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/prepare-o11y-availability.yml").read_text(encoding="utf-8"),
+    )
+    prerequisite = next(
+        task for task in tasks
+        if task.get("name") == "Check the receiver runtime interpreter and existing PyYAML dependency"
+    )
+    refusal = next(
+        task for task in tasks
+        if task.get("name") == "Require the existing receiver Python prerequisite for source readback"
+    )
+    source_helper = next(
+        task for task in tasks if task.get("ansible.builtin.script", {}).get("cmd", "").endswith(
+            "--verify-availability-source",
+        )
+    )
+    namespace_helper = next(
+        task for task in tasks if task.get("ansible.builtin.script", {}).get("cmd", "").endswith(
+            "--verify-availability-namespace",
+        )
+    )
+
+    assert prerequisite["ansible.builtin.command"]["argv"][:2] == ["/usr/bin/env", "python3"]
+    assert "sys.version_info >= (3, 10)" in prerequisite["ansible.builtin.command"]["argv"][3]
+    assert prerequisite["failed_when"] is False
+    assert prerequisite["check_mode"] is False
+    assert prerequisite["no_log"] is True
+    assert refusal["ansible.builtin.assert"]["fail_msg"] == (
+        "Receiver source readback requires Python 3.10 or newer with PyYAML; no "
+        "availability or producer-source change was placed."
+    )
+    assert tasks.index(prerequisite) < tasks.index(refusal)
+    assert tasks.index(refusal) < tasks.index(source_helper) < tasks.index(namespace_helper)
+    assert source_helper["when"] == prerequisite["when"]
+    assert namespace_helper["when"] == "_o11y_availability.enabled | bool"
+
+
 def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_gate():
     playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
     source_guard = next(
