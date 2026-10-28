@@ -674,6 +674,8 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         incomplete" was empty by its `== 2` filter (no history window full). Collector schedule
         live: tasks 3493, 3495, 3500, 3510. The "Validate the latest-state conformance read
         model" item above stays open: the rendered matrix needs an operator browser check.
+      - [ ] **Completion source contract:** add one fixed final `kind=run,status=success` receipt variant after required reads/parsing and configured required writes; preserve the existing per-service marker and six-status schemas. Keep local Loki push and production private OTLP/HTTP transport environment-specific, protect NetBox's nonblocking behavior, and suppress completion on failed/unknown required writes or receipt transport. Extend receiver classification and focused tests without weakening the single-writer boundary.
+      - [ ] **Completion silence acceptance:** verify the effective scheduled cadence and normal run duration, then select the smallest supported integer-hour silence allowing the reviewed missed-run budget. Read back one successful queryable Loki completion receipt, prove a failed run does not reset the clock, and inspect the shared silence rule and notification delivery. Preserve CA's existing 36-hour default; do not tick task 7.5 from source evidence alone.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [x] 7.7 `agent-practices.md` for agentgateway

@@ -375,3 +375,38 @@ documents processor-generated hint attributes; the Alloy project's [behavior rep
 records the default JSON envelope and that `raw` sends the body as the Loki payload.
 The cross-file test establishes the static contract. Production read-back through
 Dev-bound Semaphore remains the runtime acceptance step.
+
+
+## Bounded collector completion receipt (source proposal, 2026-10-28)
+
+Task 7.5 owns a separate completion clock for the scheduled conformance collector;
+the existing per-service `step=none` inventory markers and dashboard's 45-minute
+freshness display remain unchanged. One fixed
+`job=agent-cloud-conformance,kind=run,status=success` receipt may be emitted only
+after the collector completes its required reads/parsing and configured required
+writes. This receipt means collection completed; it does not mean historical
+coverage is complete or every service passed. Preserve `history_incomplete`,
+`no_history`, the per-step schema, and its six accepted statuses.
+
+Implement this as the narrow second record variant in the existing encoder and
+Alloy receiver allowlist. Add only the fixed `kind=run` completion form; do not
+relax the accepted keys/statuses globally or let the run record forge a
+per-service step. A failed or interrupted read, check-mode/skipped write, failed
+required configured write, or failed receipt transport must not publish a
+success receipt. Keep NetBox's explicitly nonblocking outage behavior and
+visible failure record, while withholding the completion receipt when a
+required configured write is failed or unknown. Define missing/ambiguous VM
+handling alongside the existing writer contract.
+
+Use the existing environment-specific transport: local development retains its
+current Loki push contract; production uses the exact private Alloy OTLP/HTTP
+path already declared by the collector. Do not substitute a direct production
+Loki write. A successful receiver response is transport acceptance, not durable
+Loki ingestion; queryable Loki receipt and the resulting alert readback are
+separate live acceptance. Extend the existing scheduled-job silence consumer
+with the collector declaration, whose shared ownership and unchanged default
+are tracked in [production-internal-ca task 6.4](../production-internal-ca/tasks.md);
+preserve its five-minute evaluation/pending behavior and CA's 36-hour default.
+Choose the smallest supported integer-hour silence only after verifying the
+effective cadence, normal duration, and allowed missed runs. The source
+15-minute schedule is not proof of a live schedule.

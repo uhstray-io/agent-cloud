@@ -105,3 +105,17 @@ criteria not met, error context, undo availability and Semaphore task reference.
 - **WHEN** the single-writer test runs in CI
 - **THEN** it fails if any playbook other than the collector writes the conformance custom
   fields or pushes to the step-result stream
+
+
+#### Scenario: Collector completion is emitted only after required work
+- **WHEN** a scheduled collector finishes its required reads and parsing and all configured required writes complete
+- **THEN** the collector emits exactly one fixed `job=agent-cloud-conformance,kind=run,status=success` completion receipt through the existing environment-specific transport
+- **AND** the receipt does not claim complete historical coverage or that every service passed, and existing `history_incomplete`/`no_history` markers and per-step statuses remain unchanged
+- **AND** interrupted or failed reads, check-mode/skipped writes, failed or unknown required writes, and failed receipt delivery emit no success receipt
+- **AND** the explicitly nonblocking NetBox outage behavior remains visible and does not block the workflow, while any failed required configured write suppresses the completion receipt
+
+#### Scenario: Collector silence alert observes delivered completion
+- **WHEN** the collector's exact completion receipt is queryable in Loki and the job is declared in the existing scheduled-job silence configuration
+- **THEN** the shared silence rule alerts after a reviewed integer-hour window selected from the verified effective schedule, normal run duration, and allowed missed runs
+- **AND** receiver acceptance alone does not count as durable Loki ingestion, a failed run cannot reset the clock, and the existing `renew-internal-certs` 36-hour default is preserved
+- **AND** the live schedule, queryable success receipt, failed-run non-reset, rule expression/state, and existing notification delivery are separately verified before acceptance

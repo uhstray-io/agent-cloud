@@ -32,6 +32,48 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
 
+### Requirement: Endpoint availability probes are reviewed, isolated, and bounded
+Continuous HTTP(S) endpoint availability MAY be enabled only for targets with a
+reviewed private declaration binding one exact endpoint and supported health
+contract to the stable service, environment, cluster, and `target_id` identity.
+The feature SHALL default off until endpoint semantics, receiver-vantage egress,
+finite target/work/series limits, and isolation of the native probe handler are
+validated. The candidate is the existing pinned Alloy v1.5.1
+`prometheus.exporter.blackbox` component; source support does not prove it is
+loaded or effective. No new container, published listener, runtime URL
+override, or production target is implied by this requirement.
+
+Declarations SHALL reject launch/extra-var endpoint overrides, duplicates,
+malformed or secret-bearing endpoints, unreviewed redirect destinations,
+unbounded headers/auth/proxy/body matching, and destinations outside reviewed
+private topology. Probes SHALL use bounded HTTP(S) GET, certificate
+verification, disabled environment proxying, reviewed redirect/status/TLS
+semantics, finite response-body and target budgets, and a probe timeout less
+than the scrape timeout, which SHALL not exceed the interval. Only fixed
+reviewed identity labels may be exported; endpoint text and request, client,
+trace, or secret values SHALL NOT become labels. The native handler's ability to
+accept caller-provided probe parameters SHALL be isolated from sibling callers
+before activation, with effective network denial verified. Existing private
+Prometheus forwarding and Alloy self-monitor identities/selectors SHALL be
+preserved without duplicate writers or self-scrapes.
+
+#### Scenario: Probe activation remains gated without a reviewed target and isolation
+- **WHEN** a target declaration, endpoint contract, finite budget, or effective handler isolation is missing or unverified
+- **THEN** the probe remains disabled and no target is rendered or treated as covered
+- **AND** check mode, source validation, and a rendered configuration do not count as live acceptance
+
+#### Scenario: Endpoint failure, scrape failure, and missing probe data remain distinct
+- **WHEN** an exact reviewed probe target is evaluated
+- **THEN** `probe_success=0` represents a failed endpoint health contract, `up=0` represents a failed scrape, and an absent exact declared probe series represents missing telemetry
+- **AND** none of these states is rendered or interpreted as healthy
+- **AND** probe-failed and missing-probe alerts reuse the existing gated Grafana alert owner, labels, grouping, and Discord route
+
+#### Scenario: Probe labels and resource work stay within the reviewed budget
+- **WHEN** reviewed targets are rendered and scraped
+- **THEN** only their fixed service/environment/cluster/`target_id` identity labels are retained, with no endpoint or request-derived labels
+- **AND** finite target count, interval, timeouts, body cap, scrape limits, and aggregate work/series budget bound collection
+- **AND** exact-binary validation, receiver readback, target failure/recovery, missing-series behavior, and existing-route delivery remain separate live acceptance evidence
+
 ### Requirement: Expected metrics targets are reviewed and compared exactly
 Production per-target missing-telemetry rules SHALL be active only when
 `o11y_expected_metrics_targets_reviewed` is true and production alerts are

@@ -1235,3 +1235,67 @@ rejected default still requires a caller-provided override. The pre-existing
 still refuses `All` and computed selections. The no-override receipt is
 bounded to the dashboard's stored selection and does not claim to resolve the
 live option list.
+
+
+## Bounded endpoint availability (source proposal, 2026-10-28)
+
+Continuous endpoint availability belongs in this existing estate-instrumentation
+change. It is separate from metrics coverage: an HTTP(S) health response can
+prove only the reviewed endpoint contract, not application metrics or full
+service health. Keep it opt-in and disabled until the private target contract,
+bounded work budget, and receiver-side route isolation are reviewed and
+verified. No target URL, host, credential, or private topology belongs in this
+public change.
+
+The implementation candidate is Alloy's native
+`prometheus.exporter.blackbox` component in the repository-pinned Alloy v1.5.1
+image. The component is source-confirmed for that image, but installation and
+effective runtime behavior are not verified. It does not require another
+container or exporter package. Each enabled target must come from the reviewed
+private estate declaration and bind its stable service, environment, cluster,
+and `target_id` identity to one exact HTTP(S) endpoint and supported health
+contract, including expected statuses, redirect policy, TLS trust/name, and
+receiver-vantage egress. Authenticated endpoints without an honest public
+health contract remain undeclared. Do not infer a Semaphore health target from
+its deployment-time `/api/ping` check or the reported `/api/info` 502.
+
+Reject launch overrides, duplicate or malformed declarations, userinfo,
+query/fragment data, arbitrary headers/auth/proxies/body matchers, unreviewed
+redirect destinations, and destinations outside reviewed private topology.
+Use bounded HTTP GET probes with certificate verification and environment
+proxying disabled. Review finite target count, interval, timeout, response-body
+cap, and aggregate work/series budget before rendering; probe timeout must be
+less than scrape timeout, which must not exceed the interval. Retain the
+existing scrape limits and forbidden-label policy. Export only fixed labels
+from the reviewed identity; never label endpoint text, request/client/trace
+data, or secrets. A reviewed hostname alone does not prevent DNS rebinding.
+
+The native component's HTTP handler accepts caller-provided probe parameters,
+so target inventory validation alone is not a boundary. Before activation,
+isolate the component handler from sibling containers and prove the effective
+network denial. The source candidate is to bind Alloy's HTTP listener to
+loopback and have the native exporter use its in-process address. Migrate the
+existing Prometheus Alloy self-scrape to the shared remote-write path and the
+profile pilot to loopback first; preserve `job=alloy`, service/environment/
+cluster/`target_id`, exporter counter families, and owned `instance` selectors
+without duplicate self-scrapes. Reuse the existing private Prometheus
+remote-write receiver and environment-specific transport; extract the existing
+bounded relabel/write path for reviewed probe mode rather than adding a second
+writer or publishing a port. If exact-binary validation and effective
+isolation cannot preserve these consumers, activation stays blocked.
+
+The existing Grafana rules own notifications. Keep three states distinct:
+`probe_success=0` is a failed endpoint contract, scrape `up=0` is a failed
+collector scrape, and an absent exact declared probe series is missing
+telemetry. None is a healthy fallback. Add only the bounded probe-failed and
+exact-target missing-probe rules after existing alert gates and routing are
+reused. Source tests and config validation cannot satisfy deployment
+acceptance: live proof still needs the loaded pinned component, finite runtime
+limits, isolated caller path, fresh target series, controlled failure,
+recovery, absence handling, and delivery through the existing Discord route.
+
+The endpoint-contract source and alert work is tracked under tasks 2.2, 2.3,
+3.3, 5.1/5.3, and 6.2. The existing [production observability plan](../../../05-observability.md)
+remains the rollout and capacity owner. Shared Alloy template ownership and
+sequencing are subject to that plan and the PR756 dependency; this design records
+the candidate only and authorizes no new traffic or deployment.
