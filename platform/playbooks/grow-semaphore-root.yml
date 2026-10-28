@@ -13,7 +13,9 @@
 # nor reconfigures Semaphore: the helper grows the partition, PV, LV and filesystem with no
 # reboot, no unmount and no container restart. AGENTS.md forbids a Semaphore job from restarting
 # or reconfiguring its own container; this play does neither. Ansible's remote temp lives on
-# tmpfs because the root may be full.
+# tmpfs because the root may be full. Run it while the root still has headroom, preventively or
+# after space is freed: at 100% full the job cannot clone and Postgres may be down, so recovery
+# is operator-side over SSH, as in MISTAKES 1.18.
 #
 # If the dry run reports a disk far below its declaration, the Proxmox disk itself was never
 # grown: run Resize VM (resize-vm.yml) first, then this.
