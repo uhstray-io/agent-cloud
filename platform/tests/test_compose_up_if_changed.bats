@@ -44,6 +44,8 @@ if [ "$1" = inspect ]; then
     *Health*) echo healthy ;;
     *compose.service*) cat "$c/service" ;;
     *State.Running*) cat "$c/running" ;;
+    *one-shot*) cat "$c/oneshot" 2>/dev/null || echo "<no value>" ;;
+    *ExitCode*) cat "$c/exitcode" 2>/dev/null || echo 0 ;;
     *Labels*) cat "$c/label" 2>/dev/null || echo "<no value>" ;;
     *Config.Image*) echo cr.example/img:v1 ;;
     *'.Image}}'*) cat "$c/image_run" ;;
@@ -219,6 +221,17 @@ PY2
   deploy
   changed true; [ "$(recreates)" -eq 3 ]
   deploy; changed false
+}
+
+@test "a one-shot that exited 0 is finished, not a change; a failed or unlabelled stop recreates" {
+  a_setup
+  deploy; [ "$status" -eq 0 ]
+  echo false > "$S/c/authentik-worker/running"; echo true > "$S/c/authentik-worker/oneshot"
+  deploy; [ "$status" -eq 0 ]; changed false; [ "$(recreates)" -eq 1 ]
+  echo 1 > "$S/c/authentik-worker/exitcode"
+  deploy; changed true; [ "$(recreates)" -eq 2 ]
+  echo false > "$S/c/authentik-redis/running"
+  deploy; changed true; [ "$(recreates)" -eq 3 ]
 }
 
 @test "authentik: an unreadable input refuses rather than guessing" {
