@@ -64,7 +64,7 @@
       **Not needed: podman is sufficient (1.2).** The client install is a generic opt-in
       in `install-podman.yml` (`podman_docker_api_client`), and Docker's apt repository is
       one shared task (`tasks/add-docker-apt-repo.yml`) used by both install playbooks.
-- [ ] 1.5 Validation gate — the container hook demonstrably forces a job payload into a
+- [x] 1.5 Validation gate — the container hook demonstrably forces a job payload into a
       container on the chosen runtime with no workflow-side request, proving spec
       scenario **"Isolation does not depend on the workflow asking for it"** is
       achievable on the chosen engine, and D4 in `design.md` no longer says
@@ -75,6 +75,13 @@
       D4 no longer says "unverified". Open: a job that DECLARES `container:` runs end to
       end on both live runners after the runbook deploy (the service CLAUDE.md,
       "Container jobs under rootless podman", Verify on the live hosts).
+      **Open half closed 2026-10-28** (issue #609). Semaphore tasks 9849 (Install Podman (Dev):
+      `docker-ce-cli 29.9.1` on both hosts) and 9856 (Deploy GitHub Runner (Dev): runner
+      v2.338.0, hooks v0.8.1, one Listener after `.env`, mount probe passed on both). Then
+      site-config's Runner container smoke, run 40717453592: one `container: ubuntu:22.04`
+      job on gh-runner-01 and one on gh-runner-02. Each passed "Initialize containers" and
+      ran its steps in the image with `HOME=/github/home`. The forced-isolation half stays
+      with the ephemeral-runner work (12).
 
 ## 2. Close the shared-mechanism gaps (before any host depends on them)
 
