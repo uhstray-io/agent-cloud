@@ -141,6 +141,8 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/06-inference-skynet.md` — Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao `secret/services/inference/endpoint` lever, dependency gates (N3/X2/LADDER), rollback, X2 telemetry gap
 - `plan/development/03-guardrails-governance.md` — Source-of-truth ADR + development plan: exactly one authority per concern (NetBox=network/IPAM, Git+ArgoCD=desired workload state, k8s API=live, Harbor=images, o11y=telemetry, OpenBao=secrets, OPA/Kyverno=policy); CI-enforceable invariants (reflections read-only, never invert authority, ephemeral state never pollutes IPAM); phased Compose→k8s plan
 - `plan/architecture/00-foundation-standards.md` — Master architecture document index and standards
+- `plan/architecture/network-architecture.md` — Current-state network map: edge, Caddy, inference path, internal CA/DNS, firewall, control-plane and provisioning paths; status per component
+- `plan/architecture/service-architecture.md` — Current-state service map: services by layer, identity, shared secrets, runtime dependencies, deploy and AI paths; status per service
 - `plan/architecture/04-credentials-access.md` — Semaphore vs SSH access rules
 - `plan/architecture/05-platform-infra.md` — Caddy reverse proxy architecture, TLS/DNS-01 integration, routing patterns, automation gaps
 - `plan/architecture/05-platform-infra.md` — Container runtime considerations
