@@ -120,10 +120,13 @@ PY
   grep -qE 'restart: always' "$f"
 }
 
-@test "console: healthcheck is the exec-form probe (distroless image has no shell)" {
-  local f="$DEPLOY_DIR/compose.yml"
-  grep -qF 'test: ["CMD", "/usr/local/app/server", "probe", "/healthz", "200"]' "$f"
-  refute_grep -qE '^[[:space:]]*test:.*CMD-SHELL' "$f"
+@test "console: compose declares no healthcheck (podman-compose 1.0.6 wraps it in /bin/sh; the image has no shell)" {
+  # Comment lines may name /bin/sh and CMD-SHELL to explain the decision; only a live key counts.
+  local code="$BATS_TEST_TMPDIR/compose-code.yml"
+  sed '/^[[:space:]]*#/d' "$DEPLOY_DIR/compose.yml" > "$code"
+  [ -s "$code" ]
+  refute_grep -qE '^[[:space:]]+healthcheck:' "$code"
+  refute_grep -qE 'CMD-SHELL|/bin/sh' "$code"
 }
 
 @test "console: compose has no hardcoded credentials" {
@@ -142,7 +145,7 @@ PY
   head -1 "$f" | grep -qE '^#!/usr/bin/env bash'
   grep -q 'common.sh' "$f"
   grep -qE 'compose_up_if_changed' "$f"
-  grep -q 'wait_for_healthy console' "$f"
+  grep -qF 'exec console /usr/local/app/server probe /healthz 200' "$f"
   # Lifecycle plus a host build only: no secret generation, no OpenBao interaction (Deploy Rule #2).
   refute_grep -qiE 'openssl rand|secret_id|vault|\bbao |gen_secret|put_secret|get_secret' "$f"
 }
@@ -153,6 +156,57 @@ PY
   sed '/^[[:space:]]*#/d' "$DEPLOY_DIR/deploy.sh" > "$code"
   [ -s "$code" ]
   refute_grep -q -- '--force-recreate' "$code"
+}
+
+# _run_step4 <pass_at>: runs deploy.sh's step_wait_healthy, extracted as written, against a stub
+# engine. The stub logs each `exec` and succeeds from the pass_at-th one on (never when 0). sleep
+# is stubbed: a loop with no bound stops after 200 sleeps with status 99, so a regression fails
+# the test with a named cause instead of hanging the run. Sets $status, $output, $EXEC_LOG.
+_run_step4() {
+  local pass_at="$1" step="$BATS_TEST_TMPDIR/step4.sh" driver="$BATS_TEST_TMPDIR/driver.sh"
+  EXEC_LOG="$BATS_TEST_TMPDIR/exec.log"
+  sed -n '/^step_wait_healthy()/,/^}/p' "$DEPLOY_DIR/deploy.sh" > "$step"
+  [ -s "$step" ]
+  cat > "$BATS_TEST_TMPDIR/engine" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$EXEC_LOG"
+n=$(grep -c '' "$EXEC_LOG")
+if [ "${PASS_AT:-0}" -gt 0 ] && [ "$n" -ge "$PASS_AT" ]; then exit 0; fi
+exit 1
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/engine"
+  cat > "$driver" <<'DRIVER'
+source "$COMMON"
+CONTAINER_ENGINE="$ENGINE"
+dump_container_diagnostics() { echo "DIAGNOSTICS-DUMPED for $1"; }
+sleep() {
+  SLEEPS=$(( ${SLEEPS:-0} + 1 ))
+  [ "$SLEEPS" -lt 200 ] || { echo "RUNAWAY: the probe loop has no bound" >&2; exit 99; }
+}
+source "$STEP"
+step_wait_healthy
+DRIVER
+  run env COMMON="$REPO_ROOT/platform/lib/common.sh" ENGINE="$BATS_TEST_TMPDIR/engine" \
+    STEP="$step" EXEC_LOG="$EXEC_LOG" PASS_AT="$pass_at" bash "$driver"
+}
+
+@test "console: step 4 returns at the first passing exec probe, and runs exactly that probe" {
+  _run_step4 3
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "console is ready"
+  refute_contains "$output" "DIAGNOSTICS-DUMPED"
+  [ "$(grep -c '' "$EXEC_LOG")" -eq 3 ]
+  # Every logged exec is the probe: the matching-line count equals the total line count.
+  [ "$(grep -cxF 'exec console /usr/local/app/server probe /healthz 200' "$EXEC_LOG")" -eq 3 ]
+}
+
+@test "console: step 4 is bounded at 300 s, 5 s apart; on timeout it dumps diagnostics and fails" {
+  _run_step4 0
+  [ "$status" -eq 1 ]
+  refute_contains "$output" "RUNAWAY"
+  [ "$(grep -c '' "$EXEC_LOG")" -eq 60 ]
+  assert_contains "$output" "DIAGNOSTICS-DUMPED for console"
+  assert_contains "$output" "console did not become ready within 300s"
 }
 
 @test "console: deploy.sh builds the image on the host, labelled with its inputs digest" {

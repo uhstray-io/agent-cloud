@@ -14,7 +14,7 @@ Semaphore "Deploy console" (or "Deploy console (Local)")
      │            workflow.json.j2 → config/workflow.json from the service-onboarding registry)
      │           → distribute-ca-root (local only) → ~/console symlink
      ├─ Phase 2  deploy.sh: build the image on this host (skipped when it matches its inputs)
-     │           → compose_up_if_changed → wait healthy
+     │           → compose_up_if_changed → wait for the exec probe (step 4)
      └─ Phase 3  exec probe /healthz 200 → exec probe /v1/me 401 → emit-service-deploy-result
 ```
 
@@ -110,7 +110,7 @@ The window is Semaphore's newest 200 tasks of the project (`tasks/last`). A run 
 
 ## Runtime notes
 
-- **Healthcheck is exec form, not CMD-SHELL.** The runtime image is distroless (`cc-debian12`, no `/bin/sh`), so `CMD-SHELL` cannot run. The probe is the server binary's own subcommand: `/usr/local/app/server probe /healthz 200`. Other services' comments say podman-compose mis-quotes `["CMD", ...]` lists. podman-compose 1.6.0 turns the list into a JSON `--health-cmd` (`podman_compose.py`, the `CMD` branch). Whether the engine then runs it as exec is **unverified** on this machine. The live deploy is the proof: `wait_for_healthy` fails if the container never reports healthy.
+- **No compose healthcheck; readiness is an exec probe.** The compose file declares no `healthcheck:`. On prod, podman-compose 1.0.6 (tag `v1.0.6`, `podman_compose.py`, the healthcheck translation) wraps every `healthcheck.test` in `/bin/sh -c`, and the runtime image is distroless (`cc-debian12`, no `/bin/sh`). Prod Semaphore task 9892 built and started the container, which logged `OIDC discovery ready`, yet podman reported it `unhealthy`, and `wait_for_healthy` failed the deploy. So `deploy.sh` step 4 runs `podman exec console /usr/local/app/server probe /healthz 200` every 5 s for up to 300 s, then dumps the container's diagnostics and fails. Phase 3 of `deploy-console.yml` repeats the same probe. The probe is the server binary's own subcommand, so no curl or wget is assumed. The shell-less gateway in `agentgateway` is probed the same way.
 - **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`: preferences and login sessions). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
 - **Sessions** are rows in the same `prefs.db` (table `sessions`, one connection shared with preferences). A restart keeps every unexpired session. Expired rows are swept at startup and at most hourly. The cookie `console_session` expires after 8h of inactivity.
 - **Local-dev overlay** (`compose.local.yml`, `LOCAL_MODE=true`): joins the `local-dev` network so central Caddy reaches `console:8080` by name, mounts `certs/step-ca-bundle.crt`, and sets `CONSOLE_EXTRA_CA_FILE` to it for OIDC calls to the internal IdP. Prod's IdP uses a public chain, so the overlay is not applied there.
@@ -150,7 +150,7 @@ The `Containerfile` is part of this change. It sits next to this file and builds
 ## What not to do
 
 - Don't generate or read secrets in `deploy.sh`. Ansible and OpenBao own credentials.
-- Don't use `CMD-SHELL` in the compose healthcheck. The image has no shell.
+- Don't add a `healthcheck:` to `compose.yml`. podman-compose 1.0.6 runs it through `/bin/sh`, and the image has no shell. Readiness belongs to the exec probe in `deploy.sh` step 4.
 - Don't add `--force-recreate` to `deploy.sh`. Recreate only on a change, through `compose_up_if_changed`.
 - Don't put a real tenant, site or address in `console_tenants` in this repo. Production's scope lives in site-config. The local example is fictional.
 - Don't commit `.env` or `config/`. Both are gitignored because they are rendered per deploy.

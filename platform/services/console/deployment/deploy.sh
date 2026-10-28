@@ -5,11 +5,11 @@
 # authentik; the Semaphore API token is read from OpenBao), config/scope.json and config/workflow.json
 # BEFORE this runs. This script does NOT
 # generate or read secrets. It builds the image from the committed sources when those changed
-# (there is no registry), starts the single container, and waits for it to report healthy.
+# (there is no registry), starts the single container, and waits until its exec readiness probe passes.
 #
 # Usage: ./deploy.sh
 # Steps (idempotent): verify .env and scope present, build (skipped when the image on this host
-# already matches its inputs), up if changed, wait healthy.
+# already matches its inputs), up if changed, wait for the exec probe to pass.
 #
 # Environment (set by deploy-console.yml, never by hand):
 #   CONSOLE_FORCE_REBUILD=true   rebuild even when the image already matches its inputs
@@ -113,9 +113,24 @@ step_start() {
   fi
 }
 
+# step_wait_healthy: readiness by exec probe, not by the engine's health status. The compose file
+# declares no healthcheck (see the comment there: podman-compose 1.0.6 runs it through /bin/sh, and
+# the image has none), so there is no status to poll. The probe is the binary's own subcommand,
+# the same one deploy-console.yml Phase 3 runs. Bounded: 300 s at 5 s intervals, then the
+# container's diagnostics and a failure.
 step_wait_healthy() {
   info "Step 4: Waiting for console to become healthy..."
-  wait_for_healthy console 300
+  local timeout=300 elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if $CONTAINER_ENGINE exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1; then
+      info "console is ready."
+      return 0
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  dump_container_diagnostics console
+  error "console did not become ready within ${timeout}s"
 }
 
 main() {
