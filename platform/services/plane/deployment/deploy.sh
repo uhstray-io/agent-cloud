@@ -55,30 +55,42 @@ step_pull_images() {
   compose pull
 }
 
-# Is the instance set up? Asked of the API directly, inside its own container.
-instance_set_up() {
+# Is the instance closed? Set up (the first admin exists) AND self sign-up off, asked of the API
+# directly inside its own container. Both, because setup alone is not enough: a run that set up
+# the instance and then failed before closing sign-up must not open the proxy on the next run.
+instance_closed() {
   $CONTAINER_ENGINE exec plane-api python -c \
-    "import json, sys, urllib.request; sys.exit(0 if json.load(urllib.request.urlopen('http://localhost:8000/api/instances/', timeout=10))['instance']['is_setup_done'] else 1)"
+    "import json, sys, urllib.request; d = json.load(urllib.request.urlopen('http://localhost:8000/api/instances/', timeout=10)); sys.exit(0 if d['instance']['is_setup_done'] and not d['config']['enable_signup'] else 1)"
 }
 
 # The staged start compose_up_if_changed calls when the project must be (re)created. The proxy
 # is the ONLY way in, and until the first admin signs up anyone who reaches /god-mode/ claims
-# the instance. So every other service starts first, and the proxy starts only once the
-# instance is set up. Otherwise it stays down (an old one is removed) and PLANE_PROXY_HELD=true
-# tells deploy-plane.yml to complete setup against the API directly and run this script again.
+# the instance. So the proxy is removed first, every other service starts, and the proxy starts
+# only once the instance is closed. Otherwise it stays down and PLANE_PROXY_HELD=true tells
+# deploy-plane.yml to complete setup against the API directly and run this script again.
+# Trade-off, accepted: that second run recreates the whole project once more to open the proxy
+# (a missing container is a change). It costs a restart on a first deploy, or after a failed
+# readiness check, and it fails closed; opening the proxy alone would need the inputs label
+# compose_up_if_changed computes, outside it.
 compose_staged_up() {
   local others
+  # Removed before anything starts, so no old proxy serves an instance that is not closed.
+  if $CONTAINER_ENGINE inspect plane-proxy >/dev/null 2>&1; then
+    $CONTAINER_ENGINE rm -f plane-proxy >/dev/null || return 1
+  fi
   others=$(compose_services | grep -vx proxy)
   # shellcheck disable=SC2086  # one service name per word
   compose up -d --force-recreate --remove-orphans $others || return 1
+  # Nothing may start the proxy as a dependency of another service.
+  if $CONTAINER_ENGINE inspect plane-proxy >/dev/null 2>&1; then
+    $CONTAINER_ENGINE rm -f plane-proxy >/dev/null 2>&1
+    error "plane-proxy started as a dependency of another service; removed it and stopped the deploy."
+  fi
   wait_for_healthy plane-api 600
-  if instance_set_up; then
+  if instance_closed; then
     compose up -d --force-recreate --no-deps proxy || return 1
   else
-    info "Instance not set up yet: the proxy stays down until deploy-plane.yml completes setup."
-    if $CONTAINER_ENGINE inspect plane-proxy >/dev/null 2>&1; then
-      $CONTAINER_ENGINE rm -f plane-proxy >/dev/null || return 1
-    fi
+    info "Instance not closed yet: the proxy stays down until deploy-plane.yml completes setup."
     echo "PLANE_PROXY_HELD=true"
   fi
 }

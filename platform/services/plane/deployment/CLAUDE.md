@@ -56,7 +56,8 @@ not the `RABBITMQ_DEFAULT_PASS` its `variables.env` sets, so both are written.
 
 Until the first admin signs up, **anyone who reaches `/god-mode/` claims the instance**. The
 proxy is the only way in, so `deploy.sh`'s staged start (`compose_staged_up`) brings every
-other service up first and starts the proxy only once the instance is set up. Otherwise it
+other service up first and starts the proxy only once the instance is closed: set up AND
+self sign-up off, so a run that failed between the two never opens it. Otherwise it
 holds the proxy down and prints `PLANE_PROXY_HELD=true`; `deploy-plane.yml` then completes
 setup against the API directly (`configure_instance.py`, run inside `plane-api` on
 `localhost:8000` with the password on stdin) and runs `deploy.sh` again, which opens the

@@ -33,10 +33,14 @@ S="$STUB_STATE"
 echo "$*" >> "$S/engine.log"
 if [ "$1" = image ] && [ "$2" = inspect ]; then cat "$S/image_now"; exit 0; fi
 if [ "$1" = rm ]; then rm -rf "$S/c/${@: -1}"; exit 0; fi
+# plane's deploy.sh asks the API whether the instance is closed; the test sets the answer.
+if [ "$1" = exec ] && [ "$2" = plane-api ]; then [ -f "$S/plane_closed" ]; exit $?; fi
 if [ "$1" = ps ]; then
   [ "$*" = "ps -a --filter label=com.docker.compose.project.working_dir=$STUB_DIR --format {{.Names}}" ] || exit 0
   for d in "$S"/c/*; do [ -d "$d" ] && basename "$d"; done; exit 0
 fi
+# A bare `inspect NAME` is an existence check: non-zero when there is no such container.
+if [ "$1" = inspect ] && [ $# -eq 2 ]; then [ -d "$S/c/$2" ]; exit $?; fi
 if [ "$1" = inspect ]; then
   if [ "$2" = --format ]; then fmt="$3" name="$4"; else fmt="${2#--format=}" name="$3"; fi
   c="$S/c/$name"; [ -d "$c" ] || exit 1
@@ -45,6 +49,7 @@ if [ "$1" = inspect ]; then
     *compose.service*) cat "$c/service" ;;
     *State.Running*) cat "$c/running" ;;
     *one-shot*) cat "$c/oneshot" 2>/dev/null || echo "<no value>" ;;
+    *State.Status*) cat "$c/status" 2>/dev/null || { [ "$(cat "$c/running")" = true ] && echo running || echo exited; } ;;
     *ExitCode*) cat "$c/exitcode" 2>/dev/null || echo 0 ;;
     *Labels*) cat "$c/label" 2>/dev/null || echo "<no value>" ;;
     *Config.Image*) echo cr.example/img:v1 ;;
@@ -103,6 +108,14 @@ fi
 label=$(sed -n 's/^ *io\.agent-cloud\.inputs-sha256: "\(.*\)"$/\1/p' "$overlay" | sort -u)
 [ "$(printf '%s\n' "$label" | grep -c .)" -eq 1 ] || { echo "labels differ" >&2; exit 1; }
 svcs=$(sed -n 's/^  \([a-z0-9-]*\):$/\1/p' "$overlay")
+# A recreate that names services (a staged hook's `up --force-recreate svc...`) creates only
+# those, like compose; with none named it recreates every labelled service.
+named="" seen_up=""
+for a in "$@"; do
+  if [ -n "$seen_up" ]; then case "$a" in -*) ;; *) named="$named $a" ;; esac; fi
+  [ "$a" = up ] && seen_up=1
+done
+[ -z "$named" ] || echo "up:$named" >> "$S/up.log"
 if case " $* " in *" --remove-orphans "*) true ;; *) false ;; esac; then
   for d in "$S"/c/*; do
     [ -d "$d" ] || continue
@@ -112,6 +125,7 @@ fi
 for pair in $STUB_NAMES; do
   n="${pair%%=*}" svc="${pair#*=}"
   printf '%s\n' "$svcs" | grep -qx "$svc" || continue
+  [ -z "$named" ] || case " $named " in *" $svc "*) ;; *) continue ;; esac
   mkdir -p "$S/c/$n"; echo true > "$S/c/$n/running"; echo "$label" > "$S/c/$n/label"
   echo "$svc" > "$S/c/$n/service"; cp "$S/image_now" "$S/c/$n/image_run"
 done
@@ -230,8 +244,43 @@ PY2
   deploy; [ "$status" -eq 0 ]; changed false; [ "$(recreates)" -eq 1 ]
   echo 1 > "$S/c/authentik-worker/exitcode"
   deploy; changed true; [ "$(recreates)" -eq 2 ]
-  echo false > "$S/c/authentik-redis/running"
+  # Created but never run (an interrupted up): exit code 0, yet not finished.
+  echo false > "$S/c/authentik-worker/running"; echo 0 > "$S/c/authentik-worker/exitcode"; echo created > "$S/c/authentik-worker/status"
   deploy; changed true; [ "$(recreates)" -eq 3 ]
+  rm -f "$S/c/authentik-worker/status" "$S/c/authentik-worker/oneshot"
+  echo false > "$S/c/authentik-redis/running"
+  deploy; changed true; [ "$(recreates)" -eq 4 ]
+}
+
+# ── plane: the proxy is held until the instance is closed ────────────────────
+p_setup() {
+  svc_setup plane plane-db=plane-db plane-api=api plane-migrator=migrator plane-proxy=proxy
+  # Plane's own file is fetched at deploy time, never committed; a stand-in with four services.
+  printf 'services:\n  plane-db:\n    image: x\n  api:\n    image: x\n  migrator:\n    image: x\n  proxy:\n    image: x\n' > "$D/compose.yml"
+}
+
+@test "plane: an instance that is not closed never gets its proxy, and an old one is removed" {
+  p_setup
+  # A proxy left over from an earlier run must not keep serving the unclaimed instance.
+  mkdir -p "$S/c/plane-proxy"; echo true > "$S/c/plane-proxy/running"; echo proxy > "$S/c/plane-proxy/service"
+  deploy
+  [ "$status" -eq 0 ]
+  printf '%s\n' "${lines[@]}" | grep -qx 'PLANE_PROXY_HELD=true'
+  [ ! -d "$S/c/plane-proxy" ]
+  [ -d "$S/c/plane-api" ]
+  refute_grep -qE '(^up:| )proxy( |$)' "$S/up.log"
+}
+
+@test "plane: a closed instance gets its proxy; closing it after a held run opens it" {
+  p_setup
+  deploy; [ "$status" -eq 0 ]
+  [ ! -d "$S/c/plane-proxy" ]
+  touch "$S/plane_closed"
+  deploy
+  [ "$status" -eq 0 ]
+  [ -d "$S/c/plane-proxy" ]
+  refute_grep -qx 'PLANE_PROXY_HELD=true' <(printf '%s\n' "${lines[@]}")
+  grep -qE '^up: proxy$' "$S/up.log"
 }
 
 @test "authentik: an unreadable input refuses rather than guessing" {
