@@ -308,7 +308,7 @@ def _loki(pushes: list):
 
 @contextmanager
 def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, server_frames=None,
-                       split_reads=False, expect_ack=True, server_alpn=("h2",)):
+                       split_reads=False, expect_ack=True, server_alpn=("h2",), observed_requests=None):
     """Small TLS 1.3 / HTTP2 fixture for the o11y-specific renewal proof."""
     d = Path(server_leaf["dir"])
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -353,11 +353,23 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
                 with context.wrap_socket(raw, server_side=True) as tls:
                     tls.settimeout(2)
                     request = bytearray()
+                    if behavior in ("early_data", "early_eof"):
+                        if behavior == "early_data":
+                            tls.sendall(b"x")
+                        try:
+                            request.extend(tls.recv(1))
+                        except TimeoutError:
+                            pass
+                        if observed_requests is not None:
+                            observed_requests.append(bytes(request))
+                        continue
                     while len(request) < 33:
                         chunk = tls.recv(33 - len(request))
                         if not chunk:
                             break
                         request.extend(chunk)
+                    if observed_requests is not None:
+                        observed_requests.append(bytes(request))
                     if behavior == "settings":
                         if split_reads:
                             for byte in frame:
@@ -959,28 +971,38 @@ def test_o11y_tls_proof_requires_valid_client_http2_and_refuses_missing_and_fore
     assert result.stderr == ""
 
 
-@pytest.mark.parametrize(("reason", "expected_rc", "expected_stdout"), [
-    ("SSLV3_ALERT_BAD_CERTIFICATE", 0, "O11Y_MTLS_PROVEN:"),
-    ("SSLV3_ALERT_CERTIFICATE_UNKNOWN", 0, "O11Y_MTLS_PROVEN:"),
-    ("SSLV3_ALERT_UNSUPPORTED_CERTIFICATE", 1, "UNVERIFIED_NO_CLIENT_AUTH"),
+@pytest.mark.parametrize(("reason", "phase", "expected_rc", "expected_stdout", "expected_diag"), [
+    ("SSLV3_ALERT_BAD_CERTIFICATE", "AUTH_ALERT_READ", 0, "O11Y_MTLS_PROVEN:", ""),
+    ("SSLV3_ALERT_CERTIFICATE_UNKNOWN", "AUTH_ALERT_READ", 0, "O11Y_MTLS_PROVEN:", ""),
+    ("SSLV3_ALERT_UNSUPPORTED_CERTIFICATE", "AUTH_ALERT_READ", 1, "UNVERIFIED_NO_CLIENT_AUTH",
+     "O11Y_MTLS_DIAG:NO_CLIENT_AUTH_ALERT_READ"),
+    ("TLSV13_ALERT_CERTIFICATE_REQUIRED", "TLS_HANDSHAKE", 0, "O11Y_MTLS_PROVEN:", ""),
 ])
 def test_o11y_tls_proof_classifies_only_explicit_certificate_alert_reasons(
-    tmp_path, reason, expected_rc, expected_stdout
+    tmp_path, reason, phase, expected_rc, expected_stdout, expected_diag
 ):
-    """Synthetic reason injection at probe's SSL exception boundary; neighbor tests exercise real TLS alerts."""
+    """Exercise auth-alert classification before and after verified TLS/ALPN."""
     play = playbook_yaml.plays(PLAYBOOK)[1]
     script = play["vars"]["_renew_o11y_tls_prover"]
     script = script.replace(
-        "def probe(cert=None, key=None):",
-        f"class _SyntheticSSLAlert(ssl.SSLError):\n    reason = {reason!r}\n\ndef probe(cert=None, key=None):",
+        "def probe(cert=None, key=None, expect_rejection=False):",
+        f"class _SyntheticSSLAlert(ssl.SSLError):\n    reason = {reason!r}\n"
+        "def probe(cert=None, key=None, expect_rejection=False):",
         1,
     )
-    script = script.replace(
-        "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
-        "            if cert is None:\n                raise _SyntheticSSLAlert()\n"
-        "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
-        1,
-    )
+    if phase == "AUTH_ALERT_READ":
+        script = script.replace(
+            "                    if tls.recv(1):",
+            "                    raise _SyntheticSSLAlert()\n                    if tls.recv(1):",
+            1,
+        )
+    else:
+        script = script.replace(
+            "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
+            "            if cert is None:\n                raise _SyntheticSSLAlert()\n"
+            "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
+            1,
+        )
     assert "_SyntheticSSLAlert" in script
     ca = _ca(tmp_path)
     server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
@@ -1002,7 +1024,7 @@ def test_o11y_tls_proof_classifies_only_explicit_certificate_alert_reasons(
         assert result.stderr == ""
     else:
         assert result.stdout.strip() == expected_stdout
-        assert result.stderr.strip() == "O11Y_MTLS_DIAG:NO_CLIENT_TLS_HANDSHAKE"
+        assert result.stderr.strip() == expected_diag
 
 
 @pytest.mark.parametrize("frame,split_reads", [
@@ -1174,12 +1196,10 @@ def test_o11y_tls_proof_reports_tls_handshake_failure_without_exception_details(
 
 
 @pytest.mark.parametrize(("failure", "reason"), [
-    ("settings", "NO_CLIENT_ACCEPTED"),
-    ("stall", "NO_CLIENT_SETTINGS_READ"),
-    ("short", "NO_CLIENT_SETTINGS_READ"),
-    ("unexpected", "NO_CLIENT_SETTINGS_INVALID"),
+    ("early_data", "NO_CLIENT_AUTH_DATA"),
+    ("early_eof", "NO_CLIENT_AUTH_EOF"),
 ])
-def test_o11y_tls_proof_does_not_treat_accepted_or_broken_no_client_io_as_rejection(
+def test_o11y_tls_proof_does_not_treat_no_client_data_or_eof_as_rejection(
     tmp_path, failure, reason
 ):
     play = playbook_yaml.plays(PLAYBOOK)[1]
@@ -1189,7 +1209,9 @@ def test_o11y_tls_proof_does_not_treat_accepted_or_broken_no_client_io_as_reject
     journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
     _place(ca, server_leaf, FRESH)
     _place(ca, journal_leaf, FRESH)
-    with _o11y_tls_receiver(ca, server_leaf, tmp_path, ["settings", failure]) as port:
+    observed_requests = []
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, ["settings", failure],
+                            observed_requests=observed_requests) as port:
         result = subprocess.run(
             [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
              str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
@@ -1200,12 +1222,14 @@ def test_o11y_tls_proof_does_not_treat_accepted_or_broken_no_client_io_as_reject
     assert result.returncode != 0
     assert result.stdout.strip() == "UNVERIFIED_NO_CLIENT_AUTH"
     assert result.stderr.strip() == f"O11Y_MTLS_DIAG:{reason}"
+    assert observed_requests[0] == b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+    assert observed_requests[1] == b""
 
 
 def test_o11y_tls_proof_reports_foreign_ca_unverified_result_without_details(tmp_path):
     play = playbook_yaml.plays(PLAYBOOK)[1]
     script = play["vars"]["_renew_o11y_tls_prover"].replace(
-        "foreign, _, foreign_reason = probe(foreign_cert, foreign_key)",
+        "foreign, _, foreign_reason = probe(foreign_cert, foreign_key, expect_rejection=True)",
         "foreign, _, foreign_reason = ('unverified', None, 'TLS_HANDSHAKE')",
         1,
     )

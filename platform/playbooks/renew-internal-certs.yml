@@ -383,7 +383,7 @@
               chunks.append(chunk)
               size -= len(chunk)
           return b"".join(chunks)
-      def probe(cert=None, key=None):
+      def probe(cert=None, key=None, expect_rejection=False):
           ctx = ssl.create_default_context(cafile=ca)
           ctx.minimum_version = ctx.maximum_version = ssl.TLSVersion.TLSv1_3
           ctx.set_alpn_protocols(["h2"])
@@ -413,6 +413,11 @@
                       if remaining <= 0:
                           return ("unverified", None, "DEADLINE")
                       tls.settimeout(remaining)
+                      if expect_rejection:
+                          phase = "AUTH_ALERT_READ"
+                          if tls.recv(1):
+                              return ("unverified", None, "AUTH_DATA")
+                          return ("unverified", None, "AUTH_EOF")
                       phase = "SETTINGS_WRITE"
                       tls.sendall(preface + settings)
                       phase = "SETTINGS_READ"
@@ -457,7 +462,7 @@
           print("UNVERIFIED_VALID_CLIENT_HTTP2")
           print("O11Y_MTLS_DIAG:" + (reason or "SERIAL"), file=sys.stderr)
           sys.exit(1)
-      no_client, _, no_client_reason = probe()
+      no_client, _, no_client_reason = probe(expect_rejection=True)
       if no_client != "rejected":
           print("UNVERIFIED_NO_CLIENT_AUTH")
           print("O11Y_MTLS_DIAG:NO_CLIENT_" + (no_client_reason or no_client).upper(), file=sys.stderr)
@@ -480,7 +485,7 @@
                   print("UNVERIFIED_FOREIGN_CERT_FIXTURE")
                   sys.exit(1)
           os.chmod(foreign_key, 0o600)
-          foreign, _, foreign_reason = probe(foreign_cert, foreign_key)
+          foreign, _, foreign_reason = probe(foreign_cert, foreign_key, expect_rejection=True)
           if foreign != "rejected":
               print("UNVERIFIED_FOREIGN_CA_AUTH")
               print("O11Y_MTLS_DIAG:FOREIGN_CA_" + (foreign_reason or foreign).upper(), file=sys.stderr)

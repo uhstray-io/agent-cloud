@@ -2417,14 +2417,30 @@ The Linux Python-core CI run for source head `931a72c` stopped after 5,455
 passed, 6 skipped, and 321 subtests passed, with one failure in the
 valid-client HTTP/2 test's later missing-client refusal check. The valid journal
 client proof succeeded; the script then returned
-`UNVERIFIED_NO_CLIENT_AUTH`. The negative probe's fixed phase/state was not
-reported, so the exact Linux TLS or fixture behavior remains unknown. The
-source reports a fixed phase/state category for valid-client proof failures,
-and now reports fixed categories for unverified missing-client and foreign-CA
-probes. These diagnostics preserve stdout, exit status, acceptance, and
-certificate-only rejection criteria. Focused regressions cover accepted and
-broken-I/O missing-client cases and the unverified foreign-CA reporting branch.
-This is diagnostic coverage, not a CI fix or a relaxation of TLS proof.
+`UNVERIFIED_NO_CLIENT_AUTH`. A bounded native-Linux ARM reproduction using
+Python 3.12.15/OpenSSL 3.0.22 matched that failure on diagnostic-only source:
+the write-first missing-client probe failed at `SETTINGS_WRITE` with
+`ssl.SSLError` and no reason. It also reproduced a separate foreign-client
+failure under load on source `c8368e5`, after valid-client and missing-client
+proofs had succeeded. A temporary read-first variant completed 100/100 full
+proof cycles and observed `TLSV13_ALERT_CERTIFICATE_REQUIRED` for the missing
+client and `TLSV1_ALERT_UNKNOWN_CA` for the foreign client. Four no-auth fixture
+controls remained unverified. This supports the negative-probe write/alert
+ordering as the cause in the ARM reproduction, but does not establish x86_64 CI
+parity.
+
+The source now uses a negative-only probe mode for the missing-client and
+foreign-CA legs. When that handshake completes with TLS 1.3 and ALPN h2, the
+probe reads for a certificate-auth alert before sending any application bytes.
+An explicit alert in the existing certificate-auth allowlist still proves
+rejection if the server sends it during the handshake, preserving the earlier
+contract. Application data, EOF, timeout, transport errors, and other TLS
+errors remain unverified. The valid journal-client leg retains the
+SETTINGS/ACK/serial proof. Fixed diagnostics report the negative probe's
+phase/state without changing stdout or exit status.
+A focused fixture regression records that no HTTP/2 bytes are sent on negative
+probes and verifies early application data and EOF still fail closed. No CI
+rerun or x86_64 reproduction has yet confirmed the diagnosis.
 
 Follow-up review added the OpenSSL `SSLV3_ALERT_BAD_CERTIFICATE` and
 `SSLV3_ALERT_CERTIFICATE_UNKNOWN` reason labels to the explicit certificate
@@ -2433,8 +2449,8 @@ SSL exception boundary and confirms an unrelated SSL alert still fails closed;
 neighboring tests continue to exercise real missing-client and foreign-CA TLS
 handshakes. Renewal stats now describe the OTLP proof and matched server serial
 for its two fixed leaf classes, while the gateway-probe proof text is emitted
-only for `probe-client`. These source and fixture checks do not identify the
-Linux CI failure's cause.
+only for `probe-client`. The Linux ARM comparison supports the sequencing
+diagnosis, but the CI x86_64 failure has not been rerun to confirm it.
 
 The exact cached Alloy v1.5.1 receiver image accepted full plaintext and TLS
 renders of the receiver config, and the receiver component reported healthy in
