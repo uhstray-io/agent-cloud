@@ -2514,7 +2514,7 @@ for verifier in ('verify-o11y-service.yml', 'verify-o11y-metrics-target.yml'):
 overview = json.loads((deploy / 'config/grafana/dashboards/service-overview.json').read_text())
 service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'service')
 assert service['datasource']['uid'] == 'prometheus'
-assert service['query'] == 'label_values(up, service)'
+assert service['query'] == 'label_values(up{job!="o11y-availability"}, service)'
 assert service['label'] == 'Metrics service'
 log_service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'log_service')
 assert log_service['datasource']['uid'] == 'loki'
