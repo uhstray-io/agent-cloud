@@ -433,7 +433,7 @@ a lowered threshold and routes to the Discord contact point. The threshold is th
   cutoff forward, and the run would select recent tasks. The kept-set floor refuses a large jump: a jump of J days leaves about (30 - J) x 289 tasks kept,
   which falls below 1000 only past about 26 days. A smaller jump is not caught; the per-run cap bounds what
   such a run can delete. The default is not raised to cover small jumps, because a floor near the normal
-  kept count would refuse runs whenever the task rate drops (for example while the JIT schedule is idle).
+  kept count would refuse runs whenever the task rate drops (for example while schedules are paused).
   In normal operation about 289 tasks a day over 30 days leave roughly 8,700 terminal tasks kept
   (289 x 30 = 8,670, from the cron arithmetic in Problem 1). After a large forward jump the kept set is
   near zero, so the run refuses. The floor applies only when something is selected, so a young
