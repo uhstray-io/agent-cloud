@@ -338,12 +338,12 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
         return bytes(result)
 
     def serve():
-        for behavior, frame in zip(behaviors, frames):
+        for behavior, frame in zip(behaviors, frames, strict=True):
             while not stop.is_set():
                 try:
                     raw, _address = listener.accept()
                     break
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     return

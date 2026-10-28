@@ -1,10 +1,10 @@
 """Safety contract for the bounded receiver-host journald pilot."""
 
 import ast
+import getpass
 import importlib.util
 import json
 import os
-import getpass
 import re
 import stat
 import subprocess
@@ -4800,7 +4800,9 @@ def test_o11y_tls_preflight_accepts_synthetic_pairs_and_refuses_invalid_identity
     assert valid.returncode == 0, valid.stdout + valid.stderr
 
     wrong_name = yaml.safe_load(yaml.safe_dump(inventory_base))
-    wrong_name["all"]["children"]["o11y_svc"]["hosts"]["o11y-test"]["o11y_otlp_tls_server_name"] = "wrong.dc1.example.internal"
+    wrong_name["all"]["children"]["o11y_svc"]["hosts"]["o11y-test"][
+        "o11y_otlp_tls_server_name"
+    ] = "wrong.dc1.example.internal"
     assert run(wrong_name).returncode != 0
 
     wrong_key = journal_dir / "current/key.pem"
