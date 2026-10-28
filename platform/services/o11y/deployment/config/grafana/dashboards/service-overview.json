@@ -41,7 +41,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "min by (service) (up{service=~\"$service\"})",
+          "expr": "min by (service) (up{service=~\"$service\",job!=\"o11y-availability\"})",
           "instant": true
         }
       ]
@@ -78,7 +78,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count by (service) (up{service=~\"$service\"})",
+          "expr": "count by (service) (up{service=~\"$service\",job!=\"o11y-availability\"})",
           "instant": true
         }
       ]
@@ -108,7 +108,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "avg by (service) (up{service=~\"$service\"}) * 100",
+          "expr": "avg by (service) (up{service=~\"$service\",job!=\"o11y-availability\"}) * 100",
           "legendFormat": "{{service}}"
         }
       ]
@@ -134,7 +134,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{service=~\"$service\"} == 0",
+          "expr": "up{service=~\"$service\",job!=\"o11y-availability\"} == 0",
           "instant": true,
           "format": "table"
         }
@@ -528,7 +528,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "query": "label_values(up, service)",
+        "query": "label_values(up{job!=\"o11y-availability\"}, service)",
         "refresh": 2,
         "includeAll": false,
         "multi": false,

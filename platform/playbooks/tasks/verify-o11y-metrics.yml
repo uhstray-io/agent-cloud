@@ -10,7 +10,7 @@
       - -q
       - -O
       - "-"
-      - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
+      - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\",job!=\"o11y-availability\"}') | urlencode }}"
   register: _scrapes
   changed_when: false
   check_mode: false
