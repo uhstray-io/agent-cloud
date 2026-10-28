@@ -1,0 +1,61 @@
+---
+# grow-console-root.yml: grow the console host's root filesystem into its virtual disk, online.
+#
+# Why this exists: the Deploy console (Dev) run, Semaphore task 9872, failed while building the
+# Rust image: `cargo install dioxus-cli` stopped with "No space left on device", and the podman
+# storage write failed with the same ENOSPC. The console VM's Proxmox disk is declared at 40G,
+# but VMs clone from a template built from the Ubuntu live-server ISO on a 20G disk
+# (platform/playbooks/provision-template.yml:58-61). The autoinstall puts root on LVM
+# (platform/hypervisor/proxmox/cloud-init/autoinstall-user-data.yml:17-20), so the root logical
+# volume, its partition, the physical volume and the ext4 filesystem all keep the template's size
+# after the clone. Resize VM (resize-vm.yml) grows only the Proxmox disk and says the guest must be
+# grown separately; this is that guest half, as code: partition -> PV -> root LV and its ext4
+# filesystem, through the shared tasks/grow-root-lvm.yml that grow-o11y-root.yml,
+# grow-github-runner-root.yml and grow-semaphore-root.yml also import.
+#
+# The general fix, growing the root at provision time inside Provision VM, is a tracked follow-up.
+# It is not this file.
+#
+# Online and bounded. The console is not the orchestrator, so this runs through Semaphore like any
+# other grow. The helper grows the partition, PV, LV and filesystem with no reboot, no unmount and
+# no container restart. Ansible's remote temp lives on tmpfs because the root may be full.
+#
+# If the dry run reports a disk far below its declaration, the Proxmox disk itself was never
+# grown: run Resize VM (resize-vm.yml) first, then this.
+#
+# Safe under --check: the plan reads the chain and runs growpart's own dry run (-N). A real run
+# takes only the steps the plan lists; every step is idempotent, so a re-run reports nothing to
+# do. Bound to the reviewed commit: the template requires expected_repository_sha
+# (require-reviewed-checkout.yml). `--tags verify` changes nothing and fails unless the root is
+# fully grown: it re-reads the chain and requires an empty plan.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: console_svc
+    preflight_group_expected: console_svc
+  # Under --tags verify too: a verify run over no hosts would otherwise pass (MISTAKES 2.21).
+  tags: [always]
+
+- name: "Reviewed checkout"
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: "Grow the console root filesystem"
+  hosts: console_svc
+  gather_facts: false
+  become: false
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/grow-root-lvm.py') }}"
+  tasks:
+    # Shared with grow-o11y-root.yml, grow-github-runner-root.yml and grow-semaphore-root.yml.
+    # A static import, so `--tags verify` reaches each task.
+    - name: "Grow the root filesystem"
+      ansible.builtin.import_tasks: tasks/grow-root-lvm.yml

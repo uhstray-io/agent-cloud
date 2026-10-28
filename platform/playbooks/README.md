@@ -341,6 +341,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `grow-o11y-root.yml` | Grow the o11y receiver's LVM ext4 root into its virtual disk online (partition, PV, LV, filesystem); refuses any other layout, plan-only under `--check` |
 | `grow-github-runner-root.yml` | The same online root grow for each host in `github_runner_svc`; every grow playbook imports `tasks/grow-root-lvm.yml` |
 | `grow-semaphore-root.yml` | The same online root grow for the Semaphore host (`semaphore_svc`), run from Semaphore against its own host; no reboot, no restart of Semaphore. Run Resize VM first if the Proxmox disk has not been grown. Needs headroom to start; a 100%-full root is recovered operator-side over SSH (MISTAKES 1.18). |
+| `grow-console-root.yml` | The same online root grow for the console host (`console_svc`), through the shared `tasks/grow-root-lvm.yml`; no reboot, no unmount, no container restart. Run Resize VM first if the Proxmox disk has not been grown. |
 | `reboot-host.yml` | Reboot ONE declared host and wait for it; refuses unless the group holds exactly one host named in `confirm_reboot` |
 | `mount-caddy-certs.yml` | Add a read-only `/etc/caddy/certs` volume to the central Caddy's hand-maintained compose file (after proving Caddy runs from `caddy_compose_dir`); recreate only on change, restoring the previous file on failure |
 
