@@ -102,7 +102,8 @@ and why.
 | 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 3.16 | A local Semaphore container recreate minted a new encryption key while its database lived on; every encrypted environment input became undecryptable and the next seed failed | Live state | 1 | Bootstrap (config on the data volume + carry-forward before any recreate) + test (`test_local_semaphore_config_persistence.py`, mutation-checked) |
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
-| 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled, Postgres crashed, and production orchestration was down ~13h | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
+| 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
+| 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2534,7 +2535,8 @@ UTC"), and the root showed 17 MB free when inspected. Semaphore exited with it. 
 authorized SSH recovery at about 03:50 UTC. In that session the repository's own
 `grow-root-lvm.py` grew the root online to 61G with 35G free, but my session then stalled before
 the restart, and the existing containers were started with `podman start` only at 15:18 UTC.
-Production orchestration was down for about 13 hours.
+Production orchestration was down for about 13 hours; the 11.5 hours after the grow are
+entry 3.19.
 
 **Root cause.** I treated the guest grow as ordinary platform work, where the reviewed template
 is the right path, and did not weigh how long the host could last against how long the cycle
@@ -2543,13 +2545,38 @@ recovery grew the root by hand the same way), would have restored headroom in mi
 offered that path or stated the time risk.
 
 **The rule.** When an orchestrator-class host (Semaphore, OpenBao, or the database either depends
-on) is near full and filling it takes the orchestrator down, restore headroom first, by the fastest path the operator
+on) is near full and filling it takes the orchestrator down, restore headroom first, by the
+fastest path the operator
 authorizes: ask for an operator-side grow or cleanup, and say how close to full the host is. Then
 encode the fix through the normal review cycle. Never leave the only headroom fix waiting on a
 multi-hour review without telling the operator the risk.
 
 **Enforced by.** Convention. Proposed guard: the root-disk alert at 80% on the Semaphore host
 (plan 18, Phase 4), which is also the guard 1.18 proposed.
+
+### 3.19 Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it
+
+**What happened.** During the 3.18 recovery, the operator authorized SSH access at about 03:50
+UTC on 2026-10-28. In one session I confirmed the cause (root 100% full, Postgres and Semaphore
+exited) and grew the root online to 61G with 35G free. Before starting the containers, I ran one
+more diagnostic over SSH that bundled `podman inspect` on both containers with `podman logs`
+for the database, with no per-command `timeout`. It overran the 60-second tool limit and was moved
+to the background. That background command finished only after 15:18 UTC, since its output
+includes Postgres's 15:18 startup log. My next recorded action, starting the existing containers
+with `podman start`, came at 15:18 UTC. Production orchestration stayed down about 11.5 hours
+after the cause was already removed. Why no work happened in that gap is not established.
+
+**Root cause.** I treated "headroom restored" as the end of the urgent part and went back to
+investigating, rather than restarting the service first. The diagnostic was not needed for the
+restart (the start command needed only the container names, which the first check had already
+listed), and it ran without a bound, so a hang held the recovery.
+
+**The rule.** In a recovery of a down orchestrator, once the cause is removed, restart the service
+and verify that it answers, as the very next step, in the same command where possible. Defer
+every diagnostic that the restart does not need until after the service is verified up. Bound
+every remote command in a recovery with `timeout`.
+
+**Enforced by.** Convention.
 
 ## 4. Data handling
 
