@@ -7,5 +7,6 @@ services:
       - run
       - --server.http.listen-addr=127.0.0.1:12345
       - /etc/alloy/config.alloy
-    x-podman:
-      in_pod: false
+
+x-podman:
+  in_pod: false

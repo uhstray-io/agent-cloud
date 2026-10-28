@@ -327,7 +327,7 @@ def test_availability_compose_overlays_bind_only_loopback_and_deduplicate_ca_mou
     )
     availability = availability_overlay["services"]["alloy"]
     assert availability["command"][1] == "--server.http.listen-addr=127.0.0.1:12345"
-    assert availability["x-podman"] == {"in_pod": False}
+    assert availability_overlay["x-podman"] == {"in_pod": False}
     assert "ports" not in availability
     ca_overlay = yaml.safe_load((DEPLOY / "compose.availability-ca.yml").read_text(encoding="utf-8"))
     ca = ca_overlay["services"]["alloy"]["volumes"]
@@ -357,9 +357,20 @@ def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_
         )
     )
     assert prepare < placement
-    assert gate["ansible.builtin.assert"]["that"] == "not (_o11y_availability.enabled | bool)"
     validator_path = ROOT / "platform/playbooks/tasks/prepare-o11y-availability.yml"
     validator = yaml.safe_load(validator_path.read_text(encoding="utf-8"))
+    namespace = next(
+        task for task in validator
+        if task.get("name") == "Prove current Alloy namespace isolation before placement when probes are enabled"
+    )
+    assert namespace["ansible.builtin.script"]["cmd"].endswith("--verify-availability-namespace")
+    assert namespace["no_log"] is True and namespace["when"] == "_o11y_availability.enabled | bool"
+    namespace_result = next(
+        task for task in validator
+        if task.get("name") == "Require actual current Alloy network namespace isolation before placement"
+    )
+    assert namespace_result["ansible.builtin.assert"]["that"][0] == "_o11y_namespace_preplacement.rc == 0"
+    assert gate["ansible.builtin.assert"]["that"] == "not (_o11y_availability.enabled | bool)"
     command = next(
         task for task in validator
         if task.get("name") == "Validate and privately prepare the reviewed availability projection"
@@ -370,6 +381,25 @@ def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_
         if task.get("name") == "Store the protected availability projection for the renderer"
     )
     assert projection["no_log"] is True
+    phase_two = next(play for play in plays if play.get("name") == "Phase 2: Start o11y")
+    lifecycle = next(
+        task for task in phase_two["tasks"]
+        if task.get("name") == "Run deploy.sh (container lifecycle)"
+    )
+    assert "namespace_snapshot_sha256" in lifecycle["environment"][
+        "O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256"
+    ]
+    assert "runtime_context_sha256" in lifecycle["environment"][
+        "O11Y_EXPECTED_RUNTIME_CONTEXT_SHA256"
+    ]
+    deploy_script = (DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    namespace_checks = [
+        offset for offset in range(len(deploy_script))
+        if deploy_script.startswith("--verify-availability-namespace --candidate", offset)
+    ]
+    apply = deploy_script.index("compose_up_if_changed config")
+    assert len(namespace_checks) == 2
+    assert namespace_checks[0] < apply < namespace_checks[1]
 
 
 @pytest.mark.parametrize(

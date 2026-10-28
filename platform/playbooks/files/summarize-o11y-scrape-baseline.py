@@ -7,7 +7,11 @@ import hashlib
 import ipaddress
 import json
 import os
+import platform
 import re
+import selectors
+import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -99,6 +103,578 @@ class Refusal(ValueError):
     def __init__(self, category: str) -> None:
         super().__init__(category)
         self.category = category
+
+
+MAX_AVAILABILITY_CONTAINERS = 128
+MAX_AVAILABILITY_COMMAND_BYTES = 256 * 1024
+MAX_AVAILABILITY_INSPECT_SECONDS = 20
+AVAILABILITY_PROCESS_BYTES = 4096
+AVAILABILITY_INSPECT_FORMAT = (
+    '{{.Id}}\t{{.Image}}\t{{.State.Running}}\t{{.State.Pid}}\t{{.State.StartedAt}}\t'
+    '{{.HostConfig.NetworkMode}}\t{{json .HostConfig.PortBindings}}\t'
+    '{{index .Config.Labels "com.docker.compose.project"}}\t'
+    '{{index .Config.Labels "com.docker.compose.service"}}\t{{.Name}}'
+)
+AVAILABILITY_PROVIDER_OVERRIDE_NAMES = {
+    "COMPOSE_FILE", "COMPOSE_PROJECT_NAME", "CONTAINER_CONNECTION", "CONTAINER_HOST",
+    "DOCKER_HOST", "PODMAN_COMPOSE_PROVIDER",
+}
+
+
+def _availability_command(
+    argv: list[str], *, timeout: float = 5, cwd: str | None = None
+) -> bytes:
+    """Run one bounded runtime metadata command without surfacing its output."""
+    try:
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=cwd)
+    except OSError:
+        raise Refusal("namespace_unverified") from None
+    assert process.stdout is not None
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                if not selector.select(remaining):
+                    raise TimeoutError
+                chunk = os.read(process.stdout.fileno(), 64 * 1024)
+                if not chunk:
+                    break
+                if len(output) + len(chunk) > MAX_AVAILABILITY_COMMAND_BYTES:
+                    raise ValueError
+                output.extend(chunk)
+        returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
+    except (OSError, TimeoutError, ValueError, subprocess.TimeoutExpired):
+        process.kill()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        raise Refusal("namespace_unverified") from None
+    if returncode != 0:
+        raise Refusal("namespace_unverified")
+    return bytes(output)
+
+
+def _availability_inspect(row: bytes) -> dict[str, Any]:
+    try:
+        fields = row.decode("utf-8", "strict").rstrip("\n").split("\t")
+        if len(fields) != 10 or any("\x00" in field or "\n" in field for field in fields):
+            raise ValueError
+        container_id, image, running_raw, pid_raw, started_at, network_mode, ports_raw, project, service, name = fields
+        if not re.fullmatch(r"[0-9a-f]{12,64}", container_id) or not image:
+            raise ValueError
+        if running_raw not in {"true", "false"} or not network_mode:
+            raise ValueError
+        if started_at in {"", "<no value>", "<nil>"}:
+            started_at = ""
+        if pid_raw in {"", "<no value>", "<nil>"}:
+            pid = 0
+        elif re.fullmatch(r"[0-9]{1,10}", pid_raw):
+            pid = int(pid_raw)
+        else:
+            raise ValueError
+        ports = json.loads(ports_raw) if ports_raw not in {"", "<no value>", "<nil>"} else {}
+        if ports is None:
+            ports = {}
+        if not isinstance(ports, dict):
+            raise ValueError
+        for bindings in ports.values():
+            if bindings is not None and (
+                not isinstance(bindings, list)
+                or any(
+                    not isinstance(binding, dict)
+                    or set(binding) - {"HostIp", "HostPort"}
+                    or not isinstance(binding.get("HostPort"), str)
+                    for binding in bindings
+                )
+            ):
+                raise ValueError
+        if project in {"<no value>", "<nil>"}:
+            project = ""
+        if service in {"<no value>", "<nil>"}:
+            service = ""
+        if name in {"<no value>", "<nil>"}:
+            name = ""
+        if any(len(value.encode("utf-8")) > 256 for value in (project, service, name, started_at, network_mode)):
+            raise ValueError
+        if name.startswith("/"):
+            name = name[1:]
+        return {
+            "id": container_id,
+            "image": image,
+            "running": running_raw == "true",
+            "pid": pid,
+            "started_at": started_at,
+            "network_mode": network_mode,
+            "ports": ports,
+            "project": project,
+            "service": service,
+            "name": name,
+        }
+    except (UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        raise Refusal("namespace_unverified") from None
+
+
+def _availability_process_identity(pid: int) -> dict[str, Any]:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        raise Refusal("namespace_unverified")
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat_bytes = handle.read(8193)
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            command_bytes = handle.read(AVAILABILITY_PROCESS_BYTES + 1)
+        namespace = os.stat(f"/proc/{pid}/ns/net", follow_symlinks=True)
+        if len(stat_bytes) > 8192 or len(command_bytes) > AVAILABILITY_PROCESS_BYTES:
+            raise ValueError
+        right_paren = stat_bytes.rfind(b")")
+        if right_paren < 0:
+            raise ValueError
+        stat_fields = stat_bytes[right_paren + 2 :].split()
+        # /proc/PID/stat starts at field 3 after the comm field; starttime is field 22.
+        if len(stat_fields) <= 19 or not re.fullmatch(rb"[0-9]+", stat_fields[19]):
+            raise ValueError
+        if not command_bytes or not command_bytes.endswith(b"\x00"):
+            raise ValueError
+        return {
+            "pid": pid,
+            "proc_start_ticks": int(stat_fields[19]),
+            "cmdline_sha256": hashlib.sha256(command_bytes).hexdigest(),
+            "netns_dev": int(namespace.st_dev),
+            "netns_ino": int(namespace.st_ino),
+        }
+    except (OSError, ValueError, OverflowError):
+        raise Refusal("namespace_unverified") from None
+
+
+def _safe_network_mode(value: str, project: str) -> bool:
+    if value in {"host", "none", "bridge", "slirp4netns", "pasta", "private"}:
+        return True
+    # A project-prefixed Compose network name is ordinary; unknown names and
+    # namespace-joining modes stay unverified.
+    return bool(
+        project
+        and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", value)
+        and (value == project or value.startswith((f"{project}_", f"{project}-")))
+    )
+
+
+def validate_availability_namespace_snapshot(
+    containers: list[dict[str, Any]],
+    process_identities: dict[str, dict[str, Any]],
+    host_namespace: tuple[int, int],
+) -> dict[str, str]:
+    """Validate actual bounded inspect and kernel namespace observations."""
+    if not isinstance(containers, list) or not 1 <= len(containers) <= MAX_AVAILABILITY_CONTAINERS:
+        raise Refusal("namespace_unverified")
+    if (
+        not isinstance(host_namespace, tuple)
+        or len(host_namespace) != 2
+        or any(not isinstance(part, int) or isinstance(part, bool) for part in host_namespace)
+        or host_namespace[0] < 0
+        or host_namespace[1] <= 0
+    ):
+        raise Refusal("namespace_unverified")
+    ids: set[str] = set()
+    for container in containers:
+        if (
+            not isinstance(container, dict)
+            or not isinstance(container.get("id"), str)
+            or not re.fullmatch(r"[0-9a-f]{12,64}", container["id"])
+            or not isinstance(container.get("image"), str)
+            or not container["image"]
+            or not isinstance(container.get("running"), bool)
+            or not isinstance(container.get("pid"), int)
+            or isinstance(container.get("pid"), bool)
+            or container["pid"] < 0
+            or not isinstance(container.get("started_at"), str)
+            or not isinstance(container.get("network_mode"), str)
+            or not isinstance(container.get("project"), str)
+            or not isinstance(container.get("service"), str)
+            or not isinstance(container.get("name"), str)
+            or not isinstance(container.get("ports"), dict)
+        ):
+            raise Refusal("namespace_unverified")
+        if container["id"] in ids:
+            raise Refusal("namespace_unverified")
+        ids.add(container["id"])
+    candidates = [
+        container for container in containers
+        if container.get("service") == "alloy" and container.get("project")
+    ]
+    if len(candidates) != 1:
+        raise Refusal("namespace_unverified")
+    alloy = candidates[0]
+    project = alloy["project"]
+    if (
+        alloy.get("running") is not True
+        or not isinstance(alloy.get("started_at"), str)
+        or not alloy["started_at"]
+        or not isinstance(alloy.get("network_mode"), str)
+        or not _safe_network_mode(alloy["network_mode"], project)
+        or alloy["network_mode"] in {"host", "none"}
+        or ":" in alloy["network_mode"]
+        or not isinstance(alloy.get("ports"), dict)
+    ):
+        raise Refusal("namespace_unverified")
+    host_port_12345 = any(
+        binding.get("HostPort") == "12345"
+        for bindings in alloy["ports"].values()
+        if isinstance(bindings, list)
+        for binding in bindings
+        if isinstance(binding, dict)
+    )
+    if host_port_12345:
+        raise Refusal("namespace_unverified")
+    related = [
+        container for container in containers
+        if container is not alloy and (
+            container.get("project") == project
+            or container.get("network_mode") in {
+                f"container:{alloy['id']}", f"container:{alloy.get('name', '')}",
+                f"service:{alloy.get('service', '')}",
+            }
+        )
+    ]
+    required = [alloy, *related]
+    identities: dict[str, dict[str, Any]] = {}
+    for container in required:
+        mode = container.get("network_mode")
+        if (
+            not isinstance(mode, str)
+            or not _safe_network_mode(mode, project)
+            or mode in {"host", "none"}
+            or mode.startswith(("container:", "service:", "ns:"))
+        ):
+            raise Refusal("namespace_unverified")
+        if container.get("running") is not True:
+            # A stopped project sibling can join on the next apply, so inspect its
+            # declared mode but do not invent a current kernel namespace for it.
+            continue
+        if not container.get("started_at"):
+            raise Refusal("namespace_unverified")
+        process = process_identities.get(container["id"])
+        if (
+            not isinstance(process, dict)
+            or process.get("pid") != container.get("pid")
+            or not isinstance(process.get("proc_start_ticks"), int)
+            or isinstance(process.get("proc_start_ticks"), bool)
+            or process["proc_start_ticks"] <= 0
+            or not isinstance(process.get("netns_dev"), int)
+            or isinstance(process.get("netns_dev"), bool)
+            or process["netns_dev"] < 0
+            or not isinstance(process.get("netns_ino"), int)
+            or isinstance(process.get("netns_ino"), bool)
+            or process["netns_ino"] <= 0
+            or not isinstance(process.get("pid"), int)
+            or isinstance(process.get("pid"), bool)
+            or process["pid"] <= 1
+            or not isinstance(process.get("cmdline_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", process["cmdline_sha256"])
+        ):
+            raise Refusal("namespace_unverified")
+        identities[container["id"]] = process
+    alloy_identity = identities.get(alloy["id"])
+    if alloy_identity is None:
+        raise Refusal("namespace_unverified")
+    alloy_ns = (alloy_identity["netns_dev"], alloy_identity["netns_ino"])
+    if alloy_ns == host_namespace or any(
+        (item["netns_dev"], item["netns_ino"]) == alloy_ns
+        for container_id, item in identities.items()
+        if container_id != alloy["id"]
+    ):
+        raise Refusal("namespace_unverified")
+    return {
+        "status": "isolated",
+        "reason": "distinct_kernel_namespaces",
+        "container_count": str(len(required)),
+    }
+
+
+def _availability_provider_context() -> tuple[list[str], list[str], str]:
+    if platform.system() != "Linux" or os.environ.get("CONTAINER_ENGINE") != "podman":
+        raise Refusal("namespace_unverified")
+    if any(os.environ.get(name) for name in AVAILABILITY_PROVIDER_OVERRIDE_NAMES):
+        raise Refusal("namespace_unverified")
+    if any(
+        name.startswith("COMPOSE_")
+        and name not in {"COMPOSE_OVERLAYS", "COMPOSE_CMD"}
+        and value
+        for name, value in os.environ.items()
+    ):
+        raise Refusal("namespace_unverified")
+    if any(name.startswith("PODMAN_COMPOSE_") and value for name, value in os.environ.items()):
+        raise Refusal("namespace_unverified")
+    for name in ("CONTAINERS_CONF", "CONTAINERS_CONF_OVERRIDE", "PODMAN_CONNECTION", "PODMAN_HOST"):
+        if os.environ.get(name):
+            raise Refusal("namespace_unverified")
+    deployment_dir = os.environ.get("O11Y_DEPLOYMENT_DIR", "")
+    if not deployment_dir or not os.path.isabs(deployment_dir) or not os.path.isdir(deployment_dir):
+        raise Refusal("namespace_unverified")
+    overlays = os.environ.get("COMPOSE_OVERLAYS", "").split()
+    allowed_overlays = {
+        "capacity/compose.textfile.yml", "compose.prod.yml", "compose.otlp-tls.yml",
+        "compose.availability.yml", "compose.availability-ca.yml",
+    }
+    if any(overlay not in allowed_overlays for overlay in overlays) or len(overlays) != len(set(overlays)):
+        raise Refusal("namespace_unverified")
+    if os.environ.get("LOCAL_MODE") != "true" and "compose.prod.yml" not in overlays:
+        overlays.insert(0, "compose.prod.yml")
+    availability_enabled = os.environ.get("O11Y_AVAILABILITY_ENABLED")
+    if availability_enabled not in {"true", "false"}:
+        raise Refusal("namespace_unverified")
+    if availability_enabled == "true" and "compose.availability.yml" not in overlays:
+        raise Refusal("namespace_unverified")
+    compose_cmd_value = os.environ.get("COMPOSE_CMD", "")
+    if compose_cmd_value:
+        try:
+            compose_cmd = shlex.split(compose_cmd_value)
+        except ValueError:
+            raise Refusal("namespace_unverified") from None
+    else:
+        compose_cmd = ["podman-compose"] if shutil.which("podman-compose") else ["podman", "compose"]
+    if compose_cmd not in (["podman-compose"], ["podman", "compose"]) or not shutil.which(compose_cmd[0]):
+        raise Refusal("namespace_unverified")
+    version_argv = [*compose_cmd, "--version"] if compose_cmd == ["podman-compose"] else [*compose_cmd, "version"]
+    version_raw = _availability_command(version_argv, timeout=10)
+    try:
+        version_text = version_raw.decode("utf-8", "strict")
+    except UnicodeError:
+        raise Refusal("namespace_unverified") from None
+    version_match = re.search(r"(?<![0-9])(?:1\.0\.6|1\.3\.0|1\.6\.0)(?![0-9])", version_text)
+    if version_match is None:
+        raise Refusal("namespace_unverified")
+    effective_overlays = (["compose.local.yml"] if os.environ.get("LOCAL_MODE") == "true" else []) + overlays
+    return compose_cmd, effective_overlays, version_match.group(0)
+
+
+def _availability_inspect_all(deadline: float) -> list[dict[str, Any]]:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise Refusal("namespace_unverified")
+    ids_raw = _availability_command(
+        ["podman", "ps", "-a", "--no-trunc", "--format", "{{.ID}}"],
+        timeout=min(5, remaining),
+    )
+    try:
+        ids = ids_raw.decode("ascii", "strict").splitlines()
+    except UnicodeError:
+        raise Refusal("namespace_unverified") from None
+    if not 1 <= len(ids) <= MAX_AVAILABILITY_CONTAINERS or any(
+        not re.fullmatch(r"[0-9a-f]{12,64}", container_id) for container_id in ids
+    ) or len(ids) != len(set(ids)):
+        raise Refusal("namespace_unverified")
+    records = []
+    for container_id in ids:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Refusal("namespace_unverified")
+        row = _availability_command(
+            ["podman", "inspect", "--format", AVAILABILITY_INSPECT_FORMAT, container_id],
+            timeout=min(5, remaining),
+        )
+        record = _availability_inspect(row)
+        if record["id"] != container_id:
+            raise Refusal("namespace_unverified")
+        records.append(record)
+    return records
+
+
+def _availability_related(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    alloy = [record for record in records if record.get("service") == "alloy" and record.get("project")]
+    if len(alloy) != 1:
+        raise Refusal("namespace_unverified")
+    target = alloy[0]
+    target_id = target["id"]
+    target_name = target["name"]
+    project = target["project"]
+    related = [target]
+    for record in records:
+        if record is target:
+            continue
+        mode = record.get("network_mode", "")
+        joins_alloy = False
+        if mode.startswith("container:"):
+            reference = mode.partition(":")[2]
+            joins_alloy = bool(reference) and (
+                target_id.startswith(reference) or reference in (target_name, target_id)
+            )
+        elif mode == f"service:{target.get('service', '')}":
+            joins_alloy = True
+        if record.get("project") == project or joins_alloy:
+            related.append(record)
+    if len({record["id"] for record in related}) != len(related):
+        raise Refusal("namespace_unverified")
+    return related
+
+
+def _availability_runtime_pass() -> tuple[
+    list[dict[str, Any]], dict[str, dict[str, Any]], tuple[int, int]
+]:
+    records = _availability_inspect_all(time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS)
+    host_ns = os.stat("/proc/1/ns/net", follow_symlinks=True)
+    host_namespace = (int(host_ns.st_dev), int(host_ns.st_ino))
+    related = _availability_related(records)
+    if any(
+        binding.get("HostPort") == "12345"
+        for record in records
+        for bindings in record.get("ports", {}).values()
+        if isinstance(bindings, list)
+        for binding in bindings
+        if isinstance(binding, dict)
+    ):
+        raise Refusal("namespace_unverified")
+    process_identities = {
+        record["id"]: _availability_process_identity(record["pid"])
+        for record in related if record.get("running") is True
+    }
+    return related, process_identities, host_namespace
+
+
+def _availability_namespace_fingerprint(
+    records: list[dict[str, Any]],
+    processes: dict[str, dict[str, Any]],
+    host_namespace: tuple[int, int],
+) -> str:
+    payload = {
+        "containers": [
+            {
+                key: record[key]
+                for key in (
+                    "id", "image", "running", "pid", "started_at", "network_mode",
+                    "ports", "project", "service", "name",
+                )
+            }
+            for record in sorted(records, key=lambda row: row["id"])
+        ],
+        "processes": {key: processes[key] for key in sorted(processes)},
+        "host_namespace": host_namespace,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def verify_availability_namespace(*, validate_candidate: bool = False) -> dict[str, str]:
+    """Prove current Alloy and project siblings use distinct Linux netns."""
+    compose_cmd, overlays, provider_version = _availability_provider_context()
+    podman_version_raw = _availability_command(["podman", "--version"], timeout=10)
+    if re.search(
+        rb"^podman version [0-9]+\.[0-9]+\.[0-9]+\s*$",
+        podman_version_raw,
+        re.IGNORECASE | re.MULTILINE,
+    ) is None:
+        raise Refusal("namespace_unverified")
+    first = _availability_runtime_pass()
+    second = _availability_runtime_pass()
+    if first != second:
+        raise Refusal("namespace_unverified")
+    records, process_identities, host_namespace = second
+    result = validate_availability_namespace_snapshot(records, process_identities, host_namespace)
+    namespace_fingerprint = _availability_namespace_fingerprint(records, process_identities, host_namespace)
+    expected_namespace = os.environ.get("O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256", "")
+    if expected_namespace and (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_namespace)
+        or expected_namespace != namespace_fingerprint
+    ):
+        raise Refusal("namespace_unverified")
+    provider_payload = {
+        "engine": "podman",
+        "compose_command": compose_cmd,
+        "provider_version": provider_version,
+        "local_mode": os.environ.get("LOCAL_MODE") == "true",
+        "overlays": overlays,
+    }
+    provider_fingerprint = hashlib.sha256(
+        json.dumps(provider_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    expected_provider = os.environ.get("O11Y_EXPECTED_RUNTIME_CONTEXT_SHA256", "")
+    if expected_provider and (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_provider)
+        or expected_provider != provider_fingerprint
+    ):
+        raise Refusal("namespace_unverified")
+    result["namespace_snapshot_sha256"] = namespace_fingerprint
+    result["runtime_context_sha256"] = provider_fingerprint
+    if not validate_candidate:
+        result["provider"] = "podman-compose" if compose_cmd == ["podman-compose"] else "podman-compose-plugin"
+        result["provider_version"] = provider_version
+        return result
+    deployment_dir = os.environ["O11Y_DEPLOYMENT_DIR"]
+    compose_files = ["-f", "compose.yml"]
+    if os.environ.get("LOCAL_MODE") == "true" and os.path.isfile(os.path.join(deployment_dir, "compose.local.yml")):
+        compose_files.extend(["-f", "compose.local.yml"])
+    for overlay in overlays:
+        if not os.path.isfile(os.path.join(deployment_dir, overlay)):
+            raise Refusal("namespace_unverified")
+        compose_files.extend(["-f", overlay])
+    compose_raw = _availability_command(
+        [*compose_cmd, *compose_files, "config"], timeout=10, cwd=deployment_dir
+    )
+    try:
+        config = yaml.load(compose_raw.decode("utf-8", "strict"), Loader=_SourceUniqueKeyLoader)
+    except (UnicodeError, yaml.YAMLError):
+        raise Refusal("namespace_unverified") from None
+    services = config.get("services") if isinstance(config, dict) else None
+    if not isinstance(services, dict) or not 1 <= len(services) <= 32:
+        raise Refusal("namespace_unverified")
+    running_alloy = [record for record in records if record.get("service") == "alloy"]
+    if (
+        len(running_alloy) != 1
+        or not isinstance(config, dict)
+        or config.get("name") != running_alloy[0].get("project")
+    ):
+        raise Refusal("namespace_unverified")
+    if os.environ.get("O11Y_AVAILABILITY_ENABLED") == "true":
+        overlay_path = os.path.join(deployment_dir, "compose.availability.yml")
+        try:
+            overlay_metadata = os.lstat(overlay_path)
+            if not stat.S_ISREG(overlay_metadata.st_mode) or overlay_metadata.st_size > 16_384:
+                raise ValueError
+            with open(overlay_path, "rb") as handle:
+                overlay_raw = handle.read(16_385)
+            if len(overlay_raw) != overlay_metadata.st_size or len(overlay_raw) > 16_384:
+                raise ValueError
+            overlay_document = yaml.load(overlay_raw.decode("utf-8", "strict"), Loader=_SourceUniqueKeyLoader)
+            overlay_alloy = overlay_document["services"]["alloy"]
+            overlay_command = overlay_alloy.get("command")
+            if (
+                overlay_document.get("x-podman") != {"in_pod": False}
+                or not isinstance(overlay_command, list)
+                or len(overlay_command) < 3
+                or overlay_command[1] != "--server.http.listen-addr=127.0.0.1:12345"
+                or "ports" in overlay_alloy
+                or "network_mode" in overlay_alloy
+            ):
+                raise ValueError
+        except (OSError, ValueError, KeyError, TypeError, UnicodeError, yaml.YAMLError):
+            raise Refusal("namespace_unverified") from None
+    alloy_service = services.get("alloy")
+    if not isinstance(alloy_service, dict) or alloy_service.get("network_mode") is not None:
+        raise Refusal("namespace_unverified")
+    for service in services.values():
+        if not isinstance(service, dict) or service.get("network_mode") is not None:
+            raise Refusal("namespace_unverified")
+        ports = service.get("ports", [])
+        if ports is None:
+            ports = []
+        if not isinstance(ports, list):
+            raise Refusal("namespace_unverified")
+        for port in ports:
+            if isinstance(port, dict):
+                if str(port.get("published")) == "12345":
+                    raise Refusal("namespace_unverified")
+            elif isinstance(port, (str, int)) and re.search(r"(?:^|:)12345(?::|/|$)", str(port)):
+                raise Refusal("namespace_unverified")
+            else:
+                raise Refusal("namespace_unverified")
+    if os.environ.get("O11Y_AVAILABILITY_ENABLED") == "true" and not overlays:
+        raise Refusal("namespace_unverified")
+    result["provider"] = "podman-compose" if compose_cmd == ["podman-compose"] else "podman-compose-plugin"
+    result["provider_version"] = provider_version
+    return result
 
 
 class _SourceUniqueKeyLoader(yaml.SafeLoader):
@@ -2199,6 +2775,15 @@ def _expected_target_coverage_action() -> dict[str, Any]:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--verify-availability-namespace"] and sys.argv[2:] in ([], ["--candidate"]):
+        try:
+            result = verify_availability_namespace(validate_candidate=sys.argv[2:] == ["--candidate"])
+            code = 0
+        except Exception:
+            result = {"status": "unverified", "reason": "namespace_unverified"}
+            code = 2
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return code
     if len(sys.argv) == 2 and sys.argv[1] == "--validate-active-expected-target-rules":
         try:
             result = validate_active_expected_target_rules(_input_document())

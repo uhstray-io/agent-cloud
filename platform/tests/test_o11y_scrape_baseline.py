@@ -54,6 +54,160 @@ def _budget_limits():
     }
 
 
+def _availability_namespace_fixture(*, alloy_namespace=(7, 101), sibling_namespace=(7, 102)):
+    alloy_id = "a" * 64
+    sibling_id = "b" * 64
+    containers = [
+        {
+            "id": alloy_id, "image": "sha256:alloy", "running": True, "pid": 4101,
+            "started_at": "2026-10-28T00:00:00Z", "network_mode": "o11y",
+            "ports": {}, "project": "o11y", "service": "alloy", "name": "o11y-alloy",
+            "namespace_path": "/different/path/does/not/prove/isolation",
+        },
+        {
+            "id": sibling_id, "image": "sha256:prometheus", "running": True, "pid": 4102,
+            "started_at": "2026-10-28T00:00:01Z", "network_mode": "o11y",
+            "ports": {}, "project": "o11y", "service": "prometheus", "name": "o11y-prometheus",
+        },
+    ]
+    process_identities = {
+        alloy_id: {
+            "pid": 4101, "proc_start_ticks": 100, "cmdline_sha256": "f" * 64,
+            "netns_dev": alloy_namespace[0], "netns_ino": alloy_namespace[1],
+        },
+        sibling_id: {
+            "pid": 4102, "proc_start_ticks": 101, "cmdline_sha256": "e" * 64,
+            "netns_dev": sibling_namespace[0], "netns_ino": sibling_namespace[1],
+        },
+    }
+    return containers, process_identities
+
+
+def test_availability_namespace_proof_uses_kernel_identity_and_finds_project_siblings():
+    containers, processes = _availability_namespace_fixture()
+    assert SURVEY.validate_availability_namespace_snapshot(
+        containers, processes, (7, 1)
+    ) == {
+        "status": "isolated", "reason": "distinct_kernel_namespaces", "container_count": "2"
+    }
+
+    # Different namespace path strings cannot disguise a shared kernel namespace.
+    processes["b" * 64]["netns_ino"] = processes["a" * 64]["netns_ino"]
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
+
+
+@pytest.mark.parametrize("failure", ["host", "unstable_pid", "published_port", "hidden_sibling"])
+def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure):
+    containers, processes = _availability_namespace_fixture()
+    if failure == "host":
+        processes["a" * 64]["netns_ino"] = 1
+    elif failure == "unstable_pid":
+        processes["a" * 64]["pid"] += 1
+    elif failure == "published_port":
+        containers[0]["ports"] = {"12345/tcp": [{"HostIp": "127.0.0.1", "HostPort": "12345"}]}
+    elif failure == "hidden_sibling":
+        containers[1]["service"] = ""
+        processes["b" * 64]["netns_ino"] = processes["a" * 64]["netns_ino"]
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
+
+
+@pytest.mark.parametrize("network_mode", ["host", "container:" + ("a" * 64), "service:alloy", "ns:/run/netns/shared"])
+def test_availability_namespace_proof_refuses_host_and_namespace_join_modes(network_mode):
+    containers, processes = _availability_namespace_fixture()
+    containers[0]["network_mode"] = network_mode
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
+
+
+def test_availability_provider_context_accepts_only_reviewed_local_provider_and_overlay(monkeypatch, tmp_path):
+    monkeypatch.setattr(SURVEY.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(SURVEY.shutil, "which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(
+        SURVEY, "_availability_command", lambda argv, **_kwargs: b"podman-compose version 1.3.0\n"
+    )
+    monkeypatch.setenv("CONTAINER_ENGINE", "podman")
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(tmp_path))
+    monkeypatch.setenv("O11Y_AVAILABILITY_ENABLED", "true")
+    monkeypatch.setenv("COMPOSE_OVERLAYS", "compose.availability.yml")
+    monkeypatch.delenv("LOCAL_MODE", raising=False)
+    monkeypatch.delenv("COMPOSE_CMD", raising=False)
+    for name in SURVEY.AVAILABILITY_PROVIDER_OVERRIDE_NAMES | {
+        "CONTAINERS_CONF", "CONTAINERS_CONF_OVERRIDE", "PODMAN_CONNECTION", "PODMAN_HOST"
+    }:
+        monkeypatch.delenv(name, raising=False)
+
+    assert SURVEY._availability_provider_context() == (
+        ["podman-compose"], ["compose.prod.yml", "compose.availability.yml"], "1.3.0"
+    )
+    monkeypatch.setenv("PODMAN_COMPOSE_PROVIDER", "docker-compose")
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        SURVEY._availability_provider_context()
+
+
+def test_availability_runtime_command_bounds_output_and_timeout(monkeypatch):
+    monkeypatch.setattr(SURVEY, "MAX_AVAILABILITY_COMMAND_BYTES", 4)
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        SURVEY._availability_command(["python3", "-c", "print('12345')"])
+
+
+def test_availability_lifecycle_recheck_consumes_candidate_and_preplacement_fingerprints(monkeypatch, tmp_path):
+    containers, processes = _availability_namespace_fixture()
+    host_namespace = (7, 1)
+    compose_config = b"""name: o11y
+services:
+  alloy:
+    command: [run, /etc/alloy/config.alloy]
+  prometheus: {}
+"""
+    monkeypatch.setattr(SURVEY.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(SURVEY.shutil, "which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(SURVEY, "_availability_runtime_pass", lambda: (containers, processes, host_namespace))
+
+    def command(argv, **_kwargs):
+        if argv[:2] == ["podman", "--version"]:
+            return b"podman version 4.9.3\n"
+        if argv[-1] == "--version":
+            return b"podman-compose version 1.3.0\n"
+        if argv[-1] == "version":
+            return b"podman-compose version 1.3.0\n"
+        if argv[-1] == "config":
+            return compose_config
+        raise AssertionError("unexpected runtime command")
+
+    monkeypatch.setattr(SURVEY, "_availability_command", command)
+    monkeypatch.setenv("CONTAINER_ENGINE", "podman")
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(tmp_path))
+    monkeypatch.setenv("O11Y_AVAILABILITY_ENABLED", "true")
+    monkeypatch.setenv("COMPOSE_OVERLAYS", "compose.availability.yml")
+    monkeypatch.delenv("LOCAL_MODE", raising=False)
+    monkeypatch.delenv("COMPOSE_CMD", raising=False)
+    for name in SURVEY.AVAILABILITY_PROVIDER_OVERRIDE_NAMES | {
+        "CONTAINERS_CONF", "CONTAINERS_CONF_OVERRIDE", "PODMAN_CONNECTION", "PODMAN_HOST"
+    }:
+        monkeypatch.delenv(name, raising=False)
+    for filename in ("compose.yml", "compose.prod.yml"):
+        (tmp_path / filename).write_text("services: {}\n", encoding="utf-8")
+    (tmp_path / "compose.availability.yml").write_text(
+        "services:\n  alloy:\n    command: [run, --server.http.listen-addr=127.0.0.1:12345, /etc/alloy/config.alloy]\n"
+        "x-podman:\n  in_pod: false\n",
+        encoding="utf-8",
+    )
+
+    result = SURVEY.verify_availability_namespace(validate_candidate=True)
+    assert result["status"] == "isolated"
+    assert result["provider"] == "podman-compose"
+    assert result["provider_version"] == "1.3.0"
+    assert set(result) == {
+        "status", "reason", "container_count", "namespace_snapshot_sha256",
+        "runtime_context_sha256", "provider", "provider_version",
+    }
+    monkeypatch.setenv("O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256", result["namespace_snapshot_sha256"])
+    monkeypatch.setenv("O11Y_EXPECTED_RUNTIME_CONTEXT_SHA256", result["runtime_context_sha256"])
+    assert SURVEY.verify_availability_namespace(validate_candidate=True) == result
+
+
 def _loaded_config_job(name="prometheus", **overrides):
     job = {
         "job_name": name,

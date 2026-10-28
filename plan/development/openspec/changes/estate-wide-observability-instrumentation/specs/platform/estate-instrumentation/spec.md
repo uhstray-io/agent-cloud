@@ -67,16 +67,22 @@ metrics. Only fixed identity labels SHALL be exported. Raw endpoint and
 request/client/trace/secret values SHALL NOT become labels. The exact probe
 health selector SHALL bind job, `target_id`, environment, and cluster.
 
-Before configuration placement or activation, the native handler SHALL be
-isolated from sibling/caller containers. The gate SHALL verify the effective
-Linux network namespace identity against each sibling before and after
-observation, bound to stable container IDs, running PIDs, and start times.
-Unknown or unstable identity, unavailable inspection, shared pod/network mode,
-conflicting provider or launch inputs, or a published listener SHALL refuse
-before the handler is enabled. The availability overlay SHALL declare
-`x-podman.in_pod=false`; loopback binding alone SHALL NOT count as isolation.
-The source design SHALL NOT require a future native sample in pre-enable
-preflight; runtime target/readback proof is a separate post-apply acceptance.
+Before placement, immediately before the lifecycle applies the Compose
+configuration, and after apply, the receiver SHALL prove that the effective
+Linux network namespace for Alloy is distinct from every project sibling and
+other container explicitly joining Alloy's namespace. The proof SHALL compare
+kernel namespace identity `(st_dev, st_ino)` and bracket stable container IDs,
+running PIDs, and process start times. It SHALL use the effective provider,
+arguments, environment, and overlays that the lifecycle will apply, and SHALL
+recheck them immediately inside that lifecycle. Pod membership or an IP/path
+string alone SHALL NOT prove namespace identity. The availability overlay
+SHALL declare top-level `x-podman.in_pod=false`; loopback binding alone SHALL
+NOT count as isolation. Unknown, unstable, unreadable, conflicting, shared, or
+host-network identity; an effective published listener; or provider/process
+drift SHALL refuse before the handler is enabled. A failed privilege or
+inspection read SHALL remain unverified, never trigger a permission bypass.
+Pre-apply proof SHALL NOT require a future native sample; post-apply source
+acceptance is separate.
 Existing private Prometheus forwarding, Alloy self-monitor identity/selectors,
 and profile consumers SHALL be preserved without duplicate writers or
 self-scrapes. Off mode SHALL preserve existing behavior. Existing Grafana
@@ -90,6 +96,45 @@ and the existing budget, survey, and deploy-guard projections. Current source
 SHALL be proven only from active Prometheus targets or the fixed native Alloy
 detail plus fresh forwarded diagnostics. Ownership projection alone SHALL NOT
 prove producer acceptance.
+
+An omitted source SHALL retain the legacy Prometheus behavior and exact
+eight-field Prometheus coverage projection. When a reviewed Alloy source is
+declared, the expected-target and budget/survey inputs SHALL preserve that
+source without treating the native health row as a Prometheus active target,
+as a direct HTTP survey target, or as a member of Prometheus loaded-limit
+counts and synthetic scrape pools. Native coverage and native budget evidence
+SHALL be reported in a separate projection with its point-in-time measurement
+domain; the existing Prometheus projection SHALL count only Prometheus-owned
+rows. An Alloy declaration without its fixed loaded native component and
+fresh forwarded sample evidence SHALL remain unverified.
+
+The source gate SHALL compare the proven current producer with the reviewed
+intended producer. It MAY permit a reviewed Prometheus-to-Alloy or
+Alloy-to-Prometheus change without requiring the future producer before apply,
+but it SHALL prove the old/current producer before changing configuration. An
+idempotent rerun SHALL prove its actual current source. Mixed, duplicate,
+missing, stale, or ambiguous current producers SHALL refuse. A Grafana UID or
+five-label identity match SHALL remain rule-ownership evidence only and SHALL
+NOT prove which producer currently emits the series.
+
+Post-apply Alloy acceptance SHALL read the loaded fixed exporter/scrape
+components, effective finite limits, target identity and health, and fresh
+forwarded samples. Fresh raw-sample timestamps SHALL be later than both the
+host UTC pre-apply lower bound and the new Alloy process start; query
+evaluation time or a historical maximum SHALL NOT substitute. A proven
+`probe_success=0` with a healthy scrape SHALL report observed endpoint failure,
+separately from scrape failure and missing telemetry. The scrape body counter
+measures Alloy's exporter-metrics response, not the remote health response.
+Survey and budget checks SHALL NOT replay the health endpoint. A return to
+Prometheus SHALL prove the new Prometheus target/limits and fresh diagnostics,
+absence of the native components, and absence of duplicate producers. Failed
+post-apply proof SHALL be reported as unverified; it SHALL NOT automatically
+delete, stop, revert, or recreate containers, pods, or volumes.
+
+Profile candidate acceptance SHALL use the same validated private availability
+projection and fixed profile target address as deployment. It SHALL validate
+the rendered candidate before writing temporary configuration, and SHALL
+preserve the existing profile-operation gates and restoration behavior.
 
 #### Scenario: Probe activation remains gated without a reviewed target and isolation
 - **WHEN** a target declaration, endpoint contract, finite budget, actual pre-placement namespace proof, or effective handler isolation is missing or unverified
@@ -119,6 +164,32 @@ prove producer acceptance.
 - **WHEN** an expected row declares Alloy but no fixed native component detail and fresh forwarded sample evidence are available
 - **THEN** the source survey returns a fixed unverified result rather than matching a Prometheus target or claiming native acceptance
 - **AND** a same-UID/same-five-label Grafana ownership match does not satisfy producer acceptance
+
+#### Scenario: A reviewed source transition proves the current producer first
+- **WHEN** a reviewed declaration changes an expected target from Prometheus to Alloy or from Alloy to Prometheus
+- **THEN** preflight proves the actual current producer and effective namespace isolation before placement
+- **AND** preflight does not require a future producer sample before apply
+- **AND** unchanged alert UID and five-label ownership do not replace source proof
+- **AND** an idempotent rerun proves the currently declared producer rather than assuming a migration
+
+#### Scenario: Post-apply source acceptance rejects old or stale producer samples
+- **WHEN** an applied Alloy source has only the former Prometheus target, the wrong/missing native component, or samples older than the pre-apply bound or new process start
+- **THEN** producer acceptance is unverified even if the Grafana rule identity is unchanged
+- **AND** the native health target is never replayed by the baseline survey
+- **AND** no automatic destructive rollback or duplicate-producer remediation occurs
+
+#### Scenario: Prometheus and native budget projections remain separate
+- **WHEN** no expected row declares a source or every row uses the legacy Prometheus source
+- **THEN** the existing eight-field Prometheus coverage result and budget behavior remain unchanged
+- **WHEN** a reviewed native Alloy row is present
+- **THEN** Prometheus counts, 24-hour maxima, direct HTTP checks, and loaded-limit pools include only Prometheus rows
+- **AND** native limits and point-in-time forwarded samples are returned in a separate source-labelled projection
+
+#### Scenario: Profile acceptance uses the validated availability mode before writing
+- **WHEN** profile candidates are prepared while availability is enabled
+- **THEN** the same validated private projection selects the fixed loopback profile target
+- **AND** invalid projection or candidate data refuses before temporary config is written
+- **AND** existing profile operation and restoration guards remain in force
 
 ### Requirement: Expected metrics targets are reviewed and compared exactly
 Production per-target missing-telemetry rules SHALL be active only when

@@ -1338,3 +1338,177 @@ binary, effective provider and distinct namespace, loaded component and limits,
 fresh target series, failure/recovery/missing behavior, exact rule state, and
 existing-route delivery. The existing production plan remains the rollout and
 capacity owner; all runtime gates remain open.
+
+## 2026-10-28 B2 current-producer and native-readback implementation
+
+This section defines the source follow-up to the bounded B1 producer above.
+It makes the namespace and current-producer checks consumed gates, connects
+the existing surveys and budget consumers to real native evidence, and closes
+the profile acceptance caller. It adds no probe activation default, target,
+registry, alert framework, or producer history to Grafana. User-facing
+behavior and failure scenarios are in the availability requirements in the
+capability spec.
+
+### Current producer and intended source
+
+`files/summarize-o11y-scrape-baseline.py` is the shared boundary for sanitized
+runtime observations. Its existing baseline and expected-target actions will
+accept only a fixed optional `source` value (`prometheus` or `alloy`) on the
+normalized private expected-metrics row; omission remains Prometheus. The
+source must survive existing normalization and the exact expected-target,
+baseline, budget, and deployment-guard projections. Ownership-only expected
+target rows may omit producer metadata intentionally, but that projection is
+never passed to source acceptance.
+
+Before placement, compare actual current source with the reviewed intended
+source. Prometheus current-source evidence is the exact active target plus its
+fresh forwarded diagnostics and loaded target limits. Alloy current-source
+evidence is the fixed native DETAIL plus fresh forwarded diagnostics. Refuse
+missing, stale, duplicate, mixed, or ambiguous sources. A reviewed
+Prometheus-to-Alloy or Alloy-to-Prometheus switch may proceed once the
+old/current producer is proved; do not require the not-yet-applied source.
+Same-source reruns must prove that source is already current. The existing
+Grafana expected-target helper remains rule-ownership preparation only, with
+UID, five-label identity, query, tombstone and recovery formats unchanged.
+
+The existing eight-field Prometheus coverage receipt remains byte-compatible
+when all expected targets are legacy/Prometheus. It counts only Prometheus
+rows. With native rows present, provide a separate source-labelled native
+coverage and budget projection with explicit point-in-time semantics. Never
+count Alloy rows as Prometheus `activeTargets`, insert them into the existing
+24-hour Prometheus sample/series pools, or treat an old Prometheus series with
+the same labels as current Alloy proof. Native health and metric evidence is
+not replayed with a direct HTTP request to the declared endpoint.
+
+### Effective Linux namespace proof
+
+The proof uses the same provider, effective command arguments, environment,
+and overlay selection as the existing o11y lifecycle. Expose only a fixed
+whitelist of provider executable/version, relevant effective pod/network
+controls, container identities and state, and required process fields. Do not
+print full Compose config, raw inspect output, container environment, private
+endpoints, or command output containing private values.
+
+Use bounded provider inspection to identify the running Alloy container and
+actual project siblings, including containers explicitly joining Alloy's
+network namespace. Bind observations to stable IDs, running PIDs, start times,
+image and relevant process arguments. On the Linux runtime host, compare the
+kernel namespace identity `(st_dev, st_ino)` from `/proc/<pid>/ns/net`; do not
+infer it from a Pod field, IP, namespace pathname, or Podman `SandboxKey`
+string. Bracket identity and process evidence before and after inspection and
+refuse drift, unreadable `/proc`, unknown providers/fields, unbounded results,
+shared/host/container/service network modes, published port 12345, or
+conflicting provider and launch inputs. A permissions failure is unverified.
+
+The pre-placement gate validates the private projection and reviewed
+fixed-self source binding, then proves the actual current producer and
+namespace. Immediately inside the normal lifecycle apply, re-resolve the
+effective provider and repeat the namespace proof before Compose can start or
+recreate Alloy; refuse provider, environment, argv or overlay drift. After
+apply, prove isolation again. The o11y-only `x-podman.in_pod: false` declaration
+must be top-level, where the existing Podman Compose provider consumes it. Do
+not add a blanket legacy CLI flag or change global `common.sh`. If the normal
+path cannot guarantee an immediate pre-up recheck, add only the smallest
+o11y-scoped lifecycle hook needed. A currently shared or unknown topology
+requires an ordinary, reviewed probe-disabled convergence first; do not
+temporarily start the handler, remove containers automatically, stop shared
+services, or delete volumes.
+
+Capture a host UTC pre-apply lower bound immediately before the normal
+lifecycle apply. For post-apply freshness, require raw Prometheus sample
+timestamps later than both that bound and the new Alloy process start. Query
+evaluation time and historical maxima are not sample timestamps. For a
+survey-only rerun without an apply bound, bind evidence to the actual current
+process start and the declared freshness window.
+
+### Typed native component and sample evidence
+
+Read only the fixed DETAIL endpoints inside Alloy loopback using the existing
+bounded `/dev/tcp` request pattern. Accept only the generated native blackbox
+component IDs plus `prometheus.scrape.alloy_self`; do not accept a caller URL
+or invoke `/probe/metrics` to repeat a health request. Bound HTTP status, bytes,
+time, JSON depth and entry counts. Parse DETAIL `arguments` as unique typed
+attributes keyed by name and type. Reject duplicate, missing, redacted,
+malformed, unexpected, or mismatched fields. The debug target's internal job
+component ID is distinct from the canonical `labels.job`; bind both separately.
+The debug target body is a typed name/type/value array, not a flat dictionary.
+Require exact target identity, component health, current scrape status,
+`last_scrape`, and the reviewed finite effective limits. The health scrape's
+per-target sample cap remains the stricter reviewed cap; the Alloy self-scrape
+uses the existing shared sample cap. Both retain the shared body and label
+limits and `extra_metrics=true`; the fixed health family filter does not apply
+to the self-scrape.
+
+The native exporter configuration is a typed capsule containing a string that
+encodes its module configuration. Decode that capsule with `json.loads` once,
+then parse the resulting string only with the existing duplicate-key,
+alias/depth-limited safe YAML loader. Compare the exact generated module,
+target, status list, timeout, unit-bearing response cap, redirect/proxy policy,
+TLS verification, DNS name and CA selection. Never use `eval`, `literal_eval`,
+unsafe YAML, guessed flat maps, or the inventory projection as proof that the
+running configuration loaded.
+
+Normalize an omitted DETAIL default only when the exact pinned Alloy v1.5.1
+schema/source establishes its value and a focused test covers the omission.
+The fixture confirms that the health scrape omits its default interval and the
+self-scrape omits its default timeout; implementation must verify those exact
+pinned defaults rather than assume them. A missing non-default or required
+limit remains unverified. Full DETAIL payloads and raw private endpoints stay
+under protected tasks; visible output is limited to fixed statuses, counts,
+and safe effective-limit categories.
+
+For the native source, query Prometheus for exact forwarded `up`, raw sample,
+and body diagnostics bound to the canonical target/job/instance/environment/
+cluster labels. Require unique samples with raw timestamps inside the
+freshness window and after the phase-specific lower bound. The `probe_success`
+value is endpoint health: `probe_success=0` with scrape `up=1` is an observed
+endpoint failure, not a missing sample or collection failure. Likewise the
+`scrape_body_size_bytes` diagnostic measures Alloy's exporter-metrics response,
+not bytes in the remote health response. The 4,096-byte health body cap is
+proven from the loaded module and pinned synthetic behavior, not that metric.
+
+For a return to Prometheus, post-apply proof requires the exact Prometheus
+active target, loaded Prometheus limits and fresh samples, absence of the
+native exporter/scrape components, and no duplicate producer. Do not accept
+stale same-label Alloy history as evidence of a new Prometheus scrape. Any
+post-apply mismatch returns a fixed unverified/failure category and preserves
+the running state for operator review; it never automatically stops, deletes,
+reverts, recreates, or resets telemetry storage.
+
+### Existing consumer projections
+
+The baseline survey keeps direct GET, Prometheus `activeTargets`, 24-hour
+sample/series observations, and Prometheus loaded-job pools Prometheus-only.
+Native DETAIL and forwarded samples form separate, explicitly point-in-time
+evidence. They are not disguised as direct endpoint observations or
+24-hour maxima. The budget filter compares the native module's loaded finite
+caps with the same reviewed native declaration without adding native jobs to
+Prometheus counts or synthetic Prometheus scrape pools. Its on-disk source
+check remains separate from loaded runtime acceptance. The fixed survey
+alert-input envelope remains stable when native mode is absent; native fields
+are additive and conditional when the validated native source exists.
+
+The Alloy alert-counter input may be sourced from the native fixed self
+component only after current native binding and fresh forwarded samples are
+proved. The other existing Loki/Tempo inputs and all public family statuses
+and refusal reasons remain unchanged. Do not add alert-source annotations,
+tombstone fields, recovery-format changes, a generic transition manager, or a
+producer journal.
+
+The profile acceptance path must prepare and validate the same private
+availability projection used by deploy, derive only the fixed loopback profile
+address, and pass the fixed mode through its existing operation payload. Run
+the candidate validator before any temporary configuration write, retaining
+the established profile gates and guaranteed restoration flow.
+
+### Evidence and limits
+
+The typed DETAIL records from the pinned Alloy v1.5.1 fake run are the parser
+fixtures for this source implementation. A pinned startup/readback and
+fresh-remote-write test covers the current rendered configuration; a separate
+loopback TLS module test changes only the target address and covers verified
+200, rejected 503, over-cap body, and no-redirect behavior. These establish
+source parsing and isolated synthetic component behavior only. They do not
+prove the actual host provider namespace, real endpoint availability,
+production TLS/transport, retention, rollout, or alert delivery. Those private
+and live gates remain open under the rollout plan and task 3.3.

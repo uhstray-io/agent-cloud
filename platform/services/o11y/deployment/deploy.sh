@@ -53,7 +53,23 @@ step_start() {
   # compose-spec change, so compose_up_if_changed (common.sh) hashes them with the compose
   # files in effect and recreates only when that digest or an image differs from what the
   # running containers started with. A re-run with identical inputs touches nothing.
+  if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
+    local availability_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"
+    [ -f "$availability_helper" ] || error "Availability runtime verifier is missing."
+    export COMPOSE_CMD
+    if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
+      error "Availability refused because the effective provider, candidate network configuration, or Linux namespace proof is unverified."
+    fi
+    info "Availability provider and current Linux namespace proof passed immediately before lifecycle apply."
+  fi
   compose_up_if_changed config
+  if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
+    if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256="" \
+      python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
+      error "Availability post-apply Linux namespace proof is unverified; the running stack is preserved for review."
+    fi
+    info "Availability post-apply Linux namespace proof passed."
+  fi
 }
 
 step_wait_healthy() {
