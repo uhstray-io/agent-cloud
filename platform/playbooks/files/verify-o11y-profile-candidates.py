@@ -159,7 +159,12 @@ def validate_candidates(disabled: str, enabled: str, profile_address: str = "all
         pattern = rf"profile\.{profile_type}\s*\{{\s*enabled\s*=\s*{str(enabled_value).lower()}\s*\}}"
         if len(re.findall(pattern, scrape)) != 1:
             raise Refusal("candidate_invalid")
-    return {"target_count": 1, "profile_type_count": len(PROFILE_TYPES), "profile_types": list(PROFILE_TYPES)}
+    return {
+        "target_count": 1,
+        "profile_type_count": len(PROFILE_TYPES),
+        "profile_types": list(PROFILE_TYPES),
+        "profile_address": profile_address,
+    }
 
 
 def _bounded_command(argv: list[str], *, timeout: float, max_bytes: int) -> tuple[int, bytes]:

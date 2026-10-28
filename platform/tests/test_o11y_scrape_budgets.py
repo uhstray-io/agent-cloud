@@ -1,3 +1,4 @@
+import importlib.util
 import ipaddress
 import json
 import re
@@ -22,6 +23,11 @@ LIMITS = {
 # Deterministic synthetic host from the canonical RFC1918 test network; this is
 # not derived from any site inventory or deployment topology.
 PRIVATE_TEST_IP = str(ipaddress.ip_network("192.168.0.0/16")[20])
+FILTER_PATH = ROOT / "platform/playbooks/filter_plugins/o11y_scrape_budget.py"
+FILTER_SPEC = importlib.util.spec_from_file_location("o11y_scrape_budget", FILTER_PATH)
+assert FILTER_SPEC and FILTER_SPEC.loader
+BUDGET = importlib.util.module_from_spec(FILTER_SPEC)
+FILTER_SPEC.loader.exec_module(BUDGET)
 LIMIT_FIELDS = {
     "body_size_limit": f"{LIMITS['body_size_limit_bytes']}B",
     "sample_limit": LIMITS["sample_limit"],
@@ -284,6 +290,89 @@ def test_availability_off_leaves_alloy_probe_and_self_scrape_absent():
     assert 'prometheus.remote_write "local"' not in rendered
 
 
+def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_and_native_positive():
+    prometheus = {
+        "status": "observed", "source": "prometheus", "intended_source": "prometheus",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "prometheus",
+            "alloy_self": {"up": 1, "scrape_samples_scraped": 415},
+            "scrape_body_size_bytes": {
+                "status": "unavailable", "reason": "legacy_extra_scrape_metrics_not_enabled",
+            },
+        },
+    }
+    assert BUDGET.o11y_availability_source_coverage(prometheus) == {
+        "status": "observed", "source": "prometheus", "matches_intended": True,
+        "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+        "body_counter": "not_exposed_by_legacy_prometheus",
+    }
+    prom_native_absence = json.loads(json.dumps(prometheus))
+    prom_native_absence["evidence"]["native_components"] = {
+        "status": "observed", "reason": "native_components_absent", "component_count": 3,
+    }
+    assert BUDGET.o11y_availability_source_coverage(prom_native_absence) == {
+        "status": "observed", "source": "prometheus", "matches_intended": True,
+        "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+        "body_counter": "not_exposed_by_legacy_prometheus", "native_components": "absent",
+    }
+    prom_native_absence["evidence"]["native_components"]["reason"] = "component_status_unavailable"
+    assert BUDGET.o11y_availability_source_coverage(prom_native_absence)["status"] == "unavailable"
+    malformed_prometheus = json.loads(json.dumps(prometheus))
+    malformed_prometheus["evidence"]["scrape_body_size_bytes"] = {"status": "observed", "value": 0}
+    assert BUDGET.o11y_availability_source_coverage(malformed_prometheus)["status"] == "unavailable"
+
+    native_intended_but_prom_current = json.loads(json.dumps(prometheus))
+    native_intended_but_prom_current.update(intended_source="alloy", matches_intended=False)
+    projected = BUDGET.o11y_availability_source_coverage(native_intended_but_prom_current)
+    assert projected["status"] == "observed" and projected["source"] == "prometheus"
+    assert projected["matches_intended"] is False
+    missing_native = {
+        "status": "unavailable", "reason": "native_source_unavailable", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_coverage(missing_native) == {
+        "status": "unavailable", "reason": "native_source_unavailable", "source": "unknown",
+    }
+
+    limits = {
+        "body_size_limit": 16_777_216, "sample_limit": 64, "label_limit": 64,
+        "label_name_length_limit": 128, "label_value_length_limit": 2048,
+    }
+    native = {
+        "status": "observed", "source": "alloy", "intended_source": "alloy",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "alloy",
+            "detail": {
+                "status": "observed", "reason": "fixed_native_components_loaded", "target_count": 1,
+                "targets": [{
+                    "target_id": "service:api",
+                    "status": "observed",
+                    "probe_health": "down",
+                    "limits": limits,
+                }],
+                "alloy_self": {"status": "observed", "limits": limits},
+            },
+            "samples": {
+                "status": "observed", "reason": "fresh_native_samples", "freshness_seconds": 300,
+                "alloy_self": {"status": "observed", "scrape_up": 1,
+                                "scrape_samples_scraped": 415, "scrape_body_size_bytes": 73_675},
+                "targets": [{
+                    "target_id": "service:api", "status": "observed", "scrape_up": 1,
+                    "probe_success": 0, "probe_http_status_code": 503, "probe_duration_seconds": "0.25",
+                    "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
+                }],
+            },
+        },
+    }
+    assert BUDGET.o11y_availability_source_coverage(native) == {
+        "status": "observed", "source": "alloy", "matches_intended": True,
+        "sample_count": 1, "probe_failed_count": 1, "scrape_failed_count": 0,
+        "body_counter": "observed_positive",
+    }
+
+
 def test_prometheus_alloy_job_is_omitted_only_for_availability_mode():
     base = {
         "local_mode": False, "o11y_environment": "production",
@@ -304,8 +393,9 @@ def test_prometheus_alloy_job_is_omitted_only_for_availability_mode():
 def test_availability_compose_overlays_bind_only_loopback_and_deduplicate_ca_mount():
     deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
     phase = next(play for play in deploy if play.get("name") == "Phase 2: Start o11y")
+    lifecycle_block = next(task for task in phase["tasks"] if "block" in task)
     deploy_task = next(
-        task for task in phase["tasks"]
+        task for task in lifecycle_block["block"]
         if task.get("name") == "Run deploy.sh (container lifecycle)"
     )
     overlays = deploy_task["environment"]["COMPOSE_OVERLAYS"]
@@ -338,7 +428,7 @@ def test_availability_compose_overlays_bind_only_loopback_and_deduplicate_ca_mou
     }]
 
 
-def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_default():
+def test_deploy_availability_gates_current_and_postapply_source_before_reporting():
     plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
     phase = next(play for play in plays if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
     tasks = phase["tasks"]
@@ -349,12 +439,6 @@ def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_
     placement = next(
         index for index, task in enumerate(tasks)
         if task.get("name") == "Place the monorepo + ensure podman/compose"
-    )
-    gate = next(
-        task for task in tasks
-        if task.get("name") == (
-            "Refuse availability deployment until runtime isolation and readback gates are implemented"
-        )
     )
     assert prepare < placement
     validator_path = ROOT / "platform/playbooks/tasks/prepare-o11y-availability.yml"
@@ -370,7 +454,10 @@ def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_
         if task.get("name") == "Require actual current Alloy network namespace isolation before placement"
     )
     assert namespace_result["ansible.builtin.assert"]["that"][0] == "_o11y_namespace_preplacement.rc == 0"
-    assert gate["ansible.builtin.assert"]["that"] == "not (_o11y_availability.enabled | bool)"
+    assert not any(
+        "Refuse availability deployment until runtime isolation" in task.get("name", "")
+        for task in tasks
+    )
     command = next(
         task for task in validator
         if task.get("name") == "Validate and privately prepare the reviewed availability projection"
@@ -381,9 +468,16 @@ def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_
         if task.get("name") == "Store the protected availability projection for the renderer"
     )
     assert projection["no_log"] is True
+    reviewed_source = next(
+        task for task in validator
+        if task.get("name") == "Prove the current Alloy self-metrics producer before a reviewed source transition"
+    )
+    assert reviewed_source["no_log"] is True
+    assert "equalto', 'alloy:12345'" in reviewed_source["when"]
     phase_two = next(play for play in plays if play.get("name") == "Phase 2: Start o11y")
+    lifecycle_block = next(task for task in phase_two["tasks"] if "block" in task)
     lifecycle = next(
-        task for task in phase_two["tasks"]
+        task for task in lifecycle_block["block"]
         if task.get("name") == "Run deploy.sh (container lifecycle)"
     )
     assert "namespace_snapshot_sha256" in lifecycle["environment"][
@@ -392,14 +486,46 @@ def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_
     assert "runtime_context_sha256" in lifecycle["environment"][
         "O11Y_EXPECTED_RUNTIME_CONTEXT_SHA256"
     ]
+    source_file = next(
+        task for task in lifecycle_block["block"]
+        if task.get("name") == "Write the protected source-review declaration"
+    )
+    assert source_file["no_log"] is True and source_file["ansible.builtin.copy"]["mode"] == "0600"
+    postapply = next(
+        task for task in next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")["tasks"]
+        if task.get("name") == "Read back the current Alloy self-metrics producer after lifecycle apply"
+    )
+    assert postapply["no_log"] is True
+    assert "require_health_targets" in postapply["ansible.builtin.command"]["stdin"]
+    classified = next(
+        task for task in next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")["tasks"]
+        if task.get("name") == "Classify the private post-apply producer response"
+    )
+    assert "rescue" in classified
+    assert all(step.get("no_log") is True for step in classified["block"] + classified["rescue"])
+    report = next(
+        task for task in next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")["tasks"]
+        if task.get("name") == "Report fixed post-apply producer status"
+    )
+    assert "no_log" not in report
+    assert "_o11y_source_postapply_raw" not in str(report)
     deploy_script = (DEPLOY / "deploy.sh").read_text(encoding="utf-8")
     namespace_checks = [
         offset for offset in range(len(deploy_script))
         if deploy_script.startswith("--verify-availability-namespace --candidate", offset)
     ]
     apply = deploy_script.index("compose_up_if_changed config")
-    assert len(namespace_checks) == 2
-    assert namespace_checks[0] < apply < namespace_checks[1]
+    staged_hook = deploy_script.index("compose_staged_up() {")
+    final_apply = deploy_script.index("compose up -d --force-recreate --remove-orphans", staged_hook)
+    assert len(namespace_checks) == 3
+    assert namespace_checks[0] < staged_hook < namespace_checks[1] < final_apply
+    assert final_apply < apply < namespace_checks[2]
+    source_check = deploy_script.index("--verify-availability-source")
+    boundary = deploy_script.index("O11Y_AVAILABILITY_PREAPPLY_EPOCH=")
+    assert namespace_checks[0] < source_check < boundary < apply
+    assert 'O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR"' in deploy_script[
+        source_check - 180 : source_check + 120
+    ]
 
 
 @pytest.mark.parametrize(

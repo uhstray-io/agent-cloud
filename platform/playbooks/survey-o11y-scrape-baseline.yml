@@ -59,7 +59,19 @@
     _survey_engine: "{{ container_engine | default('') }}"
     _baseline_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
     _survey_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _survey_monorepo_dir }}/{{ monorepo_deploy_path }}"
     _survey_scrape_config_dir: "{{ _survey_monorepo_dir }}/{{ monorepo_deploy_path }}/config/scrape.d"
+    _survey_availability_source_json: >-
+      {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+          'targets': o11y_expected_metrics_targets | default([]),
+          'availability': _o11y_availability | default({}),
+          'shared_limits': o11y_scrape_limits | default({}),
+          'candidate_config_sha256': _survey_candidate_config_sha256 | default(''),
+          'environment': o11y_environment | default('prod'),
+          'cluster': o11y_cluster | default('agent-cloud-local'),
+          'lower_bound': none,
+          'freshness_seconds': 300,
+          'require_health_targets': true} | to_json }}
     _survey_public_jobs:
       - alloy
       - agentgateway
@@ -102,6 +114,24 @@
         quiet: true
       when: not ansible_check_mode
 
+    - name: Hash the reviewed rendered Alloy config privately
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/config.alloy"
+        checksum_algorithm: sha256
+      register: _survey_candidate_config_stat
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Keep the rendered Alloy candidate digest private
+      ansible.builtin.set_fact:
+        _survey_candidate_config_sha256: "{{ _survey_candidate_config_stat.stat.checksum }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Prepare the reviewed native availability source projection
+      ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
+      when: not ansible_check_mode
+
     - name: Collect and sanitize the active scrape baseline on the receiver
       ansible.builtin.script:
         cmd: "{{ _baseline_helper }}"
@@ -111,7 +141,12 @@
       check_mode: false
       no_log: true
       environment:
+        CONTAINER_ENGINE: "{{ _survey_engine }}"
+        O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
+        O11Y_AVAILABILITY_ENABLED: "{{ 'true' if ((_o11y_availability | default({})).get('enabled', false) | bool) else 'false' }}"
+        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if not (local_mode | default(false) | bool) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if ((_o11y_availability | default({})).get('enabled', false) | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability | default({})).get('targets', []) | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
         O11Y_SCRAPE_CONFIG_DIR: "{{ _survey_scrape_config_dir }}"
+        O11Y_AVAILABILITY_SOURCE_JSON: "{{ _survey_availability_source_json }}"
       when: not ansible_check_mode
 
     - name: Parse and classify the helper response
@@ -127,11 +162,12 @@
           ansible.builtin.set_fact:
             _scrape_helper_envelope_valid: >-
               {{ _scrape_survey_result is mapping
-                 and (_scrape_survey_result.keys() | list | sort) == ['alert_input_availability', 'baseline', 'loaded_limit_readback', 'source_limit_readback']
+                 and (_scrape_survey_result.keys() | list | sort) == ['alert_input_availability', 'baseline', 'loaded_limit_readback', 'native_availability_source', 'source_limit_readback']
                  and _scrape_survey_result.get('baseline') is mapping
                  and _scrape_survey_result.get('loaded_limit_readback') is mapping
                  and _scrape_survey_result.get('source_limit_readback') is mapping
-                 and _scrape_survey_result.get('alert_input_availability') is mapping }}
+                 and _scrape_survey_result.get('alert_input_availability') is mapping
+                 and _scrape_survey_result.get('native_availability_source') is mapping }}
           no_log: true
 
         - name: Classify the helper response envelope
@@ -242,6 +278,28 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Compute source-specific availability coverage
+      ansible.builtin.set_fact:
+        _scrape_availability_source_coverage: >-
+          {{ _scrape_survey_result.native_availability_source | o11y_availability_source_coverage }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Validate the fixed source-specific availability projection
+      ansible.builtin.assert:
+        that:
+          - _scrape_availability_source_coverage.status in ['observed', 'unavailable']
+          - _scrape_availability_source_coverage.source in ['prometheus', 'alloy', 'unknown']
+          - _scrape_availability_source_coverage.keys() | sort in [
+              ['reason', 'source', 'status'],
+              ['body_counter', 'matches_intended', 'probe_failed_count', 'sample_count', 'scrape_failed_count', 'source', 'status'],
+              ['body_counter', 'matches_intended', 'native_components', 'probe_failed_count', 'sample_count', 'scrape_failed_count', 'source', 'status']
+            ]
+        fail_msg: "The native availability-source projection is outside its fixed public schema."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
     - name: Validate the fixed alert-input availability projection
       ansible.builtin.assert:
         that:
@@ -281,6 +339,11 @@
         msg: "{{ _scrape_alert_input_availability | to_json }}"
       when: not ansible_check_mode
 
+    - name: Report source-specific availability coverage
+      ansible.builtin.debug:
+        msg: "{{ _scrape_availability_source_coverage | to_json }}"
+      when: not ansible_check_mode
+
     - name: Report the bounded baseline receipt
       ansible.builtin.debug:
         msg: "{{ _scrape_baseline_receipt | to_json }}"
@@ -307,4 +370,7 @@
             status: check_mode_unverified
             reason: "Prometheus alert-input queries are skipped in check mode."
             families: []
+          native_availability_source:
+            status: check_mode_unverified
+            reason: "Current producer and native component readback are skipped in check mode."
       when: ansible_check_mode

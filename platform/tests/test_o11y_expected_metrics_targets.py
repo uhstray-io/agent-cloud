@@ -219,6 +219,27 @@ def test_expected_target_coverage_counts_exact_missing_unexpected_and_unhealthy_
     assert (unhealthy["matched_count"], unhealthy["unhealthy_count"]) == (1, 1)
 
 
+def test_expected_target_coverage_keeps_native_source_out_of_prometheus_counts():
+    prometheus = _expected()
+    native = _expected(
+        uid="o11y_missing_alloy", job="alloy", instance="alloy:12345",
+        service="o11y/alloy", source="alloy", target_id="service:o11y",
+    )
+    declaration = {"reviewed": True, "targets": [prometheus, native]}
+    receipt = SURVEY.expected_target_coverage(_target_document([_active(prometheus)]), declaration)
+    assert receipt == {
+        "status": "observed", "reason": "exact_match", "expected_count": 1,
+        "active_target_count": 1, "matched_count": 1, "missing_count": 0,
+        "unexpected_count": 0, "unhealthy_count": 0,
+    }
+
+    native_only = SURVEY.expected_target_coverage(_target_document([]), {
+        "reviewed": True, "targets": [native],
+    })
+    assert native_only["reason"] == "no_expected_targets"
+    assert native_only["expected_count"] == 0
+
+
 def test_expected_target_coverage_refuses_ambiguous_and_untrusted_inputs_without_labels():
     expected = _expected()
     declaration = {"reviewed": True, "targets": [expected]}
@@ -257,6 +278,28 @@ def test_expected_target_declaration_refuses_invalid_duplicates_and_uid_collisio
         SURVEY.validate_expected_target_declaration(
             targets, retired, reviewed=True, other_rule_uids=other_uids
         )
+
+
+def test_expected_target_source_is_private_optional_and_fixed_for_alloy_self():
+    legacy, _ = SURVEY.validate_expected_target_declaration([_expected()])
+    assert legacy == [_expected()]
+
+    native = _expected(
+        job="alloy", instance="alloy:12345", service="o11y/alloy",
+        source="alloy", target_id="service:o11y",
+    )
+    normalized, _ = SURVEY.validate_expected_target_declaration([native])
+    assert normalized == [native]
+
+    for invalid in (
+        {**native, "source": "remote-prometheus"},
+        {**native, "instance": "another:12345"},
+        {**native, "target_id": "service:other"},
+        {**native, "source": "prometheus", "target_id": "service:o11y"},
+        {**native, "source": []},
+    ):
+        with pytest.raises(SURVEY.Refusal, match="invalid_declaration"):
+            SURVEY.validate_expected_target_declaration([invalid])
 
 
 def test_validator_cli_reports_only_fixed_refusal_and_hides_input_values():
@@ -1426,6 +1469,9 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
 
     survey_path = ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml"
     survey = yaml.safe_load(survey_path.read_text())
+    reviewed_paths = survey[1]["vars"]["_reviewed_checkout_payload_paths"]
+    assert "platform/playbooks/files/o11y-coverage-census.py" in reviewed_paths
+    assert "platform/playbooks/filter_plugins/o11y_scrape_budget.py" in reviewed_paths
     receiver = next(
         play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
     )
@@ -1436,9 +1482,23 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
     )
     assert task["no_log"] is True
     assert task["when"] == "not ansible_check_mode"
+    native_source = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Read current native source evidence privately"
+    )
+    assert native_source["no_log"] is True and native_source["failed_when"] is False
+    assert native_source["ansible.builtin.command"]["argv"][-1] == "--verify-availability-source"
+    assert "_expected_target_native_source" in native_source["register"]
+    project = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Project the fixed native source evidence privately"
+    )
+    assert "o11y_availability_source_coverage" in project["ansible.builtin.set_fact"]["_expected_target_native_source"]
     report = next(
         task
         for task in receiver["tasks"]
         if task.get("name") == "Report expected-target coverage without target labels"
     )
     assert "_expected_target_coverage | to_json" in report["ansible.builtin.debug"]["msg"]
+    assert "prometheus_target_coverage" in report["ansible.builtin.debug"]["msg"]
+    assert "native_availability_source" in report["ansible.builtin.debug"]["msg"]

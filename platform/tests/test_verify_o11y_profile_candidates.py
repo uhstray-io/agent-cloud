@@ -121,6 +121,7 @@ def test_candidate_structure_accepts_only_cpu_self_profile():
             "process_cpu", "memory", "block", "goroutine", "mutex", "fgprof",
             "godeltaprof_memory", "godeltaprof_mutex", "godeltaprof_block",
         ],
+        "profile_address": "alloy:12345",
     }
 
 
@@ -691,9 +692,30 @@ def test_profile_playbook_uses_validated_availability_projection_and_fixed_expec
     )
     assert prepare < outer_render
     assert tasks[prepare]["ansible.builtin.import_tasks"] == "tasks/prepare-o11y-availability.yml"
+    assert playbook[-1]["vars"]["_deploy_dir"] == "{{ _profile_deploy_dir }}"
     assert "profile_address" in run["ansible.builtin.command"]["stdin"]
     assert "127.0.0.1:12345" in run["ansible.builtin.command"]["stdin"]
     assert 'estate_coverage_inventory' in str(playbook[2]["vars"]["_profile_internal_overrides"])
+
+
+def test_acceptance_reuses_validated_profile_address_in_operation_payload():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/accept-o11y-profile-pilot.yml").read_text())
+    controller = next(
+        play for play in playbook
+        if play.get("name") == "Require all profile pilot gates before the live operation"
+    )
+    assert "_profile_availability" in controller["vars"]
+    assert (
+        "_profile_candidate.profile_address == _profile_address"
+        in controller["tasks"][-1]["ansible.builtin.assert"]["that"]
+    )
+    operation_play = playbook[-1]
+    block = next(task["block"] for task in operation_play["tasks"] if "block" in task)
+    run = next(
+        task for task in block
+        if task.get("name") == "Run the Alloy-only activation, delivery, restoration, and post-disable query proof"
+    )
+    assert "'profile_address': _profile_address" in run["ansible.builtin.command"]["stdin"]
 
 
 @pytest.mark.parametrize("stdout", ["", "not-json"])

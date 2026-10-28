@@ -215,6 +215,7 @@ class CoverageCensusTests(unittest.TestCase):
             "target_id": "service:alpha", "service_identity": "alpha",
             "environment": "production", "cluster": "prod-cluster",
             "endpoint": f"https://{PRIVATE_TEST_IP}/healthz",
+            "freshness_seconds": 300,
             "expected_status_codes": [200], "tls_server_name": "health.example.invalid",
             "trust": "system", "interval_seconds": 60,
             "scrape_timeout_seconds": 20, "probe_timeout_seconds": 10,

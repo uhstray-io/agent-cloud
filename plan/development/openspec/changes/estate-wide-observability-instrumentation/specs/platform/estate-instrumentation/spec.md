@@ -131,6 +131,23 @@ absence of the native components, and absence of duplicate producers. Failed
 post-apply proof SHALL be reported as unverified; it SHALL NOT automatically
 delete, stop, revert, or recreate containers, pods, or volumes.
 
+The fixed Alloy v1.5.1 `/api/v0/web/components` response SHALL be treated as a
+complete root graph only; it SHALL NOT be treated as a registry for isolated
+module or remote-config controllers. The empty `moduleID` and omitted
+`createdModuleIDs` fields SHALL NOT prove those controller scopes absent. A
+return-to-Prometheus absence proof SHALL require a normal apply that created a
+new Alloy process after installing the exact reviewed flat candidate. It SHALL
+bind the actual container ID, image, PID, start time, executed arguments, sole
+read-only `/etc/alloy/config.alloy` mount, and actual mounted config bytes to
+the reviewed rendered candidate. Ready and root-list observations SHALL be
+bracketed by unchanged process/config identity; expected healthy service
+sentinels SHALL be present and every forbidden native root component absent.
+Imports, custom modules, `remotecfg`, nested or remote controller scope, an
+unbound command/mount/config, or lack of a provably fresh process SHALL leave
+the result unverified. A same-process root list SHALL NOT prove absence, and
+the playbook SHALL NOT force-restart core services or consult a prior-component
+registry to satisfy this gate.
+
 Profile candidate acceptance SHALL use the same validated private availability
 projection and fixed profile target address as deployment. It SHALL validate
 the rendered candidate before writing temporary configuration, and SHALL

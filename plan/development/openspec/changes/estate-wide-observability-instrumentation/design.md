@@ -1475,6 +1475,22 @@ post-apply mismatch returns a fixed unverified/failure category and preserves
 the running state for operator review; it never automatically stops, deletes,
 reverts, recreates, or resets telemetry storage.
 
+The fixed Alloy v1.5.1 `/api/v0/web/components` endpoint is a complete bounded
+root graph, not a registry of isolated module or remote-config controllers.
+Its `moduleID=""` values and omitted `createdModuleIDs` cannot prove those other
+controller scopes absent. A return-to-Prometheus absence claim therefore needs
+a normal apply that created a new Alloy process after the exact flat candidate
+config was installed. Bind the actual container ID, image, PID, start time,
+executed arguments, single read-only `/etc/alloy/config.alloy` mount, and the
+actual mounted config bytes to the reviewed rendered candidate. Bracket ready
+and root-list reads with unchanged process/config identity; require healthy
+known service sentinels and no forbidden native root components, imports,
+custom modules, or `remotecfg`. A ready response or same-process root list alone
+is insufficient. If the normal apply did not create a provably fresh process,
+the actual command/mount/config cannot be bound, or nested/remote controller
+scope is possible, the result remains unverified. Do not force-restart a core
+service or add a prior-component registry to make absence appear proven.
+
 ### Existing consumer projections
 
 The baseline survey keeps direct GET, Prometheus `activeTargets`, 24-hour
