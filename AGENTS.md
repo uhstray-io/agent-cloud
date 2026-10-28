@@ -703,6 +703,7 @@ which does not exist — the content lives in the numbered architecture doc.)
 - `plan/architecture/03-testing-ci-quality.md` — Full testing strategy and implementation status
 - `plan/architecture/03-testing-ci-quality.md` — Branch deploy and validation workflow
 - `plan/development/03-guardrails-governance.md` — Branch protection & rulesets plan (config-as-code `protect-main`; evaluate→active rollout; CI-gated merges)
+- `plan/development/18-semaphore-task-retention.md` — Semaphore task history kept 30 days (daily API prune as a scheduled template, one-time operator-side `VACUUM FULL`), storage measured first, and a root-disk alert for the orchestrator host
 - `.github/rulesets/README.md` — Branch protection rulesets as config-as-code (`protect-main.json` + idempotent `apply.sh`)
 - `plan/architecture/02-service-onboarding.md` — Service onboarding checklist
 - `plan/architecture/04-credentials-access.md` — Secret generation, storage, rotation, and retirement
