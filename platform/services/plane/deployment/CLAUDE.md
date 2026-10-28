@@ -93,6 +93,11 @@ address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automatio
 |---|---|
 | Deploy or update | `Deploy Plane` (`Deploy Plane (Local)` locally) |
 | Destroy everything and redeploy | `Clean Deploy Plane` (`-e confirm_reset=<host>`) |
+| Back up the database | `Back Up Plane DB` (pg_dump of `plane-db` to an owner-only dir on the VM) |
+| Restore a named dump | `Restore Plane DB` (`-e plane_dump_file=<path>`; staging first, prior database kept as `plane_prev`) |
+
+The dump covers the database only. Uploads live in the MinIO volumes and are covered by a VM
+snapshot before an upgrade (change task 1.7).
 
 Logs reach Loki through Alloy's container discovery. `live`, `silo` and `space` can also
 export OTLP logs (`OTEL_ENABLED`, `OTLP_ENDPOINT`), proven on 2026-10-27 but not enabled yet.

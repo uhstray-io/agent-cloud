@@ -154,3 +154,26 @@ PY
   grep -qF 'COMPOSE_PROJECT_NAME: plane' "$CLEAN"
   grep -qF "'COMPOSE_PROJECT_NAME': 'plane'" "$ENV_TPL"
 }
+
+@test "plane: backup is owner-only, never overwrites, and checks the dump is real" {
+  local f="$REPO_ROOT/platform/playbooks/backup-plane-db.yml"
+  grep -qF 'mode: "0700"' "$f"
+  grep -qF 'umask 077' "$f"
+  grep -qF 'set -C' "$f"
+  grep -qF 'PostgreSQL database dump' "$f"
+  grep -qF '_pg_container: plane-db' "$f"
+  grep -qF 'container_name: plane-db' "$OVERLAY"
+}
+
+@test "plane: restore needs an explicit dump, loads staging first, and always brings the stack back" {
+  local f="$REPO_ROOT/platform/playbooks/restore-plane-db.yml"
+  grep -qF 'plane_dump_file is defined' "$f"
+  grep -qF -- '-v ON_ERROR_STOP=1 --single-transaction' "$f"
+  # The live database is renamed away only after the dump has loaded into staging.
+  assert_precedes "$f" 'Restore the dump into staging' 'Swap staging into place'
+  assert_precedes "$f" 'Swap staging into place' '      always:'
+  grep -qF 'RENAME TO {{ _prev_db }}' "$f"
+  # The restart is in always:, through deploy.sh, so the migrator runs and the proxy hold holds.
+  assert_precedes "$f" '      always:' 'Bring the stack back \(forced recreate through deploy\.sh\)'
+  grep -qF 'FORCE_RECREATE: "true"' "$f"
+}

@@ -1,0 +1,83 @@
+---
+# backup-plane-db.yml — timestamped pg_dump of Plane's Postgres (plane-db). Modelled on
+# backup-n8n-db.yml: a STANDING tool, run before every Plane release bump and before any
+# clean deploy whose data matters.
+#
+# Read-only against the database. Writes ONE new timestamped dump file (0600, umask'd at
+# creation, noclobber) into an owner-only (0700) directory on the VM. The dump holds every
+# workspace, project and work item, so it stays on the host and is removed deliberately,
+# never silently. Re-running creates a new dump; it never overwrites one.
+#
+# Covers the DATABASE only. Uploads live in the plane_uploads/minio volumes and are covered
+# by snapshot-vm.yml before an upgrade (change task 1.7) until the PBS restore gate lands.
+#
+# The paired restore is restore-plane-db.yml.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# Ansible exits 0 on "no hosts matched", so without this an empty group reports SUCCESS
+# having written no dump.
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: plane_svc
+    preflight_group_expected: plane_svc
+
+- name: "Back up the Plane database (pg_dump)"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    # Fixed in compose.agentcloud.yml; the role and database come from env.j2's DATABASE_URL.
+    _pg_container: plane-db
+    _db_user: plane
+    _db_name: plane
+    _backup_dir: "{{ plane_backup_dir | default((local_home_dir | default('/home/' ~ (ansible_user | default('deploy')))) ~ '/plane-db-backups') }}"
+
+  tasks:
+    - name: "Assert the Postgres container is running"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", "inspect", "--format", "{{ '{{.State.Running}}' }}", "{{ _pg_container }}"]
+      register: _pg_state
+      changed_when: false
+      failed_when: _pg_state.rc != 0 or _pg_state.stdout != 'true'
+      check_mode: false
+
+    - name: "Ensure the owner-only backup directory exists"
+      ansible.builtin.file:
+        path: "{{ _backup_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: "Name the dump artifact (frozen for the whole run)"
+      # A play var holding now() re-evaluates at every reference; set_fact freezes it once.
+      ansible.builtin.set_fact:
+        _dump_file: "{{ _backup_dir }}/{{ _db_name }}-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}.sql"
+
+    - name: "Dump the database (plain SQL)"
+      # stdout goes straight to the file, so the dump never enters the run record. umask keeps
+      # it 0600; noclobber (set -C) fails a same-second collision instead of overwriting.
+      ansible.builtin.shell: |
+        umask 077
+        set -C
+        {{ _engine | quote }} exec {{ _pg_container | quote }} pg_dump -U {{ _db_user | quote }} -d {{ _db_name | quote }} > {{ _dump_file | quote }}
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "Verify the dump is real (carries the pg_dump header)"
+      ansible.builtin.command:
+        argv: ["grep", "-qm1", "PostgreSQL database dump", "{{ _dump_file }}"]
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: "Report the artifact"
+      ansible.builtin.debug:
+        msg: >-
+          Dumped {{ _db_name }} from {{ _pg_container }} to {{ _dump_file }}. Pass it to
+          restore-plane-db.yml as -e plane_dump_file={{ _dump_file }}. Uploads are not in it
+          (snapshot the VM for those). Remove it deliberately once it is no longer needed.
