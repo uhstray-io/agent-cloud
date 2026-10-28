@@ -1487,13 +1487,26 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
         if task.get("name") == "Read current native source evidence privately"
     )
     assert native_source["no_log"] is True and native_source["failed_when"] is False
-    assert native_source["ansible.builtin.command"]["argv"][-1] == "--verify-availability-source"
+    assert native_source["ansible.builtin.script"]["cmd"].endswith("--verify-availability-source")
+    assert "O11Y_AVAILABILITY_SOURCE_JSON" in native_source["environment"]
+    assert "delegate_to" not in native_source
     assert "_expected_target_native_source" in native_source["register"]
+    availability_projection = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Prove the fixed native source when explicitly declared"
+    )
+    assert availability_projection["delegate_to"] == "localhost"
+    for name in ("Require the reviewed native source projection", "Keep the native source projection private"):
+        guarded = next(task for task in receiver["tasks"] if task.get("name") == name)
+        assert "skipped" in guarded["when"]
     project = next(
         task for task in receiver["tasks"]
         if task.get("name") == "Project the fixed native source evidence privately"
     )
     assert "o11y_availability_source_coverage" in project["ansible.builtin.set_fact"]["_expected_target_native_source"]
+    assert "o11y_availability_source_coverage(true)" in project["ansible.builtin.set_fact"][
+        "_expected_target_native_source"
+    ]
     report = next(
         task
         for task in receiver["tasks"]

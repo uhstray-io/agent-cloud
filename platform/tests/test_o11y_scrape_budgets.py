@@ -463,6 +463,7 @@ def test_deploy_availability_gates_current_and_postapply_source_before_reporting
         if task.get("name") == "Validate and privately prepare the reviewed availability projection"
     )
     assert command["no_log"] is True and command["failed_when"] is False
+    assert command["delegate_to"] == "localhost"
     projection = next(
         task for task in validator
         if task.get("name") == "Store the protected availability projection for the renderer"
@@ -473,6 +474,10 @@ def test_deploy_availability_gates_current_and_postapply_source_before_reporting
         if task.get("name") == "Prove the current Alloy self-metrics producer before a reviewed source transition"
     )
     assert reviewed_source["no_log"] is True
+    assert "ansible.builtin.script" in reviewed_source
+    assert "O11Y_AVAILABILITY_SOURCE_JSON" in reviewed_source["environment"]
+    assert reviewed_source["environment"]["O11Y_DEPLOYMENT_DIR"] == "{{ _deploy_dir }}"
+    assert reviewed_source["environment"]["COMPOSE_CMD"] == "podman-compose"
     assert "equalto', 'alloy:12345'" in reviewed_source["when"]
     phase_two = next(play for play in plays if play.get("name") == "Phase 2: Start o11y")
     lifecycle_block = next(task for task in phase_two["tasks"] if "block" in task)
@@ -526,6 +531,47 @@ def test_deploy_availability_gates_current_and_postapply_source_before_reporting
     assert 'O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR"' in deploy_script[
         source_check - 180 : source_check + 120
     ]
+
+
+def test_default_off_source_transition_initializes_staged_helper_before_branch():
+    script = (DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    start = script.index("step_start() {")
+    end = script.index("\nstep_wait_healthy()", start)
+    body = script[start:end]
+    declaration = body.index(
+        'local availability_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"'
+    )
+    enable_branch = body.index('if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then')
+    source_branch = body.index('if [ -n "${O11Y_AVAILABILITY_SOURCE_FILE:-}" ]; then')
+    staged_hook = body.index("compose_staged_up() {")
+    assert declaration < enable_branch < source_branch < staged_hook
+    assert 'python3 "$availability_helper" --verify-availability-source' in body
+    assert "availability_source_helper" not in body
+
+
+def test_candidate_hash_is_from_same_private_controller_renderer_not_installed_bytes():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase = next(play for play in playbook if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    tasks = phase["tasks"]
+    candidate = next(
+        task for task in tasks
+        if task.get("name") == "Derive the reviewed Alloy candidate digest from the committed renderer"
+    )
+    render = next(task for task in candidate["block"] if "ansible.builtin.template" in task)
+    stat = next(task for task in candidate["block"] if "ansible.builtin.stat" in task)
+    renderer = next(
+        task for task in tasks
+        if task.get("name") == "Render Alloy config with the inventory cluster label"
+    )
+    assert render["delegate_to"] == stat["delegate_to"] == "localhost"
+    assert render["ansible.builtin.template"]["src"] == renderer["ansible.builtin.template"]["src"]
+    assert stat["ansible.builtin.stat"]["path"] == "{{ _o11y_candidate_tmp.path }}/config.alloy"
+    assert candidate["always"][0]["delegate_to"] == "localhost"
+    assert candidate["always"][0]["ansible.builtin.file"]["state"] == "absent"
+    assert not any(
+        task.get("ansible.builtin.stat", {}).get("path") == "{{ _deploy_dir }}/config/config.alloy"
+        for task in tasks
+    )
 
 
 @pytest.mark.parametrize(

@@ -79,6 +79,7 @@
       failed_when: false
       check_mode: false
       no_log: true
+      delegate_to: localhost
       when: >-
         not ansible_check_mode and
         (o11y_expected_metrics_targets_reviewed | default(false) | bool) and
@@ -92,21 +93,29 @@
         fail_msg: "The native expected-target source projection is unavailable or invalid."
         quiet: true
       no_log: true
-      when: _expected_availability_validation is defined
+      when: >-
+        _expected_availability_validation is defined and
+        not (_expected_availability_validation.skipped | default(false) | bool)
 
     - name: Keep the native source projection private
       ansible.builtin.set_fact:
         _expected_source_availability: "{{ _expected_availability_validation.stdout | from_json }}"
       no_log: true
-      when: _expected_availability_validation is defined
+      when: >-
+        _expected_availability_validation is defined and
+        not (_expected_availability_validation.skipped | default(false) | bool)
 
     - name: Read current native source evidence privately
-      ansible.builtin.command:
-        argv:
-          - python3
-          - "{{ _expected_target_helper }}"
-          - --verify-availability-source
-        stdin: >-
+      ansible.builtin.script:
+        cmd: "{{ _expected_target_helper }} --verify-availability-source"
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        COMPOSE_CMD: podman-compose
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
+        O11Y_AVAILABILITY_ENABLED: "{{ 'true' if (_expected_source_availability.enabled | bool) else 'false' }}"
+        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if (_expected_source_availability.enabled | bool) else []) + (['compose.availability-ca.yml'] if (((_expected_source_availability.targets | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0)) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
+        O11Y_AVAILABILITY_SOURCE_JSON: >-
           {{ {
             'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
             'targets': o11y_expected_metrics_targets | default([]),
@@ -128,7 +137,7 @@
     - name: Project the fixed native source evidence privately
       ansible.builtin.set_fact:
         _expected_target_native_source: >-
-          {{ (_expected_target_native_source_raw.stdout | from_json) | o11y_availability_source_coverage }}
+          {{ (_expected_target_native_source_raw.stdout | from_json) | o11y_availability_source_coverage(true) }}
       no_log: true
       when: _expected_target_native_source_raw is defined
 
@@ -157,7 +166,7 @@
 
     - name: Project the fixed native source evidence privately
       ansible.builtin.set_fact:
-        _expected_target_native_source: "{{ _o11y_current_source | o11y_availability_source_coverage }}"
+        _expected_target_native_source: "{{ _o11y_current_source | o11y_availability_source_coverage(true) }}"
       no_log: true
       when:
         - not ansible_check_mode

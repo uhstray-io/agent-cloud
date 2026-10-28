@@ -87,6 +87,11 @@
     _o11y_availability_internal_ca: >-
       {{ (_o11y_availability | default({})).get('targets', [])
          | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0 }}
+    _o11y_source_review_required: >-
+      {{ ((_o11y_availability | default({})).get('enabled', false) | bool) or
+         ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+          (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+           selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1)) }}
     _probe_textfile_dir: /var/lib/node_exporter/textfile
     _probe_user: "{{ ansible_user | default('deploy') }}"
     _probe_unit_dir: /etc/systemd/system
@@ -143,6 +148,47 @@
 
     - name: Prepare the bounded private availability source projection
       ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
+
+    - name: Derive the reviewed Alloy candidate digest from the committed renderer
+      when: _o11y_source_review_required | bool
+      block:
+        - name: Allocate private controller candidate workspace
+          ansible.builtin.tempfile:
+            state: directory
+            path: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) }}"
+            prefix: o11y-deploy-candidate-
+          delegate_to: localhost
+          register: _o11y_candidate_tmp
+          no_log: true
+
+        - name: Render the exact Alloy candidate on the controller
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+            dest: "{{ _o11y_candidate_tmp.path }}/config.alloy"
+            mode: "0600"
+          delegate_to: localhost
+          no_log: true
+
+        - name: Hash the controller-rendered Alloy candidate privately
+          ansible.builtin.stat:
+            path: "{{ _o11y_candidate_tmp.path }}/config.alloy"
+            checksum_algorithm: sha256
+          delegate_to: localhost
+          register: _o11y_candidate_config_stat
+          no_log: true
+
+        - name: Keep the reviewed candidate digest for the receiver comparison
+          ansible.builtin.set_fact:
+            _o11y_candidate_config_sha256: "{{ _o11y_candidate_config_stat.stat.checksum }}"
+          no_log: true
+      always:
+        - name: Remove private controller candidate workspace
+          ansible.builtin.file:
+            path: "{{ (_o11y_candidate_tmp | default({})).path | default('') }}"
+            state: absent
+          delegate_to: localhost
+          no_log: true
+          when: _o11y_candidate_tmp is defined
 
     - name: Validate the fixed receiver and journal TLS contract before placement or rendering
       ansible.builtin.include_tasks: tasks/assert-o11y-otlp-tls.yml
@@ -551,24 +597,6 @@
         src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
         dest: "{{ _deploy_dir }}/config/config.alloy"
         mode: "0644"
-
-    - name: Hash the reviewed rendered Alloy candidate privately
-      ansible.builtin.stat:
-        path: "{{ _deploy_dir }}/config/config.alloy"
-        checksum_algorithm: sha256
-      register: _o11y_candidate_config_stat
-      no_log: true
-      when: >-
-        ((_o11y_availability | default({})).get('enabled', false) | bool) or
-        ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
-         (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
-          selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
-
-    - name: Keep the reviewed rendered Alloy candidate digest private
-      ansible.builtin.set_fact:
-        _o11y_candidate_config_sha256: "{{ _o11y_candidate_config_stat.stat.checksum }}"
-      no_log: true
-      when: _o11y_candidate_config_stat is defined
 
     - name: "Render Prometheus config with the inventory cluster label"
       ansible.builtin.template:
@@ -1368,6 +1396,7 @@
       no_log: true
       environment:
         CONTAINER_ENGINE: "{{ _engine }}"
+        COMPOSE_CMD: podman-compose
         O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
         O11Y_AVAILABILITY_ENABLED: "{{ 'true' if ((_o11y_availability | default({})).get('enabled', false) | bool) else 'false' }}"
         COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if ((_o11y_availability | default({})).get('enabled', false) | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability | default({})).get('targets', []) | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"

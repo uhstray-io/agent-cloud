@@ -3195,10 +3195,19 @@ def _alloy_component_detail(raw: bytes, expected_id: str, expected_name: str) ->
         or detail.get("type") != "block"
         or not isinstance(detail.get("label"), str)
         or not isinstance(detail.get("moduleID"), str)
-        or not isinstance(detail.get("original"), list)
+        or detail.get("original") != ""
         or not isinstance(detail.get("exports"), list)
         or not isinstance(detail.get("referencedBy"), list)
         or not isinstance(detail.get("referencesTo"), list)
+        or len(detail["referencedBy"]) > MAX_AVAILABILITY_DETAIL_ROWS
+        or len(detail["referencesTo"]) > MAX_AVAILABILITY_DETAIL_ROWS
+        or any(
+            not isinstance(component_id, str)
+            or not re.fullmatch(r"[a-zA-Z0-9_.-]{1,160}", component_id)
+            for component_id in detail["referencedBy"] + detail["referencesTo"]
+        )
+        or len(set(detail["referencedBy"])) != len(detail["referencedBy"])
+        or len(set(detail["referencesTo"])) != len(detail["referencesTo"])
     ):
         raise Refusal("native_detail_invalid")
     health = detail.get("health")
@@ -3225,6 +3234,8 @@ def _alloy_component_detail(raw: bytes, expected_id: str, expected_name: str) ->
         "arguments": _alloy_detail_rows(attr_rows, "attr"),
         "argument_blocks": _alloy_detail_rows(block_rows, "block"),
         "debug_info": _alloy_detail_rows(detail.get("debugInfo"), "block"),
+        "referenced_by": detail["referencedBy"],
+        "references_to": detail["referencesTo"],
     }
 
 
@@ -3295,7 +3306,7 @@ def _alloy_scrape_arguments(
         raise Refusal("native_detail_invalid")
     if args.get("job_name") != job or args.get("extra_metrics") is not True:
         raise Refusal("native_detail_invalid")
-    if not isinstance(args.get("forward_to"), list) or len(args["forward_to"]) != 1:
+    if args.get("forward_to") != ['capsule("storage.Appendable")']:
         raise Refusal("native_detail_invalid")
     if not isinstance(args.get("scrape_protocols"), list) or not args["scrape_protocols"]:
         raise Refusal("native_detail_invalid")
@@ -3340,7 +3351,6 @@ def _alloy_scrape_arguments(
             "service": "o11y/alloy",
             "target_id": "service:o11y",
         }
-        expected_forward = "prometheus.relabel.bounded_labels.receiver"
     else:
         expected_interval = f"{target.get('interval_seconds')}s"
         expected_timeout = f"{target.get('scrape_timeout_seconds')}s"
@@ -3368,15 +3378,12 @@ def _alloy_scrape_arguments(
             "service": target.get("service_identity"),
             "target_id": target_id,
         }
-        expected_forward = f"prometheus.relabel.availability_{module_name}.receiver"
     if any(not isinstance(value, str) or not value for value in expected_target.values()):
         raise Refusal("native_declaration_invalid")
     if args.get("scrape_interval", "60s" if interval_default else None) != expected_interval:
         raise Refusal("native_limits_mismatch")
     if args.get("scrape_timeout", "10s" if timeout_default else None) != expected_timeout:
         raise Refusal("native_limits_mismatch")
-    if args["forward_to"] != [expected_forward]:
-        raise Refusal("native_detail_invalid")
     targets = args["targets"]
     if not isinstance(targets, list) or len(targets) != 1 or targets[0] != expected_target:
         raise Refusal("native_target_mismatch")
@@ -3445,6 +3452,15 @@ def validate_availability_native_details(
         scrape = details[scrape_id]
         if scrape.get("health") != "healthy" or scrape.get("name") != "prometheus.scrape":
             raise Refusal("native_component_unhealthy")
+        if (
+            set(scrape.get("references_to", [])) != {
+                exporter_id, f"prometheus.relabel.availability_{module_name}",
+            }
+            or scrape.get("referenced_by") != []
+            or exporter.get("references_to") != []
+            or exporter.get("referenced_by") != [scrape_id]
+        ):
+            raise Refusal("native_detail_invalid")
         target_limits, _scrape_target = _alloy_scrape_arguments(
             scrape, job="o11y-availability", target=target,
             shared_limits=shared, self_scrape=False,
@@ -3477,6 +3493,11 @@ def validate_availability_native_details(
     self_detail = details[self_id]
     if self_detail.get("health") != "healthy" or self_detail.get("name") != "prometheus.scrape":
         raise Refusal("native_component_unhealthy")
+    if (
+        self_detail.get("references_to") != ["prometheus.relabel.bounded_labels"]
+        or self_detail.get("referenced_by") != []
+    ):
+        raise Refusal("native_detail_invalid")
     self_limits, _ = _alloy_scrape_arguments(
         self_detail, job="alloy", target=None, shared_limits=shared,
         self_scrape=True,
@@ -4121,10 +4142,11 @@ def _validate_prometheus_alloy_loaded_limits(
     static = job.get("static_configs")
     if not isinstance(static, list) or len(static) != 1 or not isinstance(static[0], dict):
         raise Refusal("native_source_limits_unavailable")
-    if (
-        static[0].get("targets") != ["alloy:12345"]
-        or static[0].get("labels") != _availability_self_identity(environment, cluster)
-    ):
+    static_identity = _availability_self_identity(environment, cluster)
+    static_labels = {
+        key: static_identity[key] for key in ("service", "target_id", "cluster", "environment")
+    }
+    if static[0].get("targets") != ["alloy:12345"] or static[0].get("labels") != static_labels:
         raise Refusal("native_source_limits_mismatch")
 
 
@@ -4193,7 +4215,15 @@ def collect_prometheus_self_source(
 
 
 def _current_alloy_identity() -> tuple[dict[str, Any], dict[str, Any]]:
-    records = _availability_inspect_all(time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS)
+    provider_context = _availability_provider_context()
+    identities = provider_context[5]
+    podman_identity = identities.get("podman") if isinstance(identities, dict) else None
+    podman_path = podman_identity.get("path") if isinstance(podman_identity, dict) else None
+    if not isinstance(podman_path, str) or not os.path.isabs(podman_path):
+        raise Refusal("native_source_unavailable")
+    records = _availability_inspect_all(
+        time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
+    )
     candidates = [record for record in records if record.get("service") == "alloy"]
     if len(candidates) != 1:
         raise Refusal("native_source_unavailable")

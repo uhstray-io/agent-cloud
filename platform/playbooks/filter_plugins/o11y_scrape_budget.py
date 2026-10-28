@@ -551,7 +551,7 @@ def o11y_source_scrape_limit_coverage(
         return _loaded_unavailable("source_readback_unavailable")
 
 
-def o11y_availability_source_coverage(readback: Any) -> dict[str, Any]:
+def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = False) -> dict[str, Any]:
     """Consume the source-specific availability evidence without returning private labels."""
     reasons = {
         "native_declaration_invalid", "native_source_unavailable", "native_source_absent",
@@ -635,6 +635,12 @@ def o11y_availability_source_coverage(readback: Any) -> dict[str, Any]:
     ):
         return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
     detail, samples = evidence["detail"], evidence["samples"]
+    self_only = (
+        allow_self_only is True
+        and isinstance(detail, Mapping) and detail.get("target_count") == 0
+        and detail.get("targets") == []
+        and isinstance(samples, Mapping) and samples.get("targets") == []
+    )
     if (
         not isinstance(detail, Mapping) or not isinstance(samples, Mapping)
         or detail.get("status") != "observed" or samples.get("status") != "observed"
@@ -643,7 +649,7 @@ def o11y_availability_source_coverage(readback: Any) -> dict[str, Any]:
         or detail.get("reason") != "fixed_native_components_loaded"
         or samples.get("reason") != "fresh_native_samples"
         or not isinstance(detail.get("target_count"), int) or isinstance(detail.get("target_count"), bool)
-        or not 1 <= detail["target_count"] <= 64
+        or not (detail["target_count"] == 0 if self_only else 1 <= detail["target_count"] <= 64)
         or not isinstance(detail.get("targets"), list) or len(detail["targets"]) != detail["target_count"]
         or not isinstance(samples.get("targets"), list) or len(samples["targets"]) != detail["target_count"]
     ):
@@ -697,7 +703,7 @@ def o11y_availability_source_coverage(readback: Any) -> dict[str, Any]:
     return {
         "status": "observed", "source": "alloy",
         "matches_intended": readback["matches_intended"],
-        "sample_count": detail["target_count"],
+        "sample_count": 1 if self_only else detail["target_count"],
         "probe_failed_count": probe_failed, "scrape_failed_count": scrape_failed,
         "body_counter": "observed_positive",
     }

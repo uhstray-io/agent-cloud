@@ -114,23 +114,50 @@
         quiet: true
       when: not ansible_check_mode
 
-    - name: Hash the reviewed rendered Alloy config privately
-      ansible.builtin.stat:
-        path: "{{ _deploy_dir }}/config/config.alloy"
-        checksum_algorithm: sha256
-      register: _survey_candidate_config_stat
-      no_log: true
-      when: not ansible_check_mode
-
-    - name: Keep the rendered Alloy candidate digest private
-      ansible.builtin.set_fact:
-        _survey_candidate_config_sha256: "{{ _survey_candidate_config_stat.stat.checksum }}"
-      no_log: true
-      when: not ansible_check_mode
-
     - name: Prepare the reviewed native availability source projection
       ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
       when: not ansible_check_mode
+
+    - name: Derive reviewed Alloy candidate bytes from the committed renderer
+      when: not ansible_check_mode
+      block:
+        - name: Allocate private controller candidate workspace
+          ansible.builtin.tempfile:
+            state: directory
+            path: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) }}"
+            prefix: o11y-baseline-candidate-
+          delegate_to: localhost
+          register: _survey_candidate_tmp
+          no_log: true
+
+        - name: Render the reviewed Alloy candidate on the controller
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+            dest: "{{ _survey_candidate_tmp.path }}/config.alloy"
+            mode: "0600"
+          delegate_to: localhost
+          no_log: true
+
+        - name: Hash the controller-rendered Alloy candidate privately
+          ansible.builtin.stat:
+            path: "{{ _survey_candidate_tmp.path }}/config.alloy"
+            checksum_algorithm: sha256
+          delegate_to: localhost
+          register: _survey_candidate_config_stat
+          no_log: true
+
+        - name: Keep the reviewed candidate digest private for receiver comparison
+          ansible.builtin.set_fact:
+            _survey_candidate_config_sha256: "{{ _survey_candidate_config_stat.stat.checksum }}"
+          no_log: true
+      always:
+        - name: Remove private controller candidate workspace
+          ansible.builtin.file:
+            path: "{{ (_survey_candidate_tmp | default({})).path | default('') }}"
+            state: absent
+          delegate_to: localhost
+          no_log: true
+          when: _survey_candidate_tmp is defined
 
     - name: Collect and sanitize the active scrape baseline on the receiver
       ansible.builtin.script:
@@ -142,6 +169,7 @@
       no_log: true
       environment:
         CONTAINER_ENGINE: "{{ _survey_engine }}"
+        COMPOSE_CMD: podman-compose
         O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
         O11Y_AVAILABILITY_ENABLED: "{{ 'true' if ((_o11y_availability | default({})).get('enabled', false) | bool) else 'false' }}"
         COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if not (local_mode | default(false) | bool) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if ((_o11y_availability | default({})).get('enabled', false) | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability | default({})).get('targets', []) | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"

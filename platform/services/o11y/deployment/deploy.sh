@@ -48,13 +48,13 @@ step_pull_image() {
 
 step_start() {
   info "Step 3: Starting o11y (prometheus + loki + alloy + grafana), recreating only on change..."
+  local availability_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"
   # Grafana reads runtime config (admin pw, OIDC client settings) from `env_file: .env`, and
   # every service reads its config from ./config bind mounts at start. Neither is a
   # compose-spec change, so compose_up_if_changed (common.sh) hashes them with the compose
   # files in effect and recreates only when that digest or an image differs from what the
   # running containers started with. A re-run with identical inputs touches nothing.
   if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
-    local availability_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"
     [ -f "$availability_helper" ] || error "Availability runtime verifier is missing."
     export COMPOSE_CMD
     if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
@@ -69,12 +69,11 @@ step_start() {
     export TMPDIR=/tmp
   fi
   if [ -n "${O11Y_AVAILABILITY_SOURCE_FILE:-}" ]; then
-    local availability_source_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"
-    [[ -f "$availability_source_helper" && -f "$O11Y_AVAILABILITY_SOURCE_FILE" ]] \
+    [[ -f "$availability_helper" && -f "$O11Y_AVAILABILITY_SOURCE_FILE" ]] \
       || error "The reviewed current-source input is unavailable."
     local availability_preapply_source_receipt
     if ! availability_preapply_source_receipt=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" \
-      python3 "$availability_source_helper" --verify-availability-source \
+      python3 "$availability_helper" --verify-availability-source \
       < "$O11Y_AVAILABILITY_SOURCE_FILE"); then
       error "The current Alloy self-metrics producer is not uniquely verified."
     fi

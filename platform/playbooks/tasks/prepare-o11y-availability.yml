@@ -33,6 +33,7 @@
   failed_when: false
   check_mode: false
   no_log: true
+  delegate_to: localhost
 
 - name: Require the bounded availability source projection
   ansible.builtin.assert:
@@ -66,12 +67,16 @@
   when: _o11y_availability.enabled | bool
 
 - name: Prove the current Alloy self-metrics producer before a reviewed source transition
-  ansible.builtin.command:
-    argv:
-      - python3
-      - "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
-      - --verify-availability-source
-    stdin: >-
+  ansible.builtin.script:
+    cmd: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py --verify-availability-source"
+  environment:
+    CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+    COMPOSE_CMD: podman-compose
+    LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+    O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
+    O11Y_AVAILABILITY_ENABLED: "{{ 'true' if (_o11y_availability.enabled | bool) else 'false' }}"
+    COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if (_o11y_availability.enabled | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability.targets | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0)) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
+    O11Y_AVAILABILITY_SOURCE_JSON: >-
       {{ {
         'reviewed': (o11y_expected_metrics_targets_reviewed | default(false) | bool) or (_o11y_availability.enabled | bool),
         'targets': o11y_expected_metrics_targets | default([]),
@@ -132,6 +137,7 @@
   no_log: true
   environment:
     CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+    COMPOSE_CMD: podman-compose
     LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
     O11Y_AVAILABILITY_ENABLED: "{{ 'true' if (_o11y_availability.enabled | bool) else 'false' }}"
     O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
