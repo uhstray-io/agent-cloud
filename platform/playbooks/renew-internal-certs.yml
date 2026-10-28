@@ -368,6 +368,7 @@
           "TLSV1_ALERT_UNKNOWN_CA", "TLSV13_ALERT_UNKNOWN_CA",
           "TLSV1_ALERT_BAD_CERTIFICATE", "TLSV13_ALERT_BAD_CERTIFICATE",
           "TLSV1_ALERT_CERTIFICATE_UNKNOWN", "TLSV13_ALERT_CERTIFICATE_UNKNOWN",
+          "SSLV3_ALERT_BAD_CERTIFICATE", "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
       }
       def read_exact(sock, size, deadline):
           chunks = []
@@ -854,7 +855,10 @@
                 {%- elif not (_renew_prove | bool) -%}{%- set proof = 'check mode' if (_renew_due | bool) else 'left alone' -%}
                 {%- elif l.class == 'caddy-client' -%}{%- set proof = how ~ 'caddy serial in current, ' ~ (renew_caddy_proof_host | default(inference_route_address, true)) ~ ' answered ' ~ (renew_caddy_proof_status | default(401)) -%}
                 {%- elif l.class == 'gateway-server' -%}{%- set proof = how ~ 'served on every listener' -%}
-                {%- else -%}{%- set proof = how ~ 'probe path answered 401, refused without a client certificate' -%}{%- endif -%}
+                {%- elif l.class == 'o11y-server' -%}{%- set proof = how ~ 'receiver TLS 1.3/h2 complete SETTINGS; server serial matched; journal client accepted; missing and foreign-CA clients refused' -%}
+                {%- elif l.class == 'o11y-journal-client' -%}{%- set proof = how ~ 'journal client accepted by receiver TLS 1.3/h2 complete SETTINGS; server serial matched; missing and foreign-CA clients refused' -%}
+                {%- elif l.class == 'probe-client' -%}{%- set proof = how ~ 'probe path answered 401, refused without a client certificate' -%}
+                {%- else -%}{%- set proof = '' -%}{%- endif -%}
                 {%- set _ = out.append({'leaf': l.name, 'host': inventory_hostname, 'profile': l.profile,
                                         'serial': c.serial | default(''), 'not_after': c.not_after | default(0),
                                         'remaining_seconds': c.remaining | default(0), 'renewed': renewed,

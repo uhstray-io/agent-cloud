@@ -755,6 +755,7 @@ def test_a_verify_run_proves_every_leaf_in_use_and_issues_nothing(world):
     assert len(world.gw_handshakes) >= 3
     assert world.caddy_asked == [(ROUTE, "/v1/models")]
     assert out.count("verified in use") >= 3
+    assert "probe path answered 401, refused without a client certificate" in out
     assert '"status": "success"' in out
 
 
@@ -956,6 +957,52 @@ def test_o11y_tls_proof_requires_valid_client_http2_and_refuses_missing_and_fore
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == f"O11Y_MTLS_PROVEN:{server_serial}"
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize(("reason", "expected_rc", "expected_stdout"), [
+    ("SSLV3_ALERT_BAD_CERTIFICATE", 0, "O11Y_MTLS_PROVEN:"),
+    ("SSLV3_ALERT_CERTIFICATE_UNKNOWN", 0, "O11Y_MTLS_PROVEN:"),
+    ("SSLV3_ALERT_UNSUPPORTED_CERTIFICATE", 1, "UNVERIFIED_NO_CLIENT_AUTH"),
+])
+def test_o11y_tls_proof_classifies_only_explicit_certificate_alert_reasons(
+    tmp_path, reason, expected_rc, expected_stdout
+):
+    """Synthetic reason injection at probe's SSL exception boundary; neighbor tests exercise real TLS alerts."""
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    script = script.replace(
+        "def probe(cert=None, key=None):",
+        f"class _SyntheticSSLAlert(ssl.SSLError):\n    reason = {reason!r}\n\ndef probe(cert=None, key=None):",
+        1,
+    )
+    script = script.replace(
+        "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
+        "            if cert is None:\n                raise _SyntheticSSLAlert()\n"
+        "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
+        1,
+    )
+    assert "_SyntheticSSLAlert" in script
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    server_serial = _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode == expected_rc
+    assert result.stdout.startswith(expected_stdout)
+    if expected_rc == 0:
+        assert result.stdout.strip().endswith(server_serial)
+        assert result.stderr == ""
+    else:
+        assert result.stdout.strip() == expected_stdout
+        assert result.stderr == ""
 
 
 @pytest.mark.parametrize("frame,split_reads", [
@@ -1233,6 +1280,18 @@ def test_o11y_receiver_leaves_are_proved_in_verify_mode_when_gateway_tls_is_off(
     assert "o11y-inference-probe (probe-client)" in out
     assert "not in use: gateway listener TLS off, left alone" in out
     assert "TASK [Prove receiver HTTP/2, the issued server leaf, and client-auth enforcement]" in out
+    expected_server_serial = format(server_serial, "X")
+    if len(expected_server_serial) % 2:
+        expected_server_serial = "0" + expected_server_serial
+    assert f'"serial": "{expected_server_serial}"' in out
+    assert (
+        "receiver TLS 1.3/h2 complete SETTINGS; server serial matched; journal client accepted; "
+        "missing and foreign-CA clients refused"
+    ) in out
+    assert (
+        "journal client accepted by receiver TLS 1.3/h2 complete SETTINGS; server serial matched; "
+        "missing and foreign-CA clients refused"
+    ) in out
     assert "_renew_after" not in out
     assert world.signed() == [] and world.reloads() == []
     assert int(server_serial) == _current_serial(server_leaf)

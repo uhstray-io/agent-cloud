@@ -2423,3 +2423,13 @@ cause of the Linux CI failure remains unknown: the same test passed under
 Python 3.12.13 and ansible-core 2.20.8 on macOS, which does not establish Linux
 or OpenSSL parity. This is source/test evidence only; no live issuance,
 receiver activation, or renewal proof was performed.
+
+Follow-up review added the OpenSSL `SSLV3_ALERT_BAD_CERTIFICATE` and
+`SSLV3_ALERT_CERTIFICATE_UNKNOWN` reason labels to the explicit certificate
+rejection allowlist. A focused test injects those reason values at the prover's
+SSL exception boundary and confirms an unrelated SSL alert still fails closed;
+neighboring tests continue to exercise real missing-client and foreign-CA TLS
+handshakes. Renewal stats now describe the OTLP proof and matched server serial
+for its two fixed leaf classes, while the gateway-probe proof text is emitted
+only for `probe-client`. These source and fixture checks do not identify the
+Linux CI failure's cause.
