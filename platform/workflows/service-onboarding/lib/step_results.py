@@ -176,8 +176,9 @@ def classify_otlp_ack(response: dict) -> dict:
     """Classify the collector's sanitized projection of one OTLP/HTTP response.
 
     The playbook passes only response status, a Content-Type predicate, schema predicates,
-    and the bounded rejected-record counter. It never sends response headers, raw body text,
-    or server-provided error messages to this command.
+    and an optional bounded rejected-record counter. Empty partial success and an omitted
+    counter mean zero; malformed present values remain unknown. It never sends response
+    headers, raw body text, or server-provided error messages to this command.
     """
     unknown = {"accepted": False, "outcome": "unknown", "rejected_records": None}
     if (not isinstance(response, dict) or type(response.get("status")) is not int
@@ -190,22 +191,22 @@ def classify_otlp_ack(response: dict) -> dict:
         return {"accepted": True, "outcome": "accepted", "rejected_records": 0}
     if (response.get("partial_success_is_object") is not True
             or response.get("partial_fields_known") is not True
-            or response.get("rejected_present") is not True):
+            or type(response.get("rejected_present")) is not bool
+            or type(response.get("warning_present")) is not bool):
         return unknown
-    value = response.get("rejected_records")
-    if type(value) is int:
-        rejected = value
-    elif isinstance(value, str) and re.fullmatch(r"(?:0|[1-9][0-9]{0,18})", value):
-        rejected = int(value)
+    if response["rejected_present"]:
+        value = response.get("rejected_records")
+        if type(value) is int:
+            rejected = value
+        elif isinstance(value, str) and re.fullmatch(r"(?:0|[1-9][0-9]{0,18})", value):
+            rejected = int(value)
+        else:
+            return unknown
     else:
-        return unknown
+        rejected = 0
     if rejected < 0 or rejected > 2**63 - 1:
         return unknown
-    warning_present = response.get("warning_present") is True
-    warning_valid = response.get("warning_valid") is True
-    if warning_present and not warning_valid:
-        return unknown
-    if rejected == 0 and (not warning_present or not warning_valid):
+    if response["warning_present"] and response.get("warning_valid") is not True:
         return unknown
     if rejected:
         return {"accepted": False, "outcome": "rejected", "rejected_records": rejected}

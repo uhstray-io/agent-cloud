@@ -590,7 +590,9 @@ def test_no_playbook_decides_for_itself_whether_an_inventory_is_needed(playbook)
         ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {
             "rejectedLogRecords": "0", "errorMessage": "private warning"}}}, "delivered", 0, "private warning"),
         ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {}}},
-         "failed/UNKNOWN", 1, None),
+         "delivered", 0, None),
+        ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {
+            "rejectedLogRecords": 0, "errorMessage": ""}}}, "delivered", 0, None),
         ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {
             "rejectedLogRecords": True, "errorMessage": "private detail"}}}, "failed/UNKNOWN", 1, "private detail"),
     ],
@@ -648,6 +650,130 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
         )
     if private_marker:
         assert private_marker not in output
+
+
+def test_pinned_empty_partial_success_is_accepted_by_both_otlp_posts(tmp_path):
+    tasks = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]["tasks"]
+    names = (
+        "Classify the OTLP response without exposing its body",
+        "Completion: hold the classified OTLP acknowledgement",
+        "Completion: classify final receipt response",
+        "Completion: hold final receipt result",
+    )
+    selected = [next(task for task in tasks if task.get("name") == name) for name in names]
+    payload = {
+        "status": 200, "content_type": "application/json",
+        "json": {"partialSuccess": {}},
+    }
+    fixture = [{
+        "name": "Classify both successful empty OTLP acknowledgements",
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_otlp": payload, "_otlp_receipt": payload,
+                 "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py")},
+        "tasks": selected + [{
+            "name": "Show bounded data acknowledgement",
+            "ansible.builtin.debug": {"var": "_otlp_delivery_ack"},
+        }, {
+            "name": "Show bounded receipt acknowledgement",
+            "ansible.builtin.debug": {"var": "_completion_receipt_ack"},
+        }],
+    }]
+    fixture_path = tmp_path / "otlp-empty-partial-success.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture))
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    result = subprocess.run(
+        ["ansible-playbook", "-v", "-i", "localhost,", str(fixture_path)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"_otlp_delivery_ack": true' in result.stdout
+    assert '"_completion_receipt_ack": true' in result.stdout
+
+
+@pytest.mark.parametrize("status", [0, False, "", []])
+def test_netbox_status_projection_preserves_malformed_falsey_values(tmp_path, status):
+    tasks = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]["tasks"]
+    selected = [next(task for task in tasks if task.get("name") == name) for name in (
+        "NetBox: keep only bounded lookup data",
+        "NetBox: classify complete reads and unique matches",
+        "NetBox: hold classified lookup outcomes",
+    )]
+    fixture = [{
+        "name": "Project and classify a malformed NetBox status",
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {
+            "_vms": {"results": [{"item": "service-a", "status": 200,
+                                     "json": {"count": 1, "next": None,
+                                              "results": [{"id": 7, "custom_fields": {
+                                                  "ac_workflow_status": status}}]}}]},
+            "_select": {"stdout": json.dumps({"inventory_services": ["service-a"]})},
+            "_netbox_url": "https://netbox.example.invalid",
+            "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
+        },
+        "tasks": selected + [{
+            "name": "Show bounded read classification",
+            "ansible.builtin.debug": {
+                "msg": "{{ {'complete': _netbox_state.complete, 'unknown': _vm_unknown, "
+                       "'found': _vm_found} | to_json }}",
+            },
+        }],
+    }]
+    fixture_path = tmp_path / "netbox-falsey-status.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture))
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    result = subprocess.run(
+        ["ansible-playbook", "-v", "-i", "localhost,", str(fixture_path)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"complete": false' in result.stdout
+    assert '"unknown": ["service-a"]' in result.stdout
+    assert '"found": []' in result.stdout
+
+
+def test_otlp_uri_results_are_protected_at_verbose_levels(tmp_path):
+    tasks = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]["tasks"]
+    uri_names = (
+        "Production Alloy: deliver conformance records over OTLP/HTTP",
+        "Production Alloy: publish collector completion receipt",
+    )
+    for name in uri_names:
+        task = next(task for task in tasks if task.get("name") == name)
+        assert task.get("no_log") is True
+
+    marker = "private receiver response marker"
+    protected_tasks = [{
+        "name": "Protect the raw receiver response in the task result",
+        "ansible.builtin.set_fact": {"_raw_otlp_response": {
+            "status": 503, "content_type": "application/json",
+            "json": {"partialSuccess": {"errorMessage": marker}},
+            "headers": {"X-Response-Marker": marker},
+        }},
+        "no_log": True,
+    }, {
+        "name": "Expose only a fixed status",
+        "ansible.builtin.debug": {"msg": {"status": "failed/UNKNOWN"}},
+    }]
+    fixture = [{"name": "Protect OTLP response material", "hosts": "localhost",
+                "connection": "local", "gather_facts": False, "tasks": protected_tasks}]
+    fixture_path = tmp_path / "protected-otlp-response.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture))
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    for verbosity in ("-v", "-vvv"):
+        result = subprocess.run(
+            ["ansible-playbook", verbosity, "-i", "localhost,", str(fixture_path)],
+            cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert marker not in output
+        assert '"status": "failed/UNKNOWN"' in output
 
 
 def _emitted_evidence() -> dict[str, set[str]]:

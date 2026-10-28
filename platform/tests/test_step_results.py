@@ -321,11 +321,23 @@ def test_otlp_ack_requires_a_valid_bounded_success_response():
         "warning_present": False, "warning_valid": False,
     }
     assert classify(valid) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    empty_partial_success = {**valid, "partial_success_present": True,
+                             "partial_success_is_object": True, "partial_fields_known": True,
+                             "rejected_present": False}
+    assert classify(empty_partial_success) == {
+        "accepted": True, "outcome": "accepted", "rejected_records": 0,
+    }
     for counter in (0, "0"):
         warning = {**valid, "partial_success_present": True, "partial_success_is_object": True,
                    "partial_fields_known": True, "rejected_present": True,
                    "rejected_records": counter, "warning_present": True, "warning_valid": True}
         assert classify(warning) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+        no_warning = {**warning, "warning_present": False, "warning_valid": False}
+        assert classify(no_warning) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    empty_warning = {**valid, "partial_success_present": True, "partial_success_is_object": True,
+                     "partial_fields_known": True, "rejected_present": False,
+                     "warning_present": True, "warning_valid": True}
+    assert classify(empty_warning) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
     rejected = {**valid, "partial_success_present": True, "partial_success_is_object": True,
                 "partial_fields_known": True, "rejected_present": True,
                 "rejected_records": "2", "warning_present": False, "warning_valid": False}
@@ -340,7 +352,7 @@ def test_otlp_ack_requires_a_valid_bounded_success_response():
         {**valid, "body_fields_known": False},
         {**valid, "partial_success_present": True},
         {**valid, "partial_success_present": True, "partial_success_is_object": True,
-         "partial_fields_known": True},
+         "partial_fields_known": True, "rejected_present": "false"},
         *[{**valid, "partial_success_present": True, "partial_success_is_object": True,
            "partial_fields_known": True, "rejected_present": True,
            "rejected_records": counter, "warning_present": True, "warning_valid": True}

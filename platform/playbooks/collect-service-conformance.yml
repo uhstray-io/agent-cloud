@@ -244,7 +244,8 @@
               {%- for vm in response.results -%}
                 {%- if vm is mapping -%}
                   {%- set fields = vm.custom_fields | default({}) -%}
-                  {%- set status = fields.ac_workflow_status | default({}, true) if fields is mapping else none -%}
+                  {%- set status = fields.get('ac_workflow_status') if fields is mapping else none -%}
+                  {%- if status is none -%}{%- set status = {} -%}{%- endif -%}
                   {%- if rows.append({'id': vm.id | default(none),
                                       'custom_fields': ({'ac_workflow_status': status} if fields is mapping else none)}) -%}{%- endif -%}
                 {%- else -%}
@@ -390,6 +391,9 @@
       register: _otlp
       changed_when: true
       failed_when: false
+      # The receiver response can contain private workflow error context. Keep the raw URI
+      # result out of task history; the following classifier exposes only fixed outcomes.
+      no_log: true
       when:
         - not ansible_check_mode
         - not (local_mode | default(false) | bool)
@@ -417,8 +421,7 @@
                                     (partial.get('rejectedLogRecords') is string and
                                      partial.get('rejectedLogRecords') is match('^(0|[1-9][0-9]{0,18})$'))) else none),
               'warning_present': (partial is mapping and 'errorMessage' in partial),
-              'warning_valid': (partial is mapping and partial.get('errorMessage') is string and
-                                partial.get('errorMessage') | length > 0)} | to_json }}
+              'warning_valid': (partial is mapping and partial.get('errorMessage') is string)} | to_json }}
       register: _otlp_delivery_classification
       changed_when: false
       check_mode: false
@@ -490,6 +493,8 @@
       register: _otlp_receipt
       changed_when: true
       failed_when: false
+      # Apply the same narrow response boundary to the final fixed receipt POST.
+      no_log: true
       when:
         - not ansible_check_mode
         - not (local_mode | default(false) | bool)
@@ -517,8 +522,7 @@
                                     (partial.get('rejectedLogRecords') is string and
                                      partial.get('rejectedLogRecords') is match('^(0|[1-9][0-9]{0,18})$'))) else none),
               'warning_present': (partial is mapping and 'errorMessage' in partial),
-              'warning_valid': (partial is mapping and partial.get('errorMessage') is string and
-                                partial.get('errorMessage') | length > 0)} | to_json }}
+              'warning_valid': (partial is mapping and partial.get('errorMessage') is string)} | to_json }}
       register: _completion_receipt_delivery
       changed_when: false
       check_mode: false
