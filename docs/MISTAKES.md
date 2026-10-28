@@ -2530,18 +2530,20 @@ Resize VM at 01:51 UTC on 2026-10-28 (task 9802), and then took the guest half, 
 Root template, through a pull request with two review rounds and two CI runs (#752, merged at
 03:01 UTC). While that cycle ran, the root filled: by 02:16:35 UTC Postgres had crashed and its
 crash recovery was interrupted (its log: "interrupted while in recovery at 2026-10-28 02:16:35
-UTC"), and the root showed 17 MB free when inspected. Semaphore exited with it. Production orchestration was down until 15:18 UTC,
-when the operator authorized SSH recovery: the repository's own `grow-root-lvm.py` grew the root
-online to 61G with 35G free, and the existing containers were started with `podman start`.
+UTC"), and the root showed 17 MB free when inspected. Semaphore exited with it. The operator
+authorized SSH recovery at about 03:50 UTC. In that session the repository's own
+`grow-root-lvm.py` grew the root online to 61G with 35G free, but my session then stalled before
+the restart, and the existing containers were started with `podman start` only at 15:18 UTC.
+Production orchestration was down for about 13 hours.
 
 **Root cause.** I treated the guest grow as ordinary platform work, where the reviewed template
 is the right path, and did not weigh how long the host could last against how long the cycle
 takes. The virtual disk was already 64G from 01:51. The same helper, run operator-side (the 1.18
-recovery grew the root by hand the same way), would have restored headroom in minutes. I never offered that path or stated the
-time risk.
+recovery grew the root by hand the same way), would have restored headroom in minutes. I never
+offered that path or stated the time risk.
 
-**The rule.** When an orchestrator-class host (Semaphore, OpenBao, or the database either depends on) is near full and
-filling it takes the orchestrator down, restore headroom first, by the fastest path the operator
+**The rule.** When an orchestrator-class host (Semaphore, OpenBao, or the database either depends
+on) is near full and filling it takes the orchestrator down, restore headroom first, by the fastest path the operator
 authorizes: ask for an operator-side grow or cleanup, and say how close to full the host is. Then
 encode the fix through the normal review cycle. Never leave the only headroom fix waiting on a
 multi-hour review without telling the operator the risk.
