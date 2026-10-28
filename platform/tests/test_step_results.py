@@ -283,13 +283,12 @@ def test_data_delivery_batch_never_contains_the_final_receipt():
     history = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi", "step-ca"], DEPLOYS,
                                      incomplete={"tududi"})
     streams = step_results.loki_streams(history, 1700000000000000000)
-    batch = _call({"mode": "delivery", "streams": streams, "completion_ready": True, "now_ns": 2})
-    assert batch["streams"] == streams
-    assert all(s["stream"].get("kind") != "run" for s in batch["streams"])
+    payload = step_results.otlp_logs_payload(streams)
+    assert all(s["stream"].get("kind") != "run" for s in streams)
     assert next(s["stream"]["status"] for s in streams
                 if s["stream"].get("service") == "tududi") == "history_incomplete"
     assert next(s["stream"]["status"] for s in streams if s["stream"].get("service") == "step-ca") == "no_history"
-    assert len(batch["otlp_payload"]["resourceLogs"][0]["scopeLogs"][0]["logRecords"]) == len(streams)
+    assert len(payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]) == len(streams)
 
 
 def test_final_receipt_batch_contains_only_the_fixed_run_record():
@@ -306,11 +305,52 @@ def test_final_receipt_waits_for_prior_data_batch_transport_acceptance():
     assert eligible(True, "local_loki", True, 1, 204)
     assert not eligible(True, "local_loki", True, 1, 500)
     assert not eligible(True, "local_loki", False, 0, None)
-    assert eligible(True, "production_otlp", True, 1, 200, 0)
-    assert not eligible(True, "production_otlp", True, 1, 200, 1)
-    assert not eligible(True, "production_otlp", True, 1, 503, 0)
-    assert eligible(True, "production_otlp", True, 0, None, 0)
-    assert not eligible(False, "production_otlp", True, 0, None, 0)
+    assert eligible(True, "production_otlp", True, 1, None, True)
+    assert not eligible(True, "production_otlp", True, 1, None, False)
+    assert eligible(True, "production_otlp", True, 0, None, False)
+    assert not eligible(False, "production_otlp", True, 0, None, False)
+
+
+def test_otlp_ack_requires_a_valid_bounded_success_response():
+    classify = step_results.classify_otlp_ack
+    valid = {
+        "status": 200, "content_type_valid": True, "body_is_object": True,
+        "body_fields_known": True, "partial_success_present": False,
+        "partial_success_is_object": False, "partial_fields_known": False,
+        "rejected_present": False, "rejected_records": None,
+        "warning_present": False, "warning_valid": False,
+    }
+    assert classify(valid) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    for counter in (0, "0"):
+        warning = {**valid, "partial_success_present": True, "partial_success_is_object": True,
+                   "partial_fields_known": True, "rejected_present": True,
+                   "rejected_records": counter, "warning_present": True, "warning_valid": True}
+        assert classify(warning) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    rejected = {**valid, "partial_success_present": True, "partial_success_is_object": True,
+                "partial_fields_known": True, "rejected_present": True,
+                "rejected_records": "2", "warning_present": False, "warning_valid": False}
+    assert classify(rejected) == {"accepted": False, "outcome": "rejected", "rejected_records": 2}
+
+    malformed = [
+        {**valid, "status": "200"},
+        {**valid, "status": True},
+        {**valid, "status": 503},
+        {**valid, "content_type_valid": False},
+        {**valid, "body_is_object": False},
+        {**valid, "body_fields_known": False},
+        {**valid, "partial_success_present": True},
+        {**valid, "partial_success_present": True, "partial_success_is_object": True,
+         "partial_fields_known": True},
+        *[{**valid, "partial_success_present": True, "partial_success_is_object": True,
+           "partial_fields_known": True, "rejected_present": True,
+           "rejected_records": counter, "warning_present": True, "warning_valid": True}
+          for counter in (True, False, -1, 2**63, "-1", "1.0", "1e2", "9223372036854775808", None)],
+        {**valid, "partial_success_present": True, "partial_success_is_object": True,
+         "partial_fields_known": True, "rejected_present": True,
+         "rejected_records": 0, "warning_present": True, "warning_valid": False},
+    ]
+    for response in malformed:
+        assert classify(response) == {"accepted": False, "outcome": "unknown", "rejected_records": None}
 
 
 def test_netbox_result_requires_a_complete_read_and_only_unique_matches_are_required_writes():
@@ -318,9 +358,11 @@ def test_netbox_result_requires_a_complete_read_and_only_unique_matches_are_requ
     expected = ["service-a", "service-b", "service-c"]
     state = classify(expected, [
         {"item": "service-a", "status": 200,
-         "json": {"count": 1, "results": [{"id": 7, "custom_fields": {"ac_workflow_status": {"step": "pass"}}}]}},
-        {"item": "service-b", "status": 200, "json": {"count": 0, "results": []}},
-        {"item": "service-c", "status": 200, "json": {"count": 2, "results": [{"id": 8}, {"id": 9}]}},
+         "json": {"count": 1, "next_is_terminal": True,
+                  "results": [{"id": 7, "custom_fields": {"ac_workflow_status": {"step": "pass"}}}]}},
+        {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}},
+        {"item": "service-c", "status": 200,
+         "json": {"count": 2, "results": [{"id": 8}, {"id": 9}], "next_is_terminal": True}},
     ])
     assert state == {
         "complete": True,
@@ -338,16 +380,21 @@ def test_netbox_incomplete_or_malformed_reads_are_unknown_and_never_empty_succes
     classify = step_results.classify_netbox_results
     expected = ["service-a", "service-b"]
     for results in (
-        [{"item": "service-a", "status": 200, "json": {"count": 0, "results": []}}],
-        [{"item": "service-a", "status": 503, "json": {"count": 0, "results": []}},
-         {"item": "service-b", "status": 200, "json": {"count": 0, "results": []}}],
-        [{"item": "service-a", "status": 200, "json": {"count": 1, "results": []}},
-         {"item": "service-b", "status": 200, "json": {"count": 0, "results": []}}],
+        [{"item": "service-a", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 503, "json": {"count": 0, "results": [], "next_is_terminal": True}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": 1, "results": [], "next_is_terminal": True}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
         [{"item": "service-a", "status": 200,
-          "json": {"count": 1, "results": [{"id": 7, "custom_fields": {"ac_workflow_status": 0}}]}},
-         {"item": "service-b", "status": 200, "json": {"count": 0, "results": []}}],
-        [{"item": "service-a", "status": 200, "json": {"count": True, "results": []}},
-         {"item": "service-b", "status": 200, "json": {"count": 0, "results": []}}],
+          "json": {"count": 1, "next_is_terminal": True,
+                   "results": [{"id": 7, "custom_fields": {"ac_workflow_status": 0}}]}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": True, "results": [], "next_is_terminal": True}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": 1, "results": [], "next_is_terminal": False}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": 1, "results": []}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
     ):
         state = classify(expected, results)
         assert not state["complete"]
@@ -717,7 +764,7 @@ def test_the_collector_passes_the_window_to_the_aggregate():
 def test_the_collector_writes_every_tracked_service():
     text = (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
     assert 'loop: "{{ (_select.stdout | from_json).inventory_services }}"' in text
-    assert "_delivery.streams | length > 0" in text
+    assert "_agg.loki_streams | length > 0" in text
     assert "_agg.services.keys()" not in text
 
 

@@ -41,14 +41,14 @@ def test_collector_includes_the_shared_push_task():
     assert task["ansible.builtin.include_tasks"] == "tasks/push-loki-lines.yml"
     assert task["vars"] == {
         "push_loki_url": "{{ collector_loki_url }}",
-        "push_loki_streams": "{{ _delivery.streams }}",
+        "push_loki_streams": "{{ _agg.loki_streams }}",
         "push_loki_must_succeed": False,  # an unreachable Loki never fails the collector
     }
     assert task["when"] == [
         "not ansible_check_mode",
         "local_mode | default(false) | bool",
         "collector_loki_url is defined",
-        "_delivery.streams | length > 0",
+        "_agg.loki_streams | length > 0",
     ]
 
 
@@ -89,6 +89,23 @@ class _Loki(DrainingHandler):
         self.send_response(status)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+class _OtlpUnknownAck(DrainingHandler):
+    requests: list = []
+
+    def do_POST(self):  # noqa: N802 — http.server's handler name
+        length = int(self.headers.get("Content-Length", 0))
+        type(self).requests.append({"path": self.path, "body": json.loads(self.rfile.read(length) or b"null")})
+        body = b"private invalid OTLP response"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, *args):
         pass
@@ -184,6 +201,8 @@ def test_collector_publishes_receipt_separately_after_data_ack(
     final["ansible.builtin.include_tasks"] = str(TASK)
     selected = [
         base,
+        by_name["Classify the OTLP response without exposing its body"],
+        by_name["Completion: hold the classified OTLP acknowledgement"],
         by_name["Completion: capture conformance transport result"],
         by_name["Completion: classify prior data delivery"],
         by_name["Completion: hold publication boundary"],
@@ -191,6 +210,9 @@ def test_collector_publishes_receipt_separately_after_data_ack(
         by_name["Completion: hold receipt payload"],
         final,
         by_name["Completion: classify final receipt response"],
+        by_name["Completion: hold final receipt result"],
+        by_name["Completion: classify final receipt publication"],
+        by_name["Completion: hold final receipt publication result"],
         {"name": "Report", **by_name["Report"]},
     ]
     vars_ = {
@@ -198,8 +220,7 @@ def test_collector_publishes_receipt_separately_after_data_ack(
         "collector_loki_url": loki.url,
         "ansible_check_mode": False,
         "_completion_ready": True,
-        "_delivery": {"streams": STREAMS, "otlp_payload": {"resourceLogs": []}},
-        "_agg": {"report": {}},
+        "_agg": {"loki_streams": STREAMS, "otlp_payload": {"resourceLogs": []}, "report": {}},
         "_nb_writes": {"results": []},
         "_vm_missing": [],
         "_vm_ambiguous": [],
@@ -219,6 +240,54 @@ def test_collector_publishes_receipt_separately_after_data_ack(
             "values": [[loki.requests[1]["body"]["streams"][0]["values"][0][0],
                         '{"collection_completed":true,"version":1}']],
         }]
+
+
+@needs_ansible
+def test_unknown_otlp_data_ack_suppresses_the_separate_receipt_post(tmp_path):
+    handler = type("OtlpUnknownAck", (_OtlpUnknownAck,), {"requests": []})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/v1/logs"
+        tasks = _collector_tasks()
+        selected = [next(t for t in tasks if t.get("name") == name) for name in (
+            "Production Alloy: deliver conformance records over OTLP/HTTP",
+            "Classify the OTLP response without exposing its body",
+            "Completion: hold the classified OTLP acknowledgement",
+            "Completion: classify prior data delivery",
+            "Completion: hold publication boundary",
+            "Completion: build separate receipt payload",
+            "Completion: hold receipt payload",
+            "Production Alloy: publish collector completion receipt",
+        )]
+        payload = {"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": "step"}}]}]}]}
+        play = [{
+            "name": "unknown OTLP acknowledgement suppresses the receipt",
+            "hosts": "localhost", "connection": "local", "gather_facts": False,
+            "vars": {
+                "local_mode": False, "ansible_check_mode": False,
+                "_collector_otlp_url": url, "_completion_ready": True,
+                "_agg": {"loki_streams": STREAMS, "otlp_payload": payload, "report": {}},
+                "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
+            },
+            "tasks": selected,
+        }]
+        path = tmp_path / "unknown-otlp.yml"
+        path.write_text(json.dumps(play))
+        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+        env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default",
+                   ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
+        result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO,
+                                env=env, capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert len(handler.requests) == 1
+        assert handler.requests[0]["path"] == "/v1/logs"
+        assert handler.requests[0]["body"] == payload
+        assert "private invalid OTLP response" not in result.stdout + result.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 @needs_ansible

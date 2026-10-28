@@ -113,14 +113,14 @@ criteria not met, error context, undo availability and Semaphore task reference.
 - **AND** the receipt proves successful required collection work only; it does not claim complete historical coverage, that every service passed, a green Semaphore task, or durable sender acknowledgement, and existing `history_incomplete`/`no_history` markers and per-step statuses remain unchanged
 - **AND** interrupted or failed reads, check-mode/skipped writes, and failed or unknown required writes before that boundary prevent sending a success receipt
 - **AND** the explicitly nonblocking NetBox outage behavior remains visible and does not block the workflow, while any failed required configured write before the boundary prevents sending
-- **AND** the separate receipt request follows HTTP 204 for the local data batch or HTTP 200 with zero rejected records for the production data batch; when there are no conformance data records, no prior batch request is needed
+- **AND** the separate receipt request follows HTTP 204 for the local data batch or a valid OTLP JSON `ExportLogsServiceResponse` with HTTP 200 and zero rejected records for the production data batch; the response must have a known shape and `rejectedLogRecords` accepts only a nonnegative int64 integer or decimal string, while an invalid or missing body/counter is unknown; a protocol-valid zero-rejection warning is accepted; when there are no conformance data records, no prior batch request is needed
 - **AND** a lost response or timeout after possible remote acceptance is reported as failed/UNKNOWN publication; the record may already be queryable and may reset the silence clock, so no absence or non-publication claim is made
 - **AND** failed or unknown acceptance of the prior data batch prevents the separate receipt request; a partial OTLP rejection cannot share a batch with and accidentally accept the completion receipt
 
 #### Scenario: Completion distinguishes complete VM lookup outcomes from unknown reads
-- **WHEN** NetBox is configured and each expected service lookup returns HTTP 200 with an integer `count` equal to the number of returned rows
+- **WHEN** NetBox is configured and each expected service lookup returns HTTP 200 with an integer `count` equal to the number of returned rows and an explicit terminal `next: null`
 - **THEN** zero matches and multiple matches remain visible nonblocking outcomes with no VM PATCH selected, while exactly one match selects that VM's required PATCH
-- **AND** a failed, missing, duplicate, malformed, incomplete, or unknown configured lookup suppresses the completion receipt without turning into a known no-match result or failing the existing nonblocking collector path
+- **AND** a non-null, missing, or malformed pagination field, or a failed, missing, duplicate, malformed, incomplete, or unknown configured lookup suppresses the completion receipt without turning into a known no-match result or failing the existing nonblocking collector path; the collector does not follow or expose the `next` URL
 - **AND** a failed, skipped, missing, duplicate, or unknown required PATCH suppresses the completion receipt; only one explicit HTTP 200 for every unique match completes the configured write boundary
 
 #### Scenario: Collector silence alert observes delivered completion

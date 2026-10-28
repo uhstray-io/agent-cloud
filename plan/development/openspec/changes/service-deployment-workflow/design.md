@@ -401,7 +401,10 @@ and visible failure record, while withholding the receipt when a required
 configured write is failed or unknown. Define missing/ambiguous VM handling
 alongside the existing writer contract: with NetBox configured, each expected
 inventory service must have one HTTP 200 response whose integer `count` agrees
-with the length of its `results` list. A complete zero-match or multi-match is
+with the length of its `results` list and whose known `next` pagination field is
+null. The collector retains only a terminal-page boolean; it never follows or
+logs NetBox's `next` URL. NetBox's `count` is total matches and `results` is the
+current page ([pagination contract](https://netbox.readthedocs.io/en/stable/integrations/rest-api/#pagination)). A complete zero-match or multi-match is
 a known nonblocking outcome and selects no write; it remains visible in the
 existing missing/ambiguous report. Only a unique match selects a required
 PATCH. A missing, duplicate, malformed, incomplete, failed, or otherwise
@@ -414,8 +417,17 @@ writes required by this contract.
 Use the existing environment-specific transport: local development retains its
 current Loki push contract; production uses the exact private Alloy OTLP/HTTP
 path already declared by the collector. Do not substitute a direct production
-Loki write. Require HTTP 204 for the local conformance batch or HTTP 200 with
-zero rejected records for the production batch before attempting the receipt.
+Loki write. Require HTTP 204 for the local conformance batch or a valid OTLP
+`ExportLogsServiceResponse` JSON response with HTTP 200 and zero rejected
+records for the production batch before attempting the receipt. A missing or
+non-JSON body, unknown response fields, malformed `partialSuccess`, or invalid
+counter makes acknowledgement unknown and suppresses the receipt. Parse
+`rejectedLogRecords` as an exact nonnegative int64, accepting both an integer
+and its decimal-string ProtoJSON representation; do not coerce invalid values
+to zero. A protocol-valid zero-rejection warning remains accepted. The
+[OTLP/HTTP response](https://opentelemetry.io/docs/specs/otlp/#otlphttp-response)
+and [ProtoJSON int64 representation](https://protobuf.dev/programming-guides/json/#representation-of-each-type)
+define these response shapes.
 When the conformance batch is empty, no prior data request is needed. A positive
 receiver response is transport acceptance, not durable
 Loki ingestion. If a request may have been accepted but its response is lost or
