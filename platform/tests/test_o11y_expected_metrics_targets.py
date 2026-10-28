@@ -1547,3 +1547,103 @@ def test_native_expected_target_survey_preserves_legacy_source_omission_and_skip
     assert not project_condition(_expected_target_native_source_raw={"skipped": True})
     assert not project_condition(_expected_target_native_source_raw={"rc": 1, "stdout": ""})
     assert project_condition(_expected_target_native_source_raw={"rc": 0, "stdout": "{}"})
+
+
+def test_declared_native_readback_failure_makes_final_two_target_report_unavailable(monkeypatch, capsys):
+    prometheus = _expected()
+    native = _expected(
+        uid="o11y_missing_alloy", job="alloy", instance="alloy:12345", service="o11y/alloy",
+        source="alloy", target_id="service:o11y",
+    )
+    declaration = {"reviewed": True, "targets": [prometheus, native]}
+    helper_payload = {
+        "reviewed": True,
+        "targets": declaration["targets"],
+        "availability": {"enabled": False, "targets": [], "limits": {}},
+        "shared_limits": {},
+        "environment": "prod",
+        "cluster": "prod-west",
+        "lower_bound": None,
+        "freshness_seconds": 300,
+        "require_health_targets": False,
+    }
+
+    def fail_receiver_read(*_args, **_kwargs):
+        raise SURVEY.Refusal("native_source_unavailable")
+
+    monkeypatch.setattr(SURVEY, "_run_api", fail_receiver_read)
+    monkeypatch.setattr(SURVEY.sys, "argv", [str(HELPER), "--verify-availability-source"])
+    monkeypatch.setenv("O11Y_AVAILABILITY_SOURCE_JSON", json.dumps(helper_payload))
+    assert SURVEY.main() == 2
+    helper_receipt = json.loads(capsys.readouterr().out)
+    assert helper_receipt == {
+        "status": "unavailable", "reason": "native_source_unavailable", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    tasks = receiver["tasks"]
+    native_projection = next(
+        task for task in tasks if task.get("name") == "Project the fixed native source evidence privately"
+    )
+    failure_projection = next(
+        task for task in tasks
+        if task.get("name") == "Keep required native source failures in the final coverage receipt"
+    )
+    final_report = next(
+        task for task in tasks if task.get("name") == "Report expected-target coverage without target labels"
+    )
+    raw_register = {"rc": 2, "stdout": json.dumps(helper_receipt)}
+    env = Environment()
+    env.filters.update(bool=bool, to_json=json.dumps)
+    assert not env.compile_expression(native_projection["when"])(
+        _expected_target_native_source_raw=raw_register,
+    )
+    failure_condition = env.compile_expression(failure_projection["when"])
+    for failed_register in (raw_register, {"skipped": True}, None):
+        failure_context = {
+            "ansible_check_mode": False,
+            "o11y_expected_metrics_targets_reviewed": True,
+            "o11y_expected_metrics_targets": declaration["targets"],
+        }
+        if failed_register is not None:
+            failure_context["_expected_target_native_source_raw"] = failed_register
+        assert failure_condition(**failure_context)
+    assert not failure_condition(
+        ansible_check_mode=False,
+        o11y_expected_metrics_targets_reviewed=True,
+        o11y_expected_metrics_targets=[prometheus],
+        _expected_target_native_source_raw=raw_register,
+    )
+
+    # The real coverage helper still sees the matching Prometheus row, but the
+    # playbook's final report must carry the separately required native failure.
+    coverage = SURVEY.expected_target_coverage(_target_document([_active(prometheus)]), declaration)
+    assert coverage["status"] == "observed" and coverage["reason"] == "exact_match"
+    assert coverage["expected_count"] == 1
+    report_expr = final_report["ansible.builtin.debug"]["msg"].strip()[2:-2].strip()
+    unavailable = failure_projection["ansible.builtin.set_fact"]["_expected_target_native_source"]
+    report_json = env.compile_expression(report_expr)(
+        _expected_target_coverage=coverage,
+        _expected_target_native_source=unavailable,
+    )
+    report = json.loads(report_json)
+    assert report["overall_status"] == "unavailable"
+    assert report["prometheus_target_coverage"] == coverage
+    assert report["native_availability_source"] == unavailable
+    legacy_report = env.compile_expression(report_expr)(_expected_target_coverage=coverage)
+    assert json.loads(legacy_report) == coverage
+
+    mismatched_prometheus = {
+        "status": "observed", "source": "prometheus", "matches_intended": False,
+        "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+        "body_counter": "not_exposed_by_legacy_prometheus",
+    }
+    mismatch_report = env.compile_expression(report_expr)(
+        _expected_target_coverage=coverage,
+        _expected_target_native_source=mismatched_prometheus,
+    )
+    assert json.loads(mismatch_report)["overall_status"] == "mismatch"
