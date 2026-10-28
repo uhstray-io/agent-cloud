@@ -165,6 +165,15 @@ preserve the existing profile-operation gates and restoration behavior.
 - **AND** none of these states is rendered or interpreted as healthy
 - **AND** probe-failed and missing-probe alerts reuse the existing gated Grafana alert owner, labels, grouping, and Discord route
 
+#### Scenario: Endpoint alerts distinguish failure, missing data, and scrape failure
+- **WHEN** the validated availability source is enabled with alerts enabled and no alert canary
+- **THEN** the failed-endpoint rule fires only for the exact target identity with `up=1` and `probe_success=0`
+- **AND** the missing-endpoint rule uses the reviewed `signals.health.freshness_seconds` window and fires when the exact probe series is absent
+- **AND** only `up=0` with the same fixed six-label identity suppresses the missing-endpoint rule; missing `up` or unrelated identity does not suppress it
+- **AND** the existing generic scrape rule continues to own `up=0` and its title/annotations describe telemetry scrape failure without asserting that the application is down
+- **AND** both endpoint rules are omitted and deleted through the existing ownership cleanup when availability is disabled, alerts are disabled, or the canary is active
+- **AND** rule rendering or query evaluation does not prove live Grafana readback, firing/recovery, or notification delivery
+
 #### Scenario: Probe labels and resource work stay within the reviewed budget
 - **WHEN** reviewed targets are rendered and scraped
 - **THEN** only their fixed service/environment/cluster/`target_id` identity labels are retained, with no endpoint or request-derived labels

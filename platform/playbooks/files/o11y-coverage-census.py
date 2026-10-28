@@ -236,6 +236,8 @@ def _validate_availability_target(target):
         budget["probe_timeout_seconds"] < budget["scrape_timeout_seconds"] <= budget["interval_seconds"]
     ):
         fail("availability timeouts must satisfy probe < scrape <= interval")
+    if health["freshness_seconds"] <= budget["interval_seconds"]:
+        fail("availability health freshness_seconds must exceed interval_seconds")
 
 
 def validate(targets, receipt_bindings=None):

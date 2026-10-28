@@ -295,6 +295,9 @@ class CoverageCensusTests(unittest.TestCase):
         item = availability_target()
         item["budget"]["health"]["samples_per_scrape"] = 257
         invalid.append(item)
+        item = availability_target()
+        item["signals"]["health"]["freshness_seconds"] = 60
+        invalid.append(item)
         for declaration in invalid:
             with self.subTest(declaration=declaration), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
                 prepare_availability(
@@ -303,6 +306,21 @@ class CoverageCensusTests(unittest.TestCase):
                     receiver_environment="production", cluster="prod-cluster",
                     shared_sample_limit=2000,
                 )
+
+    def test_availability_freshness_must_exceed_the_reviewed_scrape_interval(self):
+        declaration = availability_target()
+        declaration["signals"]["health"]["freshness_seconds"] = 61
+        prepared = prepare_availability(
+            [declaration], enabled=True, reviewed=True,
+            limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            receiver_environment="production", cluster="prod-cluster",
+            shared_sample_limit=2000,
+        )
+        self.assertEqual(prepared["targets"][0]["freshness_seconds"], 61)
+
+        declaration["signals"]["health"]["freshness_seconds"] = 60
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            CENSUS.validate([declaration])
 
     def test_availability_https_server_name_is_dns_not_an_ip_literal(self):
         accepted = availability_target()

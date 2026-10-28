@@ -1885,6 +1885,27 @@
             _o11y_trace_silence_expected: "{{ _o11y_expected_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
             _o11y_trace_silence_live: "{{ _o11y_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
 
+        - name: Require live endpoint-health and scheduled-job PromQL to equal the provisioned expressions
+          ansible.builtin.assert:
+            that:
+              - _o11y_health_and_silence_live_exprs == _o11y_health_and_silence_expected_exprs
+            fail_msg: "Live endpoint-health or scheduled-job alert expressions differ from the provisioned file."
+          vars:
+            _o11y_health_and_silence_uids:
+              - o11y_endpoint_probe_failed
+              - o11y_endpoint_probe_missing
+              - o11y_scheduled_job_silent
+            _o11y_health_and_silence_expected_exprs: >-
+              {{ _o11y_expected_rules
+                 | selectattr('uid', 'in', _o11y_health_and_silence_uids)
+                 | map(attribute='data') | map('first') | map(attribute='model')
+                 | map(attribute='expr') | list }}
+            _o11y_health_and_silence_live_exprs: >-
+              {{ _o11y_rules
+                 | selectattr('uid', 'in', _o11y_health_and_silence_uids)
+                 | map(attribute='data') | map('first') | map(attribute='model')
+                 | map(attribute='expr') | list }}
+
         # Same uid order on both sides (asserted above), so each field compares rule by
         # rule; absent or null maps compare as empty maps. The durations are strings in
         # the 11.4 AlertRuleNotificationSettings schema.

@@ -448,3 +448,13 @@ preserve its five-minute evaluation/pending behavior and CA's 36-hour default.
 Choose the smallest supported integer-hour silence only after verifying the
 effective cadence, normal duration, and allowed missed runs. The source
 15-minute schedule is not proof of a live schedule.
+
+The shared alert source already selects fixed completion `kind=run,status=success`
+rows and applies each declared integer-hour window. Per-service conformance
+consumers require service/step-shaped records, so the global receipt is not
+counted as a tracked service, failed step, or inventory marker. Source-only
+collector and receiver-consumer slices are complete; the private
+`agent-cloud-conformance` schedule and silence row remain unreviewed. Do not
+infer its effective cadence from the public 15-minute template or alter the
+existing CA 36-hour default. Loki readback and Grafana alert delivery remain
+separate live acceptance.

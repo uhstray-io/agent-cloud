@@ -1519,6 +1519,14 @@ the established profile gates and guaranteed restoration flow.
 
 ### Evidence and limits
 
+The existing receiver-side baseline survey executes this same helper, which
+imports PyYAML. No managed PyYAML installation was found in the public o11y
+playbooks or deployment source. The availability/source preflight therefore
+checks the exact `/usr/bin/env python3` invocation for Python 3.10+ and PyYAML
+before calling the helper, then refuses with a fixed message if unavailable.
+It does not install or bootstrap a package; whether the live receiver satisfies
+this existing dependency remains unverified.
+
 The typed DETAIL records from the pinned Alloy v1.5.1 fake run are the parser
 fixtures for this source implementation. A pinned startup/readback and
 fresh-remote-write test covers the current rendered configuration; a separate
@@ -1528,3 +1536,46 @@ source parsing and isolated synthetic component behavior only. They do not
 prove the actual host provider namespace, real endpoint availability,
 production TLS/transport, retention, rollout, or alert delivery. Those private
 and live gates remain open under the rollout plan and task 3.3.
+
+### B3 bounded endpoint-alert source slice (2026-10-28)
+
+Keep the existing `o11y_service_down` UID, query identity, threshold, pending
+period, canary behavior, and routing. Its title and annotations describe a
+telemetry scrape failure; `up=0` does not establish that the application is
+down. Add only the stable `o11y_endpoint_probe_failed` and
+`o11y_endpoint_probe_missing` UIDs. Both exist only when the validated private
+availability projection is enabled, alerts are enabled, and the alert canary
+is inactive. When the gate is off, omit both rules and include both UIDs in the
+existing single `deleteRules` list.
+
+The failed rule is per reviewed target:
+`(1 - probe_success{job="o11y-availability",instance="<stable target>",service="<service>",target_id="<target>",environment="<environment>",cluster="<cluster>"}) and on(job,instance,service,target_id,environment,cluster) (up{same exact identity} == 1)`.
+Its threshold remains greater than `0.5`. It reports an observed failed health
+contract only while the scrape succeeds. The missing rule applies
+`absent_over_time(probe_success{same exact identity}[F]) unless on(job,instance,service,target_id,environment,cluster) (up{same exact identity} == 0)`
+with the same threshold. `F` is the already-reviewed
+`signals.health.freshness_seconds`; require `F` to exceed the target scrape
+interval, and retain the existing 60-second evaluation and two-minute pending
+period. The only suppression is an `up=0` series with the same six-label
+identity. Missing `up`, missing `probe_success`, or an unrelated series cannot
+silence the missing-probe rule. Detection/firing latency includes `F`, one
+evaluation interval, and the pending period; `F` is not the full firing
+deadline.
+
+The existing provisioner compares the exact query for owned rules. Extend that
+same comparison for the two gated rules and, when present, the shared
+`o11y_scheduled_job_silent` query. Preserve selector, UID, labels, annotations,
+pause state, routing, and notification ownership. Reuse the existing
+service-telemetry group and Discord route. No new alert framework, source
+annotation, tombstone, recovery format, or guessed private silence window is
+introduced. The fixed collector `kind=run,status=success` source and generic
+integer-hour silence consumer already exist; the private
+`agent-cloud-conformance` silence row remains unconfigured until its effective
+cadence, duration, and missed-run budget are reviewed. Keep the CA 36-hour
+default unchanged.
+
+The cached Prometheus 3.1.0 fake-query evaluation covered healthy endpoint,
+failed endpoint, scrape failure, both missing signals, missing probe with
+healthy scrape, unrelated identity, and freshness inside/outside `F`. This
+supports expression semantics only; rendered Grafana state, target-specific
+private policy, firing/recovery, and notification delivery remain live gates.

@@ -1370,6 +1370,82 @@ assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule
 PY
 }
 
+@test "o11y: endpoint health alerts preserve scrape failure and missing-series distinctions" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+targets = [
+    {'target_id': 'service:alpha', 'service_identity': 'alpha', 'environment': 'prod',
+     'cluster': 'test-cluster', 'freshness_seconds': 600},
+    {'target_id': 'service:beta', 'service_identity': 'beta', 'environment': 'prod',
+     'cluster': 'test-cluster', 'freshness_seconds': 900},
+]
+base = {
+    'local_mode': False,
+    'o11y_environment': 'prod',
+    'o11y_cluster': 'test-cluster',
+    'o11y_alerts_enabled': True,
+    'o11y_availability': {'enabled': True, 'targets': targets},
+}
+
+def rules(**values):
+    document = yaml.safe_load(template.render(**(base | values)))
+    return document['groups'][0]['rules'], document
+
+rendered, active_doc = rules()
+by_uid = {rule['uid']: rule for rule in rendered}
+failed = by_uid['o11y_endpoint_probe_failed']
+missing = by_uid['o11y_endpoint_probe_missing']
+identity = 'job="o11y-availability",instance="service:alpha",service="alpha",target_id="service:alpha",environment="prod",cluster="test-cluster"'
+labels = 'on(job,instance,service,target_id,environment,cluster)'
+assert failed['title'] == 'Endpoint health check failed'
+assert failed['data'][0]['model']['expr'] == (
+    f'(1 - probe_success{{{identity}}}) and {labels} (up{{{identity}}} == 1) or '
+    '(1 - probe_success{job="o11y-availability",instance="service:beta",service="beta",'
+    'target_id="service:beta",environment="prod",cluster="test-cluster"}) and '
+    'on(job,instance,service,target_id,environment,cluster) '
+    '(up{job="o11y-availability",instance="service:beta",service="beta",target_id="service:beta",'
+    'environment="prod",cluster="test-cluster"} == 1)'
+)
+assert missing['data'][0]['model']['expr'] == (
+    'absent_over_time(probe_success{' + identity + '}[600s]) unless ' + labels +
+    ' (up{' + identity + '} == 0) or '
+    'absent_over_time(probe_success{job="o11y-availability",instance="service:beta",service="beta",'
+    'target_id="service:beta",environment="prod",cluster="test-cluster"}[900s]) unless '
+    'on(job,instance,service,target_id,environment,cluster) '
+    '(up{job="o11y-availability",instance="service:beta",service="beta",target_id="service:beta",'
+    'environment="prod",cluster="test-cluster"} == 0)'
+)
+assert missing['data'][0]['relativeTimeRange'] == {'from': 900, 'to': 0}
+assert all(rule['for'] == '2m' for rule in (failed, missing))
+assert all(rule['notification_settings']['receiver'] == 'agent-cloud-ops' for rule in (failed, missing))
+assert all(rule['labels']['severity'] == 'critical' for rule in (failed, missing))
+assert by_uid['o11y_service_down']['title'] == 'Service telemetry scrape failed'
+
+disabled, disabled_doc = rules(o11y_alerts_enabled=False)
+unavailable, unavailable_doc = rules(o11y_availability={'enabled': False, 'targets': targets})
+canary, canary_doc = rules(o11y_alert_canary_service='o11y-fault-probe-' + 'a' * 12)
+for document in (disabled_doc, unavailable_doc, canary_doc):
+    assert [item['uid'] for item in document['deleteRules']].count('o11y_endpoint_probe_failed') == 1
+    assert [item['uid'] for item in document['deleteRules']].count('o11y_endpoint_probe_missing') == 1
+    assert not any(rule['uid'] in {'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'}
+                   for group in document['groups'] for rule in group['rules'])
+assert not any(rule['uid'] in {'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'}
+               for rule in disabled)
+assert not any(rule['uid'] in {'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'}
+               for rule in unavailable)
+PY
+}
+
 @test "o11y: agentgateway trace silence rule requires traffic, zero spans, and every activation guard" {
   python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
 import json
@@ -1725,11 +1801,12 @@ scope = by_name['Scope live rules to the provisioned folders and groups']
 set_check = by_name['Require the live rule set to equal the provisioned rules']
 field_check = by_name["Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's"]
 settings_check = by_name["Require each live rule's notification settings to equal the provisioned rule's"]
+query_check = by_name['Require live endpoint-health and scheduled-job PromQL to equal the provisioned expressions']
 live_rules = by_name['Read live o11y alert rules']
 slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
-assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check) < tasks.index(settings_check)
+assert tasks.index(scope) < tasks.index(set_check) < tasks.index(query_check) < tasks.index(field_check) < tasks.index(settings_check)
 assert slurp['register'] == '_provisioned_rules_file' and not block.get('no_log', False)
 assert live_rules['no_log'] is True and folders['no_log'] is True
 assert 'no_log' not in field_check and 'no_log' not in settings_check
@@ -1745,6 +1822,7 @@ compile_value = lambda value: env.compile_expression(value.strip().removeprefix(
 set_checks = [env.compile_expression(expr) for expr in set_check['ansible.builtin.assert']['that']]
 direct_exprs = [env.compile_expression(expr) for expr in field_check['ansible.builtin.assert']['that']]
 field_exprs = [env.compile_expression(expr) for expr in settings_check['ansible.builtin.assert']['that']]
+query_exprs = [env.compile_expression(expr) for expr in query_check['ansible.builtin.assert']['that']]
 fields = settings_check['loop']
 assert {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'} == set(fields)
 
@@ -1770,6 +1848,10 @@ def verify_rules(rules, provisioned, live_folders=({'uid': 'f1', 'title': 'agent
         names[key] = compile_value(expr)(**names)
     if not all(bool(check(**names)) for check in set_checks):
         return False
+    for key, expr in query_check['vars'].items():
+        names[key] = expr if isinstance(expr, list) else compile_value(expr)(**names)
+    if not all(bool(check(**names)) for check in query_exprs):
+        return False
     if not all(bool(check(**names)) for check in direct_exprs):
         return False
     for key, expr in settings_check['vars'].items():
@@ -1792,6 +1874,22 @@ assert next(rule for rule in local_live if rule['uid'] == 'o11y_receiver_root_di
 assert verify_rules(local_live, local_doc)
 assert verify_rules(prod_live, prod_doc)
 assert verify_rules(inf_live, inf_doc)
+availability_doc = yaml.safe_load(render_alerts.render(
+    local_mode=False, o11y_alerts_enabled=True,
+    o11y_availability={'enabled': True, 'targets': [
+        {'target_id': 'service:alpha', 'service_identity': 'alpha', 'environment': 'prod',
+         'cluster': 'test-cluster', 'freshness_seconds': 600},
+    ]},
+    o11y_scheduled_jobs=[{'job': 'agent-cloud-conformance', 'max_silence_hours': 2}],
+))
+availability_live = live_of(availability_doc)
+assert verify_rules(availability_live, availability_doc)
+for uid in ('o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing', 'o11y_scheduled_job_silent'):
+    drifted = [dict(rule) for rule in availability_live]
+    rule = next(item for item in drifted if item['uid'] == uid)
+    rule['data'] = [dict(item) for item in rule['data']]
+    rule['data'][0]['model'] = dict(rule['data'][0]['model'], expr='vector(0)')
+    assert not verify_rules(drifted, availability_doc), uid
 assert any(rule.get('labels', {}).get('service') == '{{ $$labels.job }}'
            for group in prod_doc['groups'] for rule in group['rules'])
 assert any(rule.get('labels', {}).get('service') == '{{ $labels.job }}'
@@ -3280,7 +3378,9 @@ enabled = yaml.safe_load(template.render(**base, dgx_spark_scrape_enabled=True, 
 created = [rule['uid'] for group in enabled['groups'] for rule in group['rules']
            if rule['uid'].startswith('inference_')]
 assert created, 'enabled render carries no inference rules'
-assert 'deleteRules' not in enabled, enabled.get('deleteRules')
+assert sorted(entry['uid'] for entry in enabled['deleteRules']) == [
+    'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing',
+], enabled.get('deleteRules')
 
 for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(local_mode=True)):
     disabled = yaml.safe_load(template.render(**values))
@@ -3288,7 +3388,8 @@ for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(loca
             if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry', 'agentgateway-traces'], values
     assert all(not rule['uid'].startswith('inference_')
                for group in disabled['groups'] for rule in group['rules']), values
-    assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(created), disabled['deleteRules']
+    assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(
+        created + ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing']), disabled['deleteRules']
     assert all(entry['orgId'] == 1 for entry in disabled['deleteRules'])
 PY
 }
@@ -3367,8 +3468,13 @@ assert all(group['interval'] == '5m' for group in default['groups'] if group['na
 rules = loki_rules(default)
 assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expiring',
                        'o11y_internal_ca_intermediate_expiring']
-assert 'deleteRules' not in render(local_mode=False, o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True,
-                                  o11y_inference_probe_enabled=True)
+assert 'deleteRules' not in render(local_mode=False, o11y_alerts_enabled=True,
+                                  o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True,
+                                  o11y_inference_probe_enabled=True,
+                                  o11y_availability={'enabled': True, 'targets': [
+                                      {'target_id': 'service:alpha', 'service_identity': 'alpha',
+                                       'environment': 'prod', 'cluster': 'test-cluster', 'freshness_seconds': 600}
+                                  ]})
 
 silent = rules['o11y_scheduled_job_silent']
 assert silent['title'] == 'Scheduled job silent'
@@ -3433,8 +3539,9 @@ inference = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference
              'inference_node_memavailable_low', 'inference_node_memfree_low',
              'inference_benchmark_gate_placeholder']
 probe = ['inference_probe_failing', 'inference_probe_stale']
-for scrape, deleted in ((True, probe + ['o11y_scheduled_job_silent']),
-                        (False, inference + probe + ['o11y_scheduled_job_silent'])):
+availability = ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing']
+for scrape, deleted in ((True, probe + availability + ['o11y_scheduled_job_silent']),
+                        (False, inference + probe + availability + ['o11y_scheduled_job_silent'])):
     empty = render(local_mode=False, o11y_scheduled_jobs=[], o11y_expected_metrics_targets=[],
                    dgx_spark_scrape_enabled=scrape)
     assert 'scheduled-jobs' not in [group['name'] for group in empty['groups']]

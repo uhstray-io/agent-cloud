@@ -513,6 +513,21 @@ use `absent_over_time(up{...}[5m])` and hold for two minutes. An endpoint that
 still exists with `up=0` remains the service-down condition; a target missing
 from Prometheus for five minutes is the disappeared-target condition.
 
+The optional native endpoint-health rules keep three observations separate:
+`probe_success=0` means the reviewed health contract failed while its scrape is
+healthy, `up=0` means telemetry collection failed, and an absent exact
+`probe_success` series is missing health data. The failed-probe rule requires
+`up=1` for the same six-label target identity. The missing-probe rule uses the
+reviewed health freshness window and is suppressed only by `up=0` for that same
+identity. The existing generic service rule reports a telemetry scrape failure
+and does not claim the application is down. Both endpoint rules use the
+existing alert enablement, canary, ownership, and Discord route; disabling the
+source, alerts, or activating the canary removes the rules through the existing
+`deleteRules` cleanup. A rendered rule and source-level PromQL evaluation do not
+prove Grafana readback, live firing/recovery, endpoint behavior, or notification
+delivery. The `agent-cloud-conformance` silence duration remains private and
+must follow its verified schedule; no default cadence is inferred here.
+
 When production alerts or the reviewed-target gate turns off, Grafana's generated
 file keeps every validated previously owned target UID as a paused `vector(0)`
 rule with generic labels and no route. The next deploy or baseline restoration
