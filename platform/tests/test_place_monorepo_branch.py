@@ -17,8 +17,9 @@ pins `expected_repository_sha` per include (:56-59 and :361-364). Include forms 
 string, the `{file: ...}` dict, and any path ending in tasks/place-monorepo.yml (so
 `{{ playbook_dir }}/tasks/...` counts). A playbook whose text names the placement but yields no
 placement row fails, so an unrecognised form cannot pass silently. Block-level `when` and `vars`,
-and a branch set by `set_fact`, are not read: the guard is conservative there, so it may flag a
-correct play, and it never passes a wrong one. LOCAL_ONLY lists the plays that place only in
+and a branch set by `set_fact`, are not read: the guard is conservative there and may flag a
+correct play. A positive `local_mode` term followed by a comparison (`local_mode | bool == false`)
+would pass; no playbook uses that form. LOCAL_ONLY lists the plays that place only in
 local mode, because the play refuses any other run before the include.
 """
 
