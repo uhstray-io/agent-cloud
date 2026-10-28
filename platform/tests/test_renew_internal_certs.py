@@ -349,6 +349,11 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
                     return
             else:
                 break
+            if behavior == "plaintext_auth_alert":
+                # A raw TLS alert without ServerHello/certificate must not prove refusal.
+                raw.sendall(b"\x15\x03\x03\x00\x02\x02\x74")
+                raw.close()
+                continue
             try:
                 with context.wrap_socket(raw, server_side=True) as tls:
                     tls.settimeout(2)
@@ -976,7 +981,8 @@ def test_o11y_tls_proof_requires_valid_client_http2_and_refuses_missing_and_fore
     ("SSLV3_ALERT_CERTIFICATE_UNKNOWN", "AUTH_ALERT_READ", 0, "O11Y_MTLS_PROVEN:", ""),
     ("SSLV3_ALERT_UNSUPPORTED_CERTIFICATE", "AUTH_ALERT_READ", 1, "UNVERIFIED_NO_CLIENT_AUTH",
      "O11Y_MTLS_DIAG:NO_CLIENT_AUTH_ALERT_READ"),
-    ("TLSV13_ALERT_CERTIFICATE_REQUIRED", "TLS_HANDSHAKE", 0, "O11Y_MTLS_PROVEN:", ""),
+    ("TLSV13_ALERT_CERTIFICATE_REQUIRED", "TLS_HANDSHAKE", 1, "UNVERIFIED_NO_CLIENT_AUTH",
+     "O11Y_MTLS_DIAG:NO_CLIENT_TLS_HANDSHAKE"),
 ])
 def test_o11y_tls_proof_classifies_only_explicit_certificate_alert_reasons(
     tmp_path, reason, phase, expected_rc, expected_stdout, expected_diag
@@ -1224,6 +1230,28 @@ def test_o11y_tls_proof_does_not_treat_no_client_data_or_eof_as_rejection(
     assert result.stderr.strip() == f"O11Y_MTLS_DIAG:{reason}"
     assert observed_requests[0] == b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00"
     assert observed_requests[1] == b""
+
+
+def test_o11y_tls_proof_does_not_accept_plaintext_auth_alert_without_server_identity(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, ["settings", "plaintext_auth_alert"]) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=20,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_NO_CLIENT_AUTH"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:NO_CLIENT_TLS_HANDSHAKE"
+    assert "O11Y_MTLS_PROVEN" not in result.stdout
 
 
 def test_o11y_tls_proof_reports_foreign_ca_unverified_result_without_details(tmp_path):

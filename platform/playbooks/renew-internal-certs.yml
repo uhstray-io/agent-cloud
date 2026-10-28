@@ -357,7 +357,8 @@
           sys.exit(1)
     # This o11y-only proof requires a verified TLS 1.3 / ALPN h2 connection and a complete
     # server SETTINGS frame with the actual journal client. Negative probes count only explicit
-    # certificate-auth alerts; EOF, timeout, connection, ALPN, and frame failures are unverified.
+    # certificate-auth alerts after the server identity and ALPN are verified; all other results
+    # remain unverified.
     _renew_o11y_tls_prover: |
       import os, socket, ssl, subprocess, sys, tempfile, time
       host, port, name, ca, client_cert, client_key = sys.argv[1:7]
@@ -450,7 +451,7 @@
                       serial = tls.getpeercert().get("serialNumber")
                       return ("accepted", serial, None) if serial else ("unverified", None, "SERIAL")
           except ssl.SSLError as exc:
-              if exc.reason in auth_alerts:
+              if exc.reason in auth_alerts and (not expect_rejection or phase == "AUTH_ALERT_READ"):
                   return ("rejected", None, phase)
               return ("unverified", None, phase)
           except TimeoutError:

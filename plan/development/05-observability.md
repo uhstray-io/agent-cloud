@@ -2432,14 +2432,16 @@ parity.
 The source now uses a negative-only probe mode for the missing-client and
 foreign-CA legs. When that handshake completes with TLS 1.3 and ALPN h2, the
 probe reads for a certificate-auth alert before sending any application bytes.
-An explicit alert in the existing certificate-auth allowlist still proves
-rejection if the server sends it during the handshake, preserving the earlier
-contract. Application data, EOF, timeout, transport errors, and other TLS
-errors remain unverified. The valid journal-client leg retains the
+Only an explicit alert in the existing certificate-auth allowlist during this
+post-authentication read proves refusal. A plaintext alert before ServerHello,
+or any alert before the server identity and ALPN are verified, remains
+unverified. Application data, EOF, timeout, transport errors, and other TLS
+errors also remain unverified. The valid journal-client leg retains the
 SETTINGS/ACK/serial proof. Fixed diagnostics report the negative probe's
 phase/state without changing stdout or exit status.
 A focused fixture regression records that no HTTP/2 bytes are sent on negative
-probes and verifies early application data and EOF still fail closed. No CI
+probes, verifies early application data and EOF still fail closed, and rejects a
+plaintext certificate-required alert from a peer with no server identity. No CI
 rerun or x86_64 reproduction has yet confirmed the diagnosis.
 
 Follow-up review added the OpenSSL `SSLV3_ALERT_BAD_CERTIFICATE` and
