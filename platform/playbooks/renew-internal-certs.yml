@@ -389,59 +389,72 @@
           if cert:
               ctx.load_cert_chain(cert, key)
           deadline = time.monotonic() + 8
+          phase = "CONNECT"
           try:
               remaining = deadline - time.monotonic()
               if remaining <= 0:
-                  return ("unverified", None)
+                  return ("unverified", None, "DEADLINE")
               with socket.create_connection((host, int(port)), timeout=remaining) as raw:
                   remaining = deadline - time.monotonic()
                   if remaining <= 0:
-                      return ("unverified", None)
+                      return ("unverified", None, "DEADLINE")
                   raw.settimeout(remaining)
+                  phase = "TLS_HANDSHAKE"
                   with ctx.wrap_socket(raw, server_hostname=name) as tls:
                       remaining = deadline - time.monotonic()
                       if remaining <= 0:
-                          return ("unverified", None)
+                          return ("unverified", None, "DEADLINE")
                       tls.settimeout(remaining)
+                      phase = "ALPN"
                       if tls.selected_alpn_protocol() != "h2":
-                          return ("unverified", None)
+                          return ("unverified", None, "ALPN")
                       remaining = deadline - time.monotonic()
                       if remaining <= 0:
-                          return ("unverified", None)
+                          return ("unverified", None, "DEADLINE")
                       tls.settimeout(remaining)
+                      phase = "SETTINGS_WRITE"
                       tls.sendall(preface + settings)
+                      phase = "SETTINGS_READ"
                       header = read_exact(tls, 9, deadline)
                       length = int.from_bytes(header[:3], "big")
                       frame_type, flags = header[3], header[4]
                       stream_id = int.from_bytes(header[5:9], "big") & 0x7fffffff
+                      phase = "SETTINGS_INVALID"
                       if frame_type != 4 or flags & 1 or stream_id != 0 or length > 16384 or length % 6:
-                          return ("unverified", None)
+                          return ("unverified", None, "SETTINGS_INVALID")
+                      phase = "SETTINGS_READ"
                       payload = read_exact(tls, length, deadline)
+                      phase = "SETTINGS_INVALID"
                       for offset in range(0, length, 6):
                           setting_id = int.from_bytes(payload[offset:offset + 2], "big")
                           value = int.from_bytes(payload[offset + 2:offset + 6], "big")
                           if setting_id == 2 and value != 0:
-                              return ("unverified", None)
+                              return ("unverified", None, "SETTINGS_INVALID")
                           if setting_id == 4 and value > 0x7fffffff:
-                              return ("unverified", None)
+                              return ("unverified", None, "SETTINGS_INVALID")
                           if setting_id == 5 and not 16384 <= value <= 16777215:
-                              return ("unverified", None)
+                              return ("unverified", None, "SETTINGS_INVALID")
                       remaining = deadline - time.monotonic()
                       if remaining <= 0:
-                          return ("unverified", None)
+                          return ("unverified", None, "DEADLINE")
                       tls.settimeout(remaining)
+                      phase = "ACK"
                       tls.sendall(b"\x00\x00\x00\x04\x01\x00\x00\x00\x00")
+                      phase = "SERIAL"
                       serial = tls.getpeercert().get("serialNumber")
-                      return ("accepted", serial) if serial else ("unverified", None)
+                      return ("accepted", serial, None) if serial else ("unverified", None, "SERIAL")
           except ssl.SSLError as exc:
               if exc.reason in auth_alerts:
-                  return ("rejected", None)
-              return ("unverified", None)
+                  return ("rejected", None, phase)
+              return ("unverified", None, phase)
+          except TimeoutError:
+              return ("unverified", None, "DEADLINE")
           except (OSError, RuntimeError, ValueError):
-              return ("unverified", None)
-      valid, serial = probe(client_cert, client_key)
+              return ("unverified", None, phase)
+      valid, serial, reason = probe(client_cert, client_key)
       if valid != "accepted" or not serial:
           print("UNVERIFIED_VALID_CLIENT_HTTP2")
+          print("O11Y_MTLS_DIAG:" + (reason or "SERIAL"), file=sys.stderr)
           sys.exit(1)
       if probe()[0] != "rejected":
           print("UNVERIFIED_NO_CLIENT_AUTH")

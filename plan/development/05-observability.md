@@ -2410,3 +2410,16 @@ sustained ingestion. No trace IDs, identity values, private addresses, or raw
 log/trace payloads were retained. Controller and receiver source revisions were
 not read back during this observation, so it does not establish which source
 revision was live.
+
+### 2026-10-28 OTLP mTLS prover diagnostics
+
+The Linux Python-core CI run for source head `9decfeb` failed the valid-client
+HTTP/2 proof with `UNVERIFIED_VALID_CLIENT_HTTP2`; its captured command result
+had empty stderr. The command task preserves child stderr, while the prover
+collapsed caught failures to that stable stdout result. The source now adds one
+fixed reason code on stderr for valid-client proof failures, without changing
+the success output, acceptance checks, or certificate-refusal criteria. The
+cause of the Linux CI failure remains unknown: the same test passed under
+Python 3.12.13 and ansible-core 2.20.8 on macOS, which does not establish Linux
+or OpenSSL parity. This is source/test evidence only; no live issuance,
+receiver activation, or renewal proof was performed.

@@ -308,7 +308,7 @@ def _loki(pushes: list):
 
 @contextmanager
 def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, server_frames=None,
-                       split_reads=False, expect_ack=True):
+                       split_reads=False, expect_ack=True, server_alpn=("h2",)):
     """Small TLS 1.3 / HTTP2 fixture for the o11y-specific renewal proof."""
     d = Path(server_leaf["dir"])
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -316,7 +316,7 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
     context.load_cert_chain(d / "current/cert.pem", d / "current/key.pem")
     context.verify_mode = ssl.CERT_REQUIRED if client_behaviors is None else ssl.CERT_NONE
     context.load_verify_locations(cadata=ca["bundle"])
-    context.set_alpn_protocols(["h2"])
+    context.set_alpn_protocols(list(server_alpn))
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -955,6 +955,7 @@ def test_o11y_tls_proof_requires_valid_client_http2_and_refuses_missing_and_fore
         )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == f"O11Y_MTLS_PROVEN:{server_serial}"
+    assert result.stderr == ""
 
 
 @pytest.mark.parametrize("frame,split_reads", [
@@ -982,6 +983,7 @@ def test_o11y_tls_proof_accepts_valid_settings_and_unknown_ids(tmp_path, frame, 
         )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == f"O11Y_MTLS_PROVEN:{server_serial}"
+    assert result.stderr == ""
 
 
 @pytest.mark.parametrize("frame", [
@@ -1015,6 +1017,7 @@ def test_o11y_tls_proof_does_not_accept_malformed_valid_client_settings(tmp_path
     assert result.returncode != 0
     assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
     assert "O11Y_MTLS_PROVEN" not in result.stdout
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:SETTINGS_INVALID"
 
 
 def test_o11y_tls_proof_deadline_expiry_during_frame_read_is_unverified(tmp_path):
@@ -1041,6 +1044,86 @@ def test_o11y_tls_proof_deadline_expiry_during_frame_read_is_unverified(tmp_path
     assert result.returncode != 0
     assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
     assert "O11Y_MTLS_PROVEN" not in result.stdout
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:DEADLINE"
+
+
+@pytest.mark.parametrize(("failure", "reason"), [("short", "SETTINGS_READ"), ("alpn", "ALPN")])
+def test_o11y_tls_proof_reports_fixed_reason_for_settings_or_alpn_failure(tmp_path, failure, reason):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    receiver = {"client_behaviors": ["short"], "expect_ack": False} if failure == "short" else {
+        "client_behaviors": ["settings"], "expect_ack": False, "server_alpn": ("http/1.1",),
+    }
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, **receiver) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert result.stderr.strip() == f"O11Y_MTLS_DIAG:{reason}"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
+
+
+def test_o11y_tls_proof_reports_connect_failure_without_exception_details(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.close()
+    result = subprocess.run(
+        [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+         str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+         str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+         str(Path(journal_leaf["dir"]) / "current/key.pem")],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:CONNECT"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
+
+
+def test_o11y_tls_proof_reports_tls_handshake_failure_without_exception_details(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    untrusted_ca = _ca(untrusted_dir)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(untrusted_ca["dir"] / "bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:TLS_HANDSHAKE"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
 
 
 @pytest.mark.parametrize("failure", ["settings", "stall", "short", "unexpected"])
