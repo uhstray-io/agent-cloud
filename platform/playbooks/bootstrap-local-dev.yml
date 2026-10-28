@@ -88,6 +88,7 @@
       - {'host': 'console.{{ _dev_zone }}', 'upstream': 'console:8080'}
       - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
       - {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}
+      - {'host': 'plane.{{ _dev_zone }}', 'upstream': 'plane-proxy:80'}
       # agentgateway operator UI — the gateway runs its own OIDC login (plain proxy).
       - {'host': 'admin.inference.{{ _dev_zone }}', 'upstream': 'agentgateway:4001'}
       # inference — the edge shape (/v1 + /health allowlist, edge 401/404) in front of the
@@ -1482,6 +1483,31 @@
           # Search node — required as of v2.23.0; the full account lives in
           # platform/services/postiz/deployment/CLAUDE.md. Default is true.
           postiz_temporal_search=true
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          # plane — work tracker, Commercial edition. Declared here for the same
+          # container-path reason as postiz above: this inventory is what the local
+          # Semaphore runs with, so the paths are the container's, not the host's.
+          [plane_svc]
+          plane-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [plane_svc:vars]
+          ansible_user=semaphore
+          service_name=plane
+          monorepo_deploy_path=platform/services/plane/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          plane_bind=127.0.0.1
+          plane_port=8096
+          plane_public_url=https://plane.{{ _dev_zone }}:{{ _edge_https_port }}
+          plane_trusted_proxies=private_ranges
+          plane_automation_email=plane-automation@{{ _dev_zone }}
+          plane_company_name=agent-cloud
+          plane_workspace_slug=agent-cloud
+          plane_workspace_name=agent-cloud
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

@@ -46,33 +46,26 @@
         fail_msg: "plane_version {{ _plane_version }} has no pinned sha256 in deploy-plane.yml; pin it before deploying."
         quiet: true
 
-    - name: "Scratch directory for the setup files (controller)"
-      ansible.builtin.tempfile:
-        state: directory
-        suffix: plane-setup
-      register: _plane_setup_tmp
-      delegate_to: localhost
-      run_once: true
-      check_mode: false
-
-    - name: "Fetch and verify docker-compose.yml and variables.env"
+    # A read: verifies both files in memory and prints them; writes nothing anywhere, so a
+    # dry run fetches and verifies for real.
+    - name: "Fetch and verify docker-compose.yml and variables.env"  # noqa: run-once[task] — one fetch serves every host
       ansible.builtin.command:
         argv:
           - python3
           - -I
           - "{{ playbook_dir }}/../services/plane/deployment/fetch_setup.py"
           - "{{ _plane_version }}"
-          - "{{ _plane_setup_tmp.path }}"
           - "{{ _plane_setup_pins[_plane_version].compose }}"
           - "{{ _plane_setup_pins[_plane_version].variables }}"
+      register: _plane_setup_fetch
       delegate_to: localhost
       run_once: true
       changed_when: false
       check_mode: false
 
-    - name: "Remember where the verified files are"
+    - name: "Keep the verified files"
       ansible.builtin.set_fact:
-        _plane_setup_dir: "{{ _plane_setup_tmp.path }}"
+        _plane_setup: "{{ _plane_setup_fetch.stdout | from_json }}"
 
 # ── Phase 1: Place repo + Compose file + secrets + .env ─────────────────────
 - name: "Phase 1: Place repo + manage plane secrets"
@@ -109,30 +102,24 @@
     _service_url: "{{ plane_public_url | default('') }}"
 
   tasks:
+    # manage-secrets sends the controller AppRole and receives every secret over this
+    # connection — refuse a public cleartext endpoint before any of it is sent.
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
     - name: "Place Plane's verified Compose file as compose.yml"
       ansible.builtin.copy:
-        src: "{{ _plane_setup_dir }}/docker-compose.yml"
+        content: "{{ _plane_setup['docker-compose.yml'] }}"
         dest: "{{ _deploy_dir }}/compose.yml"
         mode: "0644"
 
     - name: "Manage secrets and render .env"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
-
-- name: "Phase 1: Remove the controller copy of the setup files"
-  hosts: plane_svc
-  gather_facts: false
-  become: false
-  tasks:
-    - name: "Remove the scratch directory"
-      ansible.builtin.file:
-        path: "{{ _plane_setup_dir }}"
-        state: absent
-      delegate_to: localhost
-      run_once: true
-      check_mode: false
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start plane"

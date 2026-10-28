@@ -128,6 +128,11 @@ templates:
   - name: "Deploy Postiz (Local)"
     playbook: platform/playbooks/deploy-postiz.yml
 
+  # plane - work tracker, Commercial edition (Plane's own Compose file is fetched
+  # and sha256-verified per run, never committed). Native in-app auth.
+  - name: "Deploy Plane (Local)"
+    playbook: platform/playbooks/deploy-plane.yml
+
   # Captures the app-minted public-API key into the local OpenBao — run after
   # the first sign-in (the app mints the key on the first authenticated request).
   - name: "Store Postiz API Key (Local)"
@@ -241,6 +246,14 @@ templates:
         required: true
   - name: "Clean Deploy Postiz (Local)"
     playbook: platform/playbooks/clean-deploy-postiz.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+  - name: "Clean Deploy Plane (Local)"
+    playbook: platform/playbooks/clean-deploy-plane.yml
     survey_vars:
       - name: confirm_reset
         title: "Confirm: host whose data is destroyed"

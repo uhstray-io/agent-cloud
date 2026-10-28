@@ -1091,6 +1091,26 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Deploy Plane
+    playbook: platform/playbooks/deploy-plane.yml
+    dev_variant: true
+    # Plane work tracker, Commercial edition. Plane's own Compose file is fetched
+    # and sha256-verified on every run (its EULA forbids committing it). Native
+    # in-app auth; Caddy is a plain reverse_proxy, no forward_auth.
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
     survey_vars:
@@ -1344,6 +1364,25 @@ templates:
     # against an account that no longer exists — re-issue the key after
     # re-registering. Set postiz_disable_registration back to false first, or
     # nobody can sign in to the rebuilt stack.
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy Plane
+    playbook: platform/playbooks/clean-deploy-plane.yml
+    # DESTRUCTIVE: wipes Plane's containers and every named volume (database,
+    # Redis, RabbitMQ, uploads, proxy state). Every workspace, project and work
+    # item is gone and first-run configuration runs again. Secrets come back from
+    # OpenBao unchanged, so the rebuilt stack keeps its keys.
     survey_vars:
       - name: confirm_reset
         title: "Confirm: host whose data is destroyed"

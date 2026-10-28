@@ -63,7 +63,8 @@ def form_post(path, fields):
     _, _, tok = call("GET", "/auth/get-csrf-token/")
     status, location, _ = call("POST", path, dict(fields, csrfmiddlewaretoken=tok["csrf_token"]), form=True)
     if status != 302 or "error_code" in location:
-        sys.exit(f"{path}: refused ({status}, error {urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get('error_code', ['?'])[0]})")
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get("error_code", ["?"])[0]
+        sys.exit(f"{path}: refused ({status}, error {code})")
 
 
 done = []

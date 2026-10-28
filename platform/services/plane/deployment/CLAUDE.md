@@ -11,7 +11,8 @@ Plane's EULA (§2.1) forbids redistributing its software, so **no Plane-authored
 either repository**. On every run, `deploy-plane.yml`:
 
 1. Fetches the pinned release's `docker-compose.yml` and `variables.env` on the controller
-   (`fetch_setup.py`) from `prime.plane.so/api/v2/setup/?version=<tag>`.
+   (`fetch_setup.py`) from `prime.plane.so/api/v2/setup/?version=<tag>`, in memory: nothing is
+   written on the controller, so a dry run fetches and verifies for real.
 2. Verifies **each file's** sha256 against `_plane_setup_pins` in the playbook. Not the zip's
    digest, which changes on every download because the server stamps entry dates per request.
 3. Places the Compose file here as `compose.yml` (gitignored), and renders `.env` from

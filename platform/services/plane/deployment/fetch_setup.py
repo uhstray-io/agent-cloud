@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch Plane's Commercial setup files for one release and verify them before writing.
+"""Fetch Plane's Commercial setup files for one release and verify them, writing nothing.
 
 Plane's EULA (plane.so/legals/eula, section 2.1) forbids redistributing its files, so nothing
 Plane wrote is committed here: the deploy fetches the release's docker-compose.yml and
@@ -7,15 +7,16 @@ variables.env from the public setup endpoint on every run and checks each file a
 sha256 pinned in deploy-plane.yml. The zip's own digest is not pinned: the endpoint stamps entry
 dates at request time, so two downloads of one release differ (design.md, spike 0.1).
 
-Only the two named members are read, by exact name, and each is written only after its digest
-matches, so a changed or tampered release writes nothing.
+Only the two named members are read, by exact name. Both are verified in memory and printed
+as one JSON object; nothing is written to disk, so a dry run fetches and verifies for real
+without a write to guard. A changed or tampered release prints nothing and exits non-zero.
 
-Usage: fetch_setup.py <version> <dest-dir> <compose-sha256> <variables-sha256>
+Usage: fetch_setup.py <version> <compose-sha256> <variables-sha256>
 """
 
 import hashlib
 import io
-import os
+import json
 import sys
 import urllib.parse
 import urllib.request
@@ -39,9 +40,9 @@ def verified_members(blob, expected):
 
 
 def main(argv):
-    if len(argv) != 5:
+    if len(argv) != 4:
         sys.exit(__doc__.strip().splitlines()[-1])
-    version, dest, compose_sha, vars_sha = argv[1:]
+    version, compose_sha, vars_sha = argv[1:]
     url = SETUP_URL.format(urllib.parse.quote(version, safe=""))
     with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 - fixed https host
         blob = resp.read()
@@ -49,11 +50,7 @@ def main(argv):
         files = verified_members(blob, {MEMBERS[0]: compose_sha, MEMBERS[1]: vars_sha})
     except (KeyError, ValueError, zipfile.BadZipFile) as exc:
         sys.exit(f"Refusing Plane {version} setup files: {exc}")
-    os.makedirs(dest, exist_ok=True)
-    for name, data in files.items():
-        with open(os.path.join(dest, name), "wb") as f:
-            f.write(data)
-    print(f"Plane {version} setup files verified: {', '.join(MEMBERS)}")
+    print(json.dumps({name: data.decode("utf-8") for name, data in files.items()}))
 
 
 if __name__ == "__main__":

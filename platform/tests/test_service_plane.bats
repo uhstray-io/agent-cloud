@@ -138,7 +138,7 @@ PY
 @test "plane: the service-deploy step result is recorded last" {
   local last
   last=$(grep -E '^\s+- name: ' "$PLAYBOOK" | tail -1)
-  [[ "$last" == *"Record the service-deploy step result"* ]]
+  assert_contains "$last" "Record the service-deploy step result"
   grep -qF 'tasks/emit-service-deploy-result.yml' "$PLAYBOOK"
 }
 
