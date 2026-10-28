@@ -1,0 +1,86 @@
+# Plane — work tracker (Commercial edition)
+
+Plane links GitHub issues, each repository's OpenSpec plans and work cards. agent-cloud runs
+the **Commercial** edition (the licence is purchased; local-dev runs its Free plan, decision
+D2). Plan: `plan/development/16-plane-work-management.md`. Change, with every spike finding
+this file relies on: `plan/development/openspec/changes/deploy-plane-work-management/`.
+
+## Plane's files are fetched, never committed
+
+Plane's EULA (§2.1) forbids redistributing its software, so **no Plane-authored file is in
+either repository**. On every run, `deploy-plane.yml`:
+
+1. Fetches the pinned release's `docker-compose.yml` and `variables.env` on the controller
+   (`fetch_setup.py`) from `prime.plane.so/api/v2/setup/?version=<tag>`.
+2. Verifies **each file's** sha256 against `_plane_setup_pins` in the playbook. Not the zip's
+   digest, which changes on every download because the server stamps entry dates per request.
+3. Places the Compose file here as `compose.yml` (gitignored), and renders `.env` from
+   `variables.env` with every agent-cloud value replaced (`templates/env.j2`).
+
+Moving to another release means pinning that release's two digests in the playbook: a
+reviewed change. The pinned release is `v3.3.3` (Joseph, 2026-10-27).
+
+## What agent-cloud changes — `compose.agentcloud.yml`
+
+`deploy.sh` always applies it, and refuses a Plane file that brings a service it does not name.
+
+| Change | Why |
+|---|---|
+| `restart: always` everywhere; one-shots `"no"` + `agent-cloud.one-shot` | Plane ships `unless-stopped`, which podman's boot unit does not restart |
+| `profiles: ["disabled"]` on Plane AI (`pi-*`), Argus, email and the importer worker | Plane switches them off with `deploy.replicas: 0`, which **podman-compose 1.6.0 ignores** |
+| Named volumes for every bind mount | `compose down -v` removes them; the deploy tree's git update and rsync never touch data |
+| The proxy publishes plain HTTP on `plane_bind:plane_port` only | TLS is at the platform Caddy; HTTPS and SMTP publishes dropped |
+| `container_name` `plane-api` and `plane-proxy` | Stable names for the health wait, the configuration phase and the local Caddy upstream |
+
+The project is named `plane` by `COMPOSE_PROJECT_NAME` in `.env`: Plane's file names no
+project, and podman-compose ignores a `name:` set in an overlay.
+
+`compose.local.yml` joins the proxy to the `local-dev` network and switches off `monitor`, the
+licence agent, which exits on a domain it cannot register with Plane's licence server.
+
+## Credentials
+
+Everything is in OpenBao at `secret/services/plane`, generated once and reused:
+`plane_secret_key`, `plane_live_server_secret_key`, `plane_silo_hmac_secret_key`,
+`plane_aes_secret_key`, `plane_pi_internal_secret`, `plane_cursor_webhook_secret`, the Postgres,
+RabbitMQ and MinIO passwords, `plane_machine_signature` (the licence binds to it, so it is never
+rotated), and `plane_automation_password` for the first admin.
+
+Plane ships **working default credentials** in `variables.env` and in its Compose fallbacks,
+identical on every install. `env.j2` refuses to render if any of them comes out empty or
+equal to the shipped value. Note the RabbitMQ trap: Plane's Compose reads `RABBITMQ_PASSWORD`,
+not the `RABBITMQ_DEFAULT_PASS` its `variables.env` sets, so both are written.
+
+## First run closes the instance
+
+Until the first admin signs up, **anyone who reaches `/god-mode/` claims the instance**. So
+`deploy-plane.yml` completes setup in the same run as the first start, before the edge route
+opens (`configure_instance.py`, run inside `plane-api` with the password on stdin):
+
+1. Instance setup through the admin sign-up form, as `plane_automation_email`.
+2. `ENABLE_SIGNUP=0` (invitation-only). It is in `.env` from the first boot too: Plane copies
+   instance settings from the environment only when the setting's row is first created.
+3. The workspace `plane_workspace_slug`. Its owner is the automation account, never a person.
+
+Never run `manage.py create_instance_admin` before setup: sign-up then refuses because an
+admin exists, nothing else completes setup, and the instance is stuck.
+
+The instance configuration read-back returns encrypted settings **decrypted**, so any task
+that reads it is `no_log`.
+
+## Inventory
+
+`plane_svc` hosts need: `plane_public_url`, `plane_trusted_proxies` (the platform Caddy's
+address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automation_email`,
+`plane_company_name`, `plane_workspace_slug`, `plane_workspace_name`. Optional:
+`plane_version` (default `v3.3.3`).
+
+## Operate
+
+| Task | Template |
+|---|---|
+| Deploy or update | `Deploy Plane` (`Deploy Plane (Local)` locally) |
+| Destroy everything and redeploy | `Clean Deploy Plane` (`-e confirm_reset=<host>`) |
+
+Logs reach Loki through Alloy's container discovery. `live`, `silo` and `space` can also
+export OTLP logs (`OTEL_ENABLED`, `OTLP_ENDPOINT`), proven on 2026-10-27 but not enabled yet.

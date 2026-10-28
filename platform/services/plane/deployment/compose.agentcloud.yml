@@ -1,0 +1,127 @@
+# compose.agentcloud.yml — agent-cloud's overlay on Plane's Commercial docker-compose.yml.
+#
+# The base file is Plane's own and is NEVER committed (EULA section 2.1): deploy-plane.yml fetches
+# it for the pinned release, verifies its sha256, and places it here as compose.yml (gitignored).
+# Everything agent-cloud changes lives in this file, which deploy.sh always applies.
+#
+# What it changes, and why:
+#   restart   Plane ships `unless-stopped`, which podman's boot unit does not restart. Every
+#             long-lived service is `always`; one-shot init containers are "no" + the
+#             agent-cloud.one-shot label (platform/tests/test_restart_policy.bats). Every service
+#             in the base is named here — deploy.sh refuses a base that brings one this file
+#             does not, so a release adding a service cannot slip in on Plane's policy.
+#   profiles  Plane switches optional services off with `deploy.replicas: 0`, which
+#             podman-compose 1.6.0 IGNORES (it started a replicas-0 service in a 2026-10-27 test).
+#             A profile nothing activates keeps them off under both providers: Plane AI (pi-*),
+#             the Argus scanner, inbound email and the importer worker.
+#   volumes   Plane binds its data under $INSTALL_DIR. Named volumes instead, so the data lives
+#             in the engine, `compose down -v` (clean-service.yml) removes it, and neither the
+#             git update nor the local rsync of the deploy tree can touch it.
+#   ports     Only the proxy publishes, plain HTTP on one bind; TLS is at the platform Caddy. Its
+#             HTTPS and three SMTP publishes are dropped.
+# Design: plan/development/openspec/changes/deploy-plane-work-management/design.md (spikes 0.1, 0.2).
+
+x-always: &always
+  restart: always
+x-disabled: &disabled
+  restart: always
+  profiles: ["disabled"]
+x-one-shot: &one-shot
+  restart: "no"
+  labels:
+    agent-cloud.one-shot: "true"
+
+services:
+  admin: *always
+  web: *always
+  space: *always
+  live: *always
+  live-exporter: *always
+  monitor:
+    <<: *always
+    volumes: !override
+      - monitor_data:/app
+  api:
+    <<: *always
+    container_name: plane-api
+    volumes: !override
+      - logs_api:/code/plane/logs
+  worker:
+    <<: *always
+    volumes: !override
+      - logs_worker:/code/plane/logs
+  beat-worker:
+    <<: *always
+    volumes: !override
+      - logs_beat_worker:/code/plane/logs
+  migrator:
+    <<: *one-shot
+    volumes: !override
+      - logs_migrator:/code/plane/logs
+  plane-db:
+    <<: *always
+    volumes: !override
+      - pgdata:/var/lib/postgresql/data
+  plane-redis:
+    <<: *always
+    volumes: !override
+      - redisdata:/data
+  plane-mq:
+    <<: *always
+    volumes: !override
+      - rabbitmq_data:/var/lib/rabbitmq
+  plane-minio:
+    <<: *always
+    volumes: !override
+      - uploads:/export
+      - minio_data:/data
+  iframely: *always
+  silo: *always
+  automation-consumer: *always
+  webhook-consumer:
+    <<: *always
+    volumes: !override
+      - logs_webhook_consumer:/code/plane/logs
+  outbox-poller: *always
+  runner: *always
+  proxy:
+    <<: *always
+    container_name: plane-proxy
+    ports: !override
+      - "${PLANE_BIND:-127.0.0.1}:${PLANE_PORT:-8080}:80"
+    volumes: !override
+      - proxy_config:/config
+      - proxy_data:/data
+
+  # Off: replicas 0 upstream; kept off under podman-compose by the profile.
+  importer-worker: *disabled
+  email: *disabled
+  pi-api: *disabled
+  pi-beat: *disabled
+  pi-worker: *disabled
+  pi-agent-worker: *disabled
+  argus: *disabled
+  pi-db-init:
+    <<: *one-shot
+    profiles: ["disabled"]
+  pi-migrator:
+    <<: *one-shot
+    profiles: ["disabled"]
+  argus-migrator:
+    <<: *one-shot
+    profiles: ["disabled"]
+
+volumes:
+  monitor_data:
+  logs_api:
+  logs_worker:
+  logs_beat_worker:
+  logs_migrator:
+  logs_webhook_consumer:
+  pgdata:
+  redisdata:
+  rabbitmq_data:
+  uploads:
+  minio_data:
+  proxy_config:
+  proxy_data:

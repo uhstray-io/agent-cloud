@@ -1,0 +1,256 @@
+---
+# deploy-plane.yml — Plane work tracker, Commercial edition (composable).
+#
+# Phase 0: Fetch Plane's setup files for the pinned release on the controller and verify each
+#          against its sha256 (fetch_setup.py). Plane's EULA forbids redistributing them, so
+#          they are never committed (design.md, spike 0.1).
+# Phase 1: Place repo, place the fetched docker-compose.yml as compose.yml, manage-secrets
+#          (every credential generated once into OpenBao and reused) and render .env from
+#          Plane's variables.env with agent-cloud's values (templates/env.j2).
+# Phase 2: deploy.sh — container lifecycle with compose.agentcloud.yml always applied.
+# Phase 3: First-run configuration (configure_instance.py, inside plane-api): instance setup,
+#          invitation-only sign-up and the workspace. In the SAME run as the first start,
+#          because until the first admin signs up anyone who reaches /god-mode/ claims it.
+# Phase 4: Verify through the proxy, then record the service-deploy step result.
+#
+# Plan: plan/development/16-plane-work-management.md
+# Change: plan/development/openspec/changes/deploy-plane-work-management/
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: plane_svc
+    preflight_group_expected: plane_svc
+
+# ── Phase 0: Fetch and verify the release's setup files (controller) ─────────
+- name: "Phase 0: Fetch Plane's setup files"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _plane_version: "{{ plane_version | default('v3.3.3') }}"
+    # Per-file sha256, NOT the zip's: the endpoint stamps entry dates per request (spike 0.1).
+    # Moving to another release is a reviewed change here, with the digests read from that
+    # release's files.
+    _plane_setup_pins:
+      v3.3.3:
+        compose: ec74ea1b7e1998b81119ce737c971b514292474015b34b4b5fc921f137796872
+        variables: fa45732e0c2d36c3e3f9920aaef21314da0c785c793dc929117582e250b3afed
+  tasks:
+    - name: "Refuse a release without pinned digests"
+      ansible.builtin.assert:
+        that: _plane_version in _plane_setup_pins
+        fail_msg: "plane_version {{ _plane_version }} has no pinned sha256 in deploy-plane.yml; pin it before deploying."
+        quiet: true
+
+    - name: "Scratch directory for the setup files (controller)"
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: plane-setup
+      register: _plane_setup_tmp
+      delegate_to: localhost
+      run_once: true
+      check_mode: false
+
+    - name: "Fetch and verify docker-compose.yml and variables.env"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -I
+          - "{{ playbook_dir }}/../services/plane/deployment/fetch_setup.py"
+          - "{{ _plane_version }}"
+          - "{{ _plane_setup_tmp.path }}"
+          - "{{ _plane_setup_pins[_plane_version].compose }}"
+          - "{{ _plane_setup_pins[_plane_version].variables }}"
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Remember where the verified files are"
+      ansible.builtin.set_fact:
+        _plane_setup_dir: "{{ _plane_setup_tmp.path }}"
+
+# ── Phase 1: Place repo + Compose file + secrets + .env ─────────────────────
+- name: "Phase 1: Place repo + manage plane secrets"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _plane_version: "{{ plane_version | default('v3.3.3') }}"
+    _plane_public_url: "{{ plane_public_url }}"
+    # Every value is STATEFUL: generated once into OpenBao and reused. Regenerating
+    # plane_secret_key ends every session; the datastore passwords lock the app out of its
+    # volumes; plane_machine_signature is what the licence binds to (spike 0.2).
+    _secret_definitions:
+      - { name: plane_secret_key, type: django, length: 50 }
+      - { name: plane_live_server_secret_key, type: random, length: 40 }
+      - { name: plane_silo_hmac_secret_key, type: random, length: 40 }
+      - { name: plane_aes_secret_key, type: random, length: 32 }
+      - { name: plane_pi_internal_secret, type: random, length: 40 }
+      - { name: plane_cursor_webhook_secret, type: random, length: 40 }
+      - { name: plane_db_password, type: random, length: 32 }
+      - { name: plane_rabbitmq_password, type: random, length: 32 }
+      - { name: plane_minio_password, type: random, length: 32 }
+      - { name: plane_machine_signature, type: random, length: 32 }
+      # The first instance admin, used only by this playbook's configuration phase.
+      - { name: plane_automation_password, type: random, length: 32 }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+    _service_url: "{{ plane_public_url | default('') }}"
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Place Plane's verified Compose file as compose.yml"
+      ansible.builtin.copy:
+        src: "{{ _plane_setup_dir }}/docker-compose.yml"
+        dest: "{{ _deploy_dir }}/compose.yml"
+        mode: "0644"
+
+    - name: "Manage secrets and render .env"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+- name: "Phase 1: Remove the controller copy of the setup files"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Remove the scratch directory"
+      ansible.builtin.file:
+        path: "{{ _plane_setup_dir }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      check_mode: false
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start plane"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
+      register: _deploy
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+      when: not ansible_check_mode
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: First-run configuration ────────────────────────────────────────
+- name: "Phase 3: Configure plane"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    # Credential task: the admin password goes to the script on stdin, so no_log here and
+    # only the non-secret summary is shown below.
+    - name: "Converge instance setup, invitation-only sign-up and the workspace"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - plane-api
+          - python
+          - -c
+          - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/configure_instance.py') }}"
+        stdin: >-
+          {{ {'base': 'http://proxy:80',
+              'host': plane_public_url | urlsplit('hostname'),
+              'origin': plane_public_url,
+              'email': plane_automation_email,
+              'password': _resolved.plane_automation_password,
+              'first_name': 'Plane', 'last_name': 'Automation',
+              'company': plane_company_name,
+              'workspace_slug': plane_workspace_slug,
+              'workspace_name': plane_workspace_name} | to_json }}
+      register: _plane_configure
+      changed_when: (_plane_configure.stdout_lines[-1] | from_json).changed | bool
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Keep only the configuration summary"
+      ansible.builtin.set_fact:
+        _plane_configure_summary: "{{ _plane_configure.stdout_lines[-1] | from_json }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Show the configuration summary"
+      ansible.builtin.debug:
+        msg: "{{ _plane_configure_summary.actions | default([]) or ['instance, sign-up and workspace already in place'] }}"
+      when: not ansible_check_mode
+
+# ── Phase 4: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 4: Verify plane"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "API answers through the proxy, set up and invitation-only"
+      # Through the proxy, not the API port: proves the routing the edge uses. /api/instances/,
+      # NOT /: the proxy serves / from the web frontend, which stays up over a dead API
+      # (MISTAKES 2.19).
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - plane-api
+          - python
+          - -c
+          - >-
+            import json, urllib.request;
+            r = urllib.request.Request('http://proxy:80/api/instances/', headers={'Host': '{{ plane_public_url | urlsplit('hostname') }}'});
+            d = json.load(urllib.request.urlopen(r, timeout=10));
+            assert d['instance']['is_setup_done'], 'instance not set up';
+            assert not d['config']['enable_signup'], 'self sign-up is open';
+            print('setup done, sign-up closed')
+      register: _plane_verify
+      changed_when: false
+      retries: 10
+      delay: 10
+      until: _plane_verify.rc == 0
+      check_mode: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          plane healthy — {{ plane_public_url }} served by the stack's proxy on
+          {{ plane_bind | default('127.0.0.1') }}:{{ plane_port | default(8080) }} (TLS at the platform
+          Caddy); instance set up, self sign-up closed, workspace {{ plane_workspace_slug }} present.
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy
