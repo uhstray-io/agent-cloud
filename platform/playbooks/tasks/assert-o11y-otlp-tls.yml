@@ -1,0 +1,161 @@
+---
+# Fixed receiver/journal mTLS contract. Caller supplies _deploy_dir.
+- name: Require one internal CA for o11y OTLP TLS
+  ansible.builtin.assert:
+    that: groups.get('step_ca_svc', []) | length == 1
+    fail_msg: "o11y OTLP TLS requires exactly one step_ca_svc host."
+    quiet: true
+
+- name: Select the fixed receiver and journal leaves from the CA declaration
+  ansible.builtin.set_fact:
+    _o11y_otlp_ca_host: "{{ groups['step_ca_svc'] | first }}"
+    _o11y_otlp_declared: >-
+      {{ hostvars[groups['step_ca_svc'] | first].internal_leaves | default([])
+         | selectattr('name', 'in', ['o11y-otlp-server', 'o11y-journal']) | list }}
+    _o11y_otlp_tls_name: "{{ o11y_otlp_tls_server_name | default('') | string | trim }}"
+  no_log: true
+
+- name: Require the exact enabled receiver and journal declarations before trust-file writes
+  ansible.builtin.assert:
+    that:
+      - o11y_otlp_tls_enabled | default(false) | bool
+      - _o11y_otlp_tls_name is match('^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
+      - _o11y_otlp_tls_name is search('\.' ~ ((dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | regex_escape ~ '$')
+      - _o11y_otlp_declared | length == 2
+      - _o11y_otlp_declared | map(attribute='name') | list | unique | length == 2
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-otlp-server') | list | length) == 1
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-journal') | list | length) == 1
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-otlp-server') | map(attribute='host') | first) == inventory_hostname
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-journal') | map(attribute='host') | first) == inventory_hostname
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-otlp-server') | map(attribute='profile') | first) == 'server'
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-journal') | map(attribute='profile') | first) == 'client'
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-otlp-server') | map(attribute='reload') | first) == 'none'
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-journal') | map(attribute='reload') | first) == 'none'
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-otlp-server') | map(attribute='dir') | first) == _deploy_dir ~ '/certs/o11y-otlp-server'
+      - (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-journal') | map(attribute='dir') | first) == _deploy_dir ~ '/certs/o11y-journal'
+      - _o11y_otlp_tls_name in (_o11y_otlp_declared | selectattr('name', 'equalto', 'o11y-otlp-server') | map(attribute='sans') | first | default([]))
+    fail_msg: >-
+      Enabled o11y OTLP TLS requires the fixed same-host o11y-otlp-server/server and
+      o11y-journal/client declarations, exact deployment certificate directories,
+      reload=none, and the declared receiver DNS SAN. No TLS files or containers were changed.
+    quiet: true
+  no_log: true
+
+- name: Distribute the authoritative internal CA bundle to the fixed o11y certificate directory
+  ansible.builtin.include_tasks: distribute-ca-root.yml
+  vars:
+    _ca_host: "{{ _o11y_otlp_ca_host }}"
+    _ca_bundle_dest: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+  when:
+    - not ansible_check_mode
+    - "'verify' not in ansible_run_tags"
+
+- name: Require staged current links to resolve to contained issued-serial directories
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os, re, sys
+        for directory in sys.argv[1:]:
+            current = os.path.join(directory, "current")
+            if not os.path.islink(current):
+                raise SystemExit("current leaf is not an issuance-managed symlink")
+            target = os.readlink(current)
+            resolved = os.path.realpath(current)
+            if not re.fullmatch(r"[0-9A-F]+", target) or os.path.dirname(resolved) != os.path.realpath(directory):
+                raise SystemExit("current leaf does not resolve to a contained issued serial")
+      - "{{ _deploy_dir }}/certs/o11y-otlp-server"
+      - "{{ _deploy_dir }}/certs/o11y-journal"
+  changed_when: false
+  no_log: true
+  check_mode: false
+
+- name: Read staged receiver and journal certificate metadata
+  ansible.builtin.stat:
+    path: "{{ item.1 }}"
+    follow: true
+  loop:
+    - [server-cert, "{{ _deploy_dir }}/certs/o11y-otlp-server/current/cert.pem"]
+    - [server-key, "{{ _deploy_dir }}/certs/o11y-otlp-server/current/key.pem"]
+    - [journal-cert, "{{ _deploy_dir }}/certs/o11y-journal/current/cert.pem"]
+    - [journal-key, "{{ _deploy_dir }}/certs/o11y-journal/current/key.pem"]
+    - [ca-bundle, "{{ _deploy_dir }}/certs/step-ca-bundle.crt"]
+  register: _o11y_otlp_tls_stats
+  changed_when: false
+
+- name: Require readable staged certificate pairs and private key ownership
+  ansible.builtin.assert:
+    that:
+      - _o11y_otlp_tls_stats.results | length == 5
+      - _o11y_otlp_tls_stats.results | map(attribute='stat.exists') | select('equalto', true) | list | length == 5
+      - _o11y_otlp_tls_stats.results[0].stat.isreg
+      - _o11y_otlp_tls_stats.results[1].stat.isreg
+      - _o11y_otlp_tls_stats.results[1].stat.mode == '0600'
+      - _o11y_otlp_tls_stats.results[1].stat.pw_name == (ansible_user | default('deploy'))
+      - _o11y_otlp_tls_stats.results[2].stat.isreg
+      - _o11y_otlp_tls_stats.results[3].stat.isreg
+      - _o11y_otlp_tls_stats.results[3].stat.mode == '0600'
+      - _o11y_otlp_tls_stats.results[3].stat.pw_name == (ansible_user | default('deploy'))
+      - _o11y_otlp_tls_stats.results[4].stat.isreg
+      - _o11y_otlp_tls_stats.results[4].stat.readable
+    fail_msg: "The fixed o11y OTLP certificate pairs, private-key modes/owners, or CA bundle are missing or unsafe."
+    quiet: true
+
+- name: Verify server certificate name, chain, purpose, and validity
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - verify
+      - -purpose
+      - sslserver
+      - -verify_hostname
+      - "{{ _o11y_otlp_tls_name }}"
+      - -CAfile
+      - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+      - "{{ _deploy_dir }}/certs/o11y-otlp-server/current/cert.pem"
+  changed_when: false
+  register: _o11y_otlp_server_verify
+  failed_when: _o11y_otlp_server_verify.rc != 0
+  check_mode: false
+
+- name: Verify journal client certificate chain, purpose, and validity
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - verify
+      - -purpose
+      - sslclient
+      - -CAfile
+      - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+      - "{{ _deploy_dir }}/certs/o11y-journal/current/cert.pem"
+  changed_when: false
+  register: _o11y_otlp_journal_verify
+  failed_when: _o11y_otlp_journal_verify.rc != 0
+  check_mode: false
+
+- name: Compare each staged certificate public key with its private key
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import subprocess, sys
+        for cert, key in zip(sys.argv[1::2], sys.argv[2::2]):
+            cert_pem = subprocess.run(["openssl", "x509", "-in", cert, "-pubkey", "-noout"],
+                                      capture_output=True, check=True).stdout
+            cert_der = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "DER"],
+                                      input=cert_pem, capture_output=True, check=True).stdout
+            key_pem = subprocess.run(["openssl", "pkey", "-in", key, "-pubout"],
+                                     capture_output=True, check=True).stdout
+            key_der = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "DER"],
+                                     input=key_pem, capture_output=True, check=True).stdout
+            if cert_der != key_der:
+                raise SystemExit("certificate and private key do not match")
+      - "{{ _deploy_dir }}/certs/o11y-otlp-server/current/cert.pem"
+      - "{{ _deploy_dir }}/certs/o11y-otlp-server/current/key.pem"
+      - "{{ _deploy_dir }}/certs/o11y-journal/current/cert.pem"
+      - "{{ _deploy_dir }}/certs/o11y-journal/current/key.pem"
+  changed_when: false
+  no_log: true
+  check_mode: false

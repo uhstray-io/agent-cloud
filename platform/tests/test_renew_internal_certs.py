@@ -27,6 +27,7 @@ import os
 import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 from contextlib import ExitStack, contextmanager
@@ -816,12 +817,58 @@ def test_the_template_runs_daily_from_dev_right_after_issue_internal_leaf():
 
 def test_the_proof_scripts_never_print_a_key():
     play = playbook_yaml.plays(PLAYBOOK)[1]
-    for name in ("_renew_reader", "_renew_server_prover", "_renew_route_prover"):
+    for name in ("_renew_reader", "_renew_server_prover", "_renew_o11y_refusal_prover", "_renew_route_prover"):
         script = play["vars"][name]
         assert "key.pem" not in script and "PRIVATE" not in script, name
     # No task in the renewal itself is hidden: secrets live only inside the issuance task.
     for task in playbook_yaml.tasks(playbook_yaml.load(PLAYBOOK)):
         assert "no_log" not in task, task.get("name")
+
+
+def test_o11y_renewal_refuses_no_client_and_foreign_ca_after_tls13_io(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_refusal_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    _place(ca, server_leaf, FRESH)
+    cert_path = Path(server_leaf["dir"]) / "current/cert.pem"
+    key_path = Path(server_leaf["dir"]) / "current/key.pem"
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = context.maximum_version = ssl.TLSVersion.TLSv1_3
+    context.load_cert_chain(cert_path, key_path)
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_verify_locations(cadata=ca["bundle"])
+
+    class Receiver:
+        def __init__(self):
+            self.listener = socket.socket()
+            self.listener.bind(("127.0.0.1", 0))
+            self.listener.listen(4)
+            self.port = self.listener.getsockname()[1]
+            self.thread = threading.Thread(target=self.serve, daemon=True)
+
+        def serve(self):
+            for _ in range(2):
+                raw, _address = self.listener.accept()
+                try:
+                    with context.wrap_socket(raw, server_side=True) as tls:
+                        if tls.getpeercert():
+                            tls.recv(64)
+                            tls.sendall(b"\x00\x00\x00\x04\x00\x00\x00\x00\x00")
+                except (OSError, ssl.SSLError):
+                    raw.close()
+            self.listener.close()
+
+    receiver = Receiver()
+    receiver.thread.start()
+    result = subprocess.run(
+        [sys.executable, "-c", script, "127.0.0.1", str(receiver.port), "o11y.internal.test",
+         str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt")],
+        check=False, capture_output=True, text=True, timeout=30,
+    )
+    receiver.thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "REFUSED_NO_CLIENT_AND_FOREIGN_CA_TLS13"
 
 
 def test_the_serial_python_reports_is_the_serial_openssl_prints(tmp_path):

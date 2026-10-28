@@ -159,7 +159,32 @@
       "description": "Loki log lines per second for the selected Logs service, separated into disjoint legacy container, journal container, gateway access, optional gateway span, workflow conformance, and unclassified sources. Unclassified means the record has no nonempty container label and no recognized signal; it does not identify a source or indicate service health. Missing data means no matching logs were observed; Prometheus scrape health is shown separately above.",
       "fieldConfig": {
         "defaults": {},
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "A" },
+            "properties": [{ "id": "displayName", "value": "Legacy container" }]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "E" },
+            "properties": [{ "id": "displayName", "value": "Journal container" }]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [{ "id": "displayName", "value": "Access" }]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "C" },
+            "properties": [{ "id": "displayName", "value": "Span" }]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "D" },
+            "properties": [{ "id": "displayName", "value": "Conformance" }]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "F" },
+            "properties": [{ "id": "displayName", "value": "Unclassified" }]
+          }
+        ]
       },
       "targets": [
         {

@@ -4,6 +4,7 @@ import ast
 import importlib.util
 import json
 import os
+import getpass
 import re
 import stat
 import subprocess
@@ -4681,6 +4682,136 @@ def test_resolved_compose_gate_requires_the_v3_volume_and_nocopy():
         assert not COMPOSE.verify_config(mismatch)
 
 
+def test_resolved_compose_gate_requires_only_fixed_read_only_tls_mounts_when_enabled():
+    deploy_dir = "/srv/agent-cloud/platform/services/o11y/deployment"
+    tls_mounts = [
+        {"type": "bind", "source": f"{deploy_dir}/certs/o11y-journal",
+         "target": "/certs/journal-client", "read_only": True},
+        {"type": "bind", "source": f"{deploy_dir}/certs/step-ca-bundle.crt",
+         "target": "/certs/step-ca-bundle.crt", "read_only": True},
+    ]
+    resolved = {
+        "name": "o11y-journal",
+        "services": {"journal-collector": {"networks": ["o11y"], "volumes": [
+            {"type": "volume", "source": "journal-collector-state-v3", "target": "/alloy-state",
+             "volume": {"nocopy": True}},
+            *tls_mounts,
+        ]}},
+        "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+        "volumes": {"journal-collector-state-v3": {
+            "name": "o11y_journal-collector-state-v3", "external": True,
+        }},
+    }
+    assert COMPOSE.verify_config(resolved, tls_enabled=True, deploy_dir=deploy_dir)
+    assert not COMPOSE.verify_config(resolved, tls_enabled=False, deploy_dir=deploy_dir)
+    for bad_mounts in (
+        [tls_mounts[0], {**tls_mounts[1], "read_only": False}],
+        [{**tls_mounts[0], "source": f"{deploy_dir}/certs/other"}, tls_mounts[1]],
+        tls_mounts[:1],
+        [*tls_mounts, tls_mounts[0]],
+    ):
+        mismatch = {**resolved, "services": {"journal-collector": {
+            **resolved["services"]["journal-collector"],
+            "volumes": [resolved["services"]["journal-collector"]["volumes"][0], *bad_mounts],
+        }}}
+        assert not COMPOSE.verify_config(mismatch, tls_enabled=True, deploy_dir=deploy_dir)
+
+
+def test_o11y_tls_preflight_accepts_synthetic_pairs_and_refuses_invalid_identity(tmp_path):
+    deploy_dir = tmp_path / "agent-cloud/platform/services/o11y/deployment"
+    cert_root = deploy_dir / "certs"
+    server_dir = cert_root / "o11y-otlp-server"
+    journal_dir = cert_root / "o11y-journal"
+    ca_dir = tmp_path / "synthetic-ca"
+    for directory in (server_dir, journal_dir, ca_dir):
+        directory.mkdir(parents=True)
+    ca_key, ca_cert = ca_dir / "ca.key", ca_dir / "ca.crt"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+        "-nodes", "-days", "2", "-subj", "/CN=synthetic-o11y-root",
+        "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-keyout", str(ca_key), "-out", str(ca_cert),
+    ], check=True, capture_output=True)
+    server_name = "otlp.dc1.example.internal"
+    leaves = [
+        ("o11y-otlp-server", "server", "serverAuth", server_dir, server_name),
+        ("o11y-journal", "client", "clientAuth", journal_dir, "journal.dc1.example.internal"),
+    ]
+    declarations = []
+    for name, profile, eku, directory, san in leaves:
+        serial_dir = directory / "01"
+        serial_dir.mkdir()
+        key, csr = serial_dir / "key.pem", serial_dir / "request.csr"
+        cert, ext = serial_dir / "cert.pem", serial_dir / "extensions.cnf"
+        ext.write_text(
+            f"subjectAltName=DNS:{san}\nextendedKeyUsage={eku}\n"
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=digitalSignature\n",
+            encoding="utf-8",
+        )
+        subprocess.run([
+            "openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-nodes", "-subj", f"/CN={san}", "-keyout", str(key), "-out", str(csr),
+        ], check=True, capture_output=True)
+        subprocess.run([
+            "openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_cert), "-CAkey", str(ca_key),
+            "-CAcreateserial", "-days", "2", "-extfile", str(ext), "-out", str(cert),
+        ], check=True, capture_output=True)
+        os.chmod(key, 0o600)
+        (directory / "current").symlink_to("01")
+        declarations.append({
+            "name": name, "host": "o11y-test", "dir": str(directory),
+            "profile": profile, "reload": "none", "sans": [san],
+        })
+    (cert_root / "step-ca-bundle.crt").write_bytes(ca_cert.read_bytes())
+
+    playbook = tmp_path / "preflight.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "hosts": "o11y_svc", "gather_facts": False,
+        "vars": {"_deploy_dir": str(deploy_dir)},
+        "tasks": [{"ansible.builtin.include_tasks": str(ROOT / "platform/playbooks/tasks/assert-o11y-otlp-tls.yml")}],
+    }]), encoding="utf-8")
+    inventory_base = {
+        "all": {
+            "vars": {"dns_site": "dc1", "dns_zone": "example.internal"},
+            "children": {
+                "o11y_svc": {"hosts": {"o11y-test": {
+                    "ansible_connection": "local", "ansible_user": getpass.getuser(),
+                    "o11y_otlp_tls_enabled": True, "o11y_otlp_tls_server_name": server_name,
+                }}},
+                "step_ca_svc": {"hosts": {"ca-test": {
+                    "ansible_connection": "local", "internal_leaves": declarations,
+                }}},
+            },
+        },
+    }
+    local_tmp = tmp_path / "ansible"
+    local_tmp.mkdir()
+
+    def run(inventory):
+        path = tmp_path / "inventory.yml"
+        path.write_text(yaml.safe_dump(inventory), encoding="utf-8")
+        return subprocess.run(
+            ["ansible-playbook", "--check", "-i", str(path), str(playbook)],
+            check=False, capture_output=True, text=True,
+            env=os.environ | {"ANSIBLE_LOCAL_TEMP": str(local_tmp)},
+        )
+
+    valid = run(inventory_base)
+    assert valid.returncode == 0, valid.stdout + valid.stderr
+
+    wrong_name = yaml.safe_load(yaml.safe_dump(inventory_base))
+    wrong_name["all"]["children"]["o11y_svc"]["hosts"]["o11y-test"]["o11y_otlp_tls_server_name"] = "wrong.dc1.example.internal"
+    assert run(wrong_name).returncode != 0
+
+    wrong_key = journal_dir / "current/key.pem"
+    original_key = wrong_key.read_bytes()
+    wrong_key.write_bytes((server_dir / "current/key.pem").read_bytes())
+    assert run(inventory_base).returncode != 0
+    wrong_key.write_bytes(original_key)
+    os.chmod(wrong_key, 0o644)
+    assert run(inventory_base).returncode != 0
+
+
 def test_collector_project_config_keeps_volume_and_network_external():
     compose = yaml.safe_load((O11Y / "compose.journal.yml").read_text())
     assert compose["name"] == "o11y-journal"
@@ -5044,7 +5175,8 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
-    assert "podman-compose, -p, o11y-journal, -f, compose.journal.yml, up" in source
+    assert "['podman-compose', '-p', 'o11y-journal', '-f', 'compose.journal.yml']" in source
+    assert "compose.journal.otlp-tls.yml" in source
     assert "Retire only a verified legacy-project collector registration" in source
     assert "positions volume was preserved and no Compose start was requested" in source
     apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
@@ -5060,7 +5192,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "argv: [podman, rm, --force, --time, \"10\", o11y-journal-collector]" in source
     assert "podman rm -v" not in source
     assert "compose down" not in source
-    assert "up, --no-deps, -d, journal-collector" in source
+    assert "['up', '--no-deps', '-d', 'journal-collector']" in source
     assert "Require all existing receiver containers to remain unchanged" in source
     assert "_journal_verification_start" in source
     assert "_journal_proof_marker" in source

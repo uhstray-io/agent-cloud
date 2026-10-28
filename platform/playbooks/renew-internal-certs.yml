@@ -125,6 +125,20 @@
           {%- set _ = errs.append((n or '(unnamed)') ~ ': a leaf must be named, and declared once') -%}
         {%- elif h not in groups['all'] -%}
           {%- set _ = errs.append(n ~ ': its host ' ~ h ~ ' is not in the inventory') -%}
+        {%- elif l.profile | default('') == 'server' and h in groups.get('o11y_svc', []) -%}
+          {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
+                 and (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool)
+                 and n == 'o11y-otlp-server' and r == 'none'
+                 and hostvars[h].o11y_otlp_tls_server_name | default('') in (l.sans | default([]))
+                 and l.dir == hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/o11y-otlp-server'
+                 and (_leaves | selectattr('name', 'equalto', 'o11y-journal')
+                      | selectattr('host', 'equalto', h) | selectattr('profile', 'equalto', 'client')
+                      | selectattr('dir', 'equalto', (hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/o11y-journal'))
+                      | list | length) == 1 -%}
+            {%- set cls.v = 'o11y-server' -%}
+          {%- else -%}
+            {%- set _ = errs.append(n ~ ': the o11y OTLP server leaf is admitted only as the fixed enabled receiver leaf with its declared journal client proof') -%}
+          {%- endif -%}
         {%- elif l.profile | default('') == 'server' -%}
           {%- if h == _gw and n == (hostvars[h].agw_server_leaf | default('agw-server')) and r in ['restart', 'none'] -%}
             {%- if (_leaves | selectattr('name', 'equalto', hostvars[h].agw_verifier_leaf | default('agw-verifier'))
@@ -144,6 +158,18 @@
             {%- set cls.v = 'caddy-client' -%}
           {%- else -%}
             {%- set _ = errs.append(n ~ ': a caddy-reloaded leaf must be on the one caddy_svc host, which must declare inference_route_address (or renew_caddy_proof_host), with renew_caddy_proof_status an HTTP status and renew_caddy_proof_path an absolute path') -%}
+          {%- endif -%}
+        {%- elif l.profile | default('') == 'client' and h in groups.get('o11y_svc', []) -%}
+          {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
+                 and (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool)
+                 and n == 'o11y-journal' and r == 'none'
+                 and (l.sans | default([]) | length) > 0
+                 and l.dir == hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/o11y-journal'
+                 and (_leaves | selectattr('name', 'equalto', 'o11y-otlp-server')
+                      | selectattr('host', 'equalto', h) | selectattr('profile', 'equalto', 'server') | list | length) == 1 -%}
+            {%- set cls.v = 'o11y-journal-client' -%}
+          {%- else -%}
+            {%- set _ = errs.append(n ~ ': the o11y journal client leaf is admitted only as the fixed enabled same-host client paired with o11y-otlp-server') -%}
           {%- endif -%}
         {%- elif l.profile | default('') == 'client' and r == 'none' -%}
           {%- if _gw | length > 0 and (hostvars[_gw].agw_listener_tls | default(false) | bool)
@@ -304,6 +330,49 @@
       except (OSError, ssl.SSLError, ValueError) as e:
           print("ERROR " + type(e).__name__ + ": " + str(e))
           sys.exit(1)
+    # A valid leaf is proved separately above. These TLS 1.3 probes send an HTTP/2
+    # preface and SETTINGS after handshake so delayed client-auth alerts count as refusal.
+    # The foreign identity is synthetic and exists only inside a mode-0700 temporary dir.
+    _renew_o11y_refusal_prover: |
+      import os, socket, ssl, subprocess, sys, tempfile
+      host, port, name, ca = sys.argv[1:5]
+      def accepted(cert=None, key=None):
+          ctx = ssl.create_default_context(cafile=ca)
+          ctx.minimum_version = ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+          if cert:
+              ctx.load_cert_chain(cert, key)
+          try:
+              with socket.create_connection((host, int(port)), timeout=8) as raw:
+                  with ctx.wrap_socket(raw, server_hostname=name) as tls:
+                      tls.settimeout(8)
+                      tls.sendall(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00")
+                      response = tls.recv(9)
+                      return len(response) == 9 and response[3] == 4
+          except (OSError, ssl.SSLError, ValueError):
+              return False
+      with tempfile.TemporaryDirectory(prefix="o11y-otlp-refusal-") as d:
+          os.chmod(d, 0o700)
+          ca_key, ca_cert = d + "/ca.key", d + "/ca.crt"
+          key, csr, cert, ext = d + "/client.key", d + "/client.csr", d + "/client.crt", d + "/ext.cnf"
+          with open(ext, "w") as f:
+              f.write("extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\n")
+          commands = [
+              ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=synthetic-foreign-ca", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", ca_key, "-out", ca_cert],
+              ["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=synthetic-foreign-client", "-keyout", key, "-out", csr],
+              ["openssl", "x509", "-req", "-in", csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-days", "1", "-extfile", ext, "-out", cert],
+          ]
+          for command in commands:
+              result = subprocess.run(command, capture_output=True, text=True)
+              if result.returncode:
+                  print("FIXTURE_UNAVAILABLE")
+                  sys.exit(1)
+          if accepted():
+              print("NO_CLIENT_ACCEPTED")
+              sys.exit(1)
+          if accepted(cert, key):
+              print("FOREIGN_CA_ACCEPTED")
+              sys.exit(1)
+      print("REFUSED_NO_CLIENT_AND_FOREIGN_CA_TLS13")
     # One request through a Caddy route: TLS to Caddy's own port on this host under the route's
     # name (verified against the system trust plus the internal bundle, since local-dev's Caddy
     # serves an internal certificate), a placeholder Bearer value so Caddy's edge check passes
@@ -484,6 +553,48 @@
           when: (_renew_issued | default(false) | bool) and not ansible_check_mode and 'caddy reload --force' in _reloads
 
         # ── Proof ────────────────────────────────────────────────────────────
+        - name: "Prove the receiver serves the issued server leaf to its journal client"
+          tags: [verify]
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "{{ _renew_server_prover }}"
+              - "{{ '127.0.0.1' if (o11y_otlp_bind | default('')) in ['0.0.0.0', '::', ''] else o11y_otlp_bind }}"
+              - "{{ o11y_otlp_port | default('4317') }}"
+              - "{{ o11y_otlp_tls_server_name }}"
+              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir | dirname }}/step-ca-bundle.crt"
+              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-journal-client') | first).dir }}/current/cert.pem"
+              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-journal-client') | first).dir }}/current/key.pem"
+          register: _renew_o11y_served
+          changed_when: false
+          retries: "{{ _retries }}"
+          delay: "{{ _delay }}"
+          until: >-
+            _renew_o11y_served.rc == 0
+            and (_renew_o11y_served.stdout | trim | int(-1, 16)) == (_renew_after[(_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir].serial | default('') | int(-2, 16))
+          when:
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'o11y-server') | list | length > 0
+
+        - name: "Prove the receiver refuses absent and foreign-CA client identities"
+          tags: [verify]
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "{{ _renew_o11y_refusal_prover }}"
+              - "{{ '127.0.0.1' if (o11y_otlp_bind | default('')) in ['0.0.0.0', '::', ''] else o11y_otlp_bind }}"
+              - "{{ o11y_otlp_port | default('4317') }}"
+              - "{{ o11y_otlp_tls_server_name }}"
+              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir | dirname }}/step-ca-bundle.crt"
+          register: _renew_o11y_refusal
+          changed_when: false
+          failed_when: _renew_o11y_refusal.rc != 0 or (_renew_o11y_refusal.stdout | trim) != 'REFUSED_NO_CLIENT_AND_FOREIGN_CA_TLS13'
+          when:
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'o11y-server') | list | length > 0
+
         - name: "Prove the gateway serves the new server leaf"
           tags: [verify]
           ansible.builtin.command:

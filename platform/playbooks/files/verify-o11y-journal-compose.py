@@ -2,6 +2,7 @@
 """Verify the provider-resolved journal volume declaration without exposing config."""
 
 import json
+import os
 import subprocess
 import sys
 
@@ -16,7 +17,7 @@ DATA_PATH = "/alloy-state"
 MAX_CONFIG_BYTES = 1_048_576
 
 
-def verify_config(config):
+def verify_config(config, tls_enabled=False, deploy_dir="."):
     if not isinstance(config, dict):
         return False
     services = config.get("services")
@@ -30,6 +31,24 @@ def verify_config(config):
     matches = [
         mount for mount in volumes if isinstance(mount, dict) and mount.get("target") == DATA_PATH
     ] if isinstance(volumes, list) else []
+    tls_mounts = [
+        (os.path.join(deploy_dir, "certs/o11y-journal"), "/certs/journal-client"),
+        (os.path.join(deploy_dir, "certs/step-ca-bundle.crt"), "/certs/step-ca-bundle.crt"),
+    ]
+    actual_tls_mounts = [
+        (mount.get("source"), mount.get("target"))
+        for mount in volumes
+        if isinstance(mount, dict)
+        and mount.get("target") in {target for _, target in tls_mounts}
+    ] if isinstance(volumes, list) else []
+    tls_mounts_valid = (
+        sorted(actual_tls_mounts) == sorted(tls_mounts)
+        and all(
+            mount.get("read_only") is True
+            for mount in volumes
+            if isinstance(mount, dict) and mount.get("target") in {target for _, target in tls_mounts}
+        )
+    ) if tls_enabled else not actual_tls_mounts
     return (
         config.get("name") == PROJECT
         and len(matches) == 1
@@ -47,14 +66,20 @@ def verify_config(config):
             isinstance(network_refs, list) and NETWORK_KEY in network_refs
             or isinstance(network_refs, dict) and NETWORK_KEY in network_refs
         )
+        and tls_mounts_valid
     )
 
 
 def main():
     result = {"status": "unavailable", "reason": "provider_config_unavailable"}
     try:
+        tls_enabled = os.environ.get("O11Y_OTLP_TLS_ENABLED", "false") == "true"
+        command = ["podman-compose", "-p", PROJECT, "-f", "compose.journal.yml"]
+        if tls_enabled:
+            command.extend(["-f", "compose.journal.otlp-tls.yml"])
+        command.append("config")
         completed = subprocess.run(
-            ["podman-compose", "-p", PROJECT, "-f", "compose.journal.yml", "config"],
+            command,
             cwd=sys.argv[1],
             check=False,
             capture_output=True,
@@ -63,7 +88,7 @@ def main():
         )
         if completed.returncode == 0 and len(completed.stdout) <= MAX_CONFIG_BYTES:
             parsed = yaml.safe_load(completed.stdout)
-            if verify_config(parsed):
+            if verify_config(parsed, tls_enabled=tls_enabled, deploy_dir=sys.argv[1]):
                 result = {"status": "verified", "reason": "provider_config_exact"}
             else:
                 result = {"status": "refused", "reason": "provider_config_mismatch"}

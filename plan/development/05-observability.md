@@ -2380,3 +2380,20 @@ prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
 effective role capabilities, writer drain, or isolated restore/cleanup. The
 capacity source ambiguity is cleared for the observed refresh only; its history
 remains too short for the separate seven-day forecast.
+
+### 2026-10-27 conformance dashboard rendering
+
+The live conformance dashboard (schema v8 on Grafana 11.4) rendered the
+service/step/state table and the separate completion-age table correctly,
+including `Unknown` ages. On refresh, after valid collector markers aged beyond
+45 minutes, previously tracked failures and services changed to `No recent data`,
+the marker status read `No valid marker in 45m`, and completion age read
+`Unknown completion time`. This verifies rendering and stale-state behavior
+only. It does not close OpenSpec 7.4, the collector pipeline, or the drill, and
+does not identify a cause for the stale markers.
+
+The live source-count stat panel initially rendered Grafana's default `Value#A`–
+`Value#F` names even though its query legends were human-readable. The source
+dashboard now overrides each frame by its stable query ref ID to the existing
+source label. This is source-only; the live dashboard has not yet received this
+change.
