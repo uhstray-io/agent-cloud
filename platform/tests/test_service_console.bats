@@ -193,6 +193,7 @@ STUB
   cat > "$shim/timeout" <<'SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TIMEOUT_LOG"
+while [ "$1" = "-k" ]; do shift 2; done
 shift
 exec "$@"
 SHIM
@@ -226,9 +227,9 @@ DRIVER
   [ "$status" -eq 0 ]
   assert_contains "$output" "console is ready"
   refute_contains "$output" "DIAGNOSTICS-DUMPED"
-  # Three attempts, each one bounded on the host by `timeout 15` and each one the probe.
+  # Three attempts, each one bounded on the host by `timeout -k 5 15` and each one the probe.
   [ "$(grep -c '' "$TIMEOUT_LOG")" -eq 3 ]
-  [ "$(grep -cxF "15 $BATS_TEST_TMPDIR/engine exec console /usr/local/app/server probe /healthz 200" "$TIMEOUT_LOG")" -eq 3 ]
+  [ "$(grep -cxF -- "-k 5 15 $BATS_TEST_TMPDIR/engine exec console /usr/local/app/server probe /healthz 200" "$TIMEOUT_LOG")" -eq 3 ]
   [ "$(grep -c '' "$EXEC_LOG")" -eq 3 ]
   # Every logged exec is the probe: the matching-line count equals the total line count.
   [ "$(grep -cxF 'exec console /usr/local/app/server probe /healthz 200' "$EXEC_LOG")" -eq 3 ]
@@ -241,6 +242,8 @@ DRIVER
   _run_step4 2 none
   [ "$status" -eq 0 ]
   assert_contains "$output" "console is ready"
+  # The operator is told the probes are unbounded, so a later hang is explainable.
+  assert_contains "$output" "each readiness probe runs unbounded"
   [ "$(grep -c '' "$EXEC_LOG")" -eq 2 ]
   [ "$(grep -cxF 5 "$SLEEP_LOG")" -eq 1 ]
   # Nothing was bounded: no timeout shim was on this PATH.

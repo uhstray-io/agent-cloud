@@ -119,10 +119,11 @@ step_start() {
 # Each probe is bounded on the host. A `podman exec` can stall while the container is up, and an
 # unbounded call would then hold step_wait_healthy past its deadline (CodeRabbit on PR #763). The
 # bound is coreutils `timeout`, 15 s. It is absent on some hosts (macOS without coreutils), so
-# there the exec runs unbounded. The targets are Linux, where `timeout` is normally present.
+# there the exec runs unbounded (step_wait_healthy warns once). The targets are Linux, where
+# `timeout` is normally present. `-k 5` sends KILL 5 s after TERM, in case the exec ignores TERM.
 _console_probe_once() {
   if command -v timeout >/dev/null 2>&1; then
-    timeout 15 "$CONTAINER_ENGINE" exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1
+    timeout -k 5 15 "$CONTAINER_ENGINE" exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1
   else
     "$CONTAINER_ENGINE" exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1
   fi
@@ -135,6 +136,7 @@ _console_probe_once() {
 # the deadline. Sleep 5 s between attempts. On timeout: the container's diagnostics, then a failure.
 step_wait_healthy() {
   info "Step 4: Waiting for console to become healthy..."
+  command -v timeout >/dev/null 2>&1 || warn "coreutils timeout not found: each readiness probe runs unbounded"
   local timeout=300 deadline
   deadline=$((SECONDS + timeout))
   while [ "$SECONDS" -lt "$deadline" ]; do
