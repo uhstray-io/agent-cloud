@@ -183,6 +183,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 
 | [15-service-deployment-workflow-agents.md](../development/15-service-deployment-workflow-agents.md) | PROPOSED | The 22-step service deployment workflow as code: step registry, step-result and proposal contracts, four skynet agent roles (OPA identities), OPA-only gate, collector + NetBox custom fields + Loki + Grafana tracking; agentgateway backfill → estate sweep → greenfield pilot. |
 | [17-dispatch-console.md](../development/17-dispatch-console.md) | PROPOSED | Dispatch Console build plan: all-Rust Dioxus fullstack (WASM client + JSON `/v1` API in one binary), API-first, proposals-only change path (skynet → OPA → Semaphore), bounded context per authority, phases 0–7 and traceability to the 22 console requirements; design in `plan/product/dispatch-console/`. |
+| [18-semaphore-task-retention.md](../development/18-semaphore-task-retention.md) | PROPOSED | Semaphore task history kept 30 days via a daily API prune (paged /tasks/last, 400 re-check, floor/skew/cap guards); storage measured first; VACUUM FULL conditional and operator-side; orchestrator root-disk alert. |
 
 ### Archived Plans
 
