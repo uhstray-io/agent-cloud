@@ -6,7 +6,7 @@
 # Patterns:
 #   - The legacy {$VAR}-driven routes below stay as-is during the transition.
 #   - New services (UhhCraft etc.) land as sites/<name>.caddy fragments.
-#   - See plan/architecture/CADDY-REVERSE-PROXY.md for the full convention.
+#   - See plan/architecture/05-platform-infra.md for the full convention.
 import sites/*.caddy
 
 # ── Legacy {$VAR}-driven routes ─────────────────────────────────────────

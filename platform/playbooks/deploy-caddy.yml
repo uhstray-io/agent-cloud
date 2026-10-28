@@ -8,8 +8,8 @@
 # Phase 2: deploy.sh — container lifecycle (compose up, wait healthy).
 # Phase 3: Verify the admin API loaded the configured routes.
 #
-# Source of truth: plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 4 (Caddy local
-# profile); plan/architecture/CADDY-REVERSE-PROXY.md.
+# Source of truth: plan/development/00-foundation-local-dev.md, "Phase 4 — Local DNS,
+# TLS, and extended roster" (Caddy local profile); plan/architecture/05-platform-infra.md.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).

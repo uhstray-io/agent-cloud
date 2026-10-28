@@ -74,12 +74,14 @@
     # fires when the env value is absent, so an env-token run needs no OpenBao.
     - name: "Resolve the Semaphore URL + token (env first, else OpenBao AppRole lookup)"
       ansible.builtin.set_fact:
+        # The declared URL may end in "/". "<url>//api/users/<id>" is answered with a 301,
+        # which uri follows for GET but not for the PUT, so trim it (task 9870, #604).
         _sem_url: >-
-          {{ _sem_url_env if (_sem_url_env | length) > 0
-             else lookup('community.hashi_vault.hashi_vault',
-                         'secret/data/services/semaphore:url',
-                         url=_bao_url, auth_method='approle',
-                         role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+          {{ (_sem_url_env if (_sem_url_env | length) > 0
+              else lookup('community.hashi_vault.hashi_vault',
+                          'secret/data/services/semaphore:url',
+                          url=_bao_url, auth_method='approle',
+                          role_id=_bao_role_id, secret_id=_bao_secret_id)) | regex_replace('/+$', '') }}
         _sem_token: >-
           {{ _sem_token_env if (_sem_token_env | length) > 0
              else lookup('community.hashi_vault.hashi_vault',
@@ -155,6 +157,9 @@
         label: "{{ item.username }} <{{ item.email }}>"
       register: _sem_promoted
       changed_when: true
+      # A failure here is hidden by no_log, so the status codes are judged below, where they
+      # can be shown (task 9843 failed with nothing but "details hidden", #604).
+      failed_when: false
       no_log: true  # bearer token rides in headers — never dump it (failure/-vvv)
       when: not ansible_check_mode
 
@@ -162,8 +167,22 @@
       ansible.builtin.debug:
         msg: >-
           Promotion PUT statuses:
-          {{ _sem_promoted.results | default([]) | map(attribute='status') | list }}
+          {{ _sem_promoted.results | default([]) | map(attribute='status', default=-1) | list }}
       # Under --check the promotion loop is skipped and its results carry no status.
+      when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
+
+    - name: "Require Semaphore to accept every promotion"
+      vars:
+        _refused: >-
+          {{ _to_promote | map(attribute='username')
+             | zip(_sem_promoted.results | map(attribute='status', default=-1))
+             | rejectattr('1', 'in', [200, 204]) | list }}
+      ansible.builtin.assert:
+        that: _refused | length == 0
+        fail_msg: >-
+          Semaphore refused these promotions (username, HTTP status; -1 means no answer): {{ _refused }}.
+          A 401 is either a token Semaphore does not accept or a token whose user may not edit
+          that account (not an admin, or the account is its own).
       when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
 
     # A PUT the server answered is not proof it applied: read the accounts back.

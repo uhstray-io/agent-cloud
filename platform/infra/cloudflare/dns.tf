@@ -13,6 +13,7 @@ locals {
   platform_subdomains = [
     "auth",   # Authentik IdP
     "canvas", # OpenHands
+    "console",
     "devlog",
     "inference", # vLLM on the DGX Spark pair (adopted 2026-09-15; waf.tf + ratelimit.tf govern it)
     # agentgateway operator UI — NEW record (created by apply, not imported), proxied like
