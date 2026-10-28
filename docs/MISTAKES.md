@@ -55,6 +55,7 @@ and why.
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there | Unverified claim | 1 | Convention |
+| 1.26 | Called the console live from a probe pinned to the Caddy origin; its DNS record was unapplied and the public link failed until it was | Unverified claim | 1 | Convention (public-path probe via a WAF-skipped /healthz proposed) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1035,6 +1036,35 @@ report is known to come from a different ref, treat all its line numbers as unve
 until re-read; file paths and line numbers do not survive 1,700 commits.
 
 **Enforced by.** Convention.
+
+### 1.26 Called the console live from a probe that bypassed Cloudflare
+
+**What happened.** On 2026-10-28 I reported the Dispatch Console "live in production at
+https://console.uhstray.io". The evidence was a `curl --resolve console.uhstray.io:443:<caddy
+host>` probe sent straight to the Caddy origin on the LAN (`/healthz` 200, `/v1/me` 401,
+`/auth/login` 302 to Authentik). Every request through the public path had returned `403` with
+`cf-mitigated: challenge`, and I read that as the bot challenge every scripted request gets. It
+was, but it said nothing about routing. The console's own DNS record (step 16,
+`cloudflare_dns_record.platform["console"]`) had not been applied: I held it because the plan also
+wanted to recreate a retired record, and I reasoned that the `*.uhstray.io` wildcard already
+covered the name. The wildcard is not managed in code and I never read its target. The operator
+opened the link and it did not work. After the explicit record was applied (Apply Cloudflare Tofu
+task 9965, post-apply zero-diff), the operator logged in through the browser.
+
+**Root cause.** I treated "the origin answers" as "the service is reachable" and filled the one
+gap I could not probe, the edge's routing for this hostname, with an assumption about an unmanaged
+record. Proxied DNS answers with Cloudflare's addresses for any name, so `dig` could not settle it
+either.
+
+**The rule.** A public hostname is "live" only after a request passes through the edge and reaches
+the service: a browser login by the operator, or an automated probe of a path the WAF lets
+through. A probe pinned to the origin proves the origin only, and the report says exactly that. A
+step that publishes a hostname (its DNS record) is part of "live"; a held step means "not live
+yet".
+
+**Enforced by.** Convention. Proposed guard: a WAF skip for exactly `console.uhstray.io/healthz`
+(the inference `/health` rule's shape) so Verify Service Health can probe the public URL through
+the edge.
 
 ## 2. Tests that would have passed for the wrong reason
 
