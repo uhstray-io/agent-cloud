@@ -32,15 +32,22 @@ def verify_config(config, tls_enabled=False, deploy_dir="."):
         mount for mount in volumes if isinstance(mount, dict) and mount.get("target") == DATA_PATH
     ] if isinstance(volumes, list) else []
     tls_mounts = [
-        (os.path.join(deploy_dir, "certs/o11y-journal"), "/certs/journal-client"),
-        (os.path.join(deploy_dir, "certs/step-ca-bundle.crt"), "/certs/step-ca-bundle.crt"),
+        (os.path.abspath(os.path.join(deploy_dir, "certs/o11y-journal")), "/certs/journal-client"),
+        (os.path.abspath(os.path.join(deploy_dir, "certs/step-ca-bundle.crt")), "/certs/step-ca-bundle.crt"),
     ]
-    actual_tls_mounts = [
-        (mount.get("source"), mount.get("target"))
-        for mount in volumes
-        if isinstance(mount, dict)
-        and mount.get("target") in {target for _, target in tls_mounts}
-    ] if isinstance(volumes, list) else []
+    actual_tls_mounts = []
+    if isinstance(volumes, list):
+        for mount in volumes:
+            if (
+                isinstance(mount, dict)
+                and mount.get("target") in {target for _, target in tls_mounts}
+            ):
+                source = mount.get("source")
+                if isinstance(source, str):
+                    if not os.path.isabs(source):
+                        source = os.path.join(deploy_dir, source)
+                    source = os.path.abspath(source)
+                actual_tls_mounts.append((source, mount.get("target")))
     tls_mounts_valid = (
         sorted(actual_tls_mounts) == sorted(tls_mounts)
         and all(

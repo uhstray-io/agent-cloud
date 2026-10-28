@@ -1082,6 +1082,41 @@ def test_o11y_probe_client_keeps_legacy_classification_when_receiver_tls_is_off(
     assert "not in use: gateway listener TLS off, left alone" in out
 
 
+def test_declared_fixed_o11y_tls_leaves_are_skipped_while_receiver_tls_is_off(world):
+    world.place()
+    o11y_leaves, deployment, _serials = _o11y_leaves(world)
+    rc, out = world.run(
+        check=True,
+        leaves=[*world.leaves.values(), *o11y_leaves],
+        host_over={"o11y_svc": {"o11y": {
+            "local_monorepo_dir": str(deployment.parents[3]),
+            "o11y_otlp_tls_enabled": False,
+            "agw_verify_base_url": "https://gateway.dc1.example.internal:4000",
+        }}},
+    )
+    assert rc == 0, out
+    assert "o11y-otlp-server" not in out and "o11y-journal (o11y-journal-client)" not in out
+    assert "o11y-inference-probe (probe-client)" in out
+    assert "agw-server (gateway-server)" in out and "caddy (caddy-client)" in out
+    assert world.signed() == [] and world.reloads() == []
+
+
+def test_malformed_fixed_o11y_tls_leaf_is_still_refused_while_tls_is_off(world):
+    world.place()
+    o11y_leaves, deployment, _serials = _o11y_leaves(world)
+    leaves = [*world.leaves.values(), *(dict(leaf) for leaf in o11y_leaves)]
+    next(leaf for leaf in leaves if leaf["name"] == "o11y-journal")["dir"] += "/wrong"
+    rc, out = world.run(
+        leaves=leaves,
+        host_over={"o11y_svc": {"o11y": {
+            "local_monorepo_dir": str(deployment.parents[3]),
+            "o11y_otlp_tls_enabled": False,
+            "agw_verify_base_url": "https://gateway.dc1.example.internal:4000",
+        }}},
+    )
+    _refused(world, out, rc, "an inactive o11y TLS leaf must be the fixed same-host leaf")
+
+
 def test_o11y_receiver_leaves_are_proved_in_verify_mode_when_gateway_tls_is_off(world):
     world.place()
     o11y_leaves, deployment, serials = _o11y_leaves(world)

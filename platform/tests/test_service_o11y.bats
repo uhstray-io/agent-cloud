@@ -729,16 +729,44 @@ for overlay, service, expected in ((receiver_overlay, 'alloy', ('./certs/o11y-ot
     assert (mount['source'], mount['target']) == expected
     assert mount['read_only'] is True and mount['bind']['create_host_path'] is False
     assert all(item['read_only'] is True for item in yaml.safe_load(overlay)['services'][service]['volumes'])
-assert 'o11y_otlp_tls_enabled | default(false)' in deploy
-assert deploy.index('Validate the fixed receiver and journal TLS contract') < deploy.index('Place the monorepo + ensure podman/compose')
-assert 'Require exact read-only runtime receiver TLS mounts' in deploy
+deploy_plays = yaml.safe_load(deploy)
+deploy_tasks = next(
+    play['tasks'] for play in deploy_plays
+    if any(task.get('name') == 'Place the monorepo + ensure podman/compose'
+           for task in play.get('tasks', []))
+)
+tls_validation = next(
+    task for task in deploy_tasks
+    if task.get('name') == 'Validate the fixed receiver and journal TLS contract before placement or rendering'
+)
+placement = next(task for task in deploy_tasks
+                 if task.get('name') == 'Place the monorepo + ensure podman/compose')
+mount_assertion = next(
+    task for task in next(play['tasks'] for play in deploy_plays if play.get('name') == 'Phase 3: Verify o11y')
+    if task.get('name') == 'Require exact read-only runtime receiver TLS mounts'
+)
+assert 'o11y_otlp_tls_enabled | default(false)' in str(tls_validation['when'])
+assert deploy_tasks.index(tls_validation) < deploy_tasks.index(placement)
+mount_that = '\n'.join(map(str, mount_assertion['ansible.builtin.assert']['that']))
+assert mount_assertion['when'] == 'not ansible_check_mode'
+assert "'Source', 'equalto', _deploy_dir ~ '/certs/o11y-otlp-server'" in mount_that
+assert "'Destination', 'equalto', '/certs/otlp-server'" in mount_that
+assert "'Source', 'equalto', _deploy_dir ~ '/certs/step-ca-bundle.crt'" in mount_that
+assert "'Destination', 'equalto', '/certs/step-ca-bundle.crt'" in mount_that
+assert "'RW', 'equalto', false" in mount_that
 play = next(p for p in yaml.safe_load(deploy) if p.get('name') == 'Phase 2: Start o11y')
 overlays = next(t for t in play['tasks'] if t.get('name') == 'Run deploy.sh (container lifecycle)')['environment']['COMPOSE_OVERLAYS']
 assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == ''
 assert env.from_string(overlays).render(local_mode=False, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == 'capacity/compose.textfile.yml'
 assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=True, o11y_inference_probe_enabled=False) == 'compose.otlp-tls.yml'
-assert 'Refuse TLS-enabled clean deploy before any teardown' in clean
-assert 'platform/services/o11y/deployment/certs/' in gitignore
+clean_plays = yaml.safe_load(clean)
+clean_tasks = next(play['tasks'] for play in clean_plays if play.get('name') == 'Clean o11y deployment')
+clean_tls_guard = next(task for task in clean_tasks
+                       if task.get('name') == 'Refuse TLS-enabled clean deploy before any teardown')
+clean_destroy = next(task for task in clean_tasks if task.get('name') == 'Destroy existing deployment')
+assert 'o11y_otlp_tls_enabled' in str(clean_tls_guard['ansible.builtin.assert']['that'])
+assert clean_tasks.index(clean_tls_guard) < clean_tasks.index(clean_destroy)
+assert 'platform/services/o11y/deployment/certs/' in gitignore.splitlines()
 PY
 }
 

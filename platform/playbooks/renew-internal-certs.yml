@@ -125,6 +125,27 @@
           {%- set _ = errs.append((n or '(unnamed)') ~ ': a leaf must be named, and declared once') -%}
         {%- elif h not in groups['all'] -%}
           {%- set _ = errs.append(n ~ ': its host ' ~ h ~ ' is not in the inventory') -%}
+        {%- elif n in ['o11y-otlp-server', 'o11y-journal'] and h in groups.get('o11y_svc', [])
+                and not (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool) -%}
+          {%- set expected_profile = 'server' if n == 'o11y-otlp-server' else 'client' -%}
+          {%- set expected_dir = hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/' ~ n -%}
+          {%- set partner_name = 'o11y-journal' if n == 'o11y-otlp-server' else 'o11y-otlp-server' -%}
+          {%- set partner_profile = 'client' if n == 'o11y-otlp-server' else 'server' -%}
+          {%- set partner_dir = hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/' ~ partner_name -%}
+          {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
+                 and l.profile | default('') == expected_profile and r == 'none' and l.dir == expected_dir
+                 and (_leaves | selectattr('name', 'equalto', partner_name)
+                      | selectattr('host', 'equalto', h) | selectattr('profile', 'equalto', partner_profile)
+                      | selectattr('dir', 'equalto', partner_dir) | selectattr('reload', 'equalto', 'none')
+                      | list | length) == 1 -%}
+            {#- Fixed TLS leaves are staged while the receiver is off; no live proof or renewal applies. -#}
+          {%- else -%}
+            {%- set _ = errs.append(n ~ ': an inactive o11y TLS leaf must be the fixed same-host leaf paired with its declared counterpart') -%}
+          {%- endif -%}
+        {%- elif n == 'o11y-otlp-server' and (h not in groups.get('o11y_svc', []) or l.profile | default('') != 'server') -%}
+          {%- set _ = errs.append(n ~ ': the fixed o11y receiver leaf must be a server leaf on o11y_svc') -%}
+        {%- elif n == 'o11y-journal' and (h not in groups.get('o11y_svc', []) or l.profile | default('') != 'client') -%}
+          {%- set _ = errs.append(n ~ ': the fixed o11y journal leaf must be a client leaf on o11y_svc') -%}
         {%- elif l.profile | default('') == 'server' and h in groups.get('o11y_svc', []) -%}
           {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
                  and (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool)

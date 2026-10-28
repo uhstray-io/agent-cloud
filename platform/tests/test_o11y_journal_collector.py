@@ -4704,6 +4704,15 @@ def test_resolved_compose_gate_requires_only_fixed_read_only_tls_mounts_when_ena
     }
     assert COMPOSE.verify_config(resolved, tls_enabled=True, deploy_dir=deploy_dir)
     assert not COMPOSE.verify_config(resolved, tls_enabled=False, deploy_dir=deploy_dir)
+    relative_mounts = [
+        {**tls_mounts[0], "source": "./certs/o11y-journal"},
+        {**tls_mounts[1], "source": "certs/step-ca-bundle.crt"},
+    ]
+    relative = {**resolved, "services": {"journal-collector": {
+        **resolved["services"]["journal-collector"],
+        "volumes": [resolved["services"]["journal-collector"]["volumes"][0], *relative_mounts],
+    }}}
+    assert COMPOSE.verify_config(relative, tls_enabled=True, deploy_dir=deploy_dir)
     for bad_mounts in (
         [tls_mounts[0], {**tls_mounts[1], "read_only": False}],
         [{**tls_mounts[0], "source": f"{deploy_dir}/certs/other"}, tls_mounts[1]],
