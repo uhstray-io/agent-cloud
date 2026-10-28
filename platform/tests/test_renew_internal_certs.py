@@ -307,7 +307,8 @@ def _loki(pushes: list):
 
 
 @contextmanager
-def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None):
+def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, server_frames=None,
+                       split_reads=False, expect_ack=True):
     """Small TLS 1.3 / HTTP2 fixture for the o11y-specific renewal proof."""
     d = Path(server_leaf["dir"])
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -322,10 +323,24 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None):
     listener.listen(4)
     port = listener.getsockname()[1]
     behaviors = list(client_behaviors or ["settings", "settings", "settings"])
+    frames = list(server_frames or [b"\x00\x00\x00\x04\x00\x00\x00\x00\x00"] * len(behaviors))
+    fixture_errors = []
+
+    def read_exact(sock, size):
+        result = bytearray()
+        while len(result) < size:
+            chunk = sock.recv(size - len(result))
+            if not chunk:
+                break
+            result.extend(chunk)
+        return bytes(result)
 
     def serve():
-        for behavior in behaviors:
-            raw, _address = listener.accept()
+        for behavior, frame in zip(behaviors, frames):
+            try:
+                raw, _address = listener.accept()
+            except OSError:
+                break
             try:
                 with context.wrap_socket(raw, server_side=True) as tls:
                     tls.settimeout(10)
@@ -336,7 +351,15 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None):
                             break
                         request.extend(chunk)
                     if behavior == "settings":
-                        tls.sendall(b"\x00\x00\x00\x04\x00\x00\x00\x00\x00")
+                        if split_reads:
+                            for byte in frame:
+                                tls.sendall(bytes([byte]))
+                        else:
+                            tls.sendall(frame)
+                        if expect_ack:
+                            ack = read_exact(tls, 9)
+                            if ack != b"\x00\x00\x00\x04\x01\x00\x00\x00\x00":
+                                raise RuntimeError("client did not acknowledge valid SETTINGS")
                     elif behavior == "short":
                         tls.sendall(b"\x00\x00")
                     elif behavior == "unexpected":
@@ -344,6 +367,9 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None):
                     elif behavior == "stall":
                         tls.recv(1)
             except (OSError, ssl.SSLError):
+                raw.close()
+            except RuntimeError as exc:
+                fixture_errors.append(str(exc))
                 raw.close()
         listener.close()
 
@@ -354,6 +380,15 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None):
     finally:
         listener.close()
         thread.join(timeout=12)
+        assert not fixture_errors, "; ".join(fixture_errors)
+
+
+def _settings_frame(settings=(), *, stream_id=0, reserved=False):
+    payload = b"".join(setting.to_bytes(2, "big") + value.to_bytes(4, "big")
+                       for setting, value in settings)
+    encoded_stream = stream_id | (0x80000000 if reserved else 0)
+    return (len(payload).to_bytes(3, "big") + b"\x04\x00" +
+            encoded_stream.to_bytes(4, "big") + payload)
 
 
 # Shadowing the interpreter's own sitecustomize would drop what it does (Homebrew's adds its
@@ -910,6 +945,66 @@ def test_o11y_tls_proof_requires_valid_client_http2_and_refuses_missing_and_fore
         )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == f"O11Y_MTLS_PROVEN:{server_serial}"
+
+
+@pytest.mark.parametrize("frame,split_reads", [
+    (_settings_frame(), False),
+    (_settings_frame([(1, 0xffffffff), (2, 0), (3, 0xffffffff),
+                      (4, 0x7fffffff), (5, 16384), (5, 16777215), (6, 0xffffffff),
+                      (65000, 0xffffffff)], reserved=True), True),
+])
+def test_o11y_tls_proof_accepts_valid_settings_and_unknown_ids(tmp_path, frame, split_reads):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    server_serial = _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, server_frames=[frame] * 3,
+                            split_reads=split_reads) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == f"O11Y_MTLS_PROVEN:{server_serial}"
+
+
+@pytest.mark.parametrize("frame", [
+    _settings_frame(stream_id=1),
+    _settings_frame([(2, 1)]),
+    _settings_frame([(4, 0x80000000)]),
+    _settings_frame([(5, 16383)]),
+    _settings_frame([(5, 16777216)]),
+    _settings_frame([(5, 16383), (5, 16384)]),
+    b"\x00\x00\x00\x04\x01\x00\x00\x00\x00",
+    b"\x00\x00\x00\x01\x00\x00\x00\x00\x00",
+    b"\x00\x00\x01\x04\x00\x00\x00\x00\x00x",
+])
+def test_o11y_tls_proof_does_not_accept_malformed_valid_client_settings(tmp_path, frame):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, server_frames=[frame] * 3,
+                            expect_ack=False) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert "O11Y_MTLS_PROVEN" not in result.stdout
 
 
 @pytest.mark.parametrize("failure", ["settings", "stall", "short", "unexpected"])

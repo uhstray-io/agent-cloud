@@ -373,10 +373,22 @@
                       header = read_exact(tls, 9)
                       length = int.from_bytes(header[:3], "big")
                       frame_type, flags = header[3], header[4]
-                      if frame_type != 4 or flags & 1 or length > 16384 or length % 6:
+                      stream_id = int.from_bytes(header[5:9], "big") & 0x7fffffff
+                      if frame_type != 4 or flags & 1 or stream_id != 0 or length > 16384 or length % 6:
                           return ("unverified", None)
-                      read_exact(tls, length)
-                      return ("accepted", tls.getpeercert().get("serialNumber"))
+                      payload = read_exact(tls, length)
+                      for offset in range(0, length, 6):
+                          setting_id = int.from_bytes(payload[offset:offset + 2], "big")
+                          value = int.from_bytes(payload[offset + 2:offset + 6], "big")
+                          if setting_id == 2 and value != 0:
+                              return ("unverified", None)
+                          if setting_id == 4 and value > 0x7fffffff:
+                              return ("unverified", None)
+                          if setting_id == 5 and not 16384 <= value <= 16777215:
+                              return ("unverified", None)
+                      tls.sendall(b"\x00\x00\x00\x04\x01\x00\x00\x00\x00")
+                      serial = tls.getpeercert().get("serialNumber")
+                      return ("accepted", serial) if serial else ("unverified", None)
           except ssl.SSLError as exc:
               if exc.reason in auth_alerts:
                   return ("rejected", None)
