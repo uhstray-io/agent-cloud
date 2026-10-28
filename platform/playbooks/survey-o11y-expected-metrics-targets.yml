@@ -84,7 +84,8 @@
         not ansible_check_mode and
         (o11y_expected_metrics_targets_reviewed | default(false) | bool) and
         (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
-         selectattr('instance', 'equalto', 'alloy:12345') | selectattr('source', 'equalto', 'alloy') |
+         selectattr('instance', 'equalto', 'alloy:12345') | selectattr('source', 'defined') |
+         selectattr('source', 'equalto', 'alloy') |
          list | length == 1)
 
     - name: Require the reviewed native source projection
@@ -139,7 +140,11 @@
         _expected_target_native_source: >-
           {{ (_expected_target_native_source_raw.stdout | from_json) | o11y_availability_source_coverage(true) }}
       no_log: true
-      when: _expected_target_native_source_raw is defined
+      when: >-
+        _expected_target_native_source_raw is defined and
+        not (_expected_target_native_source_raw.skipped | default(false) | bool) and
+        (_expected_target_native_source_raw.rc | default(1)) == 0 and
+        _expected_target_native_source_raw.stdout is defined
 
     - name: Survey expected-target coverage with private input protected
       ansible.builtin.command:

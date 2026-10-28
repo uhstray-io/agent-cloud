@@ -55,6 +55,8 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  vars_files:
+    - vars/o11y-metric-labels.yml
   vars:
     _survey_engine: "{{ container_engine | default('') }}"
     _baseline_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"

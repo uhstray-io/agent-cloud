@@ -3569,6 +3569,14 @@ def _parse_native_time(value: Any) -> Decimal:
     return Decimal(int(parsed.timestamp())) + fraction
 
 
+def _alloy_ui_http_script(path: str) -> str:
+    return (
+        "exec 3<>/dev/tcp/127.0.0.1/12345 || exit 10; "
+        f"printf 'GET {path} HTTP/1.0\\r\\nHost: localhost\\r\\nAccept: application/json\\r\\n"
+        "Connection: close\\r\\n\\r\\n' >&3; cat <&3"
+    )
+
+
 def _read_alloy_component_detail(
     component_id: str, deadline: float, *, allow_absent: bool = False,
 ) -> bytes:
@@ -3578,12 +3586,7 @@ def _read_alloy_component_detail(
     ):
         raise Refusal("native_declaration_invalid")
     path = AVAILABILITY_COMPONENT_DETAIL_PATH + component_id
-    script = (
-        "exec 3<>/dev/tcp/127.0.0.1/12345 || exit 10; "
-        f"printf 'GET {path} HTTP/1.0\\r\\nHost: localhost\\r\\nAccept: application/json\\r\\n"
-        "Connection: close\\r\\n\\r\\n' >&3; "
-        "while IFS= read -r line || [[ -n $line ]]; do printf '%s\\n' \"$line\"; done <&3"
-    )
+    script = _alloy_ui_http_script(path)
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise Refusal("native_readback_timeout")
@@ -3610,12 +3613,7 @@ def _read_alloy_root_components(deadline: float) -> tuple[bytes, bytes]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise Refusal("native_readback_timeout")
-        script = (
-            "exec 3<>/dev/tcp/127.0.0.1/12345 || exit 10; "
-            f"printf 'GET {path} HTTP/1.0\\r\\nHost: localhost\\r\\nAccept: application/json\\r\\n"
-            "Connection: close\\r\\n\\r\\n' >&3; "
-            "while IFS= read -r line || [[ -n $line ]]; do printf '%s\\n' \"$line\"; done <&3"
-        )
+        script = _alloy_ui_http_script(path)
         raw = _availability_command(
             ["podman", "exec", "o11y-alloy", "bash", "-c", script],
             timeout=min(10, remaining),
@@ -4595,7 +4593,9 @@ def _expected_target_coverage_action() -> dict[str, Any]:
 
 
 def _availability_source_action() -> dict[str, Any]:
-    source_context = _validate_availability_source_payload(_input_document())
+    source_json = os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON")
+    declaration = _json_input_bytes(source_json) if source_json is not None else _input_document()
+    source_context = _validate_availability_source_payload(declaration)
     environment, cluster = source_context["environment"], source_context["cluster"]
     targets_raw = _run_api("/api/v1/targets?state=active", "native_source_unavailable")
     loaded = _loaded_limit_readback(targets_raw)

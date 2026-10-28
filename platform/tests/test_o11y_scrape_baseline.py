@@ -5,7 +5,9 @@ import ipaddress
 import json
 import re
 import shutil
+import socket
 import subprocess
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -130,6 +132,61 @@ def _alloy_http_response(document, status="200 OK", content_type="application/js
         + b"\r\n\r\n"
         + json.dumps(document).encode()
     )
+
+
+def _alloy_wire_response(body, content_type="application/json"):
+    return (
+        b"HTTP/1.0 200 OK\r\nContent-Type: " + content_type.encode("ascii")
+        + b"\r\nContent-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body
+    )
+
+
+def _run_fake_alloy_http(argv, response):
+    assert argv[:5] == ["podman", "exec", "o11y-alloy", "bash", "-c"]
+    script = argv[-1]
+    socket_prefix = "/dev/tcp/127.0.0.1/12345"
+    assert script.count(socket_prefix) == 1
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(3)
+    port = listener.getsockname()[1]
+    requests, errors = [], []
+
+    def serve():
+        try:
+            connection, _address = listener.accept()
+            with connection:
+                connection.settimeout(3)
+                request = bytearray()
+                while b"\r\n\r\n" not in request and len(request) < 2048:
+                    chunk = connection.recv(512)
+                    if not chunk:
+                        break
+                    request.extend(chunk)
+                if b"\r\n\r\n" not in request:
+                    raise AssertionError("fake Alloy request was incomplete")
+                requests.append(bytes(request))
+                connection.sendall(response)
+                connection.shutdown(socket.SHUT_WR)
+        except Exception as exc:  # propagate assertions and bounded socket errors to the test
+            errors.append(exc)
+
+    server = threading.Thread(target=serve, daemon=True)
+    server.start()
+    script = script.replace(socket_prefix, f"/dev/tcp/127.0.0.1/{port}", 1)
+    try:
+        result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=3, check=False)
+    finally:
+        server.join(timeout=3)
+        listener.close()
+    assert not server.is_alive(), "fake Alloy HTTP server did not stop"
+    if errors:
+        raise errors[0]
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    assert len(requests) == 1
+    return result.stdout, requests[0]
 
 
 def _typed(kind, value):
@@ -1055,6 +1112,97 @@ def test_native_absence_reads_only_fixed_ready_and_root_list_routes(monkeypatch)
     assert all("health_" not in call[0][-1] and "alloy_self" not in call[0][-1] for call in commands)
 
 
+def test_shared_alloy_http_readers_preserve_content_length_and_final_lf(monkeypatch):
+    detail_path = SURVEY.AVAILABILITY_COMPONENT_DETAIL_PATH + "prometheus.scrape.health_01"
+    detail_body = json.dumps(_alloy_detail_document(), separators=(",", ":")).encode("utf-8")
+    root_body = json.dumps(_alloy_root_graph(), separators=(",", ":")).encode("utf-8")
+    ready_body = b"Alloy is ready.\n"
+    responses = {
+        detail_path: _alloy_wire_response(detail_body),
+        SURVEY.AVAILABILITY_READY_PATH: _alloy_wire_response(ready_body, "text/plain"),
+        SURVEY.AVAILABILITY_COMPONENTS_PATH: _alloy_wire_response(root_body, "text/plain"),
+    }
+    requests = []
+
+    def command(argv, *, timeout, cwd=None):
+        script = argv[-1]
+        path = script.split("printf 'GET ", 1)[1].split(" HTTP/1.0", 1)[0]
+        raw, request = _run_fake_alloy_http(argv, responses[path])
+        requests.append(request)
+        return raw
+
+    monkeypatch.setattr(SURVEY, "_availability_command", command)
+    detail_raw = SURVEY._read_alloy_component_detail(
+        "prometheus.scrape.health_01", SURVEY.time.monotonic() + 10,
+    )
+    assert detail_raw == responses[detail_path]
+    assert SURVEY._alloy_component_detail(
+        detail_raw, "prometheus.scrape.health_01", "prometheus.scrape",
+    )["arguments"]["sample_limit"] == 64
+
+    ready_raw, root_raw = SURVEY._read_alloy_root_components(SURVEY.time.monotonic() + 10)
+    assert ready_raw == ready_body
+    assert root_raw == root_body
+    assert SURVEY._validate_alloy_root_component_list(root_raw)["status"] == "observed"
+    assert len(requests) == 3
+    assert [request.split(b"\r\n", 1)[0] for request in requests] == [
+        f"GET {detail_path} HTTP/1.0".encode(),
+        f"GET {SURVEY.AVAILABILITY_READY_PATH} HTTP/1.0".encode(),
+        f"GET {SURVEY.AVAILABILITY_COMPONENTS_PATH} HTTP/1.0".encode(),
+    ]
+    assert not detail_body.endswith(b"\n") and ready_body.endswith(b"\n")
+    assert not root_body.endswith(b"\n")
+
+
+def test_shared_alloy_http_reader_preserves_nul_bytes_without_a_final_newline():
+    path = SURVEY.AVAILABILITY_COMPONENT_DETAIL_PATH + "prometheus.scrape.health_01"
+    script = SURVEY._alloy_ui_http_script(path)
+    body = b"{\"x\":\"a\x00b\"}"
+    response = _alloy_wire_response(body, "text/plain;charset=utf-8")
+    raw, request = _run_fake_alloy_http(
+        ["podman", "exec", "o11y-alloy", "bash", "-c", script], response,
+    )
+    assert raw == response
+    assert b"\x00" in raw and not body.endswith(b"\n")
+    assert request.startswith(f"GET {path} HTTP/1.0\r\n".encode())
+
+
+def test_availability_source_action_consumes_ansible_environment_json_and_stdin_fallback(monkeypatch):
+    payload = {
+        "reviewed": True,
+        "targets": [{
+            "uid": "o11y_missing_prometheus",
+            "job": "prometheus",
+            "instance": "localhost:9090",
+            "service": "o11y/prometheus",
+            "cluster": "prod-west",
+            "environment": "prod",
+        }],
+        "availability": {"enabled": False, "targets": [], "limits": {}},
+        "shared_limits": {},
+        "environment": "prod",
+        "cluster": "prod-west",
+        "lower_bound": None,
+        "freshness_seconds": 300,
+        "require_health_targets": False,
+    }
+
+    def stop_before_api(*_args, **_kwargs):
+        raise SURVEY.Refusal("native_source_unavailable")
+
+    monkeypatch.setattr(SURVEY, "_run_api", stop_before_api)
+    monkeypatch.setenv("O11Y_AVAILABILITY_SOURCE_JSON", json.dumps(payload))
+    monkeypatch.setattr(SURVEY.sys, "stdin", io.TextIOWrapper(io.BytesIO(b"not json")))
+    assert SURVEY.os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON") == json.dumps(payload)
+    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+        SURVEY._availability_source_action()
+
+    monkeypatch.delenv("O11Y_AVAILABILITY_SOURCE_JSON")
+    monkeypatch.setattr(SURVEY.sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode())))
+    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+        SURVEY._availability_source_action()
+
+
 def test_availability_namespace_proof_uses_kernel_identity_and_finds_project_siblings():
     containers, processes = _availability_namespace_fixture()
     assert SURVEY.validate_availability_namespace_snapshot(
@@ -1843,6 +1991,23 @@ def test_preview_result_never_returns_candidate_or_observed_values():
 def test_survey_candidate_preview_is_optional_protected_and_check_mode_skipped():
     playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
     receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
+    assert "vars/o11y-metric-labels.yml" in receiver["vars_files"]
+    label_policy = yaml.safe_load(
+        (ROOT / "platform/playbooks/vars/o11y-metric-labels.yml").read_text(encoding="utf-8"),
+    )["_o11y_forbidden_metric_label_names_regex"]
+    assert isinstance(label_policy, str) and label_policy
+    candidate_env = Environment(undefined=StrictUndefined)
+    candidate_env.filters.update(to_json=json.dumps, bool=bool)
+    rendered_candidate = candidate_env.from_string(
+        (ROOT / "platform/services/o11y/deployment/templates/config.alloy.j2").read_text(encoding="utf-8"),
+    ).render(
+        local_mode=False,
+        _o11y_availability={"enabled": True, "targets": []},
+        _o11y_forbidden_metric_label_names_regex=label_policy,
+        o11y_cluster="prod-west",
+        o11y_environment="prod",
+    )
+    assert json.dumps(label_policy) in rendered_candidate
     tasks = receiver["tasks"]
     preview = next(task for task in tasks if task.get("name") == "Compute the source-only candidate budget preview")
     report = next(task for task in tasks if task.get("name") == "Report the source-only candidate budget preview")

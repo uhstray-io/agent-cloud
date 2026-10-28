@@ -8,7 +8,7 @@ groups:
     folder: agent-cloud
     interval: 60s
     rules:
-{% set _availability_projection = o11y_availability | default({}) %}
+{% set _availability_projection = _o11y_availability | default({}) %}
 {% set _availability_targets = _availability_projection.get('targets', []) %}
 {% set _availability_uids = ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'] %}
 {% set _availability_on = _availability_projection.get('enabled', false) | bool
@@ -110,11 +110,11 @@ groups:
           dashboard_url: '/d/service-overview?var-service={% raw %}{{ $labels.service }}{% endraw %}'
         labels:
           severity: critical
-          service: '{% raw %}{{ $labels.service }}{% endraw %}'
-          target_id: '{% raw %}{{ $labels.target_id }}{% endraw %}'
+          service: '{% raw %}{{ $$labels.service }}{% endraw %}'
+          target_id: '{% raw %}{{ $$labels.target_id }}{% endraw %}'
           owner: platform-operations
-          environment: '{% raw %}{{ $labels.environment }}{% endraw %}'
-          cluster: '{% raw %}{{ $labels.cluster }}{% endraw %}'
+          environment: '{% raw %}{{ $$labels.environment }}{% endraw %}'
+          cluster: '{% raw %}{{ $$labels.cluster }}{% endraw %}'
         isPaused: false
         notification_settings:
           receiver: agent-cloud-ops

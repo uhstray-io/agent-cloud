@@ -1394,7 +1394,7 @@ base = {
     'o11y_environment': 'prod',
     'o11y_cluster': 'test-cluster',
     'o11y_alerts_enabled': True,
-    'o11y_availability': {'enabled': True, 'targets': targets},
+    '_o11y_availability': {'enabled': True, 'targets': targets},
 }
 
 def rules(**values):
@@ -1408,6 +1408,14 @@ missing = by_uid['o11y_endpoint_probe_missing']
 identity = 'job="o11y-availability",instance="service:alpha",service="alpha",target_id="service:alpha",environment="prod",cluster="test-cluster"'
 labels = 'on(job,instance,service,target_id,environment,cluster)'
 assert failed['title'] == 'Endpoint health check failed'
+assert failed['labels']['service'] == '{{ $$labels.service }}'
+assert failed['labels']['target_id'] == '{{ $$labels.target_id }}'
+assert failed['labels']['environment'] == '{{ $$labels.environment }}'
+assert failed['labels']['cluster'] == '{{ $$labels.cluster }}'
+assert all('{{ $labels.' in value.replace('$$', '$') for value in (
+    failed['labels']['service'], failed['labels']['target_id'],
+    failed['labels']['environment'], failed['labels']['cluster'],
+))
 assert failed['data'][0]['model']['expr'] == (
     f'(1 - probe_success{{{identity}}}) and {labels} (up{{{identity}}} == 1) or '
     '(1 - probe_success{job="o11y-availability",instance="service:beta",service="beta",'
@@ -1432,7 +1440,7 @@ assert all(rule['labels']['severity'] == 'critical' for rule in (failed, missing
 assert by_uid['o11y_service_down']['title'] == 'Service telemetry scrape failed'
 
 disabled, disabled_doc = rules(o11y_alerts_enabled=False)
-unavailable, unavailable_doc = rules(o11y_availability={'enabled': False, 'targets': targets})
+unavailable, unavailable_doc = rules(_o11y_availability={'enabled': False, 'targets': targets})
 canary, canary_doc = rules(o11y_alert_canary_service='o11y-fault-probe-' + 'a' * 12)
 for document in (disabled_doc, unavailable_doc, canary_doc):
     assert [item['uid'] for item in document['deleteRules']].count('o11y_endpoint_probe_failed') == 1
@@ -1876,7 +1884,7 @@ assert verify_rules(prod_live, prod_doc)
 assert verify_rules(inf_live, inf_doc)
 availability_doc = yaml.safe_load(render_alerts.render(
     local_mode=False, o11y_alerts_enabled=True,
-    o11y_availability={'enabled': True, 'targets': [
+    _o11y_availability={'enabled': True, 'targets': [
         {'target_id': 'service:alpha', 'service_identity': 'alpha', 'environment': 'prod',
          'cluster': 'test-cluster', 'freshness_seconds': 600},
     ]},
@@ -1997,7 +2005,7 @@ PY
 }
 
 @test "o11y: self-monitoring scrapes feed the provisioned dashboard" {
-  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$REPO_ROOT/platform/playbooks/survey-o11y-scrape-baseline.yml" <<'PY'
 import json
 import pathlib
 import re
@@ -2014,6 +2022,18 @@ plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
 policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-labels.yml', encoding='utf-8'))['_o11y_forbidden_metric_label_names_regex']
+survey_plays = yaml.safe_load(pathlib.Path(sys.argv[3]).read_text())
+survey_receiver = next(play for play in survey_plays if play.get('name') == 'Read and reduce the production scrape baseline')
+assert 'vars/o11y-metric-labels.yml' in survey_receiver['vars_files']
+candidate_context = {
+    'local_mode': False,
+    '_o11y_availability': {'enabled': True, 'targets': []},
+    '_o11y_forbidden_metric_label_names_regex': policy,
+    'o11y_cluster': 'prod-west',
+    'o11y_environment': 'prod',
+}
+candidate = env.from_string((deploy / 'templates/config.alloy.j2').read_text()).render(**candidate_context)
+assert f'regex  = {json.dumps(policy)}' in candidate
 prometheus_template = (deploy / 'templates/prometheus.yml.j2').read_text()
 rendered_prometheus = env.from_string(prometheus_template).render(
     o11y_cluster='test-cluster', o11y_environment='prod', local_mode=False,
@@ -3471,7 +3491,7 @@ assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expir
 assert 'deleteRules' not in render(local_mode=False, o11y_alerts_enabled=True,
                                   o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True,
                                   o11y_inference_probe_enabled=True,
-                                  o11y_availability={'enabled': True, 'targets': [
+                                  _o11y_availability={'enabled': True, 'targets': [
                                       {'target_id': 'service:alpha', 'service_identity': 'alpha',
                                        'environment': 'prod', 'cluster': 'test-cluster', 'freshness_seconds': 600}
                                   ]})

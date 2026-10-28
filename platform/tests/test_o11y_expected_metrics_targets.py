@@ -1515,3 +1515,35 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
     assert "_expected_target_coverage | to_json" in report["ansible.builtin.debug"]["msg"]
     assert "prometheus_target_coverage" in report["ansible.builtin.debug"]["msg"]
     assert "native_availability_source" in report["ansible.builtin.debug"]["msg"]
+
+
+def test_native_expected_target_survey_preserves_legacy_source_omission_and_skipped_registers():
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    projection = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Prove the fixed native source when explicitly declared"
+    )
+    project = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Project the fixed native source evidence privately"
+    )
+
+    env = Environment()
+    env.filters["bool"] = bool
+    condition = env.compile_expression(projection["when"])
+    common = {
+        "ansible_check_mode": False,
+        "o11y_expected_metrics_targets_reviewed": True,
+    }
+    legacy_self = {"job": "alloy", "instance": "alloy:12345"}
+    assert not condition(**(common | {"o11y_expected_metrics_targets": [legacy_self]}))
+    native_self = legacy_self | {"source": "alloy"}
+    assert condition(**(common | {"o11y_expected_metrics_targets": [native_self]}))
+
+    project_condition = env.compile_expression(project["when"])
+    assert not project_condition(_expected_target_native_source_raw={"skipped": True})
+    assert not project_condition(_expected_target_native_source_raw={"rc": 1, "stdout": ""})
+    assert project_condition(_expected_target_native_source_raw={"rc": 0, "stdout": "{}"})
