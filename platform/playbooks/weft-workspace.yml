@@ -1,0 +1,180 @@
+---
+# weft-workspace.yml — the plays of deploy-weft-workspace.yml, without its empty-group guard. Imported by that
+# launcher (which a person runs, and which refuses an empty weft_workspaces group first), and by
+# the timers and Stand Up weft Workspace, which queue exactly the hosts they mean to deploy into
+# a group of their own: an empty queue there is their decision that there is nothing to do, said
+# by their own first play, not an empty inventory group passing as a success.
+#
+# What it does — deploy one weft release to workspaces, ONE AT A TIME, stopping at
+# the first that fails (serial: 1, max_fail_percentage: 0). A workspace is one company's whole
+# installation on its own VM: the board, the orchestrator and capture as three containers from
+# the weft-workspace image, sharing the workspace directory on the VM's own disk.
+#
+# Per workspace:
+#   - place the repo; make the workspace directory; enable the deploy user's podman socket (the
+#     orchestrator starts agent and egress-proxy containers through it)
+#   - the front door's public key, read from the door's OpenBao path for weft.toml. No model
+#     key or forge token: the workspace's admin enters them on Settings > Credentials after the
+#     first sign-in, and they stay sealed in the catalog (weft's D539)
+#   - one deploy (tasks/weft-deploy.yml): verify, stop, back up, start, health through the edge,
+#     watch, and roll back automatically if health or the watch fails
+#
+# The front door must have been deployed first: its public key is in this workspace's weft.toml,
+# and its deploy is what writes that key to OpenBao.
+#
+# Inputs:
+#   weft_release           REQUIRED: a full commit main published, or a release like v0.5.0
+#   weft_workspace_hosts   the inventory group or host pattern (default weft_workspaces;
+#                          staging: weft_staging_workspace; one workspace: its inventory name)
+# Host and group vars from site-config: see platform/services/weft/deployment/README.md.
+#
+# Run through Semaphore ("Deploy weft Workspace"), never by hand on the VM.
+
+- name: "Workspaces, one at a time: deploy {{ weft_release | default('(unset)') }}"
+  hosts: "{{ weft_workspace_hosts | default('weft_workspaces') }}"
+  serial: 1
+  max_fail_percentage: 0
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _weft_role: workspace
+    _weft_workspace_dir: "{{ _weft_root }}/{{ weft_workspace_id }}"
+    _weft_state_dir: "{{ _weft_workspace_dir }}"
+    _weft_deploy_dir: "{{ _monorepo_dir }}/platform/services/weft/deployment"
+    _weft_label: "workspace {{ weft_workspace_id }}"
+    _weft_environment: "{{ weft_environment }}"
+    _weft_seal_bao_path: "services/{{ _weft_secrets }}/workspaces/{{ weft_workspace_id }}"
+    _weft_podman_socket: "/run/user/{{ _weft_uid.stdout }}/podman/podman.sock"
+    # Set by follow-weft-main.yml / roll-out-weft-release.yml on the controller before they
+    # import this playbook; empty when a person runs it.
+    _weft_github_deployment_id: "{{ (hostvars['localhost'] | default({}))['_weft_github_deployment_id'] | default('') }}"
+    _weft_notes: "{{ (hostvars['localhost'] | default({}))['_weft_notes'] | default('') }}"
+    _weft_rollout: "{{ (hostvars['localhost'] | default({}))['_weft_rollout'] | default({}) }}"
+    _weft_deploy_env:
+      CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+      COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+    # Through the edge, from outside the board: TLS, the Caddy route, the board, the migration
+    # and a tend pass that finished after this deploy started.
+    _weft_health_argv:
+      - bash
+      - deploy.sh
+      - workspace
+      - health
+      - --since
+      - "{{ _weft_started.stdout }}"
+      - --board
+      - "https://{{ weft_workspace_name }}.{{ weft_domain }}"
+      - --workspace
+      - "{{ weft_workspace_id }}"
+
+  tasks:
+    - name: "Require this workspace's declaration"
+      ansible.builtin.assert:
+        that:
+          - weft_release | default('') | length > 0
+          # The front door's id: what sign-in claims are bound to, and this workspace's directory.
+          - weft_workspace_id | default('') is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          # The company name its admin chose: this workspace's DNS label, <name>.<domain>.
+          - weft_workspace_name | default('') is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - weft_domain | default('') | length > 0
+          - weft_environment | default('') in ['rack', 'staging']
+          - weft_voice_udp | default('') | string is match('^[0-9]+$')
+          # An address and never a name: it goes into every SDP answer as an ICE candidate.
+          - weft_public_address | default('') is match('^[0-9a-fA-F:.]+$')
+          - weft_providers | default({}) | length > 0
+          - weft_default_provider | default('') in weft_providers | default({})
+          - weft_daily_tokens is defined
+          - weft_tracker_bot_login | default('') | length > 0
+        fail_msg: >-
+          {{ inventory_hostname }} is missing part of its weft declaration (weft_workspace_id and
+          weft_workspace_name as DNS labels, weft_domain, weft_environment, weft_voice_udp, weft_public_address as an IP,
+          weft_providers with weft_default_provider among them, weft_daily_tokens and
+          weft_tracker_bot_login). See platform/services/weft/deployment/README.md.
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Read the Discord webhook (and the GitHub token, when this deploy is recorded)"
+      ansible.builtin.include_tasks: tasks/weft-credentials.yml
+      vars:
+        _weft_need_github: "{{ _weft_github_deployment_id | string | length > 0 }}"
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Make the workspace directory on the VM's own disk"
+      ansible.builtin.file:
+        path: "{{ _weft_workspace_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        mode: "0700"
+      become: true
+
+    - name: "Read the deploy user's id"
+      ansible.builtin.command: id -u
+      register: _weft_uid
+      changed_when: false
+      check_mode: false
+
+    - name: "Enable the deploy user's podman socket (the orchestrator's only)"
+      ansible.builtin.systemd_service:
+        name: podman.socket
+        scope: user
+        enabled: true
+        state: started
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _weft_uid.stdout }}"
+
+    # The workspace keeps no key from OpenBao; it needs only the front door's public half (not a
+    # secret) for weft.toml, and the login the seal copy uses.
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Read the front door's path"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/{{ _weft_secrets }}/door"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _weft_door_secret
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Take the front door's public key"
+      ansible.builtin.set_fact:
+        _shared:
+          public_key: "{{ (_weft_door_secret.json | default({})).data.data.public_key | default('') if _weft_door_secret.status == 200 else '' }}"
+      no_log: true
+
+    - name: "Require the front door's public key"
+      ansible.builtin.assert:
+        that: _shared.public_key is match('^[0-9a-f]{64}$')
+        fail_msg: >-
+          services/{{ _weft_secrets }}/door has no public_key: deploy the front door first (Deploy
+          weft Front Door writes it), because every workspace's weft.toml names it.
+
+    - name: "One deploy, with automatic rollback"
+      ansible.builtin.include_tasks: tasks/weft-deploy.yml

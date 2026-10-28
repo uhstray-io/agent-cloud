@@ -1,0 +1,146 @@
+---
+# rollback-weft-workspace.yml — a PERSON rolls one weft workspace back to an earlier release, from
+# a backup set they name. DESTRUCTIVE to what people wrote since that backup: the current catalog
+# is set aside (never deleted) and the backup is put in its place.
+#
+# A deploy rolls back by itself only inside its own watch window, with the copy it took minutes
+# earlier (tasks/weft-rollback.yml). Every other rollback is a person's decision, made here:
+#
+#   weft_workspace_hosts=<one inventory host>    which workspace
+#   confirm_rollback=<that same host name>       no default: the launch names the host twice
+#   weft_release=<commit or vX.Y.Z>              the release to go back to; its release.json and
+#                                                images are verified like any deploy's
+#   weft_restore_from=<backup set>               a set under <workspace>/deploys/, never "the
+#                                                latest": the person says which copy they mean
+#   weft_rollback_reason=<one line>              said in Discord and on the record
+#
+# The release being left is recorded as refused on this host, so no timer deploys it again.
+# `restore` refuses while anything has the catalog open, refuses a copy that does not verify, and
+# refuses one newer than the release's binary, each before anything moves.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Roll back one workspace by hand"
+  hosts: "{{ weft_workspace_hosts | default('weft_workspaces') }}"
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _weft_role: workspace
+    _weft_workspace_dir: "{{ _weft_root }}/{{ weft_workspace_id }}"
+    _weft_state_dir: "{{ _weft_workspace_dir }}"
+    _weft_deploy_dir: "{{ _monorepo_dir }}/platform/services/weft/deployment"
+    _weft_label: "workspace {{ weft_workspace_id }}"
+    _weft_environment: "{{ weft_environment }}"
+    _weft_podman_socket: "/run/user/{{ _weft_uid.stdout }}/podman/podman.sock"
+    _weft_rollback_by_hand: true
+    _weft_deploy_env:
+      CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+      COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+    _weft_health_argv:
+      - bash
+      - deploy.sh
+      - workspace
+      - health
+      - --since
+      - "{{ _weft_started.stdout }}"
+      - --board
+      - "https://{{ weft_workspace_name }}.{{ weft_domain }}"
+      - --workspace
+      - "{{ weft_workspace_id }}"
+
+  tasks:
+    - name: "Require one named workspace, confirmed, a release, a backup set and a reason"
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - confirm_rollback | default('') == inventory_hostname
+          - weft_release | default('') | length > 0
+          # One set directly under deploys/: never '.' or '..', which would name a directory above it.
+          - weft_restore_from | default('') is match('^' ~ (_weft_workspace_dir | regex_escape) ~ '/deploys/(?!\\.{1,2}/?$)[A-Za-z0-9._-]+/?$')
+          - weft_rollback_reason | default('') | trim | length > 0
+        fail_msg: >-
+          Name exactly one workspace host, repeat its name in confirm_rollback, and give
+          weft_release, weft_restore_from (a set under {{ _weft_workspace_dir }}/deploys/) and
+          weft_rollback_reason. Nothing was changed.
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Read the Discord webhook"
+      ansible.builtin.include_tasks: tasks/weft-credentials.yml
+
+    - name: "Read the front door's public key, for the restored release's weft.toml"
+      ansible.builtin.set_fact:
+        _shared:
+          public_key: >-
+            {{ lookup('community.hashi_vault.hashi_vault',
+                      'secret/data/services/' ~ _weft_secrets ~ '/door:public_key',
+                      url=_bao_url, auth_method='approle',
+                      role_id=(bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))),
+                      secret_id=(bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')))) }}
+      no_log: true
+
+    - name: "Require the backup set to exist"
+      ansible.builtin.stat:
+        path: "{{ weft_restore_from }}/backup.json"
+      register: _weft_named_set
+      failed_when: not _weft_named_set.stat.exists
+
+    - name: "Read the deploy user's id"
+      ansible.builtin.command: id -u
+      register: _weft_uid
+      changed_when: false
+      check_mode: false
+
+    - name: "Verify and pull the release to go back to"
+      ansible.builtin.include_tasks: tasks/weft-release.yml
+
+    - name: "Check mode: report and stop here"
+      ansible.builtin.debug:
+        msg: "check mode: {{ _weft_label }} would be rolled back to {{ weft_release }} from {{ weft_restore_from }}."
+      when: ansible_check_mode
+
+    - name: "Check mode: end this host"
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+
+    - name: "Read what this host runs"
+      ansible.builtin.slurp:
+        src: "{{ _weft_state_dir }}/deployed.json"
+      register: _weft_current_raw
+
+    - name: "Note when the rollback started"
+      ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%SZ
+      register: _weft_started
+      changed_when: false
+      check_mode: false
+
+    # weft-rollback.yml goes from the release in _weft_release_json back to _weft_deployed's.
+    # Here the person chose the target, so the two are set from their choice.
+    - name: "Point the rollback at the person's choice"
+      ansible.builtin.set_fact:
+        _weft_current: "{{ _weft_current_raw.content | b64decode | from_json }}"
+        _weft_target: "{{ _weft_release_json }}"
+
+    - name: "Name both sides"
+      ansible.builtin.set_fact:
+        _weft_deployed: {release: "{{ _weft_target }}", deployed_at: "{{ _weft_started.stdout }}"}
+        _weft_release_json: "{{ _weft_current.release }}"
+        _weft_refused: "{{ _weft_current.refused | default([]) }}"
+        _weft_from: "{{ _weft_target.version or _weft_target.commit[:12] }}"
+        _weft_to: "{{ _weft_current.release.version or _weft_current.release.commit[:12] }}"
+        _weft_backup_set: "{{ weft_restore_from }}"
+        _weft_failed_check: "rolled back by hand: {{ weft_rollback_reason }}"
+
+    - name: "Roll back"
+      ansible.builtin.include_tasks: tasks/weft-rollback.yml

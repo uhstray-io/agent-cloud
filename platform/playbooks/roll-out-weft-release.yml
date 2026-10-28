@@ -1,0 +1,244 @@
+---
+# roll-out-weft-release.yml — roll an approved weft release out to the rack. Runs on a Semaphore
+# timer every five minutes ("Roll Out weft Release"), inside the rack: nothing outside reaches
+# Semaphore, so it looks for the approval itself.
+#
+#   1. the newest published release on GitHub (release.yml publishes it only once its `rack`
+#      environment is approved)
+#   2. CHECK THE APPROVAL ITSELF: the release.yml run for that version has an approval of the
+#      `rack` environment by the declared approver (weft_release_approver). A release published
+#      by anybody else, or by an agent with `gh`, deploys nothing.
+#   3. if every rack host runs it, or a host rolled it back, or a deploy holds a host: stop
+#   4. the front door first (it must accept the previous release's boards while the rest move),
+#      then each company workspace ONE AT A TIME in inventory order, uhstray's own first as the
+#      canary (list it first in weft_workspaces). Each: back up, deploy, health, watch.
+#   5. at the first failure that workspace is restored and the run fails, so the rest stay on the
+#      previous release; every workspace is then on the new release and healthy, or on the old
+#      one and healthy. Discord says which is on which.
+#
+# A host already on the release is skipped, and one that rolled it back is never retried, so a
+# later tick neither repeats a finished rollout nor retries a failed one: the fix is a new release.
+#
+# Inventory: weft_door (one host) and weft_workspaces (in rollout order), weft_environment=rack,
+# and weft_release_approver (the GitHub login whose approval counts).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Roll out: is there an approved release to deploy"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _door_hosts: "{{ groups['weft_door'] | default([]) }}"
+    _workspace_hosts: "{{ groups['weft_workspaces'] | default([]) }}"
+    _gh_headers:
+      Authorization: "Bearer {{ _weft_github_token }}"
+      Accept: application/vnd.github+json
+      X-GitHub-Api-Version: "2022-11-28"
+
+  tasks:
+    - name: "Nothing to roll out without a rack"
+      ansible.builtin.debug:
+        msg: "No weft_door host is declared; the rack has no weft yet."
+      when: _door_hosts | length == 0
+
+    - name: "End: no rack"
+      ansible.builtin.meta: end_play
+      when: _door_hosts | length == 0
+
+    - name: "Require the approver's login"
+      ansible.builtin.assert:
+        that: weft_release_approver | default('') | length > 0
+        fail_msg: "Declare weft_release_approver (the GitHub login whose approval of `rack` counts) in site-config."
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Read the GitHub token and the Discord webhook"
+      ansible.builtin.include_tasks: tasks/weft-credentials.yml
+      vars:
+        _weft_need_github: true
+
+    - name: "Ask GitHub for the newest published release"
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ _weft_repo }}/releases/latest"
+        headers: "{{ _gh_headers }}"
+        status_code: [200, 404]
+        follow_redirects: none
+      register: _weft_latest
+      check_mode: false
+      no_log: true
+
+    - name: "End: nothing released yet"
+      ansible.builtin.meta: end_play
+      when: _weft_latest.status == 404
+
+    - name: "Take its version"
+      ansible.builtin.set_fact:
+        _weft_version: "{{ _weft_latest.json.tag_name }}"
+        _weft_release_url: "{{ _weft_latest.json.html_url }}"
+
+    - name: "Require a published release version"
+      ansible.builtin.assert:
+        that:
+          - _weft_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+$')
+          - not _weft_latest.json.draft
+          - not _weft_latest.json.prerelease
+        fail_msg: "The newest release is '{{ _weft_version }}', which is not a published vX.Y.Z; nothing was deployed."
+
+    - name: "Read what the rack runs"
+      ansible.builtin.include_tasks: tasks/weft-environment-state.yml
+      vars:
+        _wes_hosts: "{{ _door_hosts + _workspace_hosts }}"
+
+    - name: "Ask GitHub which commit the release names"
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ _weft_repo }}/commits/{{ _weft_version }}"
+        headers: "{{ _gh_headers }}"
+        status_code: [200]
+        follow_redirects: none
+      register: _weft_tag_commit
+      check_mode: false
+      no_log: true
+
+    - name: "Decide"
+      ansible.builtin.set_fact:
+        _weft_commit: "{{ _weft_tag_commit.json.sha }}"
+        _weft_locked: "{{ _weft_state | dict2items | selectattr('value.locked') | map(attribute='key') | list }}"
+        _weft_refused_by: "{{ _weft_state | dict2items | selectattr('value.refused', 'contains', _weft_tag_commit.json.sha) | map(attribute='key') | list }}"
+        _weft_behind: "{{ _weft_state | dict2items | rejectattr('value.commit', 'equalto', _weft_tag_commit.json.sha) | map(attribute='key') | list }}"
+
+    - name: "Say why nothing is deployed"
+      ansible.builtin.debug:
+        msg: >-
+          {{ ('A deploy holds ' ~ (_weft_locked | join(', ')) ~ '; if none is running, remove its '
+              ~ 'deploying/ directory after looking at the host.') if _weft_locked | length > 0
+             else (('The rollout of ' ~ _weft_version ~ ' stopped at ' ~ (_weft_refused_by | join(', '))
+                    ~ ', which rolled it back. Release a fix.') if _weft_refused_by | length > 0
+             else ('The rack already runs ' ~ _weft_version ~ '.')) }}
+      when: _weft_locked | length > 0 or _weft_refused_by | length > 0 or _weft_behind | length == 0
+
+    - name: "End: nothing to deploy"
+      ansible.builtin.meta: end_play
+      when: _weft_locked | length > 0 or _weft_refused_by | length > 0 or _weft_behind | length == 0
+
+    # The approval is checked HERE, through GitHub's API, and not trusted from the release being
+    # published: publishing is something any token with contents:write can do. Only an approval of
+    # the `rack` environment by the declared approver on the run that released this version counts.
+    # The run is found by its name, which weft's release.yml sets to "release <version>".
+    - name: "Find the release.yml run for {{ _weft_version }}"
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ _weft_repo }}/actions/workflows/release.yml/runs?branch=main&status=success&per_page=50"
+        headers: "{{ _gh_headers }}"
+        status_code: [200]
+        follow_redirects: none
+      register: _weft_release_runs
+      check_mode: false
+      no_log: true
+
+    - name: "Take that run"
+      ansible.builtin.set_fact:
+        _weft_release_run: >-
+          {{ _weft_release_runs.json.workflow_runs | selectattr('display_title', 'equalto', 'release ' ~ _weft_version) | list }}
+
+    - name: "Require exactly one run for the version"
+      ansible.builtin.assert:
+        that: _weft_release_run | length == 1
+        fail_msg: >-
+          Found {{ _weft_release_run | length }} successful release.yml runs named
+          'release {{ _weft_version }}'; exactly one is required to check who approved it, so
+          nothing was deployed. (weft's release.yml must set `run-name: release <version>`.)
+
+    - name: "Read that run's approvals"
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ _weft_repo }}/actions/runs/{{ _weft_release_run[0].id }}/approvals"
+        headers: "{{ _gh_headers }}"
+        status_code: [200]
+        follow_redirects: none
+      register: _weft_approvals
+      check_mode: false
+      no_log: true
+
+    - name: "Keep the approvals of rack"
+      ansible.builtin.set_fact:
+        _weft_rack_approvals: >-
+          {%- set out = [] -%}
+          {%- for review in _weft_approvals.json -%}
+          {%- if 'rack' in (review.environments | map(attribute='name') | list) -%}
+          {%- set _ = out.append({'login': review.user.login, 'state': review.state}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Require the declared approver's approval of rack, and no rejection"
+      ansible.builtin.assert:
+        that:
+          - _weft_rack_approvals | selectattr('state', 'equalto', 'approved') | selectattr('login', 'equalto', weft_release_approver) | list | length > 0
+          - _weft_rack_approvals | selectattr('state', 'equalto', 'rejected') | list | length == 0
+        fail_msg: >-
+          {{ _weft_version }} is published, but its `rack` approval is not {{ weft_release_approver }}'s
+          (approvals: {{ _weft_rack_approvals }}). Nothing was deployed.
+
+    - name: "Tell Discord the rollout starts"
+      ansible.builtin.include_tasks: tasks/notify-discord.yml
+      vars:
+        _discord_webhook_url: "{{ _weft_discord_webhook }}"
+        _discord_message: >-
+          Rolling out {{ _weft_version }} ({{ _weft_release_url }}), approved by
+          {{ weft_release_approver }}: {{ _weft_behind | join(', ') }}, in that order, one at a time.
+
+    - name: "Queue the front door"
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: weft_rollout_door
+      loop: "{{ _door_hosts }}"
+      when: item in _weft_behind
+
+    - name: "Queue the workspaces, in inventory order"
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: weft_rollout_workspaces
+      loop: "{{ _workspace_hosts }}"
+      when: item in _weft_behind
+
+    # Read by a rollback, so its Discord line says which host is on which release.
+    - name: "Remember the rollout's order"
+      ansible.builtin.set_fact:
+        _weft_rollout:
+          version: "{{ _weft_version }}"
+          hosts: "{{ _weft_behind }}"
+
+- name: "Roll out: the front door"
+  ansible.builtin.import_playbook: weft-door.yml
+  vars:
+    weft_release: "{{ hostvars['localhost']['_weft_version'] | default('') }}"
+    weft_door_hosts: weft_rollout_door
+    weft_edge_workspace_hosts: weft_workspaces
+
+- name: "Roll out: the workspaces, one at a time"
+  ansible.builtin.import_playbook: weft-workspace.yml
+  vars:
+    weft_release: "{{ hostvars['localhost']['_weft_version'] | default('') }}"
+    weft_workspace_hosts: weft_rollout_workspaces
+
+- name: "Roll out: done"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/weft.yml
+  tasks:
+    - name: "Tell Discord the rack runs the release"
+      ansible.builtin.include_tasks: tasks/notify-discord.yml
+      vars:
+        _discord_webhook_url: "{{ _weft_discord_webhook }}"
+        _discord_message: "The rack runs {{ _weft_version }}: the front door and every workspace are healthy."
+      when: _weft_version is defined and _weft_discord_webhook is defined and (_weft_behind | default([]) | length > 0)

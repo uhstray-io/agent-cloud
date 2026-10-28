@@ -1,0 +1,103 @@
+---
+# stand-up-weft-workspace.yml — put weft on a NEW workspace VM and route its hostname
+# ("Stand Up weft Workspace"; Jacob runs it with the workspace's inventory host).
+#
+# The order is forced by weft (docs/deployment.md, "Standing a workspace up"): the front door
+# mints the workspace's id when somebody creates the workspace there, and only then can a
+# deployment be configured with it. So, before this runs:
+#
+#   1. the workspace exists on the front door, and its id is in site-config as the host's
+#      weft_workspace_id, with the rest of its declaration (README.md in the service directory)
+#   2. the VM exists and is hardened, through the platform's usual workflow, each its own
+#      template: Provision VM (vm_cpu must give it AVX2: x86-64-v3 or host), Distribute SSH Keys,
+#      Harden SSH, Apply Firewall
+#
+# Then this:
+#   - re-renders weft's Caddy fragment for the environment, so <name>.<domain> reaches the new VM
+#     (through Deploy weft Front Door, whose deploy step leaves the front door alone when it
+#     already runs the release)
+#   - deploys to the new workspace the release its front door runs, so a new workspace never
+#     starts on a version the rest of its environment does not run
+#
+# Afterwards the workspace's admin signs in and enters its model keys and forge token on
+# Settings > Credentials; they are sealed in its catalog and never pass through Semaphore or
+# OpenBao (weft's D539). Until then its orchestrator has no model to call and says so.
+#
+# Until this has run, the front door shows the workspace as not answering yet; that is the
+# recoverable half-state, because the half that exists (the front door's row) is the half that
+# can be pointed at.
+#
+# Input: target_host — the workspace's inventory host, in weft_workspaces or weft_staging_workspace.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Stand up: which workspace, and which release"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _in_rack: "{{ target_host | default('') in (groups['weft_workspaces'] | default([])) }}"
+    _in_staging: "{{ target_host | default('') in (groups['weft_staging_workspace'] | default([])) }}"
+
+  tasks:
+    - name: "Require a declared workspace host"
+      ansible.builtin.assert:
+        that:
+          - target_host | default('') | length > 0
+          - _in_rack or _in_staging
+          - hostvars[target_host].weft_workspace_id is defined
+          - hostvars[target_host].weft_workspace_name is defined
+        fail_msg: >-
+          target_host must name a host declared in weft_workspaces or weft_staging_workspace, with
+          its weft_workspace_id (the id the front door minted) and weft_workspace_name (the company
+          name its admin chose). Nothing was changed.
+
+    - name: "Name its environment's groups"
+      ansible.builtin.set_fact:
+        _weft_standup_door_group: "{{ 'weft_door' if _in_rack else 'weft_staging_door' }}"
+        _weft_standup_workspace_group: "{{ 'weft_workspaces' if _in_rack else 'weft_staging_workspace' }}"
+
+    - name: "Read what its front door runs"
+      ansible.builtin.include_tasks: tasks/weft-environment-state.yml
+      vars:
+        _wes_hosts: "{{ groups[_weft_standup_door_group] | default([]) }}"
+
+    - name: "Require a front door that runs a release"
+      ansible.builtin.assert:
+        that:
+          - groups[_weft_standup_door_group] | default([]) | length == 1
+          - (_weft_state.values() | first).commit | length > 0
+        fail_msg: >-
+          {{ _weft_standup_door_group }} must have one front door that runs a release; deploy it
+          first (Deploy weft Front Door). Its public key is in every workspace's weft.toml.
+
+    - name: "Take the front door's release"
+      ansible.builtin.set_fact:
+        # The version a release runs under, or the commit staging followed.
+        _weft_standup_release: >-
+          {{ (_weft_state.values() | first).version
+             if ((_weft_state.values() | first).version is match('^v[0-9]'))
+             else (_weft_state.values() | first).commit }}
+
+    - name: "Queue the new workspace"
+      ansible.builtin.add_host:
+        name: "{{ target_host }}"
+        groups: weft_standup
+
+- name: "Stand up: route the new workspace's hostname"
+  ansible.builtin.import_playbook: weft-door.yml
+  vars:
+    weft_release: "{{ hostvars['localhost']['_weft_standup_release'] | default('') }}"
+    weft_door_hosts: "{{ hostvars['localhost']['_weft_standup_door_group'] | default('weft_door') }}"
+    weft_edge_workspace_hosts: "{{ hostvars['localhost']['_weft_standup_workspace_group'] | default('weft_workspaces') }}"
+
+- name: "Stand up: deploy the new workspace"
+  ansible.builtin.import_playbook: weft-workspace.yml
+  vars:
+    weft_release: "{{ hostvars['localhost']['_weft_standup_release'] | default('') }}"
+    weft_workspace_hosts: weft_standup

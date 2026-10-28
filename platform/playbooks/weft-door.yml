@@ -1,0 +1,177 @@
+---
+# weft-door.yml — the plays of deploy-weft-door.yml, without its empty-group guard. Imported by that
+# launcher (which a person runs, and which refuses an empty weft_door group first), and by
+# the timers and Stand Up weft Workspace, which queue exactly the hosts they mean to deploy into
+# a group of their own: an empty queue there is their decision that there is nothing to do, said
+# by their own first play, not an empty inventory group passing as a success.
+#
+# What it does — deploy one weft release to a front door (the rack's or staging's).
+#
+# The front door is identity across companies and a URL per workspace; it redirects and never
+# proxies, and it is deployed FIRST in every rollout, because it must keep accepting the
+# previous release's boards while the workspaces move one at a time.
+#
+#   Phase 1  place the repo; the signing key (generated once into OpenBao, 0600 file on the VM)
+#            and its public half (stored beside it for the workspaces' deploys to read)
+#   Phase 2  the edge: render weft's Caddy fragment for this environment and distribute it
+#   Phase 3  one deploy (tasks/weft-deploy.yml): verify, stop, back up, start, health through
+#            the edge, watch, and roll back automatically if health or the watch fails
+#
+# Inputs:
+#   weft_release      REQUIRED: a full commit main published, or a release like v0.5.0
+#   weft_door_hosts   the inventory group (default weft_door; staging: weft_staging_door)
+#   weft_edge_workspace_hosts  the same environment's workspaces, all of them, for the Caddy
+#                     fragment (default weft_workspace_hosts, then weft_workspaces; staging:
+#                     weft_staging_workspace)
+# Group vars from site-config: weft_domain, weft_environment (rack | staging),
+# weft_secret_root (weft | weft-staging), monorepo_deploy_path.
+#
+# Run through Semaphore ("Deploy weft Front Door"), never by hand on the VM.
+
+- name: "Front door: repo, signing key and public key"
+  hosts: "{{ weft_door_hosts | default('weft_door') }}"
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Require one front door per environment, and its domain"
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - weft_domain | default('') | length > 0
+          - weft_environment | default('') in ['rack', 'staging']
+          - weft_release | default('') | length > 0
+        fail_msg: >-
+          Declare exactly one host in {{ weft_door_hosts | default('weft_door') }}, with weft_domain
+          and weft_environment (rack or staging), and pass weft_release.
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Make the records' directory on the VM's own disk"
+      ansible.builtin.file:
+        path: "{{ _weft_door_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        mode: "0700"
+      become: true
+
+    - name: "The signing key (generated once, reused forever) as a 0600 file"
+      # Generated once: a new key makes every workspace's [front_door] public_key wrong, and
+      # every sign-in fails at once.
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+      vars:
+        service_name: "{{ _weft_secrets }}/door"
+        monorepo_deploy_path: platform/services/weft/deployment
+        _secret_definitions:
+          - { name: signing_key, type: hex, length: 64 }
+        _env_templates:
+          - { src: door.key.j2, dest: door.key, mode: "0600" }
+
+    - name: "Derive the public key on the controller (key on stdin)"
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../services/weft/deployment/lib/door_public_key.py"]
+        stdin: "{{ _resolved.signing_key }}"
+      register: _weft_door_public
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Store the public key beside it, for the workspaces' weft.toml"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ _weft_secrets }}/door"
+        _bm_data:
+          public_key: "{{ _weft_door_public.stdout | trim }}"
+      no_log: true
+
+- name: "Front door: the edge"
+  hosts: "{{ weft_door_hosts | default('weft_door') }}"
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _weft_door_hosts: "{{ groups[weft_door_hosts | default('weft_door')] | default([]) }}"
+    # EVERY workspace of the environment, not only the ones a rollout is about to touch: a
+    # fragment rendered from a subset would drop the routes of the workspaces left out.
+    _weft_workspace_hosts: "{{ groups[weft_edge_workspace_hosts | default(weft_workspace_hosts | default('weft_workspaces'))] | default([]) }}"
+    _fragment_src: "/tmp/weft-{{ weft_environment }}-caddy-site.caddy"
+    _fragment_name: "weft-{{ weft_environment }}.caddy"
+    _has_caddy: "{{ (groups['caddy_svc'] | default([]) | length > 0) and not (local_mode | default(false) | bool) and (caddy_composable | default(true) | bool) }}"
+
+  tasks:
+    - name: "Render weft's Caddy fragment for {{ weft_environment }}"
+      # Rendered from the controller's checkout, onto this host, then pushed to central Caddy.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/weft/deployment/templates/caddy-site.j2"
+        dest: "{{ _fragment_src }}"
+        mode: "0644"
+      when: _has_caddy | bool
+
+    - name: "Push it to central Caddy, validate, reload"
+      ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+      when: _has_caddy | bool
+
+    - name: "Note when Caddy distribution is skipped"
+      ansible.builtin.debug:
+        msg: "No caddy_svc host in inventory (or local_mode): weft's Caddy fragment was not distributed."
+      when: not (_has_caddy | bool)
+
+- name: "Front door: deploy {{ weft_release | default('(unset)') }}"
+  hosts: "{{ weft_door_hosts | default('weft_door') }}"
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _weft_role: door
+    _weft_state_dir: "{{ _weft_door_dir }}"
+    _weft_deploy_dir: "{{ _monorepo_dir }}/platform/services/weft/deployment"
+    _weft_label: front door
+    _weft_environment: "{{ weft_environment }}"
+    # Set by follow-weft-main.yml / roll-out-weft-release.yml on the controller before they
+    # import this playbook; empty when a person runs it.
+    _weft_github_deployment_id: "{{ (hostvars['localhost'] | default({}))['_weft_github_deployment_id'] | default('') }}"
+    _weft_notes: "{{ (hostvars['localhost'] | default({}))['_weft_notes'] | default('') }}"
+    _weft_rollout: "{{ (hostvars['localhost'] | default({}))['_weft_rollout'] | default({}) }}"
+    _weft_deploy_env:
+      CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+      COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+    # Asks every workspace on the records whether it agrees about its id; one that names
+    # another id fails it, one that does not answer yet is only reported (its row exists
+    # before its VM does).
+    _weft_health_argv: [bash, deploy.sh, door, health]
+
+  tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Read the Discord webhook (and the GitHub token, when this deploy is recorded)"
+      ansible.builtin.include_tasks: tasks/weft-credentials.yml
+      vars:
+        _weft_need_github: "{{ _weft_github_deployment_id | string | length > 0 }}"
+
+    - name: "One deploy, with automatic rollback"
+      ansible.builtin.include_tasks: tasks/weft-deploy.yml

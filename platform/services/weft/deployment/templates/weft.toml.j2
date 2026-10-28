@@ -1,0 +1,121 @@
+{#- One workspace's deployment file — rendered by deploy-weft-workspace.yml into the workspace
+    directory, for the release being deployed (its agent images, by digest) and again for the
+    previous release when a deploy rolls back. NO CREDENTIAL GOES IN THIS FILE, and none names an
+    environment variable either: a workspace's model keys and forge token are entered by its admin
+    on Settings > Credentials and kept sealed in its catalog (weft's D539), so no provider or
+    tracker here names a variable to read one from. weft refuses a key it does not know, so every key here is one its
+    loader lists (weft's crates/catalog-types/deployment-file-keys.txt).
+
+    Every path weft writes through starts with the workspace directory, because one file is one
+    workspace and two workspaces must never share a clone, a backup directory or a socket.
+    Do NOT edit by hand. -#}
+{%- set ws = _weft_workspace_dir -%}
+{%- set images = _weft_images -%}
+default_provider = "{{ weft_default_provider }}"
+
+[spend]
+daily_tokens = {{ weft_daily_tokens }}
+soft_percent = {{ weft_soft_percent | default(80) }}
+{% if weft_cached_daily_tokens is defined %}
+cached_daily_tokens = {{ weft_cached_daily_tokens }}
+{% endif %}
+
+[day]
+utc_offset_hours = {{ weft_utc_offset_hours | default(0) }}
+utc_offset_minutes = {{ weft_utc_offset_minutes | default(0) }}
+
+[locks]
+renew_within_minutes = {{ weft_lock_renew_minutes | default(30) }}
+
+[checkouts]
+reap_after_days = {{ weft_reap_after_days | default(3) }}
+
+[audio]
+original_days = {{ weft_audio_original_days | default(7) }}
+compact_days = {{ weft_audio_compact_days | default(30) }}
+
+[tracker]
+bot_login = "{{ weft_tracker_bot_login }}"
+
+[sealing]
+quiet_after_minutes = {{ weft_quiet_after_minutes | default(30) }}
+max_span_hours = {{ weft_max_span_hours | default(8) }}
+
+[tend]
+every_seconds = {{ weft_tend_every_seconds | default(300) }}
+# Short on purpose: a Unix socket path over ~104 bytes fails to bind with an error that says
+# nothing about length.
+wake = "{{ ws }}/tend.sock"
+max_turns_per_pass = {{ weft_max_turns_per_pass | default(10) }}
+
+# Scheduled copies on the VM, beside the deploy backups. Off the VM is not decided yet.
+[backups]
+into = "{{ ws }}/backups"
+every_hours = {{ weft_backup_every_hours | default(24) }}
+keep = {{ weft_backup_keep | default(7) }}
+
+[transcribe]
+# The model file the deploy fetched into {{ ws }}/models/, checked against the release's sum.
+model = "{{ _weft_whisper_model }}"
+
+[builders]
+image = "{{ images['weft-builder'] }}"
+network = "weft-internal"
+egress_network = "weft-egress"
+proxy_image = "{{ images['weft-proxy'] }}"
+proxy_port = 8899
+checkouts = "{{ ws }}/checkouts"
+agent_command = "/usr/local/bin/weft-agent"
+longest_turn_minutes = {{ weft_longest_turn_minutes | default(120) }}
+round_cap = {{ weft_round_cap | default(3) }}
+
+[builders.clones]
+{% for repository, name in (weft_clones | default({})).items() | sort %}
+"{{ repository }}" = "{{ ws }}/repos/{{ name }}"
+{% endfor %}
+
+[builders.limits]
+memory = "{{ weft_builder_memory | default('4g') }}"
+cpus = "{{ weft_builder_cpus | default('2') }}"
+processes = {{ weft_builder_processes | default(512) }}
+
+[sessions]
+claude_code_image = "{{ images['weft-harness-claude-code'] }}"
+opencode_image = "{{ images['weft-harness-opencode'] }}"
+orchestrator_command = {{ weft_orchestrator_command | default(['claude-agent-acp']) | to_json }}
+every_seconds = {{ weft_sessions_every_seconds | default(30) }}
+idle_minutes = {{ weft_sessions_idle_minutes | default(10) }}
+
+{% for id, provider in weft_providers | dictsort %}
+[providers.{{ id }}]
+name = {{ provider.name | to_json }}
+endpoint = {{ provider.endpoint | to_json }}
+wire = {{ provider.wire | to_json }}
+budget = {{ provider.budget | to_json }}
+{% for class in ['economy', 'standard', 'frontier'] if class in provider.models %}
+models.{{ class }} = {{ provider.models[class] | to_json }}
+{% endfor %}
+
+{% endfor %}
+[board]
+listen = "0.0.0.0:8080"
+cookie_secure = true
+columns = {{ weft_board_columns | default(['Ready', 'In progress', 'In review', 'Done']) | to_json }}
+# The page is the image's, so the page served is the one the release's digest was signed with.
+page = "/usr/share/weft/board"
+recordings = "{{ ws }}/recordings"
+ingest_from = {{ weft_board_ingest_from | default([]) | to_json }}
+trusted_proxies = {{ weft_board_trusted_proxies | default([]) | to_json }}
+
+[voice]
+udp = {{ weft_voice_udp }}
+# The rack's public address with this workspace's own port: browsers send the audio there, and
+# the rack forwards the same number to this VM.
+public = "{{ weft_public_address }}:{{ weft_voice_udp }}"
+
+[front_door]
+# The id the front door issued this workspace. Wrong, and every sign-in is refused for an
+# audience mismatch nobody can see from a browser.
+known_as = "{{ weft_workspace_id }}"
+public_key = "{{ _shared.public_key }}"
+address = "https://{{ weft_domain }}"

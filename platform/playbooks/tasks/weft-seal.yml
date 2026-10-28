@@ -1,0 +1,102 @@
+---
+# weft-seal.yml — keep one copy of a workspace's seal in OpenBao (weft's docs/cicd.md §5).
+#
+# seal.key sits beside the catalog and opens the credentials a company's admin set on their own
+# board (a Discord bot token, a forge token). It is written once, by the workspace's first start,
+# and never changes. weft keeps it OUT of every backup set, so that a copy of the catalog is never
+# also a working set of somebody's credentials. Its one other copy is here, in OpenBao, so a
+# workspace restored onto a new VM gets its connections back.
+#
+#   on the VM, not in OpenBao   -> copy it to OpenBao (after a first start, or for a workspace
+#                                  that predates this task)
+#   in OpenBao, not on the VM   -> put it on the VM before start (a restore onto a new VM)
+#   both, and they differ       -> REFUSE, before anything starts. One of them opens the stored
+#                                  credentials and the other does not, and only a person can say
+#                                  which; overwriting either could lose them for good.
+#   neither                     -> nothing yet: the first start writes it, and the call after
+#                                  start copies it.
+#
+# The cost accepted (Jacob's decision 5): OpenBao holds every workspace's seal, so a compromise of
+# OpenBao opens every workspace's stored credentials. Only the controller's AppRole reads them,
+# and no weft VM can reach OpenBao.
+#
+# Caller passes: _weft_workspace_dir, _weft_seal_bao_path (services/<root>/workspaces/<id>),
+# _bao_url and an authenticated _bao_auth (manage-secrets' login). Every step that holds the seal
+# is no_log; the report says only what was done.
+
+- name: "Is there a seal on the VM"
+  ansible.builtin.stat:
+    path: "{{ _weft_workspace_dir }}/seal.key"
+  register: _weft_seal_file
+
+- name: "Read the workspace's OpenBao path"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/{{ _weft_seal_bao_path }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+    status_code: [200, 404]
+  register: _weft_seal_store
+  delegate_to: localhost
+  check_mode: false
+  no_log: true
+
+- name: "Read the seal on the VM"
+  ansible.builtin.slurp:
+    src: "{{ _weft_workspace_dir }}/seal.key"
+  register: _weft_seal_raw
+  when: _weft_seal_file.stat.exists
+  no_log: true
+
+- name: "Hold both copies in memory"
+  ansible.builtin.set_fact:
+    _weft_seal_here: "{{ _weft_seal_raw.content | default('') }}"
+    _weft_seal_stored: "{{ (_weft_seal_store.json | default({})).data.data.seal_key_b64 | default('') if _weft_seal_store.status == 200 else '' }}"
+  no_log: true
+
+- name: "Decide what to do with the seal"
+  ansible.builtin.set_fact:
+    _weft_seal_action: >-
+      {{ 'conflict' if (_weft_seal_here | length > 0 and _weft_seal_stored | length > 0 and _weft_seal_here != _weft_seal_stored)
+         else ('store' if (_weft_seal_here | length > 0 and _weft_seal_stored | length == 0)
+         else ('place' if (_weft_seal_here | length == 0 and _weft_seal_stored | length > 0)
+         else ('none-yet' if _weft_seal_here | length == 0 else 'in-step'))) }}
+
+- name: "Refuse two different seals"
+  ansible.builtin.assert:
+    that: _weft_seal_action != 'conflict'
+    fail_msg: >-
+      The seal on {{ inventory_hostname }} and the copy in OpenBao ({{ _weft_seal_bao_path }}) differ.
+      Nothing was changed and nothing was started. Find out which one opens this workspace's
+      stored credentials before replacing either.
+
+- name: "Put the stored seal on the VM (restore onto a new VM)"
+  ansible.builtin.command:
+    argv: [sh, -c, 'umask 077 && base64 -d > "$1"', sh, "{{ _weft_workspace_dir }}/seal.key"]
+    stdin: "{{ _weft_seal_stored }}"
+    creates: "{{ _weft_workspace_dir }}/seal.key"
+  when:
+    - not ansible_check_mode
+    - _weft_seal_action == 'place'
+  no_log: true
+
+- name: "Copy the VM's seal to OpenBao"
+  ansible.builtin.include_tasks: bao-merge-keys.yml
+  vars:
+    _bm_url: "{{ _bao_url }}"
+    _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+    _bm_path: "{{ _weft_seal_bao_path }}"
+    _bm_data:
+      seal_key_b64: "{{ _weft_seal_here }}"
+  when: _weft_seal_action == 'store'
+  no_log: true
+
+- name: "Report the seal (no value)"
+  ansible.builtin.debug:
+    msg: >-
+      seal for {{ inventory_hostname }}: {{ {
+        'store': 'copied from the VM to OpenBao',
+        'place': 'placed on the VM from OpenBao',
+        'in-step': 'the VM and OpenBao hold the same seal',
+        'none-yet': 'none yet; the first start writes it'}[_weft_seal_action] }}
+      {{- ' (check mode: not written)' if ansible_check_mode and _weft_seal_action in ['store', 'place'] else '' }}.

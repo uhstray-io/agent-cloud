@@ -1069,6 +1069,153 @@ templates:
         required: false
         default_value: "false"
 
+  # ── weft ───────────────────────────────────────────────────────
+  # weft is deployed from signed images named by its release.json, never built on a VM.
+  # Staging follows weft's main on a timer; the rack moves only on a release whose `rack`
+  # approval the rollout checks itself. Every deploy backs up first and rolls itself back when
+  # its health check or its 15-minute watch fails. See platform/services/weft/deployment/.
+  - name: Deploy weft Front Door
+    playbook: platform/playbooks/deploy-weft-door.yml
+    # Introduced on dev; main has no weft code until promotion.
+    dev_variant: true
+    survey_vars:
+      - name: weft_release
+        title: "Release"
+        description: "A full commit main published, or a release like v0.5.0"
+        type: string
+        required: true
+      - name: weft_door_hosts
+        title: "Front door group"
+        description: "weft_door (the rack) or weft_staging_door"
+        type: string
+        required: false
+        default_value: "weft_door"
+      - name: weft_edge_workspace_hosts
+        title: "Workspace group"
+        description: "Every workspace of the same environment, for the Caddy routes"
+        type: string
+        required: false
+        default_value: "weft_workspaces"
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy weft Workspace
+    playbook: platform/playbooks/deploy-weft-workspace.yml
+    # One at a time, stopping at the first failure; a host already on the release is skipped.
+    dev_variant: true
+    survey_vars:
+      - name: weft_release
+        title: "Release"
+        description: "A full commit main published, or a release like v0.5.0"
+        type: string
+        required: true
+      - name: weft_workspace_hosts
+        title: "Workspaces"
+        description: "weft_workspaces or weft_staging_workspace (hosts already on the release are skipped)"
+        type: string
+        required: false
+        default_value: "weft_workspaces"
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Roll Back weft Workspace
+    playbook: platform/playbooks/rollback-weft-workspace.yml
+    # DESTRUCTIVE to what was written since the named backup (set aside, never deleted). A
+    # deploy rolls back by itself only inside its own watch window; every other rollback is a
+    # person's decision, made here.
+    dev_variant: true
+    survey_vars:
+      - name: weft_workspace_hosts
+        title: "Workspace host"
+        description: "The one workspace's inventory host"
+        type: string
+        required: true
+      - name: confirm_rollback
+        title: "Confirm"
+        description: "The same inventory host name again"
+        type: string
+        required: true
+      - name: weft_release
+        title: "Release to go back to"
+        description: "A full commit or vX.Y.Z"
+        type: string
+        required: true
+      - name: weft_restore_from
+        title: "Backup set"
+        description: "A set under the workspace's deploys/ directory"
+        type: string
+        required: true
+      - name: weft_rollback_reason
+        title: "Reason"
+        description: "One line, said in Discord"
+        type: string
+        required: true
+
+  - name: Stand Up weft Workspace
+    playbook: platform/playbooks/stand-up-weft-workspace.yml
+    # After the workspace exists on the front door and its VM is provisioned and hardened:
+    # routes <name>.<domain> to it and deploys the release its front door runs.
+    dev_variant: true
+    survey_vars:
+      - name: target_host
+        title: "Workspace host"
+        description: "The workspace's inventory host (weft_workspaces or weft_staging_workspace)"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Follow weft main
+    playbook: platform/playbooks/follow-weft-main.yml
+    # Staging only, by Jacob's decision (weft D533): the newest commit main published, verified,
+    # deployed to the staging front door and workspace, recorded as a GitHub deployment that
+    # weft's release.yml requires before it releases that commit. Does nothing until staging is
+    # declared, so the timer may exist first.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+    schedule:
+      cron: "*/5 * * * *"
+
+  - name: Roll Out weft Release
+    playbook: platform/playbooks/roll-out-weft-release.yml
+    # The newest published release, only after checking through GitHub's API that the declared
+    # approver approved its `rack` environment. Front door first, then each workspace one at a
+    # time; stops at the first failure and never retries a release a host rolled back.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+    schedule:
+      cron: "*/5 * * * *"
+
+  - name: Seed weft Secrets
+    playbook: platform/playbooks/seed-weft-secrets.yml
+    # Makes the bot-owned "weft deploys" webhook in the declared channel and stores its URL;
+    # lists, by name only, the operator-held credentials still to seed with Seed OpenBao Key.
+    dev_variant: true
+
   - name: Deploy Postiz
     playbook: platform/playbooks/deploy-postiz.yml
     dev_variant: true

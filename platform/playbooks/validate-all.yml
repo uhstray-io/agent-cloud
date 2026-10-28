@@ -188,6 +188,51 @@
       ansible.builtin.debug:
         msg: "postiz: {{ 'HEALTHY' if _postiz_health is succeeded else 'UNHEALTHY' }}"
 
+# weft: through the edge, as a browser reaches it. The front door's page, and each workspace's
+# one unauthenticated route, which must name the workspace's own id: a board answering for
+# another id is the misconfiguration that refuses every sign-in while both sides look fine.
+- name: "Validate weft front doors"
+  hosts: weft_door:weft_staging_door
+  gather_facts: false
+  tasks:
+    - name: Check the weft front door through the edge
+      ansible.builtin.uri:
+        url: "https://{{ weft_domain }}/"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: _weft_door_health
+      ignore_errors: true
+      check_mode: false
+      delegate_to: localhost
+
+    - name: Report weft front door status
+      ansible.builtin.debug:
+        msg: "weft front door ({{ weft_environment | default('?') }}): {{ 'HEALTHY' if _weft_door_health is succeeded else 'UNHEALTHY' }}"
+
+- name: "Validate weft workspaces"
+  hosts: weft_workspaces:weft_staging_workspace
+  gather_facts: false
+  tasks:
+    - name: Check the weft workspace through the edge
+      ansible.builtin.uri:
+        url: "https://{{ weft_workspace_name }}.{{ weft_domain }}/api/workspace"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: _weft_workspace_health
+      ignore_errors: true
+      check_mode: false
+      delegate_to: localhost
+
+    - name: Report weft workspace status
+      ansible.builtin.debug:
+        msg: >-
+          weft workspace {{ weft_workspace_name }}:
+          {{ 'HEALTHY' if (_weft_workspace_health is succeeded
+                           and (_weft_workspace_health.json | default({})).known_as | default('') == weft_workspace_id)
+             else 'UNHEALTHY' }}
+
 - name: "Summary"
   hosts: localhost
   connection: local

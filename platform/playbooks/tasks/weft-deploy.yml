@@ -1,0 +1,312 @@
+---
+# weft-deploy.yml — ONE deploy of one weft host (a workspace or a front door), the same steps for
+# staging, for each workspace in a rollout, and for a front door (weft's docs/cicd.md §6.1):
+#
+#   preflight   fetch + verify release.json and every image, pull, check the disk, read what runs
+#   stop        orchestrator, capture, board (a front door: its one container)
+#   back up     the binary's own `backup --before-deploy`; a copy that does not verify stops the
+#               deploy here and starts the old version again
+#   deploy      render .env (and weft.toml) for the new digests, start: board, orchestrator, capture
+#   health      within weft_health_minutes (5)
+#   watch       weft_watch_minutes (15): no container restarts, health still passes
+#   passed      record the version on the VM, tell Discord
+#
+# A failure in health or watch rolls back automatically (tasks/weft-rollback.yml), and only then:
+# after the watch window people have used the new version, and a rollback would lose what they
+# wrote, so a later failure is a question for a person.
+#
+# A host already on the release is left alone, so a re-run (or the next timer tick) continues a
+# rollout where it stopped. A release this host has rolled back is never tried again here; the
+# fix is a new release.
+#
+# Caller passes (and loads vars/weft.yml):
+#   weft_release          a full commit or vX.Y.Z
+#   _weft_role            workspace | door
+#   _weft_state_dir       the role's directory on the VM
+#   _weft_deploy_dir      platform/services/weft/deployment in the monorepo clone on the VM
+#   _weft_label           how the messages name this host ("workspace <id>" / "front door")
+#   _weft_environment     staging | rack
+# Optional: _weft_github_deployment_id (staging records its deploy on GitHub),
+#           weft_force_redeploy (redeploy the release a host already runs).
+
+- name: "Preflight: release.json, signatures and images"
+  ansible.builtin.include_tasks: weft-release.yml
+
+- name: "Check mode: report and stop here"
+  ansible.builtin.debug:
+    msg: "check mode: {{ _weft_label }} would be deployed to {{ weft_release }}; nothing was stopped, backed up or started."
+  when: ansible_check_mode
+
+- name: "Check mode: end this host"
+  ansible.builtin.meta: end_host
+  when: ansible_check_mode
+
+- name: "Read what this host runs"
+  ansible.builtin.slurp:
+    src: "{{ _weft_state_dir }}/deployed.json"
+  register: _weft_deployed_raw
+  failed_when: false
+
+- name: "Name the two versions"
+  ansible.builtin.set_fact:
+    _weft_deployed: "{{ (_weft_deployed_raw.content | b64decode | from_json) if (_weft_deployed_raw.content is defined) else {} }}"
+    _weft_to: "{{ _weft_release_json.version or _weft_release_json.commit[:12] }}"
+
+- name: "Name the version being replaced"
+  ansible.builtin.set_fact:
+    _weft_from: >-
+      {{ (_weft_deployed.release.version or _weft_deployed.release.commit[:12])
+         if (_weft_deployed.release | default(none)) is not none else 'none' }}
+    _weft_refused: "{{ _weft_deployed.refused | default([]) }}"
+
+- name: "Leave alone a release this host already rolled back"
+  ansible.builtin.debug:
+    msg: >-
+      {{ _weft_label }} rolled {{ _weft_to }} back once already; it is not tried again here.
+      Release a fix.
+  when: _weft_release_json.commit in _weft_refused
+
+- name: "End this host: release refused earlier"
+  ansible.builtin.meta: end_host
+  when: _weft_release_json.commit in _weft_refused
+
+- name: "Leave alone a host already on this release"
+  ansible.builtin.debug:
+    msg: "{{ _weft_label }} already runs {{ _weft_to }} (commit {{ _weft_release_json.commit }})."
+  when:
+    - (_weft_deployed.release.commit | default('')) == _weft_release_json.commit
+    - not (weft_force_redeploy | default(false) | bool)
+
+- name: "End this host: already on this release"
+  ansible.builtin.meta: end_host
+  when:
+    - (_weft_deployed.release.commit | default('')) == _weft_release_json.commit
+    - not (weft_force_redeploy | default(false) | bool)
+
+- name: "Find the data a backup must copy"
+  ansible.builtin.stat:
+    path: "{{ _weft_state_dir }}/{{ 'weft.db' if _weft_role == 'workspace' else 'front-door.db' }}"
+  register: _weft_data
+
+- name: "Read the free space beside it"
+  ansible.builtin.command:
+    argv: [df, --output=avail, -B1, "{{ _weft_state_dir }}"]
+  register: _weft_df
+  changed_when: false
+  check_mode: false
+
+- name: "Require room for the backup: twice the data"
+  ansible.builtin.assert:
+    that:
+      - (_weft_df.stdout_lines | last | trim | int) > 2 * (_weft_data.stat.size | default(0) | int)
+    fail_msg: >-
+      {{ _weft_label }} has {{ _weft_df.stdout_lines | last | trim }} bytes free beside a
+      {{ _weft_data.stat.size | default(0) }}-byte database: not enough for the backup copy.
+      Nothing was stopped.
+
+- name: "Keep the replaced version's release.json for the backup set"
+  ansible.builtin.copy:
+    content: "{{ _weft_deployed.release | to_nice_json }}"
+    dest: "{{ _weft_state_dir }}/release.replaced.json"
+    mode: "0600"
+  when: (_weft_deployed.release | default(none)) is not none
+
+- name: "Check the seal before anything stops"
+  ansible.builtin.include_tasks: weft-seal.yml
+  when: _weft_role == 'workspace'
+
+# One deploy per host at a time. The timers fire every five minutes and a deploy takes twenty, so
+# without this a second run would start on a host the first one is still watching. mkdir is the
+# lock because it fails if the directory exists; the timers read it too, and start nothing while
+# any host of their environment holds one.
+- name: "Hold the deploy lock for the whole deploy"
+  block:
+    - name: "Take the deploy lock"
+      ansible.builtin.command:
+        argv: [mkdir, "{{ _weft_state_dir }}/deploying"]
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "This run holds the lock"
+      ansible.builtin.set_fact:
+        _weft_lock_held: true
+
+    - name: "Stop and back up"
+      block:
+        - name: "Stop {{ _weft_label }}"
+          ansible.builtin.command:
+            argv: [bash, deploy.sh, "{{ _weft_role }}", stop]
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Back up before deploying {{ _weft_to }}"
+          ansible.builtin.command:
+            argv: >-
+              {{ ['bash', 'deploy.sh', _weft_role, 'backup', '--from', _weft_from, '--to', _weft_to]
+                 + ((['--release', _weft_state_dir ~ '/release.replaced.json'])
+                    if (_weft_role == 'workspace' and (_weft_deployed.release | default(none)) is not none) else []) }}
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          register: _weft_backup
+          changed_when: true
+          when:
+            - not ansible_check_mode
+            - _weft_data.stat.exists
+
+        - name: "Keep the backup set's path"
+          ansible.builtin.set_fact:
+            _weft_backup_set: "{{ (_weft_backup.stdout_lines | default([''])) | last }}"
+          when: _weft_data.stat.exists
+
+      rescue:
+        - name: "Start the version that was running again"
+          ansible.builtin.command:
+            argv: [bash, deploy.sh, "{{ _weft_role }}", up]
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          changed_when: true
+          when:
+            - not ansible_check_mode
+            - (_weft_deployed.release | default(none)) is not none
+
+        - name: "Tell Discord the deploy stopped before changing anything"
+          ansible.builtin.include_tasks: notify-discord.yml
+          vars:
+            _discord_webhook_url: "{{ _weft_discord_webhook }}"
+            _discord_message: >-
+              {{ _weft_environment }}: {{ _weft_label }} was not deployed to {{ _weft_to }}: the backup
+              before it did not verify ({{ ansible_failed_task.name | default('unknown step') }}). It
+              is still on {{ _weft_from }} and nothing else changed.
+
+        - name: "Fail: the backup did not verify"
+          ansible.builtin.fail:
+            msg: "{{ _weft_label }}: backup failed at '{{ ansible_failed_task.name | default('unknown step') }}'; still on {{ _weft_from }}."
+
+    - name: "Note when the deploy started (health counts passes after this)"
+      ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%SZ
+      register: _weft_started
+      changed_when: false
+      check_mode: false
+
+    - name: "Deploy, check and watch"
+      block:
+        - name: "Render .env for {{ _weft_to }}"
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/weft/deployment/templates/{{ _weft_role }}.env.j2"
+            dest: "{{ _weft_deploy_dir }}/.env"
+            mode: "0600"
+
+        - name: "Workspace: the release's whisper model, checked against its sum"
+          ansible.builtin.include_tasks: weft-workspace-files.yml
+          when: _weft_role == 'workspace'
+
+        - name: "Start the new release, {{ _weft_to }}"
+          ansible.builtin.command:
+            argv: [bash, deploy.sh, "{{ _weft_role }}", up]
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Health, within the window in minutes: {{ _weft_health_minutes }}"
+          ansible.builtin.command:
+            argv: "{{ _weft_health_argv }}"
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          register: _weft_health
+          changed_when: false
+          check_mode: false
+          retries: "{{ (_weft_health_minutes | int) * 6 }}"
+          delay: 10
+          until: _weft_health.rc == 0
+
+        - name: "Front door: the page answers through the edge"
+          ansible.builtin.uri:
+            url: "https://{{ weft_domain }}/"
+            status_code: [200]
+            timeout: 15
+          delegate_to: localhost
+          check_mode: false
+          when: _weft_role == 'door'
+
+        - name: "Workspace: the calls port is bound"
+          ansible.builtin.command:
+            argv: [ss, -Hlun, "sport = :{{ weft_voice_udp }}"]
+          register: _weft_udp
+          changed_when: false
+          check_mode: false
+          failed_when: _weft_udp.stdout | trim | length == 0
+          when: _weft_role == 'workspace'
+
+        - name: "Workspace: copy a new seal to OpenBao"
+          ansible.builtin.include_tasks: weft-seal.yml
+          when: _weft_role == 'workspace'
+
+        - name: "Restart counts at the start of the watch"
+          ansible.builtin.command:
+            argv: [bash, deploy.sh, "{{ _weft_role }}", restarts]
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          register: _weft_restarts_before
+          changed_when: false
+          check_mode: false
+
+        - name: "Watch, in minutes: {{ _weft_watch_minutes }}"
+          ansible.builtin.pause:
+            minutes: "{{ _weft_watch_minutes | int }}"
+          when: (_weft_watch_minutes | int) > 0
+
+        - name: "Restart counts at the end of the watch"
+          ansible.builtin.command:
+            argv: [bash, deploy.sh, "{{ _weft_role }}", restarts]
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          register: _weft_restarts_after
+          changed_when: false
+          check_mode: false
+          # A crash loop looks like "up" at any single moment; a count that moved is the evidence.
+          failed_when: >-
+            _weft_restarts_after.rc != 0
+            or _weft_restarts_after.stdout != _weft_restarts_before.stdout
+            or 'missing' in _weft_restarts_after.stdout
+
+        - name: "Health, again, at the end of the watch"
+          ansible.builtin.command:
+            argv: "{{ _weft_health_argv }}"
+            chdir: "{{ _weft_deploy_dir }}"
+          environment: "{{ _weft_deploy_env }}"
+          changed_when: false
+          check_mode: false
+
+        - name: "Record what this host runs: {{ _weft_to }}"
+          ansible.builtin.copy:
+            content: >-
+              {{ {'release': _weft_release_json, 'deployed_at': _weft_started.stdout,
+                  'refused': _weft_refused} | to_nice_json }}
+            dest: "{{ _weft_state_dir }}/deployed.json"
+            mode: "0600"
+
+        - name: "Tell Discord"
+          ansible.builtin.include_tasks: notify-discord.yml
+          vars:
+            _discord_webhook_url: "{{ _weft_discord_webhook }}"
+            _discord_message: >-
+              {{ _weft_environment }}: {{ _weft_label }} is on {{ _weft_to }}
+              (from {{ _weft_from }}), healthy after a {{ _weft_watch_minutes }}-minute watch.
+              {{- (' ' ~ _weft_notes) if (_weft_notes | default('') | length > 0) else '' }}
+
+      rescue:
+        - name: "Roll back {{ _weft_label }}"
+          ansible.builtin.include_tasks: weft-rollback.yml
+          vars:
+            _weft_failed_check: "{{ ansible_failed_task.name | default('unknown step') }}"
+
+  always:
+    # Only by the run that took it: a run that found the lock taken must leave it alone.
+    - name: "Release the deploy lock"
+      ansible.builtin.file:
+        path: "{{ _weft_state_dir }}/deploying"
+        state: absent
+      when: _weft_lock_held | default(false) | bool

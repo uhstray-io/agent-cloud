@@ -131,6 +131,7 @@ health. Verify the selected environment before relying on a service.
 | **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live; production deployed) |
 | **agentgateway** | Inference edge gateway (Linux Foundation agentgateway v1.5.0) -- OpenAI-compatible `/v1` with per-client API keys and per-key hourly token budgets (own Postgres) in front of the model API; local-dev fronts LM Studio, prod will front vLLM on the DGX Spark head behind `inference.uhstray.io` (local-dev proving) |
 | **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (local bring-up recorded; production application rollout and publishing verification remain pending) |
+| **weft** | uhstray's agent harness -- one front door VM plus one VM per company workspace (board + orchestrator + capture from one image, the orchestrator starting agent containers through rootless podman), and a staging pair that follows weft's `main`. Deployed from cosign-signed images by digest, backed up before every deploy, rolled back automatically when health or a 15-minute watch fails; the rack moves only on a release whose `rack` approval the rollout checks itself (written; not yet run) |
 | **github-runner** | Self-hosted GitHub Actions runners -- two hosts forming one interchangeable pool, org-scoped to the PRIVATE repos declared in `manage-github-runner-group.yml` (seven as of 2026-10-19; `agent-cloud` excluded: it is public, and a fork can propose workflow code onto hosts inside the perimeter). For workflows that must originate from inside the network or its stable address (both live, serving jobs) |
 
 ## Repository Structure
@@ -158,6 +159,7 @@ agent-cloud/
       postiz/             Social publishing (app + Temporal workflow engine)
       agentgateway/       Inference edge gateway (per-client keys, token budgets)
       github-runner/      Self-hosted GitHub Actions runners
+      weft/               Agent harness: front door + one VM per workspace, signed images by digest
       opa/                Policy engine (Rego policy-as-code)
       openhands/          Agent Canvas
       erpnext/            ERP (composable slim local tier)

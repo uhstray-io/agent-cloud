@@ -1,0 +1,74 @@
+---
+# verify-cosign.yml — refuse any image whose keyless cosign signature does not name the one
+# workflow identity the caller trusts. Nothing else in agent-cloud checks a signature; the first
+# caller is weft, which deploys only images its images.yml built and signed on main.
+#
+# Keyless: there is no public key to hold. The signature's certificate names the workflow that
+# signed it (repository, file and ref) and the OIDC issuer that vouched for it, and the check is
+# that both are EXACTLY what the caller pins. An image built by the same workflow from a branch is
+# signed with that branch's identity and is refused, which is the whole point: only reviewed,
+# merged code reaches a host.
+#
+# Every reference must be pinned by digest. A tag is a name that can be moved after the check, so
+# verifying a tag proves nothing about what is pulled next; the caller pulls the same digests.
+#
+# cosign runs as a container on the target host, from an image pinned by digest, so the check
+# happens on the machine that pulls and needs nothing installed there but podman. The deploy
+# user's registry login (tasks/registry-login.yml) is mounted read-only for private packages.
+#
+# Caller passes:
+#   _cosign_refs        list of <registry>/<repo>@sha256:<64 hex>
+#   _cosign_identity    the exact certificate identity (e.g.
+#                       https://github.com/<org>/<repo>/.github/workflows/images.yml@refs/heads/main)
+#   _cosign_issuer      the exact OIDC issuer (GitHub Actions: https://token.actions.githubusercontent.com)
+#   _cosign_auth_file   optional: the host's registry auth file, for private images
+# Optional:
+#   cosign_image        the cosign image, pinned by digest (default below)
+#   container_engine    podman | docker (default podman)
+#
+# No secret passes through here (the auth file stays on the host, mounted by path), so nothing
+# is no_log: a refusal must say which image failed and why.
+#
+# Under --check the verification is skipped (it runs a container), and so is everything the
+# caller does with the images; a dry run reports what it would verify.
+
+- name: "Resolve the cosign image"
+  ansible.builtin.set_fact:
+    _cosign_run_image: >-
+      {{ cosign_image | default('ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8') }}
+
+- name: "Require digest-pinned references and an exact signer"
+  ansible.builtin.assert:
+    that:
+      - _cosign_refs | default([]) | length > 0
+      - _cosign_refs | reject('match', '^[^@\\s]+@sha256:[0-9a-f]{64}$') | list | length == 0
+      - _cosign_identity | default('') | length > 0
+      - _cosign_issuer | default('') is match('^https://')
+      - _cosign_run_image is match('^[^@\\s]+@sha256:[0-9a-f]{64}$')
+    fail_msg: >-
+      verify-cosign.yml needs digest-pinned references (a tag can move after the check), an exact
+      certificate identity and an https OIDC issuer. Not pinned:
+      {{ _cosign_refs | default([]) | reject('match', '^[^@\\s]+@sha256:[0-9a-f]{64}$') | list }}
+
+- name: "Verify each signature against the pinned identity"
+  ansible.builtin.command:
+    argv: >-
+      {{ [container_engine | default('podman'), 'run', '--rm']
+         + (['-v', _cosign_auth_file ~ ':/auth/config.json:ro', '-e', 'DOCKER_CONFIG=/auth']
+            if (_cosign_auth_file | default('') | length > 0) else [])
+         + [_cosign_run_image,
+            'verify',
+            '--certificate-identity', _cosign_identity,
+            '--certificate-oidc-issuer', _cosign_issuer,
+            '--output', 'text',
+            item] }}
+  loop: "{{ _cosign_refs }}"
+  register: _cosign_results
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "Report the verified images"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'check mode: would verify' if ansible_check_mode else 'verified' }}
+      {{ _cosign_refs | length }} image(s) as signed by {{ _cosign_identity }}.

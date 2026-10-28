@@ -1,0 +1,43 @@
+---
+# weft.yml — the facts every weft playbook shares, in one place. Loaded with vars_files; each
+# value is lazily templated, so nothing is read until a task uses it. Inventory (site-config)
+# overrides any of them by setting the un-prefixed name.
+#
+# None of these is secret or site-private: the repository, its registry and the workflow that
+# signs its images are public facts about weft. The environment's domain, addresses, ids and the
+# approver's login are site-config's (see platform/services/weft/deployment/README.md).
+
+# Where weft's code and images live.
+_weft_repo: "{{ weft_github_repository | default('uhstray-io/weft') }}"
+_weft_registry: "{{ weft_registry | default('ghcr.io/uhstray-io') }}"
+
+# THE identity a weft image must be signed by: weft's images.yml, on main. A release promotes the
+# digests main built and signs its release.json with this same identity, so one identity covers
+# both; an image built from a branch carries that branch's identity and is refused.
+_weft_signer: "{{ weft_signer_identity | default('https://github.com/' ~ _weft_repo ~ '/.github/workflows/images.yml@refs/heads/main') }}"
+_weft_issuer: "https://token.actions.githubusercontent.com"
+
+# release.json is an OCI artifact beside the images (weft-release:<commit> for every commit main
+# published, weft-release:<version> for a release), fetched with oras and verified with cosign.
+_weft_oras_image: "{{ weft_oras_image | default('ghcr.io/oras-project/oras:v1.3.4@sha256:f7bc056d54d97baa399414ed5048ecc67c3371b750d4bbce1d871827a5758179') }}"
+
+# The images each role runs. A workspace also pulls every agent image its orchestrator starts, so
+# a session is never the first thing to find one missing.
+_weft_images_by_role:
+  workspace: [weft-workspace, weft-builder, weft-proxy, weft-harness-claude-code, weft-harness-opencode]
+  door: [weft-door]
+
+# Directories on the VM's own disk (D537: the catalog opens only where one kernel mounts it).
+_weft_root: "{{ weft_root | default('/srv/weft') }}"
+_weft_door_dir: "{{ weft_door_dir | default('/srv/weft-door') }}"
+
+# The OpenBao subtree for this environment: weft (the rack) or weft-staging. It holds what each
+# environment keeps apart, the front door's signing key and each workspace's seal. The Discord
+# webhook and the GitHub token are one per platform and stay at services/weft/ for both
+# (tasks/weft-credentials.yml, seed-weft-secrets.yml).
+_weft_secrets: "{{ weft_secret_root | default('weft') }}"
+
+# How long a deploy waits for health, and how long it watches afterwards before calling it done
+# (docs/cicd.md §6.1: 5 and 15 minutes). After the watch, no rollback is automatic.
+_weft_health_minutes: "{{ weft_health_minutes | default(5) }}"
+_weft_watch_minutes: "{{ weft_watch_minutes | default(15) }}"

@@ -86,9 +86,17 @@ detect_runtime() {
 # playbook sets it from inventory (e.g. postiz's search-node gate); each named
 # file must exist, because a missing -f is how a gated topology silently
 # degrades to the base one while the run reports success.
+#
+# COMPOSE_BASE — optional base file in place of compose.yml, for a service that
+# deploys a different stack to each kind of host from one directory (weft: a
+# workspace on one VM, its front door on another). A named base must exist, for
+# the reason an overlay must. Unset => byte-identical to before.
 compose() {
   detect_runtime
-  local files=(-f compose.yml)
+  if [ -n "${COMPOSE_BASE:-}" ] && [ ! -f "$COMPOSE_BASE" ]; then
+    error "COMPOSE_BASE names '$COMPOSE_BASE', which does not exist here ($(pwd))"
+  fi
+  local files=(-f "${COMPOSE_BASE:-compose.yml}")
   if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
     files+=(-f compose.local.yml)
   fi

@@ -1,0 +1,50 @@
+---
+# weft-environment-state.yml — on the controller: what every weft host of one environment runs,
+# what it has refused, and whether a deploy holds it right now. Read from each host's
+# deployed.json and deploy lock, which the deploys write; the version a weft host runs is recorded
+# on the VM (and on GitHub), not in site-config, because the pipeline changes it and a person
+# does not.
+#
+# Caller passes:
+#   _wes_hosts   inventory hosts, in rollout order (the front door first)
+# with vars/weft.yml loaded. Sets _weft_state: {host: {commit, version, refused, locked}}.
+# Read-only: identical under --check.
+
+- name: "Read each host's deployed.json"
+  ansible.builtin.slurp:
+    src: >-
+      {{ (_weft_root ~ '/' ~ hostvars[item].weft_workspace_id) if hostvars[item].weft_workspace_id is defined
+         else _weft_door_dir }}/deployed.json
+  loop: "{{ _wes_hosts }}"
+  register: _wes_deployed
+  delegate_to: "{{ item | default(inventory_hostname) }}"
+  failed_when: false
+
+- name: "Read each host's deploy lock"
+  ansible.builtin.stat:
+    path: >-
+      {{ (_weft_root ~ '/' ~ hostvars[item].weft_workspace_id) if hostvars[item].weft_workspace_id is defined
+         else _weft_door_dir }}/deploying
+  loop: "{{ _wes_hosts }}"
+  register: _wes_lock
+  delegate_to: "{{ item | default(inventory_hostname) }}"
+
+- name: "Summarise the environment"
+  ansible.builtin.set_fact:
+    _weft_state: >-
+      {%- set state = {} -%}
+      {%- for host in _wes_hosts -%}
+      {%- set raw = _wes_deployed.results[loop.index0] -%}
+      {%- set deployed = (raw.content | b64decode | from_json) if raw.content is defined else {} -%}
+      {%- set release = deployed.release | default(none) -%}
+      {%- set _ = state.update({host: {
+            'commit': release.commit if release else '',
+            'version': (release.version or release.commit[:12]) if release else 'nothing',
+            'refused': deployed.refused | default([]),
+            'locked': _wes_lock.results[loop.index0].stat.exists | default(false)}}) -%}
+      {%- endfor -%}
+      {{ state }}
+
+- name: "Report the environment"
+  ansible.builtin.debug:
+    msg: "{{ _weft_state | dict2items | map(attribute='key') | zip(_weft_state | dict2items | map(attribute='value.version')) | map('join', ': ') | list }}"

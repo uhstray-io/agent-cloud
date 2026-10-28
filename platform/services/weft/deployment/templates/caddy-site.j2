@@ -1,0 +1,46 @@
+{#- weft's central-Caddy fragment for ONE environment (the rack or staging) — rendered from
+    inventory by deploy-weft-door.yml and stand-up-weft-workspace.yml, distributed and validated
+    by tasks/distribute-caddy-site.yml. Caddy is the EDGE proxy: TLS and hostname routing, nothing
+    else. The front door behind it redirects and never proxies; it is not this.
+
+      <domain>          -> the front door's VM
+      <name>.<domain>   -> that workspace's VM, one host matcher per workspace (weft D540)
+      any other host    -> the front door's VM, which answers it itself
+
+    A workspace's hostname is its company name as its admin chose it on the front door
+    (weft_workspace_name, a DNS label), the name the front door's address template fills in. Its
+    id (weft_workspace_id) is what claims are bound to and names its VM and directory; it is never
+    a route.
+
+    Every other subdomain goes to the front door, which knows every name a workspace has had: a
+    307 to the current name for an old name or an id address, a 503 for a name an admin chose that
+    this fragment does not route yet (a rename before inventory catches up), and a 404 for
+    anything else. Never somebody else's board.
+
+    Calls are NOT here: the edge routes by hostname, a UDP datagram has none, and the rack forwards
+    each workspace's UDP port straight to its VM.
+    Do NOT edit by hand. -#}
+{%- set tls = weft_caddy_tls | default('dns cloudflare {$CLOUDFLARE_API_KEY}') -%}
+{%- set door = _weft_door_hosts | first -%}
+{{ weft_domain }} {
+	tls {
+		{{ tls }}
+	}
+	reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) }}:{{ hostvars[door].weft_door_port | default(8081) }}
+}
+
+*.{{ weft_domain }} {
+	tls {
+		{{ tls }}
+	}
+{% for host in _weft_workspace_hosts %}
+{% set h = hostvars[host] %}
+	@ws{{ loop.index }} host {{ h.weft_workspace_name }}.{{ weft_domain }}
+	handle @ws{{ loop.index }} {
+		reverse_proxy {{ h.weft_board_bind | default(h.ansible_host) }}:{{ h.weft_board_port | default(8080) }}
+	}
+{% endfor %}
+	handle {
+		reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) }}:{{ hostvars[door].weft_door_port | default(8081) }}
+	}
+}

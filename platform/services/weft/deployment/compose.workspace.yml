@@ -1,0 +1,95 @@
+# weft — one workspace's deployment: three containers from the one weft-workspace image
+# (weft's docs/cicd.md §3.1). One workspace per VM, because a workspace boundary is a machine
+# boundary; nothing here is shared with another workspace.
+#
+#   board          weft-board        the web API and the page; starts weft-voice as its child
+#   orchestrator   orchestrator run  starts weft-whisper and weft-extract as children, and every
+#                                    agent and egress-proxy container through the podman socket
+#   capture        capture-discord   reads the rooms an admin enrolled on the board
+#
+# The image is pinned by the digest deploy-weft-workspace.yml read from the signed release.json
+# and rendered into .env. deploy.sh refuses a reference that is not a digest.
+#
+# THE WORKSPACE DIRECTORY IS MOUNTED INTO THESE THREE CONTAINERS AND NO OTHER. It holds the
+# catalog (weft.db), its seal, weft.toml, the whisper models and the checkouts, and it is a bind
+# mount from the VM's own disk at the same path inside and out. Same path, because the
+# orchestrator mounts checkouts into agent containers through the VM's podman, which resolves
+# paths on the VM. Own disk, because the catalog's WAL index is coherent only between processes
+# that share one kernel's page cache (D537); a named volume or a network share is refused by
+# weft itself. The agent and egress-proxy containers the orchestrator starts never get this
+# directory (least privilege: they hold a credential or run an agent).
+#
+# ONLY THE ORCHESTRATOR GETS THE PODMAN SOCKET. With it, a container can do anything the
+# workspace user can do on this VM, so the orchestrator's container is not a sandbox (an
+# accepted cost: it is what the orchestrator held on a host before). The board is the
+# internet-facing process and never gets it, so a compromised board cannot start a container.
+#
+# userns keep-id maps the VM's deploy user to the images' uid 10001, so every file written into
+# the workspace directory belongs to the deploy user on the VM, and the backup and the restore can
+# read it.
+#
+# Ports: the board's HTTP port to the Caddy host only (bind from inventory), and the workspace's
+# one UDP port for calls, the same number inside and out, because the board tells browsers that
+# number in every SDP answer.
+
+name: weft-workspace
+
+services:
+  board:
+    image: ${WEFT_WORKSPACE_IMAGE}
+    container_name: weft-board
+    restart: always
+    userns_mode: "keep-id:uid=10001,gid=10001"
+    command: ["weft-board"]
+    environment:
+      WEFT_DB: ${WEFT_WORKSPACE_DIR}/weft.db
+      WEFT_CONFIG: ${WEFT_WORKSPACE_DIR}/weft.toml
+    volumes:
+      - ${WEFT_WORKSPACE_DIR}:${WEFT_WORKSPACE_DIR}
+    ports:
+      - "${WEFT_BOARD_BIND}:${WEFT_BOARD_PORT}:8080"
+      - "${WEFT_VOICE_UDP}:${WEFT_VOICE_UDP}/udp"
+    healthcheck:
+      # The board's one unauthenticated route. node is the image's runtime, so no curl is
+      # assumed; a non-2xx or a refused connection exits non-zero.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/api/workspace').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+    networks: [weft]
+
+  orchestrator:
+    image: ${WEFT_WORKSPACE_IMAGE}
+    container_name: weft-orchestrator
+    restart: always
+    userns_mode: "keep-id:uid=10001,gid=10001"
+    command: ["orchestrator", "run"]
+    # No env_file and no key in the environment (weft's D539): model keys and the forge token are
+    # entered by the workspace's admin on Settings > Credentials and kept sealed in the catalog.
+    environment:
+      WEFT_DB: ${WEFT_WORKSPACE_DIR}/weft.db
+      WEFT_CONFIG: ${WEFT_WORKSPACE_DIR}/weft.toml
+      CONTAINER_HOST: unix:///run/podman/podman.sock
+    volumes:
+      - ${WEFT_WORKSPACE_DIR}:${WEFT_WORKSPACE_DIR}
+      - ${WEFT_PODMAN_SOCKET}:/run/podman/podman.sock
+    networks: [weft]
+
+  capture:
+    image: ${WEFT_WORKSPACE_IMAGE}
+    container_name: weft-capture
+    restart: always
+    userns_mode: "keep-id:uid=10001,gid=10001"
+    # Starts with nothing configured and waits: its token and enrolments are catalog rows an
+    # admin sets on the board, read under the seal.
+    command: ["capture-discord"]
+    environment:
+      WEFT_DB: ${WEFT_WORKSPACE_DIR}/weft.db
+    volumes:
+      - ${WEFT_WORKSPACE_DIR}:${WEFT_WORKSPACE_DIR}
+    networks: [weft]
+
+networks:
+  weft:
+    driver: bridge

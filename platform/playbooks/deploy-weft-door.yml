@@ -1,0 +1,26 @@
+---
+# deploy-weft-door.yml — deploy one weft release to one front door: the launcher a person runs
+# ("Deploy weft Front Door"). Inputs, steps and rules are in weft-door.yml, which it imports
+# after refusing an empty target group: a play with no hosts prints "skipping: no hosts matched"
+# and exits 0, and a deploy that did nothing must not be recorded as a success (MISTAKES 2.21).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: the target group is declared and populated"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Refuse an empty or undeclared target group"
+      ansible.builtin.assert:
+        that:
+          - groups[weft_door_hosts | default('weft_door')] | default([]) | length > 0
+        fail_msg: >-
+          {{ weft_door_hosts | default('weft_door') }} is not a populated inventory group, so this
+          deploy would do nothing and report success. Declare its hosts in site-config.
+
+- name: "Deploy"
+  ansible.builtin.import_playbook: weft-door.yml
