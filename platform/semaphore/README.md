@@ -208,6 +208,12 @@ token, and nobody uses another account's token.
 account's token, as recovery material. It is not anyone's daily operator token.
 Rotate your own token with `scripts/semaphore-rotate-token.py` (above).
 
+When the bootstrap `admin` token is rotated, the recovery copy is part of the same change.
+The rotation script updates only the `--backup` file it is given, never site-config. Once the
+script finishes, open a site-config PR that replaces the recovery copy with the new value
+(check it first with `GET /api/user`), or deletes the file. A rotation that skipped this
+left the copy revoked and sent an operator down a dead path (`docs/MISTAKES.md` 10.31).
+
 Without a token, the operator launches from the UI and the agent hands over the
 exact template name, survey values and verification commands. Do not fabricate
 access by reading the controller's own token out of OpenBao from a workstation.

@@ -5094,7 +5094,7 @@ for it is `dev_variant: true`, and the copy of the playbook on `main` still read
 `semaphore_admin_users`. On 2026-10-27 the production project held "Promote Semaphore
 Admins" (bound to `main`) and no "(Dev)" variant. `scripts/semaphore-launch.py --template
 "Promote Semaphore Admins (Dev)"` answered `Expected one template named ...`.
-`GET /api/users` listed `jacob.haig@uhstray.io` with `admin: false`, nine days after the
+`GET /api/users` listed the second operator's account with `admin: false`, nine days after the
 fix was recorded as built. Issue #604 stayed open with the second operator still unable
 to see the project.
 
