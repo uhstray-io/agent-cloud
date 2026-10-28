@@ -159,7 +159,7 @@
           {%- else -%}
             {%- set _ = errs.append(n ~ ': a caddy-reloaded leaf must be on the one caddy_svc host, which must declare inference_route_address (or renew_caddy_proof_host), with renew_caddy_proof_status an HTTP status and renew_caddy_proof_path an absolute path') -%}
           {%- endif -%}
-        {%- elif l.profile | default('') == 'client' and h in groups.get('o11y_svc', []) -%}
+        {%- elif l.profile | default('') == 'client' and n == 'o11y-journal' and h in groups.get('o11y_svc', []) -%}
           {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
                  and (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool)
                  and n == 'o11y-journal' and r == 'none'
@@ -276,7 +276,11 @@
     # listener TLS on (otherwise nothing presents or verifies them).
     _provable: >-
       {{ (_mine | selectattr('class', 'equalto', 'caddy-client') | list)
-         + ((_mine | rejectattr('class', 'equalto', 'caddy-client') | list) if (_gw_tls | bool) else []) }}
+         + (_mine | selectattr('class', 'equalto', 'o11y-server') | list)
+         + (_mine | selectattr('class', 'equalto', 'o11y-journal-client') | list)
+         + ((_mine | rejectattr('class', 'equalto', 'caddy-client')
+             | rejectattr('class', 'equalto', 'o11y-server')
+             | rejectattr('class', 'equalto', 'o11y-journal-client') | list) if (_gw_tls | bool) else []) }}
     _reloads: "{{ _provable | map(attribute='reload') | reject('equalto', 'none') | unique | list }}"
     # `--tags verify`: prove the leaves in place, issue nothing.
     _verify_only: "{{ 'verify' in ansible_run_tags and 'all' not in ansible_run_tags }}"
@@ -330,49 +334,84 @@
       except (OSError, ssl.SSLError, ValueError) as e:
           print("ERROR " + type(e).__name__ + ": " + str(e))
           sys.exit(1)
-    # A valid leaf is proved separately above. These TLS 1.3 probes send an HTTP/2
-    # preface and SETTINGS after handshake so delayed client-auth alerts count as refusal.
-    # The foreign identity is synthetic and exists only inside a mode-0700 temporary dir.
-    _renew_o11y_refusal_prover: |
+    # This o11y-only proof requires a verified TLS 1.3 / ALPN h2 connection and a complete
+    # server SETTINGS frame with the actual journal client. Negative probes count only explicit
+    # certificate-auth alerts; EOF, timeout, connection, ALPN, and frame failures are unverified.
+    _renew_o11y_tls_prover: |
       import os, socket, ssl, subprocess, sys, tempfile
-      host, port, name, ca = sys.argv[1:5]
-      def accepted(cert=None, key=None):
+      host, port, name, ca, client_cert, client_key = sys.argv[1:7]
+      preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+      settings = b"\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+      auth_alerts = {
+          "TLSV13_ALERT_CERTIFICATE_REQUIRED", "TLSV1_ALERT_CERTIFICATE_REQUIRED",
+          "TLSV1_ALERT_UNKNOWN_CA", "TLSV13_ALERT_UNKNOWN_CA",
+          "TLSV1_ALERT_BAD_CERTIFICATE", "TLSV13_ALERT_BAD_CERTIFICATE",
+          "TLSV1_ALERT_CERTIFICATE_UNKNOWN", "TLSV13_ALERT_CERTIFICATE_UNKNOWN",
+      }
+      def read_exact(sock, size):
+          chunks = []
+          while size:
+              chunk = sock.recv(size)
+              if not chunk:
+                  raise RuntimeError("short HTTP/2 frame")
+              chunks.append(chunk)
+              size -= len(chunk)
+          return b"".join(chunks)
+      def probe(cert=None, key=None):
           ctx = ssl.create_default_context(cafile=ca)
           ctx.minimum_version = ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+          ctx.set_alpn_protocols(["h2"])
           if cert:
               ctx.load_cert_chain(cert, key)
           try:
               with socket.create_connection((host, int(port)), timeout=8) as raw:
                   with ctx.wrap_socket(raw, server_hostname=name) as tls:
                       tls.settimeout(8)
-                      tls.sendall(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00")
-                      response = tls.recv(9)
-                      return len(response) == 9 and response[3] == 4
-          except (OSError, ssl.SSLError, ValueError):
-              return False
+                      if tls.selected_alpn_protocol() != "h2":
+                          return ("unverified", None)
+                      tls.sendall(preface + settings)
+                      header = read_exact(tls, 9)
+                      length = int.from_bytes(header[:3], "big")
+                      frame_type, flags = header[3], header[4]
+                      if frame_type != 4 or flags & 1 or length > 16384 or length % 6:
+                          return ("unverified", None)
+                      read_exact(tls, length)
+                      return ("accepted", tls.getpeercert().get("serialNumber"))
+          except ssl.SSLError as exc:
+              if exc.reason in auth_alerts:
+                  return ("rejected", None)
+              return ("unverified", None)
+          except (OSError, RuntimeError, ValueError):
+              return ("unverified", None)
+      valid, serial = probe(client_cert, client_key)
+      if valid != "accepted" or not serial:
+          print("UNVERIFIED_VALID_CLIENT_HTTP2")
+          sys.exit(1)
+      if probe()[0] != "rejected":
+          print("UNVERIFIED_NO_CLIENT_AUTH")
+          sys.exit(1)
       with tempfile.TemporaryDirectory(prefix="o11y-otlp-refusal-") as d:
           os.chmod(d, 0o700)
           ca_key, ca_cert = d + "/ca.key", d + "/ca.crt"
-          key, csr, cert, ext = d + "/client.key", d + "/client.csr", d + "/client.crt", d + "/ext.cnf"
+          foreign_key, csr = d + "/client.key", d + "/client.csr"
+          foreign_cert, ext = d + "/client.crt", d + "/ext.cnf"
           with open(ext, "w") as f:
               f.write("extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\n")
           commands = [
               ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=synthetic-foreign-ca", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", ca_key, "-out", ca_cert],
-              ["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=synthetic-foreign-client", "-keyout", key, "-out", csr],
-              ["openssl", "x509", "-req", "-in", csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-days", "1", "-extfile", ext, "-out", cert],
+              ["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=synthetic-foreign-client", "-keyout", foreign_key, "-out", csr],
+              ["openssl", "x509", "-req", "-in", csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-days", "1", "-extfile", ext, "-out", foreign_cert],
           ]
           for command in commands:
               result = subprocess.run(command, capture_output=True, text=True)
               if result.returncode:
-                  print("FIXTURE_UNAVAILABLE")
+                  print("UNVERIFIED_FOREIGN_CERT_FIXTURE")
                   sys.exit(1)
-          if accepted():
-              print("NO_CLIENT_ACCEPTED")
+          os.chmod(foreign_key, 0o600)
+          if probe(foreign_cert, foreign_key)[0] != "rejected":
+              print("UNVERIFIED_FOREIGN_CA_AUTH")
               sys.exit(1)
-          if accepted(cert, key):
-              print("FOREIGN_CA_ACCEPTED")
-              sys.exit(1)
-      print("REFUSED_NO_CLIENT_AND_FOREIGN_CA_TLS13")
+      print("O11Y_MTLS_PROVEN:" + serial)
     # One request through a Caddy route: TLS to Caddy's own port on this host under the route's
     # name (verified against the system trust plus the internal bundle, since local-dev's Caddy
     # serves an internal certificate), a placeholder Bearer value so Caddy's edge check passes
@@ -553,13 +592,13 @@
           when: (_renew_issued | default(false) | bool) and not ansible_check_mode and 'caddy reload --force' in _reloads
 
         # ── Proof ────────────────────────────────────────────────────────────
-        - name: "Prove the receiver serves the issued server leaf to its journal client"
+        - name: "Prove receiver HTTP/2, the issued server leaf, and client-auth enforcement"
           tags: [verify]
           ansible.builtin.command:
             argv:
               - python3
               - -c
-              - "{{ _renew_server_prover }}"
+              - "{{ _renew_o11y_tls_prover }}"
               - "{{ '127.0.0.1' if (o11y_otlp_bind | default('')) in ['0.0.0.0', '::', ''] else o11y_otlp_bind }}"
               - "{{ o11y_otlp_port | default('4317') }}"
               - "{{ o11y_otlp_tls_server_name }}"
@@ -572,25 +611,9 @@
           delay: "{{ _delay }}"
           until: >-
             _renew_o11y_served.rc == 0
-            and (_renew_o11y_served.stdout | trim | int(-1, 16)) == (_renew_after[(_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir].serial | default('') | int(-2, 16))
-          when:
-            - _renew_prove | bool and not ansible_check_mode
-            - _provable | selectattr('class', 'equalto', 'o11y-server') | list | length > 0
-
-        - name: "Prove the receiver refuses absent and foreign-CA client identities"
-          tags: [verify]
-          ansible.builtin.command:
-            argv:
-              - python3
-              - -c
-              - "{{ _renew_o11y_refusal_prover }}"
-              - "{{ '127.0.0.1' if (o11y_otlp_bind | default('')) in ['0.0.0.0', '::', ''] else o11y_otlp_bind }}"
-              - "{{ o11y_otlp_port | default('4317') }}"
-              - "{{ o11y_otlp_tls_server_name }}"
-              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir | dirname }}/step-ca-bundle.crt"
-          register: _renew_o11y_refusal
-          changed_when: false
-          failed_when: _renew_o11y_refusal.rc != 0 or (_renew_o11y_refusal.stdout | trim) != 'REFUSED_NO_CLIENT_AND_FOREIGN_CA_TLS13'
+            and (_renew_o11y_served.stdout | trim).startswith('O11Y_MTLS_PROVEN:')
+            and ((_renew_o11y_served.stdout | trim).split(':')[-1] | int(-1, 16))
+                == (_renew_expect[(_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir].serial | default('') | int(-2, 16))
           when:
             - _renew_prove | bool and not ansible_check_mode
             - _provable | selectattr('class', 'equalto', 'o11y-server') | list | length > 0

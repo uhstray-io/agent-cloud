@@ -273,17 +273,18 @@ def test_overview_source_status_queries_match_disjoint_aggregate_selectors_and_s
         target["legendFormat"].split(" · ", 1)[0]: _selector(target["expr"])
         for target in aggregate["targets"]
     }
+    assert aggregate["fieldConfig"]["overrides"] == []
     source_display_names = {
         override["matcher"]["options"]: override["properties"][0]["value"]
-        for override in aggregate["fieldConfig"]["overrides"]
+        for override in status["fieldConfig"]["overrides"]
         if override["matcher"]["id"] == "byFrameRefID"
     }
     assert source_display_names == {
         "A": "Legacy container",
-        "E": "Journal container",
-        "B": "Access",
-        "C": "Span",
-        "D": "Conformance",
+        "B": "Journal container",
+        "C": "Access",
+        "D": "Span",
+        "E": "Conformance",
         "F": "Unclassified",
     }
     status_by_source = {target["legendFormat"]: _selector(target["expr"])

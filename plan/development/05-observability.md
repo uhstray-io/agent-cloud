@@ -2392,8 +2392,21 @@ the marker status read `No valid marker in 45m`, and completion age read
 only. It does not close OpenSpec 7.4, the collector pipeline, or the drill, and
 does not identify a cause for the stale markers.
 
-The live source-count stat panel initially rendered Grafana's default `Value#A`–
-`Value#F` names even though its query legends were human-readable. The source
-dashboard now overrides each frame by its stable query ref ID to the existing
-source label. This is source-only; the live dashboard has not yet received this
-change.
+The live “Selected source records observed (5m)” stat initially rendered
+Grafana's default `Value#A`–`Value#F` names even though its query legends were
+human-readable. The source dashboard now overrides each frame by its stable query
+ref ID to the existing source label. This is source-only; the live dashboard has
+not yet received this change.
+
+### 2026-10-28 bounded browser trace/log pivot
+
+A read-only browser pass followed one existing agentgateway access record to its
+Tempo trace, which rendered two spans. The selected server span's Logs link
+returned three matching Loki records using exact service and trace matching in a
+bounded window around the span. This establishes one existing-data browser
+access-log → trace → logs pivot. It does not establish pivots for other services,
+profile pivots, unsampled requests, privacy of callback payloads, mTLS, or
+sustained ingestion. No trace IDs, identity values, private addresses, or raw
+log/trace payloads were retained. Controller and receiver source revisions were
+not read back during this observation, so it does not establish which source
+revision was live.
