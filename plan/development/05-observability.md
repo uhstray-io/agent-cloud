@@ -2413,16 +2413,18 @@ revision was live.
 
 ### 2026-10-28 OTLP mTLS prover diagnostics
 
-The Linux Python-core CI run for source head `9decfeb` failed the valid-client
-HTTP/2 proof with `UNVERIFIED_VALID_CLIENT_HTTP2`; its captured command result
-had empty stderr. The command task preserves child stderr, while the prover
-collapsed caught failures to that stable stdout result. The source now adds one
-fixed reason code on stderr for valid-client proof failures, without changing
-the success output, acceptance checks, or certificate-refusal criteria. The
-cause of the Linux CI failure remains unknown: the same test passed under
-Python 3.12.13 and ansible-core 2.20.8 on macOS, which does not establish Linux
-or OpenSSL parity. This is source/test evidence only; no live issuance,
-receiver activation, or renewal proof was performed.
+The Linux Python-core CI run for source head `931a72c` stopped after 5,455
+passed, 6 skipped, and 321 subtests passed, with one failure in the
+valid-client HTTP/2 test's later missing-client refusal check. The valid journal
+client proof succeeded; the script then returned
+`UNVERIFIED_NO_CLIENT_AUTH`. The negative probe's fixed phase/state was not
+reported, so the exact Linux TLS or fixture behavior remains unknown. The
+source reports a fixed phase/state category for valid-client proof failures,
+and now reports fixed categories for unverified missing-client and foreign-CA
+probes. These diagnostics preserve stdout, exit status, acceptance, and
+certificate-only rejection criteria. Focused regressions cover accepted and
+broken-I/O missing-client cases and the unverified foreign-CA reporting branch.
+This is diagnostic coverage, not a CI fix or a relaxation of TLS proof.
 
 Follow-up review added the OpenSSL `SSLV3_ALERT_BAD_CERTIFICATE` and
 `SSLV3_ALERT_CERTIFICATE_UNKNOWN` reason labels to the explicit certificate
@@ -2433,3 +2435,13 @@ handshakes. Renewal stats now describe the OTLP proof and matched server serial
 for its two fixed leaf classes, while the gateway-probe proof text is emitted
 only for `probe-client`. These source and fixture checks do not identify the
 Linux CI failure's cause.
+
+The exact cached Alloy v1.5.1 receiver image accepted full plaintext and TLS
+renders of the receiver config, and the receiver component reported healthy in
+two consecutive samples for each mode in a bounded network-none fixture. The
+TLS files were synthetic and supplied through tmpfs; this did not exercise a TLS
+handshake, client refusal, deployed read-only bind mounts, telemetry delivery,
+or production activation. Alloy v1.9.2 for the journal remains uncached and
+unverified. The evidence is recorded in
+`/private/tmp/o11y-alloy-pinned-validation-20261028/result.md`; it does not mark
+an OpenSpec live-acceptance criterion complete.

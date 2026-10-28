@@ -1002,7 +1002,7 @@ def test_o11y_tls_proof_classifies_only_explicit_certificate_alert_reasons(
         assert result.stderr == ""
     else:
         assert result.stdout.strip() == expected_stdout
-        assert result.stderr == ""
+        assert result.stderr.strip() == "O11Y_MTLS_DIAG:NO_CLIENT_TLS_HANDSHAKE"
 
 
 @pytest.mark.parametrize("frame,split_reads", [
@@ -1173,8 +1173,15 @@ def test_o11y_tls_proof_reports_tls_handshake_failure_without_exception_details(
     assert str(tmp_path) not in result.stderr
 
 
-@pytest.mark.parametrize("failure", ["settings", "stall", "short", "unexpected"])
-def test_o11y_tls_proof_does_not_treat_accepted_or_broken_no_client_io_as_rejection(tmp_path, failure):
+@pytest.mark.parametrize(("failure", "reason"), [
+    ("settings", "NO_CLIENT_ACCEPTED"),
+    ("stall", "NO_CLIENT_SETTINGS_READ"),
+    ("short", "NO_CLIENT_SETTINGS_READ"),
+    ("unexpected", "NO_CLIENT_SETTINGS_INVALID"),
+])
+def test_o11y_tls_proof_does_not_treat_accepted_or_broken_no_client_io_as_rejection(
+    tmp_path, failure, reason
+):
     play = playbook_yaml.plays(PLAYBOOK)[1]
     script = play["vars"]["_renew_o11y_tls_prover"]
     ca = _ca(tmp_path)
@@ -1192,6 +1199,35 @@ def test_o11y_tls_proof_does_not_treat_accepted_or_broken_no_client_io_as_reject
         )
     assert result.returncode != 0
     assert result.stdout.strip() == "UNVERIFIED_NO_CLIENT_AUTH"
+    assert result.stderr.strip() == f"O11Y_MTLS_DIAG:{reason}"
+
+
+def test_o11y_tls_proof_reports_foreign_ca_unverified_result_without_details(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"].replace(
+        "foreign, _, foreign_reason = probe(foreign_cert, foreign_key)",
+        "foreign, _, foreign_reason = ('unverified', None, 'TLS_HANDSHAKE')",
+        1,
+    )
+    assert "foreign, _, foreign_reason = ('unverified', None, 'TLS_HANDSHAKE')" in script
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_FOREIGN_CA_AUTH"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:FOREIGN_CA_TLS_HANDSHAKE"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
 
 
 def test_o11y_probe_client_keeps_legacy_classification_when_receiver_tls_is_off(world):

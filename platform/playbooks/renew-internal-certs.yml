@@ -457,8 +457,10 @@
           print("UNVERIFIED_VALID_CLIENT_HTTP2")
           print("O11Y_MTLS_DIAG:" + (reason or "SERIAL"), file=sys.stderr)
           sys.exit(1)
-      if probe()[0] != "rejected":
+      no_client, _, no_client_reason = probe()
+      if no_client != "rejected":
           print("UNVERIFIED_NO_CLIENT_AUTH")
+          print("O11Y_MTLS_DIAG:NO_CLIENT_" + (no_client_reason or no_client).upper(), file=sys.stderr)
           sys.exit(1)
       with tempfile.TemporaryDirectory(prefix="o11y-otlp-refusal-") as d:
           os.chmod(d, 0o700)
@@ -478,8 +480,10 @@
                   print("UNVERIFIED_FOREIGN_CERT_FIXTURE")
                   sys.exit(1)
           os.chmod(foreign_key, 0o600)
-          if probe(foreign_cert, foreign_key)[0] != "rejected":
+          foreign, _, foreign_reason = probe(foreign_cert, foreign_key)
+          if foreign != "rejected":
               print("UNVERIFIED_FOREIGN_CA_AUTH")
+              print("O11Y_MTLS_DIAG:FOREIGN_CA_" + (foreign_reason or foreign).upper(), file=sys.stderr)
               sys.exit(1)
       print("O11Y_MTLS_PROVEN:" + serial)
     # One request through a Caddy route: TLS to Caddy's own port on this host under the route's
