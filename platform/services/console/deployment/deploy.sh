@@ -113,21 +113,36 @@ step_start() {
   fi
 }
 
+# _console_probe_once: one readiness probe, run inside the container with `podman exec`. The probe
+# is the binary's own subcommand, the same one deploy-console.yml Phase 3 runs.
+#
+# Each probe is bounded on the host. A `podman exec` can stall while the container is up, and an
+# unbounded call would then hold step_wait_healthy past its deadline (CodeRabbit on PR #763). The
+# bound is coreutils `timeout`, 15 s. It is absent on some hosts (macOS without coreutils), so
+# there the exec runs unbounded. The targets are Linux, where `timeout` is normally present.
+_console_probe_once() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 15 "$CONTAINER_ENGINE" exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1
+  else
+    "$CONTAINER_ENGINE" exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1
+  fi
+}
+
 # step_wait_healthy: readiness by exec probe, not by the engine's health status. The compose file
 # declares no healthcheck (see the comment there: podman-compose 1.0.6 runs it through /bin/sh, and
-# the image has none), so there is no status to poll. The probe is the binary's own subcommand,
-# the same one deploy-console.yml Phase 3 runs. Bounded: 300 s at 5 s intervals, then the
-# container's diagnostics and a failure.
+# the image has none), so there is no status to poll. Bounded by a wall-clock deadline on bash's
+# SECONDS, not by a sum of sleeps: a stalled probe spends real time, and that time counts toward
+# the deadline. Sleep 5 s between attempts. On timeout: the container's diagnostics, then a failure.
 step_wait_healthy() {
   info "Step 4: Waiting for console to become healthy..."
-  local timeout=300 elapsed=0
-  while [ "$elapsed" -lt "$timeout" ]; do
-    if $CONTAINER_ENGINE exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1; then
+  local timeout=300 deadline
+  deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if _console_probe_once; then
       info "console is ready."
       return 0
     fi
     sleep 5
-    elapsed=$((elapsed + 5))
   done
   dump_container_diagnostics console
   error "console did not become ready within ${timeout}s"

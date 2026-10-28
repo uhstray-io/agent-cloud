@@ -158,15 +158,29 @@ PY
   refute_grep -q -- '--force-recreate' "$code"
 }
 
-# _run_step4 <pass_at>: runs deploy.sh's step_wait_healthy, extracted as written, against a stub
-# engine. The stub logs each `exec` and succeeds from the pass_at-th one on (never when 0). sleep
-# is stubbed: a loop with no bound stops after 200 sleeps with status 99, so a regression fails
-# the test with a named cause instead of hanging the run. Sets $status, $output, $EXEC_LOG.
+# _run_step4 <pass_at> <bound: timeout|none> [stall]
+# Runs deploy.sh's _console_probe_once and step_wait_healthy, both extracted as written, against
+# a stub engine that logs each `exec` and succeeds from the pass_at-th one on (never when 0).
+#   timeout : a `timeout` shim is first on PATH; it logs its arguments, then runs the command.
+#   none    : PATH holds only bash, date and grep, so `command -v timeout` finds nothing.
+#   stall   : the probe's bound is a function that costs 15 s of wall clock and returns 124, the
+#             status coreutils timeout reports. It models a stalled `podman exec`.
+# sleep logs its argument and advances SECONDS by it, so the step's wall-clock deadline is real
+# inside the test. A loop with no bound stops after 200 sleeps with status 99: a named failure,
+# not a hung run. Sets $status, $output and the logs EXEC_LOG, SLEEP_LOG, TIMEOUT_LOG.
 _run_step4() {
-  local pass_at="$1" step="$BATS_TEST_TMPDIR/step4.sh" driver="$BATS_TEST_TMPDIR/driver.sh"
+  local pass_at="$1" bound="$2" stall="${3:-}"
+  local step="$BATS_TEST_TMPDIR/step4.sh" driver="$BATS_TEST_TMPDIR/driver.sh"
+  local shim="$BATS_TEST_TMPDIR/shim" minbin="$BATS_TEST_TMPDIR/minbin" path
   EXEC_LOG="$BATS_TEST_TMPDIR/exec.log"
-  sed -n '/^step_wait_healthy()/,/^}/p' "$DEPLOY_DIR/deploy.sh" > "$step"
-  [ -s "$step" ]
+  SLEEP_LOG="$BATS_TEST_TMPDIR/sleep.log"
+  TIMEOUT_LOG="$BATS_TEST_TMPDIR/timeout.log"
+  {
+    sed -n '/^_console_probe_once()/,/^}/p' "$DEPLOY_DIR/deploy.sh"
+    sed -n '/^step_wait_healthy()/,/^}/p' "$DEPLOY_DIR/deploy.sh"
+  } > "$step"
+  assert_grep -q '^_console_probe_once()' "$step"
+  assert_grep -q '^step_wait_healthy()' "$step"
   cat > "$BATS_TEST_TMPDIR/engine" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$EXEC_LOG"
@@ -175,36 +189,93 @@ if [ "${PASS_AT:-0}" -gt 0 ] && [ "$n" -ge "$PASS_AT" ]; then exit 0; fi
 exit 1
 STUB
   chmod +x "$BATS_TEST_TMPDIR/engine"
+  mkdir -p "$shim" "$minbin"
+  cat > "$shim/timeout" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TIMEOUT_LOG"
+shift
+exec "$@"
+SHIM
+  chmod +x "$shim/timeout"
+  local tool
+  for tool in bash date grep; do ln -sf "$(command -v "$tool")" "$minbin/$tool"; done
+  if [ "$bound" = timeout ]; then path="$shim:$PATH"; else path="$minbin"; fi
   cat > "$driver" <<'DRIVER'
 source "$COMMON"
 CONTAINER_ENGINE="$ENGINE"
 dump_container_diagnostics() { echo "DIAGNOSTICS-DUMPED for $1"; }
 sleep() {
+  printf '%s\n' "$1" >> "$SLEEP_LOG"
   SLEEPS=$(( ${SLEEPS:-0} + 1 ))
   [ "$SLEEPS" -lt 200 ] || { echo "RUNAWAY: the probe loop has no bound" >&2; exit 99; }
+  SECONDS=$(( SECONDS + $1 ))
 }
+if [ "${STALL:-}" = stall ]; then
+  timeout() { printf '%s\n' "$*" >> "$TIMEOUT_LOG"; SECONDS=$(( SECONDS + 15 )); return 124; }
+fi
 source "$STEP"
 step_wait_healthy
 DRIVER
-  run env COMMON="$REPO_ROOT/platform/lib/common.sh" ENGINE="$BATS_TEST_TMPDIR/engine" \
-    STEP="$step" EXEC_LOG="$EXEC_LOG" PASS_AT="$pass_at" bash "$driver"
+  run env PATH="$path" COMMON="$REPO_ROOT/platform/lib/common.sh" ENGINE="$BATS_TEST_TMPDIR/engine" \
+    STEP="$step" EXEC_LOG="$EXEC_LOG" SLEEP_LOG="$SLEEP_LOG" TIMEOUT_LOG="$TIMEOUT_LOG" \
+    PASS_AT="$pass_at" STALL="$stall" "$BASH" "$driver"
 }
 
-@test "console: step 4 returns at the first passing exec probe, and runs exactly that probe" {
-  _run_step4 3
+@test "console: step 4 probes under timeout 15 and returns at the first passing probe" {
+  _run_step4 3 timeout
   [ "$status" -eq 0 ]
   assert_contains "$output" "console is ready"
   refute_contains "$output" "DIAGNOSTICS-DUMPED"
+  # Three attempts, each one bounded on the host by `timeout 15` and each one the probe.
+  [ "$(grep -c '' "$TIMEOUT_LOG")" -eq 3 ]
+  [ "$(grep -cxF "15 $BATS_TEST_TMPDIR/engine exec console /usr/local/app/server probe /healthz 200" "$TIMEOUT_LOG")" -eq 3 ]
   [ "$(grep -c '' "$EXEC_LOG")" -eq 3 ]
   # Every logged exec is the probe: the matching-line count equals the total line count.
   [ "$(grep -cxF 'exec console /usr/local/app/server probe /healthz 200' "$EXEC_LOG")" -eq 3 ]
+  # Two sleeps between the three attempts, each one 5 s.
+  [ "$(grep -c '' "$SLEEP_LOG")" -eq 2 ]
+  [ "$(grep -cxF 5 "$SLEEP_LOG")" -eq 2 ]
 }
 
-@test "console: step 4 is bounded at 300 s, 5 s apart; on timeout it dumps diagnostics and fails" {
-  _run_step4 0
+@test "console: without coreutils timeout on the host, step 4 still probes and returns on the first pass" {
+  _run_step4 2 none
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "console is ready"
+  [ "$(grep -c '' "$EXEC_LOG")" -eq 2 ]
+  [ "$(grep -cxF 5 "$SLEEP_LOG")" -eq 1 ]
+  # Nothing was bounded: no timeout shim was on this PATH.
+  [ ! -e "$TIMEOUT_LOG" ]
+  # The precondition this test rests on: the PATH it ran under has no timeout at all.
+  run env PATH="$BATS_TEST_TMPDIR/minbin" "$BASH" -c 'command -v timeout'
+  [ -z "$output" ]
+}
+
+@test "console: step 4 ends at the 300 s wall-clock deadline, probing every 5 s; on timeout it dumps diagnostics and fails" {
+  _run_step4 0 timeout
   [ "$status" -eq 1 ]
   refute_contains "$output" "RUNAWAY"
-  [ "$(grep -c '' "$EXEC_LOG")" -eq 60 ]
+  # Each failed attempt is followed by a 5 s sleep, so attempts and sleeps match, and every
+  # attempt is bounded. About 60 attempts span the 300 s deadline; real seconds spent in the
+  # test shorten that count a little, so the range allows for it.
+  local n
+  n=$(grep -c '' "$EXEC_LOG")
+  [ "$n" -ge 55 ]
+  [ "$n" -le 60 ]
+  [ "$(grep -c '' "$SLEEP_LOG")" -eq "$n" ]
+  [ "$(grep -cxF 5 "$SLEEP_LOG")" -eq "$n" ]
+  [ "$(grep -c '' "$TIMEOUT_LOG")" -eq "$n" ]
+  assert_contains "$output" "DIAGNOSTICS-DUMPED for console"
+  assert_contains "$output" "console did not become ready within 300s"
+}
+
+@test "console: a stalled probe spends real time against the deadline, so the loop ends after about 15 attempts" {
+  _run_step4 0 timeout stall
+  [ "$status" -eq 1 ]
+  refute_contains "$output" "RUNAWAY"
+  # A stalled probe costs 15 s and the sleep after it 5 s: 20 s per attempt, so 15 attempts reach
+  # the 300 s deadline. A loop that counted only its sleeps would run 60 attempts.
+  [ "$(grep -c '' "$TIMEOUT_LOG")" -eq 15 ]
+  [ ! -s "$EXEC_LOG" ]
   assert_contains "$output" "DIAGNOSTICS-DUMPED for console"
   assert_contains "$output" "console did not become ready within 300s"
 }
