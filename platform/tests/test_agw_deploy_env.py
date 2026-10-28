@@ -12,10 +12,10 @@ both rollback recreates).
 The structural guard cannot see a caller in an included task file, in a play whose `hosts:` is a
 variable, or one that uses `ansible.builtin.script`. The text backstop covers them: in every
 `*.yml` under platform/playbooks (tasks/ and vars/ included) that is recognisably the gateway's,
-each non-comment line that names a deploy.sh to run is counted (the name preceded by whitespace, a
-slash, a quote, a bracket or a comma; lines keyed `name:` or `msg:` only describe it), and the
-(file, count) set must equal KNOWN, so a new caller anywhere fails until it is added to KNOWN,
-where the structural check then covers it.
+each non-comment line that names a deploy.sh to run or the bounded runtime adapter is counted
+(the name preceded by whitespace, a slash, a quote, a bracket or a comma; lines keyed `name:` or
+`msg:` only describe it), and the (file, count) set must equal KNOWN, so a new caller anywhere
+fails until it is added to KNOWN, where the structural check then covers it.
 """
 
 import copy
@@ -44,7 +44,7 @@ PLAYBOOKS = REPO / "platform/playbooks"
 # A line that names a deploy.sh as something to run: the name preceded by whitespace, a slash, a
 # quote, a bracket or a comma (`bash deploy.sh`, `./deploy.sh`, `"{{ d }}/deploy.sh"`, an argv
 # list), however it is invoked. Lines whose key is a task title or a message only describe it.
-RUNS = re.compile(r"(?<=[\s/\"'\[,])deploy\.sh\b")
+RUNS = re.compile(r"(?<=[\s/\"'\[,])(?:deploy\.sh|verify-agentgateway-runtime-inputs\.py)\b")
 DESCRIBES = re.compile(r"^\s*(?:-\s*)?\w*(?:name|msg):")
 # What makes a file the gateway's: its name, a play that targets the gateway host group, or a
 # reference to the gateway's deployment directory. Other services' playbooks run an identical
@@ -55,7 +55,7 @@ GATEWAY_DIR = re.compile(r"^[^#\n]*agentgateway/deployment", re.M)
 
 
 def _text_callers(root: Path, base: Path) -> dict[str, int]:
-    """{path relative to base: deploy.sh runs} for the gateway's files under root."""
+    """{path relative to base: deploy calls or its fixed runtime adapter} under root."""
     found: dict[str, int] = {}
     for path in sorted(root.rglob("*.yml")):
         text = path.read_text()
@@ -75,7 +75,8 @@ def _runs_deploy_sh(task) -> bool:
             continue
         if isinstance(value, dict):
             value = [value.get("cmd", ""), *(value.get("argv") or [])]
-        if "deploy.sh" in " ".join(str(v) for v in playbook_yaml.strings(value)):
+        command = " ".join(str(v) for v in playbook_yaml.strings(value))
+        if "deploy.sh" in command or "verify-agentgateway-runtime-inputs.py" in command:
             return True
     return False
 
@@ -130,6 +131,10 @@ def test_the_text_backstop_finds_callers_in_included_files_variable_hosts_and_sc
             '- hosts: "{{ t }}"\n  tasks:\n    - shell: cd services/agentgateway/deployment && bash deploy.sh\n'
         ),
         "tasks/runs-script.yml": "- hosts: agentgateway_svc\n  tasks:\n    - ansible.builtin.script: ./deploy.sh --x\n",
+        "tasks/agw-runtime-adapter.yml": (
+            "- hosts: agentgateway_svc\n  tasks:\n"
+            "    - command:\n        argv: [python3, -c, verify-agentgateway-runtime-inputs.py]\n"
+        ),
         "deploy-other.yml": "- hosts: other_svc\n  tasks:\n    - shell: bash deploy.sh\n",
         "comment-only.yml": (
             "- hosts: agentgateway_svc\n  tasks:\n    # bash deploy.sh\n    - name: Show deploy.sh output\n"
@@ -143,6 +148,7 @@ def test_the_text_backstop_finds_callers_in_included_files_variable_hosts_and_sc
         "uses-hosts.yml": 1,
         "variable-hosts.yml": 1,
         "tasks/runs-script.yml": 1,
+        "tasks/agw-runtime-adapter.yml": 1,
     }
 
 

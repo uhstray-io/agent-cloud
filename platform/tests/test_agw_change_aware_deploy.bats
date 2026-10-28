@@ -46,6 +46,7 @@ if [ "$1" = exec ]; then [ -f "$S/not_ready" ] && exit 1; exit 0; fi
 if [ "$1" = ps ]; then
   # Only the project's own selector lists anything.
   [ "$*" = "ps -a --filter label=com.docker.compose.project.working_dir=$STUB_DIR --format {{.Names}}" ] || exit 0
+    [ -f "$S/project_unavailable" ] && { echo agentgateway-db; exit 0; }
   [ -f "$S/exists" ] && echo agentgateway
   echo agentgateway-db; exit 0
 fi
@@ -162,6 +163,7 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   [ "$status" -eq 0 ]
   assert_verify_engine_calls_read_only
   assert_contains "$output" "runtime-inputs-result: pass"
+  assert_contains "$output" "runtime-inputs-reason: matched"
   [ ! -s "$S/compose.log" ]
   [ "$(recreates)" -eq 1 ]
 
@@ -171,6 +173,7 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   [ "$status" -ne 0 ]
   assert_verify_engine_calls_read_only
   assert_contains "$output" "runtime-inputs-result: refused"
+  assert_contains "$output" "runtime-inputs-reason: inputs-not-matched"
   assert_contains "$output" "inputs changed"
   [ ! -s "$S/compose.log" ]
   [ "$(recreates)" -eq 1 ]
@@ -186,9 +189,55 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   [ "$status" -ne 0 ]
   assert_verify_engine_calls_read_only
   assert_contains "$output" "runtime-inputs-result: refused"
+  assert_contains "$output" "runtime-inputs-reason: readiness-unproven"
   assert_contains "$output" "readiness not answering"
   [ ! -s "$S/compose.log" ]
   [ "$(recreates)" -eq 1 ]
+}
+
+@test "agw deploy: verify-only emits fixed reasons for every comparison refusal without lifecycle calls" {
+  deploy
+  [ "$status" -eq 0 ]
+  cp "$S/label" "$S/matching_label"
+  : > "$S/compose.log"
+
+  local expected
+  for expected in gateway-state-unavailable gateway-not-running inputs-not-matched \
+      project-enumeration-unavailable image-not-matched readiness-unproven; do
+    rm -f "$S/exists" "$S/running" "$S/project_unavailable" "$S/not_ready"
+    echo img-1 > "$S/image_now"
+    echo img-1 > "$S/image_run"
+    echo db-1 > "$S/db_image_now"
+    echo db-1 > "$S/db_image_run"
+    printf 'binds: []\n' > "$D/config.yaml"
+    cp "$S/matching_label" "$S/label"
+
+    case "$expected" in
+      gateway-state-unavailable) ;;
+      gateway-not-running)
+        touch "$S/exists"; echo false > "$S/running";;
+      inputs-not-matched)
+        touch "$S/exists"; echo true > "$S/running"; echo stale > "$S/label";;
+      project-enumeration-unavailable)
+        touch "$S/exists"; echo true > "$S/running"; touch "$S/project_unavailable";;
+      image-not-matched)
+        touch "$S/exists"; echo true > "$S/running"; echo wrong > "$S/image_run";;
+      readiness-unproven)
+        touch "$S/exists"; echo true > "$S/running"; touch "$S/not_ready";;
+    esac
+
+    : > "$S/engine.log"
+    verify_only
+    [ "$status" -ne 0 ]
+    assert_contains "$output" "runtime-inputs-reason: $expected" || {
+      echo "Expected $expected; output was: $output" >&2
+      cat "$S/engine.log" >&2
+      return 1
+    }
+    assert_verify_engine_calls_read_only
+    [ ! -s "$S/compose.log" ]
+    [ "$(recreates)" -eq 1 ]
+  done
 }
 
 @test "agw change-aware: first deploy creates the gateway and labels it with its inputs" {
