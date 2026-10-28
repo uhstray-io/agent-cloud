@@ -2070,7 +2070,7 @@ assert 'otelcol.processor.attributes.conformance_logs.input' in conformance_limi
 assert 'otelcol.processor.attributes.conformance_logs.input' in alloy
 assert 'otelcol.exporter.loki "conformance"' in alloy
 assert 'action = "upsert"' in alloy
-assert 'value  = "job,service,step,status"' in alloy
+assert 'value  = "job,service,step,status,kind"' in alloy
 datasources = yaml.safe_load((deploy / 'config/grafana/provisioning/datasources/datasources.yml').read_text())['datasources']
 assert {d['uid'] for d in datasources} == {'prometheus', 'loki', 'tempo', 'pyroscope'}
 assert any(d['uid'] == 'tempo' and d['url'] == 'http://tempo:3200' for d in datasources)

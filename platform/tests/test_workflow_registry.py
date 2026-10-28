@@ -150,6 +150,27 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert "not new-event counts" in historical_failures["description"]
     assert historical_failures["options"]["wrapLogMessage"] is False
 
+    receipt = {"job": "agent-cloud-conformance", "kind": "run", "status": "success"}
+    per_service_panels = {
+        "Current failed step states",
+        "Latest step status by service",
+        "Latest workflow completion age",
+        "Latest workflow completion age by service and step",
+        "Workflow completion and task provenance",
+        "Recent failed task snapshots",
+    }
+    for panel in conformance["panels"]:
+        if panel["title"] not in per_service_panels:
+            continue
+        expr = panel["targets"][0]["expr"]
+        assert 'service=~".+"' in expr, panel["title"]
+        assert 'step=~".+"' in expr, panel["title"]
+    # The final run receipt has no per-service labels, so positive nonempty matchers keep it
+    # out of every service/step/failure row even though it shares the conformance job.
+    assert not receipt.get("service", "")
+    assert not receipt.get("step", "")
+    assert receipt["status"] != "fail"
+
     step_table = next(panel for panel in conformance["panels"]
                       if panel["title"] == "Latest step status by service")
     assert [item["id"] for item in step_table["transformations"]] == [
@@ -209,7 +230,9 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert "} or {" not in container_query
     assert 'signal="access-log"' in source_panels["Recent gateway access records"]["targets"][0]["expr"]
     assert 'signal="span"' in source_panels["Recent optional span logs"]["targets"][0]["expr"]
-    assert 'job="agent-cloud-conformance"' in source_panels["Recent workflow conformance records"]["targets"][0]["expr"]
+    recent_conformance = source_panels["Recent workflow conformance records"]["targets"][0]["expr"]
+    assert recent_conformance.startswith('{service=~"$log_service", job="agent-cloud-conformance"}')
+    assert 'job="agent-cloud-conformance"' in recent_conformance
     unclassified = source_panels["Recent unclassified records"]
     assert unclassified["targets"][0]["expr"] == (
         '{service=~"$log_service", container!~".+", '

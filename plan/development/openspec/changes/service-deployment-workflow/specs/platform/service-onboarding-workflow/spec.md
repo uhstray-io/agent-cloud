@@ -128,3 +128,9 @@ criteria not met, error context, undo availability and Semaphore task reference.
 - **THEN** the shared silence rule alerts after a reviewed integer-hour window selected from the verified effective schedule, normal run duration, and allowed missed runs
 - **AND** receiver acceptance alone does not count as durable Loki ingestion; a known failure before the send boundary does not reset the clock, while ambiguous post-acceptance acknowledgement may have delivered a record that resets it, and the existing `renew-internal-certs` 36-hour default is preserved
 - **AND** the live schedule, queryable success receipt, pre-boundary failure behavior, ambiguous-acknowledgement status/readback, rule expression/state, and existing notification delivery are separately verified before acceptance
+
+#### Scenario: Global completion receipt is not per-service state
+- **WHEN** the service-conformance dashboard reads the collector's fixed `kind=run` completion receipt
+- **THEN** its per-service step, age, provenance, and failed-task queries require nonempty `service` and `step` labels and do not select the global receipt
+- **AND** the receipt cannot increase tracked-service counts, appear as a failed step or task, or substitute for the existing `step=none` inventory markers
+- **AND** adding `kind` to the conformance Alloy label hint leaves existing per-step stream labels and inventory markers unchanged

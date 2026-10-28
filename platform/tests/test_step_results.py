@@ -446,7 +446,7 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     assert 'key    = "loki.format"' in processor
     assert 'action = "upsert"' in processor
     assert 'value  = "raw"' in processor
-    assert 'value  = "job,service,step,status"' in processor
+    assert 'value  = "job,service,step,status,kind"' in processor
     assert 'logs = [otelcol.exporter.loki.conformance.input]' in processor
 
     dashboard = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
@@ -464,7 +464,7 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     assert failure_panel["timeFrom"] == "7d"
     assert failure_panel["targets"][0]["maxLines"] == 100
     assert failure_panel["targets"][0]["expr"] == (
-        '{job="agent-cloud-conformance", status="fail"} | json | '
+        '{job="agent-cloud-conformance", service=~".+", step=~".+", status="fail"} | json | '
         'line_format "{{.service}}/{{.step}} task={{.task_id}}: '
         '{{printf \\\"%.180s\\\" .error}}" | keep job, service, step, status'
     )
@@ -780,7 +780,7 @@ def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
     dash = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
                                "service-conformance.json").read_text())
     exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
-    assert 'step!="none"' in exprs["Latest step status by service"]
+    assert 'service=~".+", step=~".+", step!="none"' in exprs["Latest step status by service"]
     assert "last_over_time" in exprs["Latest step status by service"]
     assert '| json state_code | unwrap state_code' in exprs["Latest step status by service"]
     assert 'by (service, step)' in exprs["Latest step status by service"]

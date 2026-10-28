@@ -1233,10 +1233,15 @@ the declared private `o11y_otlp_bind`, at port `4318` and path `/v1/logs`.
 This receiver is separate from the gateway's OTLP/gRPC listener on `4317`.
 Site-config allows TCP/4318 only from the controller CIDR. The collector checks
 that its URL exactly matches the receiver bind and fails visibly when delivery
-fails. Alloy applies `job`, `service`, `step`, and `status` as the conformance-
-specific Loki labels. The shared Loki writer also adds `cluster` and
+fails. Alloy's conformance-specific label hint includes `job`, `service`,
+`step`, `status`, and `kind`. Existing per-step records retain their four-label
+schema; the fixed completion receipt adds only `kind=run` and has no `service`
+or `step`. Per-service dashboard queries require nonempty `service` and `step`
+labels, keeping that global clock record out of service state, failure, and
+inventory-marker rows. The shared Loki writer also adds `cluster` and
 `environment` labels; task identifiers and error details stay in the log body.
-Local development keeps the loopback direct-Loki path.
+This source contract does not prove a live receipt or Loki readback. Local
+development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 

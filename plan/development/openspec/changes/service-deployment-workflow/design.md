@@ -394,7 +394,10 @@ coverage is complete or every service passed. Preserve `history_incomplete`,
 Implement this as the narrow second record variant in the existing encoder and
 Alloy receiver allowlist. Add only the fixed `kind=run` completion form; do not
 relax the accepted keys/statuses globally or let the run record forge a
-per-service step. A failed or interrupted read, check-mode/skipped write, or
+per-service step. The conformance label hint includes `kind` for this variant;
+per-service step, age, provenance, and failed-snapshot dashboard queries require
+nonempty `service` and `step` labels, so the global receipt is not a service row,
+failure, or inventory marker. A failed or interrupted read, check-mode/skipped write, or
 failed/unknown required configured write before the completion boundary prevents
 sending a success receipt. Keep NetBox's explicitly nonblocking outage behavior
 and visible failure record, while withholding the receipt when a required
