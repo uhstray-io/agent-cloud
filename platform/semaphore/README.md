@@ -178,10 +178,37 @@ inventory before revocation. Run it during an exclusive token-change window:
 the API has no server-side compare-and-delete, so another operator changing
 tokens outside this command cannot honor the local lock.
 
-Until an operator token is provisioned, the honest state is: **operator launches
-from the UI; the agent hands over the exact template name, survey values and the
-verification commands.** Do not fabricate access by reading the controller's own
-token out of OpenBao from a workstation.
+### Getting your own operator token
+
+Every operator mints their own token, under their own Semaphore account, so each
+launch is attributed to the person who made it (issue #741). Nobody hands out a
+token, and nobody uses another account's token.
+
+1. **Be declared.** An administrator is an entry in `platform_admins`; any other
+   operator is an entry in `semaphore_project_members` (username to role). Both are
+   in site-config's top-level `all.vars`, so access changes only through a reviewed diff.
+2. **Sign in once** at the controller in a browser, through SSO. The browser passes
+   the Cloudflare challenge that blocks a scripted `/api/auth/login`. The first
+   sign-in creates a plain account that belongs to no project.
+3. **An admin converges access.** For an administrator, **Promote Semaphore Admins (Dev)**
+   sets the admin flag and reads it back. For any other operator, **Manage Semaphore
+   Access (Dev)** adds the declared membership; run it under check mode first. Until
+   one of these runs, the account sees only the **New project** button (issue #604).
+4. **Mint the token.** In the user menu, open **API Tokens** (`/tokens`) and choose
+   **New Token**. The page is open to every signed-in user, not only admins
+   (Semaphore v2.19.11 `web/src/App.vue`, `web/src/views/Tokens.vue`); it calls
+   `POST /api/user/tokens` for your own account.
+5. **Store it** at `~/.config/semaphore/operator-token`, mode `0600`, and pass it on
+   stdin only. A request that carries an `Authorization` header passes the edge's
+   WAF skip rule, so `scripts/semaphore-launch.py` works from the workstation.
+
+`site-config/secrets/semaphore/semaphore_api_token.txt` holds the bootstrap `admin`
+account's token, as recovery material. It is not anyone's daily operator token.
+Rotate your own token with `scripts/semaphore-rotate-token.py` (above).
+
+Without a token, the operator launches from the UI and the agent hands over the
+exact template name, survey values and verification commands. Do not fabricate
+access by reading the controller's own token out of OpenBao from a workstation.
 
 ## Two catalog rules, enforced by tests
 
