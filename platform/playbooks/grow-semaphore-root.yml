@@ -1,0 +1,56 @@
+---
+# grow-semaphore-root.yml: grow the Semaphore host's root filesystem into its virtual disk, online.
+#
+# Why this exists: the production Semaphore host's root filesystem ran out of space ("No space
+# left on device", Semaphore task 9541, 2026-10-27) while a job cloned the repository. Production
+# Semaphore's root filled once before (MISTAKES 1.18): Postgres failed WAL recovery with the same
+# ENOSPC and every API lookup errored, which read as an auth failure. Resize VM (resize-vm.yml)
+# grows only the Proxmox disk and says the guest must be grown separately; this is that guest
+# half, as code: partition -> PV -> root LV and its ext4 filesystem, through the shared
+# tasks/grow-root-lvm.yml that grow-o11y-root.yml and grow-github-runner-root.yml also import.
+#
+# Online and bounded. This runs from Semaphore against Semaphore's own host. It neither restarts
+# nor reconfigures Semaphore: the helper grows the partition, PV, LV and filesystem with no
+# reboot, no unmount and no container restart. AGENTS.md forbids a Semaphore job from restarting
+# or reconfiguring its own container; this play does neither. Ansible's remote temp lives on
+# tmpfs because the root may be full.
+#
+# If the dry run reports a disk far below its declaration, the Proxmox disk itself was never
+# grown: run Resize VM (resize-vm.yml) first, then this.
+#
+# Safe under --check: the plan reads the chain and runs growpart's own dry run (-N). A real run
+# takes only the steps the plan lists; every step is idempotent, so a re-run reports nothing to
+# do. Bound to the reviewed commit: the template requires expected_repository_sha
+# (require-reviewed-checkout.yml). `--tags verify` changes nothing and fails unless the root is
+# fully grown: it re-reads the chain and requires an empty plan.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: semaphore_svc
+    preflight_group_expected: semaphore_svc
+  # Under --tags verify too: a verify run over no hosts would otherwise pass (MISTAKES 2.21).
+  tags: [always]
+
+- name: "Reviewed checkout"
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: "Grow the Semaphore root filesystem"
+  hosts: semaphore_svc
+  gather_facts: false
+  become: false
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/grow-root-lvm.py') }}"
+  tasks:
+    # Shared with grow-o11y-root.yml and grow-github-runner-root.yml. A static import, so
+    # `--tags verify` reaches each task.
+    - name: "Grow the root filesystem"
+      ansible.builtin.import_tasks: tasks/grow-root-lvm.yml
