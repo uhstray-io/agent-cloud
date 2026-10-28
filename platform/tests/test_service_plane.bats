@@ -116,6 +116,19 @@ PY
   refute_grep -qE 'print\(.*password' "$DEPLOY_DIR/configure_instance.py"
 }
 
+@test "plane: the proxy stays down until the instance is set up" {
+  # The proxy is the only way in, and the first admin to sign up claims the instance, so
+  # setup runs against the API directly and the proxy starts only afterwards.
+  local f="$DEPLOY_DIR/deploy.sh"
+  grep -qF 'compose_staged_up()' "$f"
+  grep -qF "grep -vx proxy" "$f"
+  assert_precedes "$f" 'if instance_set_up; then' 'compose up -d --force-recreate --no-deps proxy'
+  grep -qF 'PLANE_PROXY_HELD=true' "$f"
+  grep -qF "'base': 'http://localhost:8000'" "$PLAYBOOK"
+  assert_precedes "$PLAYBOOK" 'Converge instance setup' 'Start the proxy now that the instance is set up'
+  grep -qF "'PLANE_PROXY_HELD=true' in _deploy_proxy.stdout_lines" "$PLAYBOOK"
+}
+
 @test "plane: verify probes the API through the proxy, not /" {
   # The proxy serves / from the web frontend, which stays up over a dead API (MISTAKES 2.19).
   grep -qF "http://proxy:80/api/instances/" "$PLAYBOOK"

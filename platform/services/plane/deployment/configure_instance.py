@@ -1,14 +1,15 @@
 """Converge a Plane instance's first-run configuration through its own session routes.
 
-Run by deploy-plane.yml INSIDE the plane-api container (`<engine> exec -i plane-api python -`),
-with a JSON document on stdin after the script, so it reaches the proxy over the stack's own
-network and no credential is ever on a command line. Prints one JSON line naming what it
-changed; never prints a credential. Idempotent: a second run changes nothing.
+Run by deploy-plane.yml INSIDE the plane-api container (`<engine> exec -i plane-api python -c`),
+with a JSON document on stdin, so it talks to the API on localhost:8000 and no credential is
+ever on a command line. Prints one JSON line naming what it changed; never prints a
+credential. Idempotent: a second run changes nothing.
 
 Why it exists: until the first admin signs up, ANYONE who can reach /god-mode/ claims the
-instance, so setup completes in the same deploy run, before the edge route is opened. Plane
-offers no API key for instance settings; these are the routes its own admin app uses
-(proven on a Commercial v3.3.3 instance, design.md "Runtime spike results", 0.3 and 0.5).
+instance. deploy.sh therefore holds the proxy, the only way in, until the instance is set up,
+and this script completes setup against the API directly. Plane offers no API key for
+instance settings; these are the routes its own admin app uses (proven on a Commercial v3.3.3
+instance, design.md "Runtime spike results", 0.3 and 0.5).
 
   1. Instance setup: admin sign-up (only while the instance is not set up).
   2. Admin sign-in (every run; the session drives 3 and 4).

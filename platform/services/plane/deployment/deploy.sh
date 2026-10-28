@@ -55,10 +55,39 @@ step_pull_images() {
   compose pull
 }
 
+# Is the instance set up? Asked of the API directly, inside its own container.
+instance_set_up() {
+  $CONTAINER_ENGINE exec plane-api python -c \
+    "import json, sys, urllib.request; sys.exit(0 if json.load(urllib.request.urlopen('http://localhost:8000/api/instances/', timeout=10))['instance']['is_setup_done'] else 1)"
+}
+
+# The staged start compose_up_if_changed calls when the project must be (re)created. The proxy
+# is the ONLY way in, and until the first admin signs up anyone who reaches /god-mode/ claims
+# the instance. So every other service starts first, and the proxy starts only once the
+# instance is set up. Otherwise it stays down (an old one is removed) and PLANE_PROXY_HELD=true
+# tells deploy-plane.yml to complete setup against the API directly and run this script again.
+compose_staged_up() {
+  local others
+  others=$(compose_services | grep -vx proxy)
+  # shellcheck disable=SC2086  # one service name per word
+  compose up -d --force-recreate --remove-orphans $others || return 1
+  wait_for_healthy plane-api 600
+  if instance_set_up; then
+    compose up -d --force-recreate --no-deps proxy || return 1
+  else
+    info "Instance not set up yet: the proxy stays down until deploy-plane.yml completes setup."
+    if $CONTAINER_ENGINE inspect plane-proxy >/dev/null 2>&1; then
+      $CONTAINER_ENGINE rm -f plane-proxy >/dev/null || return 1
+    fi
+    echo "PLANE_PROXY_HELD=true"
+  fi
+}
+
 step_start() {
   info "Step 3: Starting Plane..."
   # Recreates only when an input or image changed and prints DEPLOY_CHANGED for the playbook.
   # The migrator is a labelled one-shot: once it has exited 0 it is finished, not a change.
+  # A held proxy is a missing container, so the run after setup recreates and starts it.
   compose_up_if_changed
 }
 

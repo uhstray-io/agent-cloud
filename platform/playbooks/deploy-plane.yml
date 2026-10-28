@@ -183,7 +183,7 @@
           - -c
           - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/configure_instance.py') }}"
         stdin: >-
-          {{ {'base': 'http://proxy:80',
+          {{ {'base': 'http://localhost:8000',
               'host': plane_public_url | urlsplit('hostname'),
               'origin': plane_public_url,
               'email': plane_automation_email,
@@ -207,6 +207,23 @@
       ansible.builtin.debug:
         msg: "{{ _plane_configure_summary.actions | default([]) or ['instance, sign-up and workspace already in place'] }}"
       when: not ansible_check_mode
+
+    # deploy.sh held the proxy (the only way in) while the instance was not set up. Setup is
+    # done now, so run it again: the missing proxy is a change, and its staged start opens it.
+    - name: "Start the proxy now that the instance is set up"
+      ansible.builtin.shell: |
+        cd "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/{{ monorepo_deploy_path }}"
+        bash deploy.sh --no-pull
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+      register: _deploy_proxy
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy_proxy.stdout_lines"
+      failed_when: _deploy_proxy.rc != 0 or 'PLANE_PROXY_HELD=true' in _deploy_proxy.stdout_lines
+      when:
+        - not ansible_check_mode
+        - "'PLANE_PROXY_HELD=true' in (_deploy.stdout_lines | default([]))"
 
 # ── Phase 4: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 4: Verify plane"
