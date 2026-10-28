@@ -180,6 +180,8 @@ and why.
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 10.28 | The seed address check read the inventory as YAML; local-dev registers INI, so every seed template had been unrunnable locally since the check landed and nobody had run one | Mechanism never exercised | 1 | Bootstrap registers `static-yaml` + test (`test_sync_local_o11y_alert_inventory.py`, mutation-checked) |
 | 10.29 | Fixed the container hooks' HOME failure with a `docker` wrapper that patched the CLI path, while the design named the API socket and its open spike would have shown the CLI path was the cause; the wrapper never reached the process that runs jobs, so the runners kept failing | Mechanism never exercised | 1 | Playbook (requires Docker's CLI client, `DOCKER_HOST` probe) + local smoke harness (`hooks-smoke/`, must reproduce the shim failure) + test (`test_service_github_runner.bats`, `test_install_podman.bats`, mutation-checked) |
+| 10.30 | Recorded issue #604's fix as built when it merged; its `(Dev)` template had never been published, so the second operator stayed without access for nine days | Mechanism never exercised | 1 | Convention (catalog-drift check proposed) |
+| 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -5089,6 +5091,52 @@ real hooks through prepare, a step and cleanup, and fails unless the shim reprod
 and `test_install_podman.bats` hold each of these, each assertion seen to fail once under
 a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
 hosts").
+
+### 10.30 Issue #604's fix was recorded as built; its template had never been published, so it never ran
+
+**What happened.** `plan/architecture/04-credentials-access.md` recorded the Semaphore admin
+tier as "[BUILT 2026-10-18, issue #604]": `platform_admins` became the admin roster, and
+**Promote Semaphore Admins** would grant the flag. The template `templates.yml` declares
+for it is `dev_variant: true`, and the copy of the playbook on `main` still read only
+`semaphore_admin_users`. On 2026-10-27 the production project held "Promote Semaphore
+Admins" (bound to `main`) and no "(Dev)" variant. `scripts/semaphore-launch.py --template
+"Promote Semaphore Admins (Dev)"` answered `Expected one template named ...`.
+`GET /api/users` listed the second operator's account with `admin: false`, nine days after the
+fix was recorded as built. Issue #604 stayed open with the second operator still unable
+to see the project.
+
+**Root cause.** "Built" was recorded when the code merged into `dev`. The live step had
+three parts: publish the `(Dev)` template (an operator-side `setup-templates.yml` run),
+have the operator sign in once, then launch the template. Nothing recorded those as owed,
+and the issue had no comment saying the fix needed a run.
+
+**The rule.** A fix whose effect needs a live run is not built until that run is recorded,
+with its task ID, on the issue. Until then, write "merged, not run" and list the runs
+still owed.
+
+**Enforced by.** Convention. Proposed: a check-mode `setup-templates.yml` pass that names
+every declared template missing from the live catalog, run with each inventory sync.
+
+### 10.31 The token rotation left the committed recovery copy stale, and a second operator used it
+
+**What happened.** The Semaphore token rotation (#575, #583, 2026-10-12) revoked the token
+that `site-config/secrets/semaphore/semaphore_api_token.txt` held. The new value went into
+one workstation's working tree and was never committed. On 2026-10-25 the second operator
+read the committed file, got `401` on `/api/user`, and recorded the deploy of #717 as
+blocked (issue #741). The runner fix (#609) stayed undeployed for two more days.
+
+**Root cause.** The rotation script updates one workstation's backup file
+(`~/.config/semaphore/operator-token`) by design. It knows nothing of the recovery copy in
+site-config, and no step said that copy had to follow. A second problem made it worse: the
+operating guide named no way for a second operator to get their own token, so the shared
+recovery copy was the only path anyone could find.
+
+**The rule.** A credential rotation lists every copy of the value it replaces, recovery
+copies included, and updates or deletes each one in the same change. Each operator mints
+their own token (`platform/semaphore/README.md`, "Getting your own operator token"); the
+recovery copy is for recovery only.
+
+**Enforced by.** Convention (the README steps, site-config #123).
 
 ## 11. The largest one
 

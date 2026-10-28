@@ -155,6 +155,9 @@
         label: "{{ item.username }} <{{ item.email }}>"
       register: _sem_promoted
       changed_when: true
+      # A failure here is hidden by no_log, so the status codes are judged below, where they
+      # can be shown (task 9843 failed with nothing but "details hidden", #604).
+      failed_when: false
       no_log: true  # bearer token rides in headers — never dump it (failure/-vvv)
       when: not ansible_check_mode
 
@@ -162,8 +165,22 @@
       ansible.builtin.debug:
         msg: >-
           Promotion PUT statuses:
-          {{ _sem_promoted.results | default([]) | map(attribute='status') | list }}
+          {{ _sem_promoted.results | default([]) | map(attribute='status', default=-1) | list }}
       # Under --check the promotion loop is skipped and its results carry no status.
+      when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
+
+    - name: "Require Semaphore to accept every promotion"
+      vars:
+        _refused: >-
+          {{ _to_promote | map(attribute='username')
+             | zip(_sem_promoted.results | map(attribute='status', default=-1))
+             | rejectattr('1', 'in', [200, 204]) | list }}
+      ansible.builtin.assert:
+        that: _refused | length == 0
+        fail_msg: >-
+          Semaphore refused these promotions (username, HTTP status; -1 means no answer): {{ _refused }}.
+          A 401 is either a token Semaphore does not accept or a token whose user may not edit
+          that account (not an admin, or the account is its own).
       when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
 
     # A PUT the server answered is not proof it applied: read the accounts back.
