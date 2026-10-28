@@ -211,11 +211,11 @@ Caddy is a dedicated Infrastructure-tier host [3]. In production it is one rootl
 container run from a hand-maintained directory, not from the monorepo's compose file; the inventory
 records that directory as `compose_working_dir` so the persistence checks find it [8]. The
 monorepo's compose file publishes ports 80 and 443 and uses a Caddy build with the Cloudflare DNS
-plugin [17]. The platform's TLS strategy is public certificates through the Cloudflare DNS-01
-challenge [3], and the repository's legacy Caddyfile blocks use it [49]; AGENTS.md records the
-`auth` and `canvas` routes as `tls internal` [50]. The TLS mode of each production route lives in
-site-config and is UNVERIFIED here, as is the zone's Cloudflare SSL mode, which decides how
-Cloudflare connects to the origin.
+plugin [17]. Every browser route in the production declaration obtains a Let's Encrypt
+certificate through the Cloudflare DNS-01 challenge, the platform's public TLS strategy [3][50],
+as the repository's legacy Caddyfile blocks do [49]; the inference, operator-UI and MCP routes add
+the mutual-TLS upstream transport to agentgateway [50]. The zone's Cloudflare SSL mode, which
+decides how Cloudflare connects to the origin, is not in the repository and is UNVERIFIED.
 
 Production routes are raw Caddyfile blocks in site-config's `caddy_managed_sites`, written into a
 marked region of the live Caddyfile by `Manage Caddy Sites`, which validates the result and
@@ -569,9 +569,8 @@ visible so a later reader does not reopen them without new evidence.
 This document synthesises material that already exists; it adds no new decision. The pieces it
 rests on, by area:
 
-- **Constitution.** `PRINCIPLES.md` §6 sets the TLS, private-CA and recovery rules and records that
-  the host firewall was a pending canary when written [2]. The firewall has since been applied on the
-  DNS, o11y and CA hosts and the runner hosts, but not recorded as universal (section 6 above).
+- **Constitution.** `PRINCIPLES.md` §6 sets the TLS, private-CA and recovery rules, and its as-built
+  caveat records where the host firewall is applied and that it is not yet universal [2].
 - **Edge.** The Cloudflare zone is OpenTofu under `platform/infra/cloudflare/`: one proxied record
   list [12], a custom firewall ruleset whose order matters [13], and a rate-limit ruleset whose own
   comments record the staged log-then-block rollout [14]. The rationale for the timeout and the
@@ -690,15 +689,12 @@ without trusting the prose.
 
 ## Where older documents disagree
 
-Several documents predate the facts above. They are left unedited here (this document does not
-change them); the table gives the newer fact and its date so a reader can resolve the conflict.
+On 2026-10-27 the stale statements this survey found in `05-platform-infra.md`, `PRINCIPLES.md`,
+AGENTS.md, plan 06 and the agentgateway record were corrected in place. One known disagreement
+remains; the table gives the newer fact and its date so a reader can resolve it.
 
 | Older statement | Newer fact | Date and source |
 |---|---|---|
-| "CloudFlare is DNS-only for most hostnames" (`05-platform-infra.md`, Traffic Flow) | Every platform record is proxied | `dns.tf` [12] |
-| The inference DNS record "is NOT yet in `dns.tf`" (AGENTS.md, Deployment Status) | Adopted by an import block | 2026-09-15, `imports-inference.tf` [12] |
-| Production gateway "rollout pending" (agentgateway architecture header) | `/v1/*` routed through the gateway | 2026-10-14 [21] |
-| Host firewall "still a pending canary" (`PRINCIPLES.md` §6) | Applied on the DNS, o11y, CA and runner hosts; not yet universal | 2026-09-29 onward [11][34][36] |
 | Internal DNS, CA and Caddy authorities "LIVE (local-dev)" (plan 03 authority table) | Production CA deployed; production DNS VM provisioned, service not deployed | 2026-09-29 [9][32] |
 
 ## Cross-references
@@ -769,7 +765,7 @@ document; for the long, frequently edited documents the section name is given as
 47. `docs/LOCAL-DEV.md:205-224`
 48. `platform/infra/cloudflare/ratelimit.tf:1-30` (plan tier and per-data-center counting)
 49. `platform/services/caddy/deployment/Caddyfile:9-16`
-50. `AGENTS.md`, Deployment Status, "Caddy (flat-Caddyfile site)"
+50. site-config `inventory/production.yml`, `caddy_managed_sites` (private repository; TLS directives read 2026-10-27, no values reproduced)
 51. `plan/development/openspec/changes/production-internal-ca/proposal.md:1-25`
 
 ## Revision History

@@ -566,13 +566,12 @@ These checks let a reader confirm the catalog without trusting the prose.
 
 ## Where older documents disagree
 
-These older statements predate the facts above. They are left unedited; the table gives the newer
-fact and its date.
+These older statements predate the facts above and are not corrected in place; the table gives
+the newer fact and its date.
 
 | Older statement | Newer fact | Date and source |
 |---|---|---|
 | tududi listed as a deployed production service (AGENTS.md, Completed) | Retired by decision; Plane replaces it | 2026-10-23 [23] |
-| agentgateway "still Proposed" (plan 06 pointer) | Accepted, and in the production path | 2026-10-12, 2026-10-14 [16][44] |
 | Dispatch Console plan "PROPOSED" (plan 17) | Code and deploy templates merged; production run not recorded | 2026-10-26 [21] |
 | WisBot's `/wisllm` depends on the WisAI endpoint | The WisAI plane was never built; skynet supersedes it | 2026-06-23 [29][41] |
 

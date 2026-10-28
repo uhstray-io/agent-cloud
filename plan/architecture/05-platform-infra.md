@@ -71,8 +71,8 @@ flowchart LR
 
 Key properties:
 - **All external traffic enters on port 443.** Port 80 redirects to 443 (Caddy default).
-- **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead.
-- **CloudFlare is DNS-only for most hostnames.** Caddy handles TLS directly with DNS-01 certs. The exceptions are the proxied (orange-cloud) hostnames — the platform records adopted into `platform/infra/cloudflare/dns.tf` and `inference.uhstray.io` — where Cloudflare sits in the request path; see "Cloudflare-proxied hostnames" below for what that decides.
+- **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead. The exception is the agentgateway routes (inference, its operator UI, MCP): Caddy re-encrypts to the gateway with mutual TLS from the internal CA (see "Mutual-TLS Upstream Block" below).
+- **Every platform hostname is proxied by Cloudflare (orange cloud).** All platform records, including the inference hostname (hand-made, adopted into code 2026-09-15), are declared `proxied = true` in `platform/infra/cloudflare/dns.tf`, so Cloudflare sits in the request path for each of them; see "Cloudflare-proxied hostnames" below for what that decides. Caddy still holds its own DNS-01 certificates for the origin. (Corrected 2026-10-27: this line previously said most hostnames were DNS-only.)
 - **Internal services are not internet-exposed.** Only Caddy's ports 80/443 are forwarded through the router.
 
 ---
@@ -452,8 +452,8 @@ declared in site-config, not in this repository.
 - **Certificates follow the names.** Each member's leaf carries its instance name and its
   service name as SANs; the gateway's model `tls.hostname` is the service name. A TLS
   wildcard matches exactly one label (RFC 9525 §6.3), so the one-label local-dev wildcard
-  (`*.agent-cloud.test`, line 201 of this document) does not cover names under a site
-  label.
+  (`*.agent-cloud.test`, the "Internal TLS" row of "TLS strategy" above) does not cover
+  names under a site label.
 
 **Applied example.** agent-cloud is a template to deploy on; which hosts, instances and
 addresses a site has is declared in that site's site-config, never here. The example uses
