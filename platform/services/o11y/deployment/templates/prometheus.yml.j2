@@ -95,6 +95,7 @@ scrape_configs:
           cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
           environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
 
+{% if not ((o11y_availability_probes_enabled | default(false)) is sameas true) %}
   - job_name: alloy
     body_size_limit: {{ _o11y_scrape_limits.body_size_limit_bytes | mandatory | int }}B
     sample_limit: {{ _o11y_scrape_limits.sample_limit | mandatory | int }}
@@ -111,6 +112,7 @@ scrape_configs:
           target_id: service:o11y
           cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
           environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+{% endif %}
 
   - job_name: tempo
     body_size_limit: {{ _o11y_scrape_limits.body_size_limit_bytes | mandatory | int }}B

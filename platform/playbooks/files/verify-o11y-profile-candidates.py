@@ -116,9 +116,10 @@ def _profile_blocks(config: str) -> dict[str, str]:
     return blocks
 
 
-def validate_candidates(disabled: str, enabled: str) -> dict[str, object]:
+def validate_candidates(disabled: str, enabled: str, profile_address: str = "alloy:12345") -> dict[str, object]:
     """Check the two rendered configurations contain exactly the approved pilot."""
-    if not isinstance(disabled, str) or not isinstance(enabled, str):
+    if (not isinstance(disabled, str) or not isinstance(enabled, str)
+            or profile_address not in {"alloy:12345", "127.0.0.1:12345"}):
         raise Refusal("candidate_invalid")
     if max(len(disabled.encode("utf-8")), len(enabled.encode("utf-8"))) > MAX_CONFIG_BYTES:
         raise Refusal("candidate_invalid")
@@ -138,7 +139,7 @@ def validate_candidates(disabled: str, enabled: str) -> dict[str, object]:
     writer = blocks["pyroscope.write.private"]
     required_scrape = (
         'job_name = "o11y/alloy"',
-        '"__address__" = "alloy:12345"',
+        f'"__address__" = "{profile_address}"',
         '"service_name" = "o11y/alloy"',
         '"target_id" = "service:o11y"',
         'scrape_interval = "60s"',
@@ -527,9 +528,13 @@ def _project_disabled_components(components: object) -> str:
 
 
 def validate_runtime(payload: object) -> dict[str, object]:
-    if not isinstance(payload, dict) or set(payload) != {"disabled", "enabled"}:
+    if not isinstance(payload, dict) or set(payload) not in (
+        {"disabled", "enabled"}, {"disabled", "enabled", "profile_address"}
+    ):
         raise Refusal("candidate_invalid")
-    structure = validate_candidates(payload["disabled"], payload["enabled"])
+    structure = validate_candidates(
+        payload["disabled"], payload["enabled"], payload.get("profile_address", "alloy:12345")
+    )
     image_id, image_ref = _image_identity()
     live_image_id = _live_receiver_image_identity()
     if live_image_id != image_id:

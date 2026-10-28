@@ -172,6 +172,38 @@ scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
 
+### Native endpoint availability source contract — task 2.2/3.3 source slice
+
+The private estate declaration remains the only target authority. An applicable
+`signals.health` entry may opt into `collection_method: alloy-blackbox-http`
+with one fixed RFC1918 IPv4 HTTP(S) GET endpoint, exact accepted statuses, and
+`budget.health` interval, timeout, body, and sample limits. HTTPS requires a
+reviewed DNS server name and `system` or `internal-ca` trust; certificate
+verification stays enabled. Redirects and environment proxying are disabled.
+Endpoints, TLS names, and activation limits belong in site-config, never in this
+repository, command logs, or rendered labels.
+
+Source validation requires a matching canonical inventory revision, explicit
+reviewed enablement, a nonempty deployed target set, receiver-matching
+environment, and finite limits. Source safety ceilings are 64 targets, 30–3600
+second intervals, probe timeout at most 10 seconds, scrape timeout at most 30
+seconds with probe < scrape <= interval, response bodies at most 65,536 bytes,
+raw scrape samples at most 256 and within the existing shared cap, aggregate
+probe timeout at most 120 seconds, and at most 384 retained series. These are
+hard source ceilings, not production defaults or a measured cadence. The
+candidate retains six fixed families and fixed service, target, environment,
+cluster, job, and instance labels; endpoint text is not a label.
+
+Availability is explicitly off by default. The deploy preflight currently
+refuses an enabled declaration until the actual Linux network-namespace proof
+and post-apply Alloy component readback gates are implemented and verified.
+Candidate rendering, source tests, and the public source flag do not establish
+runtime availability or authorize probe traffic. The Alloy handler and profile
+consumer use loopback in the availability overlay; internal-CA trust uses the
+existing public CA bundle in a read-only mount, deduplicated with the OTLP TLS
+overlay. Existing self-monitor labels and metrics are forwarded through the
+existing private receiver path. Keep task 3.3 and all live acceptance gates open.
+
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
 candidate object is complete. It compares every fixed public job category in

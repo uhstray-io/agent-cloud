@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import re
 from pathlib import Path
@@ -18,6 +19,9 @@ LIMITS = {
     "label_name_length_limit": 128,
     "label_value_length_limit": 2048,
 }
+# Deterministic synthetic host from the canonical RFC1918 test network; this is
+# not derived from any site inventory or deployment topology.
+PRIVATE_TEST_IP = str(ipaddress.ip_network("192.168.0.0/16")[20])
 LIMIT_FIELDS = {
     "body_size_limit": f"{LIMITS['body_size_limit_bytes']}B",
     "sample_limit": LIMITS["sample_limit"],
@@ -71,6 +75,12 @@ def _production_validator_accepts(**values):
 def _render_yaml(name, **values):
     source = (DEPLOY / "templates" / name).read_text(encoding="utf-8")
     return yaml.safe_load(_environment().from_string(source).render(**values))
+
+
+def _render_alloy(**values):
+    return _environment().from_string(
+        (DEPLOY / "templates/config.alloy.j2").read_text(encoding="utf-8")
+    ).render(**values)
 
 
 def _assert_bounded(job, sample_limit=None):
@@ -202,6 +212,164 @@ def test_alloy_socket_discovery_and_container_metrics_render_only_in_local_mode(
         assert component in local
         assert component in production
     assert "unix:///var/run/docker.sock" not in production
+
+
+def test_availability_source_renders_bounded_native_components_and_preserves_self_monitor():
+    prepared = {
+        "enabled": True,
+        "limits": {"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+        "targets": [{
+            "module_name": "health_01", "target_id": "service:alpha",
+            "service_identity": "alpha", "environment": "production", "cluster": "prod-cluster",
+            "endpoint": f"https://{PRIVATE_TEST_IP}/healthz", "expected_status_codes": [200],
+            "tls_server_name": "health.example.invalid", "trust": "system",
+            "interval_seconds": 60, "scrape_timeout_seconds": 20,
+            "probe_timeout_seconds": 10, "body_size_limit_bytes": 4096,
+            "samples_per_scrape": 64,
+            "blackbox_config": json.dumps({"modules": {"health_01": {
+                "prober": "http", "timeout": "10s", "http": {
+                    "method": "GET", "valid_status_codes": [200],
+                    "follow_redirects": False, "proxy_from_environment": False,
+                    "body_size_limit": "4096B",
+                    "tls_config": {"insecure_skip_verify": False, "server_name": "health.example.invalid"},
+                },
+            }}}, sort_keys=True, separators=(",", ":")),
+        }],
+    }
+    rendered = _render_alloy(
+        local_mode=False, _o11y_availability=prepared,
+        o11y_cluster="prod-cluster", o11y_environment="production",
+        _o11y_forbidden_metric_label_names_regex=POLICY,
+    )
+    assert 'prometheus.exporter.blackbox "health_01"' in rendered
+    assert 'job_name = "o11y-availability"' in rendered
+    assert 'instance = "service:alpha"' in rendered
+    assert 'labels = {\n      service = "alpha",' in rendered
+    assert '"service": "alpha"' not in rendered
+    assert 'probe_http_status_code|scrape_samples_scraped|scrape_body_size_bytes' in rendered
+    assert "proxy_from_environment" in rendered and "insecure_skip_verify" in rendered
+    assert 'prometheus.scrape "alloy_self"' in rendered
+    assert '"__address__" = "127.0.0.1:12345"' in rendered
+    assert '"instance" = "alloy:12345"' in rendered
+    assert '\\"body_size_limit\\":\\"4096B\\"' in rendered  # blackbox health-response cap
+    availability_scrape = rendered.split('prometheus.scrape "health_01" {', 1)[1].split("\n}", 1)[0]
+    self_scrape = rendered.split('prometheus.scrape "alloy_self" {', 1)[1].split("\n}", 1)[0]
+    assert 'body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"' in availability_scrape
+    assert 'body_size_limit = "4096B"' not in availability_scrape
+    assert 'body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"' in self_scrape
+    for field, env_name in (
+        ("label_limit", "O11Y_SCRAPE_LABEL_LIMIT"),
+        ("label_name_length_limit", "O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"),
+        ("label_value_length_limit", "O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT"),
+    ):
+        expression = f'{field} = encoding.from_json(sys.env("{env_name}"))'
+        assert expression in availability_scrape
+        assert expression in self_scrape
+    assert 'sample_limit = 64' in availability_scrape
+    assert 'sample_limit = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))' not in availability_scrape
+    assert 'sample_limit = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))' in self_scrape
+    assert "extra_metrics = true" in availability_scrape
+    assert "extra_metrics = true" in self_scrape
+    assert 'prometheus.remote_write "local"' in rendered
+    assert 'target_label  = "environment"' in rendered
+
+
+def test_availability_off_leaves_alloy_probe_and_self_scrape_absent():
+    rendered = _render_alloy(
+        local_mode=False, o11y_cluster="prod-cluster", o11y_environment="production",
+        _o11y_forbidden_metric_label_names_regex=POLICY,
+    )
+    assert "prometheus.exporter.blackbox" not in rendered
+    assert 'prometheus.scrape "alloy_self"' not in rendered
+    assert 'prometheus.remote_write "local"' not in rendered
+
+
+def test_prometheus_alloy_job_is_omitted_only_for_availability_mode():
+    base = {
+        "local_mode": False, "o11y_environment": "production",
+        "o11y_scrape_limits_reviewed": True, "o11y_scrape_limits": LIMITS.copy(),
+        "_o11y_forbidden_metric_label_names_regex": POLICY,
+    }
+    normal = _render_yaml("prometheus.yml.j2", **base)
+    enabled = _render_yaml(
+        "prometheus.yml.j2", **base,
+        o11y_availability_probes_enabled=True,
+    )
+    normal_jobs = {job["job_name"] for job in normal["scrape_configs"]}
+    enabled_jobs = {job["job_name"] for job in enabled["scrape_configs"]}
+    assert "alloy" in normal_jobs
+    assert "alloy" not in enabled_jobs
+
+
+def test_availability_compose_overlays_bind_only_loopback_and_deduplicate_ca_mount():
+    deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase = next(play for play in deploy if play.get("name") == "Phase 2: Start o11y")
+    deploy_task = next(
+        task for task in phase["tasks"]
+        if task.get("name") == "Run deploy.sh (container lifecycle)"
+    )
+    overlays = deploy_task["environment"]["COMPOSE_OVERLAYS"]
+    env = Environment(undefined=StrictUndefined)
+    env.filters["bool"] = bool
+    targets = [{"trust": "internal-ca"}]
+    base = {
+        "local_mode": False, "o11y_otlp_tls_enabled": False,
+        "o11y_inference_probe_enabled": False,
+        "_o11y_availability": {"enabled": True, "targets": targets},
+    }
+    rendered = env.from_string(overlays).render(**base)
+    assert rendered == "capacity/compose.textfile.yml compose.availability.yml compose.availability-ca.yml"
+    combined_tls = env.from_string(overlays).render(**{**base, "o11y_otlp_tls_enabled": True})
+    assert combined_tls == "capacity/compose.textfile.yml compose.otlp-tls.yml compose.availability.yml"
+
+    availability_overlay = yaml.safe_load(
+        (DEPLOY / "compose.availability.yml").read_text(encoding="utf-8")
+    )
+    availability = availability_overlay["services"]["alloy"]
+    assert availability["command"][1] == "--server.http.listen-addr=127.0.0.1:12345"
+    assert availability["x-podman"] == {"in_pod": False}
+    assert "ports" not in availability
+    ca_overlay = yaml.safe_load((DEPLOY / "compose.availability-ca.yml").read_text(encoding="utf-8"))
+    ca = ca_overlay["services"]["alloy"]["volumes"]
+    assert ca == [{
+        "type": "bind", "source": "./certs/step-ca-bundle.crt",
+        "target": "/certs/step-ca-bundle.crt", "read_only": True,
+        "bind": {"create_host_path": False},
+    }]
+
+
+def test_deploy_availability_guard_runs_before_any_placement_and_keeps_off_mode_default():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase = next(play for play in plays if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    tasks = phase["tasks"]
+    prepare = next(
+        index for index, task in enumerate(tasks)
+        if task.get("name") == "Prepare the bounded private availability source projection"
+    )
+    placement = next(
+        index for index, task in enumerate(tasks)
+        if task.get("name") == "Place the monorepo + ensure podman/compose"
+    )
+    gate = next(
+        task for task in tasks
+        if task.get("name") == (
+            "Refuse availability deployment until runtime isolation and readback gates are implemented"
+        )
+    )
+    assert prepare < placement
+    assert gate["ansible.builtin.assert"]["that"] == "not (_o11y_availability.enabled | bool)"
+    validator_path = ROOT / "platform/playbooks/tasks/prepare-o11y-availability.yml"
+    validator = yaml.safe_load(validator_path.read_text(encoding="utf-8"))
+    command = next(
+        task for task in validator
+        if task.get("name") == "Validate and privately prepare the reviewed availability projection"
+    )
+    assert command["no_log"] is True and command["failed_when"] is False
+    projection = next(
+        task for task in validator
+        if task.get("name") == "Store the protected availability projection for the renderer"
+    )
+    assert projection["no_log"] is True
 
 
 @pytest.mark.parametrize(

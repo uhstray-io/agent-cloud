@@ -38,6 +38,16 @@ selector is sourced from Prometheus service labels, so it covers metric-enabled
 local and remote services; use Logs Drilldown and the coverage declaration for
 log-only targets.
 
+The same private `estate_coverage_inventory.targets` declaration can describe
+an opt-in health-only `alloy-blackbox-http` signal. Its source contract accepts
+only a fixed RFC1918 IPv4 HTTP(S) GET endpoint, exact statuses, verified TLS,
+disabled redirects/proxying, fixed labels, and reviewed finite per-target and
+aggregate budgets. The source ceilings are documented in the o11y deployment
+README; they are not live cadence or production defaults. Availability remains
+off until actual receiver namespace isolation and post-apply native component
+readback are proven. A health response does not establish application metrics,
+overall service health, or estate coverage.
+
 Service graph rollout records use the same per-service coverage declaration:
 logs, metrics, traces, and profiles are each marked applicable, unsupported,
 or not applicable, with an exact-target readback receipt for every applicable

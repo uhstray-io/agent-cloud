@@ -1,0 +1,11 @@
+# Public trust bundle for reviewed availability endpoints using the existing
+# internal CA. No service or client/server private key is mounted here.
+services:
+  alloy:
+    volumes:
+      - type: bind
+        source: ./certs/step-ca-bundle.crt
+        target: /certs/step-ca-bundle.crt
+        read_only: true
+        bind:
+          create_host_path: false

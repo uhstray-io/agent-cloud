@@ -1,0 +1,11 @@
+# Native blackbox handler isolation candidate. This modifies the existing Alloy
+# service only; no host port or service is added. Deployment remains blocked by
+# deploy-o11y.yml until actual namespace and post-apply readback gates pass.
+services:
+  alloy:
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - /etc/alloy/config.alloy
+    x-podman:
+      in_pod: false

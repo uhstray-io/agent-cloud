@@ -84,6 +84,9 @@
     # Off unless inventory enables it; off renders exactly the pre-probe secrets
     # and env files (platform/tests/test_inference_probe.py).
     _probe_enabled: "{{ o11y_inference_probe_enabled | default(false) | bool }}"
+    _o11y_availability_internal_ca: >-
+      {{ (_o11y_availability | default({})).get('targets', [])
+         | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0 }}
     _probe_textfile_dir: /var/lib/node_exporter/textfile
     _probe_user: "{{ ansible_user | default('deploy') }}"
     _probe_unit_dir: /etc/systemd/system
@@ -138,9 +141,27 @@
     - name: Refuse an unverified profile pilot operation before o11y mutation
       ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
 
+    - name: Prepare the bounded private availability source projection
+      ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
+
+    - name: Refuse availability deployment until runtime isolation and readback gates are implemented
+      ansible.builtin.assert:
+        that: not (_o11y_availability.enabled | bool)
+        fail_msg: >-
+          Availability source rendering is not deployable until the pre-placement Linux
+          namespace proof and post-apply native component readback are implemented and verified.
+      check_mode: false
+
     - name: Validate the fixed receiver and journal TLS contract before placement or rendering
       ansible.builtin.include_tasks: tasks/assert-o11y-otlp-tls.yml
       when: o11y_otlp_tls_enabled | default(false) | bool
+
+    - name: Require one declared CA host when an internal-CA availability target is reviewed
+      ansible.builtin.assert:
+        that: groups.get('step_ca_svc', []) | length == 1
+        fail_msg: "Internal-CA availability trust requires exactly one declared step-ca host."
+        quiet: true
+      when: _o11y_availability_internal_ca | bool
 
     - name: "Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
@@ -687,6 +708,15 @@
             _agwr_ip: "{{ _probe_gw_address }}"
             _agwr_expect: "{{ _probe_gw_address }}"
 
+    - name: Place the fixed public CA bundle for native availability trust when OTLP mTLS is off
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_host: "{{ groups['step_ca_svc'] | first }}"
+      when:
+        - _o11y_availability_internal_ca | bool
+        - not (o11y_otlp_tls_enabled | default(false) | bool)
+
     # Synthetic inference probe. Its environment file (key from OpenBao) was rendered
     # by manage-secrets above; the units and the textfile directory are host config.
     - name: "Install the synthetic inference probe"
@@ -788,7 +818,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
         # Production always scrapes capacity; local mode enables textfiles for the probe only.
-        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else [])) | join(' ') }}"
+        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if ((_o11y_availability | default({})).get('enabled', false) | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability | default({})).get('targets', []) | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
         # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
         # and image matches — clears a stale bind mount a running container still holds.
         FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
@@ -821,6 +851,9 @@
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _o11y_availability_internal_ca: >-
+      {{ (_o11y_availability | default({})).get('targets', [])
+         | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0 }}
 
   tasks:
     # A dry run skipped the deploy, so on a fresh host o11y-grafana does not exist and every
@@ -866,11 +899,11 @@
     - name: Require exact read-only runtime receiver TLS mounts
       ansible.builtin.assert:
         that:
-          - (_o11y_otlp_runtime_mounts | length) == (2 if (o11y_otlp_tls_enabled | default(false) | bool) else 0)
+          - (_o11y_otlp_runtime_mounts | length) == ((1 if (o11y_otlp_tls_enabled | default(false) | bool) else 0) + (1 if ((o11y_otlp_tls_enabled | default(false) | bool) or (_o11y_availability_internal_ca | bool)) else 0))
           - not (o11y_otlp_tls_enabled | default(false) | bool) or
             (_o11y_otlp_runtime_mounts | selectattr('Source', 'equalto', _deploy_dir ~ '/certs/o11y-otlp-server')
              | selectattr('Destination', 'equalto', '/certs/otlp-server') | selectattr('RW', 'equalto', false) | list | length) == 1
-          - not (o11y_otlp_tls_enabled | default(false) | bool) or
+          - not ((o11y_otlp_tls_enabled | default(false) | bool) or (_o11y_availability_internal_ca | bool)) or
             (_o11y_otlp_runtime_mounts | selectattr('Source', 'equalto', _deploy_dir ~ '/certs/step-ca-bundle.crt')
              | selectattr('Destination', 'equalto', '/certs/step-ca-bundle.crt') | selectattr('RW', 'equalto', false) | list | length) == 1
         fail_msg: "The live Alloy receiver does not have exactly the declared read-only TLS mounts."

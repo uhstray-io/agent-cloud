@@ -1,0 +1,48 @@
+---
+- name: Refuse private availability controls supplied as launch extra vars
+  ansible.builtin.assert:
+    that:
+      - "'estate_coverage_inventory' not in ('' | extra_var_names)"
+      - "'o11y_availability_probes_enabled' not in ('' | extra_var_names)"
+      - "'o11y_availability_probes_reviewed' not in ('' | extra_var_names)"
+      - "'o11y_availability_probe_limits' not in ('' | extra_var_names)"
+    fail_msg: >-
+      Private availability declarations and activation controls must come from reviewed
+      inventory, not launch-time extra vars.
+  check_mode: false
+
+- name: Validate and privately prepare the reviewed availability projection
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+      - --prepare-availability
+    stdin: >-
+      {{ {
+        'targets': ((estate_coverage_inventory | default({})).get('targets', []) if (estate_coverage_inventory | default({})) is mapping else []),
+        'inventory_revision': ((estate_coverage_inventory | default({})).get('revision') if (estate_coverage_inventory | default({})) is mapping else none),
+        'enabled': o11y_availability_probes_enabled | default(false),
+        'reviewed': o11y_availability_probes_reviewed | default(false),
+        'limits': o11y_availability_probe_limits | default(none),
+        'receiver_environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
+        'cluster': o11y_cluster | default('agent-cloud-local'),
+        'shared_sample_limit': o11y_scrape_sample_limit | default(2000)
+      } | to_json }}
+  register: _o11y_availability_validation
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the bounded availability source projection
+  ansible.builtin.assert:
+    that: _o11y_availability_validation.rc == 0
+    fail_msg: >-
+      The private estate availability declaration or reviewed resource gate is invalid;
+      inspect the fixed source-contract requirements without printing private endpoints.
+  check_mode: false
+
+- name: Store the protected availability projection for the renderer
+  ansible.builtin.set_fact:
+    _o11y_availability: "{{ _o11y_availability_validation.stdout | from_json }}"
+  no_log: true

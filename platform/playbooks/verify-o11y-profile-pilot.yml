@@ -37,6 +37,10 @@
       - become_method
       - ansible_become_flags
       - become_flags
+      - estate_coverage_inventory
+      - o11y_availability_probes_enabled
+      - o11y_availability_probes_reviewed
+      - o11y_availability_probe_limits
       - ansible_remote_tmp
     _profile_forged_names: "{{ _profile_internal_overrides | intersect('' | extra_var_names) }}"
   tasks:
@@ -96,6 +100,10 @@
       ansible.builtin.import_tasks: tasks/require-tmpfs-remote-tmp.yml
       when: not ansible_check_mode
 
+    - name: Prepare the reviewed availability source projection for profile candidates
+      ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
+      when: not ansible_check_mode
+
     - name: Allocate a private tmpfs workspace
       ansible.builtin.tempfile:
         state: directory
@@ -141,7 +149,8 @@
             argv: [python3, "{{ _profile_tmp.path }}/verify.py"]
             stdin: >-
               {{ {'disabled': (_profile_candidate_files.results[0].content | b64decode),
-                  'enabled': (_profile_candidate_files.results[1].content | b64decode)} | to_json }}
+                  'enabled': (_profile_candidate_files.results[1].content | b64decode),
+                  'profile_address': ('127.0.0.1:12345' if (_o11y_availability.enabled | default(false) | bool) else 'alloy:12345')} | to_json }}
             stdin_add_newline: false
           register: _profile_raw_receipt
           changed_when: false

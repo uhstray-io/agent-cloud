@@ -2,6 +2,7 @@
 """Build a sanitized, read-only census of repository candidates and estate receipts."""
 
 import hashlib
+import ipaddress
 import json
 import math
 import re
@@ -9,6 +10,7 @@ import sys
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urlsplit
 
 TARGET_ID = re.compile(r"^(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}$")
 SERVICE_ID = re.compile(r"^[a-z][a-z0-9_-]*(/[a-z][a-z0-9_-]*)?$")
@@ -21,6 +23,22 @@ PROFILE_STEP_MS = 60_000
 MAX_OBSERVATION_BYTES = 1_048_576
 MAX_EVIDENCE_COUNT = 1000
 BINDING_FIELDS = {"task_id", "template_id", "observation_window_seconds"}
+AVAILABILITY_METHOD = "alloy-blackbox-http"
+AVAILABILITY_JOB = "o11y-availability"
+AVAILABILITY_FAMILIES = 6
+AVAILABILITY_LIMITS = {
+    "max_targets": 64,
+    "max_total_timeout_seconds": 120,
+    "max_series": 384,
+}
+AVAILABILITY_HEALTH_FIELDS = {
+    "applicable", "selector", "collection_method", "receipt_reference",
+    "freshness_seconds", "endpoint", "expected_status_codes", "tls_server_name", "trust",
+}
+AVAILABILITY_BUDGET_FIELDS = {
+    "interval_seconds", "scrape_timeout_seconds", "probe_timeout_seconds",
+    "body_size_limit_bytes", "samples_per_scrape",
+}
 
 
 def fail(message):
@@ -92,6 +110,132 @@ def validate_receipt_bindings(targets, receipt_bindings):
                 binding = receipt_bindings.get(target["target_id"], {}).get(signal)
                 if binding is not None and "task_id" in binding and binding["task_id"] != int(match.group(1)):
                     fail(f"{signal} receipt binding conflicts with the legacy task reference")
+
+
+def _availability_selector(target_id, environment, cluster):
+    return (
+        f'probe_success{{job="{AVAILABILITY_JOB}",target_id="{target_id}",'
+        f'environment="{environment}",cluster="{cluster}"}}'
+    )
+
+
+def _validate_availability_target(target):
+    """Validate the fixed private declaration used by native Alloy HTTP probes."""
+    health = target["signals"].get("health")
+    if not isinstance(health, dict):
+        return
+    private_fields = AVAILABILITY_HEALTH_FIELDS - {
+        "applicable", "selector", "collection_method", "receipt_reference", "freshness_seconds",
+    }
+    if health.get("collection_method") != AVAILABILITY_METHOD:
+        if private_fields & health.keys():
+            fail("availability-only health fields require the fixed Alloy blackbox collection method")
+        return
+    if health.get("applicable") is not True:
+        fail("Alloy blackbox availability health must be declared applicable")
+    if set(health) - AVAILABILITY_HEALTH_FIELDS:
+        fail("availability health declaration contains unsupported fields")
+    budget = target["budget"].get("health") if isinstance(target.get("budget"), dict) else None
+    if not isinstance(budget, dict) or set(budget) != AVAILABILITY_BUDGET_FIELDS:
+        fail("availability health budget must contain exactly the reviewed bounded fields")
+    endpoint = health.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        fail("availability endpoint must be a fixed URL without whitespace or control characters")
+    try:
+        endpoint_bytes = endpoint.encode("utf-8")
+    except UnicodeEncodeError:
+        fail("availability endpoint must be valid UTF-8")
+    if len(endpoint_bytes) > 2048 or any(ord(ch) < 0x21 for ch in endpoint):
+        fail("availability endpoint must be bounded and contain no whitespace or control characters")
+    try:
+        parsed = urlsplit(endpoint)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        fail("availability endpoint authority is malformed")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or host is None
+        or not re.fullmatch(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]{1,5})?", parsed.netloc)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or "?" in endpoint
+        or "#" in endpoint
+        or not parsed.path.startswith("/")
+    ):
+        fail("availability endpoint must be a literal RFC1918 IPv4 HTTP(S) URL without credentials, query, or fragment")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        fail("availability endpoint must use a literal RFC1918 IPv4 address")
+    private_ranges = (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+    )
+    if address.version != 4 or not any(address in network for network in private_ranges):
+        fail("availability endpoint address must be in RFC1918 private space")
+    if port is not None and not 1 <= port <= 65535:
+        fail("availability endpoint port must be between 1 and 65535")
+
+    statuses = health.get("expected_status_codes")
+    if (
+        not isinstance(statuses, list)
+        or not 1 <= len(statuses) <= 16
+        or any(not isinstance(code, int) or isinstance(code, bool) or not 100 <= code <= 599 for code in statuses)
+        or len(statuses) != len(set(statuses))
+    ):
+        fail("availability expected status codes must be a distinct bounded list of HTTP status integers")
+    if parsed.scheme == "https":
+        server_name = health.get("tls_server_name")
+        trust = health.get("trust")
+        dns_name_pattern = (
+            r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        )
+        if (
+            not isinstance(server_name, str)
+            or not re.fullmatch(dns_name_pattern, server_name)
+            or not isinstance(trust, str)
+            or trust not in {"system", "internal-ca"}
+        ):
+            fail("HTTPS availability requires a reviewed DNS tls_server_name and system or internal-ca trust")
+        try:
+            ipaddress.ip_address(server_name)
+        except ValueError:
+            pass
+        else:
+            fail("HTTPS availability tls_server_name must be a DNS name, not an IP literal")
+    elif "tls_server_name" in health or "trust" in health:
+        fail("HTTP availability declarations must not include TLS trust or server-name fields")
+
+    selector = health.get("selector")
+    if not isinstance(selector, str):
+        fail("availability selector must bind the fixed job, target_id, environment, and cluster")
+    # Cluster is supplied by the existing receiver inventory, so validate the whole
+    # selector grammar while leaving its site-specific value private.
+    cluster_match = re.fullmatch(
+        rf'probe_success\{{job="{AVAILABILITY_JOB}",target_id="{re.escape(target["target_id"])}",environment="{re.escape(target["environment"])}",cluster="([a-z][a-z0-9_-]{{0,63}})"\}}',
+        selector,
+    )
+    if cluster_match is None:
+        fail("availability selector must use the fixed label order and bounded cluster label")
+
+    for field, maximum in (
+        ("interval_seconds", 3600), ("scrape_timeout_seconds", 30),
+        ("probe_timeout_seconds", 10), ("body_size_limit_bytes", 65536),
+        ("samples_per_scrape", 256),
+    ):
+        value = budget.get(field)
+        minimum = 30 if field == "interval_seconds" else 1
+        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+            fail(f"availability {field} must be a YAML integer within its source safety ceiling")
+    if not (
+        budget["probe_timeout_seconds"] < budget["scrape_timeout_seconds"] <= budget["interval_seconds"]
+    ):
+        fail("availability timeouts must satisfy probe < scrape <= interval")
 
 
 def validate(targets, receipt_bindings=None):
@@ -173,8 +317,109 @@ def validate(targets, receipt_bindings=None):
                 or declaration.get("selector") != f'{{target_id="{target_id}"}}'
             ):
                 fail("profiles must use the pinned CPU profile type and an exact target_id selector")
+        _validate_availability_target(target)
     validate_receipt_bindings(targets, {} if receipt_bindings is None else receipt_bindings)
     return ids, {key: values for key, values in identities.items() if len(values) > 1}
+
+
+def prepare_availability_targets(targets, *, enabled, reviewed, limits,
+                                 receiver_environment, cluster, shared_sample_limit,
+                                 inventory_revision=None):
+    """Return the private, bounded native-probe projection for one receiver."""
+    if not isinstance(enabled, bool) or not isinstance(reviewed, bool):
+        fail("availability enabled and reviewed switches must be explicit YAML booleans")
+    if not enabled:
+        return {"enabled": False, "targets": [], "limits": {}}
+    if not isinstance(targets, list):
+        fail("availability targets must be a list")
+    validate(targets)
+    if not isinstance(receiver_environment, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{1,31}", receiver_environment):
+        fail("availability receiver environment must be a bounded inventory label")
+    if not isinstance(cluster, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", cluster):
+        fail("availability receiver cluster must be a bounded inventory label")
+    if (
+        not isinstance(shared_sample_limit, int)
+        or isinstance(shared_sample_limit, bool)
+        or shared_sample_limit < 1
+    ):
+        fail("availability requires the existing positive shared scrape sample limit")
+    if not reviewed:
+        fail("availability probes require the reviewed enablement flag")
+    if (
+        not isinstance(inventory_revision, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", inventory_revision)
+        or inventory_revision != canonical_inventory_revision(targets)
+    ):
+        fail("availability requires the exact canonical private inventory revision")
+    if not isinstance(limits, dict) or set(limits) != set(AVAILABILITY_LIMITS):
+        fail(
+            "availability requires exactly the reviewed finite max_targets, "
+            "max_total_timeout_seconds, and max_series limits"
+        )
+    for name, maximum in AVAILABILITY_LIMITS.items():
+        value = limits[name]
+        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= maximum:
+            fail(f"availability {name} must be a positive YAML integer within its source safety ceiling")
+    selected = []
+    for target in targets:
+        health = target["signals"].get("health", {})
+        if (
+            target["lifecycle"] == "deployed"
+            and health.get("applicable") is True
+            and health.get("collection_method") == AVAILABILITY_METHOD
+        ):
+            if target["environment"] != receiver_environment:
+                fail("availability target environment must match the receiver environment")
+            if health["selector"] != _availability_selector(target["target_id"], receiver_environment, cluster):
+                fail("availability selector must exactly match the receiver job, target, environment, and cluster")
+            budget = target["budget"]["health"]
+            if budget["samples_per_scrape"] > min(256, shared_sample_limit):
+                fail("availability raw sample cap exceeds the existing shared scrape limit")
+            selected.append({
+                "module_name": f"health_{len(selected) + 1:02d}",
+                "target_id": target["target_id"],
+                "service_identity": target["service_identity"],
+                "environment": target["environment"],
+                "cluster": cluster,
+                "endpoint": health["endpoint"],
+                "expected_status_codes": health["expected_status_codes"],
+                "tls_server_name": health.get("tls_server_name"),
+                "trust": health.get("trust"),
+                **budget,
+            })
+    if not selected:
+        fail("enabled availability probes require at least one deployed applicable reviewed target")
+    if len(selected) > limits["max_targets"]:
+        fail("availability target count exceeds the reviewed maximum")
+    timeout_sum = sum(target["probe_timeout_seconds"] for target in selected)
+    if timeout_sum > limits["max_total_timeout_seconds"]:
+        fail("availability aggregate probe timeout exceeds the reviewed maximum")
+    if len(selected) * AVAILABILITY_FAMILIES > limits["max_series"]:
+        fail("availability retained series exceed the reviewed maximum")
+    for target in selected:
+        http = {
+            "method": "GET",
+            "valid_status_codes": target["expected_status_codes"],
+            "follow_redirects": False,
+            "proxy_from_environment": False,
+            "body_size_limit": f'{target["body_size_limit_bytes"]}B',
+        }
+        if target["tls_server_name"] is not None:
+            tls = {"insecure_skip_verify": False, "server_name": target["tls_server_name"]}
+            if target["trust"] == "internal-ca":
+                tls["ca_file"] = "/certs/step-ca-bundle.crt"
+            http["tls_config"] = tls
+        module = {
+            "prober": "http",
+            "timeout": f'{target["probe_timeout_seconds"]}s',
+            "http": http,
+        }
+        target["blackbox_config"] = json.dumps(
+            {"modules": {target["module_name"]: module}},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return {"enabled": True, "targets": selected, "limits": limits.copy()}
 
 
 def receipt_status(target, signal, inventory_revision, repository_sha, now,
@@ -551,6 +796,8 @@ def _validate_prometheus(response, target_id, signal, start, end, observed, fres
     for series in data["result"]:
         if not isinstance(series, dict) or not isinstance(series.get("metric"), dict):
             return "invalid_response", 0
+        if signal == "metrics" and series["metric"].get("job") == AVAILABILITY_JOB:
+            return "reserved_health_producer", 0
         if series["metric"].get("target_id") != target_id:
             return "identity_mismatch", 0
         latest = None
@@ -764,6 +1011,30 @@ def main():
             result = validate_signal_observation(payload)
         print(json.dumps(result, sort_keys=True))
         return
+    if len(sys.argv) == 2 and sys.argv[1] == "--prepare-availability":
+        try:
+            raw = sys.stdin.buffer.read(MAX_OBSERVATION_BYTES + 1)
+            if len(raw) > MAX_OBSERVATION_BYTES:
+                fail("availability declaration input exceeds the bounded size")
+            payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            fail("availability input must be JSON with unique object keys")
+        if not isinstance(payload, dict) or set(payload) != {
+            "targets", "inventory_revision", "enabled", "reviewed", "limits",
+            "receiver_environment", "cluster", "shared_sample_limit",
+        }:
+            fail("availability input must contain the fixed private declaration and reviewed gate fields")
+        print(json.dumps(prepare_availability_targets(
+            payload["targets"],
+            enabled=payload["enabled"],
+            reviewed=payload["reviewed"],
+            limits=payload["limits"],
+            receiver_environment=payload["receiver_environment"],
+            cluster=payload["cluster"],
+            shared_sample_limit=payload["shared_sample_limit"],
+            inventory_revision=payload["inventory_revision"],
+        ), sort_keys=True))
+        return
     try:
         inventory = json.load(sys.stdin, object_pairs_hook=unique_object)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
@@ -784,7 +1055,7 @@ def main():
     if len(sys.argv) != 2:
         fail(
             "usage: o11y-coverage-census.py <repo-root>, --inventory-revision, "
-            "--validate-profile-receipt, or --validate-signal-observation"
+            "--validate-profile-receipt, --validate-signal-observation, or --prepare-availability"
         )
     report = build_report(Path(sys.argv[1]).resolve(), inventory, inventory.get("repository_sha", ""))
     print(json.dumps(report, sort_keys=True))

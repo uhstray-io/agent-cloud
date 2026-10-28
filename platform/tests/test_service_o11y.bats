@@ -798,6 +798,49 @@ YAML
   refute_contains "$output" "TASK [Destroy existing deployment]"
 }
 
+@test "o11y: runtime readback requires the exact deduplicated TLS mount set" {
+  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import sys
+import yaml
+from jinja2 import Environment
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+verify = next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")
+task = next(task for task in verify["tasks"]
+            if task.get("name") == "Require exact read-only runtime receiver TLS mounts")
+environment = Environment()
+environment.filters["bool"] = bool
+checks = [environment.compile_expression(item)
+          for item in task["ansible.builtin.assert"]["that"]]
+root = "/srv/o11y"
+server = {"Source": root + "/certs/o11y-otlp-server", "Destination": "/certs/otlp-server", "RW": False}
+bundle = {"Source": root + "/certs/step-ca-bundle.crt", "Destination": "/certs/step-ca-bundle.crt", "RW": False}
+
+def accepts(mtls, internal_ca, mounts):
+    context = {
+        "_o11y_otlp_runtime_mounts": mounts,
+        "_o11y_availability_internal_ca": internal_ca,
+        "o11y_otlp_tls_enabled": mtls,
+        "_deploy_dir": root,
+    }
+    return all(check(**context) for check in checks)
+
+cases = [
+    (False, False, []),
+    (False, True, [bundle]),
+    (True, False, [server, bundle]),
+    (True, True, [server, bundle]),
+]
+for mtls, internal_ca, mounts in cases:
+    assert accepts(mtls, internal_ca, mounts), (mtls, internal_ca)
+    for missing in mounts:
+        assert not accepts(mtls, internal_ca, [mount for mount in mounts if mount is not missing])
+assert not accepts(False, True, [bundle, bundle])
+assert not accepts(True, False, [{**server, "Source": root + "/wrong/cert-tree"}, bundle])
+assert not accepts(True, False, [{**server, "RW": True}, bundle])
+PY
+}
+
 @test "o11y: DGX scrape jobs render from inventory with GPU optional" {
   python3 - "$DEPLOY_DIR/templates/scrape-dgx-spark.yml.j2" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json

@@ -8,6 +8,7 @@
 
 {% set _o11y_otlp_memory_limit = '384MiB' %}
 {% set _o11y_otlp_memory_spike = '64MiB' %}
+{% set _o11y_availability_enabled = (_o11y_availability | default({})).get('enabled', o11y_availability_probes_enabled | default(false)) | bool %}
 
 {% if local_mode | default(false) | bool %}
 discovery.docker "containers" {
@@ -142,7 +143,9 @@ prometheus.scrape "local_containers" {
   label_value_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT"))
   forward_to      = [prometheus.relabel.bounded_labels.receiver]
 }
+{% endif %}
 
+{% if (local_mode | default(false) | bool) or _o11y_availability_enabled %}
 prometheus.relabel "bounded_labels" {
   forward_to = [prometheus.remote_write.local.receiver]
 
@@ -176,6 +179,85 @@ prometheus.remote_write "local" {
   endpoint {
     url = "http://prometheus:9090/api/v1/write"
   }
+}
+{% endif %}
+
+{% if _o11y_availability_enabled %}
+// One fixed module and scrape component per reviewed target lets each target
+// retain its own reviewed timeout, response cap, and finite scrape budget.
+{% for _target in (_o11y_availability | default({})).get('targets', []) %}
+prometheus.exporter.blackbox "{{ _target.module_name }}" {
+  config = {{ _target.blackbox_config | to_json }}
+
+  target {
+    name    = {{ _target.target_id | to_json }}
+    address = {{ _target.endpoint | to_json }}
+    module  = {{ _target.module_name | to_json }}
+    labels = {
+      service = {{ _target.service_identity | to_json }},
+      target_id = {{ _target.target_id | to_json }},
+      environment = {{ _target.environment | to_json }},
+      cluster = {{ _target.cluster | to_json }},
+      instance = {{ _target.target_id | to_json }},
+    }
+  }
+}
+
+prometheus.scrape "{{ _target.module_name }}" {
+  job_name = "o11y-availability"
+  targets = prometheus.exporter.blackbox.{{ _target.module_name }}.targets
+  scrape_interval = {{ (_target.interval_seconds | string ~ 's') | to_json }}
+  scrape_timeout = {{ (_target.scrape_timeout_seconds | string ~ 's') | to_json }}
+  // Health-response bytes are bounded by the blackbox module above. This
+  // scrape parses Alloy's generated metrics, so it uses the existing shared
+  // response/label caps and this target's stricter reviewed sample cap.
+  body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"
+  sample_limit = {{ _target.samples_per_scrape | to_json }}
+  label_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_LIMIT"))
+  label_name_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"))
+  label_value_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT"))
+  extra_metrics = true
+  forward_to = [prometheus.relabel.availability_{{ _target.module_name }}.receiver]
+}
+
+prometheus.relabel "availability_{{ _target.module_name }}" {
+  forward_to = [prometheus.relabel.bounded_labels.receiver]
+
+  rule {
+    source_labels = ["target_id"]
+    target_label  = "instance"
+    action        = "replace"
+  }
+
+  rule {
+    source_labels = ["__name__"]
+    regex         = "^(up|probe_success|probe_duration_seconds|probe_http_status_code|scrape_samples_scraped|scrape_body_size_bytes)$"
+    action        = "keep"
+  }
+}
+{% endfor %}
+
+// Preserve the existing Alloy self-monitor identity and exporter counters in
+// availability mode while Prometheus no longer calls the shared Alloy handler.
+prometheus.scrape "alloy_self" {
+  job_name = "alloy"
+  targets = [{
+    "__address__" = "127.0.0.1:12345",
+    "instance" = "alloy:12345",
+    "service" = "o11y/alloy",
+    "target_id" = "service:o11y",
+    "cluster" = {{ o11y_cluster | default('agent-cloud-local') | to_json }},
+    "environment" = {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }},
+  }]
+  scrape_interval = "15s"
+  scrape_timeout = "10s"
+  body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"
+  sample_limit = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))
+  label_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_LIMIT"))
+  label_name_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"))
+  label_value_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT"))
+  extra_metrics = true
+  forward_to = [prometheus.relabel.bounded_labels.receiver]
 }
 {% endif %}
 
@@ -352,7 +434,7 @@ pyroscope.write "private" {
 pyroscope.scrape "alloy_self_profile" {
   job_name = "o11y/alloy"
   targets = [
-    { "__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y" },
+    { "__address__" = {{ ("127.0.0.1:12345" if _o11y_availability_enabled else "alloy:12345") | to_json }}, "service_name" = "o11y/alloy", "target_id" = "service:o11y" },
   ]
   scrape_interval = "60s"
   scrape_timeout = "10s"
