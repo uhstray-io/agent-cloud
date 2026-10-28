@@ -34,6 +34,7 @@ class Fake(DrainingHandler):
     users: list = []
     writes: list = []
     ignore_put = False
+    put_status = 204
 
     def log_message(self, *_args):
         pass
@@ -54,9 +55,9 @@ class Fake(DrainingHandler):
         type(self).writes.append((self.path, body))
         uid = int(self.path.rsplit("/", 1)[1])
         for account in type(self).users:
-            if account["id"] == uid and not type(self).ignore_put:
+            if account["id"] == uid and not type(self).ignore_put and type(self).put_status == 204:
                 account["admin"] = body["admin"]
-        self.reply({}, 204)
+        self.reply({}, type(self).put_status)
 
 
 def user(uid, username, admin=False):
@@ -64,9 +65,10 @@ def user(uid, username, admin=False):
             "admin": admin, "external": True, "alert": False}
 
 
-def run(tmp_path, all_vars, *, group_vars=None, check=False, ignore_put=False):
+def run(tmp_path, all_vars, *, group_vars=None, check=False, ignore_put=False, put_status=204):
     Fake.writes = []
     Fake.ignore_put = ignore_put
+    Fake.put_status = put_status
     Fake.users = [user(1, "local-admin", admin=True), user(2, "ops-admin", admin=True), user(3, "second-operator"),
                   user(4, "svc-robot"), user(5, "bystander")]
     inventory = {"all": {"vars": all_vars, "children": {"agent_cloud": {"vars": group_vars or {}, "hosts": {"h": {}}}}}}
@@ -109,6 +111,14 @@ def test_a_promotion_the_server_did_not_apply_fails_the_read_back(tmp_path):
                        ignore_put=True)
     assert code != 0
     assert "still not admin: ['second-operator']" in output
+
+
+def test_a_refused_promotion_names_the_account_and_status(tmp_path):
+    # The PUT task is no_log, so its own failure says only "details hidden" (task 9843, #604).
+    code, output = run(tmp_path, {"platform_admins": ADMINS, "semaphore_admin_users": ["local-admin"]},
+                       put_status=401)
+    assert code != 0
+    assert "Semaphore refused these promotions" in output and "['second-operator', 401]" in output
 
 
 def test_the_admin_list_under_a_group_is_invisible_to_this_play(tmp_path):
