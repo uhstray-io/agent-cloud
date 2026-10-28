@@ -27,7 +27,6 @@ locals {
     "mixpost",
     "n8n",
     "netbox",
-    "nocodb",
     "o11y", # Grafana
     "postiz",
     "pve", # Proxmox
