@@ -36,9 +36,40 @@ The access list is converged by `manage-github-runner-group.yml`, which **refuse
 if any declared repository resolves as public. In a web console the exclusion would hold
 only until someone widened it in a hurry, with no review trail.
 
+## Lifecycles: persistent (default) and ephemeral
+
+`github_runner_lifecycle` in a host's inventory chooses one; unset means `persistent`.
+
+- **persistent**: one long-lived registration per host, restarted by systemd. Everything
+  below this section describes it, and its isolation table is what holds on such a host.
+- **ephemeral** (openspec `add-ephemeral-github-runners`, issue #545): every job runs on a
+  runner started from a just-in-time configuration, which the service gives one job and
+  then removes. Between jobs a root supervisor (`deployment/ephemeral-supervisor.sh`, unit
+  `github-runner-ephemeral.service`) kills every process of `ghrunner` and of its
+  subordinate ids, removes every file they own on the local filesystems (the home
+  included), their System V IPC objects and the account's keyrings, verifies all of it, and
+  copies a root-owned seed of the deployed home into the empty home. A reset it cannot
+  verify, or runners that keep exiting without a job, quarantine the host: it takes no job
+  until a deploy proves a clean reset. A host whose local filesystems all match none of the
+  sweep's filesystem types (ext2/3/4, xfs, btrfs, tmpfs, mqueue, vfat) quarantines too, unless
+  `RUNNER_SWEEP_ROOTS` names its roots; that is intended, fail closed. The sweep spools its
+  temporary listings in the unit's `RuntimeDirectory` (`/run/github-runner-supervisor`, root-only),
+  and a reset run outside the unit spools in `/run`, never in `/tmp`, which the runner account
+  can fill. The configurations are minted on the orchestrator
+  (`stock-github-runner-jit.yml`, scheduled every 10 minutes) and stocked root-only in
+  `/var/lib/github-runner/jit`; the App key still never reaches the host.
+
+What changes on an ephemeral host, against the table below: per-job process reaping and
+everything a job leaves outside its workspace become **enforced between jobs**; the
+runner's own credential is bound to the job it is running instead of serving every later
+job. What does not change: **during** a job it runs as `ghrunner` on the host and can read
+what that account can read, so the placement rule below still holds. Every file the account
+needs must live in its home (the seed): a file it owns anywhere else is removed by the next
+reset. Read the design's D2 before relying on more.
+
 ## What isolation you actually get
 
-Verified from inside a running job, on both hosts:
+Verified from inside a running job, on both hosts (persistent lifecycle):
 
 | Control | Status |
 |---|---|
@@ -93,10 +124,13 @@ option that sets no_new_privs implicitly in a user unit (all seccomp-backed ones
 ## Container jobs under rootless podman
 
 A job that declares `container:` runs through the docker variant of the container hooks,
-which run `docker` (the podman-docker shim) as `ghrunner`, so the engine is rootless
-podman. Until 2026-10-11 every such job failed in "Initialize containers", for three reasons
-that Docker hides and podman does not. The first two are below; the third, the engine's
-environment, is in its own subsection after them.
+which run `docker` as `ghrunner`. That `docker` is Docker's CLI client (`docker-ce-cli`, a
+client binary with no daemon), and `DOCKER_HOST` in the runner's `.env` points it at
+`ghrunner`'s rootless podman API socket, so the engine is rootless podman and there is no
+Docker engine on the host. Until 2026-10-11 every such job failed in "Initialize
+containers", for three reasons that Docker hides and podman does not. The first two are
+below; the third, the engine's environment, decided which `docker` the hooks get and is
+in its own subsection after them.
 
 **Missing bind sources.** The runner hands the hooks a fixed mount set, and the hooks pass
 it to `docker create` unchanged (runner-container-hooks v0.8.1,
@@ -115,8 +149,9 @@ every job container (`src/Runner.Worker/Container/ContainerInfo.cs:57-60`) and e
 `docker://` step (`Handlers/ContainerActionHandler.cs:193`). The path is hardcoded; no
 runner or hook setting removes it (the hooks read only the Docker CLI variables,
 `packages/docker/src/utils.ts:29-66`, and those do not change a mount source).
-podman-docker links the path to root's socket, `/run/podman/podman.sock`, in a directory
-`ghrunner` cannot enter, so podman refused the mount with `permission denied`.
+podman-docker linked the path to root's socket, `/run/podman/podman.sock`, in a directory
+`ghrunner` cannot enter, so podman refused the mount with `permission denied`. With
+podman-docker removed (below), nothing creates the path at all.
 
 The options, and why this one:
 
@@ -139,8 +174,9 @@ Docker API. Root's own socket is still at `/run/podman/podman.sock`.
 
 **How it is applied.** `tasks/podman-user-docker-socket.yml` (shared, reusable) enables the
 account's `podman.socket` user unit and writes `/etc/tmpfiles.d/podman-docker.conf`, which
-replaces the package's file of the same name, so the link survives reboots and package
-upgrades. It reads back the effective tmpfiles.d configuration and the link. The deploy
+replaces the package's file of the same name where podman-docker is installed and creates
+the link on its own where it is not, so the link survives reboots and package upgrades.
+The same socket is the API the hooks' Docker client reaches (next subsection). It reads back the effective tmpfiles.d configuration and the link. The deploy
 then runs the hooks' `docker create`, with the full mount set and the deployed
 `job-started.sh`, in a `systemd-run --user` transient unit carrying the runner unit's
 `NoNewPrivileges` value (the reason is in `docs/MISTAKES.md` 2.29), and calls `_ping` on the
@@ -152,12 +188,13 @@ through the stop described in "Restarting the runner".
 **The failure.** After the two fixes above were deployed, every container job still failed
 with `cannot resolve /github/home: lstat /github: no such file or directory`. The hooks
 start `docker` with an environment built from the job alone. For `create`, `exec` and `run`
-it is exactly the job container's variables plus the `DOCKER_*` variables; for every other
-call (`pull`, `network`, `rm`) it is the `DOCKER_*` variables only (runner-container-hooks
-v0.8.1, `packages/docker/src/utils.ts`, `optionsWithDockerEnvs`). No PATH and no XDG
-directory of the runner's reaches the engine. The job's variables include
-`HOME=/github/home`: the CLI fills `-e HOME` from its own HOME, which is how the container
-gets its home. Rootless podman reads three things from that environment:
+it is exactly the job container's variables plus the runner's `DOCKER_*` variables; for
+every other call (`pull`, `network`, `rm`) it is the `DOCKER_*` variables only
+(runner-container-hooks v0.8.1, `packages/docker/src/utils.ts`, `optionsWithDockerEnvs`).
+No PATH and no XDG directory of the runner's reaches the `docker` process. The job's
+variables include `HOME=/github/home`: the CLI fills `-e HOME` from its own HOME, which is
+how the container gets its home. The podman-docker shim is `exec /usr/bin/podman "$@"`, so
+podman itself ran in that environment, and rootless podman reads three things from it:
 
 | What | Source | With the hooks' environment |
 |---|---|---|
@@ -165,49 +202,59 @@ gets its home. Rootless podman reads three things from that environment:
 | Image store | `XDG_DATA_HOME`, else HOME, else the passwd entry (containers/storage v1.51.0, `pkg/homedir/homedir.go:28-37`, `pkg/unshare/unshare.go:17-23`) | `pull` (no HOME) and `create` (HOME=/github/home) would use two different stores |
 | `newuidmap`/`newgidmap` | PATH (podman v4.9.3, `pkg/rootless/rootless_linux.go:104-106`) | No PATH: the mapping fails whenever no podman pause process is running |
 
-The hooks look up the `docker` binary itself with the runner's PATH (`@actions/exec` uses
-the hook process's PATH, not the child's), so a `docker` earlier on the runner's PATH is the
-one they run.
-
-The options, and why this one:
+The options, and why this one (decided under design D4, issue #609):
 
 | Option | Result |
 |---|---|
 | Set the XDG variables in the job's environment | **Rejected.** Workflow-side, so it fails open, and the values would also enter the job container. |
 | Make `/github/home` exist on the host (a link to the account's home) | **Rejected.** A new path at the host's filesystem root, made for one account's engine, and it would put the image store under a path name that only the hooks' calls use. |
-| Change HOME for the engine | **Rejected.** The container's `-e HOME` would become the account's home instead of `/github/home`. |
-| A Docker CLI against the account's podman API socket (`DOCKER_HOST`, which the hooks pass through) | **Not taken now.** A new package source and a different engine path on both hosts, with its own compatibility questions unmeasured. Kept as the alternative if the wrapper proves insufficient. |
-| A runner-only `docker` wrapper first on the runner's PATH that sets the account's directories and runs `/usr/bin/podman` | **Chosen.** It changes no argument, mount or image, and no upstream file; the hooks, the runner and the podman-docker shim stay as shipped. |
+| A runner-only `docker` wrapper first on the runner's PATH that rewrites podman's environment and the job's bare `-e` arguments, then runs `/usr/bin/podman` (PR #556) | **Replaced.** It worked in principle, but it is a patch on the CLI path, which D4 rules out ("the fallback is an existing supported path rather than a patch"), and it had to carry podman's own option tables to know where the image starts. Removed (`docs/MISTAKES.md` 10.29). |
+| Run the Docker engine (D4's declared fallback) | **Not needed, and not wanted.** Its socket is root-equivalent, and the owner wants podman as the engine. |
+| Docker's CLI client against the account's rootless podman API socket (`DOCKER_HOST`, which the hooks pass through) | **Chosen.** D4's own description of the runtime: "the container hooks drive a Docker-compatible API". The client only sends API calls; the account's `podman.socket` user unit answers them with the account's own environment, so the job's HOME never reaches podman, while the client still fills `-e HOME` from it. Nothing upstream is changed. |
 
-**How it is applied.** `templates/docker-wrapper.sh.j2` is installed as `_bin/docker` under
-the runner home (not `bin/`, which holds the runner's own binaries), owned by the account
-and mode 0750 like the job hooks. It always sets `XDG_CONFIG_HOME` and `XDG_DATA_HOME` to the
-account's `.config` and `.local/share`, `XDG_RUNTIME_DIR` to `/run/user/<uid>` (the uid is
-looked up), and PATH to the fixed system list, then runs `/usr/bin/podman`. It never sets
-HOME. A job keeps its own values of those four names: the hooks pass each job variable as
-a bare `-e NAME`, which the engine would fill from the wrapper's replaced environment, so
-the wrapper first reads the caller's values (printenv) and rewrites a bare `-e`/`--env`
-(also the `=` forms) of one of the four into `NAME=<the caller's value>`, or drops it when
-the caller had none. Every other argument is passed unchanged. The rewrite applies only
-to the options of `create`, `run` and `exec` and stops at the first positional argument
-(the IMAGE, or the CONTAINER for exec): podman reads everything from there on as the
-container's command (`SetInterspersed(false)`), so `echo -e PATH` is never changed. To
-find that argument the wrapper carries podman v4.9.3's lists of value-taking and boolean
-options for those subcommands, read from podman's own flag definitions (cited in the
-wrapper). An option it does not know, written without `=`, a combined short form or
-`--` ends the rewrite early, which at worst hands that job the host's value for one of
-the four names. The directories the wrapper sets are the values a podman command run by the
-account in its own session uses, so the store is the same one plain job steps and earlier
-runs used; nothing in this repository customises the account's storage location. The
-runner's `.env` sets PATH with `_bin` first: the systemd unit starts the runner through
-`run.sh`, which does not read the runner's `.path` file. The deploy's mount probe resolves
-`docker` from that PATH and requires the wrapper, imports its image under `env -i` (as the
-hooks' `pull` runs), creates the container under `env -i HOME=/github/home
-GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the container to carry
-`HOME=/github/home` (`docs/MISTAKES.md` 10.25). It runs no `podman system migrate`, which
-stops running containers and so could stop a job; it therefore joins the pause process
-the uid-map check left and does not exercise the wrapper's PATH for `newuidmap`. The
-rendered-wrapper bats test covers that PATH.
+**How it is applied.** `install-podman.yml` with `podman_docker_api_client: true` removes
+`podman-docker`, adds Docker's apt repository (`tasks/add-docker-apt-repo.yml`, shared with
+`install-docker.yml`) and installs only `docker-ce-cli`, pinned by
+`podman_docker_api_client_version`, without its Recommends (the buildx and compose plugins
+drive a Docker engine). It fails if `/usr/bin/docker` is not that package at that version,
+or if any Docker engine package is installed. The runner's `.env` sets
+`DOCKER_HOST=unix:///run/user/<uid>/podman/podman.sock` and no PATH, so the runner, its hooks
+and every host step use `/usr/bin/docker` and the same engine and image store.
+`tasks/podman-user-docker-socket.yml` enables that socket for `ghrunner` (lingering starts it
+at boot) and links the Docker socket path to it. The deploy refuses a host where
+`/usr/bin/docker` is not Docker's client, removes the #556 wrapper (`_bin/`) where an earlier
+deploy left it, and restarts the runner because `.env` changed. Its mount probe resolves
+`docker` from the user manager's PATH (the runner's), requires Docker's client, reads
+`DOCKER_HOST` from the deployed `.env` and requires the account's socket, imports its image
+under `env -i DOCKER_HOST=...` (as the hooks' `pull` runs), creates the container under
+`env -i HOME=/github/home GITHUB_ACTIONS=true CI=true DOCKER_HOST=...` with `-e HOME`, and
+requires the container to carry `HOME=/github/home` (`docs/MISTAKES.md` 10.25). It runs no
+`podman system migrate`, which stops running containers and so could stop a job.
+
+**Proving it off the hosts.** `deployment/hooks-smoke/run.sh` runs the real hooks (digest
+verified against the release) through one job's whole cycle in a local container with the
+hosts' podman 4.9.3 and the pinned client, twice: through a podman-docker style shim, where
+it must fail with `cannot resolve /github/home`, and through the client, where
+`prepare_job`, a `run_script_step` and `cleanup_job` must all pass. It needs only podman on
+a workstation and touches no host (D4, "Runtime feasibility, RESOLVED").
+
+**Verify on the live hosts** (the runbook; Semaphore, never SSH):
+
+1. Merge this repository's change into `dev`, and the site-config change that declares
+   `podman_docker_api_client: true` and `podman_docker_api_client_version` (and drops
+   `podman_docker_cli`) for `github_runner_svc`. Sync the inventory into Semaphore
+   (`platform/semaphore/sync-inventory.yml`).
+2. Run **Install Podman (Dev)** with `target_service=github_runner_svc`. It removes
+   `podman-docker` and installs the client; its last assert names the package and version.
+3. Run **Deploy GitHub Runner (Dev)** with `service_branch=dev`,
+   `target_service=github_runner_svc`. Expect the "Require Docker's CLI client" assert, the
+   removal of `_bin`, a quiesce and start (`.env` changed), one Listener after `.env`, and the
+   mount probe lines `client=docker-ce-cli`, `docker_host=...`, `create=ok`, `home=job`,
+   `ping=OK`.
+4. Run a job that declares `container:` on each runner: site-config's **Runner container
+   smoke** workflow (`workflow_dispatch`), or re-run a failed zerds or weft container job.
+   "Initialize containers" must pass and the steps must run in the image.
+5. Close tasks 1.5 in the openspec change with the run links.
 
 ## Restarting the runner
 
@@ -323,8 +370,9 @@ A registration token is single use, so it is minted **per host**. Nothing here i
 
 | Playbook | Purpose |
 |---|---|
-| `deploy-github-runner.yml` | Install, register, start. Idempotent: a re-run leaves an existing registration intact. |
+| `deploy-github-runner.yml` | Install or upgrade to the pinned versions, register, start. Idempotent: a re-run leaves an existing registration intact, and an unchanged pin changes nothing. |
 | `manage-github-runner-group.yml` | Converge the group's repository access list. Read-only unless `-e dry_run=false`. |
+| `stock-github-runner-jit.yml` | Ephemeral hosts only: keep the just-in-time stock full, delete runner records that can no longer take a job, and fail while a host's supervisor is stopped or quarantined. Scheduled as Stock GitHub Runner JIT (Dev). |
 | `grant-github-runner-app-repository.yml` | Add only private `uhstray-io/site-config` to the runner App installation. Directly Dev-bound in Semaphore; reads the dedicated repo-scoped administration token and App key from `secret/services/github-runner`, previews in check mode, and verifies a grant with a fresh App token. |
 | `netbox-allocate-ip.yml` | Ask the address authority for free addresses. Read-only unless `-e reserve=true`. |
 
@@ -335,7 +383,51 @@ resolve `site-config`. The grant is additive and never removes access. Check mod
 
 Host lifecycle reuses the platform's existing playbooks unchanged: `provision-vm.yml`,
 `verify-host-access.yml`, `distribute-ssh-keys.yml`, `harden-ssh.yml`,
-`apply-firewall.yml`, `install-podman.yml`.
+`apply-firewall.yml`, `install-podman.yml` (with `podman_docker_api_client` declared).
+
+## Upgrading the runner
+
+The runners are registered with `--disableupdate`, so the declared version is the running
+version and two hosts never drift apart. The cost: GitHub requires a runner with updates
+disabled to be updated "within 30 days of a new version being made available", and "if you
+do not perform a software update within 30 days, the GitHub Actions service will not queue
+jobs to your runner" ([Self-hosted runners reference, "Runner software updates on
+self-hosted runners"](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)).
+Watch [actions/runner releases](https://github.com/actions/runner/releases) and move the pin
+within that window.
+
+An upgrade is a declaration change: raise `github_runner_version` (or
+`github_runner_hooks_version`) in site-config, merge, then run the deploy. `deploy.sh install`
+converges the host on the declared versions:
+
+- **Same version: no-op.** The installed version is read from the binary
+  (`bin/Runner.Listener --version`), never from a record of the last deploy. Nothing is
+  downloaded or stopped.
+- **Different version: swap.** The new tarball is fetched and its digest verified, then
+  extracted into a staging directory and checked: it must report the declared version and
+  must not ship any host-owned name (`.runner`, `.credentials`, `.credentials_rsaparams`,
+  `.env`, `.path`, `config/`, `_hooks/`, `_work/`, `_diag/`, `job-cleanup.sh`, `.config/`).
+  Only then is the service stopped, and the release's own entries (`bin/`, `externals/`,
+  `config.sh`, `env.sh`, `run.sh`, `safe_sleep.sh`, the run-helper templates) are moved
+  aside and replaced. The registration is never touched, so the host stays registered under
+  the same name. The service is started again, the binary is re-read, and only then is
+  "upgraded runner A -> B" logged, with the version the binary reports. A failure mid-swap
+  restores the previous files.
+- **Lower version: refused.** A declared version below the installed one is usually a stale
+  declaration, not an intent, and silently acting on it could push a host behind the 30-day
+  window. A real rollback passes `-e github_runner_allow_downgrade=true`.
+- **Container hooks** follow the same rules. Their archive carries no readable version, so
+  `deploy.sh` writes `_hooks/.hooks-version` beside the files it places; a host without the
+  marker reinstalls the declared hooks once (they are stateless).
+
+**An upgrade interrupts an in-flight job.** The unit uses `KillMode=mixed`, so stopping it
+ends every process in its cgroup. `deploy.sh` also sends SIGINT to any `Runner.Listener` still
+running, as one left by an older `KillMode=process` unit would be, and waits up to
+`RUNNER_STOP_WAIT` seconds (default 60). If one survives, the swap is refused and the old
+install stays as it was. Run upgrades while the runners are idle.
+
+After the deploy, the playbook reads the binary's version and the hooks marker back and
+fails unless both match the pin. The final report states those read-back values.
 
 ## Declaration
 
@@ -356,9 +448,12 @@ directory. Reading `monorepo_deploy_path` as the root instead — an earlier bug
 yields `<deploy-path>/<deploy-path>/deploy.sh` and `rc=127`.
 
 Key vars: pinned `github_runner_version` / `github_runner_hooks_version` (an upgrade is a
-declaration change and a review, never something that happens because time passed),
+declaration change and a review, never something that happens because time passed; see
+"Upgrading the runner" above),
 `github_runner_labels`, `github_runner_group`, `github_runner_account`,
-`podman_docker_cli: true`, `firewall_deny_egress`, and optionally
+`podman_docker_api_client: true` with a pinned `podman_docker_api_client_version` (Docker's
+CLI client against the account's podman API; never `podman_docker_cli`, which the hooks
+cannot use), `firewall_deny_egress`, and optionally
 `github_runner_drain_seconds` (how long a restart waits for a running job, default 600).
 
 `firewall_deny_egress` entries must name **single hosts**. A denial broader than
@@ -377,7 +472,7 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
   fail with `Failed to connect to bus: No medium found` even while the runner is online.
   The uid is looked up, never assumed.
 - **Container jobs need `uidmap`.** A job that declares `container:` runs through the
-  container hooks, which call `docker` (podman-docker) as `ghrunner`, i.e. rootless podman.
+  container hooks, which call `docker` as `ghrunner` against its rootless podman.
   That needs `newuidmap` from the `uidmap` package and a `/etc/subuid` range for the
   account. Both hosts ran without `uidmap` until 2026-10-10: every container job failed
   with "command required for rootless mode with multiple IDs", and the job cleanup's
@@ -397,9 +492,13 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
   with the hooks' own mount set, from inside the user manager (`docs/MISTAKES.md` 10.24).
 - **A hook-shaped probe must copy the hooks' environment too.** The 10.24 probe used the
   hooks' arguments with the account's own environment, passed, and every container job
-  still failed: the hooks give the engine only the job's variables, with
-  `HOME=/github/home`. The probe now runs the wrapper under `env -i` with the hooks' HOME
-  (`docs/MISTAKES.md` 10.25).
+  still failed: the hooks give `docker` only the job's variables, with
+  `HOME=/github/home`. The probe now runs `docker` under `env -i` with the hooks' HOME and
+  `DOCKER_HOST` (`docs/MISTAKES.md` 10.25).
+- **The hooks need Docker's CLI client, not podman as a CLI.** The podman-docker shim runs
+  podman in the job's environment and fails on `HOME=/github/home`; Docker's client against
+  the account's podman API does not (`docs/MISTAKES.md` 10.29). Declare
+  `podman_docker_api_client`, not `podman_docker_cli`, for runner hosts.
 - **The root disk is small until grown.** Both hosts came up with a 9.8 GiB root LV on a
   200 G disk, 878 MiB free, which no Rust build fits in. Run Grow GitHub Runner Root
   (`grow-github-runner-root.yml`) after provisioning; its dry run shows each host's chain.
@@ -410,11 +509,13 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
 
 ## Known limitations
 
-1. Per-job containerisation is not enforced (above), and neither is process reaping: a
-   job may leave a process running after it ends. Both have the same fix — an ephemeral
-   runner whose process and filesystem are containerised per job. A best-effort reaper is
+1. On the persistent lifecycle, per-job containerisation is not enforced (above), and
+   neither is process reaping: a job may leave a process running after it ends. The
+   ephemeral lifecycle (above) enforces the reaping between jobs; containerising the runner
+   itself per job is still not done. A best-effort reaper on a persistent host is
    deliberately not shipped: one that cannot tell a leftover process from the runner's own
-   is more dangerous than the gap it closes. A stop of the unit is not a per-job reaper:
+   is more dangerous than the gap it closes. The ephemeral supervisor can tell, because it
+   resets only when the account should have no process at all. A stop of the unit is not a per-job reaper:
    it ends every process in the unit's cgroup, a leftover of a finished job included,
    because none of them belongs to a running runner any more (`KillMode=mixed`).
 2. Both hosts are on one hypervisor node. The cluster has no shared image storage and the

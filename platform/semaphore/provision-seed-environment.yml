@@ -7,6 +7,11 @@
 # the declared base template, `seed_variant` picks its dev or main instance. The
 # environment gets its own encrypted copy of the controller AppRole, so staged
 # secret inputs never sit in the environment every other template shares.
+#
+# `seed_replace_auth=true` overwrites the two AppRole inputs in place with the values from
+# OpenBao. Use it only after Semaphore's encryption key changed, when those inputs exist
+# but cannot be decrypted (MISTAKES 3.16). A normal run leaves it false: existing inputs
+# are kept, never rotated, and only missing ones are created.
 - name: "Provision the declared isolated seed environment"
   hosts: localhost
   connection: local
@@ -24,6 +29,8 @@
     _repo_name: "{{ semaphore_dev_repo_name | default('agent-cloud dev') if _variant == 'dev' else _base.repository | default('agent-cloud') }}"
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}"
     _selected_templates: "{{ [_base | combine({'_publish_name': _target_name, '_generated': _variant == 'dev'})] }}"
+    # Survey strings: "true" and "false" both convert, and an unset value stays false.
+    _replace_auth: "{{ seed_replace_auth | default(false) | bool }}"
 
   tasks:
     - name: "Require a declared isolated seed template"
@@ -184,15 +191,30 @@
         _auth: "{{ _target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
       no_log: true
 
-    - name: "Prepare missing encrypted authentication inputs in memory"
+    - name: "Prepare encrypted authentication inputs in memory"
       ansible.builtin.set_fact:
+        # Replace mode overwrites the two inputs the target holds IN PLACE, by id. Semaphore
+        # (v2.19.11, api/projects/environment.go) applies the operations one by one with no
+        # rollback, so delete-then-create could stop between the two and leave a lone half
+        # that the guard above refuses on every later run. An update re-encrypts the new
+        # value without reading the old one, keeps the id, and a failed update leaves the
+        # pair whole for a retry. Semaphore ignores an update with an empty value; the
+        # AppRole login above has already refused empty credentials.
+        # The guard has already refused any other shape (exactly two, each once, or none).
+        # Creates happen only when the target holds none.
         _auth_operations: >-
-          {{ [{'name': 'BAO_ROLE_ID', 'type': 'env', 'operation': 'create',
-               'secret': bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))},
-              {'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'create',
-               'secret': bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))}]
-             if (_target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list | length == 0)
-             else [] }}
+          {{ ([{'id': (_auth_present | selectattr('name', 'equalto', 'BAO_ROLE_ID') | first).id,
+                'name': 'BAO_ROLE_ID', 'type': 'env', 'operation': 'update', 'secret': _role_value},
+               {'id': (_auth_present | selectattr('name', 'equalto', 'BAO_SECRET_ID') | first).id,
+                'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'update', 'secret': _secret_value}]
+              if _replace_auth and _auth_present | length == 2 else [])
+             + ([{'name': 'BAO_ROLE_ID', 'type': 'env', 'operation': 'create', 'secret': _role_value},
+                 {'name': 'BAO_SECRET_ID', 'type': 'env', 'operation': 'create', 'secret': _secret_value}]
+                if _auth_present | length == 0 else []) }}
+      vars:
+        _auth_present: "{{ _target.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
+        _role_value: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+        _secret_value: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
       no_log: true
 
     - name: "Re-read dedicated environment before credential mutation"
@@ -215,7 +237,7 @@
 
     # Semaphore v2.17.31 applies secrets as explicit create/update/delete operations;
     # an empty list preserves every existing secret (api/projects/environment.go).
-    - name: "Store only missing encrypted authentication; remove an earlier address pin"
+    - name: "Store encrypted authentication; remove an earlier address pin"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/environment/{{ _target.json.id }}"
         method: PUT
@@ -245,15 +267,18 @@
       no_log: true
       check_mode: false
 
-    - name: "Verify preserved inputs and new authentication identities"
+    - name: "Verify preserved inputs and authentication identities"
       ansible.builtin.assert:
         that:
           - >-
             _after.json | combine({'secrets': [], 'json': '{}'}) ==
             _target.json | combine({'secrets': [], 'json': '{}'})
           - (_after.json.json | default('{}', true) | from_json) == {}
+          # Every input the target held survives with the same id, name and type; an
+          # in-place replacement changes only the encrypted value, which is never read back.
           - _target.json.get('secrets', []) | difference(_after.json.get('secrets', [])) | length == 0
-          - _after.json.get('secrets', []) | length == _target.json.get('secrets', []) | length + _auth_operations | length
+          # Operations net out: the target's count plus creates.
+          - (_after.json.get('secrets', []) | length) == (_target.json.get('secrets', []) | length) + (_created | length)
           - _auth | length == 2
           - _auth | map(attribute='name') | unique | list | length == 2
           - _auth | rejectattr('type', 'equalto', 'env') | list | length == 0
@@ -263,6 +288,7 @@
         fail_msg: "Authentication metadata readback differs; binding was not changed."
       vars:
         _auth: "{{ _after.json.get('secrets', []) | selectattr('name', 'in', ['BAO_ROLE_ID', 'BAO_SECRET_ID']) | list }}"
+        _created: "{{ _auth_operations | selectattr('operation', 'equalto', 'create') | list }}"
       no_log: true
       when: not ansible_check_mode
 

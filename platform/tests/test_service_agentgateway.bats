@@ -315,8 +315,8 @@ PY
 
 @test "agentgateway: playbook verifies through the one probe path, asserts the 401, puts no key on an argv" {
   # Every gateway probe outside Caddy is tasks/agw-probe.yml (task 6.1a). The client key reaches
-  # exactly eight tasks (the keyed /v1 listing and completion, the opt-in OpenRouter completion, the
-  # OpenRouter refusal probe, and the four keyed MCP probes), all includes of that file, and inside it
+  # exactly nine tasks (the keyed /v1 listing, completion and schema-constrained completion, the
+  # opt-in OpenRouter completion, the OpenRouter refusal probe, and the four keyed MCP probes), all includes of that file, and inside it
   # only a no_log `uri` header: no command or shell task ever sees it (a shell probe put it on wget's
   # argv, PR 221 Codex review).
   PROBE="$REPO_ROOT/platform/playbooks/tasks/agw-probe.yml"
@@ -336,6 +336,7 @@ for play in yaml.safe_load(open(sys.argv[1])):
 assert [t.get("name") for t in keyed] == [
     "An enrolled identity lists the served models",
     "An enrolled identity completes one chat request through the upstream",
+    "An enrolled identity completes one schema-constrained request through the upstream",
     "An enrolled identity completes one OpenRouter request (opt-in)",
     "A service identity is refused an OpenRouter model",
     "MCP: an enrolled identity initialises a session",
@@ -452,7 +453,10 @@ PY
   assert_grep -qF 'agw_client_policies' "$CONFIG"
   assert_grep -qF 'allowedModels: {{ _am | to_json }}' "$CONFIG"
   assert_grep -qF '_pol.allowed_models | default([])' "$CONFIG"
-  assert_grep -qF '_pol.tokens_per_hour | default(agw_rate_tokens_per_hour' "$CONFIG"
+  # Scoped to the key-loop macro: the expression must be the budget the macro renders, not a comment elsewhere.
+  local macro
+  macro=$(sed -n '/^{% macro apikey_policy/,/^{% endmacro %}/p' "$CONFIG")
+  assert_contains "$macro" '_pol.tokens_per_hour | default(_tier_budgets[_tier] if _tier in _tier_budgets else (agw_rate_tokens_per_hour'
 }
 
 # ── agw_ui_enabled: /v1 can ship before the Authentik client exists ─────────

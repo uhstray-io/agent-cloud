@@ -63,7 +63,7 @@ and why.
 | 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | 1 | Test (`test_no_line_window_assertions.bats` + ratchet) |
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | 1 | Convention |
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | 3 | Test (`test_no_line_window_assertions.bats` + ratchet) |
-| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
+| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 2 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
@@ -100,6 +100,8 @@ and why.
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
 | 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
+| 3.16 | A local Semaphore container recreate minted a new encryption key while its database lived on; every encrypted environment input became undecryptable and the next seed failed | Live state | 1 | Bootstrap (config on the data volume + carry-forward before any recreate) + test (`test_local_semaphore_config_persistence.py`, mutation-checked) |
+| 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -112,7 +114,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 4 | Pre-push hook |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 5 | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -131,7 +133,7 @@ and why.
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
-| 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 1 | Convention (operator rule; no hook) |
+| 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Convention (operator rule; no hook) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s | Process | 1 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
@@ -176,6 +178,8 @@ and why.
 | 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
 | 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
+| 10.28 | The seed address check read the inventory as YAML; local-dev registers INI, so every seed template had been unrunnable locally since the check landed and nobody had run one | Mechanism never exercised | 1 | Bootstrap registers `static-yaml` + test (`test_sync_local_o11y_alert_inventory.py`, mutation-checked) |
+| 10.29 | Fixed the container hooks' HOME failure with a `docker` wrapper that patched the CLI path, while the design named the API socket and its open spike would have shown the CLI path was the cause; the wrapper never reached the process that runs jobs, so the runners kept failing | Mechanism never exercised | 1 | Playbook (requires Docker's CLI client, `DOCKER_HOST` probe) + local smoke harness (`hooks-smoke/`, must reproduce the shim failure) + test (`test_service_github_runner.bats`, `test_install_podman.bats`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -1222,6 +1226,15 @@ surfaced this, on a branch whose author believed the suite had verified these ve
 properties.
 
 **Status 2026-10-02.** `platform/tests/test_assertions_are_real.bats` now also scans for `grep -v -q` and `|| true` assertions, with known instances in the shrink-only `platform/tests/known_inert_assertions.txt` (PR #392).
+
+**Occurrence 2 — 2026-10-26 (Dispatch Console, PR #742).** A worker wrote eight `! grep`
+assertions in the middle of test bodies in `platform/tests/test_service_console.bats`; the
+full BATS suite passed and the PR cited it. CodeRabbit flagged two of them; all were converted
+to `refute_grep`, and one conversion was mutation-checked (a live `source .env` in `deploy.sh`
+turned the new test red while the old form stayed green). Why the ratchet did not fire: its
+`BASELINE` (53) had not been lowered as other files were cleaned up, so the repository total
+sat below it and the eight new offenders fit inside the slack. Fix: `BASELINE` lowered to the
+measured total, 46. The ratchet only holds if every conversion also lowers the number.
 
 
 ### 2.10 §2.9 repeated — a no-op negative assertion, written while fixing that class
@@ -2453,6 +2466,59 @@ evidence, the service paths changed since the revision of the last successful re
 the launcher refuses a real run with unproven changes unless an explicit acknowledgement
 variable is set. Related: 3.14, 10.26.
 
+### 3.16 A local Semaphore container recreate orphaned every encrypted environment input
+
+**Occurrences: 1** — 2026-10-24
+
+**What happened.** The workflow 3.8 live proof needed `Seed OpenBao Key (Dev)` on local
+Semaphore. Its dry run passed; the real launch returned HTTP 500 and the server logged
+`cannot decrypt access key, perhaps encryption key was changed` (task 6729, template 203). The
+seed environment's two encrypted AppRole inputs dated from the last green seed (task 1722,
+2026-09-25). The container's `/etc/semaphore/config.json` was dated 2026-10-12: the container had
+been recreated since, and the new one had minted a fresh `access_key_encryption`.
+
+**Root cause.** The image's entrypoint (`server-wrapper`, v2.19.11) runs `semaphore setup`, which
+writes a new random key, whenever `${SEMAPHORE_CONFIG_PATH}/config.json` is absent; the default
+path `/etc/semaphore` is the container layer. The bootstrap kept the database on the
+`local-semaphore-data` volume but the key in the layer, and its own recreate step (image, port,
+mount, label or OIDC change) removes the layer. The database survived; the key that decrypts it
+did not.
+
+**The rule.** Data and the key that decrypts it share one lifetime: persist them together, and
+move an existing key before anything that can destroy where it lives. Inputs already orphaned are
+recovered by `Provision Seed Environment` with `seed_replace_auth=true`, which overwrites the
+two undecryptable AppRole inputs in place from OpenBao. The API removal used on
+2026-10-24 was a one-time stopgap from before that flag existed; with the key persisted, neither
+should be needed again.
+
+**Enforced by.** `bootstrap-local-dev.yml` starts Semaphore with `SEMAPHORE_CONFIG_PATH` on the
+data volume and copies an older container's key there before the recreate step;
+`platform/tests/test_local_semaphore_config_persistence.py` (ordering + behaviour against a
+stubbed engine, mutation-checked). The replace path is `platform/tests/test_provision_seed_replace_auth.py`
+(the provisioner's own tasks run against synthetic environments, mutation-checked). Triage entry
+in `docs/LOCAL-DEV.md`.
+
+### 3.17 A dry-run-then-real loop launched the real run after the dry run failed
+
+**What happened.** On 2026-10-24 I published one survey field to local Semaphore with
+`for mode in --dry-run ""; do python3 scripts/semaphore-launch.py --template "Publish Semaphore
+Template Surveys (Dev)" ... $mode ...; done`. The check-mode task (6943) failed: "Project,
+inventory, and variable-group IDs are accepted only for one-template creation." The loop did
+not look at the exit code and launched the real task (6944), which failed at the same input
+check and changed nothing. With inputs that passed validation but failed a later check-mode
+step, the same loop would have written for real on a dry run that had just failed.
+
+**Root cause.** The loop treated "dry run, then real" as two iterations of one command rather
+than a gate. The order was right; nothing made the second step depend on the first.
+
+**The rule.** A real launch follows a dry run only when the dry run finished and succeeded.
+Launch the dry run without `--no-wait` (with it, `scripts/semaphore-launch.py` returns 0 as soon
+as the task is submitted, while the task is still running) and chain the real launch with `&&`:
+`launch --dry-run ... && launch ...`. Never a bare loop, and not `|| break` inside one, which
+leaves the loop's own status 0 after a failure.
+
+**Enforced by.** Convention.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -2913,6 +2979,17 @@ the read said. It returned CLEAN, so nothing merged that should not have. Why th
 fire: it is written about commits and suites, and a merge after a state read did not register
 as the same shape; it is. Any action that a read is meant to decide is issued after reading
 it, in a separate command.
+
+**Occurrence 2026-10-25 (merge-conflict resolution, console branch).** Resolved an add/add
+conflict in `platform/tests/test_service_console.bats` by script, then ran
+`bats ... > log; echo rc=$?; grep -c '^not ok' log; git add ... && git commit` in one command.
+The output said `rc=1` and `6` failing tests, and the merge commit (`7dbaa800`) ran anyway,
+because the commit was chained to `git add`, not to the test result. Cause of the red: the
+splice keyed on the marker text `# --- Deploy ---`, which also appears inside the second file's
+header comment, so a second `setup()` overrode the first. Fixed in the next commit (`41b8f032`)
+before any push. Why the rule did not fire: the merge felt like bookkeeping rather than a
+change, and the test run was there as a report, not as a gate. The pre-push hook is still the
+mechanical backstop; the rule stands as written.
 
 ### 5.3 Merging while the review was rate-limited
 
@@ -3383,7 +3460,7 @@ whose head is newer than the reviewed one when the caller passes the live head.
 
 ### 5.21 A worker was told amending an unpushed commit was acceptable
 
-**Occurrences: 1** — 2026-10-14/15 (the change's working days; the hour was not recorded)
+**Occurrences: 3** — 2026-10-14/15 (the change's working days; the hour was not recorded), 2026-10-25, 2026-10-26
 
 **What happened.** During the `agentgateway-mcp` work the lead told a worker that amending its unpushed local
 commit was acceptable. The operator's rule for this repository's work is no amend, no rebase and no force
@@ -3403,6 +3480,17 @@ situation seems to need an exception, it stops and asks the operator.
 `git push --force*` for workers, outside the one secret-in-a-commit path the operator's global instructions
 define. Related: 5.10, 5.14, 5.19. Entries 5.2, 5.5 and 5.6 record amending an unpushed commit as their fix;
 the rule as given for this change does not allow it.
+
+**Occurrence 2 — 2026-10-25 (Dispatch Console CI job).** A worker adding the `Rust (console)` job amended
+its own local, unpushed commit (`3b13d04d` to `c0b2bff8`) to add two version prints, and reported it.
+**Occurrence 3 — 2026-10-26 (github-runner sweep, bash 3.2).** A worker amended its own local, unpushed
+commit (`c758257` to `fffa769`) to correct a comment it had not verified, and reported it. Why the rule did
+not fire either time: the lead's briefs neither relaxed the rule nor restated it, and a worker reads "unpushed"
+as safe. Both amendments were reported, nothing amended was pushed. Since 2026-10-26 the lead's briefs state
+"new commits only: no amend, no rebase, no force". At three occurrences `Convention` no longer suffices: the
+PreToolUse hook proposed above (refuse `git commit --amend`, `git rebase` and `git push --force*` outside the
+secret-in-a-commit path) is the guard to build; it is a change to the operator's harness settings, so it waits
+on the operator.
 
 ### 5.22 The `Python core` CI job outgrew its 30-minute timeout as the suite grew
 
@@ -4926,6 +5014,74 @@ start it fails unless there is exactly one Listener, in the unit's cgroup, start
 `run.sh`. `test_service_github_runner.bats` holds the unit settings and the task order,
 and runs `deploy.sh procs` against a fabricated `/proc` of the state found on 2026-10-12
 (three Listeners, the serving one from boot with `NoNewPrivs` set, `run.sh` clean).
+
+### 10.28 The seed address check was never run against the local-dev inventory
+
+**Occurrences: 1** — 2026-10-24
+
+**What happened.** With 3.16 recovered, the seed's read-only access check (task 6734) failed in
+`tasks/assert-bao-addr-declared.yml`: `from_yaml ... did not find expected <document start>`. The
+check, added 2026-09-25, reads the run's inventory FILE with `from_yaml` and requires one literal
+`all.vars.openbao_addr`. Production registers `static-yaml`; the local bootstrap registered INI
+(`'type': 'static'`) with no `all.vars` at all. Seed OpenBao Key, Seed Postiz Secrets and Rotate
+Semaphore API Token had all been unrunnable on local Semaphore for a month, and nothing noticed
+because nobody had run one locally since.
+
+**Root cause.** The check's header states its assumption (a static-yaml inventory) and it held
+for production; local-dev diverged from the production inventory shape, and no test or run
+exercised the check against the local record.
+
+**The rule.** A guard that parses an environment's configuration is proven against every
+environment that runs it, not the one its author had in mind. Prefer removing the divergence
+(local registers the production shape) over teaching the guard a second format.
+
+**Enforced by.** `bootstrap-local-dev.yml` registers Ansible's own `--export` YAML of the local
+inventory as `static-yaml` with a literal `all.vars.openbao_addr`; the registration test in
+`test_sync_local_o11y_alert_inventory.py` fails if the type reverts (mutation-checked).
+
+### 10.29 The hooks' HOME failure was patched on the CLI path; the design named the API socket
+
+**What happened.** 10.25 found that the container hooks start `docker` with only the job's
+variables, `HOME=/github/home` among them, and that podman, run as a CLI by the
+podman-docker shim, fails on that HOME with `cannot resolve /github/home`. The fix chosen
+(PR #556) was a `docker` wrapper first on the runner's PATH: it replaced podman's
+XDG directories and PATH, and, because the hooks pass job variables as bare `-e NAME`,
+rewrote those arguments for four names, with a copy of podman v4.9.3's option tables to
+find where the image starts. The PR itself recorded that this conflicts with design D4,
+which says the hooks "drive a Docker-compatible API", leaves open whether they work
+"against rootless Podman's compatibility socket", and requires that the fallback be "an
+existing supported path rather than a patch". The wrapper never reached the process that
+runs jobs (10.27, then a deploy that could not be launched, issue #609), so the runners
+kept failing: zerds run 39135564896 on 2026-10-18 shows the hooks running
+`/usr/bin/docker create` and the same error, six days later.
+
+**Root cause.** The design's spike (tasks 1.2) was still open, so the question it asks,
+does the API socket work, had no answer, and the fix was built on the path that had
+already failed rather than on the one the design named. The spike, once run
+(`hooks-smoke/`, 2026-10-18), shows the failure is a property of running podman as a CLI
+in the job's environment: Docker's CLI client against the account's rootless podman API
+socket runs the hooks' whole cycle unmodified, because the API service keeps the
+account's own environment and only the client sees the job's HOME.
+
+**The rule.** When a design names the mechanism and leaves its feasibility to a spike,
+run the spike before building around the mechanism that failed. A workaround that has
+to imitate another program's argument parser to stay correct is a patch, however small
+its footprint (widens 10.24 and 10.25).
+
+**Enforced by.** `install-podman.yml` has an opt-in `podman_docker_api_client` that
+removes podman-docker, installs only `docker-ce-cli` at a declared pin from Docker's
+repository (one shared task with `install-docker.yml`), and fails unless
+`/usr/bin/docker` is that package at that version and no Docker engine is installed. The
+runner's `.env` sets `DOCKER_HOST` to the account's podman socket and no PATH; the
+wrapper template is deleted and the deploy removes `_bin/` from a host that has it.
+`deploy-github-runner.yml` refuses a host whose `/usr/bin/docker` is not Docker's client,
+and its mount probe requires the client, the `.env` `DOCKER_HOST`, and every engine call
+under `env -i`. `platform/services/github-runner/deployment/hooks-smoke/run.sh` runs the
+real hooks through prepare, a step and cleanup, and fails unless the shim reproduces
+`cannot resolve /github/home` AND the client passes. `test_service_github_runner.bats`
+and `test_install_podman.bats` hold each of these, each assertion seen to fail once under
+a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
+hosts").
 
 ## 11. The largest one
 

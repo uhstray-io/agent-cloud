@@ -7,10 +7,26 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory={{ github_runner_home }}
 ExecStart={{ github_runner_home }}/run.sh
+{% if (github_runner_lifecycle | default('persistent')) == 'ephemeral' %}
+# Ephemeral lifecycle (openspec add-ephemeral-github-runners). The unit is started by
+# ephemeral-supervisor.sh for exactly one just-in-time runner, never at login, and never
+# restarted by systemd: when the runner exits after its one job, the supervisor destroys the
+# account's processes and files before the next runner starts. A restart here would bring a
+# runner back into a home the job has used.
+Restart=no
+# The one runner's just-in-time configuration, written 0600 into the runtime directory by
+# the supervisor (never argv, which /proc shows to every local user), read here as
+# ACTIONS_RUNNER_INPUT_JITCONFIG, and removed as soon as the runner has started. The runner
+# masks the value and deletes the variable from its own environment
+# (Runner.Listener/CommandSettings.cs).
+EnvironmentFile=-%t/actions-runner-jit.env
+ExecStartPost=/bin/rm -f %t/actions-runner-jit.env
+{% else %}
 # The runner exits after certain updates and on some transient listener errors; always
 # bring it back, or the host silently stops accepting work with nothing to show for it.
 Restart=always
 RestartSec=5
+{% endif %}
 # no_new_privs is OFF, deliberately, and must stay off. Jobs run rootless podman (a
 # `container:` job through the hooks, a `podman build` in a plain step), and rootless
 # podman maps the account's /etc/subuid range by running the setuid-root helpers

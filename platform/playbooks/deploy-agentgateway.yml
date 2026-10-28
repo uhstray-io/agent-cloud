@@ -37,6 +37,10 @@
 #                          secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key; never generated)
 #   agw_verify_openrouter  (default false) send ONE completion (max_tokens 8) to the first OpenRouter model
 #                          the verifying identity may use; off, the verify only checks the keyed listing
+#   agw_verify_json_schema (default true) send ONE schema-constrained completion (`response_format`
+#                          type json_schema) to the verifying model and require a reply that parses
+#                          against that schema: skynet's structured output depends on the gateway
+#                          passing it through unchanged (service-deployment-workflow 0.5/3.3)
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
 #   agw_admin_identities_enabled (default false) gate for the personal identities below: off,
 #                          agw_identities == agw_clients and the admin list is not read
@@ -49,7 +53,11 @@
 #                          `agw_identity` if set, else its `username`. Merged with agw_clients into
 #                          agw_identities (vars/secret-declarations/agentgateway.yml); a name in both
 #                          is one identity (the same client_<name>), reported as an overlap
-#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
+#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N, tier: T}}
+#   agw_models[].pool_identity  (optional) a shared hourly cap on that model for every caller together: the
+#                          named agw_clients identity's tokens_per_hour (config.yaml.j2, "Shared model pools")
+#   agw_tier_tokens_per_hour  (optional) {tier: N}: hourly budget per tier; platform_admins identities
+#                          are tier `admin`, others join with agw_client_policies.<name>.tier
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
 #                          shared vLLM key is enrolled as identity `legacy-shared` (budget from
@@ -216,6 +224,22 @@
       ansible.builtin.assert:
         that: _agw_mcp_problems | length == 0
         fail_msg: "agw_mcp_enabled cannot be rendered: {{ _agw_mcp_problems | join('; ') }}."
+        quiet: true
+
+    # Budget tiers: every agw_client_policies.<name>.tier must name a figure in agw_tier_tokens_per_hour
+    # (vars/secret-declarations/agentgateway.yml, _agw_tier_problems), refused before anything is rendered.
+    - name: "Refuse a budget tier with no figure"
+      ansible.builtin.assert:
+        that: _agw_tier_problems | length == 0
+        fail_msg: "The budget tiers cannot be rendered: {{ _agw_tier_problems | join('; ') }}."
+        quiet: true
+
+    # Shared model pools: a pool identity must be a budgeted service identity of its own, and `pool/` is
+    # reserved (vars/secret-declarations/agentgateway.yml, _agw_pool_problems), refused before anything is rendered.
+    - name: "Refuse a shared model pool that cannot be rendered safely"
+      ansible.builtin.assert:
+        that: _agw_pool_problems | length == 0
+        fail_msg: "The shared model pools cannot be rendered: {{ _agw_pool_problems | join('; ') }}."
         quiet: true
 
     # The skynet route (agentgateway task 3.3): its backend, identities and reserved names are checked before
@@ -669,13 +693,16 @@
       ansible.builtin.assert:
         that:
           - _render.mcp | bool == (agw_mcp_enabled | default(false) | bool)
-          - _render.loopback | bool == (agw_mcp_enabled | default(false) | bool)
+          - _render.loopback | bool == _want_loopback | bool
         fail_msg: >-
           The rendered config.yaml has an mcp block: {{ _render.mcp }}, a loopback gateway: {{ _render.loopback }},
-          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }}; the two must agree.
+          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }} and a shared model pool is
+          {{ 'declared' if _pools else 'not declared' }}; the loopback gateway exists exactly when either does.
         quiet: true
       vars:
         _render: "{{ _agw_render_read.stdout | from_json }}"
+        _pools: "{{ agw_models | default([]) | selectattr('pool_identity', 'defined') | list | length > 0 }}"
+        _want_loopback: "{{ (agw_mcp_enabled | default(false) | bool) or (_pools | bool) }}"
       when: not ansible_check_mode
 
     - name: "Require the rendered mcp block to carry its own strict key policy"
@@ -1378,6 +1405,67 @@
         - not ansible_check_mode
         - _verify_client | length > 0
         - not (_verify_refused | bool)
+
+    # ONE schema-constrained completion (agw_verify_json_schema, default on). The gateway must hand
+    # `response_format` to the upstream unchanged, which constrains the reply to the schema; a reply
+    # that is not exactly {"reply": <string>} means the field was dropped or rewritten on the way.
+    - name: "An enrolled identity completes one schema-constrained request through the upstream"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [200]
+        _agwp_timeout: 120
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
+          model: "{{ _verify_models[0] }}"
+          max_tokens: 512
+          messages: [{role: user, content: "Reply with the word pong."}]
+          response_format:
+            type: json_schema
+            json_schema:
+              name: verify_reply
+              strict: true
+              schema:
+                type: object
+                properties: {reply: {type: string}}
+                required: [reply]
+                additionalProperties: false
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
+
+    - name: "Keyed probes: keep the schema-constrained response"
+      ansible.builtin.set_fact:
+        _keyed_schema: "{{ _agwp_out }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
+
+    - name: "Require a reply that parses against the requested schema"
+      ansible.builtin.assert:
+        that:
+          - (_keyed_schema.status | int) == 200
+          - _schema_content is match('^\\s*\\{')
+          - (_schema_content | from_json) is mapping
+          - (_schema_content | from_json | list) == ['reply']
+          - (_schema_content | from_json).reply is string
+        fail_msg: >-
+          Schema-constrained completion as {{ _verify_client }} for {{ _verify_models[0] }} did not
+          return a reply matching its schema (HTTP {{ _keyed_schema.status }}): the gateway or the
+          upstream did not honour response_format type json_schema.
+        success_msg: "response_format json_schema passed through: the reply parses against its schema."
+      vars:
+        _schema_content: "{{ _keyed_schema.json.choices[0].message.content | default('', true) | string }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
 
     # Opt-in (agw_verify_openrouter): ONE completion with max_tokens 8 to the first OpenRouter model
     # the verifying identity may use, so a deploy proves the OpenRouter path only when the operator

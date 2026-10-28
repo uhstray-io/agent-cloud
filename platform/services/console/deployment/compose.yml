@@ -1,0 +1,44 @@
+# console — the Dispatch Console (single container, SQLite preferences on a named volume).
+#
+# The image is BUILT ON THIS HOST by deploy.sh (build_console_image) from
+# platform/services/console/{app,deployment/Containerfile}: there is no registry push, so
+# CONSOLE_IMAGE is a local tag. Ansible's deploy-console.yml renders .env (non-secret config, the
+# OIDC client secret shared-read from authentik, and the Semaphore API token that
+# provision-console-semaphore-access.yml stores), config/scope.json and config/workflow.json BEFORE
+# this stack starts; deploy.sh does not generate or read secrets.
+#
+# Behind central Caddy: the app serves plain HTTP on :8080 inside the container. The host publish
+# is env-parameterized (CONSOLE_BIND / CONSOLE_PORT in .env), loopback by default.
+# Plan: plan/development/17-dispatch-console.md (Phase 1 — skeleton, login and deployment path).
+
+name: console
+
+services:
+  console:
+    image: ${CONSOLE_IMAGE:-localhost/agent-cloud-console:local}
+    container_name: console
+    restart: always
+    env_file:
+      - .env
+    ports:
+      # Loopback-only by default; central Caddy proxies in. Prod sets a host bind + port via .env.
+      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-3410}:8080"
+    volumes:
+      # SQLite database (/data/prefs.db): preferences and login sessions. The image's nonroot uid must own /data.
+      - console-data:/data
+      # Which tenants, orgs and sites the console shows. Rendered from the inventory; read-only.
+      - ./config/scope.json:/etc/console/scope.json:ro
+      # The service-onboarding steps the console labels a run with (CONSOLE_WORKFLOW_FILE); read-only.
+      - ./config/workflow.json:/etc/console/workflow.json:ro
+    healthcheck:
+      # Exec form, no shell: the runtime image is distroless (no /bin/sh for CMD-SHELL). The probe
+      # is the binary's own subcommand, so no curl or wget is assumed. Whether the engine runs
+      # this as exec, not shell, is verified only by a live deploy (see deployment/CLAUDE.md).
+      test: ["CMD", "/usr/local/app/server", "probe", "/healthz", "200"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 15s
+
+volumes:
+  console-data:

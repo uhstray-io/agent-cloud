@@ -809,6 +809,40 @@ templates:
         required: false
         default_value: "false"
 
+  # The Dispatch Console (platform/services/console): the image is built on the host from the
+  # committed sources (no registry). Dev-only until promotion, like agentgateway below: main has no
+  # console code yet, so the main-bound template cannot run; the "(Dev)" variant can.
+  - name: Deploy console
+    playbook: platform/playbooks/deploy-console.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate the container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+      - name: console_force_rebuild
+        title: "Force image rebuild"
+        description: "true to rebuild the console image even when its build inputs match the image on the host"
+        type: string
+        required: false
+        default_value: "false"
+
+  # The Dispatch Console's own read-only Semaphore identity (plan 17, D20): svc-console, a non-admin
+  # account at project role guest, its token stored at secret/services/console. Run it BEFORE Deploy
+  # console (which reads that token and stops when it is absent), and before Manage Semaphore Access
+  # declares svc-console (which refuses a declared member with no account yet).
+  - name: Provision Console Semaphore Access
+    playbook: platform/playbooks/provision-console-semaphore-access.yml
+    dev_variant: true
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
@@ -1214,6 +1248,23 @@ templates:
 
   - name: Clean Deploy tududi
     playbook: platform/playbooks/clean-deploy-tududi.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # Dev-only until promotion, for the same reason as Deploy console above.
+  - name: Clean Deploy console
+    playbook: platform/playbooks/clean-deploy-console.yml
+    dev_variant: true
     survey_vars:
       - name: confirm_reset
         title: "Confirm: host whose data is destroyed"
@@ -1801,6 +1852,12 @@ templates:
         type: string
         default_value: dev
         required: true
+      - name: seed_replace_auth
+        title: "Replace existing AppRole inputs"
+        description: "true only after Semaphore's encryption key changed (inputs present but undecryptable)"
+        type: string
+        default_value: "false"
+        required: false
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
@@ -2891,15 +2948,20 @@ templates:
         required: false
         default_value: "caddy_svc"
 
-  # Promote every declared platform admin (inventory var semaphore_admin_users)
-  # to a Semaphore admin via the API. Sanctioned replacement for the manual
-  # grant — Semaphore 2.18.12 has no group->role mapping (closes task #37).
+  # Promote every declared admin to a Semaphore admin via the API: each entry of
+  # platform_admins (the administrator list the Authentik deploy renders into
+  # platform-admins) plus semaphore_admin_users. Sanctioned replacement for the
+  # manual grant: Semaphore 2.18.12 has no group->role mapping (closes task #37;
+  # derived from platform_admins since #604). The Dev copy runs the derivation
+  # from dev before it is promoted to main.
   - name: Promote Semaphore Admins
     playbook: platform/playbooks/promote-semaphore-admins.yml
+    dev_variant: true
 
   # Launch rights are runner rights (plan 01, "Launch permission is runner access"): hold the
   # project team, the system admins and the integrations to the private declarations
-  # semaphore_project_members and semaphore_admin_users. Run under check mode first.
+  # semaphore_project_members, platform_admins and semaphore_admin_users. Run under check
+  # mode first.
   - name: Manage Semaphore Access
     playbook: platform/playbooks/manage-semaphore-access.yml
     dev_variant: true
@@ -3088,6 +3150,20 @@ templates:
         description: "JWT issuer — the App's client id (NOT the client secret, which is unused)"
         type: string
         required: false
+
+  # Ephemeral runner lifecycle (openspec add-ephemeral-github-runners): keeps each ephemeral
+  # host's root-only stock of just-in-time runner configurations full, minted on the
+  # controller from the App key in OpenBao, and fails while a host's supervisor is stopped or
+  # quarantined. A host on the default persistent lifecycle is skipped, so the schedule
+  # changes nothing until a host declares github_runner_lifecycle: ephemeral. Dev-bound like
+  # the o11y watcher: a schedule on a main-bound base would run `main`, which has no copy of
+  # the playbook until promotion. The App client id comes from the inventory
+  # (github_app_client_id), because a schedule cannot answer a survey.
+  - name: Stock GitHub Runner JIT (Dev)
+    playbook: platform/playbooks/stock-github-runner-jit.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/10 * * * *"
 
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml

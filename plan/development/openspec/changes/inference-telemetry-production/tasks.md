@@ -308,6 +308,10 @@
       spark-1; restored and verified." The real run is also the key-only login proof for the
       o11y-drill account from the Semaphore runner (sshd admits it only from the Semaphore
       host). Ticked: the drill induced the fault, the alert fired, the exporter was restored.
+      2026-10-26 correction (from dgx-spark): the 2026-10-12 note says dgx-spark reads the
+      drill's public key from site-config. Since dgx-spark PR 32 (2026-10-14), dgx-spark
+      commits the key in its own repository as `keys/o11y-fault-drill.pub` and installs it
+      from there on both nodes. The site-config copy is the backup.
 - [x] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;

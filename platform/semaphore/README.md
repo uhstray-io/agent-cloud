@@ -75,9 +75,14 @@ admins, project members whose role can run tasks, those users' API tokens, and i
 (incoming webhooks, which copy payload values into the task environment).
 
 **Manage Semaphore Access** holds all four to a declaration: `semaphore_project_members`
-(username to role, the whole team) and `semaphore_admin_users`, both in the private
-inventory's top-level `all.vars` (the play runs on implicit `localhost`, which receives no
-group's vars; `promote-semaphore-admins.yml` reads `semaphore_admin_users` the same way). Run it
+(username to role, the whole team) and the admin roster, all in the private inventory's
+top-level `all.vars` (the play runs on implicit `localhost`, which receives no group's vars;
+`promote-semaphore-admins.yml` reads them the same way). The admin roster is derived, never
+hand-granted: every `platform_admins` entry (the administrator list the Authentik deploy
+renders into `platform-admins`) except the service account, plus `semaphore_admin_users` for
+Semaphore-only admins such as the local bootstrap account. A platform admin's first SSO sign-in
+creates a plain account; **Promote Semaphore Admins** then grants the flag and reads it back,
+and the access report names each declared admin still to promote (issue #604). Run it
 under check mode first; the report lists the live team, admins and integrations by name. A real
 run adds declared accounts, sets declared roles, removes undeclared members and reads the team
 back; a declaration naming an account that does not exist stops it before any write. It never demotes a system admin or deletes an integration: each is named and fails the
@@ -298,6 +303,11 @@ in to OpenBao it also refuses:
 An environment provisioned before 2026-09-25 carries an `openbao_addr` pin. Publication
 refuses it until **Provision Seed Environment** runs again, which removes the pin and keeps
 the AppRole inputs.
+
+If a task launch fails with `cannot decrypt access key, perhaps encryption key was changed`,
+Semaphore's encryption key changed under existing inputs. Run **Provision Seed Environment**
+for that seed template with `seed_replace_auth=true`: it overwrites the two AppRole inputs in
+place from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
 
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
    with `seed_template` set to the declared base name, plus the verified
