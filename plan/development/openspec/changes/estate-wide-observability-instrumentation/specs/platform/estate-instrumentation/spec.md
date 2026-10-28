@@ -34,33 +34,67 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 
 ### Requirement: Endpoint availability probes are reviewed, isolated, and bounded
 Continuous HTTP(S) endpoint availability MAY be enabled only for targets with a
-reviewed private declaration binding one exact endpoint and supported health
-contract to the stable service, environment, cluster, and `target_id` identity.
-The feature SHALL default off until endpoint semantics, receiver-vantage egress,
-finite target/work/series limits, and isolation of the native probe handler are
-validated. The candidate is the existing pinned Alloy v1.5.1
-`prometheus.exporter.blackbox` component; source support does not prove it is
-loaded or effective. No new container, published listener, runtime URL
-override, or production target is implied by this requirement.
+reviewed entry in the existing private `estate_coverage_inventory.targets`
+authority, with its canonical inventory revision, binding one exact endpoint
+and supported health contract to stable service, environment, cluster, and
+`target_id` identity. The feature SHALL default off with explicit
+`enabled=false` and reviewed flags/limits required for activation; enabled
+empty targets SHALL refuse. No caller/extra-var value may override the private
+endpoint declaration or activation controls. The candidate is the existing
+pinned Alloy v1.5.1 `prometheus.exporter.blackbox` component; source support
+does not prove it is loaded or effective. No new container, published listener,
+runtime URL override, or production target is implied.
 
-Declarations SHALL reject launch/extra-var endpoint overrides, duplicates,
-malformed or secret-bearing endpoints, unreviewed redirect destinations,
-unbounded headers/auth/proxy/body matching, and destinations outside reviewed
-private topology. Probes SHALL use bounded HTTP(S) GET, certificate
-verification, disabled environment proxying, reviewed redirect/status/TLS
-semantics, finite response-body and target budgets, and a probe timeout less
-than the scrape timeout, which SHALL not exceed the interval. Only fixed
-reviewed identity labels may be exported; endpoint text and request, client,
-trace, or secret values SHALL NOT become labels. The native handler's ability to
-accept caller-provided probe parameters SHALL be isolated from sibling callers
-before activation, with effective network denial verified. Existing private
-Prometheus forwarding and Alloy self-monitor identities/selectors SHALL be
-preserved without duplicate writers or self-scrapes.
+Each endpoint SHALL be one literal RFC1918 IPv4 HTTP(S) GET URL. Declarations
+SHALL reject duplicates, userinfo, query or fragment, credentials, headers,
+request-body matching, proxies, unchecked/unreviewed redirects, and any
+unreviewed destination. The health contract SHALL use exact reviewed status
+codes. HTTPS SHALL include a reviewed DNS `tls_server_name` and trust choice
+`system` or `internal-ca`; HTTP SHALL have no TLS trust field. TLS certificate
+verification SHALL be enabled and environment proxying disabled. A target
+without a safe fixed health contract SHALL remain undeclared.
+
+Source validation SHALL enforce hard ceilings without assigning production
+defaults: 64 targets; 30–3600-second interval; probe timeout at most 10 seconds;
+scrape timeout at most 30 seconds with `probe < scrape <= interval`; response
+body at most 65,536 bytes; raw samples at most 256 and within the existing
+shared cap; summed probe timeouts at most 120 seconds; and at most 384 retained
+series (64 targets × 6 families). Only `up`, `probe_success`,
+`probe_duration_seconds`, `probe_http_status_code`, `scrape_samples_scraped`,
+and `scrape_body_size_bytes` SHALL be retained for probes, with
+`extra_metrics=true`; this filter SHALL NOT constrain Alloy self-monitor
+metrics. Only fixed identity labels SHALL be exported. Raw endpoint and
+request/client/trace/secret values SHALL NOT become labels. The exact probe
+health selector SHALL bind job, `target_id`, environment, and cluster.
+
+Before configuration placement or activation, the native handler SHALL be
+isolated from sibling/caller containers. The gate SHALL verify the effective
+Linux network namespace identity against each sibling before and after
+observation, bound to stable container IDs, running PIDs, and start times.
+Unknown or unstable identity, unavailable inspection, shared pod/network mode,
+conflicting provider or launch inputs, or a published listener SHALL refuse
+before the handler is enabled. The availability overlay SHALL declare
+`x-podman.in_pod=false`; loopback binding alone SHALL NOT count as isolation.
+The source design SHALL NOT require a future native sample in pre-enable
+preflight; runtime target/readback proof is a separate post-apply acceptance.
+Existing private Prometheus forwarding, Alloy self-monitor identity/selectors,
+and profile consumers SHALL be preserved without duplicate writers or
+self-scrapes. Off mode SHALL preserve existing behavior. Existing Grafana
+expected-target rule UIDs, five-label identities, and queries SHALL remain
+unchanged in this source slice; producer verification SHALL use the private
+inventory declaration and actual runtime evidence rather than duplicating
+producer ownership in alert annotations or tombstones. The normalized private
+expected-metrics rows MAY carry additive `source: prometheus|alloy`; omission
+SHALL mean the legacy Prometheus source. This field SHALL survive normalization
+and the existing budget, survey, and deploy-guard projections. Current source
+SHALL be proven only from active Prometheus targets or the fixed native Alloy
+detail plus fresh forwarded diagnostics. Ownership projection alone SHALL NOT
+prove producer acceptance.
 
 #### Scenario: Probe activation remains gated without a reviewed target and isolation
-- **WHEN** a target declaration, endpoint contract, finite budget, or effective handler isolation is missing or unverified
-- **THEN** the probe remains disabled and no target is rendered or treated as covered
-- **AND** check mode, source validation, and a rendered configuration do not count as live acceptance
+- **WHEN** a target declaration, endpoint contract, finite budget, actual pre-placement namespace proof, or effective handler isolation is missing or unverified
+- **THEN** activation refuses before configuration placement and no target is treated as covered
+- **AND** check mode, source validation, and rendered configuration do not count as live acceptance
 
 #### Scenario: Endpoint failure, scrape failure, and missing probe data remain distinct
 - **WHEN** an exact reviewed probe target is evaluated
@@ -71,8 +105,19 @@ preserved without duplicate writers or self-scrapes.
 #### Scenario: Probe labels and resource work stay within the reviewed budget
 - **WHEN** reviewed targets are rendered and scraped
 - **THEN** only their fixed service/environment/cluster/`target_id` identity labels are retained, with no endpoint or request-derived labels
-- **AND** finite target count, interval, timeouts, body cap, scrape limits, and aggregate work/series budget bound collection
+- **AND** the fixed six-family output and hard target, interval, timeout, body, scrape, series, and aggregate-work ceilings bound collection
 - **AND** exact-binary validation, receiver readback, target failure/recovery, missing-series behavior, and existing-route delivery remain separate live acceptance evidence
+
+#### Scenario: Source rendering does not prove post-apply probe acceptance
+- **WHEN** source validation or a rendered configuration succeeds without a fresh readback from the running pinned receiver
+- **THEN** availability remains unverified and no runtime coverage or alert-delivery acceptance is claimed
+- **AND** the post-apply check requires the loaded native component, finite effective limits, current target identity/health, and fresh samples newer than both the pre-apply receiver-time bound and the new Alloy process start
+- **AND** historical series, including a 24-hour maximum, cannot prove a new producer transition
+
+#### Scenario: Native producer survey lacks source evidence
+- **WHEN** an expected row declares Alloy but no fixed native component detail and fresh forwarded sample evidence are available
+- **THEN** the source survey returns a fixed unverified result rather than matching a Prometheus target or claiming native acceptance
+- **AND** a same-UID/same-five-label Grafana ownership match does not satisfy producer acceptance
 
 ### Requirement: Expected metrics targets are reviewed and compared exactly
 Production per-target missing-telemetry rules SHALL be active only when

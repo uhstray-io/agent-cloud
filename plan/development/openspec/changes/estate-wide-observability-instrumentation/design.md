@@ -1237,65 +1237,103 @@ bounded to the dashboard's stored selection and does not claim to resolve the
 live option list.
 
 
-## Bounded endpoint availability (source proposal, 2026-10-28)
+## Bounded endpoint availability and producer transition (2026-10-28)
 
-Continuous endpoint availability belongs in this existing estate-instrumentation
-change. It is separate from metrics coverage: an HTTP(S) health response can
-prove only the reviewed endpoint contract, not application metrics or full
-service health. Keep it opt-in and disabled until the private target contract,
-bounded work budget, and receiver-side route isolation are reviewed and
-verified. No target URL, host, credential, or private topology belongs in this
-public change.
+Continuous HTTP(S) availability is a separate health signal. A successful
+health contract does not establish application metrics, complete service
+health, or full-estate coverage. It uses the existing private
+`estate_coverage_inventory.targets` declaration and its canonical revision;
+there is no second target registry. Actual endpoint values and topology remain
+private site-config data. This design adds source contracts only and authorizes
+no probe activation, new traffic, retention change, outage drill, TLS/certificate
+policy change, or production write.
 
-The implementation candidate is Alloy's native
-`prometheus.exporter.blackbox` component in the repository-pinned Alloy v1.5.1
-image. The component is source-confirmed for that image, but installation and
-effective runtime behavior are not verified. It does not require another
-container or exporter package. Each enabled target must come from the reviewed
-private estate declaration and bind its stable service, environment, cluster,
-and `target_id` identity to one exact HTTP(S) endpoint and supported health
-contract, including expected statuses, redirect policy, TLS trust/name, and
-receiver-vantage egress. Authenticated endpoints without an honest public
-health contract remain undeclared. Do not infer a Semaphore health target from
-its deployment-time `/api/ping` check or the reported `/api/info` 502.
+The candidate is Alloy v1.5.1's native
+`prometheus.exporter.blackbox`. Each target is one reviewed fixed HTTP(S) GET
+URL and one supported health contract bound to service, environment, cluster,
+and stable `target_id`. Reject endpoint launch/extra-var overrides, duplicates,
+non-RFC1918 IPv4 literals, userinfo, query or fragment, credentials, headers,
+request-body matching, proxying, unchecked redirects, and unreviewed
+destinations. Require exact accepted status codes. HTTPS requires a reviewed
+DNS `tls_server_name` and trust choice `system` or `internal-ca`; HTTP has no
+TLS trust field. Certificate verification is enabled and environment proxying
+is disabled. An authenticated endpoint without a safe fixed contract remains
+undeclared. Do not infer a Semaphore endpoint from a deploy-time ping or an
+incidental API response.
 
-Reject launch overrides, duplicate or malformed declarations, userinfo,
-query/fragment data, arbitrary headers/auth/proxies/body matchers, unreviewed
-redirect destinations, and destinations outside reviewed private topology.
-Use bounded HTTP GET probes with TLS certificate verification enabled and
-environment proxying disabled. Review finite target count, interval, timeout, response-body
-cap, and aggregate work/series budget before rendering; probe timeout must be
-less than scrape timeout, which must not exceed the interval. Retain the
-existing scrape limits and forbidden-label policy. Export only fixed labels
-from the reviewed identity; never label endpoint text, request/client/trace
-data, or secrets. A reviewed hostname alone does not prevent DNS rebinding.
+Source validation requires explicit false-by-default enable and reviewed flags,
+reviewed limits, and a nonempty target set when enabled. Existing launch
+extra-var refusal remains the boundary for every private activation input. Hard
+source ceilings, not production defaults, are: at most 64 targets; interval
+30–3600 seconds; probe timeout at most 10 seconds; scrape timeout at most 30
+seconds with `probe < scrape <= interval`; response body at most 65,536 bytes;
+raw samples at most 256 and no greater than the existing shared cap; aggregate
+probe timeouts at most 120 seconds; and at most 384 retained series (64 × 6).
+Retain only `up`, `probe_success`, `probe_duration_seconds`,
+`probe_http_status_code`, `scrape_samples_scraped`, and
+`scrape_body_size_bytes`, with `extra_metrics=true`. Do not apply the six-family
+filter to Alloy's self-monitor series. Drop raw endpoint labels and keep only
+fixed identity labels. The probe-health selector includes job, target ID,
+environment, and cluster.
 
-The native component's HTTP handler accepts caller-provided probe parameters,
-so target inventory validation alone is not a boundary. Before activation,
-isolate the component handler from sibling containers and prove the effective
-network denial. The source candidate is to bind Alloy's HTTP listener to
-loopback and have the native exporter use its in-process address. Migrate the
-existing Prometheus Alloy self-scrape to the shared remote-write path and the
-profile pilot to loopback first; preserve `job=alloy`, service/environment/
-cluster/`target_id`, exporter counter families, and owned `instance` selectors
-without duplicate self-scrapes. Reuse the existing private Prometheus
-remote-write receiver and environment-specific transport; extract the existing
-bounded relabel/write path for reviewed probe mode rather than adding a second
-writer or publishing a port. If exact-binary validation and effective
-isolation cannot preserve these consumers, activation stays blocked.
+The native component handler accepts caller-supplied target parameters. Before
+configuration placement or activation, the actual Linux receiver must prove
+that the Alloy network namespace differs from every sibling/caller by stable
+container ID, running PID, start time, and kernel namespace identity before
+and after observation. Missing or unstable runtime identity, rootless inability
+to inspect it, shared pod/network mode, or host-published listener refuses
+before the handler is enabled. The gated overlay declares `x-podman.in_pod:
+false`; conflicting provider, pod, argv, or network-mode inputs are refused.
+Loopback binding alone is not proof of isolation. A safe metadata/liveness
+denial check must never call the arbitrary-target handler. If the existing
+topology cannot satisfy the gate, converge a reviewed probe-disabled topology
+first through the ordinary path. This is a runtime activation dependency, not a
+new rollout manager.
 
-The existing Grafana rules own notifications. Keep three states distinct:
-`probe_success=0` is a failed endpoint contract, scrape `up=0` is a failed
-collector scrape, and an absent exact declared probe series is missing
-telemetry. None is a healthy fallback. Add only the bounded probe-failed and
-exact-target missing-probe rules after existing alert gates and routing are
-reused. Source tests and config validation cannot satisfy deployment
-acceptance: live proof still needs the loaded pinned component, finite runtime
-limits, isolated caller path, fresh target series, controlled failure,
-recovery, absence handling, and delivery through the existing Discord route.
+Preserve the existing private Prometheus remote-write receiver and
+environment-specific transport. When availability mode is active, move Alloy
+self-monitor collection to the shared Alloy writer and loopback, retaining
+`job=alloy`, service/environment/cluster/target identity, exporter counter
+families, instance ownership, and existing profile consumers without duplicate
+writers or scrapes. The old source behavior remains unchanged when disabled.
+Use the bounded shared relabel/write path; do not publish port 12345, add a
+container, or add a dependency.
 
-The endpoint-contract source and alert work is tracked under tasks 2.2, 2.3,
-3.3, 5.1/5.3, and 6.2. The existing [production observability plan](../../../05-observability.md)
-remains the rollout and capacity owner. Shared Alloy template ownership and
-sequencing are subject to that plan and the PR756 dependency; this design records
-the candidate only and authorizes no new traffic or deployment.
+The normalized private expected-metrics rows may carry additive
+`source: prometheus|alloy`; omission means the legacy Prometheus source. Source
+must survive normalization and the existing budget/survey/deploy-guard
+projections. Current producer proof comes only from actual active Prometheus
+targets or the fixed native Alloy component detail plus fresh forwarded
+diagnostics. Grafana alert ownership intentionally remains limited to the
+existing UID, five-label identity, query, and recovery formats; producer source
+must not be duplicated into rule annotations or tombstones. A same-UID and
+same-five-label intended Alloy row may pass the alert-ownership preflight, but
+the source acceptance phase must fail if post-apply readback shows only the old
+Prometheus producer or an incorrect native producer. Direct survey of an Alloy
+row without native evidence is unverified, not a Prometheus match.
+
+Pre-placement preparation proves the healthy current source, reviewed intended
+source, receiver baseline, candidate bounds, and actual namespace isolation. It
+does not require a future native sample and does not accept prior 24-hour data
+as new-producer proof. After apply, native detail and fresh Prometheus range
+samples must be newer than both the pre-apply receiver time bound and the new
+Alloy process start. The existing expected-target helper remains an alert-rule
+ownership preflight, not a producer acceptance journal or generic transition
+manager. An idempotent native rerun must prove the actual current native source;
+a reviewed return to Prometheus must prove the current Alloy source before
+switching and then verify the resulting Prometheus target.
+
+Keep endpoint failure (`probe_success=0`), scrape failure (`up=0`), and missing
+exact declared series separate. Existing alert routes remain the notification
+owner. Existing generic `o11y_service_down` remains service telemetry scrape
+failure; add only failed-probe and exact-target missing-probe rules behind the
+existing gates. Per-service conformance dashboards, inventory markers, and
+failure/pass counts must exclude the global completion receipt from tracked
+service and per-step data. Health-only coverage never implies metrics coverage.
+
+Source validation, rendered config, synthetic fixtures, and check mode do not
+prove runtime acceptance. Separate evidence remains required for the installed
+binary, effective provider and distinct namespace, loaded component and limits,
+fresh target series, failure/recovery/missing behavior, exact rule state, and
+existing-route delivery. The existing production plan remains the rollout and
+capacity owner; all runtime gates remain open.
