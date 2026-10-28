@@ -138,6 +138,10 @@
     - name: Refuse an unverified profile pilot operation before o11y mutation
       ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
 
+    - name: Validate the fixed receiver and journal TLS contract before placement or rendering
+      ansible.builtin.include_tasks: tasks/assert-o11y-otlp-tls.yml
+      when: o11y_otlp_tls_enabled | default(false) | bool
+
     - name: "Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
         that:
@@ -784,7 +788,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
         # Production always scrapes capacity; local mode enables textfiles for the probe only.
-        COMPOSE_OVERLAYS: "{{ 'capacity/compose.textfile.yml' if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else '' }}"
+        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else [])) | join(' ') }}"
         # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
         # and image matches — clears a stale bind mount a running container still holds.
         FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
@@ -815,6 +819,8 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
     # A dry run skipped the deploy, so on a fresh host o11y-grafana does not exist and every
@@ -840,6 +846,36 @@
       when:
         - ansible_check_mode
         - _dry_container.rc != 0
+
+    - name: Read the receiver Alloy certificate mount metadata
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, --format, "{{ '{{' }}json .Mounts{{ '}}' }}", o11y-alloy]
+      register: _o11y_otlp_runtime_mount_readback
+      changed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Parse only the two fixed receiver TLS mounts
+      ansible.builtin.set_fact:
+        _o11y_otlp_runtime_mounts: >-
+          {{ (_o11y_otlp_runtime_mount_readback.stdout | from_json)
+             | selectattr('Destination', 'in', ['/certs/otlp-server', '/certs/step-ca-bundle.crt']) | list }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require exact read-only runtime receiver TLS mounts
+      ansible.builtin.assert:
+        that:
+          - (_o11y_otlp_runtime_mounts | length) == (2 if (o11y_otlp_tls_enabled | default(false) | bool) else 0)
+          - not (o11y_otlp_tls_enabled | default(false) | bool) or
+            (_o11y_otlp_runtime_mounts | selectattr('Source', 'equalto', _deploy_dir ~ '/certs/o11y-otlp-server')
+             | selectattr('Destination', 'equalto', '/certs/otlp-server') | selectattr('RW', 'equalto', false) | list | length) == 1
+          - not (o11y_otlp_tls_enabled | default(false) | bool) or
+            (_o11y_otlp_runtime_mounts | selectattr('Source', 'equalto', _deploy_dir ~ '/certs/step-ca-bundle.crt')
+             | selectattr('Destination', 'equalto', '/certs/step-ca-bundle.crt') | selectattr('RW', 'equalto', false) | list | length) == 1
+        fail_msg: "The live Alloy receiver does not have exactly the declared read-only TLS mounts."
+        quiet: true
+      when: not ansible_check_mode
 
     - name: "Grafana health (/api/health -> 200)"
       ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://127.0.0.1:3000/api/health"
