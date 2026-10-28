@@ -30,15 +30,13 @@ services:
       - ./config/scope.json:/etc/console/scope.json:ro
       # The service-onboarding steps the console labels a run with (CONSOLE_WORKFLOW_FILE); read-only.
       - ./config/workflow.json:/etc/console/workflow.json:ro
-    healthcheck:
-      # Exec form, no shell: the runtime image is distroless (no /bin/sh for CMD-SHELL). The probe
-      # is the binary's own subcommand, so no curl or wget is assumed. Whether the engine runs
-      # this as exec, not shell, is verified only by a live deploy (see deployment/CLAUDE.md).
-      test: ["CMD", "/usr/local/app/server", "probe", "/healthz", "200"]
-      interval: 30s
-      timeout: 10s
-      retries: 8
-      start_period: 15s
+    # No healthcheck, on purpose. podman-compose 1.0.6 (tag v1.0.6, podman_compose.py) turns a
+    # `test: ["CMD", ...]` list into `--healthcheck-command "/bin/sh -c ..."`, and this image is
+    # distroless: it has no /bin/sh, so the check could never pass (Semaphore task 9892 on prod: the container
+    # ran and logged "OIDC discovery ready", and podman reported it unhealthy). Readiness is proven
+    # from outside the container instead: deploy.sh step 4 runs the binary's own probe through
+    # `podman exec` until it passes, bounded, and deploy-console.yml Phase 3 repeats it. The
+    # agentgateway gateway image is shell-less for the same reason and is probed the same way.
 
 volumes:
   console-data:

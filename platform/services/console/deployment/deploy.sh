@@ -5,11 +5,11 @@
 # authentik; the Semaphore API token is read from OpenBao), config/scope.json and config/workflow.json
 # BEFORE this runs. This script does NOT
 # generate or read secrets. It builds the image from the committed sources when those changed
-# (there is no registry), starts the single container, and waits for it to report healthy.
+# (there is no registry), starts the single container, and waits until its exec readiness probe passes.
 #
 # Usage: ./deploy.sh
 # Steps (idempotent): verify .env and scope present, build (skipped when the image on this host
-# already matches its inputs), up if changed, wait healthy.
+# already matches its inputs), up if changed, wait for the exec probe to pass.
 #
 # Environment (set by deploy-console.yml, never by hand):
 #   CONSOLE_FORCE_REBUILD=true   rebuild even when the image already matches its inputs
@@ -113,9 +113,41 @@ step_start() {
   fi
 }
 
+# _console_probe_once: one readiness probe, run inside the container with `podman exec`. The probe
+# is the binary's own subcommand, the same one deploy-console.yml Phase 3 runs.
+#
+# Each probe is bounded on the host. A `podman exec` can stall while the container is up, and an
+# unbounded call would then hold step_wait_healthy past its deadline (CodeRabbit on PR #763). The
+# bound is coreutils `timeout`, 15 s. It is absent on some hosts (macOS without coreutils), so
+# there the exec runs unbounded (step_wait_healthy warns once). The targets are Linux, where
+# `timeout` is normally present. `-k 5` sends KILL 5 s after TERM, in case the exec ignores TERM.
+_console_probe_once() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 5 15 "$CONTAINER_ENGINE" exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1
+  else
+    "$CONTAINER_ENGINE" exec console /usr/local/app/server probe /healthz 200 >/dev/null 2>&1
+  fi
+}
+
+# step_wait_healthy: readiness by exec probe, not by the engine's health status. The compose file
+# declares no healthcheck (see the comment there: podman-compose 1.0.6 runs it through /bin/sh, and
+# the image has none), so there is no status to poll. Bounded by a wall-clock deadline on bash's
+# SECONDS, not by a sum of sleeps: a stalled probe spends real time, and that time counts toward
+# the deadline. Sleep 5 s between attempts. On timeout: the container's diagnostics, then a failure.
 step_wait_healthy() {
   info "Step 4: Waiting for console to become healthy..."
-  wait_for_healthy console 300
+  command -v timeout >/dev/null 2>&1 || warn "coreutils timeout not found: each readiness probe runs unbounded"
+  local timeout=300 deadline
+  deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if _console_probe_once; then
+      info "console is ready."
+      return 0
+    fi
+    sleep 5
+  done
+  dump_container_diagnostics console
+  error "console did not become ready within ${timeout}s"
 }
 
 main() {
