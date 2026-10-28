@@ -338,7 +338,7 @@
     # server SETTINGS frame with the actual journal client. Negative probes count only explicit
     # certificate-auth alerts; EOF, timeout, connection, ALPN, and frame failures are unverified.
     _renew_o11y_tls_prover: |
-      import os, socket, ssl, subprocess, sys, tempfile
+      import os, socket, ssl, subprocess, sys, tempfile, time
       host, port, name, ca, client_cert, client_key = sys.argv[1:7]
       preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
       settings = b"\x00\x00\x00\x04\x00\x00\x00\x00\x00"
@@ -348,9 +348,13 @@
           "TLSV1_ALERT_BAD_CERTIFICATE", "TLSV13_ALERT_BAD_CERTIFICATE",
           "TLSV1_ALERT_CERTIFICATE_UNKNOWN", "TLSV13_ALERT_CERTIFICATE_UNKNOWN",
       }
-      def read_exact(sock, size):
+      def read_exact(sock, size, deadline):
           chunks = []
           while size:
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  raise TimeoutError("HTTP/2 proof deadline exceeded")
+              sock.settimeout(remaining)
               chunk = sock.recv(size)
               if not chunk:
                   raise RuntimeError("short HTTP/2 frame")
@@ -363,20 +367,35 @@
           ctx.set_alpn_protocols(["h2"])
           if cert:
               ctx.load_cert_chain(cert, key)
+          deadline = time.monotonic() + 8
           try:
-              with socket.create_connection((host, int(port)), timeout=8) as raw:
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  return ("unverified", None)
+              with socket.create_connection((host, int(port)), timeout=remaining) as raw:
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      return ("unverified", None)
+                  raw.settimeout(remaining)
                   with ctx.wrap_socket(raw, server_hostname=name) as tls:
-                      tls.settimeout(8)
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          return ("unverified", None)
+                      tls.settimeout(remaining)
                       if tls.selected_alpn_protocol() != "h2":
                           return ("unverified", None)
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          return ("unverified", None)
+                      tls.settimeout(remaining)
                       tls.sendall(preface + settings)
-                      header = read_exact(tls, 9)
+                      header = read_exact(tls, 9, deadline)
                       length = int.from_bytes(header[:3], "big")
                       frame_type, flags = header[3], header[4]
                       stream_id = int.from_bytes(header[5:9], "big") & 0x7fffffff
                       if frame_type != 4 or flags & 1 or stream_id != 0 or length > 16384 or length % 6:
                           return ("unverified", None)
-                      payload = read_exact(tls, length)
+                      payload = read_exact(tls, length, deadline)
                       for offset in range(0, length, 6):
                           setting_id = int.from_bytes(payload[offset:offset + 2], "big")
                           value = int.from_bytes(payload[offset + 2:offset + 6], "big")
@@ -386,6 +405,10 @@
                               return ("unverified", None)
                           if setting_id == 5 and not 16384 <= value <= 16777215:
                               return ("unverified", None)
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          return ("unverified", None)
+                      tls.settimeout(remaining)
                       tls.sendall(b"\x00\x00\x00\x04\x01\x00\x00\x00\x00")
                       serial = tls.getpeercert().get("serialNumber")
                       return ("accepted", serial) if serial else ("unverified", None)

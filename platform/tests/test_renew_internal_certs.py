@@ -321,10 +321,12 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
     listener.listen(4)
+    listener.settimeout(0.2)
     port = listener.getsockname()[1]
     behaviors = list(client_behaviors or ["settings", "settings", "settings"])
     frames = list(server_frames or [b"\x00\x00\x00\x04\x00\x00\x00\x00\x00"] * len(behaviors))
     fixture_errors = []
+    stop = threading.Event()
 
     def read_exact(sock, size):
         result = bytearray()
@@ -337,13 +339,19 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
 
     def serve():
         for behavior, frame in zip(behaviors, frames):
-            try:
-                raw, _address = listener.accept()
-            except OSError:
+            while not stop.is_set():
+                try:
+                    raw, _address = listener.accept()
+                    break
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+            else:
                 break
             try:
                 with context.wrap_socket(raw, server_side=True) as tls:
-                    tls.settimeout(10)
+                    tls.settimeout(2)
                     request = bytearray()
                     while len(request) < 33:
                         chunk = tls.recv(33 - len(request))
@@ -378,8 +386,10 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
     try:
         yield port
     finally:
+        stop.set()
         listener.close()
-        thread.join(timeout=12)
+        thread.join(timeout=3)
+        assert not thread.is_alive(), "TLS fixture thread did not stop"
         assert not fixture_errors, "; ".join(fixture_errors)
 
 
@@ -1001,6 +1011,32 @@ def test_o11y_tls_proof_does_not_accept_malformed_valid_client_settings(tmp_path
              str(Path(journal_leaf["dir"]) / "current/cert.pem"),
              str(Path(journal_leaf["dir"]) / "current/key.pem")],
             check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert "O11Y_MTLS_PROVEN" not in result.stdout
+
+
+def test_o11y_tls_proof_deadline_expiry_during_frame_read_is_unverified(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    fake_clock = (
+        "import time\n"
+        "_ticks = iter([0, 0, 0, 0, 8])\n"
+        "time.monotonic = lambda: next(_ticks, 8)\n"
+    )
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, expect_ack=False) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", fake_clock + script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=10,
         )
     assert result.returncode != 0
     assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
