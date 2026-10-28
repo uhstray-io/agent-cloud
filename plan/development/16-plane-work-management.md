@@ -33,7 +33,7 @@ These decisions belong to Joe, dated 2026-10-23. The change's `design.md` record
 |---|---|---|
 | D1 | **Commercial edition on the Pro plan on production.** | OIDC is listed under `Plan: Pro, Business` in the developer docs (`self-hosting/govern/oidc-sso.mdx`). The GitHub integration is a Pro feature. OAuth app registration, which Plane Apps and MCP OAuth need, is not in the Community edition (`mcp-server-self-host`). The approved plan cites a price of $6 per user per month on the annual plan (`plane.so/pricing`). That price was not re-checked when this plan was written. |
 | D2 | **Local-dev runs the Commercial Free tier.** | A license key binds to one workspace and one machine. Local-dev proves the deploy, Caddy, backup and restore, Compose, MCP in personal-access-token mode, and the Discord app. The OIDC and GitHub-sync gates move to production. The approved plan follows the Postiz precedent, where the connect leg was proven in production. |
-| D3 | **Roles.** `platform-admins` maps to Admin (Plane has no Owner role (spike 0.9), so the top role, Admin, carries D3's intent; amended 2026-10-27, pending Joseph's confirmation). `platform-developers` and `platform-business` map to Member. `platform-user` is denied. | The group model is in `plan/development/12-rbac-user-provisioning.md:22`. The Plane OIDC documentation, as cited in the approved plan, describes no group-to-role mapping, so a playbook reconciles roles. |
+| D3 | **Roles.** `platform-admins` maps to Admin (Plane has no Owner role (spike 0.9), so the top role, Admin, carries D3's intent; amended 2026-10-27 and confirmed by Joseph that day). `platform-developers` and `platform-business` map to Member. `platform-user` is denied. | The group model is in `plan/development/12-rbac-user-provisioning.md:22`. The Plane OIDC documentation, as cited in the approved plan, describes no group-to-role mapping, so a playbook reconciles roles. |
 | D4 | **An OpenSpec change becomes a Plane module, and its `tasks.md` items become work items** with a link back to the plan file. | The repository stays the source of intent, and Plane holds status. The generator creates items and never rewrites their status. |
 | D5 | **Plane MCP server in OAuth mode, behind Caddy.** agentgateway is not in the path. | agentgateway's MCP federates only OpenAPI targets, admits only admins, and replaces the caller's credential (`platform/services/agentgateway/deployment/templates/config.yaml.j2`, the `{% if _mcp %}` block). OAuth attributes each edit to the real user. |
 | D6 | **weft uses a service identity.** A Plane personal access token for a `weft` bot user is sent to `/http/api-key/mcp` with the `x-workspace-slug` header. | weft's builder is a headless container and cannot complete a browser OAuth flow. The token lives in OpenBao. |
@@ -70,7 +70,7 @@ flowchart TD
     CADDY --> MCP
     MCP --> PL
     GH <-->|issues, pull requests, webhook| PL
-    REPOS -->|generator, then plane push| PL
+    REPOS -->|schema via Plane Compose, items via API| PL
     FD <-->|gateway websocket| DC
     PL -->|signed webhook| FD
     BAO -.->|secrets and shared reads| PL
@@ -80,7 +80,7 @@ Plane runs as a composable Compose stack on its own VM, as Postiz does. Only the
 
 ## Phases
 
-The phases follow the change's `tasks.md` one for one. Phase 0 is the set of verify-first spikes. Each spike writes a dated finding into the change's `design.md`, and no guessed answer carries forward. Findings that need a running Plane are confirmed by named runtime checks at the local deploy, each before the task it gates (task 1.15a; restructured 2026-10-27, pending Joseph's confirmation).
+The phases follow the change's `tasks.md` one for one. Phase 0 is the set of verify-first spikes. Each spike writes a dated finding into the change's `design.md`, and no guessed answer carries forward. Findings that need a running Plane are confirmed on a throwaway Commercial `v3.3.3` instance on a workstation, on the Free plan (task 0.18, approved by Joseph 2026-10-27). Only the checks that need the Pro plan or the platform VM wait for the local deploy (task 1.15a).
 
 | Phase | What it delivers | Proven by (scenario in the change) |
 |---|---|---|

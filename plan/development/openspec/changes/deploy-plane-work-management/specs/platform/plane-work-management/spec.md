@@ -198,7 +198,7 @@ The GitHub integration SHALL use the GitHub App named Plane. Issues and pull req
 
 ### Requirement: OpenSpec changes project into Plane without overwriting status
 
-The projects sync SHALL read each declared repository's OpenSpec change task files and project them into Plane as modules and work items. Each work item MUST link to its plan file. The generator MUST NOT write a state for any work item, so Plane owns status. A second run of the sync against unchanged input MUST make zero changes.
+The projects sync SHALL read each declared repository's OpenSpec change task files and project them into Plane as modules and work items. Each work item MUST link to its plan file. The generator MUST NOT write a state for any work item, so Plane owns status. The generator MUST be create-only: it identifies each module and work item by an external source and identifier, looks it up before creating it, and MUST NOT change an item that already exists. A second run of the sync against unchanged input MUST make zero changes, and the sync MUST NOT depend on any local state carried between runs.
 
 #### Scenario: Module and work items follow tasks.md
 
@@ -215,10 +215,15 @@ The projects sync SHALL read each declared repository's OpenSpec change task fil
 - **WHEN** the sync runs a second time against unchanged input
 - **THEN** it creates, updates and deletes nothing in Plane
 
-#### Scenario: Status set in Plane survives a re-push
+#### Scenario: Status set in Plane survives a re-sync
 
-- **WHEN** a work item's state is set in the Plane user interface, and the projects are pushed again
-- **THEN** the state set in Plane is still present afterwards
+- **WHEN** a work item's state, assignees and labels are set in the Plane user interface, and the sync runs again with that task's text changed
+- **THEN** the state, assignees and labels set in Plane are still present afterwards
+
+#### Scenario: A fresh runner creates no duplicates
+
+- **WHEN** the sync runs from a clean workspace with no files left by an earlier run
+- **THEN** it finds every existing module and work item by its external identifier and creates nothing that already exists
 
 #### Scenario: Work item links to its plan file
 
