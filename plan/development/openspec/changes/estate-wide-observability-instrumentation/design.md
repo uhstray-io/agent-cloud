@@ -1262,8 +1262,8 @@ its deployment-time `/api/ping` check or the reported `/api/info` 502.
 Reject launch overrides, duplicate or malformed declarations, userinfo,
 query/fragment data, arbitrary headers/auth/proxies/body matchers, unreviewed
 redirect destinations, and destinations outside reviewed private topology.
-Use bounded HTTP GET probes with certificate verification and environment
-proxying disabled. Review finite target count, interval, timeout, response-body
+Use bounded HTTP GET probes with TLS certificate verification enabled and
+environment proxying disabled. Review finite target count, interval, timeout, response-body
 cap, and aggregate work/series budget before rendering; probe timeout must be
 less than scrape timeout, which must not exceed the interval. Retain the
 existing scrape limits and forbidden-label policy. Export only fixed labels

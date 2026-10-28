@@ -391,19 +391,26 @@ coverage is complete or every service passed. Preserve `history_incomplete`,
 Implement this as the narrow second record variant in the existing encoder and
 Alloy receiver allowlist. Add only the fixed `kind=run` completion form; do not
 relax the accepted keys/statuses globally or let the run record forge a
-per-service step. A failed or interrupted read, check-mode/skipped write, failed
-required configured write, or failed receipt transport must not publish a
-success receipt. Keep NetBox's explicitly nonblocking outage behavior and
-visible failure record, while withholding the completion receipt when a
-required configured write is failed or unknown. Define missing/ambiguous VM
-handling alongside the existing writer contract.
+per-service step. A failed or interrupted read, check-mode/skipped write, or
+failed/unknown required configured write before the completion boundary prevents
+sending a success receipt. Keep NetBox's explicitly nonblocking outage behavior
+and visible failure record, while withholding the receipt when a required
+configured write is failed or unknown. Define missing/ambiguous VM handling
+alongside the existing writer contract.
 
 Use the existing environment-specific transport: local development retains its
 current Loki push contract; production uses the exact private Alloy OTLP/HTTP
 path already declared by the collector. Do not substitute a direct production
-Loki write. A successful receiver response is transport acceptance, not durable
-Loki ingestion; queryable Loki receipt and the resulting alert readback are
-separate live acceptance. Extend the existing scheduled-job silence consumer
+Loki write. A positive receiver response is transport acceptance, not durable
+Loki ingestion. If a request may have been accepted but its response is lost or
+times out, report publication as failed/UNKNOWN; the record may already be in
+Loki and may reset the silence clock. Do not infer absence, retry or retract it
+from that ambiguous acknowledgement. Observing the receipt in Loki proves the
+collector reached its successful required-work boundary; it does not prove the
+Semaphore task is green or establish durable sender acknowledgement. Queryable
+Loki readback and alert readback remain separate live acceptance. No
+distributed transaction or retraction mechanism is introduced. Extend the
+existing scheduled-job silence consumer
 with the collector declaration, whose shared ownership and unchanged default
 are tracked in [production-internal-ca task 6.4](../production-internal-ca/tasks.md);
 preserve its five-minute evaluation/pending behavior and CA's 36-hour default.

@@ -109,13 +109,14 @@ criteria not met, error context, undo availability and Semaphore task reference.
 
 #### Scenario: Collector completion is emitted only after required work
 - **WHEN** a scheduled collector finishes its required reads and parsing and all configured required writes complete
-- **THEN** the collector emits exactly one fixed `job=agent-cloud-conformance,kind=run,status=success` completion receipt through the existing environment-specific transport
-- **AND** the receipt does not claim complete historical coverage or that every service passed, and existing `history_incomplete`/`no_history` markers and per-step statuses remain unchanged
-- **AND** interrupted or failed reads, check-mode/skipped writes, failed or unknown required writes, and failed receipt delivery emit no success receipt
-- **AND** the explicitly nonblocking NetBox outage behavior remains visible and does not block the workflow, while any failed required configured write suppresses the completion receipt
+- **THEN** after the successful required-work boundary, the collector attempts one fixed `job=agent-cloud-conformance,kind=run,status=success` completion receipt through the existing environment-specific transport
+- **AND** the receipt proves successful required collection work only; it does not claim complete historical coverage, that every service passed, a green Semaphore task, or durable sender acknowledgement, and existing `history_incomplete`/`no_history` markers and per-step statuses remain unchanged
+- **AND** interrupted or failed reads, check-mode/skipped writes, and failed or unknown required writes before that boundary prevent sending a success receipt
+- **AND** the explicitly nonblocking NetBox outage behavior remains visible and does not block the workflow, while any failed required configured write before the boundary prevents sending
+- **AND** a lost response or timeout after possible remote acceptance is reported as failed/UNKNOWN publication; the record may already be queryable and may reset the silence clock, so no absence or non-publication claim is made
 
 #### Scenario: Collector silence alert observes delivered completion
 - **WHEN** the collector's exact completion receipt is queryable in Loki and the job is declared in the existing scheduled-job silence configuration
 - **THEN** the shared silence rule alerts after a reviewed integer-hour window selected from the verified effective schedule, normal run duration, and allowed missed runs
-- **AND** receiver acceptance alone does not count as durable Loki ingestion, a failed run cannot reset the clock, and the existing `renew-internal-certs` 36-hour default is preserved
-- **AND** the live schedule, queryable success receipt, failed-run non-reset, rule expression/state, and existing notification delivery are separately verified before acceptance
+- **AND** receiver acceptance alone does not count as durable Loki ingestion; a known failure before the send boundary does not reset the clock, while ambiguous post-acceptance acknowledgement may have delivered a record that resets it, and the existing `renew-internal-certs` 36-hour default is preserved
+- **AND** the live schedule, queryable success receipt, pre-boundary failure behavior, ambiguous-acknowledgement status/readback, rule expression/state, and existing notification delivery are separately verified before acceptance
