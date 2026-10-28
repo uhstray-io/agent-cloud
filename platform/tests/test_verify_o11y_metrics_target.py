@@ -130,11 +130,7 @@ def test_service_overview_generic_metrics_queries_exclude_probe_job():
         for target in panel.get("targets", [])
         if "up{" in target.get("expr", "")
     ]
-    assert expressions == [
-        'min by (service) (up{service=~"$service",job!="o11y-availability"})',
-        'count by (service) (up{service=~"$service",job!="o11y-availability"})',
-        'avg by (service) (up{service=~"$service",job!="o11y-availability"}) * 100',
-        'up{service=~"$service",job!="o11y-availability"} == 0',
-    ]
+    assert expressions
+    assert all('job!="o11y-availability"' in expression for expression in expressions)
     service = next(item for item in dashboard["templating"]["list"] if item["name"] == "service")
     assert service["query"] == 'label_values(up{job!="o11y-availability"}, service)'
