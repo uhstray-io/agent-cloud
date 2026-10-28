@@ -76,6 +76,118 @@ PICKED_KEYS = ("id", "status", "template_id", "end", "params")
 RETAINED_ERROR = "last run is older than the collector's history window; status kept from NetBox"
 STATE_CODES = {"fail": 0, "pass": 1, "skip": 2}
 INVENTORY_CODES = {"no_history": 0, "has_history": 1, "history_incomplete": 2}
+COMPLETION_BODY = '{"collection_completed":true,"version":1}'
+
+
+def classify_netbox_results(expected_services: list[str], results: list[dict]) -> dict:
+    """Classify complete NetBox list responses without treating an unknown read as empty.
+
+    A complete zero-match or multi-match response is a known nonblocking outcome. Only a
+    unique match selects a required PATCH. Response headers and request metadata are not
+    accepted as part of this bounded input.
+    """
+    expected_is_valid = isinstance(expected_services, list) and all(
+        isinstance(service, str) and service for service in expected_services
+    )
+    expected = list(expected_services) if expected_is_valid else []
+    expected_set = set(expected)
+    grouped: dict[str, list[dict]] = {}
+    unexpected = False
+    for result in results if isinstance(results, list) else []:
+        if (not isinstance(result, dict) or not isinstance(result.get("item"), str)
+                or result["item"] not in expected_set):
+            unexpected = True
+            continue
+        grouped.setdefault(result["item"], []).append(result)
+
+    found, missing, ambiguous, unknown = [], [], [], []
+    complete = isinstance(results, list) and expected_is_valid and not unexpected
+    if len(expected_set) != len(expected):
+        complete = False
+    for service in expected:
+        rows = grouped.get(service, [])
+        if len(rows) != 1:
+            unknown.append(service)
+            complete = False
+            continue
+        response = rows[0]
+        body = response.get("json")
+        if (type(response.get("status")) is not int or response["status"] != 200
+                or not isinstance(body, dict) or type(body.get("count")) is not int
+                or body["count"] < 0 or not isinstance(body.get("results"), list)
+                or len(body["results"]) != body["count"]
+                or any(not isinstance(row, dict) for row in body["results"])):
+            unknown.append(service)
+            complete = False
+            continue
+        count = body["count"]
+        if count == 0:
+            missing.append(service)
+        elif count > 1:
+            ambiguous.append(service)
+        else:
+            vm = body["results"][0]
+            vm_id = vm.get("id")
+            custom_fields = vm.get("custom_fields", {})
+            if type(vm_id) is not int or vm_id <= 0 or not isinstance(custom_fields, dict):
+                unknown.append(service)
+                complete = False
+                continue
+            status = custom_fields.get("ac_workflow_status")
+            if status is None:
+                status = {}
+            if not isinstance(status, dict):
+                unknown.append(service)
+                complete = False
+                continue
+            found.append({"item": service, "id": vm_id, "status": status})
+    return {"complete": complete, "found": found, "missing": missing,
+            "ambiguous": ambiguous, "unknown": unknown}
+
+
+def completion_eligible(netbox_read_complete: bool, required_services: list[str],
+                        write_results: list[dict]) -> bool:
+    """Whether all unique-match NetBox writes completed with an explicit HTTP 200."""
+    if netbox_read_complete is not True or not isinstance(required_services, list):
+        return False
+    if any(not isinstance(service, str) or not service for service in required_services):
+        return False
+    if len(set(required_services)) != len(required_services) or not isinstance(write_results, list):
+        return False
+    writes: dict[str, list[dict]] = {}
+    for result in write_results:
+        if (not isinstance(result, dict) or not isinstance(result.get("item"), str)
+                or result["item"] not in required_services):
+            return False
+        writes.setdefault(result["item"], []).append(result)
+    for service in required_services:
+        rows = writes.get(service, [])
+        if len(rows) != 1:
+            return False
+        result = rows[0]
+        if (type(result.get("status")) is not int or result["status"] != 200
+                or result.get("failed", False) is not False or result.get("skipped", False) is not False):
+            return False
+    return True
+
+
+def completion_delivery_eligible(required_work_ok: bool, transport: str, transport_configured: bool,
+                                 record_count: int, response_status: int | None,
+                                 rejected_records: int = 0) -> bool:
+    """Whether the prior conformance batch is acknowledged before the final receipt attempt."""
+    if (required_work_ok is not True or transport_configured is not True
+            or type(record_count) is not int or record_count < 0):
+        return False
+    if record_count == 0:
+        return True
+    if type(response_status) is not int:
+        return False
+    if transport == "local_loki":
+        return response_status == 204
+    if transport == "production_otlp":
+        return (response_status == 200 and type(rejected_records) is int
+                and rejected_records == 0)
+    return False
 
 
 def results_in(lines: list[str]) -> list[dict]:
@@ -369,6 +481,17 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
     return streams
 
 
+def completion_receipt_stream(now_ns: int) -> dict:
+    """One fixed run-completion record, separate from service and per-step status."""
+    if type(now_ns) is not int:
+        raise ValueError("completion receipt timestamp must be an integer")
+    timestamp = int(now_ns)
+    if timestamp <= 0:
+        raise ValueError("completion receipt timestamp must be positive")
+    return {"stream": {"job": "agent-cloud-conformance", "kind": "run", "status": "success"},
+            "values": [[str(timestamp), COMPLETION_BODY]]}
+
+
 def otlp_logs_payload(streams: list[dict]) -> dict:
     """Encode conformance-specific Loki labels and the body as OTLP/HTTP logs.
 
@@ -378,17 +501,25 @@ def otlp_logs_payload(streams: list[dict]) -> dict:
     records = []
     for stream in streams:
         labels = stream["stream"]
-        if set(labels) != {"job", "service", "step", "status"}:
-            raise ValueError("conformance labels do not match the fixed label contract")
-        if labels["job"] != "agent-cloud-conformance":
-            raise ValueError("conformance log job label is not bounded")
-        if labels["status"] not in {"pass", "fail", "skip", "no_history", "has_history", "history_incomplete"}:
-            raise ValueError("conformance log status label is not bounded")
-        attributes = [
-            {"key": key, "value": {"stringValue": str(labels[key])}}
-            for key in ("job", "service", "step", "status")
-        ]
-        for timestamp, body in stream["values"]:
+        values = stream["values"]
+        if set(labels) == {"job", "kind", "status"}:
+            if (not isinstance(values, list)
+                    or labels != {"job": "agent-cloud-conformance", "kind": "run", "status": "success"}
+                    or len(values) != 1 or not isinstance(values[0], list) or len(values[0]) != 2
+                    or not str(values[0][0]).isdigit() or int(values[0][0]) <= 0
+                    or values[0][1] != COMPLETION_BODY):
+                raise ValueError("completion receipt does not match the fixed run contract")
+            keys = ("job", "kind", "status")
+        else:
+            if set(labels) != {"job", "service", "step", "status"}:
+                raise ValueError("conformance labels do not match the fixed label contract")
+            if labels["job"] != "agent-cloud-conformance":
+                raise ValueError("conformance log job label is not bounded")
+            if labels["status"] not in {"pass", "fail", "skip", "no_history", "has_history", "history_incomplete"}:
+                raise ValueError("conformance log status label is not bounded")
+            keys = ("job", "service", "step", "status")
+        attributes = [{"key": key, "value": {"stringValue": str(labels[key])}} for key in keys]
+        for timestamp, body in values:
             records.append({"timeUnixNano": str(timestamp), "attributes": attributes,
                             "body": {"stringValue": body}})
     if not records:
@@ -424,6 +555,23 @@ def main() -> int:
             streams = loki_streams(out, int(data["now_ns"]))
             out["loki_streams"] = streams
             out["otlp_payload"] = otlp_logs_payload(streams)
+    elif mode == "netbox":
+        out = classify_netbox_results(data.get("expected_services", []), data.get("results", []))
+    elif mode == "completion":
+        out = {"eligible": completion_eligible(data.get("netbox_read_complete"),
+                                               data.get("required_services", []),
+                                               data.get("write_results", []))}
+    elif mode == "delivery":
+        streams = list(data.get("streams", []))
+        out = {"streams": streams, "otlp_payload": otlp_logs_payload(streams)}
+    elif mode == "receipt":
+        stream = completion_receipt_stream(data["now_ns"])
+        out = {"streams": [stream], "otlp_payload": otlp_logs_payload([stream])}
+    elif mode == "completion_delivery":
+        out = {"eligible": completion_delivery_eligible(
+            data.get("required_work_ok"), data.get("transport", ""),
+            data.get("transport_configured"), data.get("record_count"),
+            data.get("response_status"), data.get("rejected_records", 0))}
     else:
         raise SystemExit(f"unknown mode {mode!r}")
     json.dump(out, sys.stdout, sort_keys=True)

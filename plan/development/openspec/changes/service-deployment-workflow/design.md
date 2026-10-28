@@ -384,7 +384,10 @@ the existing per-service `step=none` inventory markers and dashboard's 45-minute
 freshness display remain unchanged. One fixed
 `job=agent-cloud-conformance,kind=run,status=success` receipt may be emitted only
 after the collector completes its required reads/parsing and configured required
-writes. This receipt means collection completed; it does not mean historical
+writes and the existing conformance data batch has a positive transport
+acknowledgement. Send it as a separate final request containing only the fixed
+receipt; do not append it to the earlier batch, whose partial-rejection result
+would not yet be known. This receipt means collection completed; it does not mean historical
 coverage is complete or every service passed. Preserve `history_incomplete`,
 `no_history`, the per-step schema, and its six accepted statuses.
 
@@ -396,12 +399,25 @@ failed/unknown required configured write before the completion boundary prevents
 sending a success receipt. Keep NetBox's explicitly nonblocking outage behavior
 and visible failure record, while withholding the receipt when a required
 configured write is failed or unknown. Define missing/ambiguous VM handling
-alongside the existing writer contract.
+alongside the existing writer contract: with NetBox configured, each expected
+inventory service must have one HTTP 200 response whose integer `count` agrees
+with the length of its `results` list. A complete zero-match or multi-match is
+a known nonblocking outcome and selects no write; it remains visible in the
+existing missing/ambiguous report. Only a unique match selects a required
+PATCH. A missing, duplicate, malformed, incomplete, failed, or otherwise
+unknown configured read suppresses the receipt without failing the existing
+nonblocking collector path. A unique-match PATCH must return exactly one
+explicit HTTP 200; a failed, skipped, missing, duplicate, or unknown result
+suppresses the receipt. With NetBox unconfigured, there are no NetBox reads or
+writes required by this contract.
 
 Use the existing environment-specific transport: local development retains its
 current Loki push contract; production uses the exact private Alloy OTLP/HTTP
 path already declared by the collector. Do not substitute a direct production
-Loki write. A positive receiver response is transport acceptance, not durable
+Loki write. Require HTTP 204 for the local conformance batch or HTTP 200 with
+zero rejected records for the production batch before attempting the receipt.
+When the conformance batch is empty, no prior data request is needed. A positive
+receiver response is transport acceptance, not durable
 Loki ingestion. If a request may have been accepted but its response is lost or
 times out, report publication as failed/UNKNOWN; the record may already be in
 Loki and may reset the silence clock. Do not infer absence, retry or retract it

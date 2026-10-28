@@ -109,11 +109,19 @@ criteria not met, error context, undo availability and Semaphore task reference.
 
 #### Scenario: Collector completion is emitted only after required work
 - **WHEN** a scheduled collector finishes its required reads and parsing and all configured required writes complete
-- **THEN** after the successful required-work boundary, the collector attempts one fixed `job=agent-cloud-conformance,kind=run,status=success` completion receipt through the existing environment-specific transport
+- **THEN** after the successful required-work boundary and positive transport acknowledgement of the existing conformance data batch, the collector sends one separate final request containing only the fixed `job=agent-cloud-conformance,kind=run,status=success` receipt through the existing environment-specific transport
 - **AND** the receipt proves successful required collection work only; it does not claim complete historical coverage, that every service passed, a green Semaphore task, or durable sender acknowledgement, and existing `history_incomplete`/`no_history` markers and per-step statuses remain unchanged
 - **AND** interrupted or failed reads, check-mode/skipped writes, and failed or unknown required writes before that boundary prevent sending a success receipt
 - **AND** the explicitly nonblocking NetBox outage behavior remains visible and does not block the workflow, while any failed required configured write before the boundary prevents sending
+- **AND** the separate receipt request follows HTTP 204 for the local data batch or HTTP 200 with zero rejected records for the production data batch; when there are no conformance data records, no prior batch request is needed
 - **AND** a lost response or timeout after possible remote acceptance is reported as failed/UNKNOWN publication; the record may already be queryable and may reset the silence clock, so no absence or non-publication claim is made
+- **AND** failed or unknown acceptance of the prior data batch prevents the separate receipt request; a partial OTLP rejection cannot share a batch with and accidentally accept the completion receipt
+
+#### Scenario: Completion distinguishes complete VM lookup outcomes from unknown reads
+- **WHEN** NetBox is configured and each expected service lookup returns HTTP 200 with an integer `count` equal to the number of returned rows
+- **THEN** zero matches and multiple matches remain visible nonblocking outcomes with no VM PATCH selected, while exactly one match selects that VM's required PATCH
+- **AND** a failed, missing, duplicate, malformed, incomplete, or unknown configured lookup suppresses the completion receipt without turning into a known no-match result or failing the existing nonblocking collector path
+- **AND** a failed, skipped, missing, duplicate, or unknown required PATCH suppresses the completion receipt; only one explicit HTTP 200 for every unique match completes the configured write boundary
 
 #### Scenario: Collector silence alert observes delivered completion
 - **WHEN** the collector's exact completion receipt is queryable in Loki and the job is declared in the existing scheduled-job silence configuration

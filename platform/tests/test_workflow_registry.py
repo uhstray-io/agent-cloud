@@ -344,17 +344,48 @@ def test_production_conformance_uses_the_exact_private_otlp_receiver():
                for item in guard["ansible.builtin.assert"]["that"])
     assert any("_o11y_bind is match(_o11y_private_ipv4_pattern)" in item
                for item in guard["ansible.builtin.assert"]["that"])
+    netbox_lookup = next(t for t in tasks if t.get("name") == "NetBox: find each service's VM")
+    assert netbox_lookup["failed_when"] is False  # NetBox remains nonblocking for the workflow.
+    assert netbox_lookup["ansible.builtin.uri"]["status_code"] == [200]
     push = next(t for t in tasks if t.get("name") ==
                 "Production Alloy: deliver conformance records over OTLP/HTTP")
     assert push["ansible.builtin.uri"]["body_format"] == "json"
     assert push["ansible.builtin.uri"]["url"] == "{{ _collector_otlp_url }}"
     assert push["ansible.builtin.uri"]["status_code"] == [200]
+    assert push["ansible.builtin.uri"]["body"] == "{{ _delivery.otlp_payload }}"
     assert push["failed_when"] is False
     assert "retries" not in push
     assert "not (local_mode | default(false) | bool)" in push["when"]
     local = next(t for t in tasks if t.get("name") == "Local Loki: one line per step result")
     assert "local_mode | default(false) | bool" in local["when"]
     assert "collector_loki_url is defined" in local["when"]
+    assert local["vars"]["push_loki_streams"] == "{{ _delivery.streams }}"
+    names = [t.get("name") for t in tasks]
+    assert names.index("NetBox: classify complete reads and unique matches") < names.index(
+        "Aggregate: latest result per service and step")
+    assert names.index("NetBox: write each service's workflow status") < names.index(
+        "Completion: require complete NetBox reads and successful unique-match writes")
+    assert names.index("Completion: require complete NetBox reads and successful unique-match writes") < names.index(
+        "Completion: build the environment-specific delivery batch")
+    completion_hold = next(t for t in tasks if t.get("name") == "Completion: hold the required-work result")
+    assert "not ansible_check_mode" in completion_hold["ansible.builtin.set_fact"]["_completion_ready"]
+    completion_batch = names.index("Completion: build the environment-specific delivery batch")
+    local_delivery = names.index("Local Loki: one line per step result")
+    production_delivery = names.index("Production Alloy: deliver conformance records over OTLP/HTTP")
+    prior_ack = names.index("Completion: classify prior data delivery")
+    receipt_batch = names.index("Completion: build separate receipt payload")
+    local_receipt = names.index("Local Loki: publish collector completion receipt")
+    production_receipt = names.index("Production Alloy: publish collector completion receipt")
+    assert completion_batch < local_delivery < production_delivery < prior_ack < receipt_batch
+    assert prior_ack < local_receipt < production_receipt
+    assert receipt_batch < local_receipt < production_receipt
+    assert names.index("Completion: hold publication boundary") < local_receipt
+    receipt_post = next(t for t in tasks if t.get("name") == "Production Alloy: publish collector completion receipt")
+    assert receipt_post["ansible.builtin.uri"]["body"] == "{{ _completion_receipt.otlp_payload }}"
+    assert receipt_post["failed_when"] is False
+    assert "retries" not in receipt_post
+    assert "not ansible_check_mode" in receipt_post["when"]
+    assert "_completion_publish_ready" in receipt_post["when"]
     classify = next(t for t in tasks if t.get("name") == "Classify the OTLP response without exposing its body")
     assert "rejectedLogRecords" in classify["ansible.builtin.set_fact"]["_otlp_delivery_ok"]
     assert tasks.index(classify) < next(i for i, t in enumerate(tasks) if t.get("name") == "Report")
@@ -521,11 +552,11 @@ def test_no_playbook_decides_for_itself_whether_an_inventory_is_needed(playbook)
     ("response", "expected_status", "expected_rc", "private_marker"),
     [
         ({"status": 200, "json": {}}, "delivered", 0, None),
-        ({"status": 503, "content": "private response body"}, "failed", 1, "private response body"),
-        ({"msg": "connection refused"}, "failed", 1, "connection refused"),
+        ({"status": 503, "content": "private response body"}, "failed/UNKNOWN", 1, "private response body"),
+        ({"msg": "connection refused"}, "failed/UNKNOWN", 1, "connection refused"),
         ({"status": 200, "json": {"partialSuccess": {"rejectedLogRecords": 2,
                                                        "errorMessage": "private partial detail"}}},
-         "failed", 1, "private partial detail"),
+         "failed/UNKNOWN", 1, "private partial detail"),
     ],
 )
 def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, expected_status,
@@ -544,11 +575,16 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
         "vars": {
             "local_mode": False,
             "_otlp": response,
-            "_agg": {"report": {}, "otlp_payload": {"resourceLogs": [{}]}},
+            "_completion_ready": True,
+            "_completion_publish_ready": False,
+            "_agg": {"report": {}},
+            "_delivery": {"streams": [], "otlp_payload": {"resourceLogs": [{}]}},
             "_nb_writes": {"results": []},
             "_vm_missing": [],
             "_vm_ambiguous": [],
-            "_vm_unreachable": [],
+            "_vm_unknown": [],
+            "_conformance_loki_status": 0,
+            "_conformance_loki_skipped": True,
             "_pick": {"stdout": json.dumps({"window_full": []})},
             "_push_loki_result": {"status": 204},
         },
@@ -564,8 +600,9 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
         cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
     )
     output = result.stdout + result.stderr
-    assert (result.returncode != 0) == (expected_rc != 0)
-    assert f'"otlp": "{expected_status}"' in output
+    assert (result.returncode != 0) == (expected_rc != 0), output
+    assert f'"otlp": "{expected_status}"' in output, output
+    assert '"completion_receipt": "not_attempted"' in output
     if expected_rc:
         assert "Conformance OTLP delivery failed; see the preceding report for status." in output
         assert output.index(f'"otlp": "{expected_status}"') < output.index(
