@@ -856,7 +856,9 @@ assert "'Source', 'equalto', _deploy_dir ~ '/certs/step-ca-bundle.crt'" in mount
 assert "'Destination', 'equalto', '/certs/step-ca-bundle.crt'" in mount_that
 assert "'RW', 'equalto', false" in mount_that
 play = next(p for p in yaml.safe_load(deploy) if p.get('name') == 'Phase 2: Start o11y')
-overlays = next(t for t in play['tasks'] if t.get('name') == 'Run deploy.sh (container lifecycle)')['environment']['COMPOSE_OVERLAYS']
+source_review = next(t for t in play['tasks'] if t.get('name') == 'Run deploy.sh with a protected source-review input')
+deploy_task = next(t for t in source_review['block'] if t.get('name') == 'Run deploy.sh (container lifecycle)')
+overlays = deploy_task['environment']['COMPOSE_OVERLAYS']
 assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == ''
 assert env.from_string(overlays).render(local_mode=False, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == 'capacity/compose.textfile.yml'
 assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=True, o11y_inference_probe_enabled=False) == 'compose.otlp-tls.yml'
@@ -3054,7 +3056,9 @@ assert expansion_expression(o11y_prom_retention='90d', o11y_loki_retention='45d'
 preflight = names_in_phase.index('Read o11y volume backing capacity before retention expansion')
 assert preflight < names_in_phase.index('Configure o11y alert provisioning from OpenBao')
 phase_two = next(play for play in deploy if play.get('name') == 'Phase 2: Start o11y')
-assert phase_two['tasks'][0]['name'] == 'Run deploy.sh (container lifecycle)'
+source_review = phase_two['tasks'][0]
+assert source_review['name'] == 'Run deploy.sh with a protected source-review input'
+assert any(task['name'] == 'Run deploy.sh (container lifecycle)' for task in source_review['block'])
 assert '30' in phase_one['tasks'][preflight]['ansible.builtin.script']['cmd']
 assert phase_one['tasks'][preflight]['failed_when'] is False
 gate_when = phase_one['tasks'][preflight]['when']
