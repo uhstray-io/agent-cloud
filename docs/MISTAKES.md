@@ -2546,8 +2546,7 @@ offered that path or stated the time risk.
 
 **The rule.** When an orchestrator-class host (Semaphore, OpenBao, or the database either depends
 on) is near full and filling it takes the orchestrator down, restore headroom first, by the
-fastest path the operator
-authorizes: ask for an operator-side grow or cleanup, and say how close to full the host is. Then
+fastest path the operator authorizes: ask for an operator-side grow or cleanup, and say how close to full the host is. Then
 encode the fix through the normal review cycle. Never leave the only headroom fix waiting on a
 multi-hour review without telling the operator the risk.
 
@@ -2569,7 +2568,7 @@ after the cause was already removed. Why no work happened in that gap is not est
 **Root cause.** I treated "headroom restored" as the end of the urgent part and went back to
 investigating, rather than restarting the service first. The diagnostic was not needed for the
 restart (the start command needed only the container names, which the first check had already
-listed), and it ran without a bound, so a hang held the recovery.
+listed), and it ran without a bound; whether it caused the 11.5-hour gap is not established.
 
 **The rule.** In a recovery of a down orchestrator, once the cause is removed, restart the service
 and verify that it answers, as the very next step, in the same command where possible. Defer
