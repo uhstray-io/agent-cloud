@@ -94,6 +94,7 @@ prove producer acceptance.
 #### Scenario: Probe activation remains gated without a reviewed target and isolation
 - **WHEN** a target declaration, endpoint contract, finite budget, actual pre-placement namespace proof, or effective handler isolation is missing or unverified
 - **THEN** activation refuses before configuration placement and no target is treated as covered
+- **AND** a Pod membership field alone does not establish namespace sharing; kernel network-namespace identity decides whether the probe shares a namespace
 - **AND** check mode, source validation, and rendered configuration do not count as live acceptance
 
 #### Scenario: Endpoint failure, scrape failure, and missing probe data remain distinct

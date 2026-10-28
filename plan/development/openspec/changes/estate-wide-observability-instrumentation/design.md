@@ -1281,7 +1281,8 @@ configuration placement or activation, the actual Linux receiver must prove
 that the Alloy network namespace differs from every sibling/caller by stable
 container ID, running PID, start time, and kernel namespace identity before
 and after observation. Missing or unstable runtime identity, rootless inability
-to inspect it, shared pod/network mode, or host-published listener refuses
+to inspect it, a shared network namespace (including pod/network-mode sharing),
+or host-published listener refuses
 before the handler is enabled. The gated overlay declares `x-podman.in_pod:
 false`; conflicting provider, pod, argv, or network-mode inputs are refused.
 Loopback binding alone is not proof of isolation. A safe metadata/liveness
