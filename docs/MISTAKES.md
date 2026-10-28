@@ -2528,18 +2528,19 @@ reported it, citing 1.18, where the same VM's full root had already crashed Post
 operator asked for the disk to be grown, I declared 64G in site-config, grew the Proxmox disk with
 Resize VM at 01:51 UTC on 2026-10-28 (task 9802), and then took the guest half, a new Grow Semaphore
 Root template, through a pull request with two review rounds and two CI runs (#752, merged at
-03:01 UTC). At 02:16:35 UTC, while that cycle ran, the root reached 100% (17 MB free) and Postgres
-crashed in recovery. Semaphore exited with it. Production orchestration was down until 15:18 UTC,
+03:01 UTC). While that cycle ran, the root filled: by 02:16:35 UTC Postgres had crashed and its
+crash recovery was interrupted (its log: "interrupted while in recovery at 2026-10-28 02:16:35
+UTC"), and the root showed 17 MB free when inspected. Semaphore exited with it. Production orchestration was down until 15:18 UTC,
 when the operator authorized SSH recovery: the repository's own `grow-root-lvm.py` grew the root
 online to 61G with 35G free, and the existing containers were started with `podman start`.
 
 **Root cause.** I treated the guest grow as ordinary platform work, where the reviewed template
 is the right path, and did not weigh how long the host could last against how long the cycle
-takes. The virtual disk was already 64G from 01:51. The same helper, run operator-side as in the
-1.18 recovery, would have restored headroom in minutes. I never offered that path or stated the
+takes. The virtual disk was already 64G from 01:51. The same helper, run operator-side (the 1.18
+recovery grew the root by hand the same way), would have restored headroom in minutes. I never offered that path or stated the
 time risk.
 
-**The rule.** When an orchestrator-class host (Semaphore, OpenBao, its database) is near full and
+**The rule.** When an orchestrator-class host (Semaphore, OpenBao, or the database either depends on) is near full and
 filling it takes the orchestrator down, restore headroom first, by the fastest path the operator
 authorizes: ask for an operator-side grow or cleanup, and say how close to full the host is. Then
 encode the fix through the normal review cycle. Never leave the only headroom fix waiting on a
