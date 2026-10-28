@@ -165,7 +165,7 @@
       ansible.builtin.debug:
         msg: >-
           Promotion PUT statuses:
-          {{ _sem_promoted.results | default([]) | map(attribute='status') | list }}
+          {{ _sem_promoted.results | default([]) | map(attribute='status', default=-1) | list }}
       # Under --check the promotion loop is skipped and its results carry no status.
       when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
 
@@ -173,13 +173,14 @@
       vars:
         _refused: >-
           {{ _to_promote | map(attribute='username')
-             | zip(_sem_promoted.results | map(attribute='status'))
+             | zip(_sem_promoted.results | map(attribute='status', default=-1))
              | rejectattr('1', 'in', [200, 204]) | list }}
       ansible.builtin.assert:
         that: _refused | length == 0
         fail_msg: >-
           Semaphore refused these promotions (username, HTTP status; -1 means no answer): {{ _refused }}.
-          401 means the token's user is not a Semaphore admin.
+          A 401 is either a token Semaphore does not accept or a token whose user may not edit
+          that account (not an admin, or the account is its own).
       when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
 
     # A PUT the server answered is not proof it applied: read the accounts back.

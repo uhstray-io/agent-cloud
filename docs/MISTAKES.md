@@ -5090,7 +5090,7 @@ hosts").
 **What happened.** `plan/architecture/04-credentials-access.md` recorded the Semaphore admin
 tier as "[BUILT 2026-10-18, issue #604]": `platform_admins` became the admin roster, and
 **Promote Semaphore Admins** would grant the flag. The template `templates.yml` declares
-for it is `dev_variant: true`, and `main`'s copy of the playbook still read only
+for it is `dev_variant: true`, and the copy of the playbook on `main` still read only
 `semaphore_admin_users`. On 2026-10-27 the production project held "Promote Semaphore
 Admins" (bound to `main`) and no "(Dev)" variant. `scripts/semaphore-launch.py --template
 "Promote Semaphore Admins (Dev)"` answered `Expected one template named ...`.

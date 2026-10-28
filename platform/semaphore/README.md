@@ -186,7 +186,9 @@ token, and nobody uses another account's token.
 
 1. **Be declared.** An administrator is an entry in `platform_admins`; any other
    operator is an entry in `semaphore_project_members` (username to role). Both are
-   in site-config's top-level `all.vars`, so access changes only through a reviewed diff.
+   in site-config's top-level `all.vars`, so access changes through a reviewed diff. Someone
+   who can launch these templates can override the declaration with an extra var, but launch
+   rights are already runner rights (above), so that grants nothing they did not hold.
 2. **Sign in once** at the controller in a browser, through SSO. The browser passes
    the Cloudflare challenge that blocks a scripted `/api/auth/login`. The first
    sign-in creates a plain account that belongs to no project.
