@@ -286,10 +286,16 @@ is a separate dashboard, with operations as a second dashboard.
 
 ## 6. Transport: mutual TLS on the landed bind (design decision 9)
 
-- [ ] 6.1 **[o11y]** The receiver's `tls { cert_file, key_file, client_ca_file }` block,
-      its server leaf, and the name of the receiver-side declaration that turns it on.
-      unverified today: that name. Record it in `design.md` when the o11y session picks
-      it. 6.2 waits on it
+- [ ] 6.1 **[o11y]** Receiver OTLP mTLS source and lifecycle. Source contract: the
+      receiver-side declaration is `o11y_otlp_tls_enabled` (default `false`), with
+      required `o11y_otlp_tls_server_name`; the receiver uses the fixed
+      `o11y-otlp-server` server leaf and authoritative step-ca bundle on the existing
+      gRPC listener. The existing receiver-host journal collector must use its fixed
+      `o11y-journal` client leaf and verify the declared server name before enablement.
+      Both use existing staged leaf paths, read-only mounts and native TLS reload.
+      Keep source implementation separate from live acceptance: the production leaf
+      declaration/issuance and coordinated handshake/deploy evidence remain required;
+      6.2 consumes this sender-facing interface, and 6.5 remains the live gate.
 - [ ] 6.2 `config.yaml.j2`: when the receiver declares TLS (read from
       `hostvars[groups['o11y_svc'][0]]`, as line 108 of the deploy reads
       `o11y_otlp_bind`), render `policies.backendTLS.{root, cert, key, hostname}` on
