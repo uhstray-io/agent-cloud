@@ -41,6 +41,8 @@
       - o11y_availability_probes_enabled
       - o11y_availability_probes_reviewed
       - o11y_availability_probe_limits
+      - local_monorepo_dir
+      - monorepo_deploy_path
       - ansible_remote_tmp
     _profile_forged_names: "{{ _profile_internal_overrides | intersect('' | extra_var_names) }}"
   tasks:
@@ -76,7 +78,7 @@
   vars:
     ansible_remote_tmp: /dev/shm/ansible-tmp
     _profile_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
-    _profile_deploy_dir: "{{ _profile_monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _profile_deploy_dir: "{{ _profile_monorepo_dir }}/{{ monorepo_deploy_path | default('') }}"
     _deploy_dir: "{{ _profile_deploy_dir }}"
     _profile_candidate_refusals:
       - candidate_invalid
@@ -89,6 +91,15 @@
       - image_mismatch
       - cleanup_failed
   tasks:
+    - name: Require the reviewed o11y deployment path before source probes
+      ansible.builtin.assert:
+        that:
+          - monorepo_deploy_path | default('') == 'platform/services/o11y/deployment'
+          - _profile_deploy_dir == _profile_monorepo_dir ~ '/platform/services/o11y/deployment'
+        fail_msg: >-
+          The profile verifier requires the inventory's fixed o11y deployment path before reading source state.
+        quiet: true
+
     - name: Mark check-mode results unverified
       ansible.builtin.debug:
         msg:

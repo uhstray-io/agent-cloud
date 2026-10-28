@@ -550,6 +550,61 @@ def test_native_sample_projection_uses_raw_timestamp_and_separates_endpoint_and_
     }]
 
 
+def test_rendered_availability_relabel_canonicalizes_job_for_probe_and_scrape_families():
+    _details, availability, _shared = _native_details_fixture()
+    env = Environment(undefined=StrictUndefined, trim_blocks=True)
+    env.filters.update(to_json=json.dumps, bool=bool)
+    template = env.from_string(
+        (ROOT / "platform/services/o11y/deployment/templates/config.alloy.j2").read_text(encoding="utf-8"),
+    )
+    rendered = template.render(
+        local_mode=False,
+        _o11y_availability=availability,
+        _o11y_forbidden_metric_label_names_regex="^private$",
+        o11y_cluster="prod-west",
+        o11y_environment="prod",
+    )
+    block = rendered.split('prometheus.relabel "availability_health_01" {', 1)[1].split(
+        'prometheus.scrape "alloy_self"', 1,
+    )[0]
+    job_relabel = '''source_labels = []
+    regex         = "(.*)"
+    replacement   = "o11y-availability"
+    target_label  = "job"
+    action        = "replace"'''
+    assert job_relabel in block
+    assert block.index(job_relabel) < block.index('target_label  = "instance"')
+    keep_rule = (
+        'regex         = "^(up|probe_success|probe_duration_seconds|probe_http_status_code|'
+        'scrape_samples_scraped|scrape_body_size_bytes)$"'
+    )
+    assert block.index(job_relabel) < block.index(keep_rule)
+
+    families = {
+        "up", "probe_success", "probe_duration_seconds", "probe_http_status_code",
+        "scrape_samples_scraped", "scrape_body_size_bytes",
+    }
+    forwarded = _native_metric_api_document(values=[
+        ("service:api", "o11y-availability", "service:api", "api/service", dict.fromkeys(families, 1)),
+    ], timestamp_value=1999)
+    expected = {
+        "service:api": {
+            "job": "o11y-availability", "instance": "service:api", "service": "api/service",
+            "cluster": "prod-west", "environment": "prod", "target_id": "service:api",
+        },
+    }
+    rows = SURVEY._native_metric_rows(forwarded, families=families, expected=expected)
+    assert set(rows) == {("service:api", family) for family in families}
+    assert all(row["metric"]["job"] == "o11y-availability" for row in json.loads(forwarded)["data"]["result"])
+
+    wrong_job = _native_metric_api_document(
+        values=[("service:api", "integrations/blackbox/service:api", "service:api", "api/service", {"up": 1})],
+        timestamp_value=1999,
+    )
+    with pytest.raises(SURVEY.Refusal, match="native_samples_ambiguous"):
+        SURVEY._native_metric_rows(wrong_job, families={"up"}, expected=expected)
+
+
 def test_native_forwarded_samples_reject_wrong_persisted_target_instance():
     raw = _native_metric_api_document(
         values=[("service:api", "o11y-availability", "alloy.internal", "api/service", {"up": 1})],

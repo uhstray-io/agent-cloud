@@ -194,15 +194,24 @@ hard source ceilings, not production defaults or a measured cadence. The
 candidate retains six fixed families and fixed service, target, environment,
 cluster, job, and instance labels; endpoint text is not a label.
 
-Availability is explicitly off by default. The deploy preflight currently
-refuses an enabled declaration until the actual Linux network-namespace proof
-and post-apply Alloy component readback gates are implemented and verified.
-Candidate rendering, source tests, and the public source flag do not establish
-runtime availability or authorize probe traffic. The Alloy handler and profile
-consumer use loopback in the availability overlay; internal-CA trust uses the
-existing public CA bundle in a read-only mount, deduplicated with the OTLP TLS
-overlay. Existing self-monitor labels and metrics are forwarded through the
-existing private receiver path. Keep task 3.3 and all live acceptance gates open.
+Availability is explicitly off by default. Enabling it requires
+`o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed` to be
+true, a revision-matched `estate_coverage_inventory` target declaration, and
+finite reviewed limits. Before placement and immediately before lifecycle
+apply, the deployer must prove the actual Linux network namespace is distinct;
+after apply it must bind the new Alloy process to the reviewed candidate and
+pass the fixed component, target, loaded-limit, and fresh-sample readback gates.
+These source gates and their regressions are implemented. A bounded pinned
+Alloy v1.5.1 fixture also parsed the expected component metadata after warm-up.
+No production inventory or live source transition has been accepted, and the
+fixture does not prove fresh sample delivery or endpoint health; runtime
+availability and probe traffic remain unverified. Candidate rendering, source
+tests, and the public source flag alone do not establish runtime availability.
+The Alloy handler and profile consumer use loopback in the availability overlay;
+internal-CA trust uses the existing public CA bundle in a read-only mount,
+deduplicated with the OTLP TLS overlay. Existing self-monitor labels and metrics
+are forwarded through the existing private receiver path. Keep task 3.3 and all
+live acceptance gates open.
 
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the

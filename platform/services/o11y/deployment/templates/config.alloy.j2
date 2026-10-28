@@ -223,6 +223,17 @@ prometheus.scrape "{{ _target.module_name }}" {
 prometheus.relabel "availability_{{ _target.module_name }}" {
   forward_to = [prometheus.relabel.bounded_labels.receiver]
 
+  // Blackbox exporter targets carry integrations/blackbox/<id> as a target
+  // label; canonicalize forwarded samples, including up and scrape counters,
+  // to the reviewed scrape-pool identity used by the collector and alerts.
+  rule {
+    source_labels = []
+    regex         = "(.*)"
+    replacement   = "o11y-availability"
+    target_label  = "job"
+    action        = "replace"
+  }
+
   rule {
     source_labels = ["target_id"]
     target_label  = "instance"

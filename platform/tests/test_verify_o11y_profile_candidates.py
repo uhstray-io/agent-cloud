@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 # Deterministic synthetic host from the canonical RFC1918 test network; this is
@@ -673,7 +674,14 @@ def test_playbook_is_read_only_exact_revision_pinned_and_check_mode_safe():
 
 def test_profile_playbook_uses_validated_availability_projection_and_fixed_expected_address():
     playbook = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    controller_vars = playbook[2]["vars"]
+    assert "local_monorepo_dir" in controller_vars["_profile_internal_overrides"]
+    assert "monorepo_deploy_path" in controller_vars["_profile_internal_overrides"]
     tasks = playbook[-1]["tasks"]
+    path_guard = next(
+        index for index, task in enumerate(tasks)
+        if task.get("name") == "Require the reviewed o11y deployment path before source probes"
+    )
     prepare = next(index for index, task in enumerate(tasks)
                    if task.get("name") == "Prepare the reviewed availability source projection for profile candidates")
     block = next(task["block"] for task in tasks
@@ -690,6 +698,30 @@ def test_profile_playbook_uses_validated_availability_projection_and_fixed_expec
         index for index, task in enumerate(tasks)
         if task.get("name") == "Render, validate, report, and remove temporary candidates"
     )
+    assert path_guard < prepare
+    assert "monorepo_deploy_path | default('') == 'platform/services/o11y/deployment'" in tasks[path_guard][
+        "ansible.builtin.assert"
+    ]["that"]
+    path_checks = [Environment().compile_expression(expression)
+                   for expression in tasks[path_guard]["ansible.builtin.assert"]["that"]]
+    accepted_context = {
+        "monorepo_deploy_path": "platform/services/o11y/deployment",
+        "_profile_deploy_dir": "/srv/agent-cloud/platform/services/o11y/deployment",
+        "_profile_monorepo_dir": "/srv/agent-cloud",
+    }
+    assert all(check(**accepted_context) for check in path_checks)
+    for deployment_path, rendered_path in (
+        ("platform/services/prometheus", "/srv/agent-cloud/platform/services/prometheus"),
+        (None, "/srv/agent-cloud/"),
+    ):
+        context = accepted_context | {
+            "_profile_deploy_dir": rendered_path,
+        }
+        if deployment_path is None:
+            context.pop("monorepo_deploy_path")
+        else:
+            context["monorepo_deploy_path"] = deployment_path
+        assert not all(check(**context) for check in path_checks)
     assert prepare < outer_render
     assert tasks[prepare]["ansible.builtin.import_tasks"] == "tasks/prepare-o11y-availability.yml"
     assert playbook[-1]["vars"]["_deploy_dir"] == "{{ _profile_deploy_dir }}"
