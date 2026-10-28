@@ -307,20 +307,48 @@ def test_pinned_alloy_detail_wire_shape_accepts_original_empty_string_and_typed_
     assert parsed["references_to"] == ["prometheus.relabel.bounded_labels"]
 
 
+def test_pinned_alloy_detail_accepts_observed_text_plain_utf8_json_wire_headers():
+    document = _alloy_detail_document()
+    body = json.dumps(document, separators=(",", ":")).encode("utf-8") + b"\n"
+    raw = (
+        b"HTTP/1.0 200 OK\r\n"
+        b"Content-Type: text/plain;charset=utf-8\r\n\r\n"
+        + body
+    )
+    parsed = SURVEY._alloy_component_detail(
+        raw, "prometheus.scrape.health_01", "prometheus.scrape",
+    )
+    assert parsed["local_id"] == "prometheus.scrape.health_01"
+    assert parsed["arguments"]["sample_limit"] == 64
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
-        "status", "content_type", "component_id", "duplicate_attr", "untyped_value",
-        "original_shape", "duplicate_reference",
+        "status", "content_type", "plain_without_utf8_charset", "unsupported_plain_charset",
+        "duplicate_content_type", "invalid_utf8", "component_id", "duplicate_attr",
+        "untyped_value", "original_shape", "duplicate_reference",
     ],
 )
 def test_typed_alloy_detail_parser_refuses_malformed_and_untrusted_api_evidence(mutate):
     document = _alloy_detail_document()
     status, content_type = "200 OK", "application/json"
+    raw_override = None
     if mutate == "status":
         status = "503 Service Unavailable"
     elif mutate == "content_type":
+        content_type = "text/html"
+    elif mutate == "plain_without_utf8_charset":
         content_type = "text/plain"
+    elif mutate == "unsupported_plain_charset":
+        content_type = "text/plain;charset=utf-16"
+    elif mutate == "duplicate_content_type":
+        raw_override = _alloy_http_response(document).replace(
+            b"Content-Type: application/json\r\n",
+            b"Content-Type: application/json\r\nContent-Type: text/plain;charset=utf-8\r\n",
+        )
+    elif mutate == "invalid_utf8":
+        raw_override = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n\xff"
     elif mutate == "component_id":
         document["localID"] = "prometheus.scrape.other"
     elif mutate == "duplicate_attr":
@@ -333,7 +361,7 @@ def test_typed_alloy_detail_parser_refuses_malformed_and_untrusted_api_evidence(
         document["referencesTo"] = ["prometheus.relabel.bounded_labels"] * 2
     with pytest.raises(SURVEY.Refusal):
         SURVEY._alloy_component_detail(
-            _alloy_http_response(document, status, content_type),
+            raw_override or _alloy_http_response(document, status, content_type),
             "prometheus.scrape.health_01", "prometheus.scrape",
         )
 

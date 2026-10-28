@@ -3170,9 +3170,16 @@ def _alloy_component_detail(raw: bytes, expected_id: str, expected_name: str) ->
     lengths = headers.get("content-length", [])
     encodings = headers.get("content-encoding", [])
     transfers = headers.get("transfer-encoding", [])
+    detail_json_content_type = False
+    if len(content_types) == 1:
+        media_type, separator, parameters = content_types[0].partition(";")
+        media_type = media_type.strip().lower()
+        detail_json_content_type = media_type == "application/json" or (
+            media_type == "text/plain" and separator and parameters.strip().lower() == "charset=utf-8"
+        )
     if (
         status != 200 or len(content_types) != 1
-        or content_types[0].split(";", 1)[0].strip().lower() != "application/json"
+        or not detail_json_content_type
         or len(body) > MAX_AVAILABILITY_DETAIL_BYTES
         or len(lengths) > 1
         or (lengths and (not DECIMAL.fullmatch(lengths[0]) or int(lengths[0]) != len(body)))
@@ -3181,8 +3188,9 @@ def _alloy_component_detail(raw: bytes, expected_id: str, expected_name: str) ->
     ):
         raise Refusal("native_detail_unavailable")
     try:
+        body_text = body.decode("utf-8")
         detail = json.loads(
-            body,
+            body_text,
             object_pairs_hook=_unique_object,
             parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
         )
