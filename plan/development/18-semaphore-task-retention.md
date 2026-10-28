@@ -260,8 +260,9 @@ Files: `platform/playbooks/prune-semaphore-task-history.yml` (new), and the temp
    or `null` is never selected either, and it is never read as the epoch. `end` is a pointer tagged
    `omitempty` on the base `Task` struct (`db/Task.go:64`), which `TaskWithTpl` embeds
    (`db/Task.go:209`). While walking, count the kept set: the terminal tasks whose `end` is newer than
-   the cutoff. If that count is below `semaphore_prune_min_kept` (default 1000), refuse the run. Fail it
-   and delete nothing, in check mode and in a real run alike.
+   the cutoff. If the selection is not empty and that count is below `semaphore_prune_min_kept`
+   (default 1000), refuse the run. Fail it and delete nothing, in check mode and in a real run alike.
+   An empty selection ends the run green with nothing to delete, whatever the kept count.
 5. **Sort.** Sort the selection by `end`, oldest first. `end` is not monotonic in id, so id order is not
    age order.
 6. **Check mode stops here.** Under check mode (`params.dry_run: true` at launch), report the counts (per template, and the oldest end time)
@@ -433,9 +434,8 @@ a lowered threshold and routes to the Discord contact point. The threshold is th
   cutoff forward, and the run would select recent tasks. The kept-set floor is the guard for that case.
   In normal operation about 289 tasks a day over 30 days leave roughly 8,700 terminal tasks kept
   (289 x 30 = 8,670, from the cron arithmetic in Problem 1). After a large forward jump the kept set is
-  near zero, so the run refuses. The floor also applies when nothing is selected. A young instance with
-  fewer than 1,000 kept terminal tasks, roughly 3.5 days of history at 289 tasks a day, therefore fails
-  every run until enough history exists. Phase 1's check run shows that result before activation.
+  near zero, so the run refuses. The floor applies only when something is selected, so a young
+  instance with little history and nothing older than the cutoff ends green with nothing deleted.
 - **Audit loss.** Citations of task numbers in committed files point at deleted tasks after 30 days. See O1.
 - **Lock and availability.** Phase 2 blocks output writes for the duration of the lock. The gates and the
   open items are in Phase 2.
