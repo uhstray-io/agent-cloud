@@ -74,12 +74,14 @@
     # fires when the env value is absent, so an env-token run needs no OpenBao.
     - name: "Resolve the Semaphore URL + token (env first, else OpenBao AppRole lookup)"
       ansible.builtin.set_fact:
+        # The declared URL may end in "/". "<url>//api/users/<id>" is answered with a 301,
+        # which uri follows for GET but not for the PUT, so trim it (task 9870, #604).
         _sem_url: >-
-          {{ _sem_url_env if (_sem_url_env | length) > 0
-             else lookup('community.hashi_vault.hashi_vault',
-                         'secret/data/services/semaphore:url',
-                         url=_bao_url, auth_method='approle',
-                         role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+          {{ (_sem_url_env if (_sem_url_env | length) > 0
+              else lookup('community.hashi_vault.hashi_vault',
+                          'secret/data/services/semaphore:url',
+                          url=_bao_url, auth_method='approle',
+                          role_id=_bao_role_id, secret_id=_bao_secret_id)) | regex_replace('/+$', '') }}
         _sem_token: >-
           {{ _sem_token_env if (_sem_token_env | length) > 0
              else lookup('community.hashi_vault.hashi_vault',
