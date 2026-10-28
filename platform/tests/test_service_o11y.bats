@@ -15,15 +15,52 @@ setup() {
   mkdir -p "$BATS_TEST_TMPDIR/ansible"
 }
 
+run_o11y_guard() {
+  run env -i \
+    PATH="$PATH" HOME="$HOME" \
+    TMPDIR="$BATS_TEST_TMPDIR" \
+    ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" \
+    ANSIBLE_REMOTE_TEMP="$BATS_TEST_TMPDIR/ansible/remote" \
+    ANSIBLE_HOME="$BATS_TEST_TMPDIR/ansible/home" \
+    ansible-playbook "$@"
+}
+
 @test "o11y: webhook provisioning requires an exact reviewed revision before OpenBao access" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  cp "$REPO_ROOT/platform/inventory/local-dev.yml.example" "$BATS_TEST_TMPDIR/inventory.yml"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook \
-    -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" \
-    -e openbao_addr=http://127.0.0.1:8200
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe:
+          ansible_connection: local
+YAML
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [
+        ("platform/playbooks/seed-o11y-alert-webhook.yml", "Require exactly one declared o11y receiver"),
+        ("platform/playbooks/seed-o11y-alert-webhook.yml", "Read the controller revision"),
+        ("platform/playbooks/seed-o11y-alert-webhook.yml", "Require the exact candidate revision"),
+    ],
+)
+PY
+  # Keep the original missing-SHA refusal, then prove a valid-shaped but mismatched SHA.
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Semaphore checked out a different revision; no webhook was provisioned."* ]]
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" \
+    -e expected_repository_sha=0000000000000000000000000000000000000000
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Semaphore checked out a different revision; no webhook was provisioned."* ]]
+  assert_precedes "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" \
+    'Require the exact candidate revision' 'Authenticate to OpenBao'
 }
 
 @test "o11y: webhook credentials stay on the controller and out of task output" {
@@ -163,11 +200,26 @@ all:
         o11y-probe:
           ansible_connection: local
 YAML
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [("platform/playbooks/deploy-o11y.yml", "Require the production DNS zone and Caddy origin before rendering Grafana OIDC")],
+    source_vars=[("platform/playbooks/deploy-o11y.yml", "Phase 1: Place repo + manage o11y secrets", ("_auth_edge_hosts", "_auth_edge_ip"))],
+    public_vars={"local_mode": False},
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" -e local_mode=false
   [ "$status" -ne 0 ]
   assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
-  refute_contains "$output" "TASK [Place the monorepo"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the production DNS zone and Caddy origin before rendering Grafana OIDC' \
+    'Place the monorepo'
 }
 
 @test "o11y: production refuses a missing Caddy origin before placement" {
@@ -179,13 +231,29 @@ all:
       hosts:
         o11y-probe:
           ansible_connection: local
+    caddy_svc: {}
 YAML
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [("platform/playbooks/deploy-o11y.yml", "Require the production DNS zone and Caddy origin before rendering Grafana OIDC")],
+    source_vars=[("platform/playbooks/deploy-o11y.yml", "Phase 1: Place repo + manage o11y secrets", ("_auth_edge_hosts", "_auth_edge_ip"))],
+    public_vars={"local_mode": False, "o11y_zone": "example.invalid"},
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" \
     -e local_mode=false -e o11y_zone=example.invalid
   [ "$status" -ne 0 ]
   assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
-  refute_contains "$output" "TASK [Place the monorepo"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the production DNS zone and Caddy origin before rendering Grafana OIDC' \
+    'Place the monorepo'
 }
 
 @test "o11y: local clean excludes production overlay and reports a failed Compose teardown" {
@@ -274,20 +342,56 @@ all:
         o11y-probe:
           ansible_connection: local
 YAML
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [
+        ("platform/playbooks/deploy-o11y.yml", "Read the controller checkout revision when a candidate SHA is required"),
+        ("platform/playbooks/deploy-o11y.yml", "Require the exact reviewed candidate revision"),
+    ],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" \
     -e expected_repository_sha=0000000000000000000000000000000000000000
   [ "$status" -ne 0 ]
   assert_contains "$output" "Semaphore checked out a different revision; no o11y files were placed."
-  refute_contains "$output" "PLAY [Phase 1: Place repo + manage o11y secrets]"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the exact reviewed candidate revision' 'Place the monorepo'
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the exact reviewed candidate revision' 'Configure o11y alert provisioning from OpenBao'
 }
 
 @test "o11y: an empty receiver inventory refuses before placement" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  run ansible-playbook -i localhost, "$REPO_ROOT/platform/playbooks/deploy-o11y.yml"
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [
+        ("platform/playbooks/preflight-target-group.yml", "Require a group name to check, and refuse a conflicting override"),
+        ("platform/playbooks/preflight-target-group.yml", "Require the inventory to have parsed"),
+        ("platform/playbooks/preflight-target-group.yml", "Require the group to exist and contain at least one host"),
+    ],
+    public_vars={"preflight_group": "o11y_svc", "preflight_group_expected": "o11y_svc"},
+)
+PY
+  run_o11y_guard -i localhost, "$BATS_TEST_TMPDIR/guard.yml" \
+    -e preflight_group=o11y_svc -e preflight_group_expected=o11y_svc
   [ "$status" -ne 0 ]
   assert_contains "$output" "Inventory group 'o11y_svc' is absent or empty"
-  refute_contains "$output" "PLAY [Phase 1: Place repo + manage o11y secrets]"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Pre-flight' 'name: "Phase 1: Place repo'
 }
 
 @test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {
@@ -466,12 +570,9 @@ def write_play(path, body, failed):
 write_play(sys.argv[2], content, False)
 write_play(sys.argv[3], marker, False)
 PY
-  mkdir -p "$BATS_TEST_TMPDIR/ansible-local"
-  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
-    ansible-playbook -i localhost, "$valid_playbook"
+  run_o11y_guard -i localhost, "$valid_playbook"
   [ "$status" -eq 0 ]
-  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
-    ansible-playbook -i localhost, "$invalid_playbook"
+  run_o11y_guard -i localhost, "$invalid_playbook"
   [ "$status" -ne 0 ]
   assert_contains "$output" "Discord firing receipt was incomplete after the wait: webhook messages=1, readable messages=1, owned messages=1"
   refute_contains "$output" "o11y-delivery-status=firing service=o11y-fault-probe-new"
@@ -780,22 +881,53 @@ all:
         o11y-probe-local:
           ansible_connection: local
 YAML
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/deploy-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "o11y_svc",
+    [("platform/playbooks/tasks/assert-o11y-otlp-tls.yml", "Require one internal CA for o11y OTLP TLS",
+      "platform/playbooks/deploy-o11y.yml",
+      "Validate the fixed receiver and journal TLS contract before placement or rendering")],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/deploy-guard.yml" \
     -e local_mode=true -e o11y_otlp_tls_enabled=true
   [ "$status" -ne 0 ]
   assert_contains "$output" "o11y OTLP TLS requires exactly one step_ca_svc host"
-  refute_contains "$output" "Place the monorepo + ensure podman/compose"
 
-  local head
-  head=$(git -C "$REPO_ROOT" rev-parse HEAD)
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/clean-deploy-o11y.yml" \
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/clean-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "o11y_svc",
+    [
+        ("platform/playbooks/tasks/assert-reset-confirmed.yml", "Refuse a reset the launch did not name"),
+        ("platform/playbooks/clean-deploy-o11y.yml", "Refuse TLS-enabled clean deploy before any teardown"),
+    ],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/clean-guard.yml" \
     -e local_mode=true -e o11y_otlp_tls_enabled=true \
-    -e confirm_reset=o11y-probe-local -e "expected_repository_sha=$head"
+    -e confirm_reset=o11y-probe-local
   [ "$status" -ne 0 ]
   assert_contains "$output" "Clean Deploy o11y would remove the issued OTLP certificate tree"
-  refute_contains "$output" "TASK [Destroy existing deployment]"
+  assert_precedes "$REPO_ROOT/platform/playbooks/clean-deploy-o11y.yml" \
+    'Refuse TLS-enabled clean deploy before any teardown' 'Destroy existing deployment'
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Validate the fixed receiver and journal TLS contract before placement or rendering' \
+    'Place the monorepo'
+  assert_precedes "$REPO_ROOT/platform/playbooks/tasks/assert-o11y-otlp-tls.yml" \
+    'Require one internal CA for o11y OTLP TLS' \
+    'Distribute the authoritative internal CA bundle to the fixed o11y certificate directory'
 }
 
 @test "o11y: runtime readback requires the exact deduplicated TLS mount set" {
@@ -980,25 +1112,7 @@ all:
         caddy:
           ansible_host: "192.0.2.3"
 YAML
-  # The probe refuses a checkout that differs from the reviewed commit or has local changes
-  # (its "Refuse an altered controller checkout" gate), and it reads the repo it lives in. Run
-  # it from a scratch repo holding this working tree's playbooks, so the test covers uncommitted
-  # edits and passes in a developer checkout with untracked files (PR 281 review). Git exports
-  # GIT_DIR and friends to hooks; clear them before touching any repo (2026-09-23 incident).
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
-  local probe_repo="$BATS_TEST_TMPDIR/probe-repo"
-  mkdir -p "$probe_repo/platform"
-  cp -R "$REPO_ROOT/platform/playbooks" "$probe_repo/platform/"
-  # The repo's ignore rules, so interpreter caches Ansible writes (filter_plugins/__pycache__)
-  # stay ignored exactly as in a real checkout.
-  cp "$REPO_ROOT/.gitignore" "$probe_repo/"
-  git -C "$probe_repo" init -q
-  git -C "$probe_repo" add -A
-  git -C "$probe_repo" -c user.email=t@example.invalid -c user.name=t -c core.hooksPath=/dev/null \
-    -c commit.gpgsign=false commit -q -m scratch
-  local sha probe="$probe_repo/platform/playbooks/probe-o11y-metrics-endpoint.yml"
-  sha=$(git -C "$probe_repo" rev-parse HEAD)
+  local probe="$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml"
   python3 - "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import sys
 import yaml
@@ -1017,18 +1131,30 @@ assert template['repository'] == 'agent-cloud dev'
 assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_target']
 assert template['survey_vars'][1]['type'] == 'enum'
 PY
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/probe-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "receiver",
+    [
+        ("platform/playbooks/probe-o11y-metrics-endpoint.yml", "Require one fixed target kind and its inventory declaration"),
+        ("platform/playbooks/probe-o11y-metrics-endpoint.yml", "Resolve the fixed inventory endpoint"),
+        ("platform/playbooks/probe-o11y-metrics-endpoint.yml", "Refuse an unusable metrics address or port"),
+    ],
+)
+PY
   for target in dgx-vllm agentgateway; do
-    run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-      -i "$BATS_TEST_TMPDIR/inventory.yml" \
-      "$probe" \
-      -e expected_repository_sha="$sha" -e probe_target="$target"
+    run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+      -e probe_target="$target"
     [ "$status" -eq 0 ]
     assert_contains "$output" "Refuse an unusable metrics address or port"
   done
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$probe" \
-    -e expected_repository_sha="$sha" -e probe_target=arbitrary
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+    -e probe_target=arbitrary
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
   python3 - "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/missing-gateway.yml" "$BATS_TEST_TMPDIR/mismatched-head.yml" <<'PY'
@@ -1045,24 +1171,36 @@ mismatched['all']['children']['o11y_svc']['hosts']['receiver']['dgx_spark_head_a
 with open(sys.argv[3], 'w', encoding='utf-8') as stream:
     yaml.safe_dump(mismatched, stream)
 PY
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/missing-gateway.yml" \
-    "$probe" \
-    -e expected_repository_sha="$sha" -e probe_target=agentgateway
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/missing-gateway.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+    -e probe_target=agentgateway
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/mismatched-head.yml" \
-    "$probe" \
-    -e expected_repository_sha="$sha" -e probe_target=dgx-vllm
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/mismatched-head.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+    -e probe_target=dgx-vllm
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
+
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/deploy-target-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "receiver",
+    [("platform/playbooks/deploy-o11y.yml", "Require the receiver target to match the gateway's published stats listener")],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/deploy-target-guard.yml" \
+    -e local_mode=false
   [ "$status" -ne 0 ]
   assert_contains "$output" "receiver's gateway scrape target differs"
-  refute_contains "$output" "TASK [Place the monorepo"
+  assert_precedes "$probe" 'Require one fixed target kind and its inventory declaration' \
+    'Read the receiver route and chosen source'
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    "Require the receiver target to match the gateway's published stats listener" \
+    'Place the monorepo'
 }
 
 @test "o11y: agentgateway scrape renders from a declared remote endpoint" {
