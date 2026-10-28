@@ -141,6 +141,8 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards. A
 | [skills-recommendation.md](skills-recommendation.md) | ACTIVE | Maps Claude Code skills to agent-cloud development activities. |
 | [08-ansible-automation-standards.md](08-ansible-automation-standards.md) | ACTIVE | Ansible standards from the official docs, each rule linked: check mode as the dry run, the three check-mode task classes, `--tags verify`, `set_stats` for machine-read results, recorded deviations. |
 | [09-console-ui-principles.md](09-console-ui-principles.md) | PROPOSED | Console UI principles: through the platform never around it, work first, single-sourced scope, red explains itself, vertical owned plans, Grafana for per-asset telemetry, secret names never values; the console interaction loop and how operators work with agent-cloud through it. |
+| [network-architecture.md](network-architecture.md) | ACTIVE | Current-state network map: Cloudflare edge, Caddy route shapes, the inference path with its mutual-TLS hop, internal CA and DNS, host firewall, control-plane and provisioning paths, local-dev network; status per component, decision criteria, in-flight work. |
+| [service-architecture.md](service-architecture.md) | ACTIVE | Current-state service map: every service and agent by layer with runtime, edge authentication and status; identity, shared-secret and runtime-dependency maps; deploy lifecycle, AI propose-validate-execute path, deployment workflow, lifecycle states. |
 | [WEBSITE-BUILDING-AGENT.md](WEBSITE-BUILDING-AGENT.md) | ACTIVE | WebSmith agent integration: position in 4-layer model, SPEC → service handoff, agent-cloud preset, second-site recipe. |
 
 ---
@@ -298,3 +300,4 @@ See [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md), [SECURITY-TESTIN
 |---|---|
 | 2026-05-06 | Initial creation as part of architecture review. Indexes all existing plan documents, defines document standards, diagram standards, and status values. |
 | 2026-05-10 | Reviewed by @jestyr27, updated some naming conventions and added references to missing documents. |
+| 2026-10-27 | Indexed `network-architecture.md` and `service-architecture.md`. |

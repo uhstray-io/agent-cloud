@@ -1,8 +1,10 @@
 # agentgateway — the inference edge gateway
 
 Author: Joseph A. Wisneski IV <stray@uhstray.io>. Status: local-dev proven (2026-09-17). Prod VM (node, vmid and address declared in site-config) provisioned, keyed and
-SSH-hardened through Semaphore (2026-09-18); the prod gateway rollout (Authentik app,
-edge record, key seed, deploy, firewall, Caddy block) is pending.
+SSH-hardened through Semaphore (2026-09-18). Production `/v1` traffic has been routed through
+the gateway since 2026-10-14 (the route switch in OpenSpec change
+`inference-gateway-agentgateway`). Still open: retiring the shared vLLM key (2026-11-13,
+"Shared-key retirement" below) and TLS from the gateway to vLLM.
 
 ## Role
 
@@ -13,7 +15,7 @@ identity itself; Caddy in front of it keeps TLS, the path allowlist and a header
 Bearer check only.
 
 Decision record: `plan/architecture/05-platform-infra.md`, "Inference gateway:
-agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec change:
+agentgateway alongside skynet" (Accepted 2026-10-12). OpenSpec change:
 `plan/development/openspec/changes/inference-gateway-agentgateway`.
 
 ## Shape
