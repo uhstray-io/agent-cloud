@@ -26,9 +26,9 @@ for arg in "$@"; do
   esac
 done
 
-# Plane's file is the base; agent-cloud's overlay always applies on top of it, before any
-# overlay the playbook names.
-export COMPOSE_OVERLAYS="compose.agentcloud.yml ${COMPOSE_OVERLAYS:-}"
+# Plane's file is the base; agent-cloud's overlay and its one publish always apply on top of it,
+# before any overlay the playbook names.
+export COMPOSE_OVERLAYS="compose.agentcloud.yml compose.publish.yml ${COMPOSE_OVERLAYS:-}"
 
 # Top-level service names in a compose file (two-space keys under `services:`).
 service_names() {

@@ -59,20 +59,27 @@ PY
 }
 
 @test "plane: only the proxy publishes, plain HTTP on the inventory bind" {
+  local pub="$DEPLOY_DIR/compose.publish.yml"
+  # Plane's publishes are reset; ours comes from an untagged overlay, because podman-compose
+  # does not substitute variables inside an !override value.
   [ "$(grep -c 'ports:' "$OVERLAY")" -eq 1 ]
-  grep -qF 'ports: !override' "$OVERLAY"
-  grep -qF '"${PLANE_BIND:-127.0.0.1}:${PLANE_PORT:-8080}:80"' "$OVERLAY"
+  grep -qF 'ports: !reset []' "$OVERLAY"
+  [ "$(grep -vE '^\s*#' "$pub" | grep -c 'ports:')" -eq 1 ]
+  grep -qF '"${PLANE_BIND:-127.0.0.1}:${PLANE_PORT:-8080}:80"' "$pub"
+  [ -z "$(grep -vE '^\s*#' "$pub" | grep -E 'ports: !' || true)" ]
+  grep -qF 'COMPOSE_OVERLAYS="compose.agentcloud.yml compose.publish.yml' "$DEPLOY_DIR/deploy.sh"
 }
 
 @test "plane: deploy.sh applies the overlay and refuses a Plane service it does not name" {
-  grep -qF 'COMPOSE_OVERLAYS="compose.agentcloud.yml' "$DEPLOY_DIR/deploy.sh"
   grep -qF 'compose.agentcloud.yml does not name these services' "$DEPLOY_DIR/deploy.sh"
   # Container lifecycle only: no secret handling, no OpenBao.
   [ -z "$(grep -vE '^\s*#' "$DEPLOY_DIR/deploy.sh" | grep -iE '\b(bao|openbao|vault|secret_id|role_id)\b' || true)" ]
 }
 
-@test "plane: .env closes sign-up from first boot and refuses Plane's shipped credentials" {
-  grep -qF "'ENABLE_SIGNUP': '0'" "$ENV_TPL"
+@test "plane: sign-up is closed by the instance PATCH, and .env refuses Plane's shipped credentials" {
+  # Plane's Compose passes no ENABLE_SIGNUP to any container, so only the PATCH closes it.
+  grep -qF '{"ENABLE_SIGNUP": "0"}' "$DEPLOY_DIR/configure_instance.py"
+  refute_grep -qF 'ENABLE_SIGNUP' "$ENV_TPL"
   grep -qF "'SITE_ADDRESS': ':80'" "$ENV_TPL"
   grep -qF 'is empty or still Plane' "$ENV_TPL"
   local k

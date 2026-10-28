@@ -63,15 +63,22 @@ setup against the API directly (`configure_instance.py`, run inside `plane-api` 
 proxy. A first or clean deploy therefore never has a reachable, unclaimed instance:
 
 1. Instance setup through the admin sign-up form, as `plane_automation_email`.
-2. `ENABLE_SIGNUP=0` (invitation-only). It is in `.env` from the first boot too: Plane copies
-   instance settings from the environment only when the setting's row is first created.
+2. `ENABLE_SIGNUP=0` (invitation-only), PATCHed into the instance configuration. Not through
+   `.env`: Plane's Compose file passes no `ENABLE_SIGNUP` to any container (measured on the
+   first local deploy, 2026-10-28), so the PATCH is the only control, and the held proxy keeps
+   the instance unreachable until it has run.
 3. The workspace `plane_workspace_slug`. Its owner is the automation account, never a person.
 
 Never run `manage.py create_instance_admin` before setup: sign-up then refuses because an
 admin exists, nothing else completes setup, and the instance is stuck.
 
 The instance configuration read-back returns encrypted settings **decrypted**, so any task
-that reads it is `no_log`.
+that reads it is `no_log`. The script prints one JSON line and never a credential, so a refusal
+reaches the run log through the visible assert after it.
+
+With an `https` public URL Plane marks its cookies `Secure`; the script sends them itself to
+`http://localhost:8000`, because a cookie jar would withhold a Secure cookie over plain HTTP and
+every POST would fail Plane's CSRF check (a page it serves with status 200).
 
 ## Inventory
 

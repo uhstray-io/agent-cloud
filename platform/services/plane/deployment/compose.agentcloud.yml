@@ -17,8 +17,8 @@
 #   volumes   Plane binds its data under $INSTALL_DIR. Named volumes instead, so the data lives
 #             in the engine, `compose down -v` (clean-service.yml) removes it, and neither the
 #             git update nor the local rsync of the deploy tree can touch it.
-#   ports     Only the proxy publishes, plain HTTP on one bind; TLS is at the platform Caddy. Its
-#             HTTPS and three SMTP publishes are dropped.
+#   ports     Only the proxy publishes, plain HTTP on one bind (compose.publish.yml); TLS is at the
+#             platform Caddy. Its HTTPS and three SMTP publishes are dropped here.
 # Design: plan/development/openspec/changes/deploy-plane-work-management/design.md (spikes 0.1, 0.2).
 
 x-always: &always
@@ -87,8 +87,10 @@ services:
   proxy:
     <<: *always
     container_name: plane-proxy
-    ports: !override
-      - "${PLANE_BIND:-127.0.0.1}:${PLANE_PORT:-8080}:80"
+    # Plane's HTTPS and SMTP publishes are dropped here; the one publish agent-cloud wants is in
+    # compose.publish.yml, because podman-compose 1.6.0 does not substitute ${...} inside a
+    # value tagged !override (it reached podman literally on the first local deploy).
+    ports: !reset []
     volumes: !override
       - proxy_config:/config
       - proxy_data:/data

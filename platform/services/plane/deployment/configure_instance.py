@@ -17,15 +17,21 @@ instance, design.md "Runtime spike results", 0.3 and 0.5).
   4. The workspace, created only when its slug is absent.
 """
 
-import http.cookiejar
 import json
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.cookies import SimpleCookie
 
 cfg = json.loads(sys.stdin.readline())
 BASE, HOST, ORIGIN = cfg["base"], cfg["host"], cfg["origin"]
+
+
+def fail(message):
+    """One JSON line, never a credential: the playbook shows it while the task stays no_log."""
+    print(json.dumps({"error": message}))
+    sys.exit(1)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -33,15 +39,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # the sign-up/sign-in result is in the redirect itself
 
 
-jar = http.cookiejar.CookieJar()
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), NoRedirect)
+opener = urllib.request.build_opener(NoRedirect)
+# Cookies are kept by hand: with an https WEB_URL Plane marks them Secure, and a cookie jar
+# would never send a Secure cookie to http://localhost:8000 (TLS ends at the platform edge).
+cookies = {}
 
 
 def call(method, path, data=None, form=False):
     headers = {"Host": HOST, "Origin": ORIGIN, "Referer": ORIGIN + "/god-mode/"}
-    csrf = next((c.value for c in jar if c.name == "csrftoken"), None)
-    if csrf:
-        headers["X-CSRFToken"] = csrf
+    if cookies:
+        headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    if "csrftoken" in cookies:
+        headers["X-CSRFToken"] = cookies["csrftoken"]
     body = None
     if data is not None:
         if form:
@@ -55,7 +64,13 @@ def call(method, path, data=None, form=False):
         resp = opener.open(req, timeout=30)
     except urllib.error.HTTPError as e:
         resp = e
+    for header in resp.headers.get_all("Set-Cookie") or []:
+        jar = SimpleCookie()
+        jar.load(header)
+        cookies.update({k: m.value for k, m in jar.items()})
     raw = resp.read()
+    if b"CSRF Verification Failed" in raw:  # Plane renders this page with status 200
+        fail(f"{method} {path}: CSRF verification failed")
     return resp.status, resp.headers.get("Location", ""), (json.loads(raw) if raw[:1] in (b"{", b"[") else None)
 
 
@@ -63,8 +78,8 @@ def form_post(path, fields):
     _, _, tok = call("GET", "/auth/get-csrf-token/")
     status, location, _ = call("POST", path, dict(fields, csrfmiddlewaretoken=tok["csrf_token"]), form=True)
     if status != 302 or "error_code" in location:
-        code = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get("error_code", ["?"])[0]
-        sys.exit(f"{path}: refused ({status}, error {code})")
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get("error_message", ["?"])[0]
+        fail(f"{path}: refused ({status}, {code})")
 
 
 done = []
@@ -82,7 +97,7 @@ signup = next((c["value"] for c in configs if c["key"] == "ENABLE_SIGNUP"), None
 if signup != "0":
     status, _, _ = call("PATCH", "/api/instances/configurations/", {"ENABLE_SIGNUP": "0"})
     if status != 200:
-        sys.exit(f"closing self sign-up failed ({status})")
+        fail(f"closing self sign-up failed ({status})")
     done.append("self sign-up closed")
 
 _, _, spaces = call("GET", "/api/instances/workspaces/")
@@ -91,7 +106,7 @@ if not any(w.get("slug") == cfg["workspace_slug"] for w in rows):
     status, _, _ = call("POST", "/api/instances/workspaces/", {
         "name": cfg["workspace_name"], "slug": cfg["workspace_slug"], "organization_size": "2-10"})
     if status != 201:
-        sys.exit(f"workspace {cfg['workspace_slug']} could not be created ({status})")
+        fail(f"workspace {cfg['workspace_slug']} could not be created ({status})")
     done.append(f"workspace {cfg['workspace_slug']} created")
 
 print(json.dumps({"changed": bool(done), "actions": done}))

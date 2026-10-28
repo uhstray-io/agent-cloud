@@ -1,0 +1,8 @@
+# compose.publish.yml — the proxy's one publish: plain HTTP on the inventory's bind and port
+# (TLS is at the platform Caddy). compose.agentcloud.yml removes Plane's own publishes with
+# `ports: !reset []`; this file adds ours without a tag, because podman-compose 1.6.0 does not
+# substitute ${...} inside a value tagged !override.
+services:
+  proxy:
+    ports:
+      - "${PLANE_BIND:-127.0.0.1}:${PLANE_PORT:-8080}:80"

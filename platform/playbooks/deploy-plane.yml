@@ -180,14 +180,30 @@
               'workspace_slug': plane_workspace_slug,
               'workspace_name': plane_workspace_name} | to_json }}
       register: _plane_configure
-      changed_when: (_plane_configure.stdout_lines[-1] | from_json).changed | bool
+      # The script prints one JSON line, {"changed", "actions"} or {"error"}, never a credential.
+      # Judged below from that line, so a refusal is visible while this task stays no_log.
+      changed_when: ((_plane_configure.stdout_lines | default(['{}']) | last) | from_json).changed | default(false) | bool
+      failed_when: false
       no_log: true
       when: not ansible_check_mode
 
     - name: "Keep only the configuration summary"
       ansible.builtin.set_fact:
-        _plane_configure_summary: "{{ _plane_configure.stdout_lines[-1] | from_json }}"
+        _plane_configure_summary: >-
+          {{ (_plane_configure.stdout_lines | last | from_json)
+             if (_plane_configure.stdout_lines | default([]) | length > 0
+                 and (_plane_configure.stdout_lines | last).startswith('{'))
+             else {'error': 'the configuration script printed no summary (exit ' ~ _plane_configure.rc ~ ')'} }}
       no_log: true
+      when: not ansible_check_mode
+
+    - name: "First-run configuration succeeded"
+      ansible.builtin.assert:
+        that:
+          - _plane_configure.rc == 0
+          - _plane_configure_summary.error is not defined
+        fail_msg: "plane first-run configuration failed: {{ _plane_configure_summary.error | default('exit ' ~ _plane_configure.rc) }}"
+        quiet: true
       when: not ansible_check_mode
 
     - name: "Show the configuration summary"
@@ -221,6 +237,30 @@
     _engine: "{{ container_engine | default('podman') }}"
 
   tasks:
+    # A dry run skipped the deploy, so on a fresh host the stack does not exist and the probe
+    # below would fail on it: check, and stop the dry run there (deploy-agentgateway.yml).
+    - name: "Dry run: is the plane proxy running?"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, "--format", "{{ '{{.State.Running}}' }}", "plane-proxy"]
+      register: _dry_container
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, plane not running: report"
+      ansible.builtin.debug:
+        msg: "check mode: plane is not running; its verification (through the proxy) needs a real deploy."
+      when:
+        - ansible_check_mode
+        - _dry_container.rc != 0 or _dry_container.stdout | trim != 'true'
+
+    - name: "Dry run, plane not running: stop"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _dry_container.rc != 0 or _dry_container.stdout | trim != 'true'
+
     - name: "API answers through the proxy, set up and invitation-only"
       # Through the proxy, not the API port: proves the routing the edge uses. /api/instances/,
       # NOT /: the proxy serves / from the web frontend, which stays up over a dead API
