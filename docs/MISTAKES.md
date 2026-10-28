@@ -2546,9 +2546,9 @@ offered that path or stated the time risk.
 
 **The rule.** When an orchestrator-class host (Semaphore, OpenBao, or the database either depends
 on) is near full and filling it takes the orchestrator down, restore headroom first, by the
-fastest path the operator authorizes: ask for an operator-side grow or cleanup, and say how close to full the host is. Then
-encode the fix through the normal review cycle. Never leave the only headroom fix waiting on a
-multi-hour review without telling the operator the risk.
+fastest path the operator authorizes: ask for an operator-side grow or cleanup, and say how close
+to full the host is. Then encode the fix through the normal review cycle. Never leave the only
+headroom fix waiting on a multi-hour review without telling the operator the risk.
 
 **Enforced by.** Convention. Proposed guard: the root-disk alert at 80% on the Semaphore host
 (plan 18, Phase 4), which is also the guard 1.18 proposed.
