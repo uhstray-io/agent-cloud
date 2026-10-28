@@ -88,7 +88,7 @@ without bound, and it adds the disk alert that 1.18 proposed and nobody built.
 | D7 | Clones and collection homes are pruned **only if Phase 0 ranks them first**. | Pruning them now. | A clone or home that a running task is using would break that task if it were deleted. Measure before adding a moving part. |
 | D8 | The Semaphore host gets a node-exporter target and a Grafana alert at 80% root usage. | No alert. | This is the guard 1.18 proposed. A filling disk then pages before a task or Postgres fails. |
 | D9 | The prune template is **Dev-bound**: `Prune Semaphore Task History (Dev)`, with `repository: agent-cloud dev`, declared with cron `37 5 * * *` and `active: false` until a reviewed change flips it after the check run. Its siblings are Check o11y Liveness (Dev), Collect Service Conformance (Dev), Renew Internal Certs (Dev) and Stock GitHub Runner JIT (Dev). | A main-bound template. Any other minute. | A main-bound template would run the `main` branch, which lacks the playbook until promotion. Minute 37 is not a minute that any declared schedule uses (see Architecture). The cost of Dev binding is real, and Security Considerations states it. |
-| D10 | Guards refuse a run before any deletion: a retention below 7 days, a cutoff in the future, a newest task created more than one day ahead of the controller clock, or a kept set below `semaphore_prune_min_kept` (default 1000). | Trusting the variables as given. | A mistyped retention value or a skewed clock would otherwise delete recent history, and a deletion cannot be undone. The skew check compares two timestamps from one clock, so it cannot see a clock that jumped forward. The kept-set floor catches that case. |
+| D10 | Guards refuse a run before any deletion: a retention below 7 days, a cutoff in the future, a newest task created more than one day ahead of the controller clock, or a kept set below `semaphore_prune_min_kept` (default 1000). | Trusting the variables as given. | A mistyped retention value or a skewed clock would otherwise delete recent history, and a deletion cannot be undone. The skew check compares two timestamps from one clock, so it cannot see a clock that jumped forward. The kept-set floor refuses a large forward jump (about 26 days or more at the measured rate); a smaller jump is not caught, and the per-run cap bounds what it can delete. |
 
 ---
 
@@ -399,8 +399,7 @@ a lowered threshold and routes to the Discord contact point. The threshold is th
 | 4 | Target up | The Prometheus target for the Semaphore host reports up. |
 | 4 | Alert fires | A lowered-threshold test fires the alert and routes it to the Discord contact point. |
 | 4 | Threshold reset | The rule is back at 80%. |
-| All | Schedule declared | `Prune Semaphore Task History (Dev)` is in `templates.yml` with `schedule: {cron: "37 5 * * *", active: false}` until the reviewed flip, and
-`repository: agent-cloud dev`. |
+| All | Schedule declared | `Prune Semaphore Task History (Dev)` is in `templates.yml` with `schedule: {cron: "37 5 * * *", active: false}` until the reviewed flip, and `repository: agent-cloud dev`. |
 | All | Changes reviewed | Each change to the prune playbook or its tests passes the repository's review gate before merge. |
 
 ---
@@ -431,7 +430,10 @@ a lowered threshold and routes to the Discord contact point. The threshold is th
 - **Clock.** The prune calls only `127.0.0.1`, and the controller and the Semaphore server share one
   clock. The skew guard therefore compares two timestamps from the same clock. It catches a timezone or
   parse error, and it cannot catch a clock that jumped. A clock that jumped forward 60 days moves the
-  cutoff forward, and the run would select recent tasks. The kept-set floor is the guard for that case.
+  cutoff forward, and the run would select recent tasks. The kept-set floor refuses a large jump: a jump of J days leaves about (30 - J) x 289 tasks kept,
+  which falls below 1000 only past about 26 days. A smaller jump is not caught; the per-run cap bounds what
+  such a run can delete. The default is not raised to cover small jumps, because a floor near the normal
+  kept count would refuse runs whenever the task rate drops (for example while the JIT schedule is idle).
   In normal operation about 289 tasks a day over 30 days leave roughly 8,700 terminal tasks kept
   (289 x 30 = 8,670, from the cron arithmetic in Problem 1). After a large forward jump the kept set is
   near zero, so the run refuses. The floor applies only when something is selected, so a young
