@@ -191,7 +191,7 @@ def _native_details_fixture(*, probe_health="up"):
         "__meta_component_name": "prometheus.exporter.blackbox",
         "__metrics_path__": "/api/v0/component/prometheus.exporter.blackbox.health_01/metrics",
         "__param_module": "health_01", "__param_target": target["endpoint"], "__scheme__": "http",
-        "cluster": "prod-west", "environment": "prod", "instance": "service:api",
+        "cluster": "prod-west", "environment": "prod", "instance": "alloy.internal",
         "job": "integrations/blackbox/service:api", "service": "api/service", "target_id": "service:api",
     }
     health_args = [
@@ -225,7 +225,7 @@ def _native_details_fixture(*, probe_health="up"):
         ],
     )
     self_target = {
-        "__address__": "127.0.0.1:12345", "cluster": "prod-west", "environment": "prod", "job": "alloy",
+        "__address__": "127.0.0.1:12345", "cluster": "prod-west", "environment": "prod",
         "instance": "alloy:12345", "service": "o11y/alloy", "target_id": "service:o11y",
     }
     self_args = [
@@ -245,7 +245,7 @@ def _native_details_fixture(*, probe_health="up"):
     debug_self = [{"name": "target", "type": "block", "body": [
         _alloy_detail_row("job", "string", "alloy"), _alloy_detail_row("health", "string", "up"),
         _alloy_detail_row("last_scrape", "string", "2026-10-28T18:08:22Z"),
-        _alloy_detail_row("labels", "object", self_target),
+        _alloy_detail_row("labels", "object", {**self_target, "job": "alloy"}),
     ]}]
     self_scrape = _component_detail(
         "prometheus.scrape", "prometheus.scrape.alloy_self", self_args, debug=debug_self,
@@ -352,6 +352,32 @@ def test_native_component_readback_accepts_observed_probe_failure_but_keeps_caps
     assert receipt["alloy_self"]["limits"]["sample_limit"] == 10_000
 
 
+def test_native_readback_accepts_generated_health_hostname_and_self_job_name_contract():
+    details, availability, shared = _native_details_fixture()
+    health_target = details["prometheus.scrape.health_01"]["arguments"]["targets"][0]
+    self_detail = details["prometheus.scrape.alloy_self"]
+    self_target = self_detail["arguments"]["targets"][0]
+    assert health_target["instance"] == "alloy.internal"
+    assert "job" not in self_target
+    assert self_detail["arguments"]["job_name"] == "alloy"
+    assert SURVEY.validate_availability_native_details(
+        details, availability, shared, environment="prod", cluster="prod-west",
+    )["status"] == "observed"
+
+    health_target["instance"] = "alloy..internal"
+    with pytest.raises(SURVEY.Refusal, match="native_target_mismatch"):
+        SURVEY.validate_availability_native_details(
+            details, availability, shared, environment="prod", cluster="prod-west",
+        )
+
+    details, availability, shared = _native_details_fixture()
+    details["prometheus.scrape.alloy_self"]["arguments"]["targets"][0]["job"] = "alloy"
+    with pytest.raises(SURVEY.Refusal, match="native_target_mismatch"):
+        SURVEY.validate_availability_native_details(
+            details, availability, shared, environment="prod", cluster="prod-west",
+        )
+
+
 def test_native_component_readback_rejects_unverified_caps_and_wrong_component_ids():
     details, availability, shared = _native_details_fixture()
     health = details["prometheus.scrape.health_01"]
@@ -437,6 +463,21 @@ def test_native_sample_projection_uses_raw_timestamp_and_separates_endpoint_and_
         "probe_success": 0, "probe_http_status_code": 503, "probe_duration_seconds": "0.25",
         "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
     }]
+
+
+def test_native_forwarded_samples_reject_wrong_persisted_target_instance():
+    raw = _native_metric_api_document(
+        values=[("service:api", "o11y-availability", "alloy.internal", "api/service", {"up": 1})],
+        timestamp_value=1999,
+    )
+    expected = {
+        "service:api": {
+            "job": "o11y-availability", "instance": "service:api", "service": "api/service",
+            "cluster": "prod-west", "environment": "prod", "target_id": "service:api",
+        },
+    }
+    with pytest.raises(SURVEY.Refusal, match="native_samples_ambiguous"):
+        SURVEY._native_metric_rows(raw, families={"up"}, expected=expected)
 
 
 def test_native_sample_projection_refuses_stale_raw_timestamps_and_reports_scrape_failure(monkeypatch):

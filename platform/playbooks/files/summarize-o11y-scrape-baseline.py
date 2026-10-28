@@ -3347,7 +3347,6 @@ def _alloy_scrape_arguments(
             "cluster": shared_limits.get("cluster"),
             "environment": shared_limits.get("environment"),
             "instance": "alloy:12345",
-                "job": "alloy",
             "service": "o11y/alloy",
             "target_id": "service:o11y",
         }
@@ -3373,7 +3372,6 @@ def _alloy_scrape_arguments(
             "__scheme__": "http",
             "cluster": target.get("cluster"),
             "environment": target.get("environment"),
-            "instance": target_id,
             "job": f"integrations/blackbox/{target_id}",
             "service": target.get("service_identity"),
             "target_id": target_id,
@@ -3385,9 +3383,26 @@ def _alloy_scrape_arguments(
     if args.get("scrape_timeout", "10s" if timeout_default else None) != expected_timeout:
         raise Refusal("native_limits_mismatch")
     targets = args["targets"]
-    if not isinstance(targets, list) or len(targets) != 1 or targets[0] != expected_target:
+    if not isinstance(targets, list) or len(targets) != 1 or not isinstance(targets[0], dict):
         raise Refusal("native_target_mismatch")
-    return actual_limits, expected_target
+    observed_target = targets[0]
+    expected_target_keys = set(expected_target)
+    if target is not None:
+        expected_target_keys.add("instance")
+    if (
+        set(observed_target) != expected_target_keys
+        or any(observed_target.get(key) != value for key, value in expected_target.items())
+    ):
+        raise Refusal("native_target_mismatch")
+    if target is not None:
+        instance = observed_target.get("instance")
+        hostname_pattern = (
+            r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+            r"(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*"
+        )
+        if not isinstance(instance, str) or not re.fullmatch(hostname_pattern, instance):
+            raise Refusal("native_target_mismatch")
+    return actual_limits, observed_target
 
 
 def validate_availability_native_details(
