@@ -129,7 +129,9 @@ PY
   local f="$DEPLOY_DIR/deploy.sh"
   grep -qF 'compose_staged_up()' "$f"
   grep -qF "grep -vx proxy" "$f"
-  assert_precedes "$f" 'if instance_set_up; then' 'compose up -d --force-recreate --no-deps proxy'
+  assert_precedes "$f" 'if instance_closed; then' 'compose up -d --force-recreate --no-deps proxy'
+  # Closed means set up AND sign-up off: a run that failed between the two must not open it.
+  grep -qF "d['instance']['is_setup_done'] and not d['config']['enable_signup']" "$f"
   grep -qF 'PLANE_PROXY_HELD=true' "$f"
   grep -qF "'base': 'http://localhost:8000'" "$PLAYBOOK"
   assert_precedes "$PLAYBOOK" 'Converge instance setup' 'Start the proxy now that the instance is set up'
