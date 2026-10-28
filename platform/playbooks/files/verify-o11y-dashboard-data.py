@@ -124,7 +124,7 @@ OBSERVATION_CONTRACTS = {
         "datasource_uid": "prometheus",
         "ref": "A",
         "mode": "instant",
-        "expr": 'min by (service) (up{service=~"$service"})',
+        "expr": 'min by (service) (up{service=~"$service",job!="o11y-availability"})',
     },
     ("service-conformance", "Latest inventory marker age"): {
         "name": "inventory_marker_freshness",

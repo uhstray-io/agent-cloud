@@ -45,14 +45,51 @@ _committed_files() {
 
 # ── RFC1918 IP detection ──────────────────────────────────────────────
 
+# Print private-address tokens, exempting only the exact RFC1918 CIDR declaration
+# used by the availability validator. A whole-line exemption could conceal a host
+# address beside a harmless network definition.
+_private_ip_findings() {
+  python3 - "$1" "$2" <<'PY'
+import ipaddress
+import re
+import sys
+from pathlib import Path
+
+family, path = sys.argv[1:]
+cidr_definitions = {
+    "10": "10.0.0.0/8",
+    "172": "172.16.0.0/12",
+    "192.168": "192.168.0.0/16",
+}
+network = ipaddress.ip_network(cidr_definitions[family])
+address_re = re.compile(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b")
+definition_re = re.compile(
+    r"ipaddress\.ip_network\(\s*['\"](?P<network>"
+    + re.escape(network.with_prefixlen)
+    + r")['\"]\s*\)"
+)
+for number, line in enumerate(Path(path).read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+    definition_spans = [match.span("network") for match in definition_re.finditer(line)]
+    for address in address_re.finditer(line):
+        octets = tuple(int(part) for part in address.group().split("."))
+        prefix = tuple(int(part) for part in family.split("."))
+        if octets[: len(prefix)] != prefix:
+            continue
+        if family == "172" and not 16 <= octets[1] <= 31:
+            continue
+        if any(start == address.start() and address.end() == start + len(network.network_address.exploded)
+               for start, _end in definition_spans):
+            continue
+        print(f"{number}:{address.group()}")
+PY
+}
+
 @test "credential leak: no hardcoded 192.168.x.x IPs in committed files" {
   local violations
   violations=$(
     _committed_files | while IFS= read -r f; do
       [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '192\.168\.[0-9]+\.[0-9]+' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|inventory_hostname|test|\.md:' \
-        | sed "s|^|$f:|" || true
+      _private_ip_findings 192.168 "$REPO_ROOT/$f" | sed "s|^|$f:|" || true
     done
   )
   if [ -n "$violations" ]; then
@@ -67,10 +104,7 @@ _committed_files() {
   violations=$(
     _committed_files | while IFS= read -r f; do
       [ -f "$REPO_ROOT/$f" ] || continue
-      # Match 10.N.N.N but not version strings like 10.0 without third octet
-      grep -nE '\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
+      _private_ip_findings 10 "$REPO_ROOT/$f" | sed "s|^|$f:|" || true
     done
   )
   if [ -n "$violations" ]; then
@@ -85,9 +119,7 @@ _committed_files() {
   violations=$(
     _committed_files | while IFS= read -r f; do
       [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
+      _private_ip_findings 172 "$REPO_ROOT/$f" | sed "s|^|$f:|" || true
     done
   )
   if [ -n "$violations" ]; then
@@ -95,6 +127,63 @@ _committed_files() {
     echo "$violations"
     false
   fi
+}
+
+@test "private address scan exempts only exact RFC1918 definition tokens" {
+  local fixture="$BATS_TEST_TMPDIR/rfc1918-definitions.txt"
+  python3 - "$fixture" <<'PY'
+import ipaddress
+import sys
+from pathlib import Path
+
+cidrs = {
+    "10": "10.0.0.0/8",
+    "172": "172.16.0.0/12",
+    "192.168": "192.168.0.0/16",
+}
+networks = {family: ipaddress.ip_network(cidr) for family, cidr in cidrs.items()}
+lines = [
+    f'ipaddress.ip_network("{networks["10"].with_prefixlen}")  # host {networks["10"][23]}',
+    f'ipaddress.ip_network("{networks["172"].with_prefixlen}")  # host {networks["172"][23]}',
+    f'ipaddress.ip_network("{networks["192.168"].with_prefixlen}")  # host {networks["192.168"][23]}',
+    f'host = "{networks["10"][99]}"',
+    f'host = "{networks["172"][31]}"',
+    f'host = "{networks["192.168"][2]}"',
+    f'ipaddress.ip_network("{networks["10"][1]}/{networks["10"].prefixlen}")',
+    f'ipaddress.ip_network("{networks["172"][17]}/{networks["172"].prefixlen}")',
+    f'ipaddress.ip_network("{networks["192.168"][1]}/{networks["192.168"].prefixlen}")',
+    f'url = "https://{networks["10"].network_address}/{networks["10"].prefixlen}"',
+    f'url = "https://{networks["172"].network_address}/{networks["172"].prefixlen}"',
+    f'url = "https://{networks["192.168"].network_address}/{networks["192.168"].prefixlen}"',
+    f'ipaddress.ip_network("{networks["10"].with_prefixlen}")',
+    f'ipaddress.ip_network("{networks["172"].with_prefixlen}")',
+    f'ipaddress.ip_network("{networks["192.168"].with_prefixlen}")',
+    "host = \"10." + ".".join(f"{int(part):03d}" for part in str(networks["10"][23]).split(".")[1:]) + "\"",
+]
+Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
+  run _private_ip_findings 10 "$fixture"
+  assert_contains "$output" "1:"
+  assert_contains "$output" "4:"
+  assert_contains "$output" "7:"
+  assert_contains "$output" "10:"
+  assert_contains "$output" "16:"
+  refute_contains "$output" "13:"
+
+  run _private_ip_findings 172 "$fixture"
+  assert_contains "$output" "2:"
+  assert_contains "$output" "5:"
+  assert_contains "$output" "8:"
+  assert_contains "$output" "11:"
+  refute_contains "$output" "14:"
+
+  run _private_ip_findings 192.168 "$fixture"
+  assert_contains "$output" "3:"
+  assert_contains "$output" "6:"
+  assert_contains "$output" "9:"
+  assert_contains "$output" "12:"
+  refute_contains "$output" "15:"
 }
 
 # ── Hardcoded credential detection ───────────────────────────────────

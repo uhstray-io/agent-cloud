@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote
 
+import playbook_yaml
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -449,7 +450,10 @@ def _evaluate(tmp_path, host_vars):
     """Evaluate the deploy's own secrets/env/overlay expressions for one host."""
     p1 = _phase("Phase 1")
     p2 = _phase("Phase 2")
-    run = next(t for t in p2["tasks"] if t.get("name") == "Run deploy.sh (container lifecycle)")
+    run = next(
+        t for t in playbook_yaml.tasks(p2["tasks"])
+        if t.get("name") == "Run deploy.sh (container lifecycle)"
+    )
     names = ["_probe_enabled", "_probe_textfile_dir", "_shared_reads", "_env_templates"]
     pv = {k: p1["vars"][k] for k in names}
     pv["_overlays"] = run["environment"]["COMPOSE_OVERLAYS"]

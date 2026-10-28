@@ -54,11 +54,11 @@ PY
   # Keep the original missing-SHA refusal, then prove a valid-shaped but mismatched SHA.
   run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Semaphore checked out a different revision; no webhook was provisioned."* ]]
+  assert_contains "$output" "Semaphore checked out a different revision; no webhook was provisioned."
   run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" \
     -e expected_repository_sha=0000000000000000000000000000000000000000
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Semaphore checked out a different revision; no webhook was provisioned."* ]]
+  assert_contains "$output" "Semaphore checked out a different revision; no webhook was provisioned."
   assert_precedes "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" \
     'Require the exact candidate revision' 'Authenticate to OpenBao'
 }
