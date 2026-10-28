@@ -12,6 +12,7 @@ load assert_helpers
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/o11y/deployment"
+  mkdir -p "$BATS_TEST_TMPDIR/ansible"
 }
 
 @test "o11y: webhook provisioning requires an exact reviewed revision before OpenBao access" {
@@ -691,6 +692,110 @@ PY
   grep -q 'loki.write' "$DEPLOY_DIR/templates/config.alloy.j2"
   grep -qE 'url: http://prometheus:9090' "$DEPLOY_DIR/config/grafana/provisioning/datasources/datasources.yml"
   grep -qE 'url: http://loki:3100' "$DEPLOY_DIR/config/grafana/provisioning/datasources/datasources.yml"
+}
+
+@test "o11y: OTLP mTLS is opt-in on the existing receiver and journal endpoint" {
+  python3 - "$DEPLOY_DIR/templates/config.alloy.j2" "$DEPLOY_DIR/templates/journal.alloy.j2" "$DEPLOY_DIR/compose.otlp-tls.yml" "$DEPLOY_DIR/compose.journal.otlp-tls.yml" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$REPO_ROOT/platform/playbooks/clean-deploy-o11y.yml" "$REPO_ROOT/.gitignore" <<'PY'
+import json
+import re
+import sys
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+receiver, journal, receiver_overlay, journal_overlay, deploy, clean, gitignore = [open(path, encoding='utf-8').read() for path in sys.argv[1:]]
+env = Environment(undefined=StrictUndefined)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+receiver_block = re.search(r'otelcol\.receiver\.otlp "traces" \{.*?\n\}', receiver, re.S).group()
+off = env.from_string(receiver_block).render(o11y_otlp_tls_enabled=False)
+on = env.from_string(receiver_block).render(o11y_otlp_tls_enabled=True)
+assert 'tls {' not in off
+assert 'endpoint = "0.0.0.0:4317"' in off and 'endpoint = "0.0.0.0:4317"' in on
+assert 'cert_file = "/certs/otlp-server/current/cert.pem"' in on
+assert 'client_ca_file = "/certs/step-ca-bundle.crt"' in on
+assert 'reload_interval = "1m"' in on
+
+journal_block = re.search(r'otelcol\.exporter\.otlp "journal" \{.*?\n\}', journal, re.S).group()
+off = env.from_string(journal_block).render(o11y_otlp_tls_enabled=False, o11y_otlp_bind='otlp.internal.test')
+on = env.from_string(journal_block).render(o11y_otlp_tls_enabled=True, o11y_otlp_bind='otlp.internal.test', o11y_otlp_tls_server_name='o11y.internal.test')
+assert 'insecure = true' in off and 'insecure = true' not in on
+assert 'server_name = "o11y.internal.test"' in on
+assert 'cert_file = "/certs/journal-client/current/cert.pem"' in on
+assert 'reload_interval = "1m"' in on
+
+for overlay, service, expected in ((receiver_overlay, 'alloy', ('./certs/o11y-otlp-server', '/certs/otlp-server')),
+                                   (journal_overlay, 'journal-collector', ('./certs/o11y-journal', '/certs/journal-client'))):
+    mount, = yaml.safe_load(overlay)['services'][service]['volumes'][:1]
+    assert (mount['source'], mount['target']) == expected
+    assert mount['read_only'] is True and mount['bind']['create_host_path'] is False
+    assert all(item['read_only'] is True for item in yaml.safe_load(overlay)['services'][service]['volumes'])
+deploy_plays = yaml.safe_load(deploy)
+deploy_tasks = next(
+    play['tasks'] for play in deploy_plays
+    if any(task.get('name') == 'Place the monorepo + ensure podman/compose'
+           for task in play.get('tasks', []))
+)
+tls_validation = next(
+    task for task in deploy_tasks
+    if task.get('name') == 'Validate the fixed receiver and journal TLS contract before placement or rendering'
+)
+placement = next(task for task in deploy_tasks
+                 if task.get('name') == 'Place the monorepo + ensure podman/compose')
+mount_assertion = next(
+    task for task in next(play['tasks'] for play in deploy_plays if play.get('name') == 'Phase 3: Verify o11y')
+    if task.get('name') == 'Require exact read-only runtime receiver TLS mounts'
+)
+assert 'o11y_otlp_tls_enabled | default(false)' in str(tls_validation['when'])
+assert deploy_tasks.index(tls_validation) < deploy_tasks.index(placement)
+mount_that = '\n'.join(map(str, mount_assertion['ansible.builtin.assert']['that']))
+assert mount_assertion['when'] == 'not ansible_check_mode'
+assert "'Source', 'equalto', _deploy_dir ~ '/certs/o11y-otlp-server'" in mount_that
+assert "'Destination', 'equalto', '/certs/otlp-server'" in mount_that
+assert "'Source', 'equalto', _deploy_dir ~ '/certs/step-ca-bundle.crt'" in mount_that
+assert "'Destination', 'equalto', '/certs/step-ca-bundle.crt'" in mount_that
+assert "'RW', 'equalto', false" in mount_that
+play = next(p for p in yaml.safe_load(deploy) if p.get('name') == 'Phase 2: Start o11y')
+overlays = next(t for t in play['tasks'] if t.get('name') == 'Run deploy.sh (container lifecycle)')['environment']['COMPOSE_OVERLAYS']
+assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == ''
+assert env.from_string(overlays).render(local_mode=False, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == 'capacity/compose.textfile.yml'
+assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=True, o11y_inference_probe_enabled=False) == 'compose.otlp-tls.yml'
+clean_plays = yaml.safe_load(clean)
+clean_tasks = next(play['tasks'] for play in clean_plays if play.get('name') == 'Clean o11y deployment')
+clean_tls_guard = next(task for task in clean_tasks
+                       if task.get('name') == 'Refuse TLS-enabled clean deploy before any teardown')
+clean_destroy = next(task for task in clean_tasks if task.get('name') == 'Destroy existing deployment')
+assert 'o11y_otlp_tls_enabled' in str(clean_tls_guard['ansible.builtin.assert']['that'])
+assert clean_tasks.index(clean_tls_guard) < clean_tasks.index(clean_destroy)
+assert 'platform/services/o11y/deployment/certs/' in gitignore.splitlines()
+PY
+}
+
+@test "o11y: enabled TLS deploy and Clean Deploy refuse before placement or teardown" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe-local:
+          ansible_connection: local
+YAML
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    -e local_mode=true -e o11y_otlp_tls_enabled=true
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "o11y OTLP TLS requires exactly one step_ca_svc host"
+  refute_contains "$output" "Place the monorepo + ensure podman/compose"
+
+  local head
+  head=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
+    "$REPO_ROOT/platform/playbooks/clean-deploy-o11y.yml" \
+    -e local_mode=true -e o11y_otlp_tls_enabled=true \
+    -e confirm_reset=o11y-probe-local -e "expected_repository_sha=$head"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Clean Deploy o11y would remove the issued OTLP certificate tree"
+  refute_contains "$output" "TASK [Destroy existing deployment]"
 }
 
 @test "o11y: DGX scrape jobs render from inventory with GPU optional" {

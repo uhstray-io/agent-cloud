@@ -2380,3 +2380,86 @@ prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
 effective role capabilities, writer drain, or isolated restore/cleanup. The
 capacity source ambiguity is cleared for the observed refresh only; its history
 remains too short for the separate seven-day forecast.
+
+### 2026-10-27 conformance dashboard rendering
+
+The live conformance dashboard (schema v8 on Grafana 11.4) rendered the
+service/step/state table and the separate completion-age table correctly,
+including `Unknown` ages. On refresh, after valid collector markers aged beyond
+45 minutes, previously tracked failures and services changed to `No recent data`,
+the marker status read `No valid marker in 45m`, and completion age read
+`Unknown completion time`. This verifies rendering and stale-state behavior
+only. It does not close OpenSpec 7.4, the collector pipeline, or the drill, and
+does not identify a cause for the stale markers.
+
+The live “Selected source records observed (5m)” stat initially rendered
+Grafana's default `Value#A`–`Value#F` names even though its query legends were
+human-readable. The source dashboard now overrides each frame by its stable query
+ref ID to the existing source label. This is source-only; the live dashboard has
+not yet received this change.
+
+### 2026-10-28 bounded browser trace/log pivot
+
+A read-only browser pass followed one existing agentgateway access record to its
+Tempo trace, which rendered two spans. The selected server span's Logs link
+returned three matching Loki records using exact service and trace matching in a
+bounded window around the span. This establishes one existing-data browser
+access-log → trace → logs pivot. It does not establish pivots for other services,
+profile pivots, unsampled requests, privacy of callback payloads, mTLS, or
+sustained ingestion. No trace IDs, identity values, private addresses, or raw
+log/trace payloads were retained. Controller and receiver source revisions were
+not read back during this observation, so it does not establish which source
+revision was live.
+
+### 2026-10-28 OTLP mTLS prover diagnostics
+
+The Linux Python-core CI run for source head `931a72c` stopped after 5,455
+passed, 6 skipped, and 321 subtests passed, with one failure in the
+valid-client HTTP/2 test's later missing-client refusal check. The valid journal
+client proof succeeded; the script then returned
+`UNVERIFIED_NO_CLIENT_AUTH`. A bounded native-Linux ARM reproduction using
+Python 3.12.15/OpenSSL 3.0.22 matched that failure on diagnostic-only source:
+the write-first missing-client probe failed at `SETTINGS_WRITE` with
+`ssl.SSLError` and no reason. It also reproduced a separate foreign-client
+failure under load on source `c8368e5`, after valid-client and missing-client
+proofs had succeeded. A temporary read-first variant completed 100/100 full
+proof cycles and observed `TLSV13_ALERT_CERTIFICATE_REQUIRED` for the missing
+client and `TLSV1_ALERT_UNKNOWN_CA` for the foreign client. Four no-auth fixture
+controls remained unverified. This supports the negative-probe write/alert
+ordering as the cause in the ARM reproduction, but does not establish x86_64 CI
+parity.
+
+The source now uses a negative-only probe mode for the missing-client and
+foreign-CA legs. When that handshake completes with TLS 1.3 and ALPN h2, the
+probe reads for a certificate-auth alert before sending any application bytes.
+Only an explicit alert in the existing certificate-auth allowlist during this
+post-authentication read proves refusal. A plaintext alert before ServerHello,
+or any alert before the server identity and ALPN are verified, remains
+unverified. Application data, EOF, timeout, transport errors, and other TLS
+errors also remain unverified. The valid journal-client leg retains the
+SETTINGS/ACK/serial proof. Fixed diagnostics report the negative probe's
+phase/state without changing stdout or exit status.
+A focused fixture regression records that no HTTP/2 bytes are sent on negative
+probes, verifies early application data and EOF still fail closed, and rejects a
+plaintext certificate-required alert from a peer with no server identity. No CI
+rerun or x86_64 reproduction has yet confirmed the diagnosis.
+
+Follow-up review added the OpenSSL `SSLV3_ALERT_BAD_CERTIFICATE` and
+`SSLV3_ALERT_CERTIFICATE_UNKNOWN` reason labels to the explicit certificate
+rejection allowlist. A focused test injects those reason values at the prover's
+SSL exception boundary and confirms an unrelated SSL alert still fails closed;
+neighboring tests continue to exercise real missing-client and foreign-CA TLS
+handshakes. Renewal stats now describe the OTLP proof and matched server serial
+for its two fixed leaf classes, while the gateway-probe proof text is emitted
+only for `probe-client`. The Linux ARM comparison supports the sequencing
+diagnosis, but the CI x86_64 failure has not been rerun to confirm it.
+
+The exact cached Alloy v1.5.1 receiver image accepted full plaintext and TLS
+renders of the receiver config, and the receiver component reported healthy in
+two consecutive samples for each mode in a bounded network-none fixture. The
+TLS files were synthetic and supplied through tmpfs; this did not exercise a TLS
+handshake, client refusal, deployed read-only bind mounts, telemetry delivery,
+or production activation. Alloy v1.9.2 for the journal remains uncached and
+unverified. The evidence is recorded in
+`/private/tmp/o11y-alloy-pinned-validation-20261028/result.md`; it does not mark
+an OpenSpec live-acceptance criterion complete.
