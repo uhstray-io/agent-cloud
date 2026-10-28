@@ -102,6 +102,7 @@ and why.
 | 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 3.16 | A local Semaphore container recreate minted a new encryption key while its database lived on; every encrypted environment input became undecryptable and the next seed failed | Live state | 1 | Bootstrap (config on the data volume + carry-forward before any recreate) + test (`test_local_semaphore_config_persistence.py`, mutation-checked) |
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
+| 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled, Postgres crashed, and production orchestration was down ~13h | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2518,6 +2519,34 @@ as the task is submitted, while the task is still running) and chain the real la
 leaves the loop's own status 0 after a failure.
 
 **Enforced by.** Convention.
+
+### 3.18 Knew the Semaphore root was at its limit and routed the only headroom fix through a review cycle; it filled and Postgres crashed
+
+**What happened.** On 2026-10-27 at 04:25 UTC a production task clone failed on the Semaphore host
+with `fatal: write error: No space left on device` (task 9541). I paused the console rollout and
+reported it, citing 1.18, where the same VM's full root had already crashed Postgres. When the
+operator asked for the disk to be grown, I declared 64G in site-config, grew the Proxmox disk with
+Resize VM at 01:51 UTC on 2026-10-28 (task 9802), and then took the guest half, a new Grow Semaphore
+Root template, through a pull request with two review rounds and two CI runs (#752, merged at
+03:01 UTC). At 02:16:35 UTC, while that cycle ran, the root reached 100% (17 MB free) and Postgres
+crashed in recovery. Semaphore exited with it. Production orchestration was down until 15:18 UTC,
+when the operator authorized SSH recovery: the repository's own `grow-root-lvm.py` grew the root
+online to 61G with 35G free, and the existing containers were started with `podman start`.
+
+**Root cause.** I treated the guest grow as ordinary platform work, where the reviewed template
+is the right path, and did not weigh how long the host could last against how long the cycle
+takes. The virtual disk was already 64G from 01:51. The same helper, run operator-side as in the
+1.18 recovery, would have restored headroom in minutes. I never offered that path or stated the
+time risk.
+
+**The rule.** When an orchestrator-class host (Semaphore, OpenBao, its database) is near full and
+filling it takes the orchestrator down, restore headroom first, by the fastest path the operator
+authorizes: ask for an operator-side grow or cleanup, and say how close to full the host is. Then
+encode the fix through the normal review cycle. Never leave the only headroom fix waiting on a
+multi-hour review without telling the operator the risk.
+
+**Enforced by.** Convention. Proposed guard: the root-disk alert at 80% on the Semaphore host
+(plan 18, Phase 4), which is also the guard 1.18 proposed.
 
 ## 4. Data handling
 
