@@ -55,15 +55,17 @@ Caddy is classified as **Infrastructure tier** per the SERVICE-INTEGRATION-PLAN.
 
 ```mermaid
 flowchart LR
-    Internet["Internet\n(Browser / API Client)"]
-    CF["CloudFlare DNS\n(DNS-01 TLS Challenge)"]
-    Caddy["Caddy VM\n(TLS Termination)"]
-    SvcA["Service A VM\n(HTTP)"]
-    SvcB["Service B VM\n(HTTP)"]
-    SvcC["Service C VM\n(HTTP)"]
+    Internet["Internet<br/>(Browser / API Client)"]
+    CFP["Cloudflare proxy<br/>(WAF, rate limit)"]
+    CF["CloudFlare DNS<br/>(DNS-01 TLS Challenge)"]
+    Caddy["Caddy VM<br/>(TLS Termination)"]
+    SvcA["Service A VM<br/>(HTTP)"]
+    SvcB["Service B VM<br/>(HTTP)"]
+    SvcC["Service C VM<br/>(HTTP)"]
 
-    Internet -->|"HTTPS :443"| Caddy
-    CF -.->|"DNS-01 challenge\n(certificate issuance)"| Caddy
+    Internet -->|"HTTPS :443"| CFP
+    CFP -->|"to origin"| Caddy
+    CF -.->|"DNS-01 challenge<br/>(certificate issuance)"| Caddy
     Caddy -->|"HTTP :port"| SvcA
     Caddy -->|"HTTP :port"| SvcB
     Caddy -->|"HTTP :port"| SvcC

@@ -15,7 +15,7 @@ identity itself; Caddy in front of it keeps TLS, the path allowlist and a header
 Bearer check only.
 
 Decision record: `plan/architecture/05-platform-infra.md`, "Inference gateway:
-agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec change:
+agentgateway alongside skynet" (Accepted 2026-10-12). OpenSpec change:
 `plan/development/openspec/changes/inference-gateway-agentgateway`.
 
 ## Shape

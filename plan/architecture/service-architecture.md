@@ -219,7 +219,9 @@ below the admin tier (Org, Department, Team, Role and Access Level) is a TARGET,
 
 ### 4. Secrets: who owns what, and who reads whose
 
-Every service owns one OpenBao path, `secret/services/<service>`, and writes nothing elsewhere. When
+Every service with OpenBao-managed credentials owns one path, `secret/services/<service>`, and
+writes nothing elsewhere; external systems such as vLLM own no path (the gateway holds the vLLM
+key under its own), and services with no secrets, such as OPA and OpenHands, have none. When
 a service needs another's secret, it reads it read-only through `_shared_reads` in its deploy, and
 never stores a copy under its own path [3]. The diagram draws every shared read declared in the
 deploy playbooks, plus the Postiz API key that `provision-n8n-postiz-credential.yml` reads into an
@@ -261,9 +263,10 @@ grant wildcard access over `secret/data/services/*`, against the "enumerated pat
 
 ### 5. Deploy lifecycle
 
-Every service is deployed the same way, by a Semaphore template that runs its `deploy-<name>.yml`.
-The sequence shows one deploy, using tududi as the example; the phases are the same for every
-composable service [38].
+Composable services are deployed the same way, by a Semaphore template that runs their
+`deploy-<name>.yml`. Legacy wrappers (OpenBao, Semaphore, NocoDB, NemoClaw), host services (the CI
+runners) and external systems follow the paths their own records describe, and planned services
+have none yet. The sequence shows one composable deploy, using tududi as the example [38].
 
 ```mermaid
 sequenceDiagram
@@ -520,7 +523,8 @@ TARGET [6]; the Kubernetes tier, Harbor and Kyverno are PLANNED in plan 03 [8].
 
 ## Target Outcome
 
-When the phases land, every service in the catalog is either LIVE or removed, and the AI layer is
+When the phases land, every repository-managed service in the catalog is either LIVE or removed
+(EXTERNAL systems such as vLLM stay EXTERNAL), and the AI layer is
 connected end to end through the guardrails. The diagram shows that end state; dashed lines are the
 connections not yet built.
 
@@ -543,9 +547,9 @@ These checks let a reader confirm the catalog without trusting the prose.
 
 | Check | Pass condition |
 |---|---|
-| Status of a LIVE service | Its `Verify Service Health` and `Verify Service Persistence` templates pass |
+| Status of a LIVE service | Its `Verify Service Persistence` template passes, and so does `Verify Service Health` for every service that declares a health path (Caddy declares none: its check is that a known route is served) |
 | Conformance | `Collect Service Conformance` reports a result for every tracked service, none `history_incomplete` |
-| Identity | Every app in the Authentik catalog that is enabled in production passes Deploy Authentik's post-apply redirect check |
+| Identity | Every native-OIDC app enabled in production passes Deploy Authentik's post-apply redirect check (`verify_redirect`); every forward_auth app enabled in production redirects an unauthenticated request to the Authentik login |
 | Secrets | `Check Secrets` lists every path in this document's secrets diagram; no service path holds a copy of another's secret |
 | Drift | Any status here older than its newest cited record is updated, with the date |
 

@@ -636,9 +636,10 @@ started [34]. The Kubernetes tier and its address pools are PLANNED in plan 03 [
 
 ## Target Outcome
 
-When the phases above land, the network looks like this: every hop that carries a credential is
+When the phases above land, the network looks like this: every hop on the inference path is
 encrypted with the internal CA, every host resolves internal names from the platform's own DNS, and
-the shared inference key no longer exists. The diagram shows that end state; dashed lines are the
+the shared inference key no longer exists. Semaphore's AppRole traffic to OpenBao stays plain HTTP
+on internal addresses (risk R1 in plan 03 [7]); no phase here changes it. The diagram shows that end state; dashed lines are the
 pieces not yet built.
 
 ```mermaid
@@ -662,7 +663,7 @@ without trusting the prose.
 
 | Check | Pass condition |
 |---|---|
-| Edge records | Every hostname named here appears in `platform/infra/cloudflare/dns.tf`, and `Apply Cloudflare Tofu` plans zero changes |
+| Edge records | Every public `<label>.<zone>` hostname named here appears in `platform/infra/cloudflare/dns.tf`, and `Apply Cloudflare Tofu` plans zero changes. Internal `<site>.<zone>` names are checked by Phase C instead, against the rendered zone and NetBox `dns_name` |
 | Edge machine paths | `/v1/models` on `inference.<zone>` without a key answers 401 with no `cf-mitigated` header |
 | Gateway mutual TLS | `Probe agentgateway Gate (Dev)` passes: both keyless and wrong-key `/v1/models` answer 401 through the verifier leaf |
 | Rollback mode | `Rollback Inference Route` read-back reports `/v1/*` on exactly the declared mode's upstream and `/health` on vLLM |
@@ -722,7 +723,7 @@ document; for the long, frequently edited documents the section name is given as
 4. `platform/services/agentgateway/deployment/templates/config.yaml.j2:38-51` (listener TLS) and `:236-262` (listeners)
 5. `platform/infra/cloudflare/versions.tf:1-40`; `platform/infra/cloudflare/README.md:1-40`
 6. `AGENTS.md`, "Policy and Configuration Changes — Code Only" and the Independent Workflows table (`Manage Caddy Sites`, `Apply Firewall`)
-7. `plan/development/03-guardrails-governance.md:1217-1234` (Per-concern authority table)
+7. `plan/development/03-guardrails-governance.md:1217-1234` (Per-concern authority table) and `:1466-1476` (Risks; R1 is OpenBao plaintext transport)
 8. `platform/services/caddy/context/README.md:52-59`
 9. `platform/services/step-ca/context/architecture.md:35-89` (Production, deployed 2026-09-29)
 10. `platform/services/dns/context/architecture.md:9-20`
