@@ -1,0 +1,31 @@
+{#- console flows — rendered by deploy-console.yml to config/flows.json (plan 17, D24). Names only: an edge
+    names an authentik app slug, a caddy site hostname, or an o11y job/service. The inputs carry addresses
+    (caddy upstreams, o11y instances, ports); this template reads none of those fields.
+    Caddy site lines: a site line is any line ending in an opening brace; each comma-separated address on it
+    is reduced to its hostname (scheme and port removed). A wildcard (*.host) is emitted as written. An address
+    that embeds a dotted-quad IPv4 is refused, and so is any address that is not a hostname: a directive such as
+    "reverse_proxy host:8000 {" has a space in it and is never a site. Do NOT edit by hand. -#}
+{%- set edges = [] -%}
+{%- for app in _console_authentik_apps -%}
+{%- set _ = edges.append({'kind': _console_authentik_catalog.get(app, {}).get('type', 'unknown'), 'from': app, 'to': 'authentik'}) -%}
+{%- endfor -%}
+{%- set hosts = [] -%}
+{%- for site_line in _console_caddy_sites | regex_findall('^[ \t]*([^ \t\n{#][^\n{]*?)[ \t]*[{]', multiline=True) -%}
+{%- for raw in site_line.split(',') -%}
+{%- set addr = raw | trim -%}
+{%- set host = addr | regex_replace('^[a-zA-Z]+://', '') | regex_replace(':[0-9]+$', '') -%}
+{%- if (host | regex_search('^([*][.])?([a-zA-Z0-9-]+[.])+[a-zA-Z]{2,}$')) and not (addr | regex_search('[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+')) -%}
+{%- set _ = hosts.append(host) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endfor -%}
+{%- for host in hosts | unique -%}
+{%- set _ = edges.append({'kind': 'edge', 'from': 'caddy', 'to': host}) -%}
+{%- endfor -%}
+{%- for target in _console_o11y_targets -%}
+{%- set _name = target.get('service') or target.get('job') or '' -%}
+{%- if _name | string | length > 0 -%}
+{%- set _ = edges.append({'kind': 'metrics', 'from': _name | string, 'to': 'o11y'}) -%}
+{%- endif -%}
+{%- endfor -%}
+{{ {'edges': edges} | to_nice_json }}

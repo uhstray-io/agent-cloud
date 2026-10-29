@@ -488,7 +488,7 @@ templates:
       # list of the playbook's profiles.
       - name: netbox_token_profile
         title: Token profile
-        description: "device-writer (skynet device create), workflow-collector (the conformance collector), or vm-recorder (validate-address)."
+        description: "device-writer (skynet device create), workflow-collector (the conformance collector), vm-recorder (validate-address), or console (Dispatch Console read-only inventory)."
         type: enum
         required: false
         default_value: device-writer
@@ -496,6 +496,7 @@ templates:
           - { name: "device-writer", value: "device-writer" }
           - { name: "workflow-collector", value: "workflow-collector" }
           - { name: "vm-recorder", value: "vm-recorder" }
+          - { name: "console", value: "console" }
 
   - name: Ensure NetBox Prefix
     playbook: platform/playbooks/ensure-netbox-prefix.yml
@@ -842,6 +843,27 @@ templates:
   - name: Provision Console Semaphore Access
     playbook: platform/playbooks/provision-console-semaphore-access.yml
     dev_variant: true
+
+  # The Dispatch Console's read-only Proxmox identity (plan 17, D22): console@pve with PVEAuditor on /,
+  # and a privilege-separated token with the same grant, stored at secret/services/proxmox. Run it
+  # before Deploy console when the console_svc host declares console_proxmox_url. Refuses to replace a
+  # live token: the survey flag is only for a stored token that Proxmox no longer has.
+  - name: Provision Console Proxmox Token
+    playbook: platform/playbooks/provision-console-proxmox-token.yml
+    dev_variant: true
+    survey_vars:
+      - name: console_proxmox_token_recreate
+        title: "Recreate stored token"
+        description: "Default false. Only when secret/services/proxmox holds a console_token that Proxmox no longer has: mint a replacement and overwrite it."
+        type: string
+        required: false
+        default_value: "false"
+      - name: console_proxmox_token_replace
+        title: "Replace unrecoverable token"
+        description: "Default false. Only when Proxmox has the console token but secret/services/proxmox lost its value: revoke exactly that one token and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml

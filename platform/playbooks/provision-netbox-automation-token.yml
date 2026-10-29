@@ -62,6 +62,18 @@
         view_object_types: [virtualization.cluster]
         field: vm_recorder_api_token
         description: service deployment workflow VM record (validate-address)
+      # Dispatch Console (plan 17, D22-D24): view only, on the six types the v1 console reads. D24 v1 reads
+      # prefixes only: no IP addresses and no interfaces. No add, change or delete anywhere. token_write_enabled
+      # is false on the token itself as well: NetBox's Token model declares write_enabled = BooleanField(default=True)
+      # (netbox/users/models/tokens.py at tag v4.5.0), so the token refuses writes even if a permission is widened.
+      console:
+        user: console
+        permission: console-readonly
+        actions: [view]
+        object_types: [dcim.site, dcim.device, virtualization.cluster, virtualization.virtualmachine, ipam.prefix, extras.tag]
+        token_write_enabled: false
+        field: console_api_token
+        description: Dispatch Console read-only inventory (Phase 3)
     # The survey is a closed list; an API launch or -e can still pass anything, so blank (or
     # whitespace) means the original profile and the assert below refuses the rest.
     _profile_name: "{{ (netbox_token_profile | default('') | trim) or 'device-writer' }}"
@@ -110,6 +122,37 @@
       check_mode: false
 
     # The `|` below is a Django QuerySet union inside Python, not a shell pipe.
+    # The console token must be view-only, so its user must hold no superuser or group rights: a permission
+    # granted through a group the user joins would widen it. Read before anything is written, console profile only.
+    # NetBox's User model (netbox/users/models/users.py, v4.5.0) is AbstractBaseUser + PermissionsMixin and declares
+    # no is_staff, so the staff flag is read with getattr.
+    - name: "Read the console user's superuser and group rights (console profile only)"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+
+        user = get_user_model().objects.filter(username="{{ _user }}").first()
+        if user is None:
+            print("absent")
+        elif user.is_superuser or getattr(user, "is_staff", False) or user.groups.exists():
+            print("elevated")
+        else:
+            print("plain")
+        PYSCRIPT
+      register: _console_user_rights
+      changed_when: false
+      check_mode: false
+      when: _profile_name == 'console'
+
+    - name: "Refuse a console user that holds superuser or group rights"
+      ansible.builtin.assert:
+        that: (_console_user_rights.stdout_lines | default([]) | last | default('') | trim) != 'elevated'
+        fail_msg: >-
+          NetBox user '{{ _user }}' holds superuser or group rights. The console token is view-only, so those rights
+          must go before this runs: remove the user's superuser flag and group memberships in NetBox, then rerun.
+        quiet: true
+      when: _profile_name == 'console'
+
     - name: "Ensure NetBox automation user and scoped permissions"  # noqa: risky-shell-pipe
       ansible.builtin.shell: |
         {{ _manage }} << 'PYSCRIPT'
@@ -221,6 +264,7 @@
         issued = Token.objects.create(
             user=user, version=2,
             description="{{ _profile.description }}",
+            {{ 'write_enabled=False,' if not (_profile.token_write_enabled | default(true)) else '' }}
         )
         print(issued.get_auth_header_prefix().removeprefix("Bearer ") + issued.token)
         PYSCRIPT

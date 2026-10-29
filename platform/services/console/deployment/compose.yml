@@ -30,6 +30,10 @@ services:
       - ./config/scope.json:/etc/console/scope.json:ro
       # The service-onboarding steps the console labels a run with (CONSOLE_WORKFLOW_FILE); read-only.
       - ./config/workflow.json:/etc/console/workflow.json:ro
+      # The data-flow edges (CONSOLE_FLOWS_FILE, D24): names only, rendered from the inventory; read-only.
+      - ./config/flows.json:/etc/console/flows.json:ro
+      # The Proxmox CA (CONSOLE_PROXMOX_CA_FILE): an empty file when the inventory sets no CA; read-only.
+      - ./config/proxmox-ca.pem:/etc/console/proxmox-ca.pem:ro
     # No healthcheck, on purpose. podman-compose 1.0.6 (tag v1.0.6, podman_compose.py) turns a
     # `test: ["CMD", ...]` list into `--healthcheck-command "/bin/sh -c ..."`, and this image is
     # distroless: it has no /bin/sh, so the check could never pass (Semaphore task 9892 on prod: the container
