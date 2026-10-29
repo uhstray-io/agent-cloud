@@ -49,7 +49,11 @@ Every inventory, services, network and flows answer starts with these fields:
   `links.grafana_conformance` is the conformance dashboard under that origin, or `null`. The
   flows answer carries `links` too. The fields are base-level, so they name no tenant.
 - `stale` is `true` when any configured authority's latest read failed. The data served is then
-  the last good read.
+  the last good read. On `/v1/network` the NetBox fields (`source`, `error`, `updated_at`) and
+  `stale` describe the prefix read alone, so a site outage does not mark that answer.
+- `diagnostics.dropped_mismatched` counts the NetBox rows dropped because their own scope did not
+  match the query that returned them (see "Row checks"). It is a count, not an error: the answer
+  is still served, and a non-zero count means NetBox returned rows the console did not ask for.
 
 The envelope is per authority, not single, so the UI can say which source is down.
 
@@ -102,11 +106,20 @@ The envelope is per authority, not single, so the UI can say which source is dow
 - `devices` are the devices NetBox holds at the site. `role` is the device role's name. `name`,
   `role` and `status` are `null` when NetBox holds none. Devices are site-scoped, so they are
   safe in a tenant answer.
+- Row checks: each row NetBox returns must name the site, cluster or slug the console asked for.
+  A site row must carry the requested slug. A cluster row must name the site by `site.id` or by a
+  `dcim.site` scope id. A VM must name its cluster by `cluster.id`. A device must name its site by
+  `site.id`. A row that fails the check is dropped and counted in `diagnostics`. Tenant isolation
+  holds even when NetBox ignores a filter.
 - `nodes` are the Proxmox nodes that host this cluster's matched VMs, sorted by name. A node with
-  no matched VM of the cluster is not listed. Node units are Proxmox's: `cpu` is a fraction of
-  `maxcpu`, `mem`/`maxmem` are bytes, `uptime` is seconds.
-- VM `status` is the NetBox status. `live_status` is the Proxmox status, or `null` when no unique
-  guest of that name exists (Proxmox unconfigured, or two guests share the name).
+  no matched VM of the cluster is not listed. Every caller gets `name` and `status`. Platform
+  admins also get `cpu`, `maxcpu`, `mem`, `maxmem` and `uptime`; for anyone else those keys are
+  absent. Units are Proxmox's: `cpu` is a fraction of `maxcpu`, `mem`/`maxmem` are bytes,
+  `uptime` is seconds.
+- VM `status` is the NetBox status. `live_status` is the Proxmox status, or `null` when no live
+  state is joined. A VM is joined only when its name is unique across every declared NetBox site,
+  in any tenant, and unique among the Proxmox guests. A name held twice on either side gets `null`,
+  because a guess could show another host's state.
 - `vmid` is the Proxmox id, or `null` when there is no live match.
 - `primary_ip` is the one primary address NetBox holds, prefix length included, or `null`.
   Other addresses are never returned.
@@ -142,17 +155,24 @@ When two VMs of one tenant share a name, the first in list order is returned.
 ## `GET /v1/network` (admin-only)
 
 ```json
-{ "source": {...}, "error": {...}, "stale": false, "updated_at": {...},
+{ "source": {...}, "error": {...}, "stale": false, "updated_at": {...}, "truncated": false,
   "prefixes": [
-    {"prefix": "10.20.0.0/24", "vlan": 20, "description": "management", "site": "dc-1"},
+    {"prefix": "198.51.100.0/24", "vlan": 20, "description": "management", "site": "dc-1"},
     {"prefix": "192.0.2.0/24", "vlan": null, "description": "documentation", "site": null}
   ] }
 ```
 
 - `vlan` is the VLAN id (`vid`), or `null`.
-- `site` is the NetBox site slug the prefix is scoped to, or `null` for a global prefix. A prefix
-  is attributed to a site when that site's own prefix list names it.
-- No interfaces and no IP-address list: prefixes only (D24, coordinator decision for v1).
+- `site` is the slug of the site the prefix's own scope names. A scope of type `dcim.site` gives
+  its slug, or its name when NetBox gives no slug. A prefix scoped to anything else (a location,
+  say) gives `null`, and so does a prefix with no scope. A prefix with no scope type gives the slug
+  of its nested `site` object, if it carries one. The prefix's own record decides, never a per-site list.
+- `truncated` is `true` when NetBox still had prefixes after 20 pages of 1000. The prefixes shown
+  are then the first 20,000.
+- The prefix read pages with `offset`. It does not follow the `next` link NetBox returns, so the
+  token is never sent to an address the server supplied.
+- **v1 is prefixes only.** No interfaces and no IP-address list (D24, coordinator decision for v1).
+  Those are deferred to a later phase.
 
 ## `GET /v1/flows` (admin-only)
 
@@ -203,7 +223,9 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
   logged once, not on each refresh.
 - A list that reports a next page fails that read (`NetBox list has more than one page`). The
   console never shows a partial list as complete.
-- The NetBox read is all-or-nothing per refresh: any failed request fails the whole NetBox read.
+- The site read is all-or-nothing per refresh: any failed request fails the whole site read. The
+  prefix read is separate, so a prefix failure never changes the tenant views.
+- A VM name held by two VMs across every declared site, in any tenant, gets no live join.
 
 ## Configuration
 
@@ -215,9 +237,12 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 | `CONSOLE_FLOWS_FILE` | optional JSON array of flow entries |
 | `CONSOLE_GRAFANA_URL` | optional Grafana origin for deep links. Same guard as the other URLs: `https://`, or `http://` only to loopback or RFC1918. Trailing slash trimmed. Unset leaves every link `null` |
 
-- Cleartext `http://` is accepted only for `localhost`, an IPv4 loopback or RFC1918 address, or an
-  IPv6 loopback address. Any other `http://` URL fails startup, naming the variable. `https://` is
-  always accepted.
+- Cleartext `http://` is accepted only when the host NetBox would connect to, as `reqwest::Url`
+  parses it, is `localhost`, an IPv4 loopback or RFC1918 address, or an IPv6 loopback address. A
+  fragment, a query or a backslash cannot move the host: `http://evil.example#@10.0.0.1` is refused.
+  Any other `http://` URL fails startup, naming the variable. `https://` is always accepted.
+- A `netbox_site` slug is declared by one site only, across every tenant. A slug declared twice
+  fails the scope file at load, naming both sites. A slug with whitespace fails the same way.
 - Certificate verification is never turned off. Without `CONSOLE_PROXMOX_CA_FILE` the Proxmox
   client trusts the roots bundled with reqwest's `rustls-tls` feature (the Mozilla set via
   `webpki-roots`, not the operating system store). A self-signed Proxmox certificate then fails
@@ -229,6 +254,11 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 
 - The NetBox 4.5 prefix filter `?site_id=` is used as the brief gives it. It is unverified against
   a live NetBox: no NetBox server and no NetBox source are in this repository.
+- Whether NetBox 4.5 returns `site` on a cluster or device, and `scope_type`/`scope_id` on a
+  cluster, or the nested `scope` on a prefix, is unverified against a live NetBox. A row missing the
+  field it is checked by is dropped, so a wrong field name shows as a drop count, not as data.
+- The NetBox `offset` paging on `/api/ipam/prefixes/` is unverified live. It follows the standard
+  limit/offset form.
 - The Grafana dashboard uids and variable names are read from the repository JSON. The URL path
   slug (`service-deployment-conformance`) follows the dashboard title. Whether a live Grafana
   resolves a link whose slug differs from the title is unverified: no live Grafana was read.

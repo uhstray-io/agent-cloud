@@ -281,31 +281,32 @@ fn infrastructure_origin(name: &'static str, value: &str) -> Result<String, Conf
 }
 
 /// True for `https://` anywhere, and for `http://` only when the host is `localhost`, an
-/// IPv4 loopback or RFC1918 address, or an IPv6 loopback. A hostname other than `localhost`
-/// is refused over `http://`, since its address cannot be checked here.
+/// IPv4 loopback or RFC1918 address, or an IPv6 loopback. The host is the one `reqwest::Url`
+/// parses, so a fragment, a query or a backslash cannot move it: `http://evil.example#@10.0.0.1`
+/// has host `evil.example` and is refused. A hostname other than `localhost` is refused over
+/// `http://`, since its address cannot be checked here.
 pub fn transport_allowed(url: &str) -> bool {
-    if url.starts_with("https://") {
-        return true;
-    }
-    let Some(rest) = url.strip_prefix("http://") else {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
     };
-    let authority = rest.split('/').next().unwrap_or("");
-    // Drop any userinfo, then the port. A bracketed IPv6 host keeps its colons.
-    let host_port = authority.rsplit('@').next().unwrap_or("");
-    let host = match host_port.strip_prefix('[') {
-        Some(bracketed) => bracketed.split(']').next().unwrap_or(""),
-        None => host_port
-            .rsplit_once(':')
-            .map_or(host_port, |(host, _)| host),
-    };
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    match host.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback() || v4.is_private(),
-        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback(),
-        Err(_) => false,
+    match parsed.scheme() {
+        "https" => true,
+        "http" => {
+            let Some(host) = parsed.host_str() else {
+                return false;
+            };
+            // `host_str` brackets an IPv6 literal; strip the brackets before parsing.
+            let bare = host
+                .strip_prefix('[')
+                .and_then(|inner| inner.strip_suffix(']'))
+                .unwrap_or(host);
+            match bare.parse::<std::net::IpAddr>() {
+                Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback() || v4.is_private(),
+                Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback(),
+                Err(_) => bare.eq_ignore_ascii_case("localhost"),
+            }
+        }
+        _ => false,
     }
 }
 
@@ -644,7 +645,10 @@ mod tests {
             "http://netbox.internal:8000",
             "http://[2001:db8::1]:8000",
             "http://",
-            "ftp://10.0.0.1", // example RFC1918 address
+            "ftp://10.0.0.1",                 // example RFC1918 address
+            "http://evil.example#@10.0.0.1",  // example RFC1918 address
+            "http://evil.example?@10.0.0.1",  // example RFC1918 address
+            "http://evil.example\\@10.0.0.1", // example RFC1918 address
         ] {
             assert!(!transport_allowed(url), "{url} should be refused");
         }

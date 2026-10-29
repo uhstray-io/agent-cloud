@@ -24,9 +24,9 @@ use tower_sessions::Session;
 use super::api::{error, unauthenticated};
 use super::auth;
 use super::grafana;
-use super::netbox::{self, NbCluster, NbDevice, NbPrefix, NbVm, NetboxData, Workflow};
+use super::netbox::{self, NbCluster, NbDevice, NbPrefix, NbVm, NetboxData, PrefixData, Workflow};
 use super::proxmox::{self, ProxmoxData, PveGuest, PveNode};
-use super::scope::{Site, Tenant};
+use super::scope::{is_platform_admin, Site, Tenant};
 use super::work::{self, rfc3339_now, Source};
 use super::{AppState, SharedState};
 
@@ -85,17 +85,26 @@ impl<T> SourceState<T> {
 /// Both authorities as the refresh task leaves them.
 pub struct InventoryCache {
     pub netbox: SourceState<NetboxData>,
+    /// The prefix read, kept apart from the site read: a prefix failure never touches the
+    /// tenant views, and a site failure never touches `/v1/network`.
+    pub netbox_prefixes: SourceState<PrefixData>,
     pub proxmox: SourceState<ProxmoxData>,
+}
+
+/// A source's starting state: awaiting its first read when configured, else unconfigured.
+fn configured_state<T>(configured: bool) -> SourceState<T> {
+    if configured {
+        SourceState::awaiting_first_refresh()
+    } else {
+        SourceState::unconfigured()
+    }
 }
 
 impl InventoryCache {
     pub fn new(netbox_configured: bool, proxmox_configured: bool) -> Self {
         Self {
-            netbox: if netbox_configured {
-                SourceState::awaiting_first_refresh()
-            } else {
-                SourceState::unconfigured()
-            },
+            netbox: configured_state(netbox_configured),
+            netbox_prefixes: configured_state(netbox_configured),
             proxmox: if proxmox_configured {
                 SourceState::awaiting_first_refresh()
             } else {
@@ -118,6 +127,24 @@ pub struct Meta {
     pub stale: bool,
     pub updated_at: Stamps,
     pub links: Links,
+    pub diagnostics: Diagnostics,
+}
+
+/// Counts that do not change an answer's state but a reader should see. A row NetBox returned
+/// for a different site or cluster than the one asked for is dropped, and counted here.
+#[derive(Serialize)]
+pub struct Diagnostics {
+    pub dropped_mismatched: u64,
+}
+
+fn diagnostics(cache: &InventoryCache) -> Diagnostics {
+    Diagnostics {
+        dropped_mismatched: cache
+            .netbox
+            .data
+            .as_ref()
+            .map_or(0, |data| data.dropped_mismatched),
+    }
 }
 
 /// Deep links out to Grafana. Base-level, so it is safe in every envelope. Each link is
@@ -158,6 +185,7 @@ pub struct Stamps {
 fn meta(cache: &InventoryCache, grafana_base: Option<&str>) -> Meta {
     Meta {
         links: links(grafana_base),
+        diagnostics: diagnostics(cache),
         source: Sources {
             netbox: cache.netbox.status,
             proxmox: cache.proxmox.status,
@@ -171,6 +199,29 @@ fn meta(cache: &InventoryCache, grafana_base: Option<&str>) -> Meta {
             netbox: cache.netbox.updated_at.clone(),
             proxmox: cache.proxmox.updated_at.clone(),
         },
+    }
+}
+
+/// The envelope of `/v1/network`. Its `source.netbox`, `error.netbox`, `updated_at.netbox` and
+/// `stale` describe the prefix read alone, so a site outage does not mark the network answer.
+fn network_meta(cache: &InventoryCache, grafana_base: Option<&str>) -> Meta {
+    let prefixes = &cache.netbox_prefixes;
+    Meta {
+        source: Sources {
+            netbox: prefixes.status,
+            proxmox: cache.proxmox.status,
+        },
+        error: Errors {
+            netbox: prefixes.error.clone(),
+            proxmox: cache.proxmox.error.clone(),
+        },
+        stale: prefixes.is_stale(),
+        updated_at: Stamps {
+            netbox: prefixes.updated_at.clone(),
+            proxmox: cache.proxmox.updated_at.clone(),
+        },
+        links: links(grafana_base),
+        diagnostics: diagnostics(cache),
     }
 }
 
@@ -201,8 +252,38 @@ pub struct ClusterView {
     pub name: String,
     /// The Proxmox nodes that host this cluster's matched VMs, by name. A node with no
     /// matched VM of the cluster is not listed.
-    pub nodes: Vec<PveNode>,
+    pub nodes: Vec<NodeView>,
     pub vms: Vec<VmView>,
+}
+
+/// A node as a response shows it. Name and status for everyone; the CPU, memory and uptime
+/// figures only for platform admins (`skip_serializing_if` omits them otherwise).
+#[derive(Serialize)]
+pub struct NodeView {
+    pub name: String,
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maxcpu: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maxmem: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime: Option<u64>,
+}
+
+fn node_view(node: &PveNode, admin: bool) -> NodeView {
+    NodeView {
+        name: node.name.clone(),
+        status: node.status.clone(),
+        cpu: if admin { node.cpu } else { None },
+        maxcpu: if admin { node.maxcpu } else { None },
+        mem: if admin { node.mem } else { None },
+        maxmem: if admin { node.maxmem } else { None },
+        uptime: if admin { node.uptime } else { None },
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -370,15 +451,18 @@ struct Join<'a> {
     proxmox: Option<&'a ProxmoxData>,
     stale: bool,
     grafana: Option<&'a str>,
+    /// Platform admins see node metrics; everyone else sees names and status.
+    admin: bool,
 }
 
 impl<'a> Join<'a> {
-    fn of(cache: &'a InventoryCache, grafana: Option<&'a str>) -> Self {
+    fn of(cache: &'a InventoryCache, grafana: Option<&'a str>, admin: bool) -> Self {
         Join {
             netbox: cache.netbox.data.as_ref(),
             proxmox: cache.proxmox.data.as_ref(),
             stale: cache.stale(),
             grafana,
+            admin,
         }
     }
 }
@@ -432,20 +516,28 @@ fn cluster_view(cluster: &NbCluster, join: &Join<'_>) -> ClusterView {
         .vms
         .iter()
         .map(|vm| {
-            let live = unique_guest(&vm.name, guests);
+            // A name held by two VMs across any declared site gets no live state.
+            let held_twice = join
+                .netbox
+                .is_some_and(|data| data.ambiguous_vm_names.contains(&vm.name));
+            let live = if held_twice {
+                None
+            } else {
+                unique_guest(&vm.name, guests)
+            };
             if let Some(node) = live.and_then(|guest| guest.node.as_deref()) {
                 placed.insert(node);
             }
             vm_view(vm, live, join)
         })
         .collect();
-    let nodes: Vec<PveNode> = placed
+    let nodes: Vec<NodeView> = placed
         .into_iter()
         .filter_map(|name| {
             join.proxmox
                 .and_then(|data| data.nodes.iter().find(|node| node.name == name))
         })
-        .cloned()
+        .map(|node| node_view(node, join.admin))
         .collect();
     ClusterView {
         name: cluster.name.clone(),
@@ -517,12 +609,14 @@ async fn visible_tenant<'a>(
     app: &'a AppState,
     session: &Session,
     tenant_id: &str,
-) -> Result<&'a Tenant, Response> {
+) -> Result<(&'a Tenant, bool), Response> {
     let Some(user) = auth::current_user(session).await else {
         return Err(unauthenticated());
     };
+    let admin = is_platform_admin(&user.groups);
     app.scope
         .visible_tenant(tenant_id, &user.groups)
+        .map(|tenant| (tenant, admin))
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_tenant"))
 }
 
@@ -532,12 +626,15 @@ pub async fn get_inventory(
     session: Session,
     AxumPath(tenant_id): AxumPath<String>,
 ) -> Response {
-    let tenant = match visible_tenant(&app, &session, &tenant_id).await {
-        Ok(tenant) => tenant,
+    let (tenant, admin) = match visible_tenant(&app, &session, &tenant_id).await {
+        Ok(found) => found,
         Err(response) => return response,
     };
     let cache = app.inventory.read().await;
-    let sites = site_views(tenant, &Join::of(&cache, app.config.grafana_url.as_deref()));
+    let sites = site_views(
+        tenant,
+        &Join::of(&cache, app.config.grafana_url.as_deref(), admin),
+    );
     Json(InventoryBody {
         meta: meta(&cache, app.config.grafana_url.as_deref()),
         sites,
@@ -551,12 +648,15 @@ pub async fn list_services(
     session: Session,
     AxumPath(tenant_id): AxumPath<String>,
 ) -> Response {
-    let tenant = match visible_tenant(&app, &session, &tenant_id).await {
-        Ok(tenant) => tenant,
+    let (tenant, admin) = match visible_tenant(&app, &session, &tenant_id).await {
+        Ok(found) => found,
         Err(response) => return response,
     };
     let cache = app.inventory.read().await;
-    let sites = site_views(tenant, &Join::of(&cache, app.config.grafana_url.as_deref()));
+    let sites = site_views(
+        tenant,
+        &Join::of(&cache, app.config.grafana_url.as_deref(), admin),
+    );
     let services = services_of(&sites)
         .into_iter()
         .map(|(row, _)| row)
@@ -574,12 +674,15 @@ pub async fn get_service(
     session: Session,
     AxumPath((tenant_id, name)): AxumPath<(String, String)>,
 ) -> Response {
-    let tenant = match visible_tenant(&app, &session, &tenant_id).await {
-        Ok(tenant) => tenant,
+    let (tenant, admin) = match visible_tenant(&app, &session, &tenant_id).await {
+        Ok(found) => found,
         Err(response) => return response,
     };
     let cache = app.inventory.read().await;
-    let sites = site_views(tenant, &Join::of(&cache, app.config.grafana_url.as_deref()));
+    let sites = site_views(
+        tenant,
+        &Join::of(&cache, app.config.grafana_url.as_deref(), admin),
+    );
     let Some((service, vm)) = services_of(&sites)
         .into_iter()
         .find(|(row, _)| row.name == name)
@@ -601,6 +704,8 @@ pub struct NetworkBody {
     #[serde(flatten)]
     pub meta: Meta,
     pub prefixes: Vec<NbPrefix>,
+    /// True when NetBox had more prefixes than the read's page cap covers.
+    pub truncated: bool,
 }
 
 pub async fn get_network(State(app): State<SharedState>, session: Session) -> Response {
@@ -608,15 +713,13 @@ pub async fn get_network(State(app): State<SharedState>, session: Session) -> Re
         return response;
     }
     let cache = app.inventory.read().await;
-    let prefixes = cache
-        .netbox
-        .data
-        .as_ref()
-        .map(|data| data.prefixes.clone())
-        .unwrap_or_default();
+    let data = cache.netbox_prefixes.data.as_ref();
+    let prefixes = data.map(|data| data.prefixes.clone()).unwrap_or_default();
+    let truncated = data.is_some_and(|data| data.truncated);
     Json(NetworkBody {
-        meta: meta(&cache, app.config.grafana_url.as_deref()),
+        meta: network_meta(&cache, app.config.grafana_url.as_deref()),
         prefixes,
+        truncated,
     })
     .into_response()
 }
@@ -647,6 +750,23 @@ pub async fn refresh(app: &AppState) {
                 let text = err.to_string();
                 log_failure("NetBox", cache.netbox.error.as_deref(), &text);
                 cache.netbox.record_error(text);
+            }
+        }
+        drop(cache);
+
+        // Its own read: a failure here leaves the site data and the tenant views alone.
+        let result = netbox::fetch_prefixes(&app.http, config).await;
+        let mut cache = app.inventory.write().await;
+        match result {
+            Ok(data) => cache.netbox_prefixes.record_ok(data, rfc3339_now()),
+            Err(err) => {
+                let text = err.to_string();
+                log_failure(
+                    "NetBox prefixes",
+                    cache.netbox_prefixes.error.as_deref(),
+                    &text,
+                );
+                cache.netbox_prefixes.record_error(text);
             }
         }
     }
@@ -911,7 +1031,7 @@ mod tests {
             {"id": "ghost", "name": "Ghost", "netbox_site": "missing"}
         ]}]},
         {"id": "initech", "name": "Initech", "groups": ["finance"], "orgs": [{"id": "lab", "name": "Lab", "sites": [
-            {"id": "hq", "name": "HQ", "netbox_site": "dc-1"}
+            {"id": "hq", "name": "HQ", "netbox_site": "dc-2"}
         ]}]}
     ]}"#;
 
@@ -1028,7 +1148,14 @@ mod tests {
 
     /// Both stand-ins, one refresh, and `CONSOLE_GRAFANA_URL` as given.
     async fn live_state_with(grafana: Option<&str>) -> (SharedState, nb::Mock, pve::Mock) {
-        let nb_mock = nb::Mock::default();
+        live_state_using(nb::Mock::default(), grafana).await
+    }
+
+    /// As `live_state_with`, with the NetBox stand-in prepared by the caller.
+    async fn live_state_using(
+        nb_mock: nb::Mock,
+        grafana: Option<&str>,
+    ) -> (SharedState, nb::Mock, pve::Mock) {
         let pve_mock = pve::Mock::default();
         let nb_addr = nb::serve(nb::router(nb_mock.clone())).await;
         let pve_addr = pve::serve(pve::router(pve_mock.clone())).await;
@@ -1108,7 +1235,15 @@ mod tests {
             .map(|n| n["name"].as_str().expect("name"))
             .collect();
         assert_eq!(nodes, ["pve-01", "pve-02"]);
-        assert_eq!(cluster["nodes"][0]["maxcpu"], 16.0);
+        // A member sees node name and status only; the metrics are for platform admins.
+        let node_keys: Vec<&str> = cluster["nodes"][0]
+            .as_object()
+            .expect("node")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(node_keys.len(), 2, "{node_keys:?}");
+        assert!(cluster["nodes"][0].get("maxcpu").is_none());
 
         let tududi = vm_named(&body, "tududi");
         assert_eq!(tududi["rag"], "red", "failed step");
@@ -1183,6 +1318,153 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(body["links"]["grafana"], base);
         assert_eq!(body["links"]["grafana_conformance"], conformance);
+    }
+
+    #[tokio::test]
+    async fn node_metrics_are_for_platform_admins_only() {
+        let (state, _, _) = live_state().await;
+        let (member_url, member_cookie) = signed_in(state.clone(), &["ops"]).await;
+        let (_, text) = get_json(
+            &member_url,
+            Some(&member_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        for metric in ["maxcpu", "maxmem", "uptime", "\"cpu\"", "\"mem\""] {
+            assert!(!text.contains(metric), "{metric} reached a member: {text}");
+        }
+        let member: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            member["sites"][0]["clusters"][0]["nodes"][0]["name"],
+            "pve-01"
+        );
+        assert_eq!(
+            member["sites"][0]["clusters"][0]["nodes"][0]["status"],
+            "online"
+        );
+
+        let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let admin: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let node = &admin["sites"][0]["clusters"][0]["nodes"][0];
+        assert_eq!(node["name"], "pve-01");
+        assert_eq!(node["maxcpu"], 16.0);
+        assert_eq!(node["uptime"], 123456);
+    }
+
+    #[tokio::test]
+    async fn a_name_held_by_two_declared_sites_gets_no_live_state() {
+        let nb_mock = nb::Mock::default();
+        nb_mock
+            .lab_wiki_duplicate
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (state, _, _) = live_state_using(nb_mock, None).await;
+        let (url, cookie) = signed_in(state, &["platform-admins"]).await;
+
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let wiki = vm_named(&body, "wiki");
+        assert!(
+            wiki["live_status"].is_null(),
+            "a duplicated name is not joined: {wiki}"
+        );
+        assert!(wiki["vmid"].is_null());
+        assert_eq!(wiki["rag"], "grey");
+        assert_eq!(
+            vm_named(&body, "tududi")["live_status"],
+            "running",
+            "unique names still join"
+        );
+
+        // The lab copy is held the same way, so its own view joins nothing either.
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/initech/inventory").await;
+        let lab: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(vm_named(&lab, "wiki")["live_status"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tenant_views_hold_when_netbox_ignores_its_filters() {
+        let nb_mock = nb::Mock::default();
+        nb_mock
+            .ignore_filters
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (state, _, _) = live_state_using(nb_mock, None).await;
+        let (url, cookie) = signed_in(state, &["ops"]).await;
+
+        let (status, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200);
+        for foreign in ["pve-lab", "lab-wiki", "lab-01"] {
+            assert!(
+                !text.contains(foreign),
+                "{foreign} leaked into acme: {text}"
+            );
+        }
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let dc1 = &body["sites"][0];
+        assert_eq!(dc1["id"], "dc1");
+        assert_eq!(dc1["clusters"].as_array().expect("clusters").len(), 1);
+        assert_eq!(dc1["clusters"][0]["name"], "pve-prod");
+        assert_eq!(dc1["clusters"][0]["vms"].as_array().expect("vms").len(), 5);
+        assert_eq!(dc1["devices"].as_array().expect("devices").len(), 2);
+        assert!(
+            body["diagnostics"]["dropped_mismatched"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            "the dropped rows are counted, not silent: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prefix_failure_leaves_the_tenant_inventory_untouched() {
+        let (state, nb_mock, _) = live_state().await;
+        nb_mock
+            .fail_prefixes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        refresh(&state).await;
+        let (url, cookie) = signed_in(state.clone(), &["ops"]).await;
+
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["source"]["netbox"], "ok", "{text}");
+        assert_eq!(body["stale"], false);
+        assert!(body["error"]["netbox"].is_null());
+        assert_eq!(body["sites"][0]["mapped"], true);
+        assert_eq!(vm_named(&body, "tududi")["rag"], "red");
+
+        let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
+        let (_, text) = get_json(&admin_url, Some(&admin_cookie), "/v1/network").await;
+        let network: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(network["source"]["netbox"], "error");
+        assert_eq!(network["error"]["netbox"], "NetBox answered HTTP 500");
+        assert_eq!(network["stale"], true);
+        assert_eq!(
+            network["prefixes"].as_array().expect("prefixes").len(),
+            2,
+            "last good kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prefix_list_past_the_page_cap_says_it_is_truncated() {
+        let nb_mock = nb::Mock::default();
+        nb_mock
+            .prefix_total
+            .store(25_000, std::sync::atomic::Ordering::SeqCst);
+        let (state, _, _) = live_state_using(nb_mock, None).await;
+        let (url, cookie) = signed_in(state, &["platform-admins"]).await;
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/network").await;
+        let network: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(network["truncated"], true);
+        assert_eq!(
+            network["prefixes"].as_array().expect("prefixes").len(),
+            20_000
+        );
     }
 
     #[tokio::test]

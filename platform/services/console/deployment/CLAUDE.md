@@ -128,13 +128,13 @@ Environment, read by `app/src/server/config.rs`. The deploy does not set these y
 
 Infrastructure URLs take `https://` always, and `http://` only to loopback or RFC1918. Anything else fails startup and names the variable. Certificate verification is never turned off. Without a CA file, Proxmox is verified against reqwest's bundled roots, so a self-signed API shows as `source.proxmox: "error"`.
 
-A site joins NetBox only through its declared `netbox_site` slug in `console_tenants`. `scope.json.j2` renders that list unchanged. A site with no slug is unmapped. The console never guesses a site from a name.
+A site joins NetBox only through its declared `netbox_site` slug in `console_tenants`. `scope.json.j2` renders that list unchanged. A site with no slug is unmapped. The console never guesses a site from a name. A slug is declared by one site only, across every tenant: the scope file fails at load if two sites name the same slug, or a slug has whitespace.
 
 Routes and scoping:
 
 | Route | Who | Carries |
 |-------|-----|---------|
-| `GET /v1/tenants/{t}/inventory` | members of `t` | sites, with clusters, nodes, VMs (with RAG) and devices |
+| `GET /v1/tenants/{t}/inventory` | members of `t` | sites, with clusters, nodes, VMs (with RAG) and devices. Node CPU, memory and uptime only for platform admins |
 | `GET /v1/tenants/{t}/services`, `/services/{name}` | members of `t` | VMs that carry workflow fields; one VM |
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |
@@ -145,6 +145,10 @@ Unconfigured and stale:
 
 - An unconfigured authority reports `unconfigured`, and its sites are `mapped: false`. A configured authority before its first read reports `ok` with `updated_at: null`.
 - One background task reads each configured authority every 60 s into memory. A failed read keeps the last good data, sets `stale: true`, and fills `error.<authority>`. A list that reports a next page fails rather than truncating. The NetBox read is all-or-nothing per refresh.
+
+A VM takes live state only when its name is unique across every declared NetBox site and unique among the Proxmox guests. Otherwise its live status is `null`.
+
+`diagnostics.dropped_mismatched` counts NetBox rows that did not name the site or cluster the console asked for. They are dropped, not shown, and the count is surfaced.
 
 RAG (`inventory::rag`), first match wins: `red` when a workflow step failed, or Proxmox says `stopped` while NetBox says `active`; `amber` when the data is stale, NetBox says `planned` or `staged`, a step is pending or unknown, or the live state is neither running nor stopped-while-active; `grey` when there is no live state; `green` when the VM is running and nothing above applies.
 
