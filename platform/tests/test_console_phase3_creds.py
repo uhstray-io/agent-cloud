@@ -89,7 +89,7 @@ def _run_tasks(tmp_path: Path, tasks: list, variables: dict) -> subprocess.Compl
 # --- NetBox: the console profile is view-only ----------------------------------------------------------
 
 CONSOLE_TYPES = {"dcim.site", "dcim.device", "virtualization.cluster", "virtualization.virtualmachine",
-                 "ipam.prefix", "ipam.ipaddress", "extras.tag"}
+                 "ipam.prefix", "extras.tag"}
 
 
 def _netbox_profiles() -> dict:
@@ -104,11 +104,51 @@ def test_console_netbox_profile_is_view_only():
     assert "view_object_types" not in profile, profile
 
 
-def test_console_netbox_profile_covers_exactly_the_seven_declared_types():
+def test_console_netbox_profile_covers_exactly_the_six_v1_types_prefixes_only():
     profile = _netbox_profiles()["console"]
     assert set(profile["object_types"]) == CONSOLE_TYPES, profile["object_types"]
-    # D24 scope: prefixes and addresses, no interfaces.
-    assert not any("interface" in t for t in profile["object_types"]), profile["object_types"]
+    # D24 v1 reads prefixes only: no IP addresses and no interfaces.
+    assert not any(t in ("ipam.ipaddress", "dcim.interface", "virtualization.vminterface")
+                   or "interface" in t for t in profile["object_types"]), profile["object_types"]
+
+
+def test_console_token_is_write_disabled_on_the_token_itself():
+    # NetBox's Token model declares write_enabled = BooleanField(default=True) (v4.5.0): the console token is
+    # created with write_enabled=False, and only the console profile is.
+    assert _netbox_profiles()["console"]["token_write_enabled"] is False
+    for name, profile in _netbox_profiles().items():
+        if name != "console":
+            assert "token_write_enabled" not in profile, name
+
+
+@NEEDS_ANSIBLE
+def test_the_mint_passes_write_enabled_false_only_for_the_console_profile(tmp_path):
+    expr = "{{ 'write_enabled=False,' if not (_profile.token_write_enabled | default(true)) else '' }}"
+    got = {}
+    for name, profile in _netbox_profiles().items():
+        proc = _run_tasks(tmp_path, [{"ansible.builtin.debug": {"msg": "OUT|" + expr}}],
+                          {"_profile": profile})
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        got[name] = re.search(r'OUT\|([^"]*)"', proc.stdout).group(1)
+    assert got["console"] == "write_enabled=False,", got
+    assert all(v == "" for k, v in got.items() if k != "console"), got
+
+
+def test_the_console_user_is_refused_when_it_holds_superuser_or_group_rights_before_any_write():
+    names = [t.get("name") for t in _tasks(NETBOX)]
+    read = names.index("Read the console user's superuser and group rights (console profile only)")
+    refuse = names.index("Refuse a console user that holds superuser or group rights")
+    ensure = names.index("Ensure NetBox automation user and scoped permissions")
+    assert read < refuse < ensure, (read, refuse, ensure)
+    assert _named(NETBOX, "Read the console user's superuser and group rights (console profile only)")["when"] == \
+        "_profile_name == 'console'"
+    assert _named(NETBOX, "Refuse a console user that holds superuser or group rights")["when"] == \
+        "_profile_name == 'console'"
+    body = _named(NETBOX, "Read the console user's superuser and group rights (console profile only)")[
+        "ansible.builtin.shell"]
+    assert "user.is_superuser" in body and "user.groups.exists()" in body, body
+    # NetBox's User model declares no is_staff: read it with getattr, never as an attribute.
+    assert 'getattr(user, "is_staff", False)' in body, body
 
 
 def test_console_netbox_profile_field_user_and_description():
@@ -526,7 +566,8 @@ def test_rights_are_read_from_key_presence_so_a_zero_propagate_bit_still_counts(
     short = {"/": {"User.Modify": 1}}
     got = _decide(tmp_path, {"_console_stored": False, "_console_users_list": _listing(ROOT_USER),
                              "_admin_perms": {"status": 200, "json": {"data": short}}})
-    assert got[4] == "Realm.AllocateUser,Permissions.Modify", got
+    # difference() returns a set, so the names are compared as a set, not in order.
+    assert set(got[4].split(",")) == {"Realm.AllocateUser", "Permissions.Modify"}, got
 
 
 @NEEDS_ANSIBLE
