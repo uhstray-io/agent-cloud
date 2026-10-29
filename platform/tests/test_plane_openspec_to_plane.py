@@ -2,7 +2,8 @@
 
 Every exact-output expectation below is written out by hand from the fixture text. Both input
 modes are driven from one fixture dict: the checkout copy and the stub GitHub tree serve the same
-bytes, and the CLI output must equal parse_repo's output for them.
+bytes, and the CLI output must equal parse_repo's output for them, plus the commit sha in --github
+mode.
 """
 
 import http.server
@@ -32,6 +33,8 @@ ARCHIVE_NOTES = "plan/development/openspec/changes/archive-notes/tasks.md"
 DONE_ONLY = "plan/development/openspec/changes/done-only/tasks.md"
 GAMMA = "plan/development/openspec/changes/gamma/tasks.md"
 BETA = "plans/development/openspec/changes/beta/tasks.md"
+SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+PUSHED = "- [ ] 1.1 pushed to the branch after its commit was read\n"
 
 ALPHA_TEXT = "\n".join([
     "## 1. Start",
@@ -311,7 +314,13 @@ class StubGitHub(DrainingHandler):
         s = self.state
         path = urllib.parse.urlsplit(self.path).path
         s["seen"].append((path, self.headers.get("Authorization")))
-        if path.startswith("/repos/"):
+        # The tree is served only at the commit sha: the branch name is not a tree and gets a 404.
+        if path == f"/repos/{REPO}/commits/{BRANCH}":
+            if s["commit_status"] != 200:
+                self._send(s["commit_status"], b"{}")
+                return
+            self._send(200, s["commit_body"])
+        elif path == f"/repos/{REPO}/git/trees/{SHA}":
             if s["tree_status"] != 200:
                 self._send(s["tree_status"], b"{}")
                 return
@@ -329,7 +338,8 @@ class StubGitHub(DrainingHandler):
 
 @pytest.fixture
 def github():
-    StubGitHub.state = {"tree": [], "truncated": False, "tree_status": 200, "raw": {}, "raw_fail": {},
+    StubGitHub.state = {"tree": [], "truncated": False, "tree_status": 200, "commit_status": 200,
+                        "commit_body": json.dumps({"sha": SHA}).encode(), "raw": {}, "raw_fail": {},
                         "redirects": {}, "seen": []}
     server = http.server.HTTPServer(("127.0.0.1", 0), StubGitHub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -341,7 +351,7 @@ def github():
 def publish(state, files):
     state["tree"] = [{"path": "README.md", "type": "blob"}, {"path": "plan", "type": "tree"}]
     state["tree"] += [{"path": path, "type": "blob"} for path in sorted(files)]
-    state["raw"] = {f"/{REPO}/{BRANCH}/{path}": text for path, text in files.items()}
+    state["raw"] = {f"/{REPO}/{SHA}/{path}": text for path, text in files.items()}
 
 
 def run_cli(args, stdin=""):
@@ -352,11 +362,13 @@ def run_cli(args, stdin=""):
 def test_fetch_sends_the_token_only_when_given(github):
     state, base = github
     publish(state, {ALPHA: ALPHA_TEXT})
-    assert lib.fetch_files(REPO, BRANCH, None, api=base, raw=base) == {ALPHA: ALPHA_TEXT}
-    assert state["seen"] and all(auth is None for _, auth in state["seen"])
+    assert lib.fetch_files(REPO, BRANCH, None, api=base, raw=base) == (SHA, {ALPHA: ALPHA_TEXT})
+    assert len(state["seen"]) == 3 and all(auth is None for _, auth in state["seen"])
     state["seen"].clear()
-    assert lib.fetch_files(REPO, BRANCH, TOKEN, api=base, raw=base) == {ALPHA: ALPHA_TEXT}
-    assert len(state["seen"]) == 2
+    assert lib.fetch_files(REPO, BRANCH, TOKEN, api=base, raw=base) == (SHA, {ALPHA: ALPHA_TEXT})
+    # Commit lookup, tree and one raw file: the token rides on all three.
+    assert [path for path, _ in state["seen"]] == [
+        f"/repos/{REPO}/commits/{BRANCH}", f"/repos/{REPO}/git/trees/{SHA}", f"/{REPO}/{SHA}/{ALPHA}"]
     assert all(auth == f"Bearer {TOKEN}" for _, auth in state["seen"])
 
 
@@ -366,13 +378,14 @@ def test_truncated_tree_is_refused_before_any_fetch(github):
     state["truncated"] = True
     with pytest.raises(RuntimeError, match="truncated"):
         lib.fetch_files(REPO, BRANCH, None, api=base, raw=base)
-    assert [path for path, _ in state["seen"]] == [f"/repos/{REPO}/git/trees/{BRANCH}"]
+    assert [path for path, _ in state["seen"]] == [
+        f"/repos/{REPO}/commits/{BRANCH}", f"/repos/{REPO}/git/trees/{SHA}"]
 
 
 def test_non_200_error_names_status_and_path_and_never_the_token(github):
     state, base = github
     publish(state, {ALPHA: ALPHA_TEXT})
-    state["raw_fail"] = {f"/{REPO}/{BRANCH}/{ALPHA}": 403}
+    state["raw_fail"] = {f"/{REPO}/{SHA}/{ALPHA}": 403}
     with pytest.raises(RuntimeError) as raw_error:
         lib.fetch_files(REPO, BRANCH, TOKEN, api=base, raw=base)
     assert "HTTP 403" in str(raw_error.value) and ALPHA in str(raw_error.value)
@@ -385,14 +398,45 @@ def test_non_200_error_names_status_and_path_and_never_the_token(github):
     assert "HTTP 401" in str(tree_error.value)
     assert TOKEN not in str(tree_error.value)
 
+    # A failed commit lookup stops before any tree or file read; the token rides on that one call only.
+    state["tree_status"] = 200
+    state["commit_status"] = 403
+    state["seen"].clear()
+    with pytest.raises(RuntimeError) as commit_error:
+        lib.fetch_files(REPO, BRANCH, TOKEN, api=base, raw=base)
+    message = str(commit_error.value)
+    assert "HTTP 403" in message and f"/repos/{REPO}/commits/{BRANCH}" in message
+    assert TOKEN not in message
+    assert state["seen"] == [(f"/repos/{REPO}/commits/{BRANCH}", f"Bearer {TOKEN}")]
+
+
+@pytest.mark.parametrize("body", [b"{}", b'{"sha": ""}', b'{"sha": null}', b"[]"])
+def test_commit_without_a_sha_is_refused_before_any_tree_read(github, body):
+    state, base = github
+    publish(state, {ALPHA: ALPHA_TEXT})
+    state["commit_body"] = body
+    with pytest.raises(RuntimeError, match="no commit sha"):
+        lib.fetch_files(REPO, BRANCH, None, api=base, raw=base)
+    assert [path for path, _ in state["seen"]] == [f"/repos/{REPO}/commits/{BRANCH}"]
+
+
+def test_reads_stay_on_the_commit_when_the_branch_has_moved(github):
+    state, base = github
+    publish(state, {ALPHA: ALPHA_TEXT})
+    # The branch moved after its commit was read: the branch-named path now serves a newer file.
+    state["raw"][f"/{REPO}/{BRANCH}/{ALPHA}"] = PUSHED
+    assert lib.fetch_files(REPO, BRANCH, None, api=base, raw=base) == (SHA, {ALPHA: ALPHA_TEXT})
+    assert [path for path, _ in state["seen"] if not path.startswith("/repos/")] == [f"/{REPO}/{SHA}/{ALPHA}"]
+
 
 def test_archive_and_unselected_paths_are_never_fetched(github):
     state, base = github
     publish(state, FIXTURE)
-    fetched = lib.fetch_files(REPO, BRANCH, None, api=base, raw=base)
+    commit, fetched = lib.fetch_files(REPO, BRANCH, None, api=base, raw=base)
     selected = sorted([ALPHA, ARCHIVE_NOTES, BETA, DONE_ONLY, GAMMA])
+    assert commit == SHA
     assert sorted(fetched) == selected
-    raw_requests = sorted(path.removeprefix(f"/{REPO}/{BRANCH}/") for path, _ in state["seen"]
+    raw_requests = sorted(path.removeprefix(f"/{REPO}/{SHA}/") for path, _ in state["seen"]
                           if not path.startswith("/repos/"))
     assert raw_requests == selected
 
@@ -401,11 +445,12 @@ def test_token_is_not_forwarded_across_a_redirect(github):
     state, base = github
     publish(state, {ALPHA: ALPHA_TEXT})
     elsewhere = base.replace("127.0.0.1", "localhost")
-    state["redirects"] = {f"/{REPO}/{BRANCH}/{ALPHA}": f"{elsewhere}/elsewhere/alpha"}
+    state["redirects"] = {f"/{REPO}/{SHA}/{ALPHA}": f"{elsewhere}/elsewhere/alpha"}
     state["raw"]["/elsewhere/alpha"] = ALPHA_TEXT
-    assert lib.fetch_files(REPO, BRANCH, TOKEN, api=base, raw=base) == {ALPHA: ALPHA_TEXT}
+    assert lib.fetch_files(REPO, BRANCH, TOKEN, api=base, raw=base) == (SHA, {ALPHA: ALPHA_TEXT})
     auth_by_path = dict(state["seen"])
-    assert auth_by_path[f"/repos/{REPO}/git/trees/{BRANCH}"] == f"Bearer {TOKEN}"
+    assert auth_by_path[f"/repos/{REPO}/commits/{BRANCH}"] == f"Bearer {TOKEN}"
+    assert auth_by_path[f"/repos/{REPO}/git/trees/{SHA}"] == f"Bearer {TOKEN}"
     assert auth_by_path["/elsewhere/alpha"] is None
 
 
@@ -419,7 +464,9 @@ def test_cli_github_output_equals_checkout_output_for_the_same_bytes(github, tmp
     via_checkout = run_cli(["--repo", REPO, "--branch", BRANCH, "--checkout", str(tmp_path)])
     assert via_checkout.returncode == 0, via_checkout.stderr
     expected = lib.parse_repo(tmp_path, REPO, BRANCH)
-    assert json.loads(via_github.stdout) == expected
+    github_out = json.loads(via_github.stdout)
+    assert github_out.pop("commit") == SHA
+    assert github_out == expected
     assert json.loads(via_checkout.stdout) == expected
     assert via_github.stdout.count("\n") == 1
     assert all(auth == f"Bearer {TOKEN}" for _, auth in state["seen"])

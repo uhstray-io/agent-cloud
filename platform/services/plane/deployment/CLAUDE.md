@@ -118,6 +118,13 @@ through Authentik on, and leaving it unset switches it OFF on the next deploy. `
 | Back up the database | `Back Up Plane DB` (pg_dump of `plane-db` to an owner-only dir on the VM) |
 | Restore a named dump | `Restore Plane DB` (`-e plane_dump_file=<path>`; staging first, prior database kept as `plane_prev`) |
 
+**Sync Plane Projects** reads `plane_service_token`, which Deploy Plane mints (get-or-create, never
+expires) and stores in OpenBao. Plane offers no route to revoke a service token (its token delete
+and list skip them), so revocation is an open follow-up. Which projects, modules
+and work items exist, and which module an item is in, follow `tasks.md`: an item deleted in Plane comes
+back, so tick or strike the task instead. Task ids and change names are permanent keys; renumbering or
+renaming creates duplicates. Everything else about an item (status, assignees, labels, edits) is Plane's.
+
 The dump covers the database only. Uploads live in the MinIO volumes and are covered by a VM
 snapshot before an upgrade (change task 1.7).
 

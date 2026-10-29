@@ -12,14 +12,24 @@
 # assignees and labels belong to Plane from the moment an item exists (change task 4.2, risk 4).
 # A task already ticked in tasks.md when first seen is not imported.
 #
-# Play 1 reads tasks.md through GitHub on the controller (lib/openspec_to_plane.py): a git trees
-# call and one raw read per file, no clone, so a dry run writes nothing. Public repositories are
+# Play 1 reads tasks.md through GitHub on the controller (lib/openspec_to_plane.py): it resolves
+# the branch to one commit, then a trees call and one raw read per file at that commit; no clone, so
+# a dry run writes nothing. Public repositories are
 # read without credentials. A PRIVATE repository needs the "plane-compose" GitHub App (change task
 # 4.4), which is not provisioned yet: enabling one is refused by name until it is.
 #
-# Play 2 runs sync_projects.py inside plane-api as the automation account, with a workspace
-# service token it fetches for itself. That script holds a process lock for its whole run, so two
+# Play 2 runs sync_projects.py inside plane-api with the workspace service token Deploy Plane
+# minted into OpenBao (secret/services/plane:plane_service_token); this playbook only reads it, so
+# a dry run never creates a credential. The script holds a process lock for its whole run, so two
 # overlapping syncs are refused rather than racing Plane's external-id check (design.md risk 4).
+#
+# What the repository decides, and what Plane decides:
+#   repository  which projects, modules and work items exist, and which module an item is in. A
+#               work item or module deleted in Plane comes back on the next run, and an item moved
+#               out of its module is linked back: to drop one, tick or strike (~~id~~) the task.
+#   Plane       everything else about an item once it exists: status, assignees, labels, edits.
+# Task ids and change names are permanent keys (lib/openspec_to_plane.py): renumbering a task or
+# renaming a change creates duplicates. One item Plane refuses stops the run; later projects wait.
 #
 # Dry run is --check: Play 2 reports what it would create and creates nothing.
 #
@@ -53,6 +63,9 @@
           reading it needs the plane-compose GitHub App (change task 4.4), not provisioned yet.
         quiet: true
 
+    # Today no credential is involved. When private repositories arrive (task 4.4) the token goes
+    # on stdin, and then this result carries it: the loop must then be no_log or index into the
+    # results from the clean input (AGENTS.md, test_no_request_in_loop_items.py).
     - name: "Read each repository's open tasks (read-only)"
       ansible.builtin.command:
         argv:
@@ -115,7 +128,7 @@
       no_log: true
       check_mode: false
 
-    - name: "Read the automation account's password"
+    - name: "Read the workspace service token"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/services/plane"
         follow_redirects: none
@@ -128,19 +141,25 @@
       no_log: true
       check_mode: false
 
+    - name: "Refuse to run without the service token"
+      ansible.builtin.assert:
+        that:
+          - _plane_secret.json.data.data.plane_service_token | default('') | length > 0
+        fail_msg: "secret/services/plane has no plane_service_token: run Deploy Plane, which mints and stores it."
+        quiet: true
+
     - name: "Assemble the sync input"
       ansible.builtin.set_fact:
         _sync_input:
           base: http://localhost:8000
           host: "{{ plane_public_url | urlsplit('hostname') }}"
           origin: "{{ plane_public_url }}"
-          email: "{{ plane_automation_email }}"
-          password: "{{ _plane_secret.json.data.data.plane_automation_password }}"
+          service_token: "{{ _plane_secret.json.data.data.plane_service_token }}"
           workspace_slug: "{{ plane_workspace_slug }}"
           projects: "{{ hostvars['localhost']._desired_projects }}"
       no_log: true
 
-    # Both runs carry the password on stdin; the script prints counts only (never a credential),
+    # Both runs carry the service token on stdin; the script prints counts only (never a credential),
     # judged below so a refusal is visible while these tasks stay no_log.
     - name: "Count what is missing (read-only; also the dry run)"
       ansible.builtin.command:

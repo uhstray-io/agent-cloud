@@ -13,6 +13,10 @@
 #   private     GitHub visibility of the repository, as checked with gh on 2026-10-29
 #   enabled     false keeps the entry declared but not synced; the two public repositories start enabled
 #
+# Keys are permanent: the repo is the external_id of the project and of every module and item
+# beneath it. Renaming a repo entry either stops the sync (its identifier is still taken) or, with a
+# new identifier, creates a second project whose items duplicate the old one's.
+#
 # Every name here is already public in this repository's plan documents. Nothing here is a
 # credential or an address.
 plane_projects:
