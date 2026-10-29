@@ -859,6 +859,12 @@ templates:
         required: false
         default_value: "false"
 
+  # Read-only reachability of the Dispatch Console's Phase 3 sources (plan 17 task 6.3) from the console VM:
+  # NetBox, Proxmox and OpenBao, names and booleans only. Fails when a configured source does not answer.
+  - name: Probe Console Sources
+    playbook: platform/playbooks/probe-console-sources.yml
+    dev_variant: true
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
