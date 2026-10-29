@@ -1,0 +1,205 @@
+---
+# sync-plane-projects.yml — every enabled repository's open OpenSpec tasks become Plane work items.
+#
+# For each repository enabled in platform/services/plane/projects.yml:
+#   project       one Plane project per repository (identifier and name declared there)
+#   module        one per OpenSpec change (changes/<change>/)
+#   work item     one per open task in that change's tasks.md, linked back to the file on GitHub
+#
+# CREATE-ONLY. Every object is identified by external_source "openspec" and an external_id built
+# from the repository, change and task, so a re-run creates only what is missing. Nothing that
+# already exists is ever updated or removed, and no work item is ever given a state: status,
+# assignees and labels belong to Plane from the moment an item exists (change task 4.2, risk 4).
+# A task already ticked in tasks.md when first seen is not imported.
+#
+# Play 1 reads tasks.md through GitHub on the controller (lib/openspec_to_plane.py): a git trees
+# call and one raw read per file, no clone, so a dry run writes nothing. Public repositories are
+# read without credentials. A PRIVATE repository needs the "plane-compose" GitHub App (change task
+# 4.4), which is not provisioned yet: enabling one is refused by name until it is.
+#
+# Play 2 runs sync_projects.py inside plane-api as the automation account, with a workspace
+# service token it fetches for itself. That script holds a process lock for its whole run, so two
+# overlapping syncs are refused rather than racing Plane's external-id check (design.md risk 4).
+#
+# Dry run is --check: Play 2 reports what it would create and creates nothing.
+#
+# Change: plan/development/openspec/changes/deploy-plane-work-management/ (task 4.4)
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: the Plane group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: plane_svc
+    preflight_group_expected: plane_svc
+
+# ── Play 1: what the repositories declare ─────────────────────────────────────
+- name: "Read open OpenSpec tasks from GitHub"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _declared: "{{ (lookup('file', playbook_dir ~ '/../services/plane/projects.yml') | from_yaml).plane_projects }}"
+    _enabled: "{{ _declared | selectattr('enabled') | list }}"
+    _parser: "{{ playbook_dir }}/../services/plane/lib/openspec_to_plane.py"
+  tasks:
+    - name: "Refuse an enabled private repository until the plane-compose App exists"
+      ansible.builtin.assert:
+        that:
+          - _enabled | selectattr('private') | list | length == 0
+        fail_msg: >-
+          {{ _enabled | selectattr('private') | map(attribute='repo') | join(', ') }} is private:
+          reading it needs the plane-compose GitHub App (change task 4.4), not provisioned yet.
+        quiet: true
+
+    - name: "Read each repository's open tasks (read-only)"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _parser }}"
+          - --repo
+          - "{{ item.repo }}"
+          - --branch
+          - "{{ item.branch | default('main') }}"
+          - --github
+      loop: "{{ _enabled }}"
+      loop_control:
+        label: "{{ item.repo }}"
+      register: _parsed
+      changed_when: false
+      check_mode: false
+
+    - name: "Assemble the desired projects"
+      ansible.builtin.set_fact:
+        _desired_projects: >-
+          {%- set out = [] -%}
+          {%- for r in _parsed.results -%}
+          {%- set d = r.stdout | from_json -%}
+          {%- set _ = out.append({'repo': r.item.repo, 'identifier': r.item.identifier,
+                                  'name': r.item.name, 'modules': d.modules}) -%}
+          {%- endfor -%}
+          {{ out }}
+        _skipped_count: "{{ _parsed.results | map(attribute='stdout') | map('from_json') | map(attribute='skipped') | map('length') | sum }}"
+
+# ── Play 2: make Plane hold them ──────────────────────────────────────────────
+- name: "Create the missing Plane projects, modules and work items"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _session_src: "{{ playbook_dir }}/../services/plane/deployment/plane_session.py"
+    _script_src: "{{ playbook_dir }}/../services/plane/deployment/sync_projects.py"
+  tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Read the automation account's password"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/plane"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _plane_secret
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Assemble the sync input"
+      ansible.builtin.set_fact:
+        _sync_input:
+          base: http://localhost:8000
+          host: "{{ plane_public_url | urlsplit('hostname') }}"
+          origin: "{{ plane_public_url }}"
+          email: "{{ plane_automation_email }}"
+          password: "{{ _plane_secret.json.data.data.plane_automation_password }}"
+          workspace_slug: "{{ plane_workspace_slug }}"
+          projects: "{{ hostvars['localhost']._desired_projects }}"
+      no_log: true
+
+    # Both runs carry the password on stdin; the script prints counts only (never a credential),
+    # judged below so a refusal is visible while these tasks stay no_log.
+    - name: "Count what is missing (read-only; also the dry run)"
+      ansible.builtin.command:
+        argv: &sync_argv
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - plane-api
+          - python
+          - -c
+          - "{{ lookup('file', _session_src) ~ '\n' ~ lookup('file', _script_src) }}"
+        stdin: "{{ _sync_input | combine({'apply': false}) | to_json }}"
+      register: _sync_plan
+      changed_when: false
+      failed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Create what is missing"
+      ansible.builtin.command:
+        argv: *sync_argv
+        stdin: "{{ _sync_input | combine({'apply': true}) | to_json }}"
+      register: _sync_apply
+      changed_when: >-
+        (_sync_apply.stdout_lines | default([''], true) | last).startswith('{')
+        and ((_sync_apply.stdout_lines | last) | from_json).changed | default(false) | bool
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - (_sync_plan.stdout_lines | default([''], true) | last).startswith('{')
+        - ((_sync_plan.stdout_lines | last) | from_json).error is not defined
+
+    - name: "Keep only the sync summary"
+      ansible.builtin.set_fact:
+        # The exit code only: a command result carries its stdin (the password) under invocation.
+        _sync_rc: "{{ (_sync_apply if (_sync_apply is defined and _sync_apply is not skipped) else _sync_plan).rc }}"
+        _sync_summary: >-
+          {%- set r = _sync_apply if (_sync_apply is defined and _sync_apply is not skipped) else _sync_plan -%}
+          {{ (r.stdout_lines | last | from_json)
+             if (r.stdout_lines | default([]) | length > 0 and (r.stdout_lines | last).startswith('{'))
+             else {'error': 'the sync script printed no summary (exit ' ~ r.rc ~ ')'} }}
+      no_log: true
+
+    - name: "Sync succeeded"
+      ansible.builtin.assert:
+        that:
+          - _sync_rc | int == 0
+          - _sync_summary.error is not defined
+        fail_msg: >-
+          plane project sync failed: {{ _sync_summary.error | default('exit ' ~ _sync_rc) }}{{
+          ('; already done before the failure: ' ~ _sync_summary.actions) if _sync_summary.actions | default([]) else '' }}
+        quiet: true
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'DRY RUN (--check), would create' if ansible_check_mode else 'Created' }}:
+          {{ (_sync_summary.would_create if ansible_check_mode else _sync_summary.created) }};
+          already present {{ _sync_summary.existing }};
+          repairs {{ _sync_summary.repairs | default([]) }};
+          {{ hostvars['localhost']._skipped_count }} task lines not imported (done, superseded or unnumbered).

@@ -102,6 +102,8 @@ templates:
         type: string
         required: false
         default_value: "false"
+  - name: "Sync Plane Projects (Local)"
+    playbook: platform/playbooks/sync-plane-projects.yml
   - name: "Back Up Plane DB (Local)"
     playbook: platform/playbooks/backup-plane-db.yml
   - name: "Restore Plane DB (Local)"

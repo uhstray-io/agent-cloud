@@ -16,9 +16,12 @@ document on stdin:
 Identity is the external pair (external_source "openspec", external_id): a project's external_id is
 its repo, a module's and a work item's is the id the declaration gives it. A repeat create answers
 409 with the existing id, so a row already there is counted as existing and used, never re-created.
-Nothing is ever PATCHed or DELETEd: a row Plane holds that the declaration no longer names is left
-alone. A work item is linked to its module only when this run created it; an existing one is never
-re-linked.
+Nothing is ever DELETEd, and a row Plane holds that the declaration no longer names is left alone.
+A work item is linked to its module only when this run created it; an existing one is never
+re-linked. The ONE update: Plane creates a project with Modules switched off (module_view defaults
+to False, and a module create is then refused), so a project this tool made is created with Modules
+on, and one found with Modules explicitly off gets exactly {"module_view": true} — the setting the
+sync cannot work without — reported under "repairs". Items are never updated.
 
 Auth is the workspace service token: the session signs in once, POST .../service-api-tokens/ returns
 the token, and every /api/v1 call sends it as X-Api-Key.
@@ -111,7 +114,7 @@ def create(path, body, label):
 def create_project(p):
     status, _, made = v1("POST", f"/workspaces/{slug}/projects/",
                          {"name": p["name"], "identifier": p["identifier"], "external_id": p["repo"],
-                          "external_source": EXTERNAL_SOURCE})
+                          "external_source": EXTERNAL_SOURCE, "module_view": True})
     if status == 409 and isinstance(made, dict) and "identifier" in made:
         fail(f"project identifier {p['identifier']} for {p['repo']} is taken by another project", actions=done)
     return made_or_found(status, made, f"project {p['repo']}")
@@ -124,7 +127,11 @@ def tally(bucket, kind):
     counts[bucket][kind] += 1
 
 
-known = ours(listing(f"/workspaces/{slug}/projects/"))
+project_rows = listing(f"/workspaces/{slug}/projects/")
+known = ours(project_rows)
+modules_off = {r["external_id"] for r in project_rows
+               if r.get("external_source") == EXTERNAL_SOURCE and r.get("module_view") is False}
+repairs = []
 for p in cfg["projects"]:
     pid = known.get(p["repo"])
     if pid is None and not apply:
@@ -141,6 +148,14 @@ for p in cfg["projects"]:
         tally("created" if made else "existing", "projects")
     else:
         tally("existing", "projects")
+        if p["repo"] in modules_off and not apply:
+            repairs.append(f"would enable modules on project {p['repo']}")
+        elif p["repo"] in modules_off:
+            status, _, body = v1("PATCH", f"/workspaces/{slug}/projects/{pid}/", {"module_view": True})
+            if status != 200:
+                fail(f"enabling modules on project {p['repo']} failed ({status}){reason(body)}", actions=done)
+            done.append(f"enabled modules on project {p['repo']}")
+            repairs.append(f"enabled modules on project {p['repo']}")
 
     modules = ours(listing(f"/workspaces/{slug}/projects/{pid}/modules/"))
     items = ours(listing(f"/workspaces/{slug}/projects/{pid}/issues/"))
@@ -186,4 +201,5 @@ for p in cfg["projects"]:
                      actions=done)
             done.append(f"linked work item {it['name']}")
 
-print(json.dumps({"changed": any(counts["created"].values()), "applied": apply, **counts}))
+changed = any(counts["created"].values()) or (apply and bool(repairs))
+print(json.dumps({"changed": changed, "applied": apply, **counts, "repairs": repairs}))

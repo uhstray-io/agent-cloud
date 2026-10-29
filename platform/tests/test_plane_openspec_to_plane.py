@@ -449,10 +449,9 @@ def test_cli_reads_this_repository_checkout():
     out = run_cli(["--repo", "uhstray-io/agent-cloud", "--checkout", str(REPO_ROOT)])
     assert out.returncode == 0, out.stderr
     data = json.loads(out.stdout)
-    modules = {module["name"]: module for module in data["modules"]}
-    assert "deploy-plane-work-management" in modules
-    assert modules["deploy-plane-work-management"]["external_id"] == (
-        "uhstray-io/agent-cloud/deploy-plane-work-management")
+    # No change is named: any one of them is archived sooner or later, and this must not break then.
+    assert data["modules"]
+    assert all(module["external_id"] == "uhstray-io/agent-cloud/" + module["name"] for module in data["modules"])
     ids = [item["external_id"] for module in data["modules"] for item in module["items"]]
     assert len(ids) == len(set(ids))
     assert all(len(external_id) <= 255 for external_id in ids)

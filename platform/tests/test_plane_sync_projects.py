@@ -187,9 +187,9 @@ def writes(state):
 ZERO = {"projects": 0, "modules": 0, "items": 0}
 
 
-def counts(created=None, would=None, existing=None):
+def counts(created=None, would=None, existing=None, repairs=()):
     return {"created": {**ZERO, **(created or {})}, "would_create": {**ZERO, **(would or {})},
-            "existing": {**ZERO, **(existing or {})}}
+            "existing": {**ZERO, **(existing or {})}, "repairs": list(repairs)}
 
 
 def seed_everything(state, pid="p1"):
@@ -227,7 +227,8 @@ def test_apply_creates_everything_and_links_each_new_item_to_its_module(plane, l
     mod = {m["external_id"]: m["id"] for m in state["modules"][pid]}
     item = {i["external_id"]: i["id"] for i in state["issues"][pid]}
     assert [c["body"] for c in writes(state) if c["path"] == f"{WS}/projects/"] == [
-        {"name": "Agent Cloud", "identifier": "ACL", "external_id": "agent-cloud", "external_source": "openspec"}]
+        {"name": "Agent Cloud", "identifier": "ACL", "external_id": "agent-cloud", "external_source": "openspec",
+         "module_view": True}]
     links = [(c["path"], c["body"]) for c in writes(state) if c["path"].endswith("/module-issues/")]
     assert links == [
         (f"{WS}/projects/{pid}/modules/{mod['mod-a']}/module-issues/", {"issues": [item["item-1"]]}),
@@ -256,6 +257,29 @@ def test_rows_the_declaration_no_longer_names_are_left_alone_and_nothing_is_patc
     assert [c for c in state["calls"] if c["method"] in ("PATCH", "DELETE")] == []
     assert [m["external_id"] for m in state["modules"]["p1"]] == ["mod-a", "mod-b", "mod-old"]
     assert [i["external_id"] for i in state["issues"]["p1"]] == ["item-1", "item-2", "item-3", "item-old"]
+
+
+def test_a_project_of_ours_with_modules_off_gets_exactly_that_one_setting_back(plane, lock):
+    # Plane creates projects with Modules off and then refuses every module create.
+    state, base = plane
+    seed_everything(state)
+    state["projects"][0]["module_view"] = False
+    out = summary(run(base, lock, [PROJECT], apply=False))
+    assert out["repairs"] == ["would enable modules on project agent-cloud"]
+    assert writes(state) == []
+    out = summary(run(base, lock, [PROJECT], apply=True))
+    assert out["changed"] is True and out["repairs"] == ["enabled modules on project agent-cloud"]
+    assert [(c["method"], c["path"], c["body"]) for c in writes(state)] == [
+        ("PATCH", f"{WS}/projects/p1/", {"module_view": True})]
+
+
+def test_a_project_that_is_not_ours_is_never_patched(plane, lock):
+    state, base = plane
+    seed_everything(state)
+    state["projects"].append({"id": "px", "external_source": "someone-else", "external_id": "agent-cloud",
+                              "module_view": False})
+    summary(run(base, lock, [PROJECT], apply=True))
+    assert [c for c in state["calls"] if c["method"] == "PATCH"] == []
 
 
 def test_a_409_that_names_an_id_is_existing_and_is_not_linked(plane, lock):
