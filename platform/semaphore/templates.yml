@@ -835,6 +835,28 @@ templates:
         required: false
         default_value: "false"
 
+  # The skynet orchestration API (OpenSpec service-deployment-workflow, task 3.7). Its Semaphore token is
+  # the svc-skynet account's, written to secret/services/skynet by "Provision skynet Semaphore Access":
+  # run that FIRST, because this deploy stops before any write when the token is absent. The gateway's
+  # /skynet/ route stays off until this deploy has run once. main has no skynet deploy until dev is
+  # promoted, so the main-bound template cannot run; the "(Dev)" variant can.
+  - name: Deploy skynet
+    playbook: platform/playbooks/deploy-skynet.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
   # The Dispatch Console's own read-only Semaphore identity (plan 17, D20): svc-console, a non-admin
   # account at project role guest, its token stored at secret/services/console. Run it BEFORE Deploy
   # console (which reads that token and stops when it is absent), and before Manage Semaphore Access
@@ -1284,6 +1306,25 @@ templates:
   # Dev-only until promotion, for the same reason as Deploy console above.
   - name: Clean Deploy console
     playbook: platform/playbooks/clean-deploy-console.yml
+    dev_variant: true
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # Destroys skynet's run and workflow state (its Postgres volume). The api_token, read_token and
+  # db_password come back from OpenBao, and the svc-skynet token too, so a fresh deploy needs only
+  # Provision skynet Semaphore Access to have run before. main has no skynet deploy until promotion.
+  - name: Clean Deploy skynet
+    playbook: platform/playbooks/clean-deploy-skynet.yml
     dev_variant: true
     survey_vars:
       - name: confirm_reset

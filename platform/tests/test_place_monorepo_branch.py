@@ -19,11 +19,9 @@ string, the `{file: ...}` dict, and any path ending in tasks/place-monorepo.yml 
 placement row fails, so an unrecognised form cannot pass silently. Block-level `when` and `vars`,
 and a branch set by `set_fact`, are not read: the guard is conservative there and may flag a
 correct play. A positive `local_mode` term followed by a comparison (`local_mode | bool == false`)
-would pass; no playbook uses that form. LOCAL_ONLY lists the plays that place only in
-local mode, because the play refuses any other run before the include.
+would pass; no playbook uses that form.
 """
 
-import copy
 import re
 
 import playbook_yaml
@@ -36,11 +34,6 @@ INCLUDE_KEYS = ("include_tasks", "ansible.builtin.include_tasks", "import_tasks"
 PLAY_TASK_KEYS = ("pre_tasks", "tasks", "post_tasks", "handlers")
 # A positive local_mode term opens with local_mode, optionally parenthesised. `not local_mode` does not match.
 LOCAL_MODE_TERM = re.compile(r"^\(?\s*local_mode\b")
-LOCAL_ONLY = {
-    "deploy-skynet.yml": "the play refuses any run outside local_mode before the placement include "
-                         "(the operator-token stopgap assert, deploy-skynet.yml:138-141; include at :166)",
-}
-PLACING = [playbook for playbook in PLAYBOOKS if playbook.name not in LOCAL_ONLY]
 
 
 def _positive_local_mode(condition):
@@ -110,29 +103,6 @@ def _shape(name):
     return [(unguarded, unnamed) for _, unguarded, unnamed in _placements(PLAYBOOKS_DIR / name)]
 
 
-def _asserts_local_mode(task):
-    module = task.get("ansible.builtin.assert", task.get("assert"))
-    return isinstance(module, dict) and any(_positive_local_mode(c) for c in _conditions(module.get("that")))
-
-
-def _local_mode_asserted_before_placement(doc):
-    """True when the document places the monorepo and every placing play asserts a positive
-    local_mode term before its first placement include."""
-    placing = False
-    for play in doc or []:
-        if not isinstance(play, dict) or "hosts" not in play:
-            continue
-        asserted = False
-        for task in _play_tasks(play):
-            if _is_placement(task):
-                placing = True
-                if not asserted:
-                    return False
-                break
-            asserted = asserted or _asserts_local_mode(task)
-    return placing
-
-
 def _unscanned_mentions(paths):
     """Playbooks whose raw text names the placement but yield no placement row: an include form
     the scanner does not read."""
@@ -142,10 +112,11 @@ def _unscanned_mentions(paths):
 def test_the_scanner_reads_the_placements_it_guards():
     # A renamed key or a new include form would make the guard pass for every file. These pins
     # keep it honest against known playbooks: tududi names its branch in play vars, skynet is
-    # unguarded and unnamed (local-only by allowlist), the o11y playbooks gate placement on
-    # local_mode, the journal collector names its branch on each include, console has one placement.
+    # unguarded (no local_mode term) and names its branch in play vars, the o11y playbooks gate
+    # placement on local_mode, the journal collector names its branch on each include, console has
+    # one placement.
     assert _shape("deploy-tududi.yml") == [(True, False)]
-    assert _shape("deploy-skynet.yml") == [(True, True)]
+    assert _shape("deploy-skynet.yml") == [(True, False)]
     assert _shape("drill-o11y-alert-canary.yml") == [(False, False)]
     assert _shape("restore-o11y-alert-baseline.yml") == [(False, False)]
     assert _shape("deploy-o11y-journal-collector.yml") == [(True, False), (True, False)]
@@ -159,31 +130,14 @@ def test_every_playbook_that_names_the_placement_is_scanned():
     )
 
 
-@pytest.mark.parametrize("playbook", PLACING, ids=lambda p: p.name)
+@pytest.mark.parametrize("playbook", PLAYBOOKS, ids=lambda p: p.name)
 def test_an_unguarded_placement_names_its_branch(playbook):
     assert _unnamed_in(playbook_yaml.load(playbook)) == [], (
         playbook.name + ": a play includes " + PLACEMENT + " without a positive local_mode term and "
         "names no `_branch`, in its vars or on the include. place-monorepo.yml:23-29 asserts it "
         "(task 9848). Add `_branch: \"{{ service_branch | default('main') }}\"` to that play's vars "
-        "(or the caller's chosen branch on the include), or list the play in LOCAL_ONLY with the "
-        "reason it only ever places locally."
+        "(or the caller's chosen branch on the include)."
     )
-
-
-def test_the_local_only_allowlist_names_only_live_exemptions():
-    for name, reason in LOCAL_ONLY.items():
-        path = PLAYBOOKS_DIR / name
-        assert path.is_file(), name + " no longer exists: drop its LOCAL_ONLY entry"
-        assert reason.strip(), name + ": LOCAL_ONLY needs the reason the placement is local-only"
-        doc = copy.deepcopy(playbook_yaml.load(path))
-        assert any(unnamed for _, _, unnamed in _placements_in(doc)), (
-            name + " no longer places the monorepo without a local_mode term or a named _branch: "
-            "drop its LOCAL_ONLY entry"
-        )
-        assert _local_mode_asserted_before_placement(doc), (
-            name + ": LOCAL_ONLY needs a positive local_mode assert before the placement include in "
-            "the same play (deploy-skynet.yml:138-141, include at :166)"
-        )
 
 
 # In-memory cases: each builds a play dict and feeds the same functions the file checks use.
@@ -261,42 +215,3 @@ def test_an_unrecognised_form_is_reported_by_the_backstop(tmp_path):
         "- hosts: all\n  tasks:\n    - ansible.builtin.include_tasks: [tasks/place-monorepo.yml]\n"
     )
     assert _unscanned_mentions([recognised, unrecognised]) == ["unrecognised.yml"]
-
-
-# LOCAL_ONLY is backed by a real assert. These run on an in-memory copy of deploy-skynet.yml.
-
-
-def _skynet_doc():
-    return copy.deepcopy(playbook_yaml.load(PLAYBOOKS_DIR / "deploy-skynet.yml"))
-
-
-def _without_local_assert(doc):
-    for play in doc:
-        play["tasks"] = [task for task in play.get("tasks") or [] if not _asserts_local_mode(task)]
-
-
-def _local_assert_after_placement(doc):
-    for play in doc:
-        tasks = play.get("tasks") or []
-        if not any(_is_placement(task) for task in tasks):
-            continue
-        asserts = [task for task in tasks if _asserts_local_mode(task)]
-        rest = [task for task in tasks if not _asserts_local_mode(task)]
-        at = next(i for i, task in enumerate(rest) if _is_placement(task)) + 1
-        play["tasks"] = rest[:at] + asserts + rest[at:]
-
-
-def test_the_real_skynet_asserts_local_mode_before_placing():
-    assert _local_mode_asserted_before_placement(_skynet_doc())
-
-
-def test_removing_the_local_mode_assert_fails_the_check():
-    doc = _skynet_doc()
-    _without_local_assert(doc)
-    assert not _local_mode_asserted_before_placement(doc)
-
-
-def test_moving_the_local_mode_assert_after_the_placement_fails_the_check():
-    doc = _skynet_doc()
-    _local_assert_after_placement(doc)
-    assert not _local_mode_asserted_before_placement(doc)

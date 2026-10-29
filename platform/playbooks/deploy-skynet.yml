@@ -2,25 +2,31 @@
 # deploy-skynet.yml — skynet orchestration API deploy (composable).
 #
 # Phase 1: Refuse invalid inputs before anything changes; place repo + manage-secrets
-#          (api_token + db_password generated once into OpenBao, reused thereafter;
-#          the agentgateway role keys shared-read, because the gateway enrolls them
-#          for skynet's agents); template .env.
+#          (api_token, db_password and read_token generated once into OpenBao, reused
+#          thereafter; semaphore_api_token is the svc-skynet account's token, read and
+#          never generated; the agentgateway role keys shared-read, because the gateway
+#          enrolls them for skynet's agents); template .env.
 # Phase 2: registry login (GHCR package is private) + image pre-flight + deploy.sh
 #          (container lifecycle only).
 # Phase 3: Verify inside the skynet container: /skynet/healthz answers 200, an
 #          authenticated run request is accepted (400 for the verify graph name,
 #          which no graph carries), and the same request without a token is 401.
+#          The read token lists runs (200) and cannot start one (401).
 #
 # skynet is a two-container rootless-podman stack (skynet API on the CI-built GHCR
 # image pinned by digest, and its own Postgres). The API listens on 8080 inside the
-# container; nothing here publishes it. The gateway's /skynet/ route (agentgateway
-# task 3.3) reads secret/services/skynet:api_token through a shared read, so this
-# deploy must run before that route is enabled, and the route must stay off until
-# this deploy has run once.
+# container and is published on skynet_publish_bind:skynet_publish_port (default
+# 127.0.0.1:8380). Production declares the VM's LAN address in inventory; the firewall
+# declaration must admit only the Dispatch Console VM and the gateway VM. The gateway's
+# /skynet/ route (agentgateway task 3.3) reads secret/services/skynet:api_token through a
+# shared read and is NOT enabled by this deploy; it stays off until this deploy has run once.
 #
-# Deploy order on a host: agentgateway (route off) -> skynet -> agentgateway (route on).
+# Deploy order on a host: Provision skynet Semaphore Access (once, writes the token this
+# deploy reads) -> agentgateway (route off) -> skynet -> agentgateway (route on, later).
 #
-# Plan: plan/development/15-service-deployment-workflow-agents.md (skynet, workflow 3.7).
+# Plan: OpenSpec change service-deployment-workflow, task 3.7
+# (plan/development/openspec/changes/service-deployment-workflow/tasks.md); design in
+# plan/development/15-service-deployment-workflow-agents.md.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -45,15 +51,26 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    # place-monorepo.yml asserts _branch is defined outside local_mode (:23-29). Production clones
+    # service_branch (the (Dev) template's generator default is dev; the base template defaults to main).
+    _branch: "{{ service_branch | default('main') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # Both secrets must be STABLE across redeploys: a new api_token would break the
-    # gateway's /skynet/ route until its backend token is re-read, and a new db_password
-    # would lock skynet out of the existing Postgres volume, so manage-secrets generates
-    # once into OpenBao and reuses on later runs.
+    # The generated secrets must be STABLE across redeploys: a new api_token would break the
+    # gateway's /skynet/ route until its backend token is re-read, a new db_password would lock
+    # skynet out of the existing Postgres volume, and a new read_token would break the Dispatch
+    # Console's read path (it shared-reads secret/services/skynet:read_token). manage-secrets
+    # generates each once into OpenBao and reuses it on later runs.
+    # semaphore_api_token is type existing: NEVER generated. It is the token of the svc-skynet
+    # account (project role task_runner), written to secret/services/skynet by
+    # "Provision skynet Semaphore Access", which must run first. _required_existing_secrets stops
+    # the run before any write when it is absent.
     _secret_definitions:
       - { name: api_token, type: random, length: 48 }
       - { name: db_password, type: random, length: 32 }
+      - { name: read_token, type: random, length: 48 }
+      - { name: semaphore_api_token, type: existing }
+    _required_existing_secrets: [semaphore_api_token]
     # The agentgateway owns one client_<role> key per skynet role identity (declared in
     # its agw_clients). Read-only: skynet presents these to the gateway, never stores
     # them back under secret/services/skynet. Every key must exist, or manage-secrets
@@ -129,38 +146,28 @@
           - (skynet_model | default('', true) | string | trim | length) > 0
         fail_msg: "Declare skynet_model (the model skynet's graph requests through the gateway) in inventory."
 
-    # LOCAL-DEV STOPGAP: skynet's Semaphore client needs an API token. This is the operator's
-    # token (secret/services/semaphore:api_token), read so the local skynet can call the local
-    # Semaphore. The refusal below keeps it out of every other environment. Follow-up: verify the
-    # Semaphore project role for skynet's calls, replace this read with a token scoped to that
-    # role, and remove the block. The fact is underscore-named so an extra var cannot replace it
-    # (the executor-override invariant). Never printed; no_log is on this credential read only.
-    - name: "Refuse the Semaphore operator-token stopgap outside local mode"
+    # Optional: unset, the compose defaults apply (127.0.0.1:8380). A declared value is checked
+    # here, before anything changes. 0.0.0.0 is refused: the API must not listen on every interface.
+    - name: "Refuse skynet_publish_bind unless it is one non-wildcard IPv4 address"
       ansible.builtin.assert:
         that:
-          - local_mode | default(false) | bool
+          - (skynet_publish_bind | string) is match('^(?!0[.]0[.]0[.]0$)[0-9]{1,3}([.][0-9]{1,3}){3}$')
         fail_msg: >-
-          skynet's Semaphore token is the local-dev operator-token stopgap; production needs a
-          scoped token first (follow-up: verify the Semaphore project role for skynet's calls).
+          skynet_publish_bind must be one IPv4 address to publish the skynet API on: the VM's own
+          LAN address in production, 127.0.0.1 for loopback. 0.0.0.0 is refused. Set it in the
+          inventory and re-run.
+      when: skynet_publish_bind is defined
 
-    - name: "Read the Semaphore API token for skynet (local-dev stopgap)"
-      ansible.builtin.set_fact:
-        _skynet_semaphore_token: >-
-          {{ lookup('community.hashi_vault.hashi_vault',
-                    'secret/data/services/semaphore:api_token',
-                    url=(openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true)),
-                    auth_method='approle',
-                    role_id=(bao_role_id | default(lookup('env', 'BAO_ROLE_ID'))),
-                    secret_id=(bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')))) }}
-      no_log: true
-
-    - name: "Require a usable Semaphore token before rendering skynet's env"
+    - name: "Refuse skynet_publish_port unless it is a whole port number from 1024 to 65535"
       ansible.builtin.assert:
         that:
-          - (_skynet_semaphore_token | default('') | length) > 0
+          - (skynet_publish_port | string) is match('^[0-9]{4,5}$')
+          - (skynet_publish_port | string | int) >= 1024
+          - (skynet_publish_port | string | int) <= 65535
         fail_msg: >-
-          No api_token at secret/services/semaphore in OpenBao. skynet's env needs the
-          operator's Semaphore token for the local-dev stopgap; store it there, then re-run.
+          skynet_publish_port must be a whole port number from 1024 to 65535 (the host port the
+          skynet API is published on; 8380 by default). Set it in the inventory and re-run.
+      when: skynet_publish_port is defined
 
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
@@ -380,9 +387,82 @@
           skynet unauthenticated POST /skynet/runs answered {{ _skynet_unauthed.stdout | trim }}, not 401.
           The run endpoint is reachable without a bearer token.
 
+    # The read token (SKYNET_READ_TOKEN, the Dispatch Console's bearer) reads run state and must
+    # never start a run. Both probes run inside the container with the token from its environment.
+    - name: "Read token lists runs (GET /skynet/runs -> 200, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import os
+            import urllib.error
+            import urllib.request
+            request = urllib.request.Request(
+                'http://127.0.0.1:8080/skynet/runs',
+                headers={'Authorization': 'Bearer ' + os.environ['SKYNET_READ_TOKEN']},
+                method='GET',
+            )
+            try:
+                print(urllib.request.urlopen(request, timeout=10).status)
+            except urllib.error.HTTPError as error:
+                print(error.code)
+      register: _skynet_read_list
+      changed_when: false
+      check_mode: false
+
+    - name: "Assert the read token lists runs (200)"
+      ansible.builtin.assert:
+        that:
+          - _skynet_read_list.stdout | trim == '200'
+        fail_msg: >-
+          skynet GET /skynet/runs with the read token answered {{ _skynet_read_list.stdout | trim }}, not 200.
+          401 means SKYNET_READ_TOKEN is not accepted (read_token and the container's value disagree, or
+          the image predates the read token); anything else means the route or the server is wrong.
+
+    - name: "Read token cannot start a run (POST /skynet/runs -> 401, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import os
+            import urllib.error
+            import urllib.request
+            request = urllib.request.Request(
+                'http://127.0.0.1:8080/skynet/runs',
+                data=b'{"graph": "__agent_cloud_verify__", "input": {}}',
+                headers={'Authorization': 'Bearer ' + os.environ['SKYNET_READ_TOKEN'], 'Content-Type': 'application/json'},
+                method='POST',
+            )
+            try:
+                print(urllib.request.urlopen(request, timeout=10).status)
+            except urllib.error.HTTPError as error:
+                print(error.code)
+      register: _skynet_read_post
+      changed_when: false
+      check_mode: false
+
+    - name: "Assert the read token is refused on POST /skynet/runs (401)"
+      ansible.builtin.assert:
+        that:
+          - _skynet_read_post.stdout | trim == '401'
+        fail_msg: >-
+          skynet POST /skynet/runs with the READ token answered {{ _skynet_read_post.stdout | trim }}, not 401.
+          Anything but 401 means the read-only bearer can start runs. Stop and fix the server before use.
+
     - name: "Report"
       ansible.builtin.debug:
-        msg: "skynet healthy — /skynet/healthz 200, run endpoint 400 with a token and 401 without (internal :8080; the gateway's /skynet/ route fronts it)."
+        msg: >-
+          skynet healthy — /skynet/healthz 200; run endpoint 400 with the api token and 401 without
+          (inside the container, :8080); read token lists runs (200) and cannot start one (401).
+          Published on skynet_publish_bind:skynet_publish_port; the gateway's /skynet/ route is separate.
 
     # Last: every verify task above passed (a failure stops the play before this records).
     - name: "Record the service-deploy step result"

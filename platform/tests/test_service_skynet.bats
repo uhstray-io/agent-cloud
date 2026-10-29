@@ -56,10 +56,16 @@ skip_unless_service_file() {
   assert_precedes "$CLEAN_PLAYBOOK" 'import_playbook: refuse-internal-extra-vars\.yml' 'include_tasks: tasks/clean-service\.yml'
 }
 
-@test "skynet: deploy secrets are api_token and db_password, both random and generate-once" {
+@test "skynet: api_token, db_password and read_token are generate-once; semaphore_api_token is existing and required" {
   assert_grep -qE 'name: api_token, type: random, length: 48' "$PLAYBOOK"
   assert_grep -qE 'name: db_password, type: random, length: 32' "$PLAYBOOK"
+  assert_grep -qE 'name: read_token, type: random, length: 48' "$PLAYBOOK"
+  assert_grep -qE 'name: semaphore_api_token, type: existing' "$PLAYBOOK"
+  assert_grep -qF '_required_existing_secrets: [semaphore_api_token]' "$PLAYBOOK"
   assert_grep -qF 'tasks/manage-secrets.yml' "$PLAYBOOK"
+  # The Semaphore token is written by a separate step (Provision skynet Semaphore Access). It must
+  # never be generated here: no random or django definition may carry that name.
+  refute_grep -qE 'name: semaphore_api_token, type: (random|django)' "$PLAYBOOK"
 }
 
 @test "skynet: shared-reads the six agentgateway role keys and nothing else" {
@@ -108,24 +114,41 @@ skip_unless_service_file() {
   refute_grep -qF '_assert_bao_url: "{{ openbao_addr' "$PLAYBOOK"
 }
 
-@test "skynet: the Semaphore token stopgap is a no_log credential read, labelled as a stopgap" {
-  local block
-  block=$(task_block "$PLAYBOOK" 'Read the Semaphore API token for skynet')
-  assert_contains "$block" "secret/data/services/semaphore:api_token"
-  assert_contains "$block" "no_log: true"
-  assert_contains "$block" "community.hashi_vault.hashi_vault"
-  # The stopgap is labelled where it is written, so nobody reads it as the design.
-  assert_grep -qF 'LOCAL-DEV STOPGAP' "$PLAYBOOK"
+@test "skynet: the operator's Semaphore token is no longer read anywhere in the skynet deploy" {
+  # The local-dev stopgap (secret/services/semaphore:api_token, operator-owned) is gone in every
+  # environment. skynet's Semaphore identity is svc-skynet, whose token is an existing secret at
+  # secret/services/skynet:semaphore_api_token.
+  refute_grep -qF 'services/semaphore' "$PLAYBOOK"
+  refute_grep -qF '_skynet_semaphore_token' "$PLAYBOOK"
+  refute_grep -qF 'LOCAL-DEV STOPGAP' "$PLAYBOOK"
+  refute_grep -qF 'community.hashi_vault.hashi_vault' "$PLAYBOOK"
+  # No refusal or read before the monorepo is placed depends on local_mode (the old stopgap did).
+  local refusals_block
+  refusals_block=$(sed -n '/^    - name: "Refuse skynet_image/,/^    - name: "Place the monorepo/p' "$PLAYBOOK")
+  assert_contains "$refusals_block" 'Refuse skynet_publish_port'
+  refute_grep -qF 'local_mode' <<<"$refusals_block"
+  if [ -f "$DEPLOY_DIR/templates/env.j2" ]; then
+    refute_grep -qF '_skynet_semaphore_token' "$DEPLOY_DIR/templates/env.j2"
+  fi
 }
 
-@test "skynet: no_log is on the Semaphore token read and nowhere else in the deploy playbook" {
-  # no_log is for credential tasks only (AGENTS.md "Credential Handling"). The verify and
-  # deploy tasks must keep their output, or a failed probe is undiagnosable.
+@test "skynet: the semaphore_api_token requirement is checked by manage-secrets before any OpenBao write" {
+  # The deploy declares it as an existing secret. manage-secrets refuses the run by name when it is
+  # absent, and that check precedes the store step, so a refused run writes nothing to OpenBao.
+  local manage="$REPO_ROOT/platform/playbooks/tasks/manage-secrets.yml"
+  assert_precedes "$manage" 'Require operator-owned secrets before any write' 'Store all secrets in OpenBao'
+  assert_grep -qF '_required_existing_secrets: [semaphore_api_token]' "$PLAYBOOK"
+}
+
+@test "skynet: no_log appears nowhere in the deploy playbook (manage-secrets owns the credential reads)" {
+  # no_log is for credential tasks only (AGENTS.md "Credential Handling"). The deploy playbook has
+  # no credential task of its own now, and its verify and deploy tasks must keep their output, or a
+  # failed probe is undiagnosable.
   python3 - "$PLAYBOOK" <<'PY'
 import sys
 import yaml
 
-allowed = {"Read the Semaphore API token for skynet (local-dev stopgap)"}
+allowed = set()
 plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 found = []
 for play in plays:
@@ -212,14 +235,34 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 8 ]
-  assert_grep -qx 'Require a usable Semaphore token before rendering skynet.s env' <<<"$refusals"
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 9 ]
+  # The two publish refusals name the declared bind and port, so a reader finds each one.
+  assert_grep -qx 'Refuse skynet_publish_bind unless it is one non-wildcard IPv4 address' <<<"$refusals"
+  assert_grep -qx 'Refuse skynet_publish_port unless it is a whole port number from 1024 to 65535' <<<"$refusals"
   # Every refusal sits before the monorepo is placed, so a refused run changes nothing.
   assert_precedes "$PLAYBOOK" 'Refuse skynet_image unless' 'tasks/place-monorepo\.yml'
-  assert_precedes "$PLAYBOOK" 'Require a usable Semaphore token' 'tasks/place-monorepo\.yml'
-  # The production refusal runs before the OpenBao read it guards, so no secret is fetched first.
-  assert_precedes "$PLAYBOOK" 'Refuse the Semaphore operator-token stopgap' 'Read the Semaphore API token'
+  assert_precedes "$PLAYBOOK" 'Refuse skynet_publish_bind unless' 'tasks/place-monorepo\.yml'
+  assert_precedes "$PLAYBOOK" 'Refuse skynet_publish_port unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_semaphore_project unless' 'tasks/manage-secrets\.yml'
+  # The svc-skynet token has no refusal here: it is an existing secret, and manage-secrets refuses
+  # the run by name after the placement and before any OpenBao write (the Deploy console precedent).
+  refute_grep -qiE 'semaphore (api )?token' <<<"$refusals"
+}
+
+@test "skynet: the read token lists runs (200) and cannot start one (401), inside the container" {
+  local play3 list post
+  play3=$(sed -n '/^- name: "Phase 3: Verify skynet"/,$p' "$PLAYBOOK")
+  assert_contains "$play3" "os.environ['SKYNET_READ_TOKEN']"
+  list=$(task_block "$PLAYBOOK" 'Read token lists runs (GET /skynet/runs -> 200, inside the container)')
+  assert_contains "$list" "method='GET'"
+  assert_contains "$list" "os.environ['SKYNET_READ_TOKEN']"
+  refute_contains "$list" "SKYNET_API_TOKEN"
+  assert_contains "$(task_block "$PLAYBOOK" 'Assert the read token lists runs (200)')" "== '200'"
+  post=$(task_block "$PLAYBOOK" 'Read token cannot start a run (POST /skynet/runs -> 401, inside the container)')
+  assert_contains "$post" "method='POST'"
+  assert_contains "$post" "os.environ['SKYNET_READ_TOKEN']"
+  refute_contains "$post" "SKYNET_API_TOKEN"
+  assert_contains "$(task_block "$PLAYBOOK" 'Assert the read token is refused on POST /skynet/runs (401)')" "== '401'"
 }
 
 @test "skynet: the image refusal names the digest-pinned skynet-tier2 form and nothing looser" {
@@ -241,8 +284,7 @@ plays = yaml.safe_load(open(src, encoding="utf-8"))
 play1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
 tasks = [
     t for t in play1["tasks"]
-    if "ansible.builtin.assert" in t
-    and (t["name"].startswith("Refuse ") or t["name"].startswith("Require a usable Semaphore token"))
+    if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
 if len(tasks) != 9:
     sys.exit(f"expected 9 refusal asserts in Phase 1, found {len(tasks)}")
@@ -257,9 +299,7 @@ base = {
     "skynet_semaphore_url": "https://semaphore.agent-cloud.test",
     "skynet_semaphore_catalog": "local",
     "skynet_semaphore_project": 1,
-    "_skynet_semaphore_token": "present",
     "skynet_model": "test-model",
-    "local_mode": True,
 }
 with open(f"{out}/base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
@@ -353,18 +393,44 @@ PY
   assert_contains "$output" 'Declare skynet_model'
 }
 
-@test "skynet: an empty Semaphore token refuses before any write" {
+@test "skynet: skynet_publish_bind refuses 0.0.0.0, a name, a short address and empty; a non-wildcard address and loopback are accepted" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
-  run accepted _skynet_semaphore_token '""'
+  run accepted skynet_publish_bind '"0.0.0.0"'
   [ "$status" -ne 0 ]
+  run accepted skynet_publish_bind '"localhost"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_bind '"10.0.0"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_bind '""'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_bind '"203.0.113.10"'
+  [ "$status" -eq 0 ]
+  run accepted skynet_publish_bind '"127.0.0.1"'
+  [ "$status" -eq 0 ]
 }
 
-@test "skynet: the Semaphore operator-token stopgap is refused outside local mode, before any OpenBao read" {
+@test "skynet: skynet_publish_port refuses a privileged, out-of-range, fractional or boolean value; 8380 is accepted" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
-  run accepted local_mode 'false'
+  run accepted skynet_publish_port '80'
   [ "$status" -ne 0 ]
+  run accepted skynet_publish_port '1023'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_port '65536'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_port '8380.5'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_port 'true'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_port '"8380x"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_port '1024'
+  [ "$status" -eq 0 ]
+  run accepted skynet_publish_port '8380'
+  [ "$status" -eq 0 ]
+  run accepted skynet_publish_port '65535'
+  [ "$status" -eq 0 ]
 }
 
 # ── Clean deploy and local wiring ────────────────────────────────────────────
@@ -521,19 +587,55 @@ PY
 
 # ── Part 1 contract (skip until the service directory is in this worktree) ───
 
-@test "skynet: env template renders the secrets and the Semaphore token the playbook provides" {
+@test "skynet: env renders the svc-skynet Semaphore token, the read token and the distinct publish names" {
   local env="$DEPLOY_DIR/templates/env.j2"
   skip_unless_service_file "$env"
   assert_grep -qF '{{ secrets.api_token }}' "$env"
   assert_grep -qF '{{ secrets.db_password }}' "$env"
-  assert_grep -qF '{{ _skynet_semaphore_token }}' "$env"
+  assert_grep -qF 'SKYNET_SEMAPHORE_TOKEN={{ secrets.semaphore_api_token }}' "$env"
+  assert_grep -qF 'SKYNET_READ_TOKEN={{ secrets.read_token }}' "$env"
+  assert_grep -qF "SKYNET_PUBLISH_BIND={{ skynet_publish_bind | default('127.0.0.1') }}" "$env"
+  assert_grep -qF 'SKYNET_PUBLISH_PORT={{ skynet_publish_port | default(8380) }}' "$env"
   # The verify reads the bearer from the container's environment under this exact name.
   assert_grep -qE '^SKYNET_API_TOKEN=' "$env"
+  # The image sets SKYNET_BIND=0.0.0.0 and SKYNET_PORT; rendering either here would move the listener.
+  refute_grep -qE '^SKYNET_(BIND|PORT)=' "$env"
+  refute_grep -qF '_skynet_semaphore_token' "$env"
 }
 
-@test "skynet: compose names the two containers the playbook verifies and never publishes the API" {
+@test "skynet: compose publishes the API on the declared bind and port, loopback by default; skynet-db publishes nothing" {
   local compose="$DEPLOY_DIR/compose.yml"
   skip_unless_service_file "$compose"
   assert_grep -qE '^  skynet:' "$compose"
   assert_grep -qE '^  skynet-db:' "$compose"
+  assert_grep -qF '      - "${SKYNET_PUBLISH_BIND:-127.0.0.1}:${SKYNET_PUBLISH_PORT:-8380}:8080"' "$compose"
+  # One ports list, and it sits inside the skynet service, before skynet-db.
+  [ "$(grep -c '^    ports:' "$compose")" -eq 1 ]
+  assert_precedes "$compose" '^  skynet:' '^    ports:'
+  assert_precedes "$compose" '^    ports:' '^  skynet-db:'
+  # The image's own SKYNET_BIND and SKYNET_PORT are never substituted as the publish knobs (a
+  # comment may name them; a ${...} substitution may not).
+  refute_grep -qE '[$][{]SKYNET_(BIND|PORT)[}:-]' "$compose"
+}
+
+@test "skynet: production templates offer Deploy and Clean Deploy, dev-bound, the clean one behind confirm_reset" {
+  python3 - "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys
+import yaml
+
+templates = {t["name"]: t for t in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"]}
+deploy = templates["Deploy skynet"]
+assert deploy["playbook"] == "platform/playbooks/deploy-skynet.yml", deploy
+assert deploy.get("dev_variant") is True, deploy
+fields = {v["name"]: v for v in deploy.get("survey_vars", [])}
+assert set(fields) == {"service_branch", "deploy_force_recreate"}, sorted(fields)
+assert fields["service_branch"].get("default_value") == "main", fields["service_branch"]
+clean = templates["Clean Deploy skynet"]
+assert clean["playbook"] == "platform/playbooks/clean-deploy-skynet.yml", clean
+assert clean.get("dev_variant") is True, clean
+cfields = {v["name"]: v for v in clean.get("survey_vars", [])}
+assert set(cfields) == {"confirm_reset", "service_branch"}, sorted(cfields)
+reset = cfields["confirm_reset"]
+assert reset.get("required") is True and "default_value" not in reset, reset
+PY
 }

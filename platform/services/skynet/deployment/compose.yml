@@ -1,9 +1,13 @@
 # skynet — Tier 2 orchestration API and its checkpoint database (Podman-compatible compose).
 #
 # Two containers: skynet (the orchestration API, :8080 on the container network) and
-# skynet-db (its own Postgres for durable LangGraph checkpoints, internal only). Neither
-# publishes a host port. The base file is what skynet's own compose declares; compose.local.yml
-# attaches skynet to the local-dev network so the local agentgateway can route /skynet/ to it.
+# skynet-db (its own Postgres for durable LangGraph checkpoints, internal only). skynet-db
+# publishes nothing. skynet publishes its API on ${SKYNET_PUBLISH_BIND}:${SKYNET_PUBLISH_PORT}
+# (rendered from inventory skynet_publish_bind / skynet_publish_port; loopback 127.0.0.1:8380 by
+# default). Production declares the VM's LAN address; the firewall must admit only the Dispatch
+# Console VM and the gateway VM. The base file is what skynet's own compose declares;
+# compose.local.yml attaches skynet to the local-dev network so the local agentgateway can route
+# /skynet/ to it.
 #
 # The image is skynet's Tier 2 image, pinned by digest through SKYNET_IMAGE (inventory
 # skynet_image). Ansible renders .env from OpenBao + inventory BEFORE this stack starts.
@@ -20,6 +24,10 @@ services:
     image: ${SKYNET_IMAGE:?set skynet_image in the inventory}
     container_name: skynet
     restart: always
+    # The declared bind and port (.env). The :- defaults keep an unset inventory on loopback. The
+    # container itself still listens on 8080 inside (the image sets SKYNET_BIND=0.0.0.0).
+    ports:
+      - "${SKYNET_PUBLISH_BIND:-127.0.0.1}:${SKYNET_PUBLISH_PORT:-8380}:8080"
     env_file:
       - .env
     environment:

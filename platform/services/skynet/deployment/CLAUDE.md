@@ -1,8 +1,9 @@
 # CLAUDE.md — platform/services/skynet/deployment
 
 skynet — the Tier 2 orchestration API (`skynet`, :8080 on the container network) and its own
-Postgres for LangGraph checkpoints (`skynet-db`, internal only). Two podman containers, no host
-port published. Its design is DESIGN-DECISIONS §17 in the skynet
+Postgres for LangGraph checkpoints (`skynet-db`, internal only). Two podman containers. `skynet`
+publishes its API on the declared host bind (`skynet_publish_bind`:`skynet_publish_port`, loopback
+`127.0.0.1:8380` by default); `skynet-db` publishes nothing. Its design is DESIGN-DECISIONS §17 in the skynet
 repository; its variables are listed in `deploy/tier2/README.md` there.
 
 ## What this service is
@@ -21,6 +22,12 @@ repository; its variables are listed in `deploy/tier2/README.md` there.
 - **skynet bearer** (`SKYNET_API_TOKEN`). agentgateway's route presents it as `backendAuth`, so
   every route except `/skynet/healthz` answers 401 without it. Reaching skynet directly on the
   network does not bypass the gateway.
+- **Read bearer** (`SKYNET_READ_TOKEN`), for the Dispatch Console. Accepted on `GET /skynet/runs`
+  and `GET /skynet/runs/<id>` only; `POST /skynet/runs` answers 401 to it. The server side of that
+  contract is in the skynet repository (a separate change); this repository's verify probes it
+  inside the container on every deploy. The console's shared read of it is not wired here.
+- A published API is reachable without the gateway. The bearers are the control, and the host
+  firewall must admit only the Dispatch Console VM and the gateway VM (site-config declaration).
 
 ## Secrets and the render contract
 
@@ -30,7 +37,9 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 |---|---|
 | `secret/services/skynet:db_password` | `SKYNET_DB_PASSWORD` (compose hands it to both containers) |
 | `secret/services/skynet:api_token` | `SKYNET_API_TOKEN` |
-| `secret/services/semaphore:api_token`, read by the playbook as the fact `_skynet_semaphore_token` | `SKYNET_SEMAPHORE_TOKEN` |
+| `secret/services/skynet:read_token` | `SKYNET_READ_TOKEN` |
+| `secret/services/skynet:semaphore_api_token` (existing; written by `Provision skynet Semaphore Access`) | `SKYNET_SEMAPHORE_TOKEN` |
+| inventory `skynet_publish_bind`, `skynet_publish_port` (optional; defaults `127.0.0.1`, `8380`) | `SKYNET_PUBLISH_BIND`, `SKYNET_PUBLISH_PORT`, substituted into compose `ports:` |
 | shared read `secret/services/agentgateway:client_<role>` (`secrets['client_<role>']`) | `SKYNET_GATEWAY_KEY_<ROLE>`, omitted when the key exists but is empty. A missing key stops the deploy (the shared read is all-or-nothing) |
 | inventory `skynet_gateway_url`, `skynet_model`, `skynet_opa_url`, `skynet_semaphore_url`, `skynet_semaphore_project`, `skynet_semaphore_catalog`, `skynet_image` | the matching `SKYNET_*` variables |
 
@@ -38,11 +47,17 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
   `network-agent` and `skynet-eval`. The shared read is all-or-nothing: a missing role key stops the
   deploy in manage-secrets. An absent `SKYNET_GATEWAY_KEY_<ROLE>` line fails that role's model calls
   closed in skynet.
-- The Semaphore token is deliberately NOT shared-read under the name `api_token`. That name
-  is skynet's own bearer, and a shared key of the same name would shadow it.
-- **Stopgap:** the Semaphore token is the operator's token, refused outside local_mode
-  (deploy-skynet.yml). A scoped Semaphore role for skynet is **unverified** and is a follow-up.
+- `semaphore_api_token` is the svc-skynet account's Semaphore token, an `existing` secret in
+  skynet's own path. The deploy never generates it, and manage-secrets refuses the run by name,
+  before any OpenBao write, when it is absent. It is never the operator's token.
+- The svc-skynet account and its project role come from `Provision skynet Semaphore Access`
+  (its own change). **Unverified here:** the role and the token's scope are the design's, not
+  checked against that playbook in this repository.
+- `read_token` is generated once, like `api_token`, and never shared-read here.
 - `skynet_image` has no default. Nothing in this directory names a registry.
+- The inventory publish values are optional. A declared `skynet_publish_bind` must be one
+  non-wildcard IPv4 address (`0.0.0.0` is refused), and `skynet_publish_port` a whole number from
+  1024 to 65535. Both are refused before anything changes.
 
 ## Image
 
@@ -66,11 +81,14 @@ The base `compose.yml` never sets `SSL_CERT_FILE`.
 
 ## Networks and reachability
 
-- Production: no published port and no shared network. Nothing reaches skynet from the production
-  gateway yet. Attaching a network both share is a decision for the lead.
+- Production: `skynet` publishes `${SKYNET_PUBLISH_BIND}:${SKYNET_PUBLISH_PORT}` to container
+  8080, on the address the inventory declares (the VM's LAN address). The host firewall admits only
+  the Dispatch Console VM and the gateway VM. The gateway's `/skynet/` route is NOT enabled by this
+  deploy; enabling it in production is a follow-up that runs after this deploy has run once.
+  `skynet-db` has no published port and no shared network.
 - Local-dev: `compose.local.yml` attaches `skynet` to the `local-dev` network (created by
   `platform/playbooks/bootstrap-local-dev.yml`). The local gateway reaches it there by container
-  name as `skynet:8080`.
+  name as `skynet:8080`. The host publish defaults to loopback, `127.0.0.1:8380`.
 
 ## Conventions
 
@@ -88,17 +106,21 @@ The base `compose.yml` never sets `SSL_CERT_FILE`.
 
 ## What not to do
 
-- Don't publish a port for `skynet` or `skynet-db` in the base file. The local route reaches
-  skynet over `local-dev`.
+- Don't publish `skynet-db`. Don't publish `skynet` anywhere but the declared bind and port:
+  `skynet_publish_bind` refuses `0.0.0.0`, and the compose defaults stay on loopback.
+- Don't render `SKYNET_BIND` or `SKYNET_PORT` into `.env`. The image sets `SKYNET_BIND=0.0.0.0`, and
+  `env_file` would hand a rendered value to the container. The publish knobs are
+  `SKYNET_PUBLISH_BIND` and `SKYNET_PUBLISH_PORT`.
 - Don't put `SSL_CERT_FILE` in the base file. It belongs to the local overlay.
 - Don't copy a secret into a template as a default. Required values have none.
 - Don't commit `.env` or `certs/`. The `.gitignore` here and the root `*.env` rule cover them.
-- Don't read a token for the Semaphore fact from a workstation file. It comes from OpenBao through
-  the playbook.
+- Don't give skynet the operator's Semaphore token, and don't read one from a workstation file.
+  skynet's own token is `secret/services/skynet:semaphore_api_token`, read through manage-secrets.
 
 ## Related
 
 - skynet repository, `deploy/tier2/README.md`: the variables and the API surface.
+- OpenSpec change `service-deployment-workflow`, task 3.7 (`plan/development/openspec/changes/service-deployment-workflow/tasks.md`).
 - Platform plan: `plan/development/15-service-deployment-workflow-agents.md`.
 - Gateway route and its key policy: `platform/services/agentgateway/deployment/`.
 - Trust bundle task: `platform/playbooks/tasks/distribute-ca-root.yml`.
