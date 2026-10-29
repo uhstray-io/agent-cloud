@@ -87,6 +87,15 @@ templates:
         description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
         type: string
         required: true
+  - name: "Reconcile Plane Members (Local)"
+    playbook: platform/playbooks/reconcile-plane-members.yml
+    survey_vars:
+      - name: apply
+        title: "Apply the plan"
+        description: "true to invite, set roles and remove; anything else only reports the plan"
+        type: string
+        required: false
+        default_value: "false"
   - name: "Back Up Plane DB (Local)"
     playbook: platform/playbooks/backup-plane-db.yml
   - name: "Restore Plane DB (Local)"

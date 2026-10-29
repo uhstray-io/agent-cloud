@@ -1862,6 +1862,20 @@ templates:
         type: string
         required: true
 
+  - name: Reconcile Plane Members
+    playbook: platform/playbooks/reconcile-plane-members.yml
+    # Plane workspace membership follows the Authentik groups: platform-admins -> Admin,
+    # developers and business users -> Member, everyone else removed. READ-ONLY unless apply is
+    # true (the survey default is false, so a UI launch only reports the plan).
+    dev_variant: true
+    survey_vars:
+      - name: apply
+        title: "Apply the plan"
+        description: "true to invite, set roles and remove; anything else only reports the plan"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Back Up Plane DB
     playbook: platform/playbooks/backup-plane-db.yml
     # Timestamped pg_dump of Plane's Postgres (plane-db) into an owner-only backup dir on the

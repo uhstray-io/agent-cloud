@@ -1,0 +1,207 @@
+---
+# reconcile-plane-members.yml — Plane workspace membership follows Authentik groups (decision D3).
+#
+#   platform-admins                         -> admin (plane_admin_role; default admin)
+#   platform-developers, platform-business  -> member
+#   platform-user, or no group              -> no access: not invited, removed if present
+#
+# Plane gates the Admin role behind a plan feature flag (WORKSPACE_ADMIN_ROLE), resolved through
+# its licence agent. Local-dev runs without that agent, so its inventory sets
+# plane_admin_role: member; production keeps the default and a refusal names the plan.
+#
+# Play 1 reads each group's ACTIVE members that have an email, inside authentik-server with its
+# own bootstrap token (the token never leaves that container; inspect-authentik-blueprints.yml
+# reads the API the same way). Play 2 signs in to Plane as the automation admin and runs
+# reconcile_members.py inside plane-api: invite who is missing, set roles that differ, remove
+# who left (members and pending invitations; the automation account itself is never touched).
+#
+# READ-ONLY unless -e apply=true: without it the run reports the plan and changes nothing.
+# Self sign-up is off, so an invitation is what lets a person sign in through Authentik and
+# removal is what takes it back. Plane's native IdP group sync would do this at sign-in, but it
+# is plan-gated (402 on the Free plan, spike 0.9), so this is D3's fallback until the licensed
+# workspace proves it (change task 1.15a).
+#
+# Change: plan/development/openspec/changes/deploy-plane-work-management/ (task 2.4)
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: the Authentik group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: authentik_svc
+    preflight_group_expected: authentik_svc
+
+- name: "Pre-flight: the Plane group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: plane_svc
+    preflight_group_expected: plane_svc
+
+# ── Play 1: who belongs, from Authentik ──────────────────────────────────────
+- name: "Read the platform groups from Authentik"
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _ak_become: "{{ podman_rootful | default(false) | bool }}"
+  tasks:
+    - name: "Read active members with an email (inside authentik-server, its own token)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - authentik-server
+          - python
+          - -c
+          - |
+            import http.client, json, os, sys
+            tok = os.environ.get("AUTHENTIK_BOOTSTRAP_TOKEN")
+            if not tok:
+                print(json.dumps({"error": "no bootstrap token in the server env"})); sys.exit(3)
+            out = {}
+            for g in ("platform-admins", "platform-developers", "platform-business"):
+                c = http.client.HTTPConnection("localhost", 9000, timeout=15)
+                c.request("GET", "/api/v3/core/groups/?include_users=true&name=" + g,
+                          headers={"Authorization": "Bearer " + tok})
+                r = c.getresponse()
+                if r.status != 200:
+                    print(json.dumps({"error": "groups API returned %s for %s" % (r.status, g)})); sys.exit(3)
+                res = json.load(r).get("results", [])
+                if len(res) != 1:
+                    print(json.dumps({"error": "expected exactly one group named %s, found %d" % (g, len(res))})); sys.exit(3)
+                out[g] = sorted({u["email"].lower() for u in res[0].get("users_obj") or []
+                                 if u.get("is_active") and u.get("email")})
+            print(json.dumps(out))
+      become: "{{ _ak_become }}"
+      register: _ak_groups
+      changed_when: false
+      check_mode: false
+
+    - name: "Keep the group membership"
+      ansible.builtin.set_fact:
+        _plane_groups: "{{ _ak_groups.stdout_lines | last | from_json }}"
+
+# ── Play 2: make Plane match ─────────────────────────────────────────────────
+- name: "Reconcile Plane workspace members"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Never in a dry run: --check reports the plan even when apply=true was passed.
+    _apply: "{{ (apply | default('false') | string | lower) == 'true' and not ansible_check_mode }}"
+    _groups: "{{ hostvars[groups['authentik_svc'][0]]._plane_groups }}"
+    # Highest role wins for someone in several groups.
+    _desired: >-
+      {%- set d = {} -%}
+      {%- for e in _groups['platform-developers'] + _groups['platform-business'] -%}{%- set _ = d.update({e: 'member'}) -%}{%- endfor -%}
+      {%- for e in _groups['platform-admins'] -%}{%- set _ = d.update({e: plane_admin_role | default('admin')}) -%}{%- endfor -%}
+      {{ d }}
+    _session_src: "{{ playbook_dir }}/../services/plane/deployment/plane_session.py"
+    _script_src: "{{ playbook_dir }}/../services/plane/deployment/reconcile_members.py"
+    _reconcile_input:
+      base: http://localhost:8000
+      host: "{{ plane_public_url | urlsplit('hostname') }}"
+      origin: "{{ plane_public_url }}"
+      email: "{{ plane_automation_email }}"
+      password: "{{ _plane_secret.json.data.data.plane_automation_password }}"
+      workspace_slug: "{{ plane_workspace_slug }}"
+      desired: "{{ _desired }}"
+  tasks:
+    # The AppRole is sent and the automation password read over this connection.
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # Credential tasks: read-only, no write back (this runs on a schedule).
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Read the automation admin's password"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/plane"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _plane_secret
+      delegate_to: localhost
+      no_log: true
+      check_mode: false
+
+    - name: "Plan the reconcile (read-only; also the dry run)"
+      ansible.builtin.command:
+        argv: &reconcile_argv
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - plane-api
+          - python
+          - -c
+          - "{{ lookup('file', _session_src) ~ '\n' ~ lookup('file', _script_src) }}"
+        stdin: "{{ _reconcile_input | combine({'apply': false}) | to_json }}"
+      register: _reconcile_plan
+      # The script prints one JSON line (emails and roles, never a credential); judged below so
+      # a refusal is visible while this task stays no_log.
+      changed_when: false
+      failed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Apply the reconcile (apply=true only)"
+      ansible.builtin.command:
+        argv: *reconcile_argv
+        stdin: "{{ _reconcile_input | combine({'apply': true}) | to_json }}"
+      register: _reconcile_apply
+      changed_when: ((_reconcile_apply.stdout_lines | default(['{}']) | last) | from_json).changed | default(false) | bool
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - _apply | bool
+
+    - name: "Keep only the reconcile summary"
+      ansible.builtin.set_fact:
+        # The exit code only: a command result carries its stdin (the password) under invocation.
+        _reconcile_rc: "{{ (_reconcile_apply if (_reconcile_apply is not skipped and _reconcile_apply is defined) else _reconcile_plan).rc }}"
+        _reconcile_summary: >-
+          {%- set r = _reconcile_apply if (_reconcile_apply is not skipped and _reconcile_apply is defined) else _reconcile_plan -%}
+          {{ (r.stdout_lines | last | from_json)
+             if (r.stdout_lines | default([]) | length > 0 and (r.stdout_lines | last).startswith('{'))
+             else {'error': 'the reconcile script printed no summary (exit ' ~ r.rc ~ ')'} }}
+      no_log: true
+
+    - name: "Reconcile succeeded"
+      ansible.builtin.assert:
+        that:
+          - _reconcile_rc | int == 0
+          - _reconcile_summary.error is not defined
+        fail_msg: "plane member reconcile failed: {{ _reconcile_summary.error | default('exit ' ~ _reconcile_rc) }}"
+        quiet: true
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'APPLIED' if _apply else 'PLAN ONLY (re-run with -e apply=true to apply)' }}:
+          invite {{ _reconcile_summary.plan.invite }}; set role {{ _reconcile_summary.plan.set_role }};
+          remove {{ _reconcile_summary.plan.remove }}{{ (' — done: ' ~ _reconcile_summary.actions) if _apply else '' }}

@@ -1509,6 +1509,7 @@
           plane_workspace_slug=agent-cloud
           plane_workspace_name=agent-cloud
           plane_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}
+          plane_admin_role=member
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
