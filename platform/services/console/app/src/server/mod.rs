@@ -3,13 +3,17 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod inventory;
+pub mod netbox;
 pub mod prefs;
+pub mod proxmox;
 pub mod scope;
 pub mod semaphore;
 pub mod sessions;
 pub mod work;
 
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,6 +43,13 @@ pub struct AppState {
     pub work: Arc<tokio::sync::RwLock<work::WorkCache>>,
     /// Registry steps for roles and run steppers. Empty when `CONSOLE_WORKFLOW_FILE` is unset.
     pub workflow: Vec<work::Step>,
+    /// NetBox and Proxmox reads. The refresh task writes it; `/v1/tenants/{t}/inventory`,
+    /// `/services` and `/v1/network` only read it.
+    pub inventory: tokio::sync::RwLock<inventory::InventoryCache>,
+    /// Client for Proxmox: the shared settings plus `CONSOLE_PROXMOX_CA_FILE` roots, if set.
+    pub proxmox_http: reqwest::Client,
+    /// The data-flow catalogue `GET /v1/flows` answers.
+    pub flows: inventory::FlowSet,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -64,33 +75,25 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         )
     })?;
 
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20));
-    if let Some(path) = &config.extra_ca_file {
-        let pem = fs::read(path).map_err(|err| {
-            format!(
-                "CONSOLE_EXTRA_CA_FILE: cannot read {}: {err}",
-                path.display()
-            )
-        })?;
-        let certs = reqwest::Certificate::from_pem_bundle(&pem)
-            .map_err(|err| format!("CONSOLE_EXTRA_CA_FILE: not a PEM bundle: {err}"))?;
-        if certs.is_empty() {
-            return Err("CONSOLE_EXTRA_CA_FILE: no certificates found".to_string());
-        }
-        for cert in certs {
-            builder = builder.add_root_certificate(cert);
-        }
-    }
-    let http = builder
-        .build()
-        .map_err(|err| format!("cannot build the HTTP client: {err}"))?;
+    let http = client_with_roots(config.extra_ca_file.as_deref(), "CONSOLE_EXTRA_CA_FILE")?;
+    let proxmox_http = client_with_roots(
+        config
+            .proxmox
+            .as_ref()
+            .and_then(|proxmox| proxmox.ca_file.as_deref()),
+        "CONSOLE_PROXMOX_CA_FILE",
+    )?;
 
     let workflow = match &config.workflow_file {
         Some(path) => work::load_workflow(path)?,
         None => Vec::new(),
     };
+    let flows = match &config.flows_file {
+        Some(path) => inventory::FlowSet::configured(inventory::load_flows(path)?),
+        None => inventory::FlowSet::unconfigured(),
+    };
+    let inventory_cache =
+        inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
         work::WorkCache::awaiting_first_poll()
     } else {
@@ -105,7 +108,34 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         prefs,
         work: Arc::new(tokio::sync::RwLock::new(work_cache)),
         workflow,
+        inventory: tokio::sync::RwLock::new(inventory_cache),
+        proxmox_http,
+        flows,
     }))
+}
+
+/// The client every upstream call shares: no redirects, a 20 s timeout, and the roots of a
+/// PEM bundle when `extra_ca` is set. Verification stays on in every case. `var` names the
+/// setting in an error.
+fn client_with_roots(extra_ca: Option<&Path>, var: &str) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(20));
+    if let Some(path) = extra_ca {
+        let pem = fs::read(path)
+            .map_err(|err| format!("{var}: cannot read {}: {err}", path.display()))?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem)
+            .map_err(|err| format!("{var}: not a PEM bundle: {err}"))?;
+        if certs.is_empty() {
+            return Err(format!("{var}: no certificates found"));
+        }
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    builder
+        .build()
+        .map_err(|err| format!("cannot build the HTTP client: {err}"))
 }
 
 /// Starts OIDC discovery in the background. The server is already listening,
@@ -172,6 +202,20 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/tenants/{tenant}/tree", get(api::tenant_tree))
         .route("/v1/work", get(work::list_work))
         .route("/v1/work/{key}", get(work::get_work_item))
+        .route(
+            "/v1/tenants/{tenant}/inventory",
+            get(inventory::get_inventory),
+        )
+        .route(
+            "/v1/tenants/{tenant}/services",
+            get(inventory::list_services),
+        )
+        .route(
+            "/v1/tenants/{tenant}/services/{name}",
+            get(inventory::get_service),
+        )
+        .route("/v1/network", get(inventory::get_network))
+        .route("/v1/flows", get(inventory::get_flows))
         .route("/v1/{*rest}", any(api::v1_unmatched))
         .with_state(state)
 }
@@ -228,6 +272,9 @@ mod tests {
                 scope_file: std::env::temp_dir(),
                 semaphore: None,
                 workflow_file: None,
+                netbox: None,
+                proxmox: None,
+                flows_file: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -235,6 +282,9 @@ mod tests {
             prefs,
             work: Arc::new(tokio::sync::RwLock::new(work)),
             workflow,
+            inventory: tokio::sync::RwLock::new(inventory::InventoryCache::new(false, false)),
+            proxmox_http: reqwest::Client::new(),
+            flows: inventory::FlowSet::unconfigured(),
         })
     }
 
@@ -361,6 +411,11 @@ mod tests {
             "/v1/tenants/globex/tree",
             "/v1/work",
             "/v1/work/sem-1",
+            "/v1/tenants/acme/inventory",
+            "/v1/tenants/acme/services",
+            "/v1/tenants/acme/services/tududi",
+            "/v1/network",
+            "/v1/flows",
             "/v1/nope",
         ] {
             let reply = call(addr, "GET", path, None, "").await;
@@ -786,5 +841,40 @@ mod tests {
             text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200"),
             "{text}"
         );
+    }
+    #[test]
+    fn a_bad_ca_file_fails_startup_by_its_setting_name() {
+        let missing = client_with_roots(
+            Some(Path::new("/nonexistent/console-pve-ca.pem")),
+            "CONSOLE_PROXMOX_CA_FILE",
+        )
+        .expect_err("must fail");
+        assert!(
+            missing.starts_with("CONSOLE_PROXMOX_CA_FILE: cannot read"),
+            "{missing}"
+        );
+
+        let path = std::env::temp_dir().join(format!("console-pve-ca-{}.pem", std::process::id()));
+        std::fs::write(&path, "not a certificate\n").expect("write");
+        let bad = client_with_roots(Some(&path), "CONSOLE_PROXMOX_CA_FILE").expect_err("must fail");
+        let _ = std::fs::remove_file(&path);
+        assert!(bad.starts_with("CONSOLE_PROXMOX_CA_FILE:"), "{bad}");
+    }
+
+    #[test]
+    fn no_upstream_client_turns_certificate_verification_off() {
+        // The needle is split so this file does not contain it verbatim.
+        let needle = concat!("danger_", "accept_");
+        for (file, text) in [
+            ("mod.rs", include_str!("mod.rs")),
+            ("inventory.rs", include_str!("inventory.rs")),
+            ("netbox.rs", include_str!("netbox.rs")),
+            ("proxmox.rs", include_str!("proxmox.rs")),
+            ("semaphore.rs", include_str!("semaphore.rs")),
+            ("auth.rs", include_str!("auth.rs")),
+            ("work.rs", include_str!("work.rs")),
+        ] {
+            assert!(!text.contains(needle), "{file} turns verification off");
+        }
     }
 }
