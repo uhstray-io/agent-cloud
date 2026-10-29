@@ -281,9 +281,9 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 - VM units are verified against the NetBox source, not the brief. `memory_mb` and `disk_mb` are
   megabytes. netbox-community/netbox v4.5.0 `netbox/virtualization/models/virtualmachines.py`
   labels both `(MB)` (lines 121-129). The disk unit changed from gigabytes to megabytes in 4.1
-  (`docs/release-notes/version-4.1.md:8`, v4.1.0). The 4.5 release notes at v4.5.0 and v4.5.10 say
-  nothing about the disk unit, though v4.5.10 drops the unit from the disk label. The stored value is
-  read unchanged.
+  (`docs/release-notes/version-4.1.md:8`, v4.1.0). The 4.5 release notes (`version-4.5.md` at v4.5.10)
+  record no change to the stored unit. Their only VM-resource entry is v4.5.7's #21095 (line 75),
+  which adopts IEC display labels such as GiB, a label change. The stored value is read unchanged.
 - The NetBox VM fields `vcpus`, `memory`, `disk`, `primary_ip`, `tags` and the `custom_fields` shape
   are taken from the brief and the model. `custom_fields` on a VM is confirmed by
   `platform/playbooks/collect-service-conformance.yml`; the other names are unverified against a live
