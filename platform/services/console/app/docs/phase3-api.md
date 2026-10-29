@@ -290,3 +290,17 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
   NetBox.
 - The Proxmox `cluster/resources` field names are taken from the brief and the repository's test
   fixtures. Node `status` values are as Proxmox reports them; no live response was read.
+
+## Follow-ups
+
+Not built in Phase 3. Recorded so the next change to the contract and the UI knows what waits.
+
+- **Server: Grafana links for sites, clusters and nodes.** `grafana_url` is set on a VM and on a
+  service row only. The console shows no Grafana link for a site, cluster or node, because the
+  server sends none. The server should send one per level when `CONSOLE_GRAFANA_URL` is set. The
+  UI would then render it in the resource panel. Node usage is already per-asset, so the link
+  goes to Grafana rather than a chart in the console.
+- **Domain tiles move to NetBox tags in Phase 5.** The five business-domain tiles on the Services
+  page count a service's NetBox tags by name or slug, against a fixed list in the UI
+  (`DOMAIN_TAGS` in `services.rs`). The org settings page owns the domain tags (plan 17, O5). When
+  Phase 5 stores them as NetBox tags, the list should come from the answer, not from the UI.
