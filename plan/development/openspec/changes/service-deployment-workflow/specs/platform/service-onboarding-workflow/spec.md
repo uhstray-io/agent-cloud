@@ -105,3 +105,32 @@ criteria not met, error context, undo availability and Semaphore task reference.
 - **WHEN** the single-writer test runs in CI
 - **THEN** it fails if any playbook other than the collector writes the conformance custom
   fields or pushes to the step-result stream
+
+
+#### Scenario: Collector completion is emitted only after required work
+- **WHEN** a scheduled collector finishes its required reads and parsing and all configured required writes complete
+- **THEN** after the successful required-work boundary and positive transport acknowledgement of the existing conformance data batch, the collector sends one separate final request containing only the fixed `job=agent-cloud-conformance,kind=run,status=success` receipt through the existing environment-specific transport
+- **AND** the receipt proves successful required collection work only; it does not claim complete historical coverage, that every service passed, a green Semaphore task, or durable sender acknowledgement, and existing `history_incomplete`/`no_history` markers and per-step statuses remain unchanged
+- **AND** interrupted or failed reads, check-mode/skipped writes, and failed or unknown required writes before that boundary prevent sending a success receipt
+- **AND** the explicitly nonblocking NetBox outage behavior remains visible and does not block the workflow, while any failed required configured write before the boundary prevents sending
+- **AND** the separate receipt request follows HTTP 204 for the local data batch or a valid OTLP JSON `ExportLogsServiceResponse` with HTTP 200 and zero rejected records for the production data batch; the response must have a known shape and `rejectedLogRecords` accepts only a nonnegative int64 integer or decimal string, while an invalid or missing body/counter is unknown; a protocol-valid zero-rejection warning is accepted; when there are no conformance data records, no prior batch request is needed
+- **AND** a lost response or timeout after possible remote acceptance is reported as failed/UNKNOWN publication; the record may already be queryable and may reset the silence clock, so no absence or non-publication claim is made
+- **AND** failed or unknown acceptance of the prior data batch prevents the separate receipt request; a partial OTLP rejection cannot share a batch with and accidentally accept the completion receipt
+
+#### Scenario: Completion distinguishes complete VM lookup outcomes from unknown reads
+- **WHEN** NetBox is configured and each expected service lookup returns HTTP 200 with an integer `count` equal to the number of returned rows and an explicit terminal `next: null`
+- **THEN** zero matches and multiple matches remain visible nonblocking outcomes with no VM PATCH selected, while exactly one match selects that VM's required PATCH
+- **AND** a non-null, missing, or malformed pagination field, or a failed, missing, duplicate, malformed, incomplete, or unknown configured lookup suppresses the completion receipt without turning into a known no-match result or failing the existing nonblocking collector path; the collector does not follow or expose the `next` URL
+- **AND** a failed, skipped, missing, duplicate, or unknown required PATCH suppresses the completion receipt; only one explicit HTTP 200 for every unique match completes the configured write boundary
+
+#### Scenario: Collector silence alert observes delivered completion
+- **WHEN** the collector's exact completion receipt is queryable in Loki and the job is declared in the existing scheduled-job silence configuration
+- **THEN** the shared silence rule alerts after a reviewed integer-hour window selected from the verified effective schedule, normal run duration, and allowed missed runs
+- **AND** receiver acceptance alone does not count as durable Loki ingestion; a known failure before the send boundary does not reset the clock, while ambiguous post-acceptance acknowledgement may have delivered a record that resets it, and the existing `renew-internal-certs` 36-hour default is preserved
+- **AND** the live schedule, queryable success receipt, pre-boundary failure behavior, ambiguous-acknowledgement status/readback, rule expression/state, and existing notification delivery are separately verified before acceptance
+
+#### Scenario: Global completion receipt is not per-service state
+- **WHEN** the service-conformance dashboard reads the collector's fixed `kind=run` completion receipt
+- **THEN** its per-service step, age, provenance, and failed-task queries require nonempty `service` and `step` labels and do not select the global receipt
+- **AND** the receipt cannot increase tracked-service counts, appear as a failed step or task, or substitute for the existing `step=none` inventory markers
+- **AND** adding `kind` to the conformance Alloy label hint leaves existing per-step stream labels and inventory markers unchanged

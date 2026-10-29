@@ -551,6 +551,164 @@ def o11y_source_scrape_limit_coverage(
         return _loaded_unavailable("source_readback_unavailable")
 
 
+def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = False) -> dict[str, Any]:
+    """Consume the source-specific availability evidence without returning private labels."""
+    reasons = {
+        "native_declaration_invalid", "native_source_unavailable", "native_source_absent",
+        "native_source_ambiguous", "native_source_stale", "native_source_limits_unavailable",
+        "native_source_limits_mismatch", "native_samples_unavailable", "native_samples_invalid",
+        "native_samples_missing", "native_samples_stale", "native_samples_ambiguous",
+        "native_detail_unavailable", "native_detail_invalid", "native_component_absent",
+        "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
+        "native_debug_stale", "native_debug_mismatch", "native_target_mismatch",
+        "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
+    }
+    if (
+        isinstance(readback, Mapping) and readback.get("status") == "unavailable"
+        and set(readback) == {"status", "reason", "source", "intended_source", "matches_intended"}
+        and readback.get("reason") in reasons and readback.get("source") == "unknown"
+        and readback.get("intended_source") == "unknown" and readback.get("matches_intended") is False
+    ):
+        return {"status": "unavailable", "reason": readback["reason"], "source": "unknown"}
+    if (
+        not isinstance(readback, Mapping)
+        or set(readback) not in (
+            {"status", "source", "intended_source", "matches_intended", "evidence"},
+            {"status", "source", "intended_source", "matches_intended", "evidence", "container_identity_sha256"},
+        )
+        or readback.get("status") != "observed"
+        or readback.get("source") not in {"prometheus", "alloy"}
+        or readback.get("intended_source") not in {"prometheus", "alloy"}
+        or not isinstance(readback.get("matches_intended"), bool)
+        or (
+            "container_identity_sha256" in readback
+            and (not isinstance(readback.get("container_identity_sha256"), str)
+                 or not re.fullmatch(r"[0-9a-f]{64}", readback["container_identity_sha256"]))
+        )
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    evidence = readback["evidence"]
+    if readback["source"] == "prometheus":
+        has_native_absence = isinstance(evidence, Mapping) and set(evidence) == {
+            "status", "source", "alloy_self", "scrape_body_size_bytes", "native_components",
+        }
+        native_components = evidence.get("native_components") if has_native_absence else None
+        if (
+            not isinstance(evidence, Mapping)
+            or set(evidence) not in (
+                {"status", "source", "alloy_self", "scrape_body_size_bytes"},
+                {"status", "source", "alloy_self", "scrape_body_size_bytes", "native_components"},
+            )
+            or evidence.get("status") != "observed" or evidence.get("source") != "prometheus"
+            or not isinstance(evidence.get("alloy_self"), Mapping)
+            or set(evidence["alloy_self"]) != {"up", "scrape_samples_scraped"}
+            or evidence["alloy_self"].get("up") != 1
+            or isinstance(evidence["alloy_self"].get("scrape_samples_scraped"), bool)
+            or not isinstance(evidence["alloy_self"].get("scrape_samples_scraped"), int)
+            or evidence["alloy_self"]["scrape_samples_scraped"] < 1
+            or evidence.get("scrape_body_size_bytes") != {
+                "status": "unavailable", "reason": "legacy_extra_scrape_metrics_not_enabled",
+            }
+            or (has_native_absence and (
+                not isinstance(native_components, Mapping)
+                or set(native_components) != {"status", "reason", "component_count"}
+                or native_components.get("status") != "observed"
+                or native_components.get("reason") != "native_components_absent"
+                or isinstance(native_components.get("component_count"), bool)
+                or not isinstance(native_components.get("component_count"), int)
+                or not 1 <= native_components["component_count"] <= 256
+            ))
+        ):
+            return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+        projection = {
+            "status": "observed", "source": "prometheus",
+            "matches_intended": readback["matches_intended"],
+            "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+            "body_counter": "not_exposed_by_legacy_prometheus",
+        }
+        if has_native_absence:
+            projection["native_components"] = "absent"
+        return projection
+    if (
+        not isinstance(evidence, Mapping) or set(evidence) != {"status", "source", "detail", "samples"}
+        or evidence.get("status") != "observed" or evidence.get("source") != "alloy"
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    detail, samples = evidence["detail"], evidence["samples"]
+    self_only = (
+        allow_self_only is True
+        and isinstance(detail, Mapping) and detail.get("target_count") == 0
+        and detail.get("targets") == []
+        and isinstance(samples, Mapping) and samples.get("targets") == []
+    )
+    if (
+        not isinstance(detail, Mapping) or not isinstance(samples, Mapping)
+        or detail.get("status") != "observed" or samples.get("status") != "observed"
+        or set(detail) != {"status", "reason", "target_count", "targets", "alloy_self"}
+        or set(samples) != {"status", "reason", "freshness_seconds", "alloy_self", "targets"}
+        or detail.get("reason") != "fixed_native_components_loaded"
+        or samples.get("reason") != "fresh_native_samples"
+        or not isinstance(detail.get("target_count"), int) or isinstance(detail.get("target_count"), bool)
+        or not (detail["target_count"] == 0 if self_only else 1 <= detail["target_count"] <= 64)
+        or not isinstance(detail.get("targets"), list) or len(detail["targets"]) != detail["target_count"]
+        or not isinstance(samples.get("targets"), list) or len(samples["targets"]) != detail["target_count"]
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    loaded_self, sampled_self = detail.get("alloy_self"), samples.get("alloy_self")
+    if (
+        not isinstance(loaded_self, Mapping) or set(loaded_self) != {"status", "limits"}
+        or loaded_self.get("status") != "observed" or not isinstance(loaded_self.get("limits"), Mapping)
+        or not isinstance(sampled_self, Mapping)
+        or set(sampled_self) != {"status", "scrape_up", "scrape_samples_scraped", "scrape_body_size_bytes"}
+        or sampled_self.get("status") != "observed" or sampled_self.get("scrape_up") != 1
+        or any(
+            isinstance(sampled_self.get(field), bool) or not isinstance(sampled_self.get(field), int)
+            or sampled_self[field] < 1
+            for field in ("scrape_samples_scraped", "scrape_body_size_bytes")
+        )
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    detail_ids: list[str] = []
+    probe_failed = scrape_failed = 0
+    for detail_row, sample_row in zip(detail["targets"], samples["targets"], strict=True):
+        if (
+            not isinstance(detail_row, Mapping) or set(detail_row) != {"target_id", "status", "probe_health", "limits"}
+            or detail_row.get("status") != "observed" or detail_row.get("probe_health") not in {"up", "down", "unknown"}
+            or not isinstance(detail_row.get("target_id"), str)
+            or not isinstance(detail_row.get("limits"), Mapping)
+            or not isinstance(sample_row, Mapping) or sample_row.get("target_id") != detail_row["target_id"]
+        ):
+            return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+        detail_ids.append(detail_row["target_id"])
+        if sample_row.get("status") == "scrape_failed" and set(sample_row) == {"target_id", "status"}:
+            scrape_failed += 1
+        elif (
+            sample_row.get("status") == "observed"
+            and set(sample_row) == {
+                "target_id", "status", "scrape_up", "probe_success", "probe_http_status_code",
+                "probe_duration_seconds", "scrape_samples_scraped", "scrape_body_size_bytes",
+            }
+            and sample_row.get("scrape_up") == 1
+            and sample_row.get("probe_success") in {0, 1}
+            and isinstance(sample_row.get("scrape_samples_scraped"), int)
+            and sample_row["scrape_samples_scraped"] > 0
+            and isinstance(sample_row.get("scrape_body_size_bytes"), int)
+            and sample_row["scrape_body_size_bytes"] > 0
+        ):
+            probe_failed += sample_row["probe_success"] == 0
+        else:
+            return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    if len(set(detail_ids)) != len(detail_ids):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    return {
+        "status": "observed", "source": "alloy",
+        "matches_intended": readback["matches_intended"],
+        "sample_count": 1 if self_only else detail["target_count"],
+        "probe_failed_count": probe_failed, "scrape_failed_count": scrape_failed,
+        "body_counter": "observed_positive",
+    }
+
+
 class FilterModule:
     """Expose the pure preview as an Ansible filter."""
 
@@ -559,4 +717,5 @@ class FilterModule:
             "o11y_scrape_budget_preview": o11y_scrape_budget_preview,
             "o11y_loaded_scrape_limit_coverage": o11y_loaded_scrape_limit_coverage,
             "o11y_source_scrape_limit_coverage": o11y_source_scrape_limit_coverage,
+            "o11y_availability_source_coverage": o11y_availability_source_coverage,
         }

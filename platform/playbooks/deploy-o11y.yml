@@ -84,6 +84,14 @@
     # Off unless inventory enables it; off renders exactly the pre-probe secrets
     # and env files (platform/tests/test_inference_probe.py).
     _probe_enabled: "{{ o11y_inference_probe_enabled | default(false) | bool }}"
+    _o11y_availability_internal_ca: >-
+      {{ (_o11y_availability | default({})).get('targets', [])
+         | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0 }}
+    _o11y_source_review_required: >-
+      {{ ((_o11y_availability | default({})).get('enabled', false) | bool) or
+         ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+          (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+           selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1)) }}
     _probe_textfile_dir: /var/lib/node_exporter/textfile
     _probe_user: "{{ ansible_user | default('deploy') }}"
     _probe_unit_dir: /etc/systemd/system
@@ -138,9 +146,60 @@
     - name: Refuse an unverified profile pilot operation before o11y mutation
       ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
 
+    - name: Prepare the bounded private availability source projection
+      ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
+
+    - name: Derive the reviewed Alloy candidate digest from the committed renderer
+      when: _o11y_source_review_required | bool
+      block:
+        - name: Allocate private controller candidate workspace
+          ansible.builtin.tempfile:
+            state: directory
+            path: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) }}"
+            prefix: o11y-deploy-candidate-
+          delegate_to: localhost
+          register: _o11y_candidate_tmp
+          no_log: true
+
+        - name: Render the exact Alloy candidate on the controller
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+            dest: "{{ _o11y_candidate_tmp.path }}/config.alloy"
+            mode: "0600"
+          delegate_to: localhost
+          no_log: true
+
+        - name: Hash the controller-rendered Alloy candidate privately
+          ansible.builtin.stat:
+            path: "{{ _o11y_candidate_tmp.path }}/config.alloy"
+            checksum_algorithm: sha256
+          delegate_to: localhost
+          register: _o11y_candidate_config_stat
+          no_log: true
+
+        - name: Keep the reviewed candidate digest for the receiver comparison
+          ansible.builtin.set_fact:
+            _o11y_candidate_config_sha256: "{{ _o11y_candidate_config_stat.stat.checksum }}"
+          no_log: true
+      always:
+        - name: Remove private controller candidate workspace
+          ansible.builtin.file:
+            path: "{{ (_o11y_candidate_tmp | default({})).path | default('') }}"
+            state: absent
+          delegate_to: localhost
+          no_log: true
+          when: _o11y_candidate_tmp is defined
+
     - name: Validate the fixed receiver and journal TLS contract before placement or rendering
       ansible.builtin.include_tasks: tasks/assert-o11y-otlp-tls.yml
       when: o11y_otlp_tls_enabled | default(false) | bool
+
+    - name: Require one declared CA host when an internal-CA availability target is reviewed
+      ansible.builtin.assert:
+        that: groups.get('step_ca_svc', []) | length == 1
+        fail_msg: "Internal-CA availability trust requires exactly one declared step-ca host."
+        quiet: true
+      when: _o11y_availability_internal_ca | bool
 
     - name: "Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
@@ -687,6 +746,15 @@
             _agwr_ip: "{{ _probe_gw_address }}"
             _agwr_expect: "{{ _probe_gw_address }}"
 
+    - name: Place the fixed public CA bundle for native availability trust when OTLP mTLS is off
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_host: "{{ groups['step_ca_svc'] | first }}"
+      when:
+        - _o11y_availability_internal_ca | bool
+        - not (o11y_otlp_tls_enabled | default(false) | bool)
+
     # Synthetic inference probe. Its environment file (key from OpenBao) was rendered
     # by manage-secrets above; the units and the textfile directory are host config.
     - name: "Install the synthetic inference probe"
@@ -778,25 +846,79 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _o11y_source_review_required: >-
+      {{ ((_o11y_availability | default({})).get('enabled', false) | bool) or
+         ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+          (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+           selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1)) }}
+    _o11y_source_review_json: >-
+      {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+          'targets': o11y_expected_metrics_targets | default([]),
+          'availability': _o11y_availability | default({}),
+          'shared_limits': o11y_scrape_limits | default({}),
+          'environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
+          'cluster': o11y_cluster | default('agent-cloud-local'),
+          'lower_bound': none,
+          'candidate_config_sha256': _o11y_candidate_config_sha256 | default(''),
+          'freshness_seconds': 300,
+          'require_health_targets': false} | to_json }}
 
   tasks:
-    - name: "Run deploy.sh (container lifecycle)"
-      ansible.builtin.shell: |
-        cd "{{ _deploy_dir }}"
-        bash deploy.sh
-      environment:
-        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        # Production always scrapes capacity; local mode enables textfiles for the probe only.
-        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else [])) | join(' ') }}"
-        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
-        # and image matches — clears a stale bind mount a running container still holds.
-        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
-      register: _deploy
-      # deploy.sh recreates only when its inputs or images changed (common.sh
-      # compose_up_if_changed) and says which on its own line.
-      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
-      when: not ansible_check_mode
+    - name: "Run deploy.sh with a protected source-review input"
+      block:
+        - name: Create a private temporary source-review input
+          ansible.builtin.tempfile:
+            state: file
+            path: /tmp
+            prefix: .o11y-availability-source-
+            suffix: .json
+          register: _o11y_source_review_temp
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - _o11y_source_review_required | bool
+
+        - name: Write the protected source-review declaration
+          ansible.builtin.copy:
+            content: "{{ _o11y_source_review_json }}"
+            dest: "{{ _o11y_source_review_temp.path }}"
+            mode: "0600"
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - _o11y_source_review_required | bool
+
+        - name: Run deploy.sh (container lifecycle)
+          ansible.builtin.shell: |
+            cd "{{ _deploy_dir }}"
+            bash deploy.sh
+          environment:
+            CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+            LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+            # Production always scrapes capacity; local mode enables textfiles for the probe only.
+            COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if ((_o11y_availability | default({})).get('enabled', false) | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability | default({})).get('targets', []) | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
+            O11Y_AVAILABILITY_ENABLED: "{{ 'true' if ((_o11y_availability | default({})).get('enabled', false) | bool) else 'false' }}"
+            O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256: "{{ (_o11y_namespace_preplacement_result | default({})).get('namespace_snapshot_sha256', '') }}"
+            O11Y_EXPECTED_RUNTIME_CONTEXT_SHA256: "{{ (_o11y_namespace_preplacement_result | default({})).get('runtime_context_sha256', '') }}"
+            O11Y_AVAILABILITY_SOURCE_FILE: "{{ (_o11y_source_review_temp | default({})).get('path', '') }}"
+            # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+            # and image matches — clears a stale bind mount a running container still holds.
+            FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
+          register: _deploy
+          # deploy.sh recreates only when its inputs or images changed (common.sh
+          # compose_up_if_changed) and says which on its own line.
+          changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+          when: not ansible_check_mode
+      always:
+        - name: Remove the protected source-review input
+          ansible.builtin.file:
+            path: "{{ (_o11y_source_review_temp | default({})).get('path', '') }}"
+            state: absent
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - _o11y_source_review_temp is defined
+            - _o11y_source_review_temp.path is defined
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -821,6 +943,14 @@
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _o11y_source_review_required: >-
+      {{ ((_o11y_availability | default({})).get('enabled', false) | bool) or
+         ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+          (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+           selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1)) }}
+    _o11y_availability_internal_ca: >-
+      {{ (_o11y_availability | default({})).get('targets', [])
+         | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0 }}
 
   tasks:
     # A dry run skipped the deploy, so on a fresh host o11y-grafana does not exist and every
@@ -866,11 +996,11 @@
     - name: Require exact read-only runtime receiver TLS mounts
       ansible.builtin.assert:
         that:
-          - (_o11y_otlp_runtime_mounts | length) == (2 if (o11y_otlp_tls_enabled | default(false) | bool) else 0)
+          - (_o11y_otlp_runtime_mounts | length) == ((1 if (o11y_otlp_tls_enabled | default(false) | bool) else 0) + (1 if ((o11y_otlp_tls_enabled | default(false) | bool) or (_o11y_availability_internal_ca | bool)) else 0))
           - not (o11y_otlp_tls_enabled | default(false) | bool) or
             (_o11y_otlp_runtime_mounts | selectattr('Source', 'equalto', _deploy_dir ~ '/certs/o11y-otlp-server')
              | selectattr('Destination', 'equalto', '/certs/otlp-server') | selectattr('RW', 'equalto', false) | list | length) == 1
-          - not (o11y_otlp_tls_enabled | default(false) | bool) or
+          - not ((o11y_otlp_tls_enabled | default(false) | bool) or (_o11y_availability_internal_ca | bool)) or
             (_o11y_otlp_runtime_mounts | selectattr('Source', 'equalto', _deploy_dir ~ '/certs/step-ca-bundle.crt')
              | selectattr('Destination', 'equalto', '/certs/step-ca-bundle.crt') | selectattr('RW', 'equalto', false) | list | length) == 1
         fail_msg: "The live Alloy receiver does not have exactly the declared read-only TLS mounts."
@@ -1236,6 +1366,99 @@
       retries: 8
       delay: 5
       until: _alloy_health.rc == 0 and _alloy_health.stdout == 'healthy'
+
+    - name: Read back the current Alloy self-metrics producer after lifecycle apply
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _deploy_dir }}/../../../../platform/playbooks/files/summarize-o11y-scrape-baseline.py"
+          - --verify-availability-source
+        stdin: >-
+          {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+              'targets': o11y_expected_metrics_targets | default([]),
+              'availability': _o11y_availability | default({}),
+              'shared_limits': o11y_scrape_limits | default({}),
+              'environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
+              'cluster': o11y_cluster | default('agent-cloud-local'),
+              'candidate_config_sha256': _o11y_candidate_config_sha256 | default(''),
+              'previous_source': (_deploy.stdout | regex_findall('(?m)^O11Y_AVAILABILITY_PREAPPLY_SOURCE=(prometheus|alloy)$') | first)
+                                if (_deploy.stdout | regex_findall('(?m)^O11Y_AVAILABILITY_PREAPPLY_SOURCE=(prometheus|alloy)$') | length > 0) else none,
+              'previous_container_sha256': (_deploy.stdout | regex_findall('(?m)^O11Y_AVAILABILITY_PREAPPLY_CONTAINER_SHA256=([0-9a-f]{64})$') | first)
+                                           if (_deploy.stdout | regex_findall('(?m)^O11Y_AVAILABILITY_PREAPPLY_CONTAINER_SHA256=([0-9a-f]{64})$') | length > 0) else none,
+              'lower_bound': ((_deploy.stdout | regex_findall('(?m)^O11Y_AVAILABILITY_PREAPPLY_EPOCH=([0-9]+)$') | first | int)
+                              if ('DEPLOY_CHANGED=true' in (_deploy.stdout_lines | default([]))) else none),
+              'freshness_seconds': 300,
+              'require_health_targets': true} | to_json }}
+      register: _o11y_source_postapply_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+        COMPOSE_CMD: podman-compose
+        O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
+        O11Y_AVAILABILITY_ENABLED: "{{ 'true' if ((_o11y_availability | default({})).get('enabled', false) | bool) else 'false' }}"
+        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if ((_o11y_availability | default({})).get('enabled', false) | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability | default({})).get('targets', []) | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
+      when:
+        - not ansible_check_mode
+        - _o11y_source_review_required | bool
+
+    - name: Classify the private post-apply producer response
+      when:
+        - not ansible_check_mode
+        - _o11y_source_review_required | bool
+      block:
+        - name: Parse only fixed post-apply producer status fields
+          ansible.builtin.set_fact:
+            _o11y_source_postapply_classified:
+              status: >-
+                {{ 'observed' if _o11y_source_postapply_raw.rc == 0 and
+                   (_o11y_source_postapply_raw.stdout | from_json).get('status') == 'observed' and
+                   (_o11y_source_postapply_raw.stdout | from_json).get('source') in ['prometheus', 'alloy'] and
+                   (_o11y_source_postapply_raw.stdout | from_json).get('intended_source') in ['prometheus', 'alloy'] and
+                   (_o11y_source_postapply_raw.stdout | from_json).get('matches_intended') is sameas true
+                   else 'unavailable' }}
+              source: >-
+                {{ (_o11y_source_postapply_raw.stdout | from_json).get('source', 'unknown')
+                   if _o11y_source_postapply_raw.rc == 0 and
+                   (_o11y_source_postapply_raw.stdout | from_json).get('source') in ['prometheus', 'alloy']
+                   else 'unknown' }}
+              intended_source: >-
+                {{ (_o11y_source_postapply_raw.stdout | from_json).get('intended_source', 'unknown')
+                   if _o11y_source_postapply_raw.rc == 0 and
+                   (_o11y_source_postapply_raw.stdout | from_json).get('intended_source') in ['prometheus', 'alloy']
+                   else 'unknown' }}
+          no_log: true
+      rescue:
+        - name: Replace malformed post-apply producer output with a fixed status
+          ansible.builtin.set_fact:
+            _o11y_source_postapply_classified:
+              status: unavailable
+              source: unknown
+              intended_source: unknown
+          no_log: true
+
+    - name: Report fixed post-apply producer status
+      ansible.builtin.debug:
+        msg: >-
+          Alloy self-metrics producer status={{ _o11y_source_postapply_classified.status }}
+          source={{ _o11y_source_postapply_classified.source }}
+          intended_source={{ _o11y_source_postapply_classified.intended_source }}.
+      when:
+        - not ansible_check_mode
+        - _o11y_source_review_required | bool
+
+    - name: Require fresh post-apply producer evidence for the reviewed source
+      ansible.builtin.assert:
+        that: _o11y_source_postapply_classified.status == 'observed'
+        fail_msg: >-
+          The applied receiver does not yet prove one fresh producer for the reviewed
+          Alloy self-metrics source. The running stack is preserved for review.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _o11y_source_review_required | bool
 
     - name: "Reload Prometheus after remote scrape files change"
       ansible.builtin.uri:
@@ -1661,6 +1884,27 @@
           vars:
             _o11y_trace_silence_expected: "{{ _o11y_expected_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
             _o11y_trace_silence_live: "{{ _o11y_rules | selectattr('uid', 'equalto', 'agentgateway_trace_silent') | list }}"
+
+        - name: Require live endpoint-health and scheduled-job PromQL to equal the provisioned expressions
+          ansible.builtin.assert:
+            that:
+              - _o11y_health_and_silence_live_exprs == _o11y_health_and_silence_expected_exprs
+            fail_msg: "Live endpoint-health or scheduled-job alert expressions differ from the provisioned file."
+          vars:
+            _o11y_health_and_silence_uids:
+              - o11y_endpoint_probe_failed
+              - o11y_endpoint_probe_missing
+              - o11y_scheduled_job_silent
+            _o11y_health_and_silence_expected_exprs: >-
+              {{ _o11y_expected_rules
+                 | selectattr('uid', 'in', _o11y_health_and_silence_uids)
+                 | map(attribute='data') | map('first') | map(attribute='model')
+                 | map(attribute='expr') | list }}
+            _o11y_health_and_silence_live_exprs: >-
+              {{ _o11y_rules
+                 | selectattr('uid', 'in', _o11y_health_and_silence_uids)
+                 | map(attribute='data') | map('first') | map(attribute='model')
+                 | map(attribute='expr') | list }}
 
         # Same uid order on both sides (asserted above), so each field compares rule by
         # rule; absent or null maps compare as empty maps. The durations are strings in

@@ -124,7 +124,7 @@ OBSERVATION_CONTRACTS = {
         "datasource_uid": "prometheus",
         "ref": "A",
         "mode": "instant",
-        "expr": 'min by (service) (up{service=~"$service"})',
+        "expr": 'min by (service) (up{service=~"$service",job!="o11y-availability"})',
     },
     ("service-conformance", "Latest inventory marker age"): {
         "name": "inventory_marker_freshness",
@@ -147,7 +147,7 @@ OBSERVATION_CONTRACTS = {
         "ref": "A",
         "mode": "instant",
         "expr": (
-            'sum(last_over_time({job="agent-cloud-conformance", step!="none"} | '
+            'sum(last_over_time({job="agent-cloud-conformance", service=~".+", step=~".+", step!="none"} | '
             'json state_code | unwrap state_code | __error__="" [45m]) by (service, step) '
             '== bool 0) or (sum(last_over_time({job="agent-cloud-conformance", step="none", '
             'status=~"^(no_history|has_history|history_incomplete)$"} | json | '
@@ -164,7 +164,7 @@ OBSERVATION_CONTRACTS = {
         "window_seconds": CURRENT_WORKFLOW_STATE_WINDOW_SECONDS,
         "scope": "latest_recorded_state",
         "expr": (
-            'last_over_time({job="agent-cloud-conformance", step!="none"} | '
+            'last_over_time({job="agent-cloud-conformance", service=~".+", step=~".+", step!="none"} | '
             'json state_code | unwrap state_code | __error__="" [45m]) by (service, step)'
         ),
     },
@@ -175,7 +175,7 @@ OBSERVATION_CONTRACTS = {
         "ref": "A",
         "mode": "instant",
         "expr": (
-            'last_over_time({job="agent-cloud-conformance", step!="none"} | '
+            'last_over_time({job="agent-cloud-conformance", service=~".+", step=~".+", step!="none"} | '
             'json completed_at_seconds | drop status | label_format age_seconds=`{{if eq '
             '(.completed_at_seconds | default "unknown") "unknown"}}-1{{else}}{{sub '
             '(unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | '

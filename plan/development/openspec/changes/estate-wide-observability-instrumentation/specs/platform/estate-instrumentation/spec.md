@@ -32,6 +32,191 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
 
+### Requirement: Endpoint availability probes are reviewed, isolated, and bounded
+Continuous HTTP(S) endpoint availability MAY be enabled only for targets with a
+reviewed entry in the existing private `estate_coverage_inventory.targets`
+authority, with its canonical inventory revision, binding one exact endpoint
+and supported health contract to stable service, environment, cluster, and
+`target_id` identity. The feature SHALL default off with explicit
+`enabled=false` and reviewed flags/limits required for activation; enabled
+empty targets SHALL refuse. No caller/extra-var value may override the private
+endpoint declaration or activation controls. The candidate is the existing
+pinned Alloy v1.5.1 `prometheus.exporter.blackbox` component; source support
+does not prove it is loaded or effective. No new container, published listener,
+runtime URL override, or production target is implied.
+
+Each endpoint SHALL be one literal RFC1918 IPv4 HTTP(S) GET URL. Declarations
+SHALL reject duplicates, userinfo, query or fragment, credentials, headers,
+request-body matching, proxies, unchecked/unreviewed redirects, and any
+unreviewed destination. The health contract SHALL use exact reviewed status
+codes. HTTPS SHALL include a reviewed DNS `tls_server_name` and trust choice
+`system` or `internal-ca`; HTTP SHALL have no TLS trust field. TLS certificate
+verification SHALL be enabled and environment proxying disabled. A target
+without a safe fixed health contract SHALL remain undeclared.
+
+Source validation SHALL enforce hard ceilings without assigning production
+defaults: 64 targets; 30–3600-second interval; probe timeout at most 10 seconds;
+scrape timeout at most 30 seconds with `probe < scrape <= interval`; response
+body at most 65,536 bytes; raw samples at most 256 and within the existing
+shared cap; summed probe timeouts at most 120 seconds; and at most 384 retained
+series (64 targets × 6 families). Only `up`, `probe_success`,
+`probe_duration_seconds`, `probe_http_status_code`, `scrape_samples_scraped`,
+and `scrape_body_size_bytes` SHALL be retained for probes, with
+`extra_metrics=true`; this filter SHALL NOT constrain Alloy self-monitor
+metrics. Only fixed identity labels SHALL be exported. Raw endpoint and
+request/client/trace/secret values SHALL NOT become labels. The exact probe
+health selector SHALL bind job, `target_id`, environment, and cluster.
+
+Before placement, immediately before the lifecycle applies the Compose
+configuration, and after apply, the receiver SHALL prove that the effective
+Linux network namespace for Alloy is distinct from every project sibling and
+other container explicitly joining Alloy's namespace. The proof SHALL compare
+kernel namespace identity `(st_dev, st_ino)` and bracket stable container IDs,
+running PIDs, and process start times. It SHALL use the effective provider,
+arguments, environment, and overlays that the lifecycle will apply, and SHALL
+recheck them immediately inside that lifecycle. Pod membership or an IP/path
+string alone SHALL NOT prove namespace identity. The availability overlay
+SHALL declare top-level `x-podman.in_pod=false`; loopback binding alone SHALL
+NOT count as isolation. Unknown, unstable, unreadable, conflicting, shared, or
+host-network identity; an effective published listener; or provider/process
+drift SHALL refuse before the handler is enabled. A failed privilege or
+inspection read SHALL remain unverified, never trigger a permission bypass.
+Pre-apply proof SHALL NOT require a future native sample; post-apply source
+acceptance is separate.
+Existing private Prometheus forwarding, Alloy self-monitor identity/selectors,
+and profile consumers SHALL be preserved without duplicate writers or
+self-scrapes. Off mode SHALL preserve existing behavior. Existing Grafana
+expected-target rule UIDs, five-label identities, and queries SHALL remain
+unchanged in this source slice; producer verification SHALL use the private
+inventory declaration and actual runtime evidence rather than duplicating
+producer ownership in alert annotations or tombstones. The normalized private
+expected-metrics rows MAY carry additive `source: prometheus|alloy`; omission
+SHALL mean the legacy Prometheus source. This field SHALL survive normalization
+and the existing budget, survey, and deploy-guard projections. Current source
+SHALL be proven only from active Prometheus targets or the fixed native Alloy
+detail plus fresh forwarded diagnostics. Ownership projection alone SHALL NOT
+prove producer acceptance.
+
+An omitted source SHALL retain the legacy Prometheus behavior and exact
+eight-field Prometheus coverage projection. When a reviewed Alloy source is
+declared, the expected-target and budget/survey inputs SHALL preserve that
+source without treating the native health row as a Prometheus active target,
+as a direct HTTP survey target, or as a member of Prometheus loaded-limit
+counts and synthetic scrape pools. Native coverage and native budget evidence
+SHALL be reported in a separate projection with its point-in-time measurement
+domain; the existing Prometheus projection SHALL count only Prometheus-owned
+rows. An Alloy declaration without its fixed loaded native component and
+fresh forwarded sample evidence SHALL remain unverified.
+
+The source gate SHALL compare the proven current producer with the reviewed
+intended producer. It MAY permit a reviewed Prometheus-to-Alloy or
+Alloy-to-Prometheus change without requiring the future producer before apply,
+but it SHALL prove the old/current producer before changing configuration. An
+idempotent rerun SHALL prove its actual current source. Mixed, duplicate,
+missing, stale, or ambiguous current producers SHALL refuse. A Grafana UID or
+five-label identity match SHALL remain rule-ownership evidence only and SHALL
+NOT prove which producer currently emits the series.
+
+Post-apply Alloy acceptance SHALL read the loaded fixed exporter/scrape
+components, effective finite limits, target identity and health, and fresh
+forwarded samples. Fresh raw-sample timestamps SHALL be later than both the
+host UTC pre-apply lower bound and the new Alloy process start; query
+evaluation time or a historical maximum SHALL NOT substitute. A proven
+`probe_success=0` with a healthy scrape SHALL report observed endpoint failure,
+separately from scrape failure and missing telemetry. The scrape body counter
+measures Alloy's exporter-metrics response, not the remote health response.
+Survey and budget checks SHALL NOT replay the health endpoint. A return to
+Prometheus SHALL prove the new Prometheus target/limits and fresh diagnostics,
+absence of the native components, and absence of duplicate producers. Failed
+post-apply proof SHALL be reported as unverified; it SHALL NOT automatically
+delete, stop, revert, or recreate containers, pods, or volumes.
+
+The fixed Alloy v1.5.1 `/api/v0/web/components` response SHALL be treated as a
+complete root graph only; it SHALL NOT be treated as a registry for isolated
+module or remote-config controllers. The empty `moduleID` and omitted
+`createdModuleIDs` fields SHALL NOT prove those controller scopes absent. A
+return-to-Prometheus absence proof SHALL require a normal apply that created a
+new Alloy process after installing the exact reviewed flat candidate. It SHALL
+bind the actual container ID, image, PID, start time, executed arguments, sole
+read-only `/etc/alloy/config.alloy` mount, and actual mounted config bytes to
+the reviewed rendered candidate. Ready and root-list observations SHALL be
+bracketed by unchanged process/config identity; expected healthy service
+sentinels SHALL be present and every forbidden native root component absent.
+Imports, custom modules, `remotecfg`, nested or remote controller scope, an
+unbound command/mount/config, or lack of a provably fresh process SHALL leave
+the result unverified. A same-process root list SHALL NOT prove absence, and
+the playbook SHALL NOT force-restart core services or consult a prior-component
+registry to satisfy this gate.
+
+Profile candidate acceptance SHALL use the same validated private availability
+projection and fixed profile target address as deployment. It SHALL validate
+the rendered candidate before writing temporary configuration, and SHALL
+preserve the existing profile-operation gates and restoration behavior.
+
+#### Scenario: Probe activation remains gated without a reviewed target and isolation
+- **WHEN** a target declaration, endpoint contract, finite budget, actual pre-placement namespace proof, or effective handler isolation is missing or unverified
+- **THEN** activation refuses before configuration placement and no target is treated as covered
+- **AND** a Pod membership field alone does not establish namespace sharing; kernel network-namespace identity decides whether the probe shares a namespace
+- **AND** check mode, source validation, and rendered configuration do not count as live acceptance
+
+#### Scenario: Endpoint failure, scrape failure, and missing probe data remain distinct
+- **WHEN** an exact reviewed probe target is evaluated
+- **THEN** `probe_success=0` represents a failed endpoint health contract, `up=0` represents a failed scrape, and an absent exact declared probe series represents missing telemetry
+- **AND** none of these states is rendered or interpreted as healthy
+- **AND** probe-failed and missing-probe alerts reuse the existing gated Grafana alert owner, labels, grouping, and Discord route
+
+#### Scenario: Endpoint alerts distinguish failure, missing data, and scrape failure
+- **WHEN** the validated availability source is enabled with alerts enabled and no alert canary
+- **THEN** the failed-endpoint rule fires only for the exact target identity with `up=1` and `probe_success=0`
+- **AND** the missing-endpoint rule uses the reviewed `signals.health.freshness_seconds` window and fires when the exact probe series is absent
+- **AND** only `up=0` with the same fixed six-label identity suppresses the missing-endpoint rule; missing `up` or unrelated identity does not suppress it
+- **AND** the existing generic scrape rule continues to own `up=0` and its title/annotations describe telemetry scrape failure without asserting that the application is down
+- **AND** both endpoint rules are omitted and deleted through the existing ownership cleanup when availability is disabled, alerts are disabled, or the canary is active
+- **AND** rule rendering or query evaluation does not prove live Grafana readback, firing/recovery, or notification delivery
+
+#### Scenario: Probe labels and resource work stay within the reviewed budget
+- **WHEN** reviewed targets are rendered and scraped
+- **THEN** only their fixed service/environment/cluster/`target_id` identity labels are retained, with no endpoint or request-derived labels
+- **AND** the fixed six-family output and hard target, interval, timeout, body, scrape, series, and aggregate-work ceilings bound collection
+- **AND** exact-binary validation, receiver readback, target failure/recovery, missing-series behavior, and existing-route delivery remain separate live acceptance evidence
+
+#### Scenario: Source rendering does not prove post-apply probe acceptance
+- **WHEN** source validation or a rendered configuration succeeds without a fresh readback from the running pinned receiver
+- **THEN** availability remains unverified and no runtime coverage or alert-delivery acceptance is claimed
+- **AND** the post-apply check requires the loaded native component, finite effective limits, current target identity/health, and fresh samples newer than both the pre-apply receiver-time bound and the new Alloy process start
+- **AND** historical series, including a 24-hour maximum, cannot prove a new producer transition
+
+#### Scenario: Native producer survey lacks source evidence
+- **WHEN** an expected row declares Alloy but no fixed native component detail and fresh forwarded sample evidence are available
+- **THEN** the source survey returns a fixed unverified result rather than matching a Prometheus target or claiming native acceptance
+- **AND** a same-UID/same-five-label Grafana ownership match does not satisfy producer acceptance
+
+#### Scenario: A reviewed source transition proves the current producer first
+- **WHEN** a reviewed declaration changes an expected target from Prometheus to Alloy or from Alloy to Prometheus
+- **THEN** preflight proves the actual current producer and effective namespace isolation before placement
+- **AND** preflight does not require a future producer sample before apply
+- **AND** unchanged alert UID and five-label ownership do not replace source proof
+- **AND** an idempotent rerun proves the currently declared producer rather than assuming a migration
+
+#### Scenario: Post-apply source acceptance rejects old or stale producer samples
+- **WHEN** an applied Alloy source has only the former Prometheus target, the wrong/missing native component, or samples older than the pre-apply bound or new process start
+- **THEN** producer acceptance is unverified even if the Grafana rule identity is unchanged
+- **AND** the native health target is never replayed by the baseline survey
+- **AND** no automatic destructive rollback or duplicate-producer remediation occurs
+
+#### Scenario: Prometheus and native budget projections remain separate
+- **WHEN** no expected row declares a source or every row uses the legacy Prometheus source
+- **THEN** the existing eight-field Prometheus coverage result and budget behavior remain unchanged
+- **WHEN** a reviewed native Alloy row is present
+- **THEN** Prometheus counts, 24-hour maxima, direct HTTP checks, and loaded-limit pools include only Prometheus rows
+- **AND** native limits and point-in-time forwarded samples are returned in a separate source-labelled projection
+
+#### Scenario: Profile acceptance uses the validated availability mode before writing
+- **WHEN** profile candidates are prepared while availability is enabled
+- **THEN** the same validated private projection selects the fixed loopback profile target
+- **AND** invalid projection or candidate data refuses before temporary config is written
+- **AND** existing profile operation and restoration guards remain in force
+
 ### Requirement: Expected metrics targets are reviewed and compared exactly
 Production per-target missing-telemetry rules SHALL be active only when
 `o11y_expected_metrics_targets_reviewed` is true and production alerts are

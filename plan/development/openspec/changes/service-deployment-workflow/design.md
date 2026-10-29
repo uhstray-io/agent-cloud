@@ -375,3 +375,86 @@ documents processor-generated hint attributes; the Alloy project's [behavior rep
 records the default JSON envelope and that `raw` sends the body as the Loki payload.
 The cross-file test establishes the static contract. Production read-back through
 Dev-bound Semaphore remains the runtime acceptance step.
+
+
+## Bounded collector completion receipt (source proposal, 2026-10-28)
+
+Task 7.5 owns a separate completion clock for the scheduled conformance collector;
+the existing per-service `step=none` inventory markers and dashboard's 45-minute
+freshness display remain unchanged. One fixed
+`job=agent-cloud-conformance,kind=run,status=success` receipt may be emitted only
+after the collector completes its required reads/parsing and configured required
+writes and the existing conformance data batch has a positive transport
+acknowledgement. Send it as a separate final request containing only the fixed
+receipt; do not append it to the earlier batch, whose partial-rejection result
+would not yet be known. This receipt means collection completed; it does not mean historical
+coverage is complete or every service passed. Preserve `history_incomplete`,
+`no_history`, the per-step schema, and its six accepted statuses.
+
+Implement this as the narrow second record variant in the existing encoder and
+Alloy receiver allowlist. Add only the fixed `kind=run` completion form; do not
+relax the accepted keys/statuses globally or let the run record forge a
+per-service step. The conformance label hint includes `kind` for this variant;
+per-service step, age, provenance, and failed-snapshot dashboard queries require
+nonempty `service` and `step` labels, so the global receipt is not a service row,
+failure, or inventory marker. A failed or interrupted read, check-mode/skipped write, or
+failed/unknown required configured write before the completion boundary prevents
+sending a success receipt. Keep NetBox's explicitly nonblocking outage behavior
+and visible failure record, while withholding the receipt when a required
+configured write is failed or unknown. Define missing/ambiguous VM handling
+alongside the existing writer contract: with NetBox configured, each expected
+inventory service must have one HTTP 200 response whose integer `count` agrees
+with the length of its `results` list and whose known `next` pagination field is
+null. The collector retains only a terminal-page boolean; it never follows or
+logs NetBox's `next` URL. NetBox's `count` is total matches and `results` is the
+current page ([pagination contract](https://netbox.readthedocs.io/en/stable/integrations/rest-api/#pagination)). A complete zero-match or multi-match is
+a known nonblocking outcome and selects no write; it remains visible in the
+existing missing/ambiguous report. Only a unique match selects a required
+PATCH. A missing, duplicate, malformed, incomplete, failed, or otherwise
+unknown configured read suppresses the receipt without failing the existing
+nonblocking collector path. A unique-match PATCH must return exactly one
+explicit HTTP 200; a failed, skipped, missing, duplicate, or unknown result
+suppresses the receipt. With NetBox unconfigured, there are no NetBox reads or
+writes required by this contract.
+
+Use the existing environment-specific transport: local development retains its
+current Loki push contract; production uses the exact private Alloy OTLP/HTTP
+path already declared by the collector. Do not substitute a direct production
+Loki write. Require HTTP 204 for the local conformance batch or a valid OTLP
+`ExportLogsServiceResponse` JSON response with HTTP 200 and zero rejected
+records for the production batch before attempting the receipt. A missing or
+non-JSON body, unknown response fields, malformed `partialSuccess`, or invalid
+counter makes acknowledgement unknown and suppresses the receipt. Parse
+`rejectedLogRecords` as an exact nonnegative int64, accepting both an integer
+and its decimal-string ProtoJSON representation; do not coerce invalid values
+to zero. A protocol-valid zero-rejection warning remains accepted. The
+[OTLP/HTTP response](https://opentelemetry.io/docs/specs/otlp/#otlphttp-response)
+and [ProtoJSON int64 representation](https://protobuf.dev/programming-guides/json/#representation-of-each-type)
+define these response shapes.
+When the conformance batch is empty, no prior data request is needed. A positive
+receiver response is transport acceptance, not durable
+Loki ingestion. If a request may have been accepted but its response is lost or
+times out, report publication as failed/UNKNOWN; the record may already be in
+Loki and may reset the silence clock. Do not infer absence, retry or retract it
+from that ambiguous acknowledgement. Observing the receipt in Loki proves the
+collector reached its successful required-work boundary; it does not prove the
+Semaphore task is green or establish durable sender acknowledgement. Queryable
+Loki readback and alert readback remain separate live acceptance. No
+distributed transaction or retraction mechanism is introduced. Extend the
+existing scheduled-job silence consumer
+with the collector declaration, whose shared ownership and unchanged default
+are tracked in [production-internal-ca task 6.4](../production-internal-ca/tasks.md);
+preserve its five-minute evaluation/pending behavior and CA's 36-hour default.
+Choose the smallest supported integer-hour silence only after verifying the
+effective cadence, normal duration, and allowed missed runs. The source
+15-minute schedule is not proof of a live schedule.
+
+The shared alert source already selects fixed completion `kind=run,status=success`
+rows and applies each declared integer-hour window. Per-service conformance
+consumers require service/step-shaped records, so the global receipt is not
+counted as a tracked service, failed step, or inventory marker. Source-only
+collector and receiver-consumer slices are complete; the private
+`agent-cloud-conformance` schedule and silence row remain unreviewed. Do not
+infer its effective cadence from the public 15-minute template or alter the
+existing CA 36-hour default. Loki readback and Grafana alert delivery remain
+separate live acceptance.

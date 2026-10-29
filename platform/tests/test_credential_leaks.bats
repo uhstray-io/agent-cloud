@@ -45,56 +45,264 @@ _committed_files() {
 
 # ── RFC1918 IP detection ──────────────────────────────────────────────
 
+# Print private-address tokens, exempting only the exact RFC1918 CIDR declaration
+# used by the availability validator. A whole-line exemption could conceal a host
+# address beside a harmless network definition.
+_private_ip_findings() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import ipaddress
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+family, root, paths_file = sys.argv[1:]
+paths = Path(paths_file).read_text(encoding="utf-8").splitlines()
+if not paths or any(not path for path in paths) or len(paths) != len(set(paths)):
+    print("private-address scan received an empty or ambiguous path list", file=sys.stderr)
+    raise SystemExit(2)
+listing = subprocess.run(
+    ["git", "ls-files", "--stage", "-z"],
+    cwd=root,
+    check=False,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+if listing.returncode != 0:
+    print("private-address scan could not read Git index", file=sys.stderr)
+    raise SystemExit(2)
+selected = set(paths)
+entries = {}
+try:
+    for record in listing.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, object_id, stage = metadata.split()
+        path = os.fsdecode(raw_path)
+        if path not in selected:
+            continue
+        if path in entries or stage != b"0" or mode not in {b"100644", b"100755", b"120000"}:
+            raise ValueError
+        entries[path] = (mode, object_id)
+except ValueError:
+    print("private-address scan found malformed or ambiguous Git index entries", file=sys.stderr)
+    raise SystemExit(2)
+if set(entries) != selected:
+    print("private-address scan found missing Git index entries", file=sys.stderr)
+    raise SystemExit(2)
+ordered = [(path, *entries[path]) for path in paths]
+objects = b"".join(object_id + b"\n" for _path, _mode, object_id in ordered)
+blobs = subprocess.run(
+    ["git", "cat-file", "--batch"],
+    cwd=root,
+    input=objects,
+    check=False,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+if blobs.returncode != 0:
+    print("private-address scan could not read Git blobs", file=sys.stderr)
+    raise SystemExit(2)
+cidr_definitions = {
+    "10": "10.0.0.0/8",
+    "172": "172.16.0.0/12",
+    "192.168": "192.168.0.0/16",
+}
+network = ipaddress.ip_network(cidr_definitions[family])
+address_re = re.compile(rb"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b")
+definition_re = re.compile(
+    rb"ipaddress\.ip_network\(\s*['\"](?P<network>"
+    + re.escape(network.with_prefixlen.encode("ascii"))
+    + rb")['\"]\s*\)"
+)
+offset = 0
+for path, _mode, object_id in ordered:
+    header_end = blobs.stdout.find(b"\n", offset)
+    if header_end < 0:
+        print("private-address scan received a truncated Git blob header", file=sys.stderr)
+        raise SystemExit(2)
+    header = blobs.stdout[offset:header_end].split()
+    if len(header) != 3 or header[0] != object_id or header[1] != b"blob":
+        print("private-address scan received an invalid Git blob header", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        size = int(header[2])
+    except ValueError:
+        print("private-address scan received an invalid Git blob size", file=sys.stderr)
+        raise SystemExit(2)
+    body_start = header_end + 1
+    body_end = body_start + size
+    if size < 0 or body_end >= len(blobs.stdout) or blobs.stdout[body_end:body_end + 1] != b"\n":
+        print("private-address scan received a truncated Git blob", file=sys.stderr)
+        raise SystemExit(2)
+    content = blobs.stdout[body_start:body_end]
+    offset = body_end + 1
+    for number, line in enumerate(content.splitlines(), 1):
+        definition_spans = [match.span("network") for match in definition_re.finditer(line)]
+        for address in address_re.finditer(line):
+            octets = tuple(int(part) for part in address.group().split(b"."))
+            prefix = tuple(int(part) for part in family.split("."))
+            if octets[: len(prefix)] != prefix:
+                continue
+            if family == "172" and not 16 <= octets[1] <= 31:
+                continue
+            if any(start == address.start() and address.end() == start + len(network.network_address.exploded)
+                   for start, _end in definition_spans):
+                continue
+            print(f"{path}:{number}:{address.group().decode('ascii')}")
+if offset != len(blobs.stdout):
+    print("private-address scan received trailing Git blob data", file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+_private_ip_scan() {
+  local family="$1" paths="$BATS_TEST_TMPDIR/private-ip-paths-$1.txt"
+  (set -o pipefail; _committed_files) > "$paths" || return 2
+  [ -s "$paths" ] || return 2
+  _private_ip_findings "$family" "$REPO_ROOT" "$paths"
+}
+
 @test "credential leak: no hardcoded 192.168.x.x IPs in committed files" {
-  local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '192\.168\.[0-9]+\.[0-9]+' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|inventory_hostname|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
-  if [ -n "$violations" ]; then
+  run _private_ip_scan 192.168
+  [ "$status" -eq 0 ]
+  if [ -n "$output" ]; then
     echo "Found hardcoded 192.168.x.x IPs:"
-    echo "$violations"
+    echo "$output"
     false
   fi
 }
 
 @test "credential leak: no hardcoded 10.x.x.x IPs in committed files" {
-  local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      # Match 10.N.N.N but not version strings like 10.0 without third octet
-      grep -nE '\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
-  if [ -n "$violations" ]; then
+  run _private_ip_scan 10
+  [ "$status" -eq 0 ]
+  if [ -n "$output" ]; then
     echo "Found hardcoded 10.x.x.x IPs:"
-    echo "$violations"
+    echo "$output"
     false
   fi
 }
 
 @test "credential leak: no hardcoded 172.16-31.x.x IPs in committed files" {
-  local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
-  if [ -n "$violations" ]; then
+  run _private_ip_scan 172
+  [ "$status" -eq 0 ]
+  if [ -n "$output" ]; then
     echo "Found hardcoded 172.16-31.x.x IPs:"
-    echo "$violations"
+    echo "$output"
     false
   fi
+}
+
+@test "private address scan exempts only exact RFC1918 definition tokens" {
+  local fixture="$BATS_TEST_TMPDIR/rfc1918-definitions.txt"
+  local repo="$BATS_TEST_TMPDIR/scanner-repo"
+  local paths="$BATS_TEST_TMPDIR/scanner-paths.txt"
+  python3 - "$fixture" <<'PY'
+import ipaddress
+import sys
+from pathlib import Path
+
+cidrs = {
+    "10": "10.0.0.0/8",
+    "172": "172.16.0.0/12",
+    "192.168": "192.168.0.0/16",
+}
+networks = {family: ipaddress.ip_network(cidr) for family, cidr in cidrs.items()}
+lines = [
+    f'ipaddress.ip_network("{networks["10"].with_prefixlen}")  # host {networks["10"][23]}',
+    f'ipaddress.ip_network("{networks["172"].with_prefixlen}")  # host {networks["172"][23]}',
+    f'ipaddress.ip_network("{networks["192.168"].with_prefixlen}")  # host {networks["192.168"][23]}',
+    f'host = "{networks["10"][99]}"',
+    f'host = "{networks["172"][31]}"',
+    f'host = "{networks["192.168"][2]}"',
+    f'ipaddress.ip_network("{networks["10"][1]}/{networks["10"].prefixlen}")',
+    f'ipaddress.ip_network("{networks["172"][17]}/{networks["172"].prefixlen}")',
+    f'ipaddress.ip_network("{networks["192.168"][1]}/{networks["192.168"].prefixlen}")',
+    f'url = "https://{networks["10"].network_address}/{networks["10"].prefixlen}"',
+    f'url = "https://{networks["172"].network_address}/{networks["172"].prefixlen}"',
+    f'url = "https://{networks["192.168"].network_address}/{networks["192.168"].prefixlen}"',
+    f'ipaddress.ip_network("{networks["10"].with_prefixlen}")',
+    f'ipaddress.ip_network("{networks["172"].with_prefixlen}")',
+    f'ipaddress.ip_network("{networks["192.168"].with_prefixlen}")',
+    "host = \"10." + ".".join(f"{int(part):03d}" for part in str(networks["10"][23]).split(".")[1:]) + "\"",
+]
+Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
+  mkdir -p "$repo"
+  cp "$fixture" "$repo/rfc1918-definitions.txt"
+  git -C "$repo" init -q
+  git -C "$repo" add -- rfc1918-definitions.txt
+  printf '%s\n' rfc1918-definitions.txt > "$paths"
+
+  run _private_ip_findings 10 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "1:"
+  assert_contains "$output" "4:"
+  assert_contains "$output" "7:"
+  assert_contains "$output" "10:"
+  assert_contains "$output" "16:"
+  refute_contains "$output" "13:"
+
+  run _private_ip_findings 172 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "2:"
+  assert_contains "$output" "5:"
+  assert_contains "$output" "8:"
+  assert_contains "$output" "11:"
+  refute_contains "$output" "14:"
+
+  run _private_ip_findings 192.168 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "3:"
+  assert_contains "$output" "6:"
+  assert_contains "$output" "9:"
+  assert_contains "$output" "12:"
+  refute_contains "$output" "15:"
+}
+
+@test "private address scan inspects symlink blobs without opening external targets" {
+  local repo="$BATS_TEST_TMPDIR/scanner-link-repo"
+  local external="$BATS_TEST_TMPDIR/scanner-link-outside"
+  local paths="$BATS_TEST_TMPDIR/scanner-link-paths.txt"
+  local expected_host
+  mkdir -p "$repo" "$external"
+  expected_host=$(python3 - "$repo" "$external" <<'PY'
+import ipaddress
+import os
+import sys
+from pathlib import Path
+
+repo, external = map(Path, sys.argv[1:])
+host = str(ipaddress.ip_network("10.0.0.0/8")[211])
+(external / "private-value.txt").write_text(host, encoding="utf-8")
+os.symlink(external / "private-value.txt", repo / "external-link.txt")
+os.symlink(f"../unresolved/{host}", repo / "link-text.txt")
+print(host)
+PY
+  )
+  [ -n "$expected_host" ]
+  git -C "$repo" init -q
+  git -C "$repo" add -- external-link.txt link-text.txt
+  printf '%s\n' external-link.txt link-text.txt > "$paths"
+
+  run _private_ip_findings 10 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "external-link.txt:"
+  assert_contains "$output" "link-text.txt:1:$expected_host"
+}
+
+@test "private address scan propagates index read failures" {
+  local repo="$BATS_TEST_TMPDIR/scanner-error-repo"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  _committed_files() { printf '%s\n' missing.txt; }
+  REPO_ROOT="$repo"
+  run _private_ip_scan 10
+  [ "$status" -eq 2 ]
+  assert_contains "$output" "private-address scan found missing Git index entries"
 }
 
 # ── Hardcoded credential detection ───────────────────────────────────

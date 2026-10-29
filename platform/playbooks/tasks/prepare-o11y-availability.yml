@@ -1,0 +1,196 @@
+---
+- name: Refuse private availability controls supplied as launch extra vars
+  ansible.builtin.assert:
+    that:
+      - "'estate_coverage_inventory' not in ('' | extra_var_names)"
+      - "'o11y_availability_probes_enabled' not in ('' | extra_var_names)"
+      - "'o11y_availability_probes_reviewed' not in ('' | extra_var_names)"
+      - "'o11y_availability_probe_limits' not in ('' | extra_var_names)"
+    fail_msg: >-
+      Private availability declarations and activation controls must come from reviewed
+      inventory, not launch-time extra vars.
+  check_mode: false
+
+- name: Validate and privately prepare the reviewed availability projection
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+      - --prepare-availability
+    stdin: >-
+      {{ {
+        'targets': ((estate_coverage_inventory | default({})).get('targets', []) if (estate_coverage_inventory | default({})) is mapping else []),
+        'inventory_revision': ((estate_coverage_inventory | default({})).get('revision') if (estate_coverage_inventory | default({})) is mapping else none),
+        'enabled': o11y_availability_probes_enabled | default(false),
+        'reviewed': o11y_availability_probes_reviewed | default(false),
+        'limits': o11y_availability_probe_limits | default(none),
+        'receiver_environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
+        'cluster': o11y_cluster | default('agent-cloud-local'),
+        'shared_sample_limit': o11y_scrape_sample_limit | default(2000)
+      } | to_json }}
+  register: _o11y_availability_validation
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  delegate_to: localhost
+
+- name: Require the bounded availability source projection
+  ansible.builtin.assert:
+    that: _o11y_availability_validation.rc == 0
+    fail_msg: >-
+      The private estate availability declaration or reviewed resource gate is invalid;
+      inspect the fixed source-contract requirements without printing private endpoints.
+  check_mode: false
+
+- name: Store the protected availability projection for the renderer
+  ansible.builtin.set_fact:
+    _o11y_availability: "{{ _o11y_availability_validation.stdout | from_json }}"
+  no_log: true
+
+- name: Check the receiver runtime interpreter and existing PyYAML dependency
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/env
+      - python3
+      - -c
+      - "import sys, yaml; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+  register: _o11y_receiver_python_prerequisite
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Require the existing receiver Python prerequisite for source readback
+  ansible.builtin.assert:
+    that: _o11y_receiver_python_prerequisite.rc == 0
+    fail_msg: >-
+      Receiver source readback requires Python 3.10 or newer with PyYAML; no
+      availability or producer-source change was placed.
+    quiet: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Require a reviewed fixed Alloy self target when native probes are enabled
+  ansible.builtin.assert:
+    that:
+      - o11y_expected_metrics_targets_reviewed | default(false) | bool
+      - >-
+        (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+        selectattr('instance', 'equalto', 'alloy:12345') | list | length) == 1
+      - >-
+        (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+        selectattr('instance', 'equalto', 'alloy:12345') | selectattr('source', 'defined') |
+        selectattr('source', 'equalto', 'alloy') | list | length) == 1
+    fail_msg: >-
+      Native availability requires the reviewed fixed Alloy self target with an explicit
+      native source declaration.
+    quiet: true
+  no_log: true
+  when: _o11y_availability.enabled | bool
+
+- name: Prove the current Alloy self-metrics producer before a reviewed source transition
+  ansible.builtin.script:
+    cmd: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py --verify-availability-source"
+  environment:
+    CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+    COMPOSE_CMD: podman-compose
+    LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+    O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
+    O11Y_AVAILABILITY_ENABLED: "{{ 'true' if (_o11y_availability.enabled | bool) else 'false' }}"
+    COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if (_o11y_availability.enabled | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability.targets | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0)) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
+    O11Y_AVAILABILITY_SOURCE_JSON: >-
+      {{ {
+        'reviewed': (o11y_expected_metrics_targets_reviewed | default(false) | bool) or (_o11y_availability.enabled | bool),
+        'targets': o11y_expected_metrics_targets | default([]),
+        'availability': _o11y_availability,
+        'shared_limits': o11y_scrape_limits | default({}),
+        'environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
+        'cluster': o11y_cluster | default('agent-cloud-local'),
+        'lower_bound': none,
+        'freshness_seconds': 300,
+        'require_health_targets': false
+      } | to_json }}
+  register: _o11y_current_source_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Require one fresh and unambiguous current self-metrics producer
+  ansible.builtin.assert:
+    that:
+      - _o11y_current_source_raw.rc == 0
+      - (_o11y_current_source_raw.stdout | from_json).status == 'observed'
+      - (_o11y_current_source_raw.stdout | from_json).source in ['prometheus', 'alloy']
+      - (_o11y_current_source_raw.stdout | from_json).matches_intended is boolean
+    fail_msg: >-
+      The reviewed expected-metrics source cannot transition until the current Alloy
+      producer is uniquely identified by loaded limits and fresh forwarded samples.
+    quiet: true
+  no_log: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Keep the bounded current-source proof private for placement decisions
+  ansible.builtin.set_fact:
+    _o11y_current_source: "{{ _o11y_current_source_raw.stdout | from_json }}"
+  no_log: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Prove current Alloy namespace isolation before placement when probes are enabled
+  ansible.builtin.script:
+    cmd: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py --verify-availability-namespace"
+  register: _o11y_namespace_preplacement
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  environment:
+    CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+    COMPOSE_CMD: podman-compose
+    LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+    O11Y_AVAILABILITY_ENABLED: "{{ 'true' if (_o11y_availability.enabled | bool) else 'false' }}"
+    O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
+    COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if (_o11y_availability.enabled | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability.targets | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0)) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
+  when: _o11y_availability.enabled | bool
+
+- name: Require actual current Alloy network namespace isolation before placement
+  ansible.builtin.assert:
+    that:
+      - _o11y_namespace_preplacement.rc == 0
+      - (_o11y_namespace_preplacement.stdout | from_json).status == 'isolated'
+      - (_o11y_namespace_preplacement.stdout | from_json).namespace_snapshot_sha256 is match('^[a-f0-9]{64}$')
+      - (_o11y_namespace_preplacement.stdout | from_json).runtime_context_sha256 is match('^[a-f0-9]{64}$')
+    fail_msg: >-
+      Availability remains disabled until the current receiver provider and Linux network
+      namespace identities are verified by the bounded runtime gate.
+    quiet: true
+  no_log: true
+  when: _o11y_availability.enabled | bool
+
+- name: Keep the bounded pre-placement context for the immediate lifecycle recheck
+  ansible.builtin.set_fact:
+    _o11y_namespace_preplacement_result: "{{ _o11y_namespace_preplacement.stdout | from_json }}"
+  no_log: true
+  when: _o11y_availability.enabled | bool

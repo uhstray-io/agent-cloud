@@ -55,6 +55,8 @@
     _profile_semaphore_templates: "{{ hostvars['localhost']._survey_templates.json | default(none) }}"
     _profile_semaphore_repositories: "{{ hostvars['localhost']._survey_repositories.json | default(none) }}"
     _profile_candidate: "{{ hostvars[_profile_receiver]._profile_receipt | default({}) if _profile_receiver | length > 0 else {} }}"
+    _profile_availability: "{{ hostvars[_profile_receiver]._o11y_availability | default({}) if _profile_receiver | length > 0 else {} }}"
+    _profile_address: "{{ '127.0.0.1:12345' if (_profile_availability.get('enabled', false) | bool) else 'alloy:12345' }}"
     _profile_budget_disk: "{{ hostvars[_profile_receiver]._guest_root_disk | default({}) if _profile_receiver | length > 0 else {} }}"
     _profile_budget_memory: "{{ hostvars[_profile_receiver]._guest_memory_headroom | default({}) if _profile_receiver | length > 0 else {} }}"
   tasks:
@@ -104,6 +106,7 @@
           - _profile_candidate.status == 'validated'
           - _profile_candidate.target_count == 1
           - _profile_candidate.profile_type_count == 9
+          - _profile_candidate.profile_address == _profile_address
           - _profile_budget_disk.stdout_lines | length == 2
           - _profile_budget_disk.stdout_lines[1].split() | length == 2
           - _profile_budget_disk.stdout_lines[1].split()[0] | int > 0
@@ -125,6 +128,7 @@
     ansible_remote_tmp: /dev/shm/ansible-tmp
     _profile_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _profile_deploy_dir: "{{ _profile_monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _profile_address: "{{ '127.0.0.1:12345' if ((_o11y_availability | default({})).get('enabled', false) | bool) else 'alloy:12345' }}"
     _profile_internal_names:
       - ansible_python_interpreter
       - ansible_connection
@@ -226,7 +230,8 @@
                   'receiver_sha': expected_receiver_sha,
                   'disabled': (_profile_configs.results[0].content | b64decode),
                   'enabled': (_profile_configs.results[1].content | b64decode),
-                  'candidate_helper': _profile_workspace.path ~ '/candidates.py'} | to_json }}
+                  'candidate_helper': _profile_workspace.path ~ '/candidates.py',
+                  'profile_address': _profile_address} | to_json }}
             stdin_add_newline: false
           register: _profile_operation_raw
           changed_when: false
@@ -287,6 +292,7 @@
               - >-
                 _profile_operation_receipt.reason in
                 ['invalid_input', 'receiver_unavailable', 'baseline_ambiguous', 'mount_mismatch',
+                'candidate_invalid',
                 'container_state_changed', 'volume_state_changed', 'config_write_failed', 'reload_failed',
                 'profile_component_unhealthy', 'profile_not_observed', 'rollback_failed',
                 'post_disable_query_not_observed', 'operation_failed',

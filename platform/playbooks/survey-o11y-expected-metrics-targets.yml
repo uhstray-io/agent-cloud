@@ -10,6 +10,8 @@
   vars:
     _reviewed_checkout_payload_paths:
       - platform/playbooks/files/summarize-o11y-scrape-baseline.py
+      - platform/playbooks/files/o11y-coverage-census.py
+      - platform/playbooks/filter_plugins/o11y_scrape_budget.py
 
 - name: Validate the reviewed survey context
   hosts: localhost
@@ -33,6 +35,8 @@
   any_errors_fatal: true
   vars:
     _expected_target_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+    _survey_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _survey_monorepo_dir }}/{{ monorepo_deploy_path }}"
     _expected_target_reasons:
       - exact_match
       - identity_drift
@@ -52,6 +56,95 @@
         fail_msg: "Expected-target coverage requires the declared Podman receiver."
         quiet: true
       when: not ansible_check_mode
+
+    - name: Prove the fixed native source when explicitly declared
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+          - --prepare-availability
+        stdin: >-
+          {{ {
+            'targets': ((estate_coverage_inventory | default({})).get('targets', []) if (estate_coverage_inventory | default({})) is mapping else []),
+            'inventory_revision': ((estate_coverage_inventory | default({})).get('revision') if (estate_coverage_inventory | default({})) is mapping else none),
+            'enabled': o11y_availability_probes_enabled | default(false),
+            'reviewed': o11y_availability_probes_reviewed | default(false),
+            'limits': o11y_availability_probe_limits | default(none),
+            'receiver_environment': o11y_environment | default('prod'),
+            'cluster': o11y_cluster | default('agent-cloud-local'),
+            'shared_sample_limit': o11y_scrape_sample_limit | default(2000)
+          } | to_json }}
+      register: _expected_availability_validation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      delegate_to: localhost
+      when: >-
+        not ansible_check_mode and
+        (o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+        (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+         selectattr('instance', 'equalto', 'alloy:12345') | selectattr('source', 'defined') |
+         selectattr('source', 'equalto', 'alloy') |
+         list | length == 1)
+
+    - name: Require the reviewed native source projection
+      ansible.builtin.assert:
+        that: _expected_availability_validation.rc == 0
+        fail_msg: "The native expected-target source projection is unavailable or invalid."
+        quiet: true
+      no_log: true
+      when: >-
+        _expected_availability_validation is defined and
+        not (_expected_availability_validation.skipped | default(false) | bool)
+
+    - name: Keep the native source projection private
+      ansible.builtin.set_fact:
+        _expected_source_availability: "{{ _expected_availability_validation.stdout | from_json }}"
+      no_log: true
+      when: >-
+        _expected_availability_validation is defined and
+        not (_expected_availability_validation.skipped | default(false) | bool)
+
+    - name: Read current native source evidence privately
+      ansible.builtin.script:
+        cmd: "{{ _expected_target_helper }} --verify-availability-source"
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        COMPOSE_CMD: podman-compose
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
+        O11Y_AVAILABILITY_ENABLED: "{{ 'true' if (_expected_source_availability.enabled | bool) else 'false' }}"
+        COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if (_expected_source_availability.enabled | bool) else []) + (['compose.availability-ca.yml'] if (((_expected_source_availability.targets | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0)) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
+        O11Y_AVAILABILITY_SOURCE_JSON: >-
+          {{ {
+            'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+            'targets': o11y_expected_metrics_targets | default([]),
+            'availability': _expected_source_availability,
+            'shared_limits': o11y_scrape_limits | default({}),
+            'environment': o11y_environment | default('prod'),
+            'cluster': o11y_cluster | default('agent-cloud-local'),
+            'lower_bound': none,
+            'freshness_seconds': 300,
+            'require_health_targets': false
+          } | to_json }}
+      register: _expected_target_native_source_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: _expected_source_availability is defined
+
+    - name: Project the fixed native source evidence privately
+      ansible.builtin.set_fact:
+        _expected_target_native_source: >-
+          {{ (_expected_target_native_source_raw.stdout | from_json) | o11y_availability_source_coverage(true) }}
+      no_log: true
+      when: >-
+        _expected_target_native_source_raw is defined and
+        not (_expected_target_native_source_raw.skipped | default(false) | bool) and
+        (_expected_target_native_source_raw.rc | default(1)) == 0 and
+        _expected_target_native_source_raw.stdout is defined
 
     - name: Survey expected-target coverage with private input protected
       ansible.builtin.command:
@@ -76,6 +169,49 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Project the fixed native source evidence privately
+      ansible.builtin.set_fact:
+        _expected_target_native_source: "{{ _o11y_current_source | o11y_availability_source_coverage(true) }}"
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - _o11y_current_source is defined
+
+    - name: Keep required native source failures in the final coverage receipt
+      ansible.builtin.set_fact:
+        _expected_target_native_source:
+          status: unavailable
+          reason: native_source_unavailable
+          source: unknown
+      no_log: true
+      when: >-
+        not ansible_check_mode and
+        (o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+        (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+         selectattr('instance', 'equalto', 'alloy:12345') | selectattr('source', 'defined') |
+         selectattr('source', 'equalto', 'alloy') | list | length == 1) and
+        (_expected_target_native_source_raw is not defined or
+         (_expected_target_native_source_raw.skipped | default(false) | bool) or
+         (_expected_target_native_source_raw.rc | default(1)) != 0 or
+         _expected_target_native_source_raw.stdout is not defined)
+
+    - name: Validate the fixed native source coverage projection
+      ansible.builtin.assert:
+        that:
+          - _expected_target_native_source.status in ['observed', 'unavailable']
+          - _expected_target_native_source.source in ['prometheus', 'alloy', 'unknown']
+          - _expected_target_native_source.keys() | sort in [
+              ['body_counter', 'matches_intended', 'probe_failed_count', 'sample_count', 'scrape_failed_count', 'source', 'status'],
+              ['reason', 'source', 'status']
+            ]
+          - >-
+            (_expected_target_native_source.status == 'unavailable') or
+            (_expected_target_native_source.matches_intended is boolean)
+        fail_msg: "The native expected-target source evidence is outside its fixed public schema."
+        quiet: true
+      no_log: true
+      when: _expected_target_native_source is defined
+
     - name: Validate the bounded expected-target coverage receipt
       ansible.builtin.assert:
         that:
@@ -96,7 +232,14 @@
 
     - name: Report expected-target coverage without target labels
       ansible.builtin.debug:
-        msg: "{{ _expected_target_coverage | to_json }}"
+        msg: >-
+          {{ ({'overall_status': ('observed' if (_expected_target_coverage.status == 'observed' and
+              _expected_target_native_source.status == 'observed' and
+              _expected_target_native_source.matches_intended) else
+              ('mismatch' if (_expected_target_native_source.status == 'observed') else 'unavailable')),
+              'prometheus_target_coverage': _expected_target_coverage,
+              'native_availability_source': _expected_target_native_source} | to_json)
+             if _expected_target_native_source is defined else (_expected_target_coverage | to_json) }}
       when: not ansible_check_mode
 
     - name: Report check mode as unverified

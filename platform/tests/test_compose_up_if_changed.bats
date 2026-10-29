@@ -189,9 +189,13 @@ a_setup() {
   local pb
   for pb in deploy-authentik.yml deploy-o11y.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY2'
-import sys, yaml
-plays = yaml.safe_load(open(sys.argv[1]))
-t = [t for p in plays for t in p.get("tasks", []) if t.get("name") == "Run deploy.sh (container lifecycle)"][0]
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2] / "platform/tests"))
+import playbook_yaml
+plays = playbook_yaml.load(Path(sys.argv[1]))
+t = [t for p in plays for t in playbook_yaml.tasks(p.get("tasks", []))
+     if t.get("name") == "Run deploy.sh (container lifecycle)"][0]
 import jinja2
 expr = t["environment"]["FORCE_RECREATE"]
 render = lambda **kw: jinja2.Environment().from_string(expr).render(**kw)
@@ -536,9 +540,13 @@ n_setup() {
   local pb
   for pb in deploy-authentik.yml deploy-o11y.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY'
-import sys, yaml
-plays = yaml.safe_load(open(sys.argv[1]))
-tasks = [t for p in plays for t in p.get("tasks", []) if t.get("name") == "Run deploy.sh (container lifecycle)"]
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2] / "platform/tests"))
+import playbook_yaml
+plays = playbook_yaml.load(Path(sys.argv[1]))
+tasks = [t for p in plays for t in playbook_yaml.tasks(p.get("tasks", []))
+         if t.get("name") == "Run deploy.sh (container lifecycle)"]
 assert len(tasks) == 1, tasks
 assert tasks[0]["changed_when"] == "'DEPLOY_CHANGED=true' in _deploy.stdout_lines", tasks[0]["changed_when"]
 PY

@@ -4,6 +4,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -113,7 +114,10 @@ def _mocked_operation(
     disabled, enabled = "disabled profile config", "enabled profile config"
     config.write_text(disabled)
     inode = config.stat()
-    monkeypatch.setattr(operation, "_candidate_module", lambda _path: object())
+    monkeypatch.setattr(
+        operation, "_candidate_module",
+        lambda _path: SimpleNamespace(validate_candidates=lambda *_args: None),
+    )
     snapshots = iter(("before", "after" if changed_container else "before"))
     monkeypatch.setattr(
         operation, "_container_snapshot",
@@ -136,6 +140,7 @@ def _mocked_operation(
     payload = {
         "config_path": str(config), "receiver_sha": "a" * 40,
         "disabled": disabled, "enabled": enabled, "candidate_helper": str(HELPER_PATH),
+        "profile_address": "alloy:12345",
     }
     return payload, config, inode, reloads
 
@@ -194,6 +199,36 @@ def test_failed_profile_proof_restores_disabled_config(monkeypatch, tmp_path):
     assert config.read_text() == "disabled profile config"
     assert (config.stat().st_dev, config.stat().st_ino) == (inode.st_dev, inode.st_ino)
     assert reloads == ["enabled profile config", "disabled profile config"]
+
+
+def test_candidate_validation_runs_before_any_live_config_change(monkeypatch, tmp_path):
+    payload, config, _inode, reloads = _mocked_operation(monkeypatch, tmp_path)
+
+    def reject_candidate(*_args):
+        raise ValueError("candidate mismatch")
+
+    monkeypatch.setattr(
+        operation, "_candidate_module",
+        lambda _path: SimpleNamespace(validate_candidates=reject_candidate),
+    )
+    result = operation.evaluate(payload, runner=lambda *_args, **_kwargs: None, sleep_fn=lambda _seconds: None)
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "candidate_invalid"
+    assert config.read_text() == "disabled profile config"
+    assert reloads == []
+
+
+def test_operation_refuses_unknown_profile_address_before_any_live_config_change(monkeypatch, tmp_path):
+    payload, config, _inode, reloads = _mocked_operation(monkeypatch, tmp_path)
+    payload["profile_address"] = "alloy.example:12345"
+
+    result = operation.evaluate(payload, runner=lambda *_args, **_kwargs: None, sleep_fn=lambda _seconds: None)
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "invalid_input"
+    assert config.read_text() == "disabled profile config"
+    assert reloads == []
 
 
 def test_known_enabled_baseline_is_restored_but_refused(monkeypatch, tmp_path):
