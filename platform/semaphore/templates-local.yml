@@ -87,6 +87,21 @@ templates:
         description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
         type: string
         required: true
+  - name: "Reconcile Plane Members (Local)"
+    playbook: platform/playbooks/reconcile-plane-members.yml
+    survey_vars:
+      - name: apply
+        title: "Apply the plan"
+        description: "true to invite, set roles and remove; anything else only reports the plan"
+        type: string
+        required: false
+        default_value: "false"
+      - name: allow_mass_removal
+        title: "Allow mass removal"
+        description: "true only when the groups really shrank: an apply removing more than half the workspace, or with no desired members, is refused otherwise"
+        type: string
+        required: false
+        default_value: "false"
   - name: "Back Up Plane DB (Local)"
     playbook: platform/playbooks/backup-plane-db.yml
   - name: "Restore Plane DB (Local)"
