@@ -74,6 +74,25 @@ gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
 model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
 inference latency dashboard links to it.
 
+## OTLP receiver mutual TLS source contract
+
+`o11y_otlp_tls_enabled` defaults false. When enabled, the existing OTLP gRPC
+listener requires a step-ca client certificate, and the receiver-host journal
+collector presents its fixed `o11y-journal` client leaf while verifying the required
+`o11y_otlp_tls_server_name`. The receiver uses its fixed `o11y-otlp-server` leaf and
+the authoritative root/intermediate bundle. Both certificate directories and the
+bundle are mounted read-only. Alloy rereads staged leaves natively; existing
+connections are not immediately reauthenticated after a reload.
+
+Alloy's client-CA check verifies trust-chain membership, not a gateway-specific SAN,
+so the existing source-scoped firewall remains part of the sender boundary. The
+source change does not enable private inventory or prove live activation. Leaf
+issuance, gateway exporter transport, coordinated journal/receiver rollout, runtime
+mount and delivery checks, and OpenSpec task 6.5 handshake/refusal evidence remain
+separate gates. Keep the switch false until those owners coordinate the rollout.
+TLS-enabled Clean Deploy is refused because it would remove the issued certificate
+tree.
+
 ## OTLP receiver resource bounds — source slice for task 3.3
 
 Both OTLP inputs pass directly through their own Alloy memory limiter before

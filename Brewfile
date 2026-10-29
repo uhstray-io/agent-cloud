@@ -10,6 +10,7 @@ brew "jq"
 brew "make"
 brew "podman"
 brew "podman-compose"
+brew "rsync"          # GNU rsync: place-monorepo's --delete must honour .gitignore (macOS ships openrsync, which does not)
 brew "shellcheck"
 brew "socat"          # local-dev privileged-port forwarder (make local-https)
 brew "yamllint"

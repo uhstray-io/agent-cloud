@@ -102,6 +102,8 @@ and why.
 | 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 3.16 | A local Semaphore container recreate minted a new encryption key while its database lived on; every encrypted environment input became undecryptable and the next seed failed | Live state | 1 | Bootstrap (config on the data volume + carry-forward before any recreate) + test (`test_local_semaphore_config_persistence.py`, mutation-checked) |
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
+| 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
+| 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -133,7 +135,7 @@ and why.
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
-| 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Convention (operator rule; no hook) |
+| 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s | Process | 1 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
@@ -180,6 +182,8 @@ and why.
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 10.28 | The seed address check read the inventory as YAML; local-dev registers INI, so every seed template had been unrunnable locally since the check landed and nobody had run one | Mechanism never exercised | 1 | Bootstrap registers `static-yaml` + test (`test_sync_local_o11y_alert_inventory.py`, mutation-checked) |
 | 10.29 | Fixed the container hooks' HOME failure with a `docker` wrapper that patched the CLI path, while the design named the API socket and its open spike would have shown the CLI path was the cause; the wrapper never reached the process that runs jobs, so the runners kept failing | Mechanism never exercised | 1 | Playbook (requires Docker's CLI client, `DOCKER_HOST` probe) + local smoke harness (`hooks-smoke/`, must reproduce the shim failure) + test (`test_service_github_runner.bats`, `test_install_podman.bats`, mutation-checked) |
+| 10.30 | Recorded issue #604's fix as built when it merged; its `(Dev)` template had never been published, so the second operator stayed without access for nine days | Mechanism never exercised | 1 | Convention (catalog-drift check proposed) |
+| 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -2519,6 +2523,62 @@ leaves the loop's own status 0 after a failure.
 
 **Enforced by.** Convention.
 
+### 3.18 Knew the Semaphore root was at its limit and routed the only headroom fix through a review cycle; it filled and Postgres crashed
+
+**What happened.** On 2026-10-27 at 04:25 UTC a production task clone failed on the Semaphore host
+with `fatal: write error: No space left on device` (task 9541). I paused the console rollout and
+reported it, citing 1.18, where the same VM's full root had already crashed Postgres. When the
+operator asked for the disk to be grown, I declared 64G in site-config, grew the Proxmox disk with
+Resize VM at 01:51 UTC on 2026-10-28 (task 9802), and then took the guest half, a new Grow Semaphore
+Root template, through a pull request with two review rounds and two CI runs (#752, merged at
+03:01 UTC). While that cycle ran, the root filled: by 02:16:35 UTC Postgres had crashed and its
+crash recovery was interrupted (its log: "interrupted while in recovery at 2026-10-28 02:16:35
+UTC"), and the root showed 17 MB free when inspected. Semaphore exited with it. The operator
+authorized SSH recovery at about 03:50 UTC. In that session the repository's own
+`grow-root-lvm.py` grew the root online to 61G with 35G free, but my session then stalled before
+the restart, and the existing containers were started with `podman start` only at 15:18 UTC.
+Production orchestration was down for about 13 hours; the 11.5 hours after the grow are
+entry 3.19.
+
+**Root cause.** I treated the guest grow as ordinary platform work, where the reviewed template
+is the right path, and did not weigh how long the host could last against how long the cycle
+takes. The virtual disk was already 64G from 01:51. The same helper, run operator-side (the 1.18
+recovery grew the root by hand the same way), would have restored headroom in minutes. I never
+offered that path or stated the time risk.
+
+**The rule.** When an orchestrator-class host (Semaphore, OpenBao, or the database either depends
+on) is near full and filling it takes the orchestrator down, restore headroom first, by the
+fastest path the operator authorizes: ask for an operator-side grow or cleanup, and say how close
+to full the host is. Then encode the fix through the normal review cycle. Never leave the only
+headroom fix waiting on a multi-hour review without telling the operator the risk.
+
+**Enforced by.** Convention. Proposed guard: the root-disk alert at 80% on the Semaphore host
+(plan 18, Phase 4), which is also the guard 1.18 proposed.
+
+### 3.19 Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it
+
+**What happened.** During the 3.18 recovery, the operator authorized SSH access at about 03:50
+UTC on 2026-10-28. In one session I confirmed the cause (root 100% full, Postgres and Semaphore
+exited) and grew the root online to 61G with 35G free. Before starting the containers, I ran one
+more diagnostic over SSH that bundled `podman inspect` on both containers with `podman logs`
+for the database, with no per-command `timeout`. It overran the 60-second tool limit and was moved
+to the background. That background command finished only after 15:18 UTC, since its output
+includes Postgres's 15:18 startup log. My next recorded action, starting the existing containers
+with `podman start`, came at 15:18 UTC. Production orchestration stayed down about 11.5 hours
+after the cause was already removed. Why no work happened in that gap is not established.
+
+**Root cause.** I treated "headroom restored" as the end of the urgent part and went back to
+investigating, rather than restarting the service first. The diagnostic was not needed for the
+restart (the start command needed only the container names, which the first check had already
+listed), and it ran without a bound; whether it caused the 11.5-hour gap is not established.
+
+**The rule.** In a recovery of a down orchestrator, once the cause is removed, restart the service
+and verify that it answers, as the very next step, in the same command where possible. Defer
+every diagnostic that the restart does not need until after the service is verified up. Bound
+every remote command in a recovery with `timeout`.
+
+**Enforced by.** Convention.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -3491,6 +3551,13 @@ as safe. Both amendments were reported, nothing amended was pushed. Since 2026-1
 PreToolUse hook proposed above (refuse `git commit --amend`, `git rebase` and `git push --force*` outside the
 secret-in-a-commit path) is the guard to build; it is a change to the operator's harness settings, so it waits
 on the operator.
+
+**Superseded 2026-10-26 by operator decision.** Asked whether to add a hook refusing `git commit --amend`,
+`git rebase` and force pushes, Joseph answered: "I believe these are safe actions, so I'm comfortable with
+keeping that capability for our agents." So no hook is added and briefs no longer forbid amending or rebasing
+unpushed local commits; this entry's rule ("history changes by new commits only") no longer applies. Force
+push stays governed by the operator's global instructions, the harness settings and the repository rulesets
+(`protect-main`, `protect-dev`), unchanged by this note.
 
 ### 5.22 The `Python core` CI job outgrew its 30-minute timeout as the suite grew
 
@@ -5082,6 +5149,52 @@ real hooks through prepare, a step and cleanup, and fails unless the shim reprod
 and `test_install_podman.bats` hold each of these, each assertion seen to fail once under
 a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
 hosts").
+
+### 10.30 Issue #604's fix was recorded as built; its template had never been published, so it never ran
+
+**What happened.** `plan/architecture/04-credentials-access.md` recorded the Semaphore admin
+tier as "[BUILT 2026-10-18, issue #604]": `platform_admins` became the admin roster, and
+**Promote Semaphore Admins** would grant the flag. The template `templates.yml` declares
+for it is `dev_variant: true`, and the copy of the playbook on `main` still read only
+`semaphore_admin_users`. On 2026-10-27 the production project held "Promote Semaphore
+Admins" (bound to `main`) and no "(Dev)" variant. `scripts/semaphore-launch.py --template
+"Promote Semaphore Admins (Dev)"` answered `Expected one template named ...`.
+`GET /api/users` listed the second operator's account with `admin: false`, nine days after the
+fix was recorded as built. Issue #604 stayed open with the second operator still unable
+to see the project.
+
+**Root cause.** "Built" was recorded when the code merged into `dev`. The live step had
+three parts: publish the `(Dev)` template (an operator-side `setup-templates.yml` run),
+have the operator sign in once, then launch the template. Nothing recorded those as owed,
+and the issue had no comment saying the fix needed a run.
+
+**The rule.** A fix whose effect needs a live run is not built until that run is recorded,
+with its task ID, on the issue. Until then, write "merged, not run" and list the runs
+still owed.
+
+**Enforced by.** Convention. Proposed: a check-mode `setup-templates.yml` pass that names
+every declared template missing from the live catalog, run with each inventory sync.
+
+### 10.31 The token rotation left the committed recovery copy stale, and a second operator used it
+
+**What happened.** The Semaphore token rotation (#575, #583, 2026-10-12) revoked the token
+that `site-config/secrets/semaphore/semaphore_api_token.txt` held. The new value went into
+one workstation's working tree and was never committed. On 2026-10-25 the second operator
+read the committed file, got `401` on `/api/user`, and recorded the deploy of #717 as
+blocked (issue #741). The runner fix (#609) stayed undeployed for two more days.
+
+**Root cause.** The rotation script updates one workstation's backup file
+(`~/.config/semaphore/operator-token`) by design. It knows nothing of the recovery copy in
+site-config, and no step said that copy had to follow. A second problem made it worse: the
+operating guide named no way for a second operator to get their own token, so the shared
+recovery copy was the only path anyone could find.
+
+**The rule.** A credential rotation lists every copy of the value it replaces, recovery
+copies included, and updates or deletes each one in the same change. Each operator mints
+their own token (`platform/semaphore/README.md`, "Getting your own operator token"); the
+recovery copy is for recovery only.
+
+**Enforced by.** Convention (the README steps, site-config #123).
 
 ## 11. The largest one
 

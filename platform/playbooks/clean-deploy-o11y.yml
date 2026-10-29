@@ -39,11 +39,19 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
   tasks:
-    - name: Refuse an unverified profile pilot operation before o11y cleanup
-      ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
-
     - name: "Refuse a reset the launch did not name"
       ansible.builtin.include_tasks: tasks/assert-reset-confirmed.yml
+
+    - name: Refuse TLS-enabled clean deploy before any teardown
+      ansible.builtin.assert:
+        that: not (o11y_otlp_tls_enabled | default(false) | bool)
+        fail_msg: >-
+          Clean Deploy o11y would remove the issued OTLP certificate tree while TLS is
+          enabled. Disable TLS through the reviewed receiver and sender rollout first.
+        quiet: true
+
+    - name: Refuse an unverified profile pilot operation before o11y cleanup
+      ansible.builtin.include_tasks: tasks/assert-o11y-profile-pilot-operation.yml
 
     - name: "Decide whether this destroy is on a local-dev host"
       # Waived only when the connection is local (spelled as the local plugin's own names) AND

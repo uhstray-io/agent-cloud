@@ -325,9 +325,11 @@ backend protocol genuinely requires TLS (prefer the internal CA over `tls_insecu
 Plain-HTTP backends are permitted **only** on a host where `apply-firewall.yml`'s default-deny-inbound
 (except Caddy + mgmt SSH) is applied and verified by `validate-all.yml`.
 *Why: terminating once keeps the cert surface to one place and avoids unrotated self-signed sprawl.
-But "trusted network" is a security claim only a firewall can back. As-built caveat: the host firewall
-is still a pending canary (task #16) - finish the rollout and make it a mandatory onboarding step
-(Phase 1) before relying on the trust boundary for any new service.*
+But "trusted network" is a security claim only a firewall can back. As-built caveat (updated
+2026-10-27): the host firewall is applied through Semaphore on the DNS, internal-CA, o11y and CI-runner
+hosts, but is not yet declared for every service host (none is recorded for the Caddy host) - finish
+the rollout and make it a mandatory onboarding step (Phase 1) before relying on the trust boundary
+for any new service.*
 
 **Consume public TLS, run a private CA; never become a public CA.** Browser-trusted certs via Caddy +
 CloudFlare DNS-01 (incl. On-Demand TLS for SaaS tenant domains); internal/LAN certs from the step-ca
