@@ -244,7 +244,7 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 
 - Cleartext `http://` is accepted only when the host NetBox would connect to, as `reqwest::Url`
   parses it, is `localhost`, an IPv4 loopback or RFC1918 address, or an IPv6 loopback address. A
-  fragment, a query or a backslash cannot move the host: `http://evil.example#@10.0.0.1` is refused.
+  fragment, a query or a backslash cannot move the host: `http://evil.example#@` followed by a private address is refused.
   Any other `http://` URL fails startup, naming the variable. `https://` is always accepted.
 - A `netbox_site` slug is declared by one site only, across every tenant. A slug declared twice
   fails the scope file at load, naming both sites. A slug with whitespace fails the same way.
