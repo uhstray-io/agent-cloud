@@ -232,13 +232,13 @@ repos:
         # Plane's compose.agentcloud.yml uses the same tag on every overlay it replaces
         # (volumes, the proxy's ports), so it gets the same treatment.
         exclude: >-
-          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/|platform/services/agentgateway/deployment/compose\.local\.yml|platform/services/plane/deployment/compose\.agentcloud\.yml)
+          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/|platform/services/agentgateway/deployment/compose\.local\.yml|platform/services/plane/deployment/compose\.(agentcloud|local-ca)\.yml)
       - id: check-yaml
         name: check yaml (syntax only, compose overlays with merge tags)
         # --unsafe parses for syntax without constructing, so compose-spec tags
         # (!override, !reset) are accepted while malformed YAML still fails.
         args: [--unsafe]
-        files: ^platform/services/(agentgateway/deployment/compose\.local|plane/deployment/compose\.agentcloud)\.yml$
+        files: ^platform/services/(agentgateway/deployment/compose\.local|plane/deployment/compose\.(agentcloud|local-ca))\.yml$
       - id: check-added-large-files
         args: [--maxkb=500]
         # The codebase-memory graph artifact is a deliberately-committed

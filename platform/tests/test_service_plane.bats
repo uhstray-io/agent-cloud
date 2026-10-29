@@ -214,5 +214,8 @@ PY
   grep -qF "'OIDC_CLIENT_SECRET': _shared.plane_oidc_client_secret" "$PLAYBOOK"
   refute_grep -qF 'name: plane_oidc_client_secret' "$PLAYBOOK"
   # Locally the API trusts step-ca for the server-side token and userinfo calls.
-  grep -qF 'REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt' "$DEPLOY_DIR/compose.local.yml"
+  # In its own overlay, applied last: compose.agentcloud.yml's volume !override would drop it.
+  grep -qF 'REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt' "$DEPLOY_DIR/compose.local-ca.yml"
+  grep -qF './certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro' "$DEPLOY_DIR/compose.local-ca.yml"
+  grep -qF 'COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS} compose.local-ca.yml"' "$DEPLOY_DIR/deploy.sh"
 }

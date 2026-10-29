@@ -1,0 +1,18 @@
+# compose.local-ca.yml — local-dev only: the API trusts the step-ca chain for its server-side OIDC
+# calls (token, userinfo) to https://auth.<zone>:8443. deploy.sh applies this file LAST in local
+# mode. It cannot live in compose.local.yml: common.sh applies that file before the declared
+# overlays, and compose.agentcloud.yml's `volumes: !override` for the API would replace the
+# mount (seen on the first local OIDC deploy). So the full API volume list is restated here.
+# REQUESTS_CA_BUNDLE replaces the default bundle for the API's requests calls only; local-dev
+# runs no integration that needs a public CA from the API.
+services:
+  api:
+    # The podman VM enforces SELinux, which denies a container reading an unlabelled bind mount
+    # ("Permission denied" on the first local OIDC deploy); postiz's local overlay does the same.
+    security_opt:
+      - label=disable
+    volumes: !override
+      - logs_api:/code/plane/logs
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt

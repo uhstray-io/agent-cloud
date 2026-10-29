@@ -29,6 +29,10 @@ done
 # Plane's file is the base; agent-cloud's overlay and its one publish always apply on top of it,
 # before any overlay the playbook names.
 export COMPOSE_OVERLAYS="compose.agentcloud.yml compose.publish.yml ${COMPOSE_OVERLAYS:-}"
+# Local mode: the API's step-ca trust goes last, after the overlay that replaces its volumes.
+if [ "${LOCAL_MODE:-}" = "true" ]; then
+  COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS} compose.local-ca.yml"
+fi
 
 # Top-level service names in a compose file (two-space keys under `services:`).
 service_names() {
