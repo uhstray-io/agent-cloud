@@ -52,21 +52,17 @@
 - name: "Refuse an rsync that ignores .gitignore on --delete (local mode)"
   # openrsync (macOS /usr/bin/rsync) does not honour the .gitignore filter on --delete, so it
   # deletes rendered files the deploy owns (Authentik's blueprints-active), leaving running
-  # containers on stale bind mounts. GNU rsync 3.x does; this fails the run before the copy.
+  # containers on stale bind mounts. The check and its remediation message live in one script
+  # the local preflight runs too (scripts/require-gnu-rsync.sh); its stderr is the failure text.
   ansible.builtin.command:
     argv:
-      - rsync
-      - --version
-  register: _rsync_version
+      - bash
+      - "{{ playbook_dir | dirname | dirname }}/scripts/require-gnu-rsync.sh"
   changed_when: false
   check_mode: false
-  failed_when: >-
-    _rsync_version.rc != 0 or
-    not (_rsync_version.stdout_lines | first | default('') is match('^rsync +version 3\\.'))
   when:
     - not ansible_check_mode
     - local_mode | default(false) | bool
-
 - name: "Copy working tree into place (local mode)"
   # The playbook's checkout is the only source that can honestly support a
   # branch-specific validation claim. An inventory path could point at a

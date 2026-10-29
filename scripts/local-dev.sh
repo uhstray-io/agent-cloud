@@ -31,19 +31,12 @@ confirm() {
 }
 
 preflight() {
-  local missing=0 tool rsync_line=""
+  local missing=0 tool
   for tool in podman podman-compose ansible-playbook ansible-inventory python3 curl git jq; do
     command -v "$tool" >/dev/null 2>&1 || { info "missing tool: $tool"; missing=1; }
   done
-  # macOS /usr/bin/rsync is openrsync, which ignores the .gitignore filter on --delete, so a
-  # local placement (place-monorepo.yml) would delete gitignored generated files. Require GNU 3.x.
-  if command -v rsync >/dev/null 2>&1; then
-    rsync_line="$(rsync --version 2>/dev/null | sed -n '1p')" || true
-  fi
-  if ! printf '%s\n' "$rsync_line" | grep -qE '^rsync +version 3\.'; then
-    info "rsync on PATH is not GNU rsync 3.x (macOS ships openrsync): brew install rsync, with Homebrew's bin ahead of /usr/bin on PATH"
-    missing=1
-  fi
+  # GNU rsync 3.x for local placement (scripts/require-gnu-rsync.sh says why and how to fix it).
+  "${REPO_ROOT}/scripts/require-gnu-rsync.sh" >/dev/null || missing=1
   [ "$missing" -eq 0 ] || die "install the toolchain first: brew bundle (repo root)"
   podman machine inspect --format '{{.State}}' 2>/dev/null | grep -q running \
     || die "podman machine is not running — run: podman machine start"
