@@ -3,22 +3,31 @@
 //! `Shell`, which owns the sidebar and the scope bar.
 
 mod api;
+mod compute;
 mod empty;
 mod icons;
+mod inventory;
+mod inventory_api;
 mod profile;
 mod scope;
+mod services;
 mod shell;
+mod status;
+mod topology;
 mod work;
 mod work_detail;
 
 use dioxus::prelude::*;
 
+use compute::Compute;
 use empty::{
-    Access, AiGateway, CiCd, Compute, Dashboard, LlmAccess, NotFound, OrgSettings, Policy, Secrets,
-    Services, Telemetry, TenantSettings, Topology,
+    Access, AiGateway, CiCd, Dashboard, LlmAccess, NotFound, OrgSettings, Policy, Secrets,
+    Telemetry, TenantSettings,
 };
 use profile::Profile;
+use services::{ServiceDetail, Services};
 use shell::Shell;
+use topology::Topology;
 use work::Home;
 
 #[derive(Clone, Debug, PartialEq, Routable)]
@@ -32,6 +41,8 @@ pub enum Route {
     Topology {},
     #[route("/services")]
     Services {},
+    #[route("/services/:name")]
+    ServiceDetail { name: String },
     #[route("/compute")]
     Compute {},
     #[route("/telemetry")]

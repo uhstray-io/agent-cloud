@@ -280,6 +280,51 @@ h2 { font-size: 16px; font-weight: 650; }
   .board, .board.done-open { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* ---------- Phase 3 inventory (Topology, Compute, Services; plan 17 task 6.5) ---------- */
+/* Level bars are indicators only: a width from the API's own value, with no axis and no threshold. */
+.seg { display: inline-flex; align-self: flex-start; border: 1px solid var(--line-strong); border-radius: var(--r-sm); overflow: hidden; background: var(--raised); }
+.seg button { border: 0; background: transparent; padding: 6px 12px; cursor: pointer; font-size: 13px; color: var(--fg2); }
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button:hover { color: var(--fg); }
+.seg button[aria-pressed="true"] { background: var(--accent-weak); color: var(--fg); font-weight: 600; }
+.topo-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); align-items: start; }
+.topo-layout .details { position: sticky; top: 72px; }
+.tree { display: grid; gap: 12px; padding: 12px; min-width: 0; }
+.tree-site, .tree-cluster { display: grid; gap: 4px; min-width: 0; }
+.tree-cluster { margin-left: 12px; padding: 4px 0 4px 10px; border-left: 1.5px dashed var(--line-strong); }
+.tree-leaves { list-style: none; margin: 0; padding: 0 0 0 12px; display: grid; gap: 2px; }
+.tree-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid transparent;
+  border-radius: var(--r-sm); background: transparent; color: var(--fg); cursor: pointer; text-align: left; font-size: 13px; }
+.tree-row:hover { background: var(--surface); }
+.tree-row[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-weak); }
+.tree-row .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row b { font-weight: 600; }
+.tree-meta { font-size: 12px; color: var(--fg3); }
+.tree-note { margin: 0; padding-left: 8px; font-size: 12px; color: var(--fg3); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.meter { display: inline-grid; grid-template-columns: minmax(60px, 120px) auto; align-items: center; gap: 8px; min-width: 120px; font-size: 12px; color: var(--fg2); }
+.meter-track { display: block; height: 6px; border-radius: 99px; background: var(--panel); overflow: hidden; }
+.meter-fill { display: block; height: 100%; border-radius: 99px; background: var(--fg3); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.tile { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+.tile b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.tile small { font-size: 12px; color: var(--fg2); }
+.tbl-wrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3);
+  padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl td.num, .tbl th.num { text-align: right; }
+.sources { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; }
+.source { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.source .hint { flex-basis: 100%; }
+.service-detail .fields { max-width: 720px; }
+@media (max-width: 1100px) {
+  .topo-layout { grid-template-columns: minmax(0, 1fr); }
+  .topo-layout .details { position: static; }
+}
+
 /* ---------- motion and small screens ---------- */
 @media (max-width: 760px) {
   .app { grid-template-columns: minmax(0, 1fr); }

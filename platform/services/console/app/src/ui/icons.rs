@@ -243,6 +243,12 @@ pub fn icon(name: &str) -> Element {
             path { d: "M16 3.13a4 4 0 0 1 0 7.75" }
             }
         },
+        "x" => rsx! {
+            Svg {
+            path { d: "M18 6 6 18" }
+            path { d: "m6 6 12 12" }
+            }
+        },
         "waypoints" => rsx! {
             Svg {
             circle { cx: "12", cy: "4.5", r: "2.5" }
