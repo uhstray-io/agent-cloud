@@ -414,6 +414,59 @@ def test_verify_tags_mark_reads_asserts_and_facts_and_never_a_write():
             assert "verify" in tags, t.get("name")
 
 
+def test_the_proxmox_template_declares_both_replace_and_recreate_flags_default_false():
+    tpl = next(t for t in yaml.safe_load(TEMPLATES.read_text())["templates"]
+               if t["name"] == "Provision Console Proxmox Token")
+    fields = {s["name"]: s for s in tpl["survey_vars"]}
+    assert set(fields) == {"console_proxmox_token_recreate", "console_proxmox_token_replace"}, sorted(fields)
+    for name, field in fields.items():
+        assert field["type"] == "string" and field["required"] is False and field["default_value"] == "false", name
+    # The playbook reads both names; a survey var it never reads would be a flag that does nothing.
+    text = PROXMOX.read_text()
+    assert "console_proxmox_token_replace" in text and "console_proxmox_token_recreate" in text
+
+
+def test_the_proof_is_skipped_on_a_check_mode_mint_and_never_proves_a_replaced_secret():
+    proof = _proxmox_task("Prove the stored console token authenticates (read only)")
+    assert "not (_mint and ansible_check_mode)" in proof["when"], proof["when"]
+    choose = _proxmox_task("Choose the stored console token to prove")["ansible.builtin.set_fact"][
+        "_console_proof_secret"]
+    assert "(_console_stored and not _mint)" in choose, choose
+
+
+def _run_check(tmp_path: Path, playbook: dict) -> subprocess.CompletedProcess:
+    path = tmp_path / "harness.yml"
+    path.write_text(yaml.safe_dump([playbook]))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    return subprocess.run(["ansible-playbook", "--check", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False)
+
+
+@NEEDS_ANSIBLE
+def test_a_check_mode_mint_proves_nothing_even_when_a_dead_stored_secret_is_present(tmp_path):
+    # stored_absent with recreate under --check: the store still holds the dead secret, but the mint has not run.
+    names = ("Choose the stored console token to prove", "Prove the stored console token authenticates (read only)")
+    tasks = [_proxmox_task(n) for n in names]
+    tasks.append({"ansible.builtin.debug": {
+        "msg": "OUT|{{ _console_proof_secret | length }}|{{ _console_perms is skipped }}"}})
+    variables = {"_mint": True, "_console_stored": True,
+                 "_pve_store": {"status": 200, "json": {"data": {"data": {"console_token": "DEAD-SECRET"}}}},
+                 "_pve_url": "https://pve.invalid:8006", "_console_userid": "console@pve",
+                 "_console_tokenid": "console", "_ca_dir": {"path": str(tmp_path)}}
+    proc = _run_check(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                                 "vars": variables, "tasks": tasks})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OUT|0|True" in proc.stdout, proc.stdout
+    assert "DEAD-SECRET" not in proc.stdout
+
+
+def test_the_claude_md_describes_the_replace_flag():
+    text = (REPO / "platform/services/console/deployment/CLAUDE.md").read_text()
+    assert "console_proxmox_token_replace=true" in text
+    assert "console_proxmox_token_recreate=true" in text
+
+
 def test_the_header_names_no_local_twin_and_no_dev_only_claim():
     text = PROXMOX.read_text()
     assert "(Local)" not in text

@@ -858,6 +858,12 @@ templates:
         type: string
         required: false
         default_value: "false"
+      - name: console_proxmox_token_replace
+        title: "Replace unrecoverable token"
+        description: "Default false. Only when Proxmox has the console token but secret/services/proxmox lost its value: revoke exactly that one token and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml

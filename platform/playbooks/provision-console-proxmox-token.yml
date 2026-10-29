@@ -60,7 +60,7 @@
 #
 # Verification. Every read, assertion and proof here carries the verify tag (plan/architecture/08, rule 3), so
 # `--tags verify` checks the live state without writing. The proof runs on every run that has a stored token,
-# including a check-mode run, because it only reads.
+# including a check-mode run, because it only reads. A check-mode run that would mint skips it: no token exists yet.
 #
 # Check mode: the reads run under verified TLS and the decision is printed; every write is skipped.
 #
@@ -453,11 +453,12 @@
           check_mode: false
           tags: [verify]
 
-        # The secret the proof uses: the stored one on a stored_present run, the read-back one after a mint.
-        # A check-mode run that would mint has no stored token yet, so there is nothing to prove.
+        # The secret the proof uses: the read-back one after a real mint, the stored one on a stored_present run.
+        # A check-mode run that would mint skips the proof: no token exists yet to prove. A stored token that a mint
+        # is about to replace (stored_absent) is dead, so it is never the secret chosen here.
         - name: "Choose the stored console token to prove"
           ansible.builtin.set_fact:
-            _console_proof_secret: "{{ (_pve_store_after.json.data.data.console_token | default('')) if (_mint and not ansible_check_mode) else ((_pve_store.json.data.data.console_token | default('')) if _console_stored else '') }}"
+            _console_proof_secret: "{{ (_pve_store_after.json.data.data.console_token | default('')) if (_mint and not ansible_check_mode) else ((_pve_store.json.data.data.console_token | default('')) if (_console_stored and not _mint) else '') }}"
           no_log: true
           tags: [verify]
 
@@ -473,7 +474,9 @@
             ca_path: "{{ _ca_dir.path }}/ca.pem"
           register: _console_perms
           no_log: true
-          when: _console_proof_secret | length > 0
+          when:
+            - _console_proof_secret | length > 0
+            - not (_mint and ansible_check_mode)
           check_mode: false
           tags: [verify]
 
