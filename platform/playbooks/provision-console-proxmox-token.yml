@@ -147,29 +147,44 @@
         headers:
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
         status_code: [200, 404]
-      register: _pve_store
+      register: _pve_bao_read
       no_log: true
       check_mode: false
       tags: [verify]
 
-    - name: "Require the admin credential (url, token_id, api_token)"
+    - name: "Require the admin credential (url, api_token)"
       ansible.builtin.assert:
         that:
-          - _pve_store.status == 200
-          - (_pve_store.json.data.data | default({})).url | default('') | length > 0
-          - (_pve_store.json.data.data | default({})).token_id | default('') | length > 0
-          - (_pve_store.json.data.data | default({})).api_token | default('') | length > 0
+          - _pve_bao_read.status == 200
+          - (_pve_bao_read.json.data.data | default({})).url | default('') | length > 0
+          - (_pve_bao_read.json.data.data | default({})).api_token | default('') | length > 0
         fail_msg: "secret/services/proxmox needs url, token_id and api_token (the admin token). Store them, then rerun."
         quiet: true
       no_log: true
       tags: [verify]
 
+    # The admin token id is read and checked on its own, so an empty one stops the run before the first Proxmox
+    # request. It sits in the admin Authorization header, which is no_log below.
+    - name: "Read the admin token id from the store"
+      ansible.builtin.set_fact:
+        _pve_token_id: "{{ _pve_bao_read.json.data.data.token_id | default('') }}"
+      no_log: true
+      tags: [verify]
+
+    - name: "Require the admin token id (token_id, user@realm!name)"
+      ansible.builtin.assert:
+        that:
+          - _pve_token_id | length > 0
+        fail_msg: "secret/services/proxmox needs token_id, the admin token id (user@realm!name). Store it, then rerun."
+        quiet: true
+      tags: [verify]
+
     - name: "Keep the admin request header and the stored-token flag private to this run"
       ansible.builtin.set_fact:
-        _pve_url: "{{ _pve_store.json.data.data.url }}"
+        _pve_url: "{{ _pve_bao_read.json.data.data.url }}"
         _pve_headers:
-          Authorization: "PVEAPIToken={{ _pve_store.json.data.data.token_id }}={{ _pve_store.json.data.data.api_token }}"
-        _console_stored: "{{ (_pve_store.json.data.data.console_token | default('') | length) > 0 }}"
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_bao_read.json.data.data.api_token }}"
+        _console_stored: "{{ (_pve_bao_read.json.data.data.console_token | default('') | length) > 0 }}"
       no_log: true
       tags: [verify]
 
@@ -445,7 +460,7 @@
             headers:
               X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
             status_code: [200]
-          register: _pve_store_after
+          register: _pve_bao_read_after
           no_log: true
           when:
             - _mint
@@ -458,7 +473,7 @@
         # is about to replace (stored_absent) is dead, so it is never the secret chosen here.
         - name: "Choose the stored console token to prove"
           ansible.builtin.set_fact:
-            _console_proof_secret: "{{ (_pve_store_after.json.data.data.console_token | default('')) if (_mint and not ansible_check_mode) else ((_pve_store.json.data.data.console_token | default('')) if (_console_stored and not _mint) else '') }}"
+            _console_proof_secret: "{{ (_pve_bao_read_after.json.data.data.console_token | default('')) if (_mint and not ansible_check_mode) else ((_pve_bao_read.json.data.data.console_token | default('')) if (_console_stored and not _mint) else '') }}"
           no_log: true
           tags: [verify]
 

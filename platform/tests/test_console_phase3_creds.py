@@ -224,7 +224,9 @@ def _run_env(tmp_path: Path, playbook: dict, extra_env: dict) -> subprocess.Comp
                           text=True, capture_output=True, check=False)
 
 
-def test_proxmox_play_is_local_and_refuses_internal_extra_vars():
+def test_proxmox_play_is_local_and_imports_the_extra_var_guard_first():
+    # Static: reads the play's first import. The real refusal runs in
+    # test_executor_internal_overrides.py::test_every_launchable_playbook_refuses_a_forged_internal_name.
     play = _proxmox_play()
     assert play["hosts"] == "localhost" and play.get("connection") == "local"
     assert "vars" not in play, "a play-level vars: block would reach the forced CA write"
@@ -451,7 +453,7 @@ def test_a_check_mode_mint_proves_nothing_even_when_a_dead_stored_secret_is_pres
     tasks.append({"ansible.builtin.debug": {
         "msg": "OUT|{{ _console_proof_secret | length }}|{{ _console_perms is skipped }}"}})
     variables = {"_mint": True, "_console_stored": True,
-                 "_pve_store": {"status": 200, "json": {"data": {"data": {"console_token": "DEAD-SECRET"}}}},
+                 "_pve_bao_read": {"status": 200, "json": {"data": {"data": {"console_token": "DEAD-SECRET"}}}},
                  "_pve_url": "https://pve.invalid:8006", "_console_userid": "console@pve",
                  "_console_tokenid": "console", "_ca_dir": {"path": str(tmp_path)}}
     proc = _run_check(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
