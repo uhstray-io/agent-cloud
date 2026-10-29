@@ -204,9 +204,13 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     overview = json.loads(SERVICE_OVERVIEW_DASHBOARD.read_text())
     assert overview["uid"] == "service-overview"
     health = next(panel for panel in overview["panels"] if panel["title"] == "Scrape target health")
-    assert health["targets"][0]["expr"] == 'min by (service) (up{service=~"$service"})'
+    assert health["targets"][0]["expr"] == (
+        'min by (service) (up{service=~"$service",job!="o11y-availability"})'
+    )
     failed = next(panel for panel in overview["panels"] if panel["title"] == "Unhealthy scrape targets")
-    assert failed["targets"][0]["expr"] == 'up{service=~"$service"} == 0'
+    assert failed["targets"][0]["expr"] == (
+        'up{service=~"$service",job!="o11y-availability"} == 0'
+    )
     variables = {item["name"]: item for item in overview["templating"]["list"]}
     assert variables["service"]["label"] == "Metrics service"
     assert variables["service"]["datasource"]["uid"] == "prometheus"

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
+import playbook_yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/o11y/deployment"
@@ -563,7 +564,9 @@ def test_deploy_gates_capacity_collector_and_units_for_local_mode():
     plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
     p1 = next(play for play in plays if str(play.get("name", "")).startswith("Phase 1"))
     p2 = next(play for play in plays if str(play.get("name", "")).startswith("Phase 2"))
-    overlay = next(task for task in p2["tasks"] if task.get("name") == "Run deploy.sh (container lifecycle)")
+    overlay = next(
+        task for task in playbook_yaml.tasks(p2["tasks"])
+        if task.get("name") == "Run deploy.sh (container lifecycle)")
     jinja = Environment()
     jinja.filters["bool"] = bool
     template = jinja.from_string(overlay["environment"]["COMPOSE_OVERLAYS"])
@@ -573,12 +576,12 @@ def test_deploy_gates_capacity_collector_and_units_for_local_mode():
     probe_artefacts = p1["vars"]["_probe_host_artefacts"]
     assert all("o11y_capacity" not in path for path in probe_artefacts)
     install = next(
-        task for task in p1["tasks"]
+        task for task in playbook_yaml.tasks(p1["tasks"])
         if task.get("name") == "Install the read-only o11y capacity sampler"
     )
     assert install["when"] == "not (local_mode | default(false) | bool)"
     sample = next(
-        task for task in p2["tasks"]
+        task for task in playbook_yaml.tasks(p2["tasks"])
         if task.get("name") == "Take a complete capacity sample after the stack is available"
     )
     assert sample["when"] == [
