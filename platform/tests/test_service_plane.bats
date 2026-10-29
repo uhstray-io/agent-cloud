@@ -162,7 +162,12 @@ PY
   grep -qF 'mode: "0700"' "$f"
   grep -qF 'umask 077' "$f"
   grep -qF 'set -C' "$f"
-  grep -qF 'PostgreSQL database dump' "$f"
+  # The completion trailer, not the header: a truncated dump keeps its first line.
+  grep -qF '"-- PostgreSQL database dump complete"' "$f"
+  refute_grep -qF '"-qm1", "PostgreSQL database dump"' "$f"
+  # The final name only after pg_dump succeeded.
+  grep -qF ".partial" "$f"
+  assert_precedes "$f" 'pg_dump -U' 'mv {{'
   grep -qF '_pg_container: plane-db' "$f"
   grep -qF 'container_name: plane-db' "$OVERLAY"
 }
@@ -170,6 +175,17 @@ PY
 @test "plane: restore needs an explicit dump, loads staging first, and always brings the stack back" {
   local f="$REPO_ROOT/platform/playbooks/restore-plane-db.yml"
   grep -qF 'plane_dump_file is defined' "$f"
+  # A truncated dump is refused before anything is stopped.
+  assert_precedes "$f" 'Assert the dump is complete' 'Stop every Plane service that talks to the database'
+  # The stop selection keeps the data stores up and must contain the API.
+  grep -qF '_data_services: [plane-db, plane-redis, plane-mq, plane-minio]' "$f"
+  grep -qF "'api' in (_app_pairs | map(attribute=1) | list)" "$f"
+  assert_precedes "$f" 'Refuse an empty stop selection' 'Stop every Plane service'
+  assert_precedes "$f" 'Stop every Plane service' 'Recreate the staging database'
+  # No live session before the old safety copy is dropped; the renames are one transaction.
+  assert_precedes "$f" 'Refuse the swap while anything is connected' 'Drop the previous safety copy'
+  assert_precedes "$f" 'Drop the previous safety copy' 'Swap staging into place in one transaction'
+  grep -qE '^\s+- "-1"$' "$f"
   grep -qF -- '-v ON_ERROR_STOP=1 --single-transaction' "$f"
   # The live database is renamed away only after the dump has loaded into staging.
   assert_precedes "$f" 'Restore the dump into staging' 'Swap staging into place'
