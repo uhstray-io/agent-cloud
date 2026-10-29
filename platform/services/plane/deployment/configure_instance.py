@@ -13,7 +13,8 @@ instance, design.md "Runtime spike results", 0.3 and 0.5).
 
   1. Instance setup: admin sign-up (only while the instance is not set up).
   2. Admin sign-in (every run; the session drives 3 and 4).
-  3. ENABLE_SIGNUP=0 — invitation-only; PATCHed only when it differs.
+  3. Instance settings: ENABLE_SIGNUP=0 (invitation-only) and the OIDC settings the playbook
+     passes; PATCHed only where they differ, reporting setting NAMES only.
   4. The workspace, created only when its slug is absent.
 """
 
@@ -92,13 +93,21 @@ if not inst["instance"]["is_setup_done"]:
 else:
     form_post("/api/instances/admins/sign-in/", {"email": cfg["email"], "password": cfg["password"]})
 
+# Instance settings: invitation-only sign-up always, plus whatever the playbook passes (OIDC).
+# The read-back returns encrypted settings decrypted, so a secret is compared like any value;
+# only keys that differ are PATCHed, and only their NAMES are reported.
 _, _, configs = call("GET", "/api/instances/configurations/")
-signup = next((c["value"] for c in configs if c["key"] == "ENABLE_SIGNUP"), None)
-if signup != "0":
-    status, _, _ = call("PATCH", "/api/instances/configurations/", {"ENABLE_SIGNUP": "0"})
+current = {c["key"]: c["value"] for c in configs}
+desired = dict(cfg.get("settings", {}), ENABLE_SIGNUP="0")
+unknown = sorted(k for k in desired if k not in current)
+if unknown:
+    fail(f"this Plane release has no instance setting named {', '.join(unknown)}")
+changed = {k: v for k, v in desired.items() if current.get(k) != v}
+if changed:
+    status, _, _ = call("PATCH", "/api/instances/configurations/", changed)
     if status != 200:
-        fail(f"closing self sign-up failed ({status})")
-    done.append("self sign-up closed")
+        fail(f"updating instance settings failed ({status})")
+    done.append("instance settings updated: " + ", ".join(sorted(changed)))
 
 _, _, spaces = call("GET", "/api/instances/workspaces/")
 rows = spaces.get("results", []) if isinstance(spaces, dict) else (spaces or [])

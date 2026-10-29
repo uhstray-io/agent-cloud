@@ -13,6 +13,18 @@ networks:
     external: true
 
 services:
+  # The API signs people in through Authentik: it reaches https://auth.<zone>:8443 through the
+  # local Caddy (an alias on local-dev) and trusts the step-ca chain deploy-plane.yml places in
+  # ./certs. REQUESTS_CA_BUNDLE replaces the default bundle for the API's requests calls only;
+  # local-dev runs no integration that needs a public CA from the API.
+  api:
+    networks:
+      - default
+      - local-dev
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt
   proxy:
     networks:
       - default

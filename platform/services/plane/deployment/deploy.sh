@@ -100,7 +100,11 @@ step_start() {
   # Recreates only when an input or image changed and prints DEPLOY_CHANGED for the playbook.
   # The migrator is a labelled one-shot: once it has exited 0 it is finished, not a change.
   # A held proxy is a missing container, so the run after setup recreates and starts it.
-  compose_up_if_changed
+  if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
+    compose_up_if_changed certs/step-ca-bundle.crt
+  else
+    compose_up_if_changed
+  fi
 }
 
 step_wait_healthy() {

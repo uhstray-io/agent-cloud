@@ -528,6 +528,9 @@ all:
           plane_company_name: "agent-cloud"
           plane_workspace_slug: agent-cloud
           plane_workspace_name: agent-cloud
+          # Sign-in through Authentik: the IdP base Plane's API calls server-side for the token and
+          # userinfo (same host:port the browser uses). Unset = no OIDC.
+          plane_authentik_base: "https://auth.agent-cloud.test:8443"
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy
