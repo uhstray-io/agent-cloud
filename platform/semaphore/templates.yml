@@ -3297,6 +3297,18 @@ templates:
     schedule:
       cron: "*/10 * * * *"
 
+  # The Dispatch Console's read-only GitHub credential (plan 17, task 8.0b): an installation token
+  # for agent-cloud alone with read permissions only, written to secret/services/console/github
+  # (field token). Installation tokens live ONE HOUR; */45 fires at :00 and :45, so the worst gap
+  # between two refreshes is 45 minutes. Dev-bound for the reason the JIT stock above gives: a
+  # schedule on the main-bound base would run `main`, which has no copy of this playbook until
+  # promotion. No survey: a schedule cannot answer one, and the grant is declared in the playbook.
+  - name: Refresh Console GitHub Token (Dev)
+    playbook: platform/playbooks/refresh-console-github-token.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/45 * * * *"
+
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml
     dev_variant: true
