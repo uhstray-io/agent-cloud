@@ -976,6 +976,13 @@ mod tests {
         assert_eq!(bytes_text(68_719_476_736), "64.0 GiB");
         assert_eq!(bytes_text(1_048_576), "1 MiB");
         assert_eq!(mb_text(4096), "4.0 GiB");
+        assert_eq!(
+            mb_text(40_960),
+            "40.0 GiB",
+            "a disk in megabytes shows its GiB"
+        );
+        assert_eq!(mb_text(1536), "1.5 GiB", "one decimal");
+        assert_eq!(mb_text(512), "512 MiB", "below a GiB the unit is MiB");
         assert_eq!(uptime_text(123_456), "1d 10h");
         assert_eq!(uptime_text(3 * 3_600 + 12 * 60), "3h 12m");
         assert_eq!(uptime_text(12 * 60), "12m");

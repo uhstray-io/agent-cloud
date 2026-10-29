@@ -350,7 +350,7 @@ fn ServiceCard(body: ServiceBody, reason: String) -> Element {
         .unwrap_or_else(|| "No live state".to_string());
     let vmid = vm.vmid.map_or(DASH.to_string(), |id| id.to_string());
     let memory = vm.memory_mb.map_or(DASH.to_string(), mb_text);
-    let disk = vm.disk_gb.map_or(DASH.to_string(), |gb| format!("{gb} GB"));
+    let disk = vm.disk_mb.map_or(DASH.to_string(), mb_text);
     let vcpus = vm.vcpus.map_or(DASH.to_string(), |n| format!("{n:.0}"));
     let ip = vm.primary_ip.clone().unwrap_or_else(|| DASH.to_string());
     let tags = if vm.tags.is_empty() {

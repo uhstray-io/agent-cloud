@@ -229,7 +229,7 @@ fn vm_detail(vm: &Vm, site: &str, cluster: &str) -> Detail {
     ));
     push_some(&mut rows, "vCPUs", vm.vcpus.map(|n| format!("{n:.0}")));
     push_some(&mut rows, "Memory", vm.memory_mb.map(mb_text));
-    push_some(&mut rows, "Disk", vm.disk_gb.map(|gb| format!("{gb} GB")));
+    push_some(&mut rows, "Disk", vm.disk_mb.map(mb_text));
     push_some(&mut rows, "Primary IP", vm.primary_ip.clone());
     if !vm.tags.is_empty() {
         rows.push(("Tags", vm.tags.join(", ")));
@@ -957,6 +957,27 @@ mod tests {
         assert_eq!(
             vm_meta(&inv.sites[0].clusters[0].vms[0]),
             "active \u{00b7} no live state"
+        );
+    }
+
+    #[test]
+    fn a_vm_disk_is_shown_in_its_own_unit() {
+        let mut big = vm("tududi", "green", Some("running"));
+        big.disk_mb = Some(40_960);
+        let row = vm_detail(&big, "dc1", "pve-prod")
+            .rows
+            .into_iter()
+            .find(|(label, _)| *label == "Disk")
+            .expect("a disk row when the API sent one");
+        assert_eq!(row.1, "40.0 GiB", "megabytes read as GiB, labelled");
+        let mut none = vm("x", "grey", None);
+        none.disk_mb = None;
+        assert!(
+            !vm_detail(&none, "dc1", "pve-prod")
+                .rows
+                .iter()
+                .any(|(l, _)| *l == "Disk"),
+            "an absent disk is not shown as zero"
         );
     }
 

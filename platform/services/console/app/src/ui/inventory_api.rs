@@ -147,7 +147,8 @@ pub struct Vm {
     pub live_status: Option<String>,
     pub vcpus: Option<f64>,
     pub memory_mb: Option<u64>,
-    pub disk_gb: Option<u64>,
+    /// The NetBox VM disk in megabytes (`disk_mb`, renamed from `disk_gb` by the server).
+    pub disk_mb: Option<u64>,
     pub primary_ip: Option<String>,
     pub tags: Vec<String>,
     /// `null` for a VM with none of the workflow fields.
@@ -324,7 +325,7 @@ mod tests {
                                    "mem": 8589934592u64, "maxmem": 68719476736u64, "uptime": 123456}],
                         "vms": [{
                             "name": "tududi", "vmid": 101, "status": "active", "live_status": "running",
-                            "vcpus": 2.0, "memory_mb": 4096, "disk_gb": 40,
+                            "vcpus": 2.0, "memory_mb": 4096, "disk_mb": 40960,
                             "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync"],
                             "workflow": {"steps": {"step-a": "pass", "step-b": "fail"},
                                          "failed": ["step-b"], "last_run": "2026-10-26T12:00:00Z"},
@@ -360,6 +361,11 @@ mod tests {
         assert_eq!(node.cpu, Some(0.12));
         assert_eq!(node.maxmem, Some(68_719_476_736));
         let vm = &dc1.clusters[0].vms[0];
+        assert_eq!(
+            vm.disk_mb,
+            Some(40_960),
+            "the disk is megabytes, as the server sends it"
+        );
         assert_eq!(vm.rag, "red");
         assert_eq!(vm.live_status.as_deref(), Some("running"));
         let workflow = vm.workflow.as_ref().expect("a service VM has a workflow");

@@ -116,7 +116,7 @@ fn vm_row(site: &str, cluster: &str, vm: &Vm, ordinal: usize) -> VmRow {
             .unwrap_or_else(|| "No live state".to_string()),
         vcpus: vm.vcpus.map(|n| format!("{n:.0}")),
         memory: vm.memory_mb.map(mb_text),
-        disk: vm.disk_gb.map(|gb| format!("{gb} GB")),
+        disk: vm.disk_mb.map(mb_text),
         rag: Rag::from_wire(&vm.rag),
         grafana_url: vm.grafana_url.clone(),
     }
@@ -297,7 +297,7 @@ mod tests {
                         live_status: None,
                         vcpus: Some(2.0),
                         memory_mb: Some(4096),
-                        disk_gb: Some(40),
+                        disk_mb: Some(40_960),
                         rag: "amber".into(),
                         ..Vm::default()
                     }],
@@ -349,7 +349,11 @@ mod tests {
         assert_eq!(vm.rag, Rag::Amber);
         assert_eq!(vm.vcpus.as_deref(), Some("2"));
         assert_eq!(vm.memory.as_deref(), Some("4.0 GiB"));
-        assert_eq!(vm.disk.as_deref(), Some("40 GB"));
+        assert_eq!(
+            vm.disk.as_deref(),
+            Some("40.0 GiB"),
+            "40960 MB is 40 GiB, unit shown"
+        );
         assert_eq!(vm.vmid, None);
     }
 
