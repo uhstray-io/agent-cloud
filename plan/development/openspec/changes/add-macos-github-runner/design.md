@@ -170,9 +170,13 @@ the longest workflow timeout plus 30 minutes for the runner's own cancellation g
 At that deadline, or when the runner has exited but the guest still runs any process of
 the job account, the slot force-stops the VM (`tart stop --timeout 0`) and deletes it.
 The VM is the job's whole machine, so destroying it ends every process the job started,
-wedged or not. A VM that cannot be deleted marks its slot failed: the slot clones nothing
-more, and verification reports it. One stuck job can therefore cost at most its own slot,
-for at most the deadline.
+wedged or not. The deadline bounds the **job**; it does not bound the slot. A VM that
+cannot be deleted marks its slot failed: the slot clones nothing more, retries the
+deletion every 5 minutes, and recovers by itself once the deletion succeeds and no VM of
+the slot remains. Verification reports a failed slot and how long it has been failed; one
+failed for longer than an hour is an operator's to clear (the deploy's slot-recovery step,
+which force-deletes the slot's VMs and restarts it). The other slot keeps serving
+throughout.
 
 **Why.** It is the strongest isolation available anywhere in the fleet, and on this
 hardware it is cheap: a clone is an APFS copy-on-write copy that takes seconds, and a boot
@@ -232,10 +236,14 @@ environment input, never with `--jitconfig`: the runner removes that variable fr
 own environment once read, whereas an argument stays in the process's command line, which
 every local user can read for the life of the process. This is the input the Linux
 ephemeral supervisor uses (`add-ephemeral-github-runners`). The image pins a runner
-version that clears the variable (2.336.0 or later), and the guest's launcher `exec`s
-`bin/Runner.Listener run` directly rather than through `run.sh`, so no wrapper shell keeps
-the variable in its environment while the job runs. Task 4.5 tests the guest's process
-arguments and the environment of every guest process, not only the host's. The App
+version that clears the variable (2.336.0 or later). The guest's launcher, not `run.sh`,
+starts `bin/Runner.Listener run`: it reads the configuration from standard input into a
+shell variable it does **not** export, and hands it to the listener's environment alone,
+so no wrapper keeps it in its own environment. It keeps the stock wrapper's one other duty:
+when the listener exits for a self-update (exit codes 3 and 4), it waits for the update to
+finish and relaunches the listener with the same configuration, so an update during the
+job does not drop it. Task 4.5 tests the guest's process arguments, the environment of
+every guest process, and an update exit followed by a completed job. The App
 private key is placed on the host by Ansible (secret store to Ansible memory to a `0400`
 file owned by the supervisor account), and **never enters a VM**.
 

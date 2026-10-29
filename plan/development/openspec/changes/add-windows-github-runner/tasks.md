@@ -193,8 +193,10 @@ under the decision it settles.
       published for that release before extraction; abort on mismatch. Never run
       `config.cmd`. Install rustup and the declared toolchains for the account, and place
       the pinned NSIS and WiX where the bundler looks for them.
-- [ ] 6.4 Build the seed from the deployed account home (D7): copy it to a root-only
-      location, drop per-job state, refuse if any registration file is present.
+- [ ] 6.4 Build the seed from the deployed account home (D7): copy it to
+      `C:\ProgramData\github-runner\seed\`, set every entry's owner to `SYSTEM` and its
+      access to `SYSTEM` and `Administrators` write only, drop per-job state, refuse if any
+      registration file is present, and record a digest of every file.
 - [ ] 6.5 Install the supervisor (D7): a `LocalSystem` service whose script is under
       `Program Files`; the stock and state directories under `C:\ProgramData\github-runner`
       with access for `SYSTEM` and `Administrators` only; the reset (kill the account's
@@ -213,7 +215,9 @@ under the decision it settles.
       a file the account planted in `C:\Windows\Temp` is removed by the owned-path sweep;
       the configuration is in no process's environment once the listener has started; the
       supervisor refuses to start on a seed runner version that differs from the
-      declaration.
+      declaration; no seed entry is owned by the account, and the seed's digests are
+      unchanged after a reset; a listener that exits with code 3 or 4 is relaunched with
+      the same configuration and its job completes, without counting as a failed start.
 - [ ] 6.8 Add or extend the Semaphore templates (deploy, drain, verify), run the deploy from
       Semaphore, then re-run it unchanged.
 - [ ] 6.9 Validation gate: the runner shows in the group with labels
@@ -296,11 +300,12 @@ under the decision it settles.
 - [ ] 9.5 Ask before opening the PR into `dev` (user-gated). On approval, open it, wait for
       CodeRabbit and every check, and address findings.
 - [ ] 9.6 Ask before merging it (a separate approval: opening a PR does not authorize its
-      merge). On approval, merge with a merge commit through `scripts/merge-when-green.py`.
+      merge). On approval, and only with every required check passing on the final PR head
+      (after the last fix), merge with a merge commit through `scripts/merge-when-green.py`.
 - [ ] 9.7 Ask before the `dev` to `main` promotion (user-gated). On approval, open it, wait
       for CodeRabbit and every required check to complete and pass, and address findings.
-- [ ] 9.8 Ask before merging the promotion (a separate approval). On approval, merge with
-      a merge commit.
+- [ ] 9.8 Ask before merging the promotion (a separate approval). On approval, and only with
+      every required check passing on the final PR head, merge with a merge commit.
 - [ ] 9.9 Archive the change and retain one Hindsight memory into `agent-cloud-750a33b9`:
       the outcome labelled worked / dead end / corrected, which clone-identity path won in
       1.3, the measured release time, and any constraint found the hard way.

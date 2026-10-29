@@ -122,7 +122,9 @@
       VM, read while a job runs), and is gone from the guest runner's environment once it
       has started, including in every wrapper process; a VM is deleted when the runner
       exits non-zero, when the supervisor is killed mid-job and restarted, and when a
-      cancelled job leaves a wedged child process (the slot's deadline destroys the VM, D2).
+      cancelled job leaves a wedged child process (the slot's deadline destroys the VM, D2);
+      a failed slot recovers once its VM deletion succeeds; a listener update exit (code 3
+      or 4) is relaunched with the same configuration and its job completes.
 - [ ] 4.6 Validation gate: spec scenarios **"An over-limit declaration is refused"** and
       **"A cancelled job's machine is destroyed"** verified (4.5 plus a live cancellation).
 
@@ -206,11 +208,12 @@
 - [ ] 8.5 Ask before opening the PR into `dev` (user-gated). On approval, open it, wait for
       CodeRabbit and every check, and address findings.
 - [ ] 8.6 Ask before merging it (a separate approval: opening a PR does not authorize its
-      merge). On approval, merge with a merge commit through `scripts/merge-when-green.py`.
+      merge). On approval, and only with every required check passing on the final PR head
+      (after the last fix), merge with a merge commit through `scripts/merge-when-green.py`.
 - [ ] 8.7 Ask before the `dev` to `main` promotion (user-gated). On approval, open it, wait
       for CodeRabbit and every required check to complete and pass, and address findings.
-- [ ] 8.8 Ask before merging the promotion (a separate approval). On approval, merge with
-      a merge commit.
+- [ ] 8.8 Ask before merging the promotion (a separate approval). On approval, and only with
+      every required check passing on the final PR head, merge with a merge commit.
 - [ ] 8.9 Archive and retain one Hindsight memory into `agent-cloud-750a33b9`: the outcome
       labelled worked / dead end / corrected, the headless-reboot answer, the measured
       release time, and any constraint found the hard way.

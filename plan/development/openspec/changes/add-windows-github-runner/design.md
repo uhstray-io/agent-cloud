@@ -407,8 +407,14 @@ for Linux, with Windows mechanisms in place of the Linux ones:
   takes the oldest configuration, deletes it from the stock, starts one runner as
   `ghrunner` with the configuration in `ACTIONS_RUNNER_INPUT_JITCONFIG` (never an
   argument; the runner removes the variable from its environment), and waits for it to
-  exit after its one job. It starts `bin\Runner.Listener.exe run` directly, not through
-  `run.cmd`, so no wrapper process keeps the variable while the job runs.
+  exit after its one job. It starts `bin\Runner.Listener.exe run` itself, not through
+  `run.cmd`: the configuration stays in the supervisor's own memory (a `LocalSystem`
+  process the job account cannot inspect) and is placed in the listener's environment
+  alone. The supervisor keeps the wrapper's other duty. A listener exit for a self-update
+  (exit codes 3 and 4) is not the end of the run: the supervisor waits for the runner's
+  updater to finish and relaunches the listener with the same configuration, which it
+  keeps until the listener exits terminally (any other code), at most 3 relaunches. An
+  update exit never counts towards `github_runner_max_start_failures`.
 - **Runner version.** A just-in-time configuration carries no `--disableupdate`, so a
   runner behind the newest release may update itself during its job. The update lands in
   that job's account and is discarded by the next reset; every job starts the version in
@@ -431,8 +437,13 @@ for Linux, with Windows mechanisms in place of the Linux ones:
   3. verify: no process, no profile, no path owned by the account anywhere, each declared
      root empty;
   4. recreate the profile from a machine-owned **seed** (the account's home as the deploy
-     built it, with the declared Rust toolchains and the bundler's pinned tools, root-only
-     writable, as in that change's D5), and only then start the runner.
+     built it, with the declared Rust toolchains and the bundler's pinned tools, as in that
+     change's D5), and only then start the runner. The seed lives under
+     `C:\ProgramData\github-runner\seed\`, every entry owned by `SYSTEM` and writable by
+     `SYSTEM` and `Administrators` only, so the owner sweep in step 2 can never select it.
+     The snapshot records a digest of every seed file; the reset copies the seed only after
+     checking that no entry is owned by the account and that the digests still match, and
+     otherwise quarantines the host.
 
   The reset runs **before** each runner start, not after a job, so a host that rebooted
   in the middle of a job resets on the supervisor's first start before it takes another.
