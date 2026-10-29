@@ -105,7 +105,7 @@ step_start() {
   # The migrator is a labelled one-shot: once it has exited 0 it is finished, not a change.
   # A held proxy is a missing container, so the run after setup recreates and starts it.
   if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
-    compose_up_if_changed certs/step-ca-bundle.crt
+    compose_up_if_changed certs/ca-bundle-combined.crt
   else
     compose_up_if_changed
   fi

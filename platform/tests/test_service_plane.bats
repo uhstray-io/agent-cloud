@@ -210,12 +210,24 @@ PY
   grep -qF 'name: plane_oidc_client_secret, type: random' "$REPO_ROOT/platform/playbooks/vars/secret-declarations/authentik.yml"
   grep -qF 'PLANE_OIDC_CLIENT_SECRET={{ secrets.plane_oidc_client_secret }}' "$ak/templates/env.j2"
   # Plane shared-reads it (never stores a copy) and converges its instance settings with it.
-  grep -qF '{ from_service: authentik, read_keys: [plane_oidc_client_secret] }' "$PLAYBOOK"
+  # Read only when OIDC is configured, so a host without it never depends on Deploy Authentik.
+  grep -qF "if plane_authentik_base is defined else [] }}" "$PLAYBOOK"
+  # Unset is the kill switch: OIDC is switched off, not left as it was.
+  grep -qF "{'IS_OIDC_ENABLED': '0'} if plane_authentik_base is not defined" "$PLAYBOOK"
   grep -qF "'OIDC_CLIENT_SECRET': _shared.plane_oidc_client_secret" "$PLAYBOOK"
   refute_grep -qF 'name: plane_oidc_client_secret' "$PLAYBOOK"
   # Locally the API trusts step-ca for the server-side token and userinfo calls.
   # In its own overlay, applied last: compose.agentcloud.yml's volume !override would drop it.
-  grep -qF 'REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt' "$DEPLOY_DIR/compose.local-ca.yml"
-  grep -qF './certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro' "$DEPLOY_DIR/compose.local-ca.yml"
+  # The COMBINED bundle: REQUESTS_CA_BUNDLE replaces the API's whole trust store.
+  grep -qF 'REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-bundle-combined.crt' "$DEPLOY_DIR/compose.local-ca.yml"
+  grep -qF './certs/ca-bundle-combined.crt:/etc/ssl/certs/ca-bundle-combined.crt:ro' "$DEPLOY_DIR/compose.local-ca.yml"
+  # The local list restates every API volume compose.agentcloud.yml declares, or one is dropped.
+  python3 - "$OVERLAY" "$DEPLOY_DIR/compose.local-ca.yml" <<'PY'
+import sys, yaml
+class L(yaml.SafeLoader): pass
+L.add_multi_constructor('!', lambda l, s, n: l.construct_sequence(n) if isinstance(n, yaml.SequenceNode) else (l.construct_mapping(n) if isinstance(n, yaml.MappingNode) else l.construct_scalar(n)))
+main, local = (yaml.load(open(f), Loader=L)["services"]["api"]["volumes"] for f in sys.argv[1:3])
+assert set(main) <= set(local), set(main) - set(local)
+PY
   grep -qF 'COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS} compose.local-ca.yml"' "$DEPLOY_DIR/deploy.sh"
 }

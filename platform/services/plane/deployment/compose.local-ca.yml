@@ -3,8 +3,10 @@
 # mode. It cannot live in compose.local.yml: common.sh applies that file before the declared
 # overlays, and compose.agentcloud.yml's `volumes: !override` for the API would replace the
 # mount (seen on the first local OIDC deploy). So the full API volume list is restated here.
-# REQUESTS_CA_BUNDLE replaces the default bundle for the API's requests calls only; local-dev
-# runs no integration that needs a public CA from the API.
+# REQUESTS_CA_BUNDLE replaces the API's whole trust store for its requests calls, so it points at
+# the COMBINED bundle (step-ca plus the host's public roots, distribute-ca-root.yml) and public
+# HTTPS keeps working. test_service_plane.bats checks this list restates every API volume
+# compose.agentcloud.yml declares.
 services:
   api:
     # The podman VM enforces SELinux, which denies a container reading an unlabelled bind mount
@@ -13,6 +15,6 @@ services:
       - label=disable
     volumes: !override
       - logs_api:/code/plane/logs
-      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+      - ./certs/ca-bundle-combined.crt:/etc/ssl/certs/ca-bundle-combined.crt:ro
     environment:
-      REQUESTS_CA_BUNDLE: /etc/ssl/certs/step-ca-bundle.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-bundle-combined.crt
