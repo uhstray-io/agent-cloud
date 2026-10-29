@@ -319,6 +319,7 @@ TEMPFILE_USERS = {
     "verify-o11y-profile-pilot.yml": "disposable profile candidates in tmpfs, removed in an always: block",
     "accept-o11y-profile-pilot.yml": "rendered candidates and helper files in tmpfs, removed in an always: block",
     "restart-o11y-pyroscope-durability.yml": "fixed verifier workspace in tmpfs, removed in an always: block",
+    "survey-o11y-expected-metrics-targets.yml": "private reviewed helper source workspace, contains no SSH key",
 }
 
 
