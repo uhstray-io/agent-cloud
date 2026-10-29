@@ -1,0 +1,218 @@
+---
+# deploy-console.yml — the Dispatch Console deploy (composable).
+#
+# Phase 1: Production guard on the console_svc host vars (skipped for local_mode), transport guard on
+#          the OpenBao endpoint, then place the repo, create config/, and manage-secrets. The console's
+#          own secret is its Semaphore API token, which this play
+#          reads and never generates: Provision Console Semaphore Access (provision-console-semaphore-access.yml)
+#          creates it, and this play stops before any write when it is absent. The OIDC client secret
+#          is shared-read from authentik, which owns it. Template .env, config/scope.json and
+#          config/workflow.json (the service-onboarding registry's steps: id, order, owner, label).
+# Phase 2: deploy.sh — builds the image on THIS host from platform/services/console (there is no
+#          registry), then container lifecycle (compose_up_if_changed, wait healthy).
+# Phase 3: Verify inside the container: `probe /healthz 200`, and an unauthenticated `/v1/me`
+#          answers 401 (Phase 1 acceptance: the API refuses without a session).
+#
+# The runtime image is distroless, so the probes run the binary's own `probe` subcommand. No shell
+# and no curl are assumed.
+#
+# Order: Deploy Authentik must have run first. It owns `console_oidc_client_secret` in
+# secret/services/authentik; without it, the shared read below stops this play by name.
+# Plan: plan/development/17-dispatch-console.md (Phase 1 — skeleton, login and deployment path).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: console_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: console_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: console_svc
+
+# ── Phase 1: Place repo + secrets + config ──────────────────────────────────
+- name: "Phase 1: Place repo + manage console secrets and config"
+  hosts: console_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # The Semaphore API token is provisioned by provision-console-semaphore-access.yml (the svc-console
+    # account, guest role) and only READ here: type `existing` never generates it. A missing token fails
+    # before any write, because manage-secrets checks _required_existing_secrets first. manage-secrets
+    # words that failure generically; this comment names the play that creates the token.
+    _secret_definitions:
+      - { name: semaphore_api_token, type: existing }
+    _required_existing_secrets: [semaphore_api_token]
+    # The OIDC client secret is owned by authentik (the IdP). Read it read-only so the console's
+    # CONSOLE_OIDC_CLIENT_SECRET matches the value the console provider was created with. It is
+    # never stored back under secret/services/console.
+    _shared_reads:
+      - { from_service: authentik, read_keys: [console_oidc_client_secret] }
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+      # Not secrets, so 0644. config/ is created below before manage-secrets templates into it.
+      - { src: scope.json.j2, dest: config/scope.json, mode: "0644" }
+      # The steps the console labels a skynet run with, rendered from the registry so the console never
+      # keeps a second copy of the step list.
+      - { src: workflow.json.j2, dest: config/workflow.json, mode: "0644" }
+    # The service-onboarding workflow registry: the one definition of the steps (read on the controller).
+    _workflow_registry: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}"
+    # The console_svc host vars a production console cannot run without. The guard task below checks them.
+    _console_prod_required:
+      - console_base_url
+      - console_oidc_issuer
+      - console_semaphore_api_url
+      - console_semaphore_ui_url
+      - console_semaphore_project
+
+  tasks:
+    # GUARD: refuse a production deploy before anything is written, when a console_svc host var is unset,
+    # empty or still an agent-cloud.test (local-dev) value. Mirrors the Authentik promotion guard in
+    # deploy-authentik.yml. Skipped for local_mode: local-dev runs on the agent-cloud.test defaults.
+    # Brace check: an unrendered "{{ ... }}" value would pass the other two checks with its braces intact.
+    - name: "Production guard: the console's host vars are set and not local-dev defaults"
+      ansible.builtin.assert:
+        that:
+          - "(lookup('vars', item, default='')) | string | length > 0"
+          - "'agent-cloud.test' not in (lookup('vars', item, default='') | string)"
+          - "('{' ~ '{') not in (lookup('vars', item, default='') | string)"
+        fail_msg: >-
+          Production guard: console_svc host var '{{ item }}' must be set to a production value
+          (in site-config), not empty, not an agent-cloud.test default and not an unresolved
+          template. Refusing to deploy the console.
+        quiet: true
+      loop: "{{ _console_prod_required }}"
+      when: not (local_mode | default(false) | bool)
+
+    # Read-only check of the credential path before anything is written: a refused run must not
+    # have already placed the repo or written a secret (deploy-skynet.yml pattern).
+    - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    # manage-secrets templates into this directory but does not create parent directories.
+    # config/ is gitignored, so it is never in the repo.
+    - name: "Create the config directory for the rendered scope file"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config"
+        state: directory
+        mode: "0755"
+
+    - name: "Manage secrets and template env + scope files"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # The console's Rust backend makes server-side OIDC calls to the IdP at
+    # https://auth.<zone>:8443 (step-ca-minted leaf). Distribute the step-ca trust bundle into
+    # ./certs; compose.local.yml mounts it and sets CONSOLE_EXTRA_CA_FILE. Local-only.
+    - name: "Distribute the step-ca root for OIDC TLS trust (local)"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_engine: "{{ container_engine | default('podman') }}"
+      when: local_mode | default(false) | bool
+
+    - name: "Create convenience symlink ~/console -> deploy dir"
+      # Points ~/console at the deployment dir in the composable monorepo clone.
+      ansible.builtin.file:
+        src: "{{ _deploy_dir }}"
+        dest: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy')), true) }}/{{ service_name }}"
+        state: link
+        force: true
+      register: _symlink_result
+      # Best-effort: tolerate a permission-denied home, surface any other failure.
+      failed_when: >-
+        _symlink_result is failed
+        and 'permission denied' not in (_symlink_result.msg | default('') | lower)
+
+# ── Phase 2: Build the image + container lifecycle ──────────────────────────
+- name: "Phase 2: Build the console image and start the container"
+  hosts: console_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (host image build + container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path; empty on the
+        # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
+        # leaks its placeholder into environment (rc 127).
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
+        # Operator lever (survey `console_force_rebuild`, only the literal true): rebuild the image even when
+        # its build inputs match the image on this host.
+        CONSOLE_FORCE_REBUILD: "{{ 'true' if ((console_force_rebuild | default('false') | string | lower) == 'true') else '' }}"
+        # Local podman only: a seccomp profile path on the engine (see deploy.sh build_console_image).
+        CONSOLE_BUILD_SECCOMP: "{{ console_build_seccomp | default('') }}"
+      register: _deploy
+      # deploy.sh recreates only when its inputs or images changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+      when: not ansible_check_mode
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify console"
+  hosts: console_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "Container health (probe /healthz -> 200, inside the container)"
+      # Exec inside the container so the check never depends on the published bind/port or on
+      # central Caddy. The probe subcommand exits 0 only on the expected status.
+      ansible.builtin.command: "{{ _engine }} exec console /usr/local/app/server probe /healthz 200"
+      register: _console_health
+      changed_when: false
+      retries: 10
+      delay: 6
+      until: _console_health.rc == 0
+      check_mode: false
+
+    - name: "Unauthenticated API refuses (probe /v1/me -> 401, inside the container)"
+      # Phase 1 acceptance: every /v1 route answers 401 without a session.
+      ansible.builtin.command: "{{ _engine }} exec console /usr/local/app/server probe /v1/me 401"
+      register: _console_api
+      changed_when: false
+      retries: 5
+      delay: 3
+      until: _console_api.rc == 0
+      check_mode: false
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "console healthy — /healthz answers 200 and unauthenticated /v1/me answers 401, both inside the container."
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy

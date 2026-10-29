@@ -12,7 +12,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import threading
 from http.server import ThreadingHTTPServer
@@ -23,6 +22,7 @@ import forgeries
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
@@ -33,8 +33,6 @@ _spec = importlib.util.spec_from_file_location(
 )
 step_results = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(step_results)
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
 FAKE_ENGINE = """#!/usr/bin/env python3
 import json, pathlib, sys
@@ -83,6 +81,7 @@ class FakePrometheus:
     def __init__(self, fragment: Path, reload_status: int = 200):
         self.fragment, self.reload_status, self.loaded, self.reloads = fragment, reload_status, {}, 0
         self.silent_hosts: set[str] = set()  # declared but never scraped successfully
+        self.identity_overrides: dict[str, dict] = {}
         outer = self
 
         class Handler(DrainingHandler):
@@ -97,8 +96,14 @@ class FakePrometheus:
             def do_GET(self):  # noqa: N802
                 query = parse_qs(urlparse(self.path).query)["query"][0]
                 job = re.search(r'job="([^"]+)"', query).group(1)
+                is_named_host_metric = "node_memory_MemAvailable_bytes" in query
                 result = [
-                    {"metric": {"host": tgt["labels"]["host"], "instance": tgt["targets"][0]}, "value": [0, "1"]}
+                    {"metric": {
+                        **tgt["labels"],
+                        **(outer.identity_overrides.get(tgt["labels"]["host"], {})
+                           if is_named_host_metric else {}),
+                        "instance": tgt["targets"][0],
+                    }, "value": [0, "1"]}
                     for cfg in outer.loaded.get("scrape_configs", [])
                     if cfg["job_name"] == job
                     for tgt in cfg["static_configs"]
@@ -133,14 +138,18 @@ def estate(tmp_path):
         server.shutdown()
 
 
-def _inventory(estate, binds=None, host_vars=None) -> Path:
+def _inventory(
+    estate, binds=None, host_vars=None, receiver_vars="", identity_enabled=None, coverage=None, ports=None,
+    host_coverage=None,
+) -> Path:
     tmp = estate["tmp"]
     lines = ["[demo_svc]"]
     for host, server in estate["exporters"].items():
         bind = (binds or {}).get(host, "127.0.0.1")
+        port = (ports or {}).get(host, server.server_address[1])
         lines.append(
             f"{host} ansible_connection=local container_engine={tmp / f'engine-{host}'} "
-            f"o11y_host_exporter_bind={bind} o11y_host_exporter_port={server.server_address[1]} "
+            f"o11y_host_exporter_bind={bind} o11y_host_exporter_port={port} "
             + (host_vars or {}).get(host, "")
         )
     lines += [
@@ -148,18 +157,36 @@ def _inventory(estate, binds=None, host_vars=None) -> Path:
         "[demo_svc:vars]",
         "service_name=demo",
         "local_mode=true",
+    ]
+    if identity_enabled is not None:
+        lines.append(f"o11y_host_metrics_identity_enabled={identity_enabled!r}")
+    if coverage is not None:
+        lines.append(f"estate_coverage_inventory={coverage!r}")
+    lines += [
         "",
         "[o11y_svc]",
         f"receiver ansible_connection=local local_monorepo_dir={tmp / 'repo'} monorepo_deploy_path=o11y "
-        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={estate['prometheus'].server.server_address[1]} local_mode=true",
+        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={estate['prometheus'].server.server_address[1]} local_mode=true "
+        f"{receiver_vars}",
     ]
     inventory = tmp / "inventory.ini"
     inventory.write_text("\n".join(lines) + "\n")
+    for host, host_inventory in (host_coverage or {}).items():
+        host_vars_dir = tmp / "host_vars"
+        host_vars_dir.mkdir(exist_ok=True)
+        (host_vars_dir / f"{host}.yml").write_text(yaml.safe_dump(
+            {"estate_coverage_inventory": host_inventory}, sort_keys=False
+        ))
     return inventory
 
 
-def _run(estate, *extra, binds=None, host_vars=None, path_prefix=None) -> subprocess.CompletedProcess:
-    inventory = _inventory(estate, binds, host_vars)
+def _run(
+    estate, *extra, binds=None, host_vars=None, path_prefix=None, receiver_vars="",
+    identity_enabled=None, coverage=None, ports=None, host_coverage=None
+) -> subprocess.CompletedProcess:
+    inventory = _inventory(
+        estate, binds, host_vars, receiver_vars, identity_enabled, coverage, ports, host_coverage
+    )
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     if path_prefix:
@@ -173,6 +200,36 @@ def _run(estate, *extra, binds=None, host_vars=None, path_prefix=None) -> subpro
         stdin=subprocess.DEVNULL,
         check=False,
     )
+
+
+def _coverage_targets(estate, *, hosts=None, selector=None) -> dict:
+    targets = []
+    for host in hosts or ("alpha", "beta"):
+        identity = "demo"
+        target_id = f"service:{host}"
+        targets.append({
+            "target_id": target_id,
+            "target_type": "service",
+            "lifecycle": "deployed",
+            "owner": "platform",
+            "runtime": "podman",
+            "service_identity": identity,
+            "environment": "production",
+            "inventory_host": host,
+            "signals": {"metrics": {
+                "applicable": True,
+                "selector": selector or f'node_cpu_seconds_total{{target_id="{target_id}"}}',
+                "collection_method": "prometheus",
+                "freshness_seconds": 300,
+            }},
+            "collection_method": "prometheus",
+            "budget": {"samples_per_scrape": 1000},
+            "template_references": ["Verify o11y Target Receipt"],
+        })
+    revision = hashlib.sha256(json.dumps(
+        {"targets": targets}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode()).hexdigest()
+    return {"revision": revision, "targets": targets}
 
 
 def _result(proc) -> dict:
@@ -191,8 +248,9 @@ def _changed(proc) -> dict:
 
 
 @needs_ansible
-def test_apply_declares_and_proves_then_rerun_changes_nothing(estate):
-    proc = _run(estate)
+@pytest.mark.parametrize("identity_enabled", [None, False])
+def test_apply_declares_and_proves_then_rerun_changes_nothing(estate, identity_enabled):
+    proc = _run(estate, identity_enabled=identity_enabled)
     assert proc.returncode == 0, proc.stdout[-4000:]
     result = _result(proc)
     assert (result["step"], result["status"], result["service"]) == ("instrument-host", "pass", "demo")
@@ -211,9 +269,10 @@ def test_apply_declares_and_proves_then_rerun_changes_nothing(estate):
         ("alpha", "demo/host", "node-exporter"),
         ("beta", "demo/host", "node-exporter"),
     ]
+    assert all("target_id" not in lbl and "metrics_scope" not in lbl for lbl in labels)
     assert estate["prometheus"].reloads == 1
 
-    again = _run(estate)
+    again = _run(estate, identity_enabled=identity_enabled)
     assert again.returncode == 0, again.stdout[-4000:]
     assert _result(again)["status"] == "pass"
     assert _changed(again) == {"alpha": 0, "beta": 0, "receiver": 0, "localhost": 0}
@@ -222,8 +281,181 @@ def test_apply_declares_and_proves_then_rerun_changes_nothing(estate):
 
 
 @needs_ansible
-def test_check_mode_writes_nothing_and_records_skip(estate):
-    proc = _run(estate, "--check")
+@pytest.mark.parametrize("identity_enabled", [None, False])
+def test_legacy_service_name_launch_override_remains_supported(estate, identity_enabled):
+    proc = _run(estate, "-e", "service_name=legacy-demo", identity_enabled=identity_enabled)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    labels = [
+        target["labels"]
+        for target in yaml.safe_load(estate["fragment"].read_text())["scrape_configs"][0]["static_configs"]
+    ]
+    assert [row["service"] for row in labels] == ["legacy-demo/host", "legacy-demo/host"]
+    assert all("target_id" not in row and "metrics_scope" not in row for row in labels)
+
+
+@needs_ansible
+def test_opt_in_binds_exact_declared_ids_and_host_metric_labels(estate):
+    coverage = _coverage_targets(estate)
+    proc = _run(estate, identity_enabled=True, coverage=coverage)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    declared = yaml.safe_load(estate["fragment"].read_text())["scrape_configs"][0]
+    assert declared["honor_labels"] is False
+    labels = [target["labels"] for target in declared["static_configs"]]
+    assert [(row["host"], row["target_id"], row["component"], row["metrics_scope"]) for row in labels] == [
+        ("alpha", "service:alpha", "node-exporter", "host"),
+        ("beta", "service:beta", "node-exporter", "host"),
+    ]
+    assert _result(proc)["evidence"]["series_present"] == {"alpha": True, "beta": True}
+    assert coverage["targets"][0]["signals"]["metrics"]["selector"] == (
+        'node_cpu_seconds_total{target_id="service:alpha"}'
+    )
+
+    again = _run(estate, identity_enabled=True, coverage=coverage)
+    assert again.returncode == 0, again.stdout[-4000:]
+    assert _changed(again) == {"alpha": 0, "beta": 0, "receiver": 0, "localhost": 0}
+    assert estate["prometheus"].reloads == 1
+
+
+@needs_ansible
+def test_opted_in_hosts_refuse_divergent_inventory_revisions_and_duplicate_ids_before_mutation(estate):
+    host_coverage = {}
+    for host in ("alpha", "beta"):
+        inventory = _coverage_targets(estate, hosts=(host,))
+        inventory["targets"][0]["target_id"] = "service:shared"
+        inventory["targets"][0]["signals"]["metrics"]["selector"] = (
+            'node_cpu_seconds_total{target_id="service:shared"}'
+        )
+        inventory["revision"] = hashlib.sha256(json.dumps(
+            {"targets": inventory["targets"]}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()).hexdigest()
+        host_coverage[host] = inventory
+
+    proc = _run(estate, identity_enabled=True, host_coverage=host_coverage)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "same reviewed estate inventory revision" in proc.stdout, proc.stdout[-4000:]
+    assert not estate["fragment"].exists()
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
+    assert estate["prometheus"].reloads == 0
+
+
+@needs_ansible
+@pytest.mark.parametrize("failure", [
+    "missing_inventory", "wrong_host", "wrong_service", "not_deployed", "duplicate_binding",
+    "duplicate_id", "missing_id", "bad_schema",
+])
+def test_opted_in_identity_refusals_precede_every_mutation(estate, failure):
+    coverage = _coverage_targets(estate)
+    if failure == "missing_inventory":
+        coverage = None
+    elif failure == "wrong_host":
+        coverage["targets"][0]["inventory_host"] = "other-host"
+    elif failure == "wrong_service":
+        coverage["targets"][0]["service_identity"] = "other"
+    elif failure == "not_deployed":
+        coverage["targets"][0]["lifecycle"] = "planned"
+    elif failure == "duplicate_binding":
+        duplicate = dict(coverage["targets"][0], target_id="service:alpha2")
+        coverage["targets"].append(duplicate)
+    elif failure == "duplicate_id":
+        coverage["targets"].append(dict(coverage["targets"][0]))
+    elif failure == "missing_id":
+        coverage["targets"][0].pop("target_id")
+    elif failure == "bad_schema":
+        coverage["targets"][0]["target_id"] = "vm:alpha"
+    if coverage is not None:
+        targets = coverage["targets"]
+        coverage["revision"] = hashlib.sha256(json.dumps(
+            {"targets": targets}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()).hexdigest()
+
+    proc = _run(estate, identity_enabled=True, coverage=coverage)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "Host-metrics identity refused" in proc.stdout, proc.stdout[-4000:]
+    assert not estate["fragment"].exists()
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
+    assert estate["prometheus"].reloads == 0
+
+
+@needs_ansible
+def test_identity_opt_in_rejects_non_boolean_inventory_value(estate):
+    proc = _run(estate, identity_enabled="false", coverage=_coverage_targets(estate))
+    assert proc.returncode != 0
+    assert "must be one inventory boolean value" in proc.stdout
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
+    assert not estate["fragment"].exists()
+
+
+@needs_ansible
+@pytest.mark.parametrize("spoof", [
+    {"target_id": "service:other"},
+    {"target_id": ""},
+    {"component": "application"},
+    {"metrics_scope": "application"},
+    {"host": "other"},
+])
+def test_opted_in_named_metric_requires_all_exact_returned_identity_labels(estate, spoof):
+    estate["prometheus"].identity_overrides["beta"] = spoof
+    proc = _run(estate, identity_enabled=True, coverage=_coverage_targets(estate))
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    result = _result(proc)
+    assert result["evidence"]["series_present"] == {"alpha": True, "beta": False}
+    assert "beta: no node_memory_MemAvailable_bytes series in Prometheus" in result["error"]
+
+
+@needs_ansible
+@pytest.mark.parametrize("name,value,identity_reason", [
+    ("estate_coverage_inventory", "{}", "estate_coverage_inventory"),
+    ("o11y_host_metrics_identity_enabled", "false", "o11y_host_metrics_identity_enabled"),
+    ("service_name", "other", "service_name"),
+    ("inventory_hostname", "alpha", "inventory_hostname"),
+])
+def test_identity_inventory_cannot_be_overridden_at_launch(estate, name, value, identity_reason):
+    proc = _run(estate, "-e", f"{name}={value}", identity_enabled=True,
+                coverage=_coverage_targets(estate))
+    assert proc.returncode != 0
+    assert identity_reason in proc.stdout
+    assert "Host-metrics identity is controlled by reviewed inventory declarations" in proc.stdout
+    assert step_results.results_in(proc.stdout.splitlines()) == []
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
+    assert not estate["fragment"].exists()
+    assert estate["prometheus"].reloads == 0
+
+
+@needs_ansible
+def test_duplicate_exporter_endpoint_refuses_before_mutation(estate):
+    shared_port = estate["exporters"]["alpha"].server_address[1]
+    proc = _run(estate, identity_enabled=True, coverage=_coverage_targets(estate),
+                binds={"alpha": "127.0.0.1", "beta": "127.0.0.1"},
+                ports={"alpha": shared_port, "beta": shared_port})
+    assert proc.returncode != 0
+    assert "unique exporter endpoints" in proc.stdout
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
+    assert not estate["fragment"].exists()
+
+
+@needs_ansible
+def test_application_selector_is_left_unchanged_and_host_probe_emits_no_coverage_receipt(estate):
+    application_selector = 'process_cpu_seconds_total{service="demo",target_id="service:alpha"}'
+    coverage = _coverage_targets(estate, selector=application_selector)
+    proc = _run(estate, identity_enabled=True, coverage=coverage)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    result = _result(proc)
+    assert coverage["targets"][0]["signals"]["metrics"]["selector"] == application_selector
+    assert set(result["evidence"]) == {"exporter_running", "series_present"}
+    assert "metrics_coverage" not in result["evidence"]
+
+@needs_ansible
+@pytest.mark.parametrize("identity_enabled", [None, True])
+def test_check_mode_writes_nothing_and_records_skip(estate, identity_enabled):
+    proc = _run(
+        estate, "--check", identity_enabled=identity_enabled,
+        coverage=_coverage_targets(estate) if identity_enabled else None,
+    )
     assert proc.returncode == 0, proc.stdout[-4000:]
     result = _result(proc)
     assert (result["status"], result["check_mode"]) == ("skip", True)
@@ -312,11 +544,15 @@ def test_a_declared_host_without_series_fails(estate):
 
 
 @needs_ansible
-def test_a_rejected_reload_puts_the_previous_file_back(estate):
+@pytest.mark.parametrize("identity_enabled", [False, True])
+def test_a_rejected_reload_puts_the_previous_file_back(estate, identity_enabled):
     previous = "scrape_configs: []\n"
     estate["fragment"].write_text(previous)
     estate["prometheus"].reload_status = 500
-    proc = _run(estate)
+    proc = _run(
+        estate, identity_enabled=identity_enabled,
+        coverage=_coverage_targets(estate) if identity_enabled else None,
+    )
     assert proc.returncode != 0
     result = _result(proc)
     assert result["status"] == "fail"
@@ -433,6 +669,16 @@ def test_refuses_a_target_it_must_not_instrument(estate, target):
     assert proc.returncode != 0
     assert "Pass -e target_service=<group>" in proc.stdout
     assert not estate["fragment"].exists()
+
+
+@needs_ansible
+def test_production_budget_failure_on_distinct_receiver_stops_exporter_play(estate):
+    proc = _run(estate, receiver_vars="local_mode=false")
+
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "Production o11y scrape budgets require" in proc.stdout, proc.stdout[-4000:]
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
 
 
 def _defined_names() -> set[str]:

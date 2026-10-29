@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import playbook_yaml
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -37,7 +38,7 @@ def _run_line(result: dict) -> str:
 
 
 def _task(tid, status, template_id, output="", service="tududi", **extra):
-    return {"id": tid, "status": status, "end": f"t{tid}", "template_id": template_id,
+    return {"id": tid, "status": status, "end": "2026-10-11T12:00:00Z", "template_id": template_id,
             "service": service, "output": output, **extra}
 
 
@@ -174,6 +175,49 @@ def test_report_lists_failed_steps_with_their_context_and_unreviewed_steps():
     assert entry["unreviewed"] == [s["id"] for s in REGISTRY if not s.get("reviewed")]
 
 
+def test_completion_time_requires_a_valid_timezone_aware_timestamp():
+    assert step_results._completion_time_seconds("2026-10-11T12:00:00Z") == 1791720000
+    assert step_results._completion_time_seconds("2026-10-11T15:00:00+03:00") == 1791720000
+    for value in (None, "", "not-a-time", "2026-10-11T12:00:00"):
+        assert step_results._completion_time_seconds(value) == "unknown"
+
+
+def test_retained_and_missing_completion_provenance_is_explicitly_unknown():
+    retained = step_results.aggregate(
+        REGISTRY, TEMPLATES, [], ["tududi"], DEPLOYS,
+        retained={"tududi": {"fw-harden": "fail"}},
+    )
+    retained_stream = next(s for s in step_results.loki_streams(retained, 1)
+                           if s["stream"]["step"] == "fw-harden")
+    retained_body = json.loads(retained_stream["values"][0][1])
+    assert retained_body["task_id"] == "unknown"
+    assert retained_body["completed_at_seconds"] == "unknown"
+    assert retained_body["retained"] is True
+
+    missing_time = _task(8, "success", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "pass"}), end="invalid")
+    agg = _agg(missing_time)
+    stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
+    body = json.loads(stream["values"][0][1])
+    assert body["task_id"] == 8
+    assert body["completed_at_seconds"] == "unknown"
+
+
+def test_latest_pass_replaces_an_older_failure_with_its_own_provenance():
+    failure = _task(10, "error", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "fail"}),
+        end="2026-10-11T11:00:00Z")
+    success = _task(11, "success", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "pass"}),
+        end="2026-10-11T12:00:00Z")
+    agg = _agg(failure, success)
+    assert agg["status_by_service"]["tududi"]["fw-harden"] == "pass"
+    stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
+    assert stream["stream"]["status"] == "pass"
+    assert json.loads(stream["values"][0][1])["task_id"] == 11
+    assert json.loads(stream["values"][0][1])["completed_at_seconds"] == 1791720000
+
+
 def test_loki_streams_label_every_result():
     out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
     streams = step_results.loki_streams(_agg(_task(8, "success", 1, out)), 1700000000000000000)
@@ -182,7 +226,8 @@ def test_loki_streams_label_every_result():
         "stream": {"job": "agent-cloud-conformance", "service": "tududi",
                    "step": "secrets-approle", "status": "pass"},
         "values": [["1700000000000000000", json.dumps(
-            {"check_mode": False, "error": None, "state_code": 1, "task_id": 8}, sort_keys=True)]],
+            {"check_mode": False, "completed_at_seconds": 1791720000, "error": None,
+             "state_code": 1, "task_id": 8}, sort_keys=True)]],
     }
 
 
@@ -203,8 +248,182 @@ def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
     assert set(attributes) == {"job", "service", "step", "status"}
     assert record["timeUnixNano"] == "1700000000000000000"
     assert json.loads(record["body"]["stringValue"]) == {
-        "check_mode": False, "error": "task output detail", "state_code": 0, "task_id": 8,
+        "check_mode": False, "completed_at_seconds": 1791720000,
+        "error": "task output detail", "state_code": 0, "task_id": 8,
     }
+    assert {entry["key"] for entry in record["attributes"]} == {"job", "service", "step", "status"}
+
+
+def test_fixed_completion_receipt_is_a_separate_bounded_record_variant():
+    receipt = step_results.completion_receipt_stream(1700000000000000000)
+    assert receipt == {
+        "stream": {"job": "agent-cloud-conformance", "kind": "run", "status": "success"},
+        "values": [["1700000000000000000", '{"collection_completed":true,"version":1}']],
+    }
+    payload = step_results.otlp_logs_payload([receipt])
+    (record,) = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    assert {entry["key"]: entry["value"]["stringValue"] for entry in record["attributes"]} == {
+        "job": "agent-cloud-conformance", "kind": "run", "status": "success",
+    }
+    assert json.loads(record["body"]["stringValue"]) == {"collection_completed": True, "version": 1}
+
+
+def test_completion_receipt_rejects_every_other_shape_and_status():
+    receipt = step_results.completion_receipt_stream(1)
+    for labels in (
+        {"job": "agent-cloud-conformance", "kind": "run", "status": "fail"},
+        {"job": "agent-cloud-conformance", "kind": "run", "status": "success", "service": "tududi"},
+        {"job": "other", "kind": "run", "status": "success"},
+    ):
+        with pytest.raises(ValueError):
+            step_results.otlp_logs_payload([{**receipt, "stream": labels}])
+
+
+def test_data_delivery_batch_never_contains_the_final_receipt():
+    history = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi", "step-ca"], DEPLOYS,
+                                     incomplete={"tududi"})
+    streams = step_results.loki_streams(history, 1700000000000000000)
+    payload = step_results.otlp_logs_payload(streams)
+    assert all(s["stream"].get("kind") != "run" for s in streams)
+    assert next(s["stream"]["status"] for s in streams
+                if s["stream"].get("service") == "tududi") == "history_incomplete"
+    assert next(s["stream"]["status"] for s in streams if s["stream"].get("service") == "step-ca") == "no_history"
+    assert len(payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]) == len(streams)
+
+
+def test_final_receipt_batch_contains_only_the_fixed_run_record():
+    receipt = _call({"mode": "receipt", "now_ns": 2})
+    assert receipt["streams"] == [step_results.completion_receipt_stream(2)]
+    records = receipt["otlp_payload"]["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    assert len(records) == 1
+    assert {entry["key"] for entry in records[0]["attributes"]} == {"job", "kind", "status"}
+    assert json.loads(records[0]["body"]["stringValue"]) == {"collection_completed": True, "version": 1}
+
+
+def test_final_receipt_waits_for_prior_data_batch_transport_acceptance():
+    eligible = step_results.completion_delivery_eligible
+    assert eligible(True, "local_loki", True, 1, 204)
+    assert not eligible(True, "local_loki", True, 1, 500)
+    assert not eligible(True, "local_loki", False, 0, None)
+    assert eligible(True, "production_otlp", True, 1, None, True)
+    assert not eligible(True, "production_otlp", True, 1, None, False)
+    assert eligible(True, "production_otlp", True, 0, None, False)
+    assert not eligible(False, "production_otlp", True, 0, None, False)
+
+
+def test_otlp_ack_requires_a_valid_bounded_success_response():
+    classify = step_results.classify_otlp_ack
+    valid = {
+        "status": 200, "content_type_valid": True, "body_is_object": True,
+        "body_fields_known": True, "partial_success_present": False,
+        "partial_success_is_object": False, "partial_fields_known": False,
+        "rejected_present": False, "rejected_records": None,
+        "warning_present": False, "warning_valid": False,
+    }
+    assert classify(valid) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    empty_partial_success = {**valid, "partial_success_present": True,
+                             "partial_success_is_object": True, "partial_fields_known": True,
+                             "rejected_present": False}
+    assert classify(empty_partial_success) == {
+        "accepted": True, "outcome": "accepted", "rejected_records": 0,
+    }
+    for counter in (0, "0"):
+        warning = {**valid, "partial_success_present": True, "partial_success_is_object": True,
+                   "partial_fields_known": True, "rejected_present": True,
+                   "rejected_records": counter, "warning_present": True, "warning_valid": True}
+        assert classify(warning) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+        no_warning = {**warning, "warning_present": False, "warning_valid": False}
+        assert classify(no_warning) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    empty_warning = {**valid, "partial_success_present": True, "partial_success_is_object": True,
+                     "partial_fields_known": True, "rejected_present": False,
+                     "warning_present": True, "warning_valid": True}
+    assert classify(empty_warning) == {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    rejected = {**valid, "partial_success_present": True, "partial_success_is_object": True,
+                "partial_fields_known": True, "rejected_present": True,
+                "rejected_records": "2", "warning_present": False, "warning_valid": False}
+    assert classify(rejected) == {"accepted": False, "outcome": "rejected", "rejected_records": 2}
+
+    malformed = [
+        {**valid, "status": "200"},
+        {**valid, "status": True},
+        {**valid, "status": 503},
+        {**valid, "content_type_valid": False},
+        {**valid, "body_is_object": False},
+        {**valid, "body_fields_known": False},
+        {**valid, "partial_success_present": True},
+        {**valid, "partial_success_present": True, "partial_success_is_object": True,
+         "partial_fields_known": True, "rejected_present": "false"},
+        *[{**valid, "partial_success_present": True, "partial_success_is_object": True,
+           "partial_fields_known": True, "rejected_present": True,
+           "rejected_records": counter, "warning_present": True, "warning_valid": True}
+          for counter in (True, False, -1, 2**63, "-1", "1.0", "1e2", "9223372036854775808", None)],
+        {**valid, "partial_success_present": True, "partial_success_is_object": True,
+         "partial_fields_known": True, "rejected_present": True,
+         "rejected_records": 0, "warning_present": True, "warning_valid": False},
+    ]
+    for response in malformed:
+        assert classify(response) == {"accepted": False, "outcome": "unknown", "rejected_records": None}
+
+
+def test_netbox_result_requires_a_complete_read_and_only_unique_matches_are_required_writes():
+    classify = step_results.classify_netbox_results
+    expected = ["service-a", "service-b", "service-c"]
+    state = classify(expected, [
+        {"item": "service-a", "status": 200,
+         "json": {"count": 1, "next_is_terminal": True,
+                  "results": [{"id": 7, "custom_fields": {"ac_workflow_status": {"step": "pass"}}}]}},
+        {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}},
+        {"item": "service-c", "status": 200,
+         "json": {"count": 2, "results": [{"id": 8}, {"id": 9}], "next_is_terminal": True}},
+    ])
+    assert state == {
+        "complete": True,
+        "found": [{"item": "service-a", "id": 7, "status": {"step": "pass"}}],
+        "missing": ["service-b"], "ambiguous": ["service-c"], "unknown": [],
+    }
+    assert step_results.completion_eligible(True, ["service-a"], [{"item": "service-a", "status": 200}])
+    assert step_results.completion_eligible(True, [], [])
+    assert not step_results.completion_eligible(False, [], [])
+    assert not step_results.completion_eligible(True, ["service-a"], [{"item": "service-a", "status": 500}])
+    assert not step_results.completion_eligible(True, ["service-a"], [])
+
+
+def test_netbox_incomplete_or_malformed_reads_are_unknown_and_never_empty_success():
+    classify = step_results.classify_netbox_results
+    expected = ["service-a", "service-b"]
+    for results in (
+        [{"item": "service-a", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 503, "json": {"count": 0, "results": [], "next_is_terminal": True}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": 1, "results": [], "next_is_terminal": True}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200,
+          "json": {"count": 1, "next_is_terminal": True,
+                   "results": [{"id": 7, "custom_fields": {"ac_workflow_status": 0}}]}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": True, "results": [], "next_is_terminal": True}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": 1, "results": [], "next_is_terminal": False}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+        [{"item": "service-a", "status": 200, "json": {"count": 1, "results": []}},
+         {"item": "service-b", "status": 200, "json": {"count": 0, "results": [], "next_is_terminal": True}}],
+    ):
+        state = classify(expected, results)
+        assert not state["complete"]
+        assert not step_results.completion_eligible(state["complete"], [r["item"] for r in state["found"]], [])
+
+
+def test_failed_or_unknown_netbox_patch_suppresses_completion():
+    eligible = step_results.completion_eligible
+    required = ["service-a", "service-b"]
+    assert eligible(True, required, [{"item": "service-a", "status": 200},
+                                     {"item": "service-b", "status": 200}])
+    assert not eligible(True, required, [{"item": "service-a", "status": 200},
+                                         {"item": "service-b", "status": 500}])
+    assert not eligible(True, required, [{"item": "service-a", "status": 200}])
+    assert not eligible(True, required, [{"item": "service-a", "status": 200},
+                                         {"item": "service-b", "status": 200},
+                                         {"item": "service-b", "status": 200}])
 
 
 def test_conformance_json_body_format_matches_loki_dashboard_extraction():
@@ -239,13 +458,37 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     assert 'key    = "loki.format"' in processor
     assert 'action = "upsert"' in processor
     assert 'value  = "raw"' in processor
-    assert 'value  = "job,service,step,status"' in processor
+    assert 'value  = "job,service,step,status,kind"' in processor
     assert 'logs = [otelcol.exporter.loki.conformance.input]' in processor
 
     dashboard = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
                             "service-conformance.json").read_text())
     expressions = {panel["title"]: panel["targets"][0]["expr"] for panel in dashboard["panels"]}
     assert '| json state_code | unwrap state_code' in expressions["Latest step status by service"]
+    assert "completed_at_seconds" in expressions["Latest workflow completion age"]
+    assert "marker_time_seconds" not in expressions["Latest workflow completion age"]
+    assert "task_id, completed_at_seconds" in expressions["Workflow completion and task provenance"]
+    failure_state = expressions["Current failed step states"]
+    assert failure_state.index("last_over_time") < failure_state.index("== bool 0")
+    assert 'status="fail"' not in failure_state
+    failure_panel = dashboard["panels"][[p["title"] for p in dashboard["panels"]].index(
+        "Recent failed task snapshots")]
+    assert failure_panel["timeFrom"] == "7d"
+    assert failure_panel["targets"][0]["maxLines"] == 100
+    assert failure_panel["targets"][0]["expr"] == (
+        '{job="agent-cloud-conformance", service=~".+", step=~".+", status="fail"} | json | '
+        'line_format "{{.service}}/{{.step}} task={{.task_id}}: '
+        '{{printf \\\"%.180s\\\" .error}}" | keep job, service, step, status'
+    )
+    unicode_boundary = "a" * 179 + "é"
+    assert len(unicode_boundary) == 180 and unicode_boundary[:180].endswith("é")
+    assert len(unicode_boundary.encode("utf-8")[:180].decode("utf-8", errors="ignore")) == 179
+    assert failure_panel["options"]["dedupStrategy"] == "exact"
+    assert "180 Unicode characters" in failure_panel["description"]
+    assert "full original record remains stored" in failure_panel["description"]
+    assert "adjacent returned lines only" in failure_panel["description"]
+    assert "interleaved repeats can remain" in failure_panel["description"]
+    assert "100-line limit still applies" in failure_panel["description"]
     assert '| json |' in expressions["Services not yet run"]
     assert '| unwrap inventory_code' in expressions["Services not yet run"]
     assert "marker_time_seconds" in expressions["Services tracked"]
@@ -254,7 +497,33 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
 def test_groups_map_to_their_hosts_service_name():
     groups = {"all": ["a", "b"], "tududi_svc": ["a"], "step_ca_svc": ["b"], "ungrouped": [], "misc": ["c"]}
     assert step_results.group_services(groups, {"a": "tududi", "b": "step-ca"}) == {
-        "all": "tududi", "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+        "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+
+
+def test_implicit_groups_never_map_to_a_service():
+    groups = {"all": ["a", "b"], "ungrouped": ["a"], "tududi_svc": ["a"]}
+    by_group = step_results.group_services(groups, {"a": "tududi", "b": "step-ca"})
+    assert by_group == {"tududi_svc": "tududi"}
+    # a launch whose target_service fell back to "ungrouped" stays unattributed
+    task = {"environment": json.dumps({"target_service": "ungrouped"})}
+    assert step_results._service_of(task, by_group) is None
+    assert step_results._service_of({"environment": json.dumps({"target_service": "all"})}, by_group) is None
+
+
+def test_a_group_takes_its_service_from_its_first_tracked_host():
+    # a host the collector skipped is absent from host_services; it must not hide a tracked peer
+    host_services = {"tracked": "alpha", "other": "beta"}
+    groups = {
+        "opted_out_first": ["skipped", "tracked"],
+        "opted_out_last": ["tracked", "skipped"],
+        "all_opted_out": ["skipped", "skipped2"],
+        "two_tracked": ["tracked", "other"],
+    }
+    assert step_results.group_services(groups, host_services) == {
+        "opted_out_first": "alpha",
+        "opted_out_last": "alpha",
+        "two_tracked": "alpha",
+    }
 
 
 def test_main_runs_the_three_modes_as_the_collector_calls_them():
@@ -500,7 +769,8 @@ def test_the_collector_passes_the_window_to_the_aggregate():
     assert "'window_full': (_pick.stdout | from_json).window_full" in text
     assert "'retained': _retained" in text
     # the aggregate runs after the NetBox read that supplies what it retains
-    assert text.index('name: "NetBox: sort the lookups"') < text.index('name: "Aggregate: latest result')
+    assert text.index('name: "NetBox: classify complete reads and unique matches"') < text.index(
+        'name: "Aggregate: latest result')
 
 
 def test_the_collector_writes_every_tracked_service():
@@ -522,7 +792,7 @@ def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
     dash = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
                                "service-conformance.json").read_text())
     exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
-    assert 'step!="none"' in exprs["Latest step status by service"]
+    assert 'service=~".+", step=~".+", step!="none"' in exprs["Latest step status by service"]
     assert "last_over_time" in exprs["Latest step status by service"]
     assert '| json state_code | unwrap state_code' in exprs["Latest step status by service"]
     assert 'by (service, step)' in exprs["Latest step status by service"]

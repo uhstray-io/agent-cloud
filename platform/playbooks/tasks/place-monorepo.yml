@@ -49,6 +49,20 @@
     force: true
   when: not (local_mode | default(false) | bool)
 
+- name: "Refuse an rsync that ignores .gitignore on --delete (local mode)"
+  # openrsync (macOS /usr/bin/rsync) does not honour the .gitignore filter on --delete, so it
+  # deletes rendered files the deploy owns (Authentik's blueprints-active), leaving running
+  # containers on stale bind mounts. The check and its remediation message live in one script
+  # the local preflight runs too (scripts/require-gnu-rsync.sh); its stderr is the failure text.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ playbook_dir | dirname | dirname }}/scripts/require-gnu-rsync.sh"
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - local_mode | default(false) | bool
 - name: "Copy working tree into place (local mode)"
   # The playbook's checkout is the only source that can honestly support a
   # branch-specific validation claim. An inventory path could point at a
@@ -57,6 +71,7 @@
   # removes files deleted from it, so a removed deploy input (e.g. a retired
   # blueprint) rots in the clone forever and keeps getting applied. --delete
   # mirrors the source so deletions propagate.
+  # The .gitignore filter below needs GNU rsync 3.x: the refuse task above stops openrsync, which ignores it on --delete.
   #
   # Two classes of file must NOT be deleted, and `--filter=':- .gitignore'` (rsync
   # honours each dir's .gitignore as exclude rules) covers both without us
@@ -75,10 +90,17 @@
   # every local placement. Keep the rule file-specific so future committed
   # alert rules in the same directory still copy into place.
   # No -o/-g (like tar): ownership becomes this uid.
+  #
+  # Changed means a deploy input differs, not that rsync printed a line: -i also lists a
+  # symlink's mode (the read-only checkout mount reports one the copy cannot take, so every
+  # run printed `.L...p`) and a directory's mtime. --omit-dir-times drops the mtimes at the
+  # source; filter_plugins/rsync_itemize.py counts only a transfer, a created or retargeted
+  # link, a deletion, or a mode change on a non-symlink (deploy.sh losing +x). A second local
+  # deploy of an unchanged tree therefore reports no change.
   ansible.builtin.shell: |
     set -euo pipefail
     mkdir -p "{{ _monorepo_dir }}"
-    rsync -rlpti --delete \
+    rsync -rlpti --omit-dir-times --delete \
       --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
       --exclude build/ --exclude '*.egg-info/' \
@@ -93,7 +115,7 @@
     - not ansible_check_mode
     - local_mode | default(false) | bool
   register: _rsync_result
-  changed_when: _rsync_result.stdout | length > 0
+  changed_when: _rsync_result.stdout | rsync_itemize_changed
 
 - name: "Ensure podman + compose entrypoint"
   # Sibling task in this directory; resolves relative to this file. Podman hosts only: a

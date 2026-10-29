@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""Read bounded Prometheus history and report readiness for separate forecast review."""
+
+import json
+import math
+import statistics
+import subprocess
+import sys
+import time
+
+ENGINE = "podman"
+CONTAINER = "o11y-grafana"
+API = "http://prometheus:9090/api/v1/query_range"
+RANGE_SECONDS = 8 * 24 * 60 * 60
+STEP_SECONDS = 5 * 60
+MIN_HISTORY_SECONDS = 7 * 24 * 60 * 60
+MAX_SAMPLE_AGE_SECONDS = 26 * 60 * 60
+MAX_SOURCE_GAP_SECONDS = 36 * 60 * 60
+MAX_METRIC_GAP_SECONDS = 2 * STEP_SECONDS
+MIN_METRIC_POINTS = MIN_HISTORY_SECONDS // STEP_SECONDS + 1
+MIN_SOURCE_EVENTS = 8
+MAX_RESPONSE_BYTES = 2_000_000
+CURL_TIMEOUT_SECONDS = 15
+QUERY_TIMEOUT_SECONDS = 20
+BACKENDS = {"prometheus", "loki", "tempo", "grafana", "pyroscope"}
+FAILURE_REASONS = {
+    "source_series_ambiguous",
+    "source_history_too_short",
+    "malformed_or_incomplete_history",
+    "backend_metrics_unavailable",
+    "host_metric_history_unavailable",
+    "transport_unavailable",
+}
+DIAGNOSTIC_LABEL_KEYS = (
+    "cluster",
+    "component",
+    "environment",
+    "instance",
+    "job",
+    "service",
+    "target_id",
+)
+DIAGNOSTIC_EXCLUDED_LABEL_KEYS = {"__name__", *DIAGNOSTIC_LABEL_KEYS}
+QUERIES = {
+    "source": (
+        'o11y_capacity_sample_timestamp_seconds'
+        '{job="receiver-host",service="o11y/receiver-host"}'
+    ),
+    "backends": (
+        'o11y_backend_stored_bytes'
+        '{job="receiver-host",service="o11y/receiver-host",backend=~"^(prometheus|loki|tempo|grafana|pyroscope)$"}'
+    ),
+    "cpu": (
+        '100 * (1 - avg by (job,instance) '
+        '(rate(node_cpu_seconds_total{job="receiver-host",service="o11y/receiver-host",mode="idle"}[5m])))'
+    ),
+    "memory": (
+        '100 * node_memory_MemAvailable_bytes{job="receiver-host",service="o11y/receiver-host"} '
+        '/ node_memory_MemTotal_bytes{job="receiver-host",service="o11y/receiver-host"}'
+    ),
+    "rootfs": (
+        '100 * node_filesystem_avail_bytes'
+        '{job="receiver-host",service="o11y/receiver-host",mountpoint="/"} '
+        '/ node_filesystem_size_bytes'
+        '{job="receiver-host",service="o11y/receiver-host",mountpoint="/"}'
+    ),
+}
+
+
+class InsufficientHistory(Exception):
+    def __init__(self, reason: str = "malformed_or_incomplete_history") -> None:
+        self.reason = reason if reason in FAILURE_REASONS else "malformed_or_incomplete_history"
+
+
+def require(condition: bool, reason: str = "malformed_or_incomplete_history") -> None:
+    if not condition:
+        raise InsufficientHistory(reason)
+
+
+def parse_matrix(body: object, reason: str = "malformed_or_incomplete_history") -> list[dict]:
+    require(isinstance(body, dict) and body.get("status") == "success", reason)
+    data = body.get("data")
+    require(isinstance(data, dict) and data.get("resultType") == "matrix", reason)
+    result = data.get("result")
+    require(isinstance(result, list) and all(isinstance(row, dict) for row in result), reason)
+    return result
+
+
+def points(series: dict, reason: str = "malformed_or_incomplete_history") -> dict[int, float]:
+    raw = series.get("values")
+    require(isinstance(raw, list), reason)
+    result: dict[int, float] = {}
+    for row in raw:
+        require(isinstance(row, list) and len(row) == 2, reason)
+        try:
+            timestamp, value = int(float(row[0])), float(row[1])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise InsufficientHistory(reason) from exc
+        require(math.isfinite(value) and timestamp not in result, reason)
+        result[timestamp] = value
+    return result
+
+
+def percentile95(values: list[float]) -> float:
+    return statistics.quantiles(values, n=100, method="inclusive")[94]
+
+
+def _canonical_source_events(source_points: dict[int, float]) -> list[tuple[int, int]]:
+    """Apply the assessment's existing duplicate and carried-in event rules."""
+    events: list[tuple[int, int]] = []
+    previous = None
+    for evaluation, value in sorted(source_points.items()):
+        sampled_at = int(value)
+        if sampled_at == previous:
+            continue
+        require(sampled_at <= evaluation)
+        require(not events or sampled_at > events[-1][1])
+        events.append((evaluation, sampled_at))
+        previous = sampled_at
+    if events and events[0][0] - events[0][1] > STEP_SECONDS + 300:
+        events = events[1:]
+    return events
+
+
+def _source_history_thresholds(body: object) -> dict[str, int | None]:
+    """Measure existing history thresholds, or return typed unknowns on bad input."""
+    unavailable: dict[str, int | None] = {
+        "source_evaluation_points": None,
+        "canonical_source_events": None,
+        "source_event_span_seconds": None,
+    }
+    try:
+        rows = parse_matrix(body)
+        if len(rows) != 1:
+            return unavailable
+        if not isinstance(rows[0].get("metric"), dict):
+            return unavailable
+        raw_values = rows[0].get("values")
+        if not isinstance(raw_values, list):
+            return unavailable
+        # The ordinary assessment parser intentionally remains unchanged. These
+        # diagnostics require integral, non-boolean source timestamps so malformed
+        # input cannot be summarized as a plausible zero or healthy count.
+        for point in raw_values:
+            if (
+                not isinstance(point, list)
+                or len(point) != 2
+                or any(isinstance(value, bool) for value in point)
+            ):
+                return unavailable
+            try:
+                evaluation, sampled_at = float(point[0]), float(point[1])
+            except (TypeError, ValueError, OverflowError):
+                return unavailable
+            if (
+                not math.isfinite(evaluation)
+                or not math.isfinite(sampled_at)
+                or int(evaluation) != evaluation
+                or int(sampled_at) != sampled_at
+            ):
+                return unavailable
+
+        source_points = points(rows[0])
+        events = _canonical_source_events(source_points)
+        timestamps = [sampled_at for _, sampled_at in events]
+        return {
+            "source_evaluation_points": len(source_points),
+            "canonical_source_events": len(timestamps),
+            "source_event_span_seconds": timestamps[-1] - timestamps[0] if timestamps else 0,
+        }
+    except (InsufficientHistory, TypeError, ValueError, OverflowError):
+        return unavailable
+
+
+def source_diagnostics(body: object) -> dict[str, object]:
+    """Return fixed-schema aggregate evidence without exposing series labels or values."""
+    history_thresholds = _source_history_thresholds(body)
+    unavailable: dict[str, object] = {
+        "available": False,
+        "source_series_count": None,
+        "label_variation": dict.fromkeys(DIAGNOSTIC_LABEL_KEYS),
+        "unrecognized_label_key_count": None,
+        "series_at_latest_evaluation": None,
+        "overlapping_evaluations": None,
+        "overlapping_source_events": None,
+        **history_thresholds,
+        "required_source_evaluation_points": MIN_METRIC_POINTS,
+        "required_canonical_source_events": MIN_SOURCE_EVENTS,
+        "required_source_event_span_seconds": MIN_HISTORY_SECONDS,
+    }
+    try:
+        rows = parse_matrix(body)
+        metric_rows = [row.get("metric") for row in rows]
+        if not all(isinstance(metric, dict) for metric in metric_rows):
+            return unavailable
+
+        evaluation_sets: list[set[int]] = []
+        event_sets: list[set[int]] = []
+        for row in rows:
+            raw_values = row.get("values")
+            if not isinstance(raw_values, list):
+                return unavailable
+            evaluations: set[int] = set()
+            events: set[int] = set()
+            for point in raw_values:
+                if not isinstance(point, list) or len(point) != 2:
+                    return unavailable
+                try:
+                    evaluation_number = float(point[0])
+                    event_number = float(point[1])
+                    if not math.isfinite(evaluation_number) or not math.isfinite(event_number):
+                        return unavailable
+                    evaluation_timestamp = int(evaluation_number)
+                    event_timestamp = int(event_number)
+                    if evaluation_timestamp != evaluation_number or event_timestamp != event_number:
+                        return unavailable
+                    evaluations.add(evaluation_timestamp)
+                    events.add(event_timestamp)
+                except (TypeError, ValueError, OverflowError):
+                    return unavailable
+            evaluation_sets.append(evaluations)
+            event_sets.append(events)
+
+        label_variation: dict[str, bool | None] = {}
+        for key in DIAGNOSTIC_LABEL_KEYS:
+            if len(metric_rows) < 2:
+                label_variation[key] = None
+                continue
+            # Missing and present are distinct states; values are compared only
+            # in memory and never copied into the diagnostic receipt.
+            states = [(key in metric, metric.get(key)) for metric in metric_rows]
+            label_variation[key] = any(
+                state != states[0] for state in states[1:]
+            )
+
+        evaluation_counts: dict[int, int] = {}
+        event_counts: dict[int, int] = {}
+        for evaluations, events in zip(evaluation_sets, event_sets, strict=True):
+            for timestamp in evaluations:
+                evaluation_counts[timestamp] = evaluation_counts.get(timestamp, 0) + 1
+            for timestamp in events:
+                event_counts[timestamp] = event_counts.get(timestamp, 0) + 1
+        latest_evaluation = max(evaluation_counts, default=None)
+        unknown_label_keys = {
+            key
+            for metric in metric_rows
+            for key in metric
+            if key not in DIAGNOSTIC_EXCLUDED_LABEL_KEYS
+        }
+        return {
+            "available": True,
+            "source_series_count": len(rows),
+            "label_variation": label_variation,
+            "unrecognized_label_key_count": len(unknown_label_keys),
+            "series_at_latest_evaluation": (
+                evaluation_counts[latest_evaluation] if latest_evaluation is not None else 0
+            ),
+            "overlapping_evaluations": sum(count > 1 for count in evaluation_counts.values()),
+            "overlapping_source_events": sum(count > 1 for count in event_counts.values()),
+            **history_thresholds,
+            "required_source_evaluation_points": MIN_METRIC_POINTS,
+            "required_canonical_source_events": MIN_SOURCE_EVENTS,
+            "required_source_event_span_seconds": MIN_HISTORY_SECONDS,
+        }
+    except InsufficientHistory:
+        return unavailable
+
+
+def assess(responses: dict[str, object], now: int) -> dict:
+    source_rows = parse_matrix(responses.get("source"))
+    require(len(source_rows) > 0, "source_history_too_short")
+    require(len(source_rows) == 1, "source_series_ambiguous")
+    source_points = points(source_rows[0])
+    require(len(source_points) >= MIN_METRIC_POINTS, "source_history_too_short")
+    source_events = _canonical_source_events(source_points)
+    timestamps = [sampled_at for _, sampled_at in source_events]
+    require(
+        len(timestamps) >= MIN_SOURCE_EVENTS
+        and timestamps[-1] - timestamps[0] >= MIN_HISTORY_SECONDS,
+        "source_history_too_short",
+    )
+    require(now - timestamps[-1] <= MAX_SAMPLE_AGE_SECONDS and timestamps[-1] <= now + 300)
+    require(max(b - a for a, b in zip(timestamps, timestamps[1:], strict=False)) <= MAX_SOURCE_GAP_SECONDS)
+
+    backend_rows = parse_matrix(responses.get("backends"), "backend_metrics_unavailable")
+    backend_points: dict[str, dict[int, float]] = {}
+    for row in backend_rows:
+        metric = row.get("metric")
+        require(isinstance(metric, dict), "backend_metrics_unavailable")
+        name = metric.get("backend")
+        require(name in BACKENDS and name not in backend_points, "backend_metrics_unavailable")
+        backend_points[name] = points(row, "backend_metrics_unavailable")
+    require(set(backend_points) == BACKENDS, "backend_metrics_unavailable")
+
+    # Each changed source timestamp must have all five byte gauges at the same
+    # Prometheus evaluation, proving the values came from that complete file write.
+    sample_values: dict[str, list[float]] = {name: [] for name in BACKENDS}
+    for evaluation, sampled_at in source_events:
+        require(0 <= evaluation - sampled_at <= STEP_SECONDS + 300, "backend_metrics_unavailable")
+        for name in BACKENDS:
+            value = backend_points[name].get(evaluation)
+            require(value is not None and value >= 0, "backend_metrics_unavailable")
+            sample_values[name].append(value)
+    require(
+        all(len(values) == len(timestamps) for values in sample_values.values()),
+        "backend_metrics_unavailable",
+    )
+
+    observations: dict[str, object] = {}
+    for key in ("cpu", "memory", "rootfs"):
+        rows = parse_matrix(responses.get(key), "host_metric_history_unavailable")
+        require(len(rows) == 1, "host_metric_history_unavailable")
+        values = points(rows[0], "host_metric_history_unavailable")
+        times = sorted(values)
+        require(
+            len(times) >= MIN_METRIC_POINTS and times[-1] - times[0] >= MIN_HISTORY_SECONDS,
+            "host_metric_history_unavailable",
+        )
+        require(now - times[-1] <= MAX_METRIC_GAP_SECONDS, "host_metric_history_unavailable")
+        require(
+            max(b - a for a, b in zip(times, times[1:], strict=False)) <= MAX_METRIC_GAP_SECONDS,
+            "host_metric_history_unavailable",
+        )
+        numbers = [values[timestamp] for timestamp in times]
+        require(all(0 <= value <= 100 for value in numbers), "host_metric_history_unavailable")
+        observation = {
+            "points": len(numbers),
+            "observed_p95_percent": round(percentile95(numbers), 2),
+            "observed_min_percent": round(min(numbers), 2),
+        }
+        if key == "cpu":
+            observation["p95_method"] = "p95_of_evaluated_five_minute_means"
+        observations[key] = observation
+
+    return {
+        "status": "ready_for_separate_forecast_review",
+        "source_diagnostics": source_diagnostics(responses.get("source")),
+        "history": {
+            "source_samples": len(timestamps),
+            "source_span_seconds": timestamps[-1] - timestamps[0],
+            "latest_sample_age_seconds": now - timestamps[-1],
+            "maximum_source_gap_seconds": max(
+                b - a for a, b in zip(timestamps, timestamps[1:], strict=False)
+            ),
+            "evaluation_step_seconds": STEP_SECONDS,
+        },
+        "receiver_host_observations": observations,
+        "backend_stored_bytes": {
+            name: {
+                "source_samples": len(values),
+                "first_bytes": int(values[0]),
+                "last_bytes": int(values[-1]),
+                "change_bytes": int(values[-1] - values[0]),
+            }
+            for name, values in sorted(sample_values.items())
+        },
+    }
+
+
+def query(metric: str, start: int, end: int) -> object:
+    proc = subprocess.run(
+        [
+            ENGINE, "exec", CONTAINER, "curl", "-fsS", "--max-time", str(CURL_TIMEOUT_SECONDS), "--get",
+            "--data-urlencode", f"query={QUERIES[metric]}",
+            "--data-urlencode", f"start={start}",
+            "--data-urlencode", f"end={end}",
+            "--data-urlencode", f"step={STEP_SECONDS}",
+            API,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=QUERY_TIMEOUT_SECONDS,
+    )
+    if proc.returncode != 0 or len(proc.stdout.encode("utf-8")) > MAX_RESPONSE_BYTES:
+        raise InsufficientHistory("transport_unavailable")
+    return json.loads(proc.stdout)
+
+
+def main() -> int:
+    responses: dict[str, object] = {}
+    try:
+        end = int(time.time())
+        start = end - RANGE_SECONDS
+        for key in QUERIES:
+            responses[key] = query(key, start, end)
+        receipt = assess(responses, end)
+    except InsufficientHistory as exc:
+        reason = exc.reason
+    except (OSError, subprocess.TimeoutExpired):
+        reason = "transport_unavailable"
+    except (ValueError, KeyError, TypeError, OverflowError, json.JSONDecodeError):
+        reason = "malformed_or_incomplete_history"
+    else:
+        print(json.dumps(receipt, sort_keys=True))
+        return 0
+    print(
+        json.dumps(
+            {
+                "status": "insufficient",
+                "reason": reason,
+                "source_diagnostics": source_diagnostics(responses.get("source")),
+            },
+            sort_keys=True,
+        )
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

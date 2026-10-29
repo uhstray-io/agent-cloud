@@ -75,9 +75,14 @@ admins, project members whose role can run tasks, those users' API tokens, and i
 (incoming webhooks, which copy payload values into the task environment).
 
 **Manage Semaphore Access** holds all four to a declaration: `semaphore_project_members`
-(username to role, the whole team) and `semaphore_admin_users`, both in the private
-inventory's top-level `all.vars` (the play runs on implicit `localhost`, which receives no
-group's vars; `promote-semaphore-admins.yml` reads `semaphore_admin_users` the same way). Run it
+(username to role, the whole team) and the admin roster, all in the private inventory's
+top-level `all.vars` (the play runs on implicit `localhost`, which receives no group's vars;
+`promote-semaphore-admins.yml` reads them the same way). The admin roster is derived, never
+hand-granted: every `platform_admins` entry (the administrator list the Authentik deploy
+renders into `platform-admins`) except the service account, plus `semaphore_admin_users` for
+Semaphore-only admins such as the local bootstrap account. A platform admin's first SSO sign-in
+creates a plain account; **Promote Semaphore Admins** then grants the flag and reads it back,
+and the access report names each declared admin still to promote (issue #604). Run it
 under check mode first; the report lists the live team, admins and integrations by name. A real
 run adds declared accounts, sets declared roles, removes undeclared members and reads the team
 back; a declaration naming an account that does not exist stops it before any write. It never demotes a system admin or deletes an integration: each is named and fails the
@@ -103,6 +108,7 @@ scripted path exist and are recorded here so it is built once, deliberately:
    inside the controller (see the publisher section). A workstation token is an
    operator-held value — provisioned into the workstation environment, never
    into a repo, a survey parameter or a launch argument.
+
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
    as a JSON string of the survey values. Semaphore v2.17.31 merges EVERY key of that
@@ -119,16 +125,98 @@ scripted path exist and are recorded here so it is built once, deliberately:
    shape is unverified, allows only the template's declared survey fields, fills a
    declared field left unset with its declared `default_value` as the web form does,
    and refuses while the template already has a running task, all before the POST.
+   Survey fields declared `integer` or `int` are sent as JSON integers, including
+   string defaults. Use canonical decimal `--set` values such as `limit=0`,
+   `limit=42`, or `offset=-7`; leading zeros, negative zero, a plus sign,
+   whitespace, decimals, and exponent notation are refused before submission
+   with the field name only. String and enum survey values remain strings.
    Its read-back-and-stop after the POST is only a tripwire for a changed server; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
    the `/api/project/{id}/...` prefix the committed playbooks already use;
    confirm against the running version before scripting.
 
-Until an operator token is provisioned, the honest state is: **operator launches
-from the UI; the agent hands over the exact template name, survey values and the
-verification commands.** Do not fabricate access by reading the controller's own
-token out of OpenBao from a workstation.
+### Operator token rotation
+
+`scripts/semaphore-rotate-token.py` rotates the calling user's workstation token.
+It reads the current backup only from stdin; the mode-`0600` recovery state
+holds both token values until revocation is confirmed, then is removed. The
+replacement is written atomically to the local backup with mode `0600`. The
+command requires the authenticated server's
+`/api/info` version to be exactly `2.19.11`, the version whose token create,
+list, and prefix-delete behavior this workflow has reviewed. It refuses
+wildcard-bearing or ambiguous token IDs and rechecks the complete user-token
+inventory before deletion. It never prints a token or ID prefix.
+
+Run the script from a reviewed checkout after publishing the Dev-bound
+`Rotate Semaphore Operator Token (Dev)` template and provisioning its isolated
+environment. Keep the old token file unchanged as stdin until the command
+completes. Example shape (replace only the non-secret values and file paths):
+
+```sh
+python3 scripts/semaphore-rotate-token.py \
+  --url https://semaphore.example \
+  --project 1 \
+  --expected-user-id 1 \
+  --inventory 1 \
+  --backup "$HOME/.config/semaphore/operator-token" \
+  --state "$HOME/.config/semaphore/operator-token.rotation" \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+The command verifies the replacement token, runs the guarded Dev playbook, and
+replaces the workstation backup before it attempts to revoke the old token. The
+playbook updates `secret/services/semaphore:api_token` only when its protected
+current value exactly matches the old operator token; a different controller
+token stays unchanged. The state file makes acknowledged create and later steps
+resumable, including a retry after the backup already contains the replacement.
+If the create request has an unknown outcome, the state
+file blocks another create because the API does not return an existing token's
+full value; reconcile that inventory manually before starting a new rotation.
+The command holds a private local lock beside the backup and rechecks the
+inventory before revocation. Run it during an exclusive token-change window:
+the API has no server-side compare-and-delete, so another operator changing
+tokens outside this command cannot honor the local lock.
+
+### Getting your own operator token
+
+Every operator mints their own token, under their own Semaphore account, so each
+launch is attributed to the person who made it (issue #741). Nobody hands out a
+token, and nobody uses another account's token.
+
+1. **Be declared.** An administrator is an entry in `platform_admins`; any other
+   operator is an entry in `semaphore_project_members` (username to role). Both are
+   in site-config's top-level `all.vars`, so access changes through a reviewed diff. Someone
+   who can launch these templates can override the declaration with an extra var, but launch
+   rights are already runner rights (above), so that grants nothing they did not hold.
+2. **Sign in once** at the controller in a browser, through SSO. The browser passes
+   the Cloudflare challenge that blocks a scripted `/api/auth/login`. The first
+   sign-in creates a plain account that belongs to no project.
+3. **An admin converges access.** For an administrator, **Promote Semaphore Admins (Dev)**
+   sets the admin flag and reads it back. For any other operator, **Manage Semaphore
+   Access (Dev)** adds the declared membership; run it under check mode first. Until
+   one of these runs, the account sees only the **New project** button (issue #604).
+4. **Mint the token.** In the user menu, open **API Tokens** (`/tokens`) and choose
+   **New Token**. The page is open to every signed-in user, not only admins
+   (Semaphore v2.19.11 `web/src/App.vue`, `web/src/views/Tokens.vue`); it calls
+   `POST /api/user/tokens` for your own account.
+5. **Store it** at `~/.config/semaphore/operator-token`, mode `0600`, and pass it on
+   stdin only. A request that carries an `Authorization` header passes the edge's
+   WAF skip rule, so `scripts/semaphore-launch.py` works from the workstation.
+
+`site-config/secrets/semaphore/semaphore_api_token.txt` holds the bootstrap `admin`
+account's token, as recovery material. It is not anyone's daily operator token.
+Rotate your own token with `scripts/semaphore-rotate-token.py` (above).
+
+When the bootstrap `admin` token is rotated, the recovery copy is part of the same change.
+The rotation script updates only the `--backup` file it is given, never site-config. Once the
+script finishes, open a site-config PR that replaces the recovery copy with the new value
+(check it first with `GET /api/user`), or deletes the file. A rotation that skipped this
+left the copy revoked and sent an operator down a dead path (`docs/MISTAKES.md` 10.31).
+
+Without a token, the operator launches from the UI and the agent hands over the
+exact template name, survey values and verification commands. Do not fabricate
+access by reading the controller's own token out of OpenBao from a workstation.
 
 ## Two catalog rules, enforced by tests
 
@@ -251,6 +339,11 @@ An environment provisioned before 2026-09-25 carries an `openbao_addr` pin. Publ
 refuses it until **Provision Seed Environment** runs again, which removes the pin and keeps
 the AppRole inputs.
 
+If a task launch fails with `cannot decrypt access key, perhaps encryption key was changed`,
+Semaphore's encryption key changed under existing inputs. Run **Provision Seed Environment**
+for that seed template with `seed_replace_auth=true`: it overwrites the two AppRole inputs in
+place from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
+
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
    with `seed_template` set to the declared base name, plus the verified
    `semaphore_project_id`, `semaphore_inventory_id` and `semaphore_source_environment_id`
@@ -325,6 +418,7 @@ The projection is a local copy, not a new source of truth.
 | Survey readback or repository binding fails | Stop; inspect the declared and live values before another write |
 | A token that just worked gets an empty-body 401 on every endpoint, and the UI login says "Failed to create session" | Semaphore's own database before the credential. `api/auth.go` (v2.19.11) answers any error from the token or user lookup with 401, so a stopped Postgres reads exactly like a revoked token. Check the Postgres container and the host's disk. That check needs recovery access to the Semaphore host, which requires the operator's authorization |
 | A task fails within milliseconds, with no output and no checked-out commit | The Semaphore host (disk, runner) before the task's own inputs |
+| `Unable to parse /tmp/semaphore/project_<n>/inventory_<id>.yml`, or `The inventory could not be parsed or contained no hosts` | Concurrent tasks share that one inventory file and the first to finish removes it before another has parsed it (prod task 3878 on 2026-10-09; local tasks 5583 and 5585 on 2026-10-12). Re-run the task on its own, and do not launch it at a scheduled collector minute (the conformance collector runs every 15 minutes). `tasks/runtime-access.yml` checks the inventory first whenever the run was given one with `-i`, as every Semaphore task is, so a lost file now fails with this message and not with "Refusing to send secret material … invalid endpoint". An operator-side tool started with no `-i` is not asked for an inventory |
 
 The 2026-09-26 outage matched both rows: the host's 15 GB root filesystem filled, and
 Postgres exited at 22:41:59 UTC when WAL recovery could not extend a file. Growing

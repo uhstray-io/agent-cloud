@@ -1,0 +1,230 @@
+---
+# restore-plane-db.yml — DESTRUCTIVE: overwrite Plane's database with a named pg_dump.
+# The paired backup is backup-plane-db.yml. Modelled on restore-n8n-db.yml.
+#
+# The dump file is REQUIRED and EXPLICIT (-e plane_dump_file=<path>) — never "the latest one",
+# which two runs a minute apart would resolve differently.
+#
+# Sequence: stop every Plane service that talks to the database (the four data stores stay up)
+# -> load the dump into a fresh STAGING database (--single-transaction, ON_ERROR_STOP) -> only
+# on success, swap staging into place, keeping the prior live database as plane_prev until the
+# NEXT restore -> in an `always:` block, bring the whole stack back through deploy.sh with a
+# forced recreate. That reruns Plane's migrator, which lifts an older dump to the running
+# release, and keeps the proxy held if the restored instance is not set up. The live database
+# is never dropped before the dump has provably loaded: a failed restore leaves the data intact
+# AND the service running.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: plane_svc
+    preflight_group_expected: plane_svc
+
+- name: "Restore the Plane database from a named dump"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # Fixed in compose.agentcloud.yml; the role and database come from env.j2's DATABASE_URL.
+    _pg_container: plane-db
+    _db_user: plane
+    _db_name: plane
+    _staging_db: plane_restore_staging
+    _prev_db: plane_prev
+    # The data stores stay up; every other Plane service is stopped for the swap.
+    _data_services: [plane-db, plane-redis, plane-mq, plane-minio]
+
+  tasks:
+    - name: "Require an explicit dump file"
+      ansible.builtin.assert:
+        that:
+          - plane_dump_file is defined
+          - plane_dump_file | length > 0
+        fail_msg: >-
+          Pass -e plane_dump_file=<path> explicitly (backup-plane-db.yml's report names it).
+          This play never guesses "the latest dump".
+        quiet: true
+
+    - name: "Assert the dump exists and is non-empty"
+      ansible.builtin.stat:
+        path: "{{ plane_dump_file }}"
+      register: _dump
+      failed_when: not _dump.stat.exists or _dump.stat.size == 0
+
+    # Before anything is stopped: a truncated dump keeps its header and loads without error,
+    # silently losing every table after the cut, and would then become the live database.
+    - name: "Assert the dump is complete (pg_dump completion trailer)"
+      ansible.builtin.command:
+        argv: ["grep", "-qxF", "-e", "-- PostgreSQL database dump complete", "{{ plane_dump_file }}"]
+      changed_when: false
+      check_mode: false
+
+    - name: "Assert the Postgres container is running"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", "inspect", "--format", "{{ '{{.State.Running}}' }}", "{{ _pg_container }}"]
+      register: _pg_state
+      changed_when: false
+      failed_when: _pg_state.rc != 0 or _pg_state.stdout != 'true'
+      check_mode: false
+
+    # Engine-neutral: names from ps, each one's compose service from a single inspect, the same
+    # labels common.sh reads (docker's ps exposes .Labels as a string, podman's as a map).
+    - name: "List Plane's running containers"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", ps, --filter, label=com.docker.compose.project=plane, --format, "{{ '{{.Names}}' }}"]
+      register: _running_names
+      changed_when: false
+      check_mode: false
+
+    - name: "Read each running container's compose service"
+      ansible.builtin.command:
+        argv: "{{ [_engine, 'inspect', '--format', '{{.Name}} {{index .Config.Labels \"com.docker.compose.service\"}}'] + _running_names.stdout_lines }}"
+      register: _running
+      changed_when: false
+      check_mode: false
+      when: _running_names.stdout_lines | length > 0
+
+    - name: "Choose the services to stop (everything but the data stores)"
+      ansible.builtin.set_fact:
+        _app_pairs: >-
+          {{ (_running.stdout_lines | default([])) | map('regex_replace', '^/', '')
+             | map('split', ' ') | rejectattr(1, 'in', _data_services) | list }}
+
+    # A selection that matches nothing would leave the API connected to the live database and
+    # fail only at the swap; refuse before anything changes.
+    - name: "Refuse an empty stop selection, or one without the API"
+      ansible.builtin.assert:
+        that:
+          - _app_pairs | length > 0
+          - "'api' in (_app_pairs | map(attribute=1) | list)"
+        fail_msg: >-
+          No running Plane API container was found under the compose project `plane`, so the
+          services using the database cannot be stopped safely. Deploy Plane first.
+        quiet: true
+
+    - name: "Restore with the app stopped; ALWAYS bring the stack back"
+      block:
+        - name: "Stop every Plane service that talks to the database"
+          ansible.builtin.command:
+            argv: "{{ [_engine, 'stop'] + (_app_pairs | map(attribute=0) | list) }}"
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Recreate the staging database"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "{{ _pg_container }}"
+              - psql
+              - "-U"
+              - "{{ _db_user }}"
+              - "-d"
+              - postgres
+              - "-c"
+              - "DROP DATABASE IF EXISTS {{ _staging_db }} WITH (FORCE);"
+              - "-c"
+              - "CREATE DATABASE {{ _staging_db }} OWNER {{ _db_user }};"
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Restore the dump into staging (single transaction, stop on first error)"
+          # stdin comes from the host file; the dump never enters the run record. A failure
+          # here leaves the LIVE database untouched. The dump path arrives as a survey string,
+          # so every interpolation is shell-quoted.
+          ansible.builtin.shell: >-
+            {{ _engine | quote }} exec -i {{ _pg_container | quote }}
+            psql -U {{ _db_user | quote }} -d {{ _staging_db | quote }}
+            -v ON_ERROR_STOP=1 --single-transaction
+            < {{ plane_dump_file | quote }} > /dev/null
+          changed_when: true
+          when: not ansible_check_mode
+
+        # Nothing may still be connected to the live database: a rename would fail on it, and
+        # by then the previous safety copy would already be gone. Checked before any DROP.
+        - name: "Refuse the swap while anything is connected to {{ _db_name }}"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "{{ _pg_container }}"
+              - psql
+              - "-U"
+              - "{{ _db_user }}"
+              - "-d"
+              - postgres
+              - "-tAc"
+              - "SELECT count(*) FROM pg_stat_activity WHERE datname = '{{ _db_name }}';"
+          register: _live_sessions
+          changed_when: false
+          failed_when: _live_sessions.rc != 0 or (_live_sessions.stdout | trim) != '0'
+          when: not ansible_check_mode
+
+        # Only reached when the dump fully loaded and nothing is connected. DROP DATABASE refuses
+        # a transaction block, so the old safety copy is dropped on its own; the two renames run
+        # as ONE transaction (ALTER DATABASE ... RENAME is transactional), so the live name
+        # never goes missing between them.
+        - name: "Drop the previous safety copy ({{ _prev_db }})"
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, "{{ _pg_container }}", psql, "-U", "{{ _db_user }}", "-d", postgres,
+                   "-v", "ON_ERROR_STOP=1", "-c", "DROP DATABASE IF EXISTS {{ _prev_db }} WITH (FORCE);"]
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Swap staging into place in one transaction (prior live database kept as {{ _prev_db }})"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - "{{ _pg_container }}"
+              - psql
+              - "-U"
+              - "{{ _db_user }}"
+              - "-d"
+              - postgres
+              - "-1"
+              - "-v"
+              - "ON_ERROR_STOP=1"
+              - "-c"
+              - "ALTER DATABASE {{ _db_name }} RENAME TO {{ _prev_db }};"
+              - "-c"
+              - "ALTER DATABASE {{ _staging_db }} RENAME TO {{ _db_name }};"
+          changed_when: true
+          when: not ansible_check_mode
+
+      always:
+        # Through the deploy's own lifecycle: the migrator runs first, the API must report
+        # healthy, and the proxy opens only if the restored instance is set up.
+        - name: "Bring the stack back (forced recreate through deploy.sh)"
+          ansible.builtin.shell: |
+            cd {{ _deploy_dir | quote }}
+            bash deploy.sh --no-pull
+          environment:
+            CONTAINER_ENGINE: "{{ _engine }}"
+            LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+            COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+            FORCE_RECREATE: "true"
+          register: _restart
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Show deploy.sh output"
+          ansible.builtin.debug:
+            var: _restart.stdout_lines
+          when: not ansible_check_mode
+
+    - name: "Report"
+      when: not ansible_check_mode
+      ansible.builtin.debug:
+        msg: >-
+          Restored {{ _db_name }} in {{ _pg_container }} from {{ plane_dump_file }}, and the stack
+          came back through deploy.sh. The pre-restore database is kept as {{ _prev_db }} until the
+          next restore drops it.{{ ' The restored instance is not set up, so the proxy is held: run Deploy Plane.' if ('PLANE_PROXY_HELD=true' in (_restart.stdout_lines | default([]))) else '' }}

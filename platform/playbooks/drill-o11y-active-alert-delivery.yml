@@ -1,7 +1,8 @@
 ---
 # Production-only drill against the already-active alert/contact baseline. It
-# adds one uniquely labeled failed scrape, reuses the common firing/Discord
-# receipt probe, then removes only that scrape and reloads Prometheus.
+# adds two failed scrape targets sharing one service label, reuses the common
+# firing/Discord receipt probe, then removes only its generated scrape and
+# reloads Prometheus. An interruption marker enables that cleanup after a halt.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -61,6 +62,8 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
     _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
+    _drill_cluster: "{{ o11y_cluster | default('agent-cloud-local') }}"
+    _drill_environment: "{{ o11y_environment | default('prod') }}"
     expected_service: "{{ _probe }}"
     expected_instance: 127.0.0.1:65535
   tasks:
@@ -126,6 +129,10 @@
         that: not _active_drill_scrape.stat.exists
         fail_msg: "The active-drill scrape file already exists; use Recover o11y Active Alert Drill (Dev)."
 
+    - name: Validate previous expected-target ownership before the production drill
+      ansible.builtin.include_tasks: tasks/o11y-prepare-expected-target-transition.yml
+      no_log: true
+
     - name: Read the active production service-down rule
       ansible.builtin.command:
         argv:
@@ -140,6 +147,7 @@
       register: _active_service_down_rule
       changed_when: false
       check_mode: false
+      no_log: true
 
     - name: Require exactly one active service-down rule
       ansible.builtin.assert:
@@ -147,6 +155,7 @@
           - (_active_service_down_rule.stdout | from_json).uid == 'o11y_service_down'
           - not ((_active_service_down_rule.stdout | from_json).isPaused | bool)
         fail_msg: "The production service-down alert must already be active; no fault was injected."
+      no_log: true
 
     - name: Read every provisioned o11y alert rule before the drill
       ansible.builtin.command:
@@ -162,17 +171,19 @@
       register: _active_o11y_rules
       changed_when: false
       check_mode: false
+      no_log: true
 
-    - name: Require all provisioned o11y rules to remain active
-      ansible.builtin.assert:
-        that:
-          - _drill_rules | length > 0
-          - _drill_rules | selectattr('isPaused', 'defined') | list | length == _drill_rules | length
-          - _drill_rules | selectattr('isPaused', 'equalto', false) | list | length == _drill_rules | length
-          - _drill_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
-        fail_msg: "Every production o11y rule must be active before the drill; no fault was injected."
+    - name: Validate active target rules and retired tombstones
+      ansible.builtin.include_tasks: tasks/o11y-validate-active-expected-target-rules.yml
+      no_log: true
       vars:
-        _drill_rules: "{{ _active_o11y_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+        o11y_live_expected_rules_json: "{{ _active_o11y_rules.stdout }}"
+
+    - name: Require the provisioned alert pause baseline before the drill
+      ansible.builtin.include_tasks: tasks/o11y-assert-provisioned-rule-pause-baseline.yml
+      no_log: true
+      vars:
+        o11y_live_alert_rules_json: "{{ _active_o11y_rules.stdout }}"
 
     - name: Read active production contacts without displaying webhook settings
       ansible.builtin.command:
@@ -232,9 +243,9 @@
       changed_when: true
       when: not ansible_check_mode
 
-    - name: Add one failed scrape and prove the active rule reaches Discord
+    - name: Add grouped failed scrapes and prove the active rule reaches Discord
       block:
-        - name: Add only the unique production failed-scrape target
+        - name: Add only the two unique production failed-scrape targets
           ansible.builtin.copy:
             dest: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-alert-drill.yml"
             mode: "0644"
@@ -242,9 +253,11 @@
               scrape_configs:
                 - job_name: o11y-production-active-alert-drill
                   static_configs:
-                    - targets: ["127.0.0.1:65535"]
+                    - targets: ["127.0.0.1:65534", "127.0.0.1:65535"]
                       labels:
                         service: "{{ _probe }}"
+                        cluster: "{{ _drill_cluster }}"
+                        environment: "{{ _drill_environment }}"
 
         - name: Reload Prometheus to include the failed-scrape target
           ansible.builtin.command:
@@ -258,6 +271,10 @@
             o11y_production_static_probe: true
             drill_expect_alert: true
             o11y_alerts_enabled: true
+            o11y_probe_expected_instances:
+              - 127.0.0.1:65534
+              - 127.0.0.1:65535
+            o11y_grouped_probe: true
       always:
         - name: Recover and verify the active alert baseline
           ansible.builtin.include_tasks: tasks/o11y-recover-active-alert-drill.yml

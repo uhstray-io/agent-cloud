@@ -1,0 +1,265 @@
+---
+# Render both private-inventory candidates and prove their Alloy component load
+# behavior in bounded temporary containers with no socket, network, or volumes.
+# The private inventory revision is not exposed by a trusted source here; receipts
+# report it as unverified and fingerprint rendered config bytes for later comparison.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed public checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/verify-o11y-profile-candidates.py
+      - platform/services/o11y/deployment/templates/config.alloy.j2
+
+- name: Require reviewed public revision and receiver scope
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _profile_receivers: "{{ groups.get('o11y_svc', []) }}"
+    _profile_internal_overrides:
+      - local_mode
+      - container_engine
+      - podman_rootful
+      - ansible_python_interpreter
+      - ansible_connection
+      - ansible_host
+      - ansible_user
+      - ansible_port
+      - ansible_become
+      - become
+      - ansible_become_user
+      - become_user
+      - ansible_become_method
+      - become_method
+      - ansible_become_flags
+      - become_flags
+      - estate_coverage_inventory
+      - o11y_availability_probes_enabled
+      - o11y_availability_probes_reviewed
+      - o11y_availability_probe_limits
+      - local_monorepo_dir
+      - monorepo_deploy_path
+      - ansible_remote_tmp
+    _profile_forged_names: "{{ _profile_internal_overrides | intersect('' | extra_var_names) }}"
+  tasks:
+    - name: Require one exact Dev receiver and reviewed public revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _profile_receivers | length == 1
+          - _profile_forged_names | length == 0
+          - not (hostvars[_profile_receivers | first].local_mode | default(false) | bool)
+          - hostvars[_profile_receivers | first].container_engine | default('') == 'podman'
+          - not (hostvars[_profile_receivers | first].podman_rootful | default(false) | bool)
+        fail_msg: >-
+          The profile preflight requires one rootless Dev receiver and the reviewed public revision.
+        quiet: true
+
+- name: Require the exact Dev receiver group
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Render and verify both profile candidates
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars_files:
+    - vars/o11y-metric-labels.yml
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _profile_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _profile_deploy_dir: "{{ _profile_monorepo_dir }}/{{ monorepo_deploy_path | default('') }}"
+    _deploy_dir: "{{ _profile_deploy_dir }}"
+    _profile_candidate_refusals:
+      - candidate_invalid
+      - image_unavailable
+      - image_unpinned
+      - container_start_failed
+      - component_status_unavailable
+      - component_status_invalid
+      - component_unhealthy
+      - image_mismatch
+      - cleanup_failed
+  tasks:
+    - name: Require the reviewed o11y deployment path before source probes
+      ansible.builtin.assert:
+        that:
+          - monorepo_deploy_path | default('') == 'platform/services/o11y/deployment'
+          - _profile_deploy_dir == _profile_monorepo_dir ~ '/platform/services/o11y/deployment'
+        fail_msg: >-
+          The profile verifier requires the inventory's fixed o11y deployment path before reading source state.
+        quiet: true
+
+    - name: Mark check-mode results unverified
+      ansible.builtin.debug:
+        msg:
+          status: check_mode_unverified
+          public_revision: "{{ expected_repository_sha }}"
+          private_revision: unverified
+          reason: "Check mode skips candidate rendering and container validation."
+      changed_when: false
+      when: ansible_check_mode
+
+    - name: Require receiver tmpfs for bounded candidate files
+      ansible.builtin.import_tasks: tasks/require-tmpfs-remote-tmp.yml
+      when: not ansible_check_mode
+
+    - name: Prepare the reviewed availability source projection for profile candidates
+      ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
+      when: not ansible_check_mode
+
+    - name: Allocate a private tmpfs workspace
+      ansible.builtin.tempfile:
+        state: directory
+        path: /dev/shm/ansible-tmp
+        prefix: o11y-profile-candidate-
+      register: _profile_tmp
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Render, validate, report, and remove temporary candidates
+      when: not ansible_check_mode
+      block:
+        - name: Render disabled and enabled candidates from the reviewed template
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/config.alloy.j2"
+            dest: "{{ _profile_tmp.path }}/{{ item.name }}.alloy"
+            mode: "0600"
+          loop:
+            - { name: disabled, enabled: false }
+            - { name: enabled, enabled: true }
+          loop_control:
+            label: "{{ item.name }} candidate"
+          vars:
+            o11y_alloy_profile_pilot_enabled: "{{ item.enabled }}"
+          no_log: true
+
+        - name: Copy the reviewed bounded candidate verifier into tmpfs
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/files/verify-o11y-profile-candidates.py"
+            dest: "{{ _profile_tmp.path }}/verify.py"
+            mode: "0700"
+          no_log: true
+
+        - name: Read candidate bytes without displaying them
+          ansible.builtin.slurp:
+            src: "{{ _profile_tmp.path }}/{{ item }}.alloy"
+          loop: [disabled, enabled]
+          register: _profile_candidate_files
+          no_log: true
+
+        - name: Run the no-pull, no-network pinned Alloy candidate checks
+          ansible.builtin.command:
+            argv: [python3, "{{ _profile_tmp.path }}/verify.py"]
+            stdin: >-
+              {{ {'disabled': (_profile_candidate_files.results[0].content | b64decode),
+                  'enabled': (_profile_candidate_files.results[1].content | b64decode),
+                  'profile_address': ('127.0.0.1:12345' if (_o11y_availability.enabled | default(false) | bool) else 'alloy:12345')} | to_json }}
+            stdin_add_newline: false
+          register: _profile_raw_receipt
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Validate candidate receipt JSON without displaying verifier output
+          ansible.builtin.command:
+            argv: [python3, -c, "import json,sys; json.load(sys.stdin)"]
+            stdin: "{{ _profile_raw_receipt.stdout | default('', true) }}"
+            stdin_add_newline: false
+          register: _profile_receipt_json_check
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Require verifier stdout to contain valid JSON
+          ansible.builtin.assert:
+            that:
+              - _profile_raw_receipt.stdout is defined
+              - (_profile_raw_receipt.stdout | default('', true) | length) > 0
+              - _profile_receipt_json_check.rc == 0
+            fail_msg: "The Alloy profile candidate verifier did not return a valid JSON receipt."
+            quiet: true
+
+        - name: Parse the fixed sanitized candidate receipt
+          ansible.builtin.set_fact:
+            _profile_receipt: "{{ _profile_raw_receipt.stdout | from_json }}"
+          no_log: true
+
+        - name: Require verifier success or an expected sanitized refusal
+          ansible.builtin.assert:
+            that:
+              - >-
+                _profile_raw_receipt.rc == 0 or
+                (_profile_receipt is mapping and
+                 _profile_receipt.get('status', '') == 'unavailable' and
+                 _profile_receipt.get('reason', '') in _profile_candidate_refusals)
+            fail_msg: "The Alloy profile candidate verifier failed or returned an invalid receipt."
+            quiet: true
+
+        - name: Require an exact and complete receipt
+          ansible.builtin.assert:
+            that:
+              - _profile_receipt.status == 'validated' or _profile_receipt.status == 'unavailable'
+              - _profile_receipt.status != 'unavailable' or _profile_receipt.reason in _profile_candidate_refusals
+              - _profile_receipt.status != 'validated' or _profile_raw_receipt.rc == 0
+              - _profile_receipt.status != 'validated' or _profile_receipt.image == 'docker.io/grafana/alloy:v1.5.1'
+              - _profile_receipt.status != 'validated' or _profile_receipt.image_id is match('^sha256:[0-9a-f]{64}$')
+              - _profile_receipt.status != 'validated' or _profile_receipt.live_receiver_image_id == _profile_receipt.image_id
+              - _profile_receipt.status != 'validated' or _profile_receipt.image_parity == 'verified'
+              - _profile_receipt.status != 'validated' or _profile_receipt.disabled_config_sha256 is match('^[0-9a-f]{64}$')
+              - _profile_receipt.status != 'validated' or _profile_receipt.enabled_config_sha256 is match('^[0-9a-f]{64}$')
+              - _profile_receipt.status != 'validated' or _profile_receipt.disabled_config == 'loaded_profile_absent'
+              - _profile_receipt.status != 'validated' or _profile_receipt.enabled_config == 'loaded'
+              - _profile_receipt.status != 'validated' or _profile_receipt.profile_component == 'healthy'
+              - _profile_receipt.status != 'validated' or _profile_receipt.target_count == 1
+              - _profile_receipt.status != 'validated' or _profile_receipt.profile_type_count == 9
+              - _profile_receipt.status != 'validated' or _profile_receipt.network == 'none'
+              - _profile_receipt.status != 'validated' or _profile_receipt.pull == 'never'
+              - _profile_receipt.status != 'validated' or _profile_receipt.sampling_or_delivery == 'not_proven'
+              - _profile_receipt.status != 'validated' or _profile_receipt.persistence == 'not_proven'
+            fail_msg: "The Alloy profile candidate check failed or returned an invalid bounded receipt."
+            quiet: true
+          no_log: true
+
+        - name: Report the sanitized profile candidate result
+          ansible.builtin.debug:
+            msg: >-
+              {{ _profile_receipt | combine({
+                'public_revision': expected_repository_sha,
+                'private_revision': 'unverified',
+                'inventory_projection': {
+                  'receiver_group': 'o11y_svc',
+                  'receiver_count': 1,
+                  'local_mode': (local_mode | default(false) | bool),
+                  'container_engine': container_engine | default(''),
+                  'podman_rootful': (podman_rootful | default(false) | bool)
+                }
+              }) | to_json }}
+          changed_when: false
+
+        - name: Refuse a failed profile candidate check after reporting its category
+          ansible.builtin.fail:
+            msg: >-
+              Profile candidate preflight unavailable ({{ _profile_receipt.reason }}).
+              Raw config and container output are suppressed.
+          when: _profile_receipt.status == 'unavailable'
+
+      always:
+        - name: Remove candidate files from tmpfs
+          ansible.builtin.file:
+            path: "{{ _profile_tmp.path }}"
+            state: absent
+          no_log: true
+          when: _profile_tmp.path is defined

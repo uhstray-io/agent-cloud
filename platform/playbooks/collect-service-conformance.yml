@@ -15,7 +15,11 @@
 #          report and Loki alike, never erased (PR 195 and PR 258 Codex reviews).
 #   parse  workflows/service-onboarding/lib/step_results.py (select / pick / aggregate): latest
 #          result per service and step; a failed task with no result counts as `fail` with
-#          its last 20 lines. A service is named by its inventory group's service_name.
+#          its last 20 lines. A service is named by its inventory group's service_name (its first
+#          tracked host's, so a skipped host listed first does not hide the group); a host
+#          that sets the host var `service_conformance_tracked: false` (default true; the string
+#          "false" counts) is skipped, so a non-service host carrying a service_name never
+#          appears as a service that has not run.
 #   write  NetBox custom fields on each service's VM (declared in
 #          workflows/service-onboarding/netbox-custom-fields.yml), with the scoped
 #          workflow-collector token (view/change VMs only); in local-dev, one direct Loki line
@@ -111,7 +115,12 @@
       ansible.builtin.set_fact:
         _host_services: "{{ _host_services | default({}) | combine({item: hostvars[item].service_name}) }}"
       loop: "{{ groups['all'] }}"
-      when: hostvars[item].service_name is defined
+      # A host that sets `service_conformance_tracked: false` is not a workflow service (a drill
+      # host that borrows a service_name): it contributes none, so no group, no VM lookup and no
+      # "never run" row exists for it. Every consumer reads this map, so this is the one cut.
+      when:
+        - hostvars[item].service_name is defined
+        - hostvars[item].service_conformance_tracked | default(true) | bool
 
     - name: "Select the workflow templates"
       ansible.builtin.command:
@@ -209,7 +218,7 @@
         headers: "{{ _nb_headers }}"
         status_code: [200]
       # Every inventoried service, including one that has not run a step yet (review of PR
-      # #229), as the PARSER keys them (first host of each group): the write indexes the
+      # #229), as the PARSER keys them (first tracked host of each group): the write indexes the
       # aggregate by these names, so any other list could reach a service it lacks.
       loop: "{{ (_select.stdout | from_json).inventory_services }}"
       register: _vms
@@ -218,25 +227,59 @@
       no_log: true
       when: _nb_headers is defined
 
-    - name: "NetBox: sort the lookups"
+    - name: "NetBox: keep only bounded lookup data"
       ansible.builtin.set_fact:
-        # Only the service name, the VM id and its current workflow status: a registered uri
-        # result can carry the request's headers, the collector token among them, and this
-        # fact is visible (PR 195 Codex review).
-        _vm_found: >-
+        # Whitelist only the fields needed to prove a complete list read and select a unique
+        # VM. Registered uri results can carry token-bearing request headers (PR 195 review).
+        _netbox_results: >-
           {%- set out = [] -%}
-          {%- for r in _answered | selectattr('json.count', 'equalto', 1) -%}
-            {%- if out.append({'item': r.item, 'id': r.json.results[0].id,
-                               'status': (r.json.results[0].custom_fields | default({})).ac_workflow_status | default({}, true)}) -%}{%- endif -%}
-          {%- endfor -%}
-          {{ out }}
-        _vm_missing: "{{ _answered | selectattr('json.count', 'equalto', 0) | map(attribute='item') | list }}"
-        # The lookup filters by name only: same-named VMs in two clusters are reported, never
-        # guessed at by taking the first (PR 195 Codex review).
-        _vm_ambiguous: "{{ _answered | selectattr('json.count', 'gt', 1) | map(attribute='item') | list }}"
-        _vm_unreachable: "{{ _vms.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
-      vars:
-        _answered: "{{ _vms.results | default([]) | selectattr('json', 'defined') | selectattr('json.count', 'defined') | list }}"
+          {%- for r in (_vms | default({})).results | default([]) -%}
+            {%- set response = r.json | default({}) -%}
+            {%- set page_terminal = none -%}
+            {%- if response is mapping and 'next' in response -%}
+              {%- set page_terminal = response.get('next') is none -%}
+            {%- endif -%}
+            {%- set rows = [] -%}
+            {%- if response.results is defined and response.results is sequence and response.results is not string and response.results is not mapping -%}
+              {%- for vm in response.results -%}
+                {%- if vm is mapping -%}
+                  {%- set fields = vm.custom_fields | default({}) -%}
+                  {%- set status = fields.get('ac_workflow_status') if fields is mapping else none -%}
+                  {%- if status is none -%}{%- set status = {} -%}{%- endif -%}
+                  {%- if rows.append({'id': vm.id | default(none),
+                                      'custom_fields': ({'ac_workflow_status': status} if fields is mapping else none)}) -%}{%- endif -%}
+                {%- else -%}
+                  {%- if rows.append(none) -%}{%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set safe_rows = rows -%}
+            {%- else -%}
+              {%- set safe_rows = none -%}
+            {%- endif -%}
+            {%- if out.append({'item': r.item | default(none), 'status': r.status | default(none),
+                               'json': {'count': (response.get('count') if response is mapping else none),
+                                        'next_is_terminal': page_terminal,
+                                        'results': safe_rows}}) -%}{%- endif -%}
+          {%- endfor -%}{{ out }}
+
+    - name: "NetBox: classify complete reads and unique matches"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'netbox',
+              'expected_services': ((_select.stdout | from_json).inventory_services if _netbox_url | length > 0 else []),
+              'results': _netbox_results} | to_json }}
+      register: _netbox_classification
+      changed_when: false
+      check_mode: false
+
+    - name: "NetBox: hold classified lookup outcomes"
+      ansible.builtin.set_fact:
+        _netbox_state: "{{ _netbox_classification.stdout | from_json }}"
+        _vm_found: "{{ (_netbox_classification.stdout | from_json).found }}"
+        _vm_missing: "{{ (_netbox_classification.stdout | from_json).missing }}"
+        _vm_ambiguous: "{{ (_netbox_classification.stdout | from_json).ambiguous }}"
+        _vm_unknown: "{{ (_netbox_classification.stdout | from_json).unknown }}"
 
     # ── the aggregate: after the NetBox read, which supplies what it retains ────────────
     - name: "Aggregate: latest result per service and step"
@@ -298,6 +341,30 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: "NetBox: keep bounded write outcomes for the completion gate"
+      ansible.builtin.set_fact:
+        _netbox_write_results: >-
+          {%- set out = [] -%}
+          {%- for r in (_nb_writes | default({})).results | default([]) -%}
+            {%- if out.append({'item': r.item.item | default(none), 'status': r.status | default(none),
+                               'failed': r.failed | default(false), 'skipped': r.skipped | default(false)}) -%}{%- endif -%}
+          {%- endfor -%}{{ out }}
+
+    - name: "Completion: require complete NetBox reads and successful unique-match writes"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'completion', 'netbox_read_complete': _netbox_state.complete,
+              'required_services': _vm_found | map(attribute='item') | list,
+              'write_results': _netbox_write_results} | to_json }}
+      register: _completion_gate
+      changed_when: false
+      check_mode: false
+
+    - name: "Completion: hold the required-work result"
+      ansible.builtin.set_fact:
+        _completion_ready: "{{ not ansible_check_mode and (_completion_gate.stdout | from_json).eligible }}"
+
     # Local-dev retains the loopback direct-Loki path; production uses the private OTLP receiver.
     # The shared push task; an unreachable Loki never fails the collector (it reports instead).
     - name: "Local Loki: one line per step result"
@@ -324,16 +391,162 @@
       register: _otlp
       changed_when: true
       failed_when: false
+      # The receiver response can contain private workflow error context. Keep the raw URI
+      # result out of task history; the following classifier exposes only fixed outcomes.
+      no_log: true
       when:
         - not ansible_check_mode
         - not (local_mode | default(false) | bool)
         - _agg.otlp_payload.resourceLogs | length > 0
 
     - name: "Classify the OTLP response without exposing its body"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {%- set response = _otlp | default({}) -%}
+          {%- set body = response.get('json') -%}
+          {%- set partial = (body.get('partialSuccess') if body is mapping else none) -%}
+          {{ {'mode': 'otlp_ack',
+              'status': (response.get('status') if response.get('status') is integer and response.get('status') is not boolean else none),
+              'content_type_valid': (response.get('content_type', '') | default('', true) | trim | lower == 'application/json'),
+              'body_is_object': body is mapping,
+              'body_fields_known': (body is mapping and (body.keys() | list | difference(['partialSuccess']) | length == 0)),
+              'partial_success_present': (body is mapping and 'partialSuccess' in body),
+              'partial_success_is_object': partial is mapping,
+              'partial_fields_known': (partial is mapping and (partial.keys() | list | difference(['rejectedLogRecords', 'errorMessage']) | length == 0)),
+              'rejected_present': (partial is mapping and 'rejectedLogRecords' in partial),
+              'rejected_records': (partial.get('rejectedLogRecords') if partial is mapping and
+                                   ((partial.get('rejectedLogRecords') is integer and partial.get('rejectedLogRecords') is not boolean and
+                                     0 <= partial.get('rejectedLogRecords') <= 9223372036854775807) or
+                                    (partial.get('rejectedLogRecords') is string and
+                                     partial.get('rejectedLogRecords') is match('^(0|[1-9][0-9]{0,18})$'))) else none),
+              'warning_present': (partial is mapping and 'errorMessage' in partial),
+              'warning_valid': (partial is mapping and partial.get('errorMessage') is string)} | to_json }}
+      register: _otlp_delivery_classification
+      changed_when: false
+      check_mode: false
+
+    - name: "Completion: hold the classified OTLP acknowledgement"
       ansible.builtin.set_fact:
-        _otlp_delivery_ok: >-
-          {{ (_otlp | default({})).get('status', 0) | int == 200
-             and (((((_otlp | default({})).get('json') or {}).get('partialSuccess') or {}).get('rejectedLogRecords', 0) | int) == 0) }}
+        _otlp_delivery_ack: "{{ (_otlp_delivery_classification.stdout | from_json).accepted }}"
+        _otlp_delivery_ok: "{{ (_otlp_delivery_classification.stdout | from_json).accepted }}"
+
+    - name: "Completion: capture conformance transport result"
+      ansible.builtin.set_fact:
+        _conformance_loki_status: "{{ (_push_loki_result | default({})).status | default(0) | int }}"
+        _conformance_loki_skipped: "{{ _push_loki_result is not defined or _push_loki_result is skipped }}"
+
+    - name: "Completion: classify prior data delivery"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'completion_delivery', 'required_work_ok': _completion_ready,
+              'transport': ('local_loki' if local_mode | default(false) | bool else 'production_otlp'),
+              'transport_configured': ((collector_loki_url is defined and collector_loki_url | length > 0)
+                                       if local_mode | default(false) | bool else true),
+              'record_count': _agg.loki_streams | length,
+              'response_status': (((_push_loki_result | default({})).status | default(none)) if local_mode | default(false) | bool
+                                  else none),
+              'otlp_acknowledged': _otlp_delivery_ack | default(false)} | to_json }}
+      register: _completion_delivery_gate
+      changed_when: false
+      check_mode: false
+
+    - name: "Completion: hold publication boundary"
+      ansible.builtin.set_fact:
+        _completion_publish_ready: "{{ (_completion_delivery_gate.stdout | from_json).eligible }}"
+
+    - name: "Completion: build separate receipt payload"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'receipt', 'now_ns': (now(utc=true).timestamp() * 1000000000) | int} | to_json }}
+      register: _completion_receipt_run
+      changed_when: false
+      check_mode: false
+
+    - name: "Completion: hold receipt payload"
+      ansible.builtin.set_fact:
+        _completion_receipt: "{{ _completion_receipt_run.stdout | from_json }}"
+
+    - name: "Local Loki: publish collector completion receipt"
+      ansible.builtin.include_tasks: tasks/push-loki-lines.yml
+      vars:
+        push_loki_url: "{{ collector_loki_url }}"
+        push_loki_streams: "{{ _completion_receipt.streams }}"
+        push_loki_must_succeed: false
+      when:
+        - not ansible_check_mode
+        - local_mode | default(false) | bool
+        - collector_loki_url is defined
+        - _completion_publish_ready
+
+    - name: "Production Alloy: publish collector completion receipt"
+      ansible.builtin.uri:
+        url: "{{ _collector_otlp_url }}"
+        method: POST
+        body_format: json
+        body: "{{ _completion_receipt.otlp_payload }}"
+        headers:
+          Content-Type: application/json
+        status_code: [200]
+      register: _otlp_receipt
+      changed_when: true
+      failed_when: false
+      # Apply the same narrow response boundary to the final fixed receipt POST.
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+        - _completion_publish_ready
+
+    - name: "Completion: classify final receipt response"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {%- set response = _otlp_receipt | default({}) -%}
+          {%- set body = response.get('json') -%}
+          {%- set partial = (body.get('partialSuccess') if body is mapping else none) -%}
+          {{ {'mode': 'otlp_ack',
+              'status': (response.get('status') if response.get('status') is integer and response.get('status') is not boolean else none),
+              'content_type_valid': (response.get('content_type', '') | default('', true) | trim | lower == 'application/json'),
+              'body_is_object': body is mapping,
+              'body_fields_known': (body is mapping and (body.keys() | list | difference(['partialSuccess']) | length == 0)),
+              'partial_success_present': (body is mapping and 'partialSuccess' in body),
+              'partial_success_is_object': partial is mapping,
+              'partial_fields_known': (partial is mapping and (partial.keys() | list | difference(['rejectedLogRecords', 'errorMessage']) | length == 0)),
+              'rejected_present': (partial is mapping and 'rejectedLogRecords' in partial),
+              'rejected_records': (partial.get('rejectedLogRecords') if partial is mapping and
+                                   ((partial.get('rejectedLogRecords') is integer and partial.get('rejectedLogRecords') is not boolean and
+                                     0 <= partial.get('rejectedLogRecords') <= 9223372036854775807) or
+                                    (partial.get('rejectedLogRecords') is string and
+                                     partial.get('rejectedLogRecords') is match('^(0|[1-9][0-9]{0,18})$'))) else none),
+              'warning_present': (partial is mapping and 'errorMessage' in partial),
+              'warning_valid': (partial is mapping and partial.get('errorMessage') is string)} | to_json }}
+      register: _completion_receipt_delivery
+      changed_when: false
+      check_mode: false
+
+    - name: "Completion: hold final receipt result"
+      ansible.builtin.set_fact:
+        _completion_receipt_ack: "{{ (_completion_receipt_delivery.stdout | from_json).accepted }}"
+
+    - name: "Completion: classify final receipt publication"
+      ansible.builtin.command:
+        argv: [python3, "{{ _parser }}"]
+        stdin: >-
+          {{ {'mode': 'completion_delivery', 'required_work_ok': _completion_publish_ready,
+              'transport': ('local_loki' if local_mode | default(false) | bool else 'production_otlp'),
+              'transport_configured': true, 'record_count': 1,
+              'response_status': (((_push_loki_result | default({})).status | default(none)) if local_mode | default(false) | bool else none),
+              'otlp_acknowledged': _completion_receipt_ack} | to_json }}
+      register: _completion_receipt_gate
+      changed_when: false
+      check_mode: false
+
+    - name: "Completion: hold final receipt publication result"
+      ansible.builtin.set_fact:
+        _completion_receipt_delivery_ok: "{{ (_completion_receipt_gate.stdout | from_json).eligible }}"
 
     - name: "Report"
       ansible.builtin.debug:
@@ -344,9 +557,21 @@
           netbox_ambiguous_vm: "{{ _vm_ambiguous }}"
           # Templates whose history filled the read window: their older runs were not read.
           history_window_full: "{{ (_pick.stdout | from_json).window_full }}"
-          netbox_unreachable: "{{ _vm_unreachable }}"
-          loki: "{{ 'pushed' if (_push_loki_result.status | default(0)) == 204 else ('skipped' if _push_loki_result is not defined or _push_loki_result is skipped else 'failed') }}"
-          otlp: "{{ 'check mode' if ansible_check_mode else ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else ('skipped' if local_mode | default(false) | bool else ('delivered' if _otlp_delivery_ok | default(false) | bool else 'failed'))) }}"
+          netbox_read_unknown: "{{ _vm_unknown }}"
+          loki: "{{ 'pushed' if _conformance_loki_status == 204 else ('skipped' if _conformance_loki_skipped else 'failed') }}"
+          otlp: >-
+            {{ 'check mode' if ansible_check_mode else
+               ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else
+                ('skipped' if local_mode | default(false) | bool else
+                 ('delivered' if _otlp_delivery_ok | default(false) | bool else 'failed/UNKNOWN'))) }}
+          completion_receipt: >-
+            {{- 'not_attempted' if (not _completion_publish_ready or ansible_check_mode or
+                ((local_mode | default(false) | bool) and _push_loki_result is skipped) or
+                (not (local_mode | default(false) | bool) and _otlp_receipt is skipped)) else
+                ('acknowledged' if
+                  ((local_mode | default(false) | bool and (_push_loki_result.status | default(0) | int == 204)) or
+                   (not (local_mode | default(false) | bool) and (_completion_receipt_delivery_ok | default(false) | bool)))
+                 else 'failed/UNKNOWN') -}}
 
     - name: "Fail after reporting unsuccessful production OTLP delivery"
       ansible.builtin.fail:
@@ -356,3 +581,12 @@
         - not (local_mode | default(false) | bool)
         - _agg.otlp_payload.resourceLogs | length > 0
         - not (_otlp_delivery_ok | default(false) | bool)
+
+    - name: "Fail after reporting unsuccessful production completion receipt publication"
+      ansible.builtin.fail:
+        msg: "Completion receipt publication failed or is unknown; see the preceding report for status."
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
+        - _completion_publish_ready
+        - not (_completion_receipt_delivery_ok | default(false) | bool)

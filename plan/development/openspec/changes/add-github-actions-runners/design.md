@@ -230,15 +230,55 @@ depends on the registration being persistent.
   chosen lifecycle. Explicitly reachable later.
 - *Trusting each workflow's own container declaration.* Rejected: opt-in, fails open.
 
-**Runtime feasibility — must be proven, not assumed.** The container hooks drive a
-Docker-compatible API. The platform's norm is rootless Podman, which offers a
-Docker-compatible socket, but **whether the container hooks operate unmodified against
-rootless Podman's compatibility socket is unverified.** This is settled by a spike before
+**Runtime feasibility: must be proven, not assumed** (the question as planned; the
+answer follows). The container hooks drive a Docker-compatible API. The platform's norm
+is rootless Podman, which offers a Docker-compatible socket, but **whether the container
+hooks operate unmodified against rootless Podman's compatibility socket was not known
+when this was planned.** This is settled by a spike before
 any dependent work, with two outcomes: rootless Podman works and the platform norm holds;
 or it does not, and this host uses the container engine the platform already supports for
 exactly this class of reason. Both outcomes are acceptable and declared per-host in the
 inventory — the important thing is that the answer is measured, not that it comes out a
 particular way, and that the fallback is an existing supported path rather than a patch.
+
+**Runtime feasibility, RESOLVED (2026-10-18): rootless Podman's API socket works; the
+platform norm holds.** The hooks work unmodified when their `docker` is a Docker CLI
+*client* of the runner account's rootless Podman API socket. They do not work when their
+`docker` is Podman run as a CLI (the `podman-docker` shim), which is what the hosts first
+ran. The measurement, and why the two differ:
+
+- *Why the shim fails.* The hooks start `docker` with an environment built from the job
+  alone: the job container's variables plus the runner's `DOCKER_*` variables
+  (runner-container-hooks v0.8.1, `packages/docker/src/utils.ts`,
+  `optionsWithDockerEnvs`). The job's variables carry `HOME=/github/home`. Podman run as a
+  CLI with that environment resolves its configuration home from HOME on the host and
+  stops: `cannot resolve /github/home: lstat /github: no such file or directory` (podman
+  v4.9.3, `pkg/util/utils_supported.go:81-92`). Every `container:` job on both runners
+  failed this way from 2026-10-10 (weft run 38153546438, zerds run 39135564896).
+- *Why the client works.* A Docker CLI client only sends API calls. The Podman API service
+  that answers them is the account's own `podman.socket` user unit and runs with the
+  account's environment, so the job's HOME never reaches Podman, while the client still
+  fills `-e HOME` from it and the container gets `/github/home`. `DOCKER_HOST` reaches the
+  client because the hooks pass `DOCKER_*` through on purpose.
+- *Measured* with `platform/services/github-runner/deployment/hooks-smoke/` (the spike as
+  code; tasks 1.1 to 1.2): Ubuntu 24.04's Podman 4.9.3 rootless API service, Docker CLI
+  client 29.9.1 (negotiates API 1.41 with Podman 4.9.3), hooks v0.8.1, the runner's full
+  mount set and `HOME=/github/home`. Through the shim, `prepare_job` fails with the error
+  above. Through the client, `prepare_job` (network, pull, create, start), a
+  `run_script_step` (the step sees `HOME=/github/home`, the job image, the mounted Docker
+  socket, and writes into the workspace mount) and `cleanup_job` all pass, leaving no
+  container. Not yet observed: the same on the live hosts, which is the runbook's
+  end-to-end job (tasks 1.5).
+
+**What this takes, and what it does not.** Podman remains the only engine: the hosts get
+`docker-ce-cli` from Docker's repository, which is a client binary with no daemon, and no
+Docker engine is installed (`install-podman.yml`, `podman_docker_api_client`, which also
+removes `podman-docker`). The runner's `.env` sets `DOCKER_HOST` to the account's socket.
+The upstream hooks, runner and Podman stay as shipped, so this is the existing supported
+path the paragraph above asks for, not a patch. It supersedes the interim `docker` wrapper
+of PR #556, which made the CLI path work by rewriting the engine's environment and the
+job's `-e` arguments, a patch on the CLI path; the wrapper and its PATH line are removed
+(`docs/MISTAKES.md` 10.29). The alternative engine (Docker) is not needed and is not used.
 
 ### D5 — Runner group membership is configuration, not a console click
 
@@ -330,10 +370,12 @@ hand.
   verification confirms the wipe actually happens between jobs rather than assuming it.
   `--ephemeral` remains available as a tightening, and nothing here blocks it.
 - **The container hooks may not work against rootless Podman's compatibility socket
-  (unverified).** → Settled by a spike before any dependent work, with the platform's
+  (not known when planned).** → Settled by a spike before any dependent work, with the platform's
   already-supported alternative engine as the declared fallback. This is why the spike
   is sequenced first: discovering it late would be the moment someone reaches for a
-  patch.
+  patch. **Resolved 2026-10-18 (D4):** it works through a Docker CLI client of the
+  socket, not through the `podman-docker` CLI shim. The spike ran late, and a patch was
+  reached for first (#556, `docs/MISTAKES.md` 10.29); it is removed.
 - **Host-level egress denial is weaker than gateway segmentation.** → Accepted and
   stated (D6), paired with unprivileged containerised execution so the rule is not the
   only thing standing between a job and the interior. Gateway segmentation recorded as

@@ -4,11 +4,22 @@ loki.source.journal "o11y_alloy" {
   path       = "/var/log/journal"
   matches    = "CONTAINER_NAME=o11y-alloy"
   max_age    = "15m"
-  labels     = { service = "o11y/alloy", signal = "container" }
+  labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }
   forward_to = [otelcol.receiver.loki.journal.receiver]
 }
 
 otelcol.receiver.loki "journal" {
+  output {
+    logs = [otelcol.processor.attributes.journal_labels.input]
+  }
+}
+
+otelcol.processor.attributes "journal_labels" {
+  action {
+    key    = "loki.attribute.labels"
+    action = "upsert"
+    value  = "service,signal,target_id"
+  }
   output {
     logs = [otelcol.exporter.otlp.journal.input]
   }
@@ -17,9 +28,19 @@ otelcol.receiver.loki "journal" {
 otelcol.exporter.otlp "journal" {
   client {
     endpoint = {{ (o11y_otlp_bind ~ ':' ~ (o11y_otlp_port | default(4317) | string)) | to_json }}
+{% if o11y_otlp_tls_enabled | default(false) | bool %}
+    tls {
+      ca_file = "/certs/step-ca-bundle.crt"
+      cert_file = "/certs/journal-client/current/cert.pem"
+      key_file = "/certs/journal-client/current/key.pem"
+      server_name = {{ o11y_otlp_tls_server_name | to_json }}
+      reload_interval = "1m"
+    }
+{% else %}
     tls {
       insecure = true
     }
+{% endif %}
   }
   retry_on_failure {
     enabled = true

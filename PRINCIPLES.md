@@ -192,9 +192,10 @@ As-built: `nemoclaw-read.hcl` grants the wildcard to an AI agent - tighten it, a
 **Human access is provisioned by role, never granted by hand.** Identity decomposes as
 **Organization > Department > Team > Role**, with an orthogonal **Access Level** privilege tier -
 highest-to-lowest **Admin -> Maintainer -> Developer -> User** - applied per tenant and per project.
-Organization is the hard tenant-isolation boundary (tenants are orgs); Department/Team/Role place a
-person within an org; Access Level is how much they may do. Authentik groups are the source of truth;
-a provisioning mechanism maps an identity's (org, department, team, role, access-level) to per-service
+A tenant is a tier above Organization (tenant -> org -> site -> env), and the **tenant is the hard
+isolation boundary**; organizations inside one tenant share it. Department/Team/Role place a person within an org;
+Access Level is how much they may do. Authentik groups are the source of truth;
+a provisioning mechanism maps an identity's (tenant, org, department, team, role, access-level) to per-service
 roles - Semaphore admin-flag vs project owner/manager/task_runner/guest, NetBox permissions, etc. Any
 Admin-level user is provisioned with admin rights and all-project visibility automatically - never a
 per-service hand-grant.
@@ -202,8 +203,10 @@ per-service hand-grant.
 it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identity (vs one opaque
 "user type") lets access be derived from real org structure instead of bespoke per-person grants.
 **[TARGET]** the provisioning automation + the group schema are not built yet - the operator's Semaphore user
-was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, with a proposed rename to
-`uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
+was hand-set to admin (a stopgap, superseded by the Semaphore admin flag now derived from the declared
+administrator list, issue #604), and `platform-admins` is today's sole admin group. It stays as the cross-tenant
+operator group, and `uhstray-uhstray-io-admins` (the Admin tier of the uhstray-io org in the uhstray tenant) is
+added beside it. The exact group-naming + (identity -> per-service role)
 mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based
 provisioning already holds.*
 
@@ -322,9 +325,11 @@ backend protocol genuinely requires TLS (prefer the internal CA over `tls_insecu
 Plain-HTTP backends are permitted **only** on a host where `apply-firewall.yml`'s default-deny-inbound
 (except Caddy + mgmt SSH) is applied and verified by `validate-all.yml`.
 *Why: terminating once keeps the cert surface to one place and avoids unrotated self-signed sprawl.
-But "trusted network" is a security claim only a firewall can back. As-built caveat: the host firewall
-is still a pending canary (task #16) - finish the rollout and make it a mandatory onboarding step
-(Phase 1) before relying on the trust boundary for any new service.*
+But "trusted network" is a security claim only a firewall can back. As-built caveat (updated
+2026-10-27): the host firewall is applied through Semaphore on the DNS, internal-CA, o11y and CI-runner
+hosts, but is not yet declared for every service host (none is recorded for the Caddy host) - finish
+the rollout and make it a mandatory onboarding step (Phase 1) before relying on the trust boundary
+for any new service.*
 
 **Consume public TLS, run a private CA; never become a public CA.** Browser-trusted certs via Caddy +
 CloudFlare DNS-01 (incl. On-Demand TLS for SaaS tenant domains); internal/LAN certs from the step-ca
@@ -384,10 +389,12 @@ remote_writes RED + service-graph series back into Prometheus - standing it up b
 inverts the value-to-cost order and risks the o11y stack eating the disk it's meant to watch.*
 
 **Every signal path is self-hosted, least-privilege, and free of secrets-in-labels.** Telemetry
-never leaves the platform (analytics disabled). The Grafana MCP token is OpenBao-managed and
-read-only; human metrics access goes through Caddy + Authentik, while collector-only scrape
-listeners stay on private container networks and are never published publicly. Never put secrets
-or PII in metric names or labels.
+never leaves the platform (analytics disabled). Grafana MCP credentials are OpenBao-managed and
+read-only by default; the sole exception is the explicitly authorized production `mcp-grafana`
+Editor account, whose production launcher has write tools enabled. The local MCP profile and
+separate o11y liveness watcher remain read-only. Human metrics access goes through Caddy +
+Authentik, while collector-only scrape listeners stay on private container networks and are never
+published publicly. Never put secrets or PII in metric names or labels.
 *Why: socket access for Alloy/Prometheus is the same trust surface already accepted - a deliberate,
 bounded decision keeps observability from quietly becoming an exfiltration channel.*
 

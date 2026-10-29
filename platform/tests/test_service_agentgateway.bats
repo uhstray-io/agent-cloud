@@ -77,6 +77,16 @@ setup() {
   refute_grep -qE 'admin.inference.*forward_auth' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
 }
 
+@test "agentgateway: local overlay trusts the COMBINED bundle (step-ca + public roots), built only in local_mode" {
+  # SSL_CERT_FILE replaces the trust store; the local upstream is the public edge, so the file it
+  # names must also carry the public roots. The deploy builds it only for local_mode, and the
+  # step-ca-only bundle stays for the other consumers.
+  assert_grep -qF 'SSL_CERT_FILE: /certs/ca-bundle-combined.crt' "$DEPLOY_DIR/compose.local.yml"
+  refute_grep -qF 'SSL_CERT_FILE: /certs/step-ca-bundle.crt' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qF "_ca_root_combined_dest: \"{{ (_deploy_dir ~ '/certs/ca-bundle-combined.crt') if (local_mode | default(false) | bool) else '' }}\"" "$PLAYBOOK"
+  assert_grep -qF 'Refuse a combined bundle when the play host holds no public roots' "$REPO_ROOT/platform/playbooks/tasks/distribute-ca-root.yml"
+}
+
 @test "agentgateway: admin port 15000 is never published" {
   # The admin listener stays on the container loopback (spec: "Admin interface
   # is not exposed"). Any `ports:` line carrying 15000 is a regression.
@@ -84,6 +94,57 @@ setup() {
   refute_grep -E '^\s*-\s*".*15000' "$DEPLOY_DIR/compose.local.yml"
   # Pinned to the container loopback explicitly, not left to the upstream default.
   assert_grep -qE '^  adminAddr: 127\.0\.0\.1:15000$' "$CONFIG"
+}
+
+@test "agentgateway: the MCP loopback port is published by no compose file and no env value" {
+  # The loopback gateway (agentgateway-mcp task 3.7) is unpublished: only the gateway's own call reaches
+  # it. Every published container port, across the base file and both overlays, is one of the four that
+  # existed before MCP. Parsed as YAML so a re-indented or re-quoted mapping cannot hide one.
+  python3 - "$DEPLOY_DIR" <<'PY'
+import pathlib
+import sys
+import yaml
+
+class Loader(yaml.SafeLoader):
+    pass
+
+# podman-compose's `!override` tag wraps a plain sequence or mapping.
+Loader.add_multi_constructor("!", lambda loader, suffix, node: loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode) else loader.construct_mapping(node))
+root = pathlib.Path(sys.argv[1])
+published = set()
+for name in ("compose.yml", "compose.local.yml", "compose.tls.yml"):
+    doc = yaml.load((root / name).read_text(), Loader=Loader)
+    for service in (doc.get("services") or {}).values():
+        for entry in service.get("ports") or []:
+            published.add(str(entry).rsplit(":", 1)[-1])
+assert published == {"4000", "4001", "19001", "19002"}, published
+# No compose substitution value could publish it either: the port is not named in a compose file, and
+# the env file template carries no bind or port value for it.
+for name in ("compose.yml", "compose.local.yml", "compose.tls.yml", "templates/env.j2"):
+    text = (root / name).read_text()
+    assert "4002" not in text and "AGW_LOOPBACK" not in text, name
+PY
+}
+
+@test "agentgateway: the MCP-enabled render is validated by the pinned image before any container is recreated" {
+  # G5 / task 3.3: the one validation include follows the render, is unconditional (so a flag-true render
+  # is always checked), and sits in Phase 1, before Phase 2 starts the containers.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+names = [p.get('name', '') for p in plays]
+phase1 = next(i for i, n in enumerate(names) if n.startswith('Phase 1'))
+phase2 = next(i for i, n in enumerate(names) if n.startswith('Phase 2'))
+assert phase1 < phase2
+tasks = plays[phase1]['tasks']
+order = [t.get('name') for t in tasks]
+validate = next(t for t in tasks if t.get('ansible.builtin.include_tasks') == 'tasks/agw-validate-config.yml')
+assert 'when' not in validate
+assert order.index('Manage secrets and render env + config') < order.index(validate['name'])
+assert order.index('Require the rendered mcp block to carry its own strict key policy') < order.index(validate['name'])
+assert not any(t.get('ansible.builtin.shell', '').find('deploy.sh') >= 0 and '--pull-only' not in t['ansible.builtin.shell'] for t in tasks)
+PY
 }
 
 @test "agentgateway: config is a read-only bind mount; the only volume is the budget db" {
@@ -137,13 +198,34 @@ setup() {
   assert_grep -qF "keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}" "$CONFIG"
   # A plaintext `key:` exists only inside the local-dev-only flag branch, default off.
   # ...and only together with local_mode, so a prod inventory cannot enable it.
-  assert_grep -qF "{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}" "$CONFIG"
+  assert_grep -qF "{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) and c not in _internal_ids %}" "$CONFIG"
   [ "$(grep -cE '^\s*-\s*key:\s' "$CONFIG")" -eq 1 ]
   # The deploy refuses the flag outside local_mode instead of silently ignoring it.
   assert_grep -qF "not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)" "$REPO_ROOT/platform/playbooks/deploy-agentgateway.yml"
   # strict: an unknown key is 401 at the gateway.
   assert_grep -qE '^\s*mode: strict' "$CONFIG"
   refute_grep -E '192\.168\.|10\.[0-9]+\.' "$CONFIG"
+}
+
+@test "agentgateway: the key loop is written once, in the shared macro every apiKey policy calls" {
+  # llm and mcp authenticate with the same key list; a second loop is where they would drift.
+  python3 - "$CONFIG" <<'PY'
+import re
+import sys
+text = open(sys.argv[1], encoding='utf-8').read()
+macro = re.search(r"\{% macro apikey_policy\(.*?\{% endmacro %\}", text, re.S)
+assert macro, "no apikey_policy macro"
+inside, outside = macro.group(0), text.replace(macro.group(0), "")
+assert text.count("{% macro apikey_policy(") == 1
+# The loop, and every place a key or its hash is written, are inside the macro and nowhere else.
+for needle in ("{% for c in identities %}", "secrets['client_' ~ c]", "keyHash: sha256:{{", "- key: {{"):
+    assert needle in inside, needle
+for needle in ("{% for c in", "secrets['client_'", "keyHash: sha256:{{", "- key: {{"):
+    assert needle not in outside, needle
+# The llm policy calls it with the legacy block and the limits.
+llm = text.split("\nllm:\n", 1)[1]
+assert re.search(r"\{\{ apikey_policy\(agw_identities \| default\(agw_clients \| default\(\[\]\)\), true, true\) \| trim\('\\n'\) \}\}", llm), "llm call shape"
+PY
 }
 
 @test "agentgateway: observability — identity label on metrics and logs, never prompt content" {
@@ -233,8 +315,10 @@ setup() {
 
 @test "agentgateway: playbook verifies through the one probe path, asserts the 401, puts no key on an argv" {
   # Every gateway probe outside Caddy is tasks/agw-probe.yml (task 6.1a). The client key reaches
-  # exactly two tasks, both includes of that file, and inside it only a no_log `uri` header: no
-  # command or shell task ever sees it (a shell probe put it on wget's argv, PR 221 Codex review).
+  # exactly nine tasks (the keyed /v1 listing, completion and schema-constrained completion, the
+  # opt-in OpenRouter completion, the OpenRouter refusal probe, and the four keyed MCP probes), all includes of that file, and inside it
+  # only a no_log `uri` header: no command or shell task ever sees it (a shell probe put it on wget's
+  # argv, PR 221 Codex review).
   PROBE="$REPO_ROOT/platform/playbooks/tasks/agw-probe.yml"
   python3 - "$PLAYBOOK" "$PROBE" <<'PY'
 import sys, yaml
@@ -249,7 +333,17 @@ for play in yaml.safe_load(open(sys.argv[1])):
         body = {k: v for k, v in t.items() if k not in ("name", "when")}
         if "_resolved['client_" in str(body):
             keyed.append(t)
-assert len(keyed) == 2, [t.get("name") for t in keyed]
+assert [t.get("name") for t in keyed] == [
+    "An enrolled identity lists the served models",
+    "An enrolled identity completes one chat request through the upstream",
+    "An enrolled identity completes one schema-constrained request through the upstream",
+    "An enrolled identity completes one OpenRouter request (opt-in)",
+    "A service identity is refused an OpenRouter model",
+    "MCP: an enrolled identity initialises a session",
+    "MCP: an enrolled identity lists the tools",
+    "MCP: an enrolled identity makes one model call through the chat tool",
+    "MCP: with MCP disabled a keyed initialize is not an MCP reply",
+], [t.get("name") for t in keyed]
 for t in keyed:
     assert t.get("ansible.builtin.include_tasks") == "tasks/agw-probe.yml", t.get("name")
     assert "_resolved['client_" in t["vars"]["_agwp_key"], t.get("name")
@@ -260,7 +354,7 @@ assert call.get("no_log") is True and "_agwp_key" in call["ansible.builtin.uri"]
 assert "_agwp_key" not in str({k: v for k, v in call["ansible.builtin.uri"].items() if k != "headers"})
 # The raw result carries the request, so only a no_log copy of response fields leaves the file.
 keep = next(t for t in probe if "ansible.builtin.set_fact" in t)
-assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg"}
+assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg", "rpc"}
 PY
   python3 - "$PLAYBOOK" <<'PY'
 import os
@@ -292,8 +386,10 @@ PY
   assert_grep -qF '.allowed_models' "$PLAYBOOK"
   assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
   assert_grep -qF '(_keyed_models.status | default(-1) | int) == 429' "$PLAYBOOK"
-  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails.
-  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 2 ]
+  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails. Three checks on
+  # the keyed /v1 requests (listing, completion, OpenRouter refusal probe), and the same on the MCP
+  # initialize, tool listing and model call.
+  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 6 ]
   assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
   # An unproven round-trip fails the deploy unless the operator accepts it, and that refusal
   # runs before the completion assert it would otherwise skip.
@@ -355,8 +451,12 @@ PY
 
 @test "agentgateway: per-identity policy overrides render from inventory (allowedModels, budget)" {
   assert_grep -qF 'agw_client_policies' "$CONFIG"
-  assert_grep -qF 'allowedModels: {{ _pol.allowed_models | to_json }}' "$CONFIG"
-  assert_grep -qF '_pol.tokens_per_hour | default(agw_rate_tokens_per_hour' "$CONFIG"
+  assert_grep -qF 'allowedModels: {{ _am | to_json }}' "$CONFIG"
+  assert_grep -qF '_pol.allowed_models | default([])' "$CONFIG"
+  # Scoped to the key-loop macro: the expression must be the budget the macro renders, not a comment elsewhere.
+  local macro
+  macro=$(sed -n '/^{% macro apikey_policy/,/^{% endmacro %}/p' "$CONFIG")
+  assert_contains "$macro" '_pol.tokens_per_hour | default(_tier_budgets[_tier] if _tier in _tier_budgets else (agw_rate_tokens_per_hour'
 }
 
 # ── agw_ui_enabled: /v1 can ship before the Authentik client exists ─────────
@@ -364,15 +464,21 @@ PY
 # (`--validate-only` on a UI-on render fails "failed to decode oidc discovery
 # response", 2026-09-22), so a UI-on gateway cannot even start before its
 # Authentik provider exists. The flag renders the gateway without any of it.
-_render_ui() {  # $1 = true|false|unset ; renders into $BATS_TEST_TMPDIR/<name>
+_render_ui() {  # $1 = true|false|unset ; $5 optional trace sample ; renders into $BATS_TEST_TMPDIR/<name>
   command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
-  local flag="" play="$BATS_TEST_TMPDIR/render.yml"
+  local flag="" logs="" traces="" sampling="" play="$BATS_TEST_TMPDIR/render.yml"
   [ "$1" != unset ] && flag="agw_ui_enabled: $1"
+  [ "${3:-unset}" != unset ] && logs="agw_otlp_logs: $3"
+  [ "${4:-unset}" != unset ] && traces="agw_otlp_traces: $4"
+  [ "${5:-unset}" != unset ] && sampling="agw_trace_sampling: $5"
   cat >"$play" <<YML
 - hosts: localhost
   gather_facts: false
   vars:
     $flag
+    $logs
+    $traces
+    $sampling
     agw_otlp_host: "${2:-}"
     agw_clients: [workstation]
     agw_models: [{name: m}]
@@ -385,7 +491,8 @@ YML
   ansible-playbook -i localhost, -c local "$play" >/dev/null
 }
 
-@test "agentgateway: optional OTLP policy renders query-free path fields and bounded sampling" {
+@test "agentgateway: OTLP log and trace switches render independently" {
+  # Omitted switches default off even when the receiver address is declared.
   _render_ui false receiver.test:4317
   python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
 import sys
@@ -393,33 +500,82 @@ import yaml
 config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 assert 'tracing' not in config['config']
 assert 'logging' not in config['config']
+assert 'tracing' not in config['frontendPolicies']
+assert 'otlp' not in config['frontendPolicies']['accessLog']
+PY
+
+  # Access logs only: OTLP fields include the discriminator, while stdout retains
+  # its existing bounded identity and query-free path fields.
+  _render_ui false receiver.test:4317 true false
+  python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+assert 'tracing' not in config['frontendPolicies']
+assert 'logging' not in config['config']
+accessLog = config['frontendPolicies']['accessLog']
+access = accessLog['otlp']
+assert access['host'] == 'receiver.test:4317'
+stdout_add = accessLog['add']
+otlp_add = access['fields']['add']
+assert stdout_add['identity'] == 'apiKey.name'
+assert 'signal' not in stdout_add
+assert otlp_add['signal'] == '"access-log"'
+assert otlp_add['service'] == '"agentgateway"'
+assert otlp_add['identity'] == 'apiKey.name'
+assert stdout_add['http.path'] == otlp_add['http.path'] == 'request.path'
+assert 'request.uri' not in otlp_add
+assert 'request.pathAndQuery' not in otlp_add.values()
+PY
+
+  # Traces only: tracing remains gated and does not imply access-log export.
+  _render_ui false receiver.test:4317 false true
+  python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+assert 'otlp' not in config['frontendPolicies']['accessLog']
 tracing = config['frontendPolicies']['tracing']
 assert tracing['host'] == 'receiver.test:4317'
-assert tracing['randomSampling'] == tracing['clientSampling'] == 0.05
+assert tracing['randomSampling'] == 0.1
+assert tracing['clientSampling'] is False
 assert tracing['resources']['service.name'] == '"agentgateway"'
 assert tracing['attributes']['http.path'] == 'request.path'
-access = config['frontendPolicies']['accessLog']['otlp']
-assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
-assert access['host'] == 'receiver.test:4317'
-assert access['fields']['add']['service'] == '"agentgateway"'
-assert access['fields']['add']['identity'] == 'apiKey.name'
-stdout_add = config['frontendPolicies']['accessLog']['add']
-otlp_add = access['fields']['add']
-assert stdout_add['http.path'] == otlp_add['http.path'] == tracing['attributes']['http.path'] == 'request.path'
-configured_expressions = list(stdout_add.values()) + list(otlp_add.values()) + list(tracing['attributes'].values())
-assert all('request.pathAndQuery' not in expression and 'request.uri' not in expression for expression in configured_expressions if isinstance(expression, str))
+assert 'signal' not in tracing['attributes']
 PY
+
+  # An explicit random rate changes only random sampling; client traceparents
+  # remain unable to opt requests into tracing.
+  _render_ui false receiver.test:4317 false true 0.05
+  python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+tracing = config['frontendPolicies']['tracing']
+assert tracing['randomSampling'] == 0.05
+assert tracing['clientSampling'] is False
+PY
+
+  # Both signals can be enabled together.
+  _render_ui false receiver.test:4317 true true
+  python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+assert 'tracing' in config['frontendPolicies']
+assert 'otlp' in config['frontendPolicies']['accessLog']
+PY
+
   _render_ui false
   refute_grep -qE '^  tracing:' "$BATS_TEST_TMPDIR/config.yaml"
   python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
 import sys
 import yaml
 config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
-access = config['frontendPolicies']['accessLog']
-stdout_add = access['add']
+stdout_add = config['frontendPolicies']['accessLog']['add']
 assert stdout_add['identity'] == 'apiKey.name'
 assert stdout_add['http.path'] == 'request.path'
-assert all('request.pathAndQuery' not in expression and 'request.uri' not in expression for expression in stdout_add.values() if isinstance(expression, str))
+assert 'signal' not in stdout_add
 assert 'otlp' not in config['frontendPolicies']['accessLog']
 PY
 }
@@ -434,22 +590,44 @@ tasks = phase['tasks']
 names = [task['name'] for task in tasks]
 gate = names.index('Require the recorded trace rollout gate before gateway tracing')
 assert tasks[gate]['ansible.builtin.include_tasks'] == 'tasks/assert-o11y-trace-rollout.yml'
-assert tasks[gate]['when'] == "agw_otlp_host | default('') | length > 0"
+assert tasks[gate]['when'] == 'agw_otlp_traces | default(false) | bool'
+receiver = tasks[names.index('Require a declared o11y receiver for agentgateway OTLP')]
+assert receiver['when'] == "agw_otlp_host | default('') | length > 0"
+sampling = tasks[names.index('Require valid sampling when agentgateway traces are enabled')]
+assert sampling['when'] == 'agw_otlp_traces | default(false) | bool'
+address_guard = tasks[names.index('Refuse an OTLP receiver address without an enabled signal')]
+switch_guard = tasks[names.index('Refuse an OTLP signal without its receiver address')]
+assert address_guard['when'] == "agw_otlp_host | default('') | length > 0"
+assert 'agw_otlp_logs' in address_guard['ansible.builtin.assert']['fail_msg']
+assert 'agw_otlp_traces' in address_guard['ansible.builtin.assert']['fail_msg']
+assert 'agw_otlp_host' in switch_guard['ansible.builtin.assert']['that'][0]
+assert 'agw_otlp_logs' in switch_guard['ansible.builtin.assert']['fail_msg']
+assert 'agw_otlp_traces' in switch_guard['ansible.builtin.assert']['fail_msg']
+assert names.index(address_guard['name']) < names.index('Manage secrets and render env + config')
+assert names.index(switch_guard['name']) < names.index('Manage secrets and render env + config')
 assert gate < names.index('Refuse a cleartext OpenBao endpoint')
 assert gate < names.index('Manage secrets and render env + config')
-assert names.index("Require the declared receiver's Tempo to answer before gateway tracing") < names.index('Manage secrets and render env + config')
+tempo = tasks[names.index("Require the declared receiver's Tempo to answer before gateway tracing")]
+assert tempo['when'] == 'agw_otlp_traces | default(false) | bool'
 assert names.index("Require the gateway host to reach Alloy's declared OTLP listener") < names.index('Manage secrets and render env + config')
+reachability = tasks[names.index("Require the gateway host to reach Alloy's declared OTLP listener")]
+assert reachability['when'] == "agw_otlp_host | default('') | length > 0"
 assert not any('named gateway metric' in name for name in names)
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify agentgateway')['tasks']
 verify_names = [task['name'] for task in verify]
 metric = next(task for task in verify if task['name'] == 'Require the receiver to collect the restarted gateway')
-assert metric['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
+assert metric['delegate_to'] == "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
 assert 'agentgateway_config_synchronized' in metric['ansible.builtin.command']['argv'][-1]
 assert 'timestamp(agentgateway_config_synchronized{job="agentgateway"}) and agentgateway_config_synchronized{job="agentgateway"} == 1' in metric['ansible.builtin.command']['argv'][-1]
 assert verify_names.index('Readiness listener answers (via the compose network)') < verify_names.index(metric['name'])
-assert verify_names.index('Mark gateway readiness time on the receiver') < verify_names.index(metric['name'])
+mark = next(task for task in verify if task['name'] == 'Mark gateway readiness time on the receiver')
+assert verify_names.index(mark['name']) < verify_names.index(metric['name'])
 assert metric['retries'] > 1 and metric['delay'] > 0
 assert 'not ansible_check_mode' in metric['when']
+assert any('agentgateway_metrics_address is defined' in condition for condition in metric['when'])
+assert all('agw_otlp_host' not in condition for condition in metric['when'])
+assert any('agentgateway_metrics_address is defined' in condition for condition in mark['when'])
+assert all('agw_otlp_host' not in condition for condition in mark['when'])
 assert '_gateway_ready_epoch.stdout' in metric['until']
 assert '_gateway_metric_gate.rc == 0' in metric['until']
 dry = next(task for task in verify if task['name'] == 'Dry run: is agentgateway running?')
@@ -459,6 +637,65 @@ for name in verify_names:
     if name.startswith('Dry run, agentgateway'):
         task = next(task for task in verify if task['name'] == name)
         assert "_dry_container.stdout | trim != 'true'" in task['when'][-1]
+PY
+}
+
+@test "agentgateway: a declared OTLP receiver requires at least one signal switch" {
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+from jinja2 import Environment
+
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+phase = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage agentgateway secrets')
+tasks = phase['tasks']
+task = next(task for task in tasks if task['name'] == 'Refuse an OTLP receiver address without an enabled signal')
+expression = Environment()
+expression.filters['bool'] = bool
+
+def evaluate(source, variables):
+    if isinstance(source, bool):
+        return source
+    return expression.from_string('{{ (' + source + ') }}').render(**variables).lower() == 'true'
+
+host_only = {'agw_otlp_host': 'receiver.test:4317'}
+assert evaluate(task['when'], host_only)
+assert not all(evaluate(check, host_only) for check in task['ansible.builtin.assert']['that'])
+logs_only = host_only | {'agw_otlp_logs': True}
+assert evaluate(task['when'], logs_only)
+assert all(evaluate(check, logs_only) for check in task['ansible.builtin.assert']['that'])
+assert 'agw_otlp_logs' in task['ansible.builtin.assert']['fail_msg']
+assert 'agw_otlp_traces' in task['ansible.builtin.assert']['fail_msg']
+PY
+}
+
+@test "agentgateway: either OTLP signal switch requires a receiver address" {
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+from jinja2 import Environment
+
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+phase = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage agentgateway secrets')
+tasks = phase['tasks']
+task = next(task for task in tasks if task['name'] == 'Refuse an OTLP signal without its receiver address')
+expression = Environment()
+expression.filters['bool'] = bool
+
+def evaluate(source, variables):
+    if isinstance(source, bool):
+        return source
+    return expression.from_string('{{ (' + source + ') }}').render(**variables).lower() == 'true'
+
+when = task['when'] if isinstance(task['when'], list) else [task['when']]
+for switch in ('agw_otlp_logs', 'agw_otlp_traces'):
+    missing_receiver = {switch: True}
+    assert all(evaluate(condition, missing_receiver) for condition in when)
+    assert not all(evaluate(check, missing_receiver) for check in task['ansible.builtin.assert']['that'])
+    declared_receiver = missing_receiver | {'agw_otlp_host': 'receiver.test:4317'}
+    assert all(evaluate(check, declared_receiver) for check in task['ansible.builtin.assert']['that'])
+assert 'agw_otlp_logs' in task['ansible.builtin.assert']['fail_msg']
+assert 'agw_otlp_traces' in task['ansible.builtin.assert']['fail_msg']
 PY
 }
 

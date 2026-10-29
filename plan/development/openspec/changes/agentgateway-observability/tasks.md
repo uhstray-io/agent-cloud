@@ -90,9 +90,11 @@ is a separate dashboard, with operations as a second dashboard.
 
 ## 2. Gateway configuration deltas: sampling, team, content, guards
 
-- [ ] 2.1 `config.yaml.j2` tracing (design decision 2): `randomSampling` defaults to
+- [x] 2.1 `config.yaml.j2` tracing (design decision 2): `randomSampling` defaults to
       `0.1` instead of `0.05` (line 103), and `clientSampling` renders the literal
-      `false` (line 104). The landed guard (0, 0.1] is unchanged
+      `false` (line 104). The landed guard (0, 0.1] is unchanged. Source implementation
+      and focused checks recorded 2026-10-20 in `design.md`; live traceparent acceptance
+      remains task 8.3.
 - [ ] 2.2 `config.yaml.j2` access log (design decision 3): `accessLog.add` carries
       `identity: apiKey.name` and `team: apiKey.team`; `accessLog.otlp.fields.add`
       carries `service`, `identity`, `team` and `signal: '"access-log"'`. `signal` goes
@@ -229,6 +231,10 @@ is a separate dashboard, with operations as a second dashboard.
         not `no_log`.
       - A 429 from the gateway's own bucket still satisfies the check if 4.2 shows a
         refused request leaves a record.
+      2026-10-12: pointer only, nothing here changes. Phase 3 of `deploy-agentgateway.yml` sends its
+      probes through the shared `tasks/agw-probe.yml` (`deploy-agentgateway.yml:713,763,812`), so this
+      task's access-record verify rides that probe path and
+      `inference-gateway-agentgateway` task 6.1a (ticked 2026-10-12) does not wait on it
 - [ ] 4.4 BATS: the Loki receipt selects on `signal="access-log"` (a stdout line cannot
       satisfy it), runs only when `agw_otlp_logs` is true, and its task carries no
       `Authorization` header
@@ -280,10 +286,16 @@ is a separate dashboard, with operations as a second dashboard.
 
 ## 6. Transport: mutual TLS on the landed bind (design decision 9)
 
-- [ ] 6.1 **[o11y]** The receiver's `tls { cert_file, key_file, client_ca_file }` block,
-      its server leaf, and the name of the receiver-side declaration that turns it on.
-      unverified today: that name. Record it in `design.md` when the o11y session picks
-      it. 6.2 waits on it
+- [ ] 6.1 **[o11y]** Receiver OTLP mTLS source and lifecycle. Source contract: the
+      receiver-side declaration is `o11y_otlp_tls_enabled` (default `false`), with
+      required `o11y_otlp_tls_server_name`; the receiver uses the fixed
+      `o11y-otlp-server` server leaf and authoritative step-ca bundle on the existing
+      gRPC listener. The existing receiver-host journal collector must use its fixed
+      `o11y-journal` client leaf and verify the declared server name before enablement.
+      Both use existing staged leaf paths, read-only mounts and native TLS reload.
+      Keep source implementation separate from live acceptance: the production leaf
+      declaration/issuance and coordinated handshake/deploy evidence remain required;
+      6.2 consumes this sender-facing interface, and 6.5 remains the live gate.
 - [ ] 6.2 `config.yaml.j2`: when the receiver declares TLS (read from
       `hostvars[groups['o11y_svc'][0]]`, as line 108 of the deploy reads
       `o11y_otlp_bind`), render `policies.backendTLS.{root, cert, key, hostname}` on
@@ -349,9 +361,17 @@ is a separate dashboard, with operations as a second dashboard.
       `rate(tempo_distributor_spans_received_total{job="tempo"}[30m]) == 0` while
       `increase(agentgateway_requests_total{job="agentgateway"}[30m]) >= 100`, and only
       while the gateway's `agw_otlp_traces` is true. The counter is already scraped
-      (`config/prometheus.yml:31-33`), so no new scrape is needed. unverified: whether
-      another service sends spans to this Tempo. If one does, the o11y session picks a
-      gateway-specific series
+      (`config/prometheus.yml:31-33`), so no new scrape is needed. Source implementation
+      adds `agentgateway_trace_silent` using an aggregate request increase and aggregate
+      Tempo span rate joined with `and on()`, so missing request or span series do not
+      become a zero-valued firing signal. It stays paused unless global alerts are enabled,
+      the receiver environment is exactly `prod`, no canary is active, exactly one
+      `agentgateway_svc` host declares `agw_otlp_traces: true`, and the separate
+      `o11y_tempo_gateway_exclusive_sender_reviewed` inventory flag is true. That flag
+      requires a review that agentgateway is the exclusive sender to this global Tempo
+      counter; it defaults false. Focused render coverage checks the 100-request/zero-span
+      conjunction and each activation guard. Source only as of 2026-10-18; live deployment
+      and exact Grafana rule-expression readback remain required, so this task stays open.
 - [ ] 8.3 Client-started traces: in local-dev, send 20 requests, each carrying a distinct
       `traceparent` with the sampled flag set, and search Tempo for each of those trace
       ids. Fewer than 20 are found, where `clientSampling: true` would find all 20. This

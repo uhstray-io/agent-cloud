@@ -37,6 +37,33 @@ all:
     local_home_dir: "__GENESIS_DIR__"
     ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
+    # The platform administrators (members of the Authentik platform-admins group) are ONE
+    # declared list, read by the Authentik deploy (accounts, passwords) and the agentgateway
+    # deploy (a gateway identity per entry). It is NOT set here: with no `platform_admins` the
+    # committed default in platform/playbooks/vars/platform-admins.yml applies, built from the
+    # per-user vars (wisward_*, jacob_*, stray_admin_email). Declaring it in an inventory
+    # REPLACES that default entirely; production declares its real list in site-config. The
+    # default's shape, with placeholders only:
+    #   platform_admins:
+    #   - { key: stray_admin, username: stray, name: stray, email: stray@agent-cloud.test }
+    #   - { key: agent_cloud_admin, username: agent-cloud-admin, name: "agent-cloud Admin", email: agent-cloud-admin@agent-cloud.test }
+    #   - { key: wisward, username: wisward, name: "Platform Admin", email: wisward@agent-cloud.test }
+    #   - { key: jacob, username: jacob, name: "Platform Admin 2", email: jacob@agent-cloud.test }
+    #   - { key: svc_automation, username: svc-automation, name: "Platform Service Account", type: service_account }
+    # `key` (lowercase) names the existing OpenBao field `<key>_password` and the worker env
+    # prefix, so it must equal today's name: renaming one re-keys a stored password.
+    # `type: service_account` is Authentik-only (no email, no password); `agw_identity` is
+    # optional and gateway-only. What the credential print playbook may print is NOT driven by
+    # this list: it is a committed constant (`_platform_admins_printable_keys`) next to the
+    # default, because the list is launcher-controllable. `platform_admins_exceptions` (names only, default empty)
+    # lists platform-admins members that are deliberately not in the list; the Authentik
+    # verify accepts them and fails on any other member.
+    # Accounts to DELETE are declared as ONE list of usernames, `platform_retired_accounts`
+    # (default empty, so nothing is retired). Remove the account from `platform_admins` first:
+    # the deploy refuses a name that is also active (or an exception) and the system accounts. Shape:
+    #   platform_retired_accounts: []
+    # List the usernames to retire, then run Deploy Authentik; its verify proves each one gone.
+
   children:
     # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
     # Local zone: `agent-cloud.test` — under the RFC 6761 reserved `.test` TLD
@@ -126,6 +153,8 @@ all:
             - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
             # tududi uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
             - { host: "todo.agent-cloud.test", upstream: "tududi:3002" }
+            # console uses NATIVE OIDC (not forward_auth) - plain reverse_proxy, like tududi.
+            - { host: "console.agent-cloud.test", upstream: "console:8080" }
             # honcho: /v3 API is JWT-authenticated in-app; only the human /docs
             # surface is Authentik-gated (path-scoped forward_auth).
             - { host: "memory.agent-cloud.test", upstream: "honcho-api:8000", forward_auth: "authentik-server:9000", forward_auth_paths: ["/docs*", "/redoc*", "/openapi.json"] }
@@ -133,16 +162,30 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
-            # inference — the OpenAI-compatible vLLM edge (the DGX Spark pair in
-            # prod). inference_api renders the /v1 + /health allowlist with an edge
-            # 401 and 404-for-everything-else; the upstream is a stand-in on the Mac
-            # host (scripts/fake-inference-upstream.py) so the edge rules can be
-            # exercised without a GPU box. Prod points the same shape at spark-1 via
-            # site-config's caddy_managed_sites.
-            - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
+            # plane uses in-app auth, so plain reverse_proxy like postiz. The upstream is the
+            # stack's own proxy container (plane-proxy:80), which joins the local-dev network.
+            - { host: "plane.agent-cloud.test", upstream: "plane-proxy:80" }
+            # inference — the OpenAI-compatible edge, the same shape as prod: this route
+            # fronts the local agentgateway's default listener (/v1), which holds the
+            # per-client keys and budgets. inference_api renders the /v1 + /health
+            # allowlist with an edge 401 and 404-for-everything-else. In-network clients
+            # (skynet) reach it at https://inference.agent-cloud.test/v1 (port 443).
+            # The gateway's upstream is the public edge (agentgateway_svc below).
+            - { host: "inference.agent-cloud.test", upstream: "agentgateway:4000", inference_api: true }
             # agentgateway operator UI — the gateway runs its own OIDC login against
             # Authentik (ui.policies), so this is a plain proxy to its UI listener.
             - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
+            # agentgateway MCP endpoint (change agentgateway-mcp) — mcp_api renders the same
+            # allowlist shape for the EXACT path /mcp only (Bearer-shape 401 at the edge, the
+            # gateway's key check is the authentication; everything else, /sse included, is a
+            # 404). The upstream is the gateway's `default` listener (:4000), the one that
+            # serves /mcp; the single-label host sits under the wildcard certificate.
+            - { host: "mcp.agent-cloud.test", upstream: "agentgateway:4000", mcp_api: true }
+            # OPA — the decision API (platform/services/opa), over HTTPS so callers such as skynet
+            # verify its certificate via step-ca instead of trusting plain http on the shared network.
+            # A plain proxy with NO edge gate: OPA's Phase 1 stays unauthenticated, and this route
+            # adds server authentication only. Upstream opa:8181 is in-network plain HTTP.
+            - { host: "opa.agent-cloud.test", upstream: "opa:8181" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -174,8 +217,14 @@ all:
           o11y_prom_port: 9090
           o11y_prom_retention_size: 1GB  # local cap; production must size its own disk first
           o11y_scrape_sample_limit: 2000
+          o11y_expected_metrics_targets_reviewed: false
           o11y_expected_metrics_targets:
-            - { uid: o11y_missing_caddy, service: caddy-reverse-proxy/caddy, instance: "caddy:2021" }
+            - uid: o11y_missing_caddy
+              job: caddy
+              instance: "caddy:2021"
+              service: caddy-reverse-proxy/caddy
+              cluster: agent-cloud-local
+              environment: local
           o11y_alerts_enabled: false  # enable only after the OpenBao webhook is approved and seeded
           o11y_loki_port: 3100
 
@@ -233,11 +282,52 @@ all:
           # is also the default — set this only if you map a project you own
           # through your OIDC login instead.
           tududi_sync_user_email: admin@agent-cloud.test
+    # console — the Dispatch Console (Rust/Dioxus app; SQLite preferences on a named volume). Native
+    # OIDC to Authentik (client `console`), behind Caddy at console.agent-cloud.test. The image is
+    # built on this host from platform/services/console (no registry). Deploy: make local-deploy-console.
+    console_svc:
+      hosts:
+        console-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: console
+          monorepo_deploy_path: platform/services/console/deployment
+          container_engine: podman
+          console_bind: 127.0.0.1
+          console_port: 3410   # host debug port; Caddy reaches the container :8080 by name
+          # The local podman client sends its own default seccomp path to the podman-machine engine,
+          # which has the profile only at this path ON THE ENGINE. Without it the image build's RUN
+          # steps fail "opening seccomp profile failed" (the NetBox build hit this 2026-09-22).
+          console_build_seccomp: /usr/share/containers/seccomp.json
+          # The Phase 2 work source: the Semaphore API the console reads server-side, the UI its links
+          # open, and the project it lists. Its token is the svc-console account's, stored by
+          # Provision Console Semaphore Access (guest; no run permission).
+          console_semaphore_api_url: https://semaphore.agent-cloud.test
+          console_semaphore_ui_url: https://semaphore.agent-cloud.test:8443
+          console_semaphore_project: 1
+          # Example scope only: no real tenants, sites or addresses. Production declares its own in
+          # site-config. Sites and environments here are names, not hosts.
+          console_scope_is_example: true
+          console_tenants:
+            - id: uhstray
+              name: "Uhstray (example)"
+              # Authentik groups that may see this tenant (platform-admins sees every tenant).
+              groups: [platform-admins, platform-developers]
+              orgs:
+                - id: uhstray-io
+                  name: uhstray-io
+                  sites:
+                    - { id: site-hq, name: HQ, envs: [prod, dev] }
+                    - { id: do-nyc1, name: DigitalOcean NYC1, envs: [prod] }
+                    - { id: cloudflare, name: Cloudflare, envs: [prod] }
     # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
     # per-client API keys + limits) in front of the model API. Locally the
-    # upstream is LM Studio on the Mac host (host.containers.internal:1234, no
-    # key); prod points the same shape at vLLM on the DGX Spark head node via
-    # site-config. Deploy: make local-deploy-agentgateway.
+    # upstream is the PUBLIC edge, https://inference.uhstray.io/v1 (prod's route to
+    # vLLM on the DGX Spark head node), authenticated with the prod identity
+    # `local-gateway`: its key is seeded into local OpenBao (operator step). On the
+    # LAN the upstream is the DGX directly; that address stays in this gitignored
+    # file, never in the committed example. Prod points the same shape at vLLM
+    # via site-config. Deploy: make local-deploy-agentgateway.
     # Change: plan/development/openspec/changes/inference-gateway-agentgateway
     agentgateway_svc:
       hosts:
@@ -249,22 +339,95 @@ all:
           container_engine: podman
           # Local debug publishes (127.0.0.1:4400 api, :4401 readiness, :4402 metrics) are
           # literals in compose.local.yml; the UI is reachable only via Caddy + SSO.
-          agw_upstream_base_url: http://host.containers.internal:1234/v1
+          # LAN override (DGX directly, no public edge): http://<dgx-address>:<port>/v1 in your
+          # gitignored local-dev.yml. Placeholder text only; never commit a real address here.
+          agw_upstream_base_url: https://inference.uhstray.io/v1
           agw_models:
-            # The name clients send -> the model id LM Studio serves.
-            - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+            # The name clients send. No upstream_model: the upstream receives the same name, which
+            # is the name prod's gateway lists (plan/development/openspec/changes/inference-gateway-agentgateway).
+            - { name: qwen3.8-flash-next }
           # One API-key identity each; manage-secrets mints client_<name> once
           # into secret/services/agentgateway and reuses it on every deploy.
           agw_clients:
             - dev-local
+            - isolation-probe
+            # The MCP target's own identity (agentgateway-mcp task 4.2): the gateway presents its key
+            # to its own /v1 over the loopback listener, so a model request made through MCP is
+            # charged to it and logged as `mcp-self`. Never handed out, and refused on /mcp. Enrolled
+            # on /v1 whether or not MCP is on; keep it AFTER the person identities (the deploy's verify
+            # defaults to the first one).
+            - mcp-self
+            # skynet's role identities (plan/development/15-service-deployment-workflow-agents.md,
+            # including the eval identity): one key each, enrolled on /v1 for skynet's agents.
+            - infra-agent
+            - security-agent
+            - o11y-agent
+            - service-agent
+            - network-agent
+            - skynet-eval
+          # isolation-probe: local probe identity for "Probe agentgateway Isolation (Dev)", a budget
+          # small enough to exhaust in two requests. Prod declares its own probe identity in site-config.
+          agw_client_policies:
+            isolation-probe:
+              tokens_per_hour: 50
+            mcp-self: { tokens_per_hour: 500000 }
+          # Budget tiers: platform_admins identities are tier admin; another identity joins a tier with
+          # agw_client_policies.<name>.tier. Its own tokens_per_hour still wins.
+          agw_tier_tokens_per_hour:
+            admin: 1000000000
+            developer: 500000000
+            business: 250000000
+          # MCP (agentgateway-mcp): the key-gated /mcp endpoint on the default gateway. OFF by default:
+          # false renders no mcp block and no loopback gateway, and the verify asserts /mcp is not served.
+          # /mcp admits the PERSONAL ADMIN identities only (derived from platform_admins), never an
+          # agw_clients service client: the chat tool's call runs as mcp-self, so a service client on
+          # /mcp would escape its own allowedModels and hourly budget. Turning it on therefore needs
+          # agw_admin_identities_enabled: true with platform_admins declared for this host, no
+          # allowed_models on an admin identity, and agw_client_policies.mcp-self.tokens_per_hour (the
+          # aggregate cap on every model request made through MCP); the deploy refuses otherwise.
+          agw_mcp_enabled: false
+          # The hostname Caddy fronts /mcp on (the Caddy route is section 5 of the change; the gateway
+          # deploy does not read it).
+          agw_mcp_hostname: mcp.agent-cloud.test
+          # The loopback gateway's port: plain HTTP, attached to the LLM surface only, restricted to the
+          # container's own address, never published. It is where the MCP target calls /v1.
+          agw_loopback_port: 4002
+          # The MCP targets: ONLY name + schema (a .json file in
+          # platform/services/agentgateway/deployment/mcp-schemas/). Each is rendered as an OpenAPI target
+          # over this gateway's own /v1 on the loopback listener; its kind and host are not inputs and
+          # anything else is refused before the deploy renders. The first entry is the gateway's own
+          # chat-completions and model-listing tools (task 4.3).
+          agw_mcp_openapi_targets:
+            - { name: gateway, schema: agentgateway-v1.json }
           # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
           # playground lists them as saved keys. Never set in prod inventory.
           agw_plaintext_keys: true
-          # The upstream key is OPTIONAL here, not forbidden: the deploy stops requiring it,
-          # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
-          # Prod leaves this unset (true = refuse an empty key).
-          agw_upstream_requires_key: false
-
+          # true: the deploy refuses an empty upstream key, and the public edge refuses a keyless
+          # call. Seed secret/services/agentgateway:vllm_api_key with the local-gateway identity's
+          # key (operator step) before deploying.
+          agw_upstream_requires_key: true
+          # OpenRouter models (change agentgateway-openrouter), OFF here: nothing below is declared
+          # until you uncomment it. It is billed per token, so a model is listed by name with its
+          # OpenRouter id and only the identities named in agw_openrouter_identities may call it
+          # (every other identity is denied it in config.yaml). Needs
+          # secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key). The local gateway
+          # trusts public roots too (compose.local.yml's combined bundle), so openrouter.ai verifies here.
+          #   agw_models:
+          #     - { name: qwen3.8-flash-next }
+          #     - { name: or-mini, provider: openrouter, upstream_model: openai/gpt-4o-mini }
+          #   agw_openrouter_identities: [dev-local]
+          #   agw_openrouter_admins: false   # true: every admin-derived identity may call them too
+          #   agw_verify_openrouter: false   # true: the deploy spends one 8-token completion to prove it
+          # skynet's orchestration API at /skynet/ (agentgateway task 3.3), OFF here. Enable it AFTER
+          # Deploy skynet (Local) has run once: this gateway reads skynet's api_token by shared read, so
+          # enabling it before skynet is deployed stops this deploy by name. Enabling it also needs a
+          # host:port backend and the identities allowed to call it. Those identities also pass /v1 (see
+          # the architecture doc, "skynet orchestration route"). Bootstrap forwards these three keys into
+          # the Semaphore inventory, so after editing them re-run `make local-bootstrap`, then Deploy
+          # agentgateway (Local).
+          #   agw_skynet_route_enabled: true
+          #   agw_skynet_backend: skynet:8080
+          #   agw_skynet_route_identities: [dev-local]
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs
@@ -279,6 +442,28 @@ all:
           container_engine: podman
           honcho_bind: 127.0.0.1
           honcho_port: 8400   # host debug port; Caddy reaches honcho-api:8000 by name
+
+    # skynet — the orchestration API (tier-2 image, CI-published by digest, plus its own Postgres).
+    # Its /skynet/ route is served by the local gateway once agw_skynet_route_enabled is set (see the
+    # agentgateway block). Deploy: the Deploy skynet (Local) Semaphore template.
+    skynet_svc:
+      hosts:
+        skynet-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: skynet
+          monorepo_deploy_path: platform/services/skynet/deployment
+          container_engine: podman
+          # skynet main 45fd8698 (2026-10-20); bump to the digest skynet CI prints in its publish job
+          # summary, never a tag. The deploy refuses a tag or any non-digest value.
+          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:d1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da
+          skynet_gateway_url: https://inference.agent-cloud.test
+          skynet_model: qwen3.8-flash-next
+          skynet_opa_url: https://opa.agent-cloud.test
+          skynet_semaphore_url: https://semaphore.agent-cloud.test
+          # id of the agent-cloud project in local Semaphore
+          skynet_semaphore_project: 1
+          skynet_semaphore_catalog: local
 
     # postiz — social-media scheduling and publishing. Five containers: the app
     # (the only one publishing), its own Postgres + Redis, and the Temporal
@@ -319,6 +504,33 @@ all:
           # allows a single signup then closes; encoding the flip here keeps it
           # reproducible instead of a manual step on the host.
           postiz_disable_registration: false
+
+    # plane — work tracker, Commercial edition. Plane's own Compose file is fetched and
+    # sha256-verified per deploy (its EULA forbids committing it); native in-app auth.
+    # Behind Caddy at plane.agent-cloud.test. Deploy: local Semaphore "Deploy Plane (Local)".
+    plane_svc:
+      hosts:
+        plane-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: plane
+          monorepo_deploy_path: platform/services/plane/deployment
+          container_engine: podman
+          plane_bind: 127.0.0.1
+          # Host debug port only; Caddy reaches the proxy container (plane-proxy:80) by name.
+          plane_port: 8096
+          # MUST match the URL the browser uses: Plane derives WEB_URL, CORS_ALLOWED_ORIGINS
+          # and INTEGRATION_CALLBACK_BASE_URL from it (platform/services/plane/deployment/templates/env.j2).
+          # Includes :8443 unless `make local-https` is running.
+          plane_public_url: "https://plane.agent-cloud.test:8443"
+          plane_trusted_proxies: private_ranges
+          plane_automation_email: "plane-automation@agent-cloud.test"
+          plane_company_name: "agent-cloud"
+          plane_workspace_slug: agent-cloud
+          plane_workspace_name: agent-cloud
+          # Sign-in through Authentik: the IdP base Plane's API calls server-side for the token and
+          # userinfo (same host:port the browser uses). Unset = OIDC switched off on the next deploy.
+          plane_authentik_base: "https://auth.agent-cloud.test:8443"
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy
@@ -392,3 +604,7 @@ all:
           # The orb agent runs with host networking on the engine host: it reaches the local
           # OpenBao on that host's loopback, not by the controller's container network name.
           orb_agent_openbao_addr: "http://127.0.0.1:8200"
+          # Containers `Stop Local Service` stops besides the compose project's own: the orb
+          # agent is started by tasks/deploy-orb-agent.yml, carries no compose label, and so
+          # is not found by the project selector.
+          stop_extra_containers: [netbox-orb-agent]

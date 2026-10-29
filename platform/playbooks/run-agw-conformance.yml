@@ -7,7 +7,14 @@
 # platform/services/agentgateway/deployment/tests/conformance.sh: the models list, a chat
 # completion with thinking off, one per reasoning_effort value (seven), a chat_template_kwargs
 # override, a tool call, a streamed xhigh request timed to first token and between chunks, and one
-# Responses API request — each to the gateway, then to vLLM.
+# Responses API request — each to the gateway, then to vLLM. With agw_conformance_long_stream the run
+# adds a fifteenth case, stream-long (tasks 2.3 and 2.4, spec scenario "Stream is not buffered"): one
+# streamed request that must run past 130 s on BOTH sides, passing only when the gateway adds no
+# buffering and passes vLLM's keep-alive comments through. It costs minutes of upstream generation
+# on each side, so it is opt-in; a run without it sends the fourteen cases above. vLLM sends a
+# keep-alive only after 15 s with no chunk, so proving the comments pass through needs the stream
+# to queue: agw_conformance_long_stream_saturate starts that many filler streams on each side first
+# (see the variable below for the load it puts on the upstream).
 #
 # How the keys travel. The runner reads the verifying identity's client key and the upstream key
 # from secret/services/<service_name> in no_log tasks, writes each into its own 0600 file in a
@@ -28,7 +35,9 @@
 # same host resolver, so there is no second, private mapping.
 #
 # Every request is a real completion that costs upstream capacity, so a dry run (--check) sends
-# nothing and says so. Usage (Semaphore template "Run agentgateway Conformance"): no survey.
+# nothing and says so. Usage (Semaphore template "Run agentgateway Conformance"): two survey vars,
+# agw_conformance_long_stream and agw_conformance_long_stream_saturate (both default off); every
+# other input is inventory.
 #
 # Inventory (agentgateway_svc host), all read by the deploy too:
 #   agw_upstream_base_url, agw_models, agw_clients, agw_client_policies, agw_bind, agw_port,
@@ -36,10 +45,26 @@
 #   agw_verify_base_url, agw_verify_client, agw_upstream_requires_key, agw_internal_dns_authoritative
 # Optional:
 #   agw_conformance_client      identity to send as (default: agw_verify_client, then the first
-#                               agw_clients entry, as the deploy's verify does)
+#                               agw_clients entry, as the deploy's verify does; any agw_identities
+#                               name may be named)
 #   agw_conformance_model       served name to request (default: the identity's first model)
 #   agw_conformance_timeout     per-request ceiling in seconds (default 600)
 #   agw_conformance_stream_max_tokens  max_tokens for the streamed case (default 2048)
+#   agw_conformance_long_stream        true adds the stream-long case (default false; a survey var
+#                                      reaches the play as the string "true" or "false")
+#   agw_conformance_long_stream_min_seconds  how long the direct stream must last to prove anything (130)
+#   agw_conformance_long_stream_max_tokens   max_tokens that makes the stream that long (8000)
+#   agw_conformance_long_stream_timeout      hard ceiling per side, seconds (600)
+#   agw_conformance_long_stream_saturate     0 to 16 filler streams started on each side before the
+#                                      long stream so it queues and vLLM sends keep-alives (default
+#                                      0 = none; needs agw_conformance_long_stream). Use at least
+#                                      vLLM's max-num-seqs (8 on the dgx-spark qwen3.8-flash-next
+#                                      profile). Each filler is a real generation on the SHARED
+#                                      upstream: for agw_conformance_long_stream_saturate_seconds on
+#                                      each side, one side after the other, every scheduler slot is
+#                                      held and any other client queues behind them
+#   agw_conformance_long_stream_saturate_seconds  how long a filler lives (45); the long stream
+#                                      waits about that long on each side, a keep-alive per 15 s
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -56,6 +81,9 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  # agw_identities: agw_clients plus the personal identities derived from the declared admin list.
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
@@ -73,11 +101,16 @@
     _client: "{{ agw_conformance_client | default(agw_verify_client | default((agw_clients | default([]) | first) | default(''))) }}"
     # Order-preserving filter, not `intersect`: intersect is a set operation whose order follows
     # per-process string hashing, so `first` picked a different model run to run (prod tasks 2614,
-    # 2681, 2698). This keeps allowed_models order, else agw_models order.
+    # 2681, 2698). This keeps allowed_models order, else agw_models order. OpenRouter models
+    # (agentgateway-openrouter) are never picked: the run compares the gateway with direct vLLM and
+    # OpenRouter is billed per token (agw_conformance_model still names one explicitly).
     _client_models: >-
       {{ ((agw_client_policies | default({}))[_client] | default({})).allowed_models
          | default(agw_models | default([]) | map(attribute='name') | list)
-         | select('in', agw_models | default([]) | map(attribute='name') | list) | list }}
+         | select('in', agw_models | default([]) | map(attribute='name') | list)
+         | reject('in', agw_models | default([]) | selectattr('provider', 'defined')
+                  | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list)
+         | list }}
     _model: "{{ agw_conformance_model | default(_client_models | first | default('')) }}"
     _direct_model: >-
       {{ (agw_models | default([]) | selectattr('name', 'equalto', _model) | first | default({})).upstream_model | default(_model) }}
@@ -134,18 +167,22 @@
         msg: "check mode: the conformance run sends real requests to the gateway and to vLLM; nothing was sent."
       when: ansible_check_mode
 
+    # After the run's refusal of internal extra vars (its first task), before the identity check.
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
     - name: "Require one gateway host, an upstream, and an identity allowed the model"
       ansible.builtin.assert:
         that:
           - groups['agentgateway_svc'] | length == 1
           - agw_upstream_base_url | default('') | length > 0
           - _client | length > 0
-          - _client in (agw_clients | default([]))
+          - _client in agw_identities
           - _model | length > 0
           - _model in _client_models
         fail_msg: >-
           agentgateway_svc must hold one host with agw_upstream_base_url, and the conformance identity
-          '{{ _client }}' must be in agw_clients and allowed '{{ _model }}' (it may use:
+          '{{ _client }}' must be in agw_identities and allowed '{{ _model }}' (it may use:
           {{ _client_models | join(', ') | default('nothing', true) }}).
         quiet: true
 
@@ -373,6 +410,12 @@
                 AGW_CONF_DIRECT_MODEL: "{{ _direct_model }}"
                 AGW_CONF_TIMEOUT: "{{ agw_conformance_timeout | default(600) }}"
                 AGW_CONF_STREAM_MAX_TOKENS: "{{ agw_conformance_stream_max_tokens | default(2048) }}"
+                AGW_CONF_LONG_STREAM: "{{ '1' if (agw_conformance_long_stream | default(false) | bool) else '0' }}"
+                AGW_CONF_LONG_STREAM_MIN_S: "{{ agw_conformance_long_stream_min_seconds | default(130) }}"
+                AGW_CONF_LONG_STREAM_MAX_TOKENS: "{{ agw_conformance_long_stream_max_tokens | default(8000) }}"
+                AGW_CONF_LONG_STREAM_TIMEOUT: "{{ agw_conformance_long_stream_timeout | default(600) }}"
+                AGW_CONF_LONG_STREAM_SATURATE: "{{ agw_conformance_long_stream_saturate | default(0) }}"
+                AGW_CONF_LONG_STREAM_SATURATE_S: "{{ agw_conformance_long_stream_saturate_seconds | default(45) }}"
               register: _conf_run
               changed_when: false
 
@@ -420,6 +463,7 @@
                 model: "{{ _model }}"
                 gateway_url: "{{ _gateway_url }}"
                 report: "{{ _conf_report }}"
+                unproven: "{{ _conf_report.unproven | default([]) }}"
                 results: "{{ _conf_lines }}"
 
         - name: "Report gateway against direct vLLM: summary"
@@ -440,6 +484,19 @@
         - name: "Report gateway against direct vLLM: per case"
           ansible.builtin.debug:
             var: _conf_report.cases
+
+        # Not a failure, and the verdict stays as it is: a long stream that carried no keep-alive from
+        # vLLM (it sends one only after 15 s without a chunk) passed on timing alone, which says
+        # nothing about the gateway passing the comments through. Also in the report and the stats
+        # as `unproven: ["keepalive"]`.
+        - name: "Warn: keep-alive pass-through is unproven on this run"
+          ansible.builtin.debug:
+            msg: >-
+              keep-alive pass-through UNPROVEN: vLLM sent no keep-alive comments during this stream;
+              do not close gateway task 2.3 on this run.
+              To prove it, re-run with agw_conformance_long_stream_saturate set (8 matches vLLM's
+              max-num-seqs) so the stream queues behind filler streams.
+          when: "'keepalive' in (_conf_report.unproven | default([]))"
 
         - name: "Require the gateway to match direct vLLM"
           ansible.builtin.assert:

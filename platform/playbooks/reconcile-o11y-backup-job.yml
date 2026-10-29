@@ -158,7 +158,8 @@
       ansible.builtin.command:
         argv: [python3, "{{ _planner }}", inspect]
         stdin: >-
-          {{ {'vmid': _vmid, 'jobs': _backup_jobs.json.data} | to_json }}
+          {{ {'job_id': _backup_job_id, 'vmid': _vmid,
+              'jobs': _backup_jobs.json.data} | to_json }}
       register: _backup_inspection_result
       failed_when: false
       changed_when: false
@@ -173,18 +174,454 @@
           {{ ((_backup_inspection_result.stdout | from_json).refusal
               | default('Proxmox returned invalid inspection data.')) }}
 
-    - name: Keep the sanitized backup-job candidate report private to this run
+    - name: Keep the sanitized selected-job inspection private to this run
       ansible.builtin.set_fact:
         _backup_inspection: "{{ _backup_inspection_result.stdout | from_json }}"
       no_log: true
 
-    - name: Report backup-job candidates for inventory selection
+    - name: Read the privately selected backup-job detail for inspection
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/backup/{{ _backup_job_id }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_inspect_job_detail
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_inspection.selected_job.match == 'unique'
+
+    - name: Read storage available to the declared node for destination inspection
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_storage
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_inspection.selected_job.match == 'unique'
+
+    - name: Summarize the selected job destination without exposing its identity
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", storage-summary]
+        stdin: >-
+          {{ {'job_id': _backup_job_id,
+              'jobs': _backup_jobs.json.data,
+              'job_detail_response': {
+                'status': _backup_inspect_job_detail.status | default(0),
+                'json': _backup_inspect_job_detail.json | default({})
+              },
+              'storage_response': {
+                'status': _backup_node_storage.status | default(0),
+                'json': _backup_node_storage.json | default({})
+              }} | to_json }}
+      register: _backup_selected_destination_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the sanitized selected-destination state
+      ansible.builtin.set_fact:
+        _backup_selected_destination: "{{ _backup_selected_destination_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read effective permissions on the declared Proxmox node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/access/permissions?path={{ ('/nodes/' ~ _node) | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_history_permissions
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Plan bounded archived backup-task history inspection
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", history-query]
+        stdin: >-
+          {{ {'node': _node, 'vmid': _vmid,
+              'permissions_response': {
+                'status': _backup_history_permissions.status | default(0),
+                'json': {'data': _backup_history_permissions.json.data | default({})}
+              }} | to_json }}
+      register: _backup_history_query_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the bounded backup-task history query private to this run
+      ansible.builtin.set_fact:
+        _backup_history_query: "{{ _backup_history_query_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read pvescheduler state after verified node-scoped permission
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/services/pvescheduler/state"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_scheduler_state
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_history_query.read_allowed | default(false) | bool
+
+    - name: Summarize pvescheduler state without exposing the API response
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", scheduler-state]
+        stdin: >-
+          {{ {'permissions_verified': _backup_history_query.read_allowed | default(false) | bool,
+              'response': {
+                'status': _backup_scheduler_state.status | default(0),
+                'json': _backup_scheduler_state.json | default({})
+              }} | to_json }}
+      register: _backup_scheduler_state_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the sanitized scheduler state private to this run
+      ansible.builtin.set_fact:
+        _backup_scheduler_state_summary: "{{ _backup_scheduler_state_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read the first archived vzdump task page
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host ~ '/api2/json/nodes/' ~ _node ~ '/tasks?source=archive&typefilter=vzdump&vmid='
+             ~ _vmid ~ '&since=' ~ _backup_history_query.query.since
+             ~ '&until=' ~ _backup_history_query.query.until ~ '&start=0&limit=50' }}
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_history_first
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only and _backup_history_query.read_allowed | bool
+
+    - name: Plan remaining bounded task-history pages
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", history-pages]
+        stdin: >-
+          {{ {'read_allowed': _backup_history_query.read_allowed | default(false),
+              'first_page': {
+                'status': _backup_history_first.status | default(0),
+                'json': _backup_history_first.json | default({})
+              }} | to_json }}
+      register: _backup_history_pages_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the task-history pagination plan private to this run
+      ansible.builtin.set_fact:
+        _backup_history_pages: "{{ _backup_history_pages_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read later archived vzdump task pages
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host ~ '/api2/json/nodes/' ~ _node ~ '/tasks?source=archive&typefilter=vzdump&vmid='
+             ~ _vmid ~ '&since=' ~ _backup_history_query.query.since
+             ~ '&until=' ~ _backup_history_query.query.until ~ '&start=' ~ item ~ '&limit=50' }}
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _backup_history_pages.page_starts }}"
+      register: _backup_history_later
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_history_query.read_allowed | bool
+
+    - name: Summarize archived task history without exposing task identity or details
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", history-summary]
+        stdin: >-
+          {{ {'plan': _backup_history_query,
+              'first_page': {
+                'status': _backup_history_first.status | default(0),
+                'json': _backup_history_first.json | default({})
+              },
+              'later_pages': _backup_history_later.results | default([])} | to_json }}
+      register: _backup_history_summary_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the sanitized task-history summary private to this run
+      ansible.builtin.set_fact:
+        _backup_history_summary: "{{ _backup_history_summary_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Plan bounded node-wide archived vzdump history inspection
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-history-query]
+        stdin: >-
+          {{ {'node': _node, 'vmid': _vmid,
+              'permissions_response': {
+                'status': _backup_history_permissions.status | default(0),
+                'json': {'data': _backup_history_permissions.json.data | default({})}
+              }} | to_json }}
+      register: _backup_node_history_query_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the bounded node-history query private to this run
+      ansible.builtin.set_fact:
+        _backup_node_history_query: "{{ _backup_node_history_query_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read the first node-wide archived vzdump task page
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host ~ '/api2/json/nodes/' ~ _node ~ '/tasks?source=archive&typefilter=vzdump&since='
+             ~ _backup_node_history_query.query.since ~ '&until=' ~ _backup_node_history_query.query.until
+             ~ '&start=0&limit=50' }}
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_history_first
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only and _backup_node_history_query.read_allowed | bool
+
+    - name: Plan remaining bounded node-history pages
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", history-pages]
+        stdin: >-
+          {{ {'read_allowed': _backup_node_history_query.read_allowed | default(false),
+              'first_page': {
+                'status': _backup_node_history_first.status | default(0),
+                'json': _backup_node_history_first.json | default({})
+              }} | to_json }}
+      register: _backup_node_history_pages_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the node-history pagination plan private to this run
+      ansible.builtin.set_fact:
+        _backup_node_history_pages: "{{ _backup_node_history_pages_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read later node-wide archived vzdump task pages
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host ~ '/api2/json/nodes/' ~ _node ~ '/tasks?source=archive&typefilter=vzdump&since='
+             ~ _backup_node_history_query.query.since ~ '&until=' ~ _backup_node_history_query.query.until
+             ~ '&start=' ~ item ~ '&limit=50' }}
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _backup_node_history_pages.page_starts }}"
+      register: _backup_node_history_later
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_node_history_query.read_allowed | bool
+
+    - name: Summarize node-wide archived task history without task identity or details
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-history-summary]
+        stdin: >-
+          {{ {'plan': _backup_node_history_query,
+              'first_page': {
+                'status': _backup_node_history_first.status | default(0),
+                'json': _backup_node_history_first.json | default({})
+              },
+              'later_pages': _backup_node_history_later.results | default([])} | to_json }}
+      register: _backup_node_history_summary_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the sanitized node-history summary private to this run
+      ansible.builtin.set_fact:
+        _backup_node_history_summary: "{{ _backup_node_history_summary_result.stdout | from_json }}"
+      when: _inspect_only
+
+    - name: Select one recent failed node task for a bounded diagnostic
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-plan]
+        stdin: >-
+          {{ {'plan': _backup_node_history_query,
+              'first_page': {
+                'status': _backup_node_history_first.status | default(0),
+                'json': _backup_node_history_first.json | default({})
+              },
+              'later_pages': _backup_node_history_later.results | default([])} | to_json }}
+      register: _backup_node_failure_plan_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep private node-task diagnostic selection
+      ansible.builtin.set_fact:
+        _backup_node_failure_plan: "{{ _backup_node_failure_plan_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read one task-log metadata line for a recent unique failure
+      ansible.builtin.uri:
+        url: "{{ _pve_host ~ _backup_node_failure_plan.metadata_path }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_failure_metadata
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only and _backup_node_failure_plan.read_allowed | default(false) | bool
+
+    - name: Compare task metadata with private selected backup identity
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-identity]
+        stdin: >-
+          {{ {'job_id': _backup_job_id, 'vmid': _vmid,
+              'jobs': _backup_jobs.json.data,
+              'job_detail_response': {
+                'status': _backup_inspect_job_detail.status | default(0),
+                'json': _backup_inspect_job_detail.json | default({})
+              },
+              'metadata_response': {
+                'status': _backup_node_failure_metadata.status | default(0),
+                'json': _backup_node_failure_metadata.json | default({})
+              }} | to_json }}
+      register: _backup_node_failure_identity_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep sanitized task identity comparisons
+      ansible.builtin.set_fact:
+        _backup_node_failure_identity: "{{ _backup_node_failure_identity_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Plan the bounded final task-log page
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-pages]
+        stdin: >-
+          {{ {'read_allowed': _backup_node_failure_plan.read_allowed | default(false),
+              'diagnostic': _backup_node_failure_plan.diagnostic | default(None),
+              'metadata_path': _backup_node_failure_plan.metadata_path | default(''),
+              'metadata_response': {
+                'status': _backup_node_failure_metadata.status | default(0),
+                'json': _backup_node_failure_metadata.json | default({})
+              }} | to_json }}
+      register: _backup_node_failure_pages_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep private task-log pagination plan
+      ansible.builtin.set_fact:
+        _backup_node_failure_pages: "{{ _backup_node_failure_pages_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read the bounded final task-log lines
+      ansible.builtin.uri:
+        url: "{{ _pve_host ~ _backup_node_failure_pages.log_path }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_failure_log
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only and _backup_node_failure_pages.read_allowed | default(false) | bool
+
+    - name: Classify task log into a fixed failure hint
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-summary]
+        stdin: >-
+          {{ {'page_plan': _backup_node_failure_pages,
+              'log_response': {
+                'status': _backup_node_failure_log.status | default(0),
+                'json': _backup_node_failure_log.json | default({})
+              }} | to_json }}
+      register: _backup_node_failure_summary_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep sanitized node-task failure diagnostic
+      ansible.builtin.set_fact:
+        _backup_node_failure_diagnostic: "{{ _backup_node_failure_summary_result.stdout | from_json }}"
+      when: _inspect_only
+
+    - name: Report sanitized selected backup-job status
       ansible.builtin.debug:
         msg:
           backup_job_reconciliation: inspect_only
-          verified_o11y_vmid: "{{ _vmid }}"
           candidate_count: "{{ _backup_inspection.candidate_count }}"
-          candidates: "{{ _backup_inspection.candidates }}"
+          selected_backup_job: "{{ _backup_inspection.selected_job }}"
+          backup_task_history: "{{ _backup_history_summary }}"
+          proxmox_node_task_history: "{{ _backup_node_history_summary }}"
+          proxmox_node_task_failure_diagnostic: "{{ _backup_node_failure_diagnostic }}"
+          proxmox_node_task_identity: "{{ _backup_node_failure_identity }}"
+          selected_backup_destination: "{{ _backup_selected_destination }}"
+          proxmox_scheduler_state: "{{ _backup_scheduler_state_summary }}"
       when: _inspect_only
 
     - name: End after read-only backup-job inspection

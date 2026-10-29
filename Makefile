@@ -4,7 +4,8 @@
 LOCAL_DEV := scripts/local-dev.sh
 
 .PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-templates local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean local-o11y-render-proof promote
-.PHONY: local-deploy-% local-clean-deploy-% git-setup
+.PHONY: local-deploy-% local-clean-deploy-% local-service-down local-foundation-down git-setup
+.PHONY: agw-mcp-client agw-mcp-client-remove
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z%-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-22s %s\n", $$1, $$2}'
@@ -76,6 +77,15 @@ local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local
 local-clean-deploy-%: ## DESTRUCTIVE: wipe a service's containers+volumes, then redeploy; CONFIRM_RESET=<host> required (make local-clean-deploy-dns CONFIRM_RESET=dns-local)
 	@$(LOCAL_DEV) clean-deploy $* "$(CONFIRM_RESET)"
 
+local-service-down: ## Stop ONE idle local service (containers stopped; volumes + containers kept): make local-service-down SERVICE=erpnext_svc. Restart it with that service's Deploy (docs/LOCAL-DEV.md)
+	@# SERVICE is read from the environment make exports for a command-line variable, never spliced into the shell text, and must be a plain <service>_svc name before it goes into the JSON.
+	@case "$$SERVICE" in ''|*[!A-Za-z0-9_]*) bad=1 ;; ?*_svc) bad=0 ;; *) bad=1 ;; esac; \
+	  [ "$$bad" = 0 ] || { echo "usage: make local-service-down SERVICE=<inventory group>  (letters, digits and _, ending in _svc, e.g. erpnext_svc)" >&2; exit 1; }; \
+	  $(LOCAL_DEV) run stop-local-service.yml '{"target_service":"'"$$SERVICE"'"}'
+
+local-foundation-down: ## Stop the genesis foundation (OpenBao, dns, step-ca, Caddy, Authentik, Semaphore) without removing containers, images or volumes. Bring it back with: make local-bootstrap
+	@$(LOCAL_DEV) foundation-down
+
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate
 
@@ -118,3 +128,15 @@ local-clean: ## Remove the local control plane (containers, volume, state)
 
 promote: ## Fast checks, push feature branch, open PR into dev
 	@$(LOCAL_DEV) promote
+
+# Values reach the installer as environment variables, never as text in a shell line.
+agw-mcp-client: export AGW_MCP_HOST := $(HOST)
+agw-mcp-client: export AGW_MCP_IDENTITY := $(IDENTITY)
+agw-mcp-client: export AGW_MCP_KEY_FILE := $(or $(KEY_FILE),$(AGW_MCP_KEY_FILE))
+agw-mcp-client: export AGW_MCP_HARNESS := $(HARNESS)
+agw-mcp-client: ## Install the agentgateway MCP server into Claude Code + pi, key by command (HOST=, IDENTITY=, [KEY_FILE=], [HARNESS=], [DRY_RUN=1])
+	@python3 scripts/agw-mcp-client.py $(if $(DRY_RUN),--dry-run)
+
+agw-mcp-client-remove: export AGW_MCP_HARNESS := $(HARNESS)
+agw-mcp-client-remove: ## Remove exactly the agentgateway MCP entry from Claude Code + pi ([HARNESS=], [DRY_RUN=1])
+	@python3 scripts/agw-mcp-client.py --remove $(if $(DRY_RUN),--dry-run)

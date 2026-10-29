@@ -45,56 +45,264 @@ _committed_files() {
 
 # ── RFC1918 IP detection ──────────────────────────────────────────────
 
+# Print private-address tokens, exempting only the exact RFC1918 CIDR declaration
+# used by the availability validator. A whole-line exemption could conceal a host
+# address beside a harmless network definition.
+_private_ip_findings() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import ipaddress
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+family, root, paths_file = sys.argv[1:]
+paths = Path(paths_file).read_text(encoding="utf-8").splitlines()
+if not paths or any(not path for path in paths) or len(paths) != len(set(paths)):
+    print("private-address scan received an empty or ambiguous path list", file=sys.stderr)
+    raise SystemExit(2)
+listing = subprocess.run(
+    ["git", "ls-files", "--stage", "-z"],
+    cwd=root,
+    check=False,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+if listing.returncode != 0:
+    print("private-address scan could not read Git index", file=sys.stderr)
+    raise SystemExit(2)
+selected = set(paths)
+entries = {}
+try:
+    for record in listing.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, object_id, stage = metadata.split()
+        path = os.fsdecode(raw_path)
+        if path not in selected:
+            continue
+        if path in entries or stage != b"0" or mode not in {b"100644", b"100755", b"120000"}:
+            raise ValueError
+        entries[path] = (mode, object_id)
+except ValueError:
+    print("private-address scan found malformed or ambiguous Git index entries", file=sys.stderr)
+    raise SystemExit(2)
+if set(entries) != selected:
+    print("private-address scan found missing Git index entries", file=sys.stderr)
+    raise SystemExit(2)
+ordered = [(path, *entries[path]) for path in paths]
+objects = b"".join(object_id + b"\n" for _path, _mode, object_id in ordered)
+blobs = subprocess.run(
+    ["git", "cat-file", "--batch"],
+    cwd=root,
+    input=objects,
+    check=False,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+if blobs.returncode != 0:
+    print("private-address scan could not read Git blobs", file=sys.stderr)
+    raise SystemExit(2)
+cidr_definitions = {
+    "10": "10.0.0.0/8",
+    "172": "172.16.0.0/12",
+    "192.168": "192.168.0.0/16",
+}
+network = ipaddress.ip_network(cidr_definitions[family])
+address_re = re.compile(rb"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b")
+definition_re = re.compile(
+    rb"ipaddress\.ip_network\(\s*['\"](?P<network>"
+    + re.escape(network.with_prefixlen.encode("ascii"))
+    + rb")['\"]\s*\)"
+)
+offset = 0
+for path, _mode, object_id in ordered:
+    header_end = blobs.stdout.find(b"\n", offset)
+    if header_end < 0:
+        print("private-address scan received a truncated Git blob header", file=sys.stderr)
+        raise SystemExit(2)
+    header = blobs.stdout[offset:header_end].split()
+    if len(header) != 3 or header[0] != object_id or header[1] != b"blob":
+        print("private-address scan received an invalid Git blob header", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        size = int(header[2])
+    except ValueError:
+        print("private-address scan received an invalid Git blob size", file=sys.stderr)
+        raise SystemExit(2)
+    body_start = header_end + 1
+    body_end = body_start + size
+    if size < 0 or body_end >= len(blobs.stdout) or blobs.stdout[body_end:body_end + 1] != b"\n":
+        print("private-address scan received a truncated Git blob", file=sys.stderr)
+        raise SystemExit(2)
+    content = blobs.stdout[body_start:body_end]
+    offset = body_end + 1
+    for number, line in enumerate(content.splitlines(), 1):
+        definition_spans = [match.span("network") for match in definition_re.finditer(line)]
+        for address in address_re.finditer(line):
+            octets = tuple(int(part) for part in address.group().split(b"."))
+            prefix = tuple(int(part) for part in family.split("."))
+            if octets[: len(prefix)] != prefix:
+                continue
+            if family == "172" and not 16 <= octets[1] <= 31:
+                continue
+            if any(start == address.start() and address.end() == start + len(network.network_address.exploded)
+                   for start, _end in definition_spans):
+                continue
+            print(f"{path}:{number}:{address.group().decode('ascii')}")
+if offset != len(blobs.stdout):
+    print("private-address scan received trailing Git blob data", file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+_private_ip_scan() {
+  local family="$1" paths="$BATS_TEST_TMPDIR/private-ip-paths-$1.txt"
+  (set -o pipefail; _committed_files) > "$paths" || return 2
+  [ -s "$paths" ] || return 2
+  _private_ip_findings "$family" "$REPO_ROOT" "$paths"
+}
+
 @test "credential leak: no hardcoded 192.168.x.x IPs in committed files" {
-  local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '192\.168\.[0-9]+\.[0-9]+' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|inventory_hostname|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
-  if [ -n "$violations" ]; then
+  run _private_ip_scan 192.168
+  [ "$status" -eq 0 ]
+  if [ -n "$output" ]; then
     echo "Found hardcoded 192.168.x.x IPs:"
-    echo "$violations"
+    echo "$output"
     false
   fi
 }
 
 @test "credential leak: no hardcoded 10.x.x.x IPs in committed files" {
-  local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      # Match 10.N.N.N but not version strings like 10.0 without third octet
-      grep -nE '\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
-  if [ -n "$violations" ]; then
+  run _private_ip_scan 10
+  [ "$status" -eq 0 ]
+  if [ -n "$output" ]; then
     echo "Found hardcoded 10.x.x.x IPs:"
-    echo "$violations"
+    echo "$output"
     false
   fi
 }
 
 @test "credential leak: no hardcoded 172.16-31.x.x IPs in committed files" {
-  local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
-  if [ -n "$violations" ]; then
+  run _private_ip_scan 172
+  [ "$status" -eq 0 ]
+  if [ -n "$output" ]; then
     echo "Found hardcoded 172.16-31.x.x IPs:"
-    echo "$violations"
+    echo "$output"
     false
   fi
+}
+
+@test "private address scan exempts only exact RFC1918 definition tokens" {
+  local fixture="$BATS_TEST_TMPDIR/rfc1918-definitions.txt"
+  local repo="$BATS_TEST_TMPDIR/scanner-repo"
+  local paths="$BATS_TEST_TMPDIR/scanner-paths.txt"
+  python3 - "$fixture" <<'PY'
+import ipaddress
+import sys
+from pathlib import Path
+
+cidrs = {
+    "10": "10.0.0.0/8",
+    "172": "172.16.0.0/12",
+    "192.168": "192.168.0.0/16",
+}
+networks = {family: ipaddress.ip_network(cidr) for family, cidr in cidrs.items()}
+lines = [
+    f'ipaddress.ip_network("{networks["10"].with_prefixlen}")  # host {networks["10"][23]}',
+    f'ipaddress.ip_network("{networks["172"].with_prefixlen}")  # host {networks["172"][23]}',
+    f'ipaddress.ip_network("{networks["192.168"].with_prefixlen}")  # host {networks["192.168"][23]}',
+    f'host = "{networks["10"][99]}"',
+    f'host = "{networks["172"][31]}"',
+    f'host = "{networks["192.168"][2]}"',
+    f'ipaddress.ip_network("{networks["10"][1]}/{networks["10"].prefixlen}")',
+    f'ipaddress.ip_network("{networks["172"][17]}/{networks["172"].prefixlen}")',
+    f'ipaddress.ip_network("{networks["192.168"][1]}/{networks["192.168"].prefixlen}")',
+    f'url = "https://{networks["10"].network_address}/{networks["10"].prefixlen}"',
+    f'url = "https://{networks["172"].network_address}/{networks["172"].prefixlen}"',
+    f'url = "https://{networks["192.168"].network_address}/{networks["192.168"].prefixlen}"',
+    f'ipaddress.ip_network("{networks["10"].with_prefixlen}")',
+    f'ipaddress.ip_network("{networks["172"].with_prefixlen}")',
+    f'ipaddress.ip_network("{networks["192.168"].with_prefixlen}")',
+    "host = \"10." + ".".join(f"{int(part):03d}" for part in str(networks["10"][23]).split(".")[1:]) + "\"",
+]
+Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
+  mkdir -p "$repo"
+  cp "$fixture" "$repo/rfc1918-definitions.txt"
+  git -C "$repo" init -q
+  git -C "$repo" add -- rfc1918-definitions.txt
+  printf '%s\n' rfc1918-definitions.txt > "$paths"
+
+  run _private_ip_findings 10 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "1:"
+  assert_contains "$output" "4:"
+  assert_contains "$output" "7:"
+  assert_contains "$output" "10:"
+  assert_contains "$output" "16:"
+  refute_contains "$output" "13:"
+
+  run _private_ip_findings 172 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "2:"
+  assert_contains "$output" "5:"
+  assert_contains "$output" "8:"
+  assert_contains "$output" "11:"
+  refute_contains "$output" "14:"
+
+  run _private_ip_findings 192.168 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "3:"
+  assert_contains "$output" "6:"
+  assert_contains "$output" "9:"
+  assert_contains "$output" "12:"
+  refute_contains "$output" "15:"
+}
+
+@test "private address scan inspects symlink blobs without opening external targets" {
+  local repo="$BATS_TEST_TMPDIR/scanner-link-repo"
+  local external="$BATS_TEST_TMPDIR/scanner-link-outside"
+  local paths="$BATS_TEST_TMPDIR/scanner-link-paths.txt"
+  local expected_host
+  mkdir -p "$repo" "$external"
+  expected_host=$(python3 - "$repo" "$external" <<'PY'
+import ipaddress
+import os
+import sys
+from pathlib import Path
+
+repo, external = map(Path, sys.argv[1:])
+host = str(ipaddress.ip_network("10.0.0.0/8")[211])
+(external / "private-value.txt").write_text(host, encoding="utf-8")
+os.symlink(external / "private-value.txt", repo / "external-link.txt")
+os.symlink(f"../unresolved/{host}", repo / "link-text.txt")
+print(host)
+PY
+  )
+  [ -n "$expected_host" ]
+  git -C "$repo" init -q
+  git -C "$repo" add -- external-link.txt link-text.txt
+  printf '%s\n' external-link.txt link-text.txt > "$paths"
+
+  run _private_ip_findings 10 "$repo" "$paths"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "external-link.txt:"
+  assert_contains "$output" "link-text.txt:1:$expected_host"
+}
+
+@test "private address scan propagates index read failures" {
+  local repo="$BATS_TEST_TMPDIR/scanner-error-repo"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  _committed_files() { printf '%s\n' missing.txt; }
+  REPO_ROOT="$repo"
+  run _private_ip_scan 10
+  [ "$status" -eq 2 ]
+  assert_contains "$output" "private-address scan found missing Git index entries"
 }
 
 # ── Hardcoded credential detection ───────────────────────────────────
@@ -333,57 +541,135 @@ _committed_files() {
   [ -z "$output" ]
   grep -q 'Refusing to send secret material' "$shared"
 
-  # ESCAPING PIN, updated for the var form. The pattern now lives in a YAML
-  # single-quoted VAR (_pat_strict), which Jinja passes to match() as a value —
-  # no string-literal escape processing — so a single `\.` IS the escaped dot
-  # and `\\.` would put a literal backslash into the regex. (The old inline
-  # `is match('...')` form was the opposite; runtime-proven 2026-08-30 across
-  # eight accept/refuse cases when this moved.)
-  grep -qE "_pat_strict: '.*127\(\\\.\[0-9\]" "$shared"
-  ! grep -qE "_pat_strict: '.*127\(\\\\\." "$shared"
+  # The strict policy composes the bounded IPv4 fragment for loopback HTTP;
+  # the behavioral table below verifies the expanded regex and octet boundaries.
+  grep -F "_pat_strict:" "$shared" | grep -Fq "{{ _pat_loopback }}"
+  grep -Fq "_pat_loopback: '127(?:\.{{ _pat_ipv4_octet }}){3}'" "$shared"
 
   # Every playbook that reaches OpenBao, not just the ones the guard started in.
-  # The two seed playbooks kept their own inline copies for one commit and were
-  # therefore still bypassable in exactly the way the shared task now prevents.
-  # Population selected by the CONDITION (the play resolves a store URL), never
-  # by a hand-kept list of names. The previous form of this test listed FOUR files
-  # under a comment claiming "every playbook that reaches OpenBao" — deriving the
-  # population found 40 of 52 unguarded (docs/MISTAKES.md 2.18).
+  # Follow static task imports recursively because an extracted survey task may
+  # include the shared guard from its own directory. Resolve each include from
+  # the file that contains it, matching Ansible's task-file-relative lookup.
+  # Population is selected by the condition (the play resolves a store URL),
+  # never by a hand-kept list of names.
   #
-  # A RATCHET rather than a blanket assertion, because guarding 38 live-service
-  # deploys is its own change: every unguarded play must be named in the ratchet
-  # file, and every play named there must still be unguarded — so a gap cannot
-  # appear silently, and a fix cannot leave its exception behind.
+  # A RATCHET rather than a blanket assertion: every unguarded play must be named
+  # in the ratchet file, and every play named there must still be unguarded.
   local ratchet="$REPO_ROOT/platform/tests/known_unguarded_bao_plays.txt"
   [ -f "$ratchet" ]
-  local f base n_url n_inc n_seen=0 unguarded="" bad=""
-  for f in "$pb"/*.yml; do
-    n_url=$(grep -cE '^    _bao_url:' "$f" || true)
-    [ "$n_url" -gt 0 ] || continue
-    n_seen=$((n_seen + 1))
-    base=$(basename "$f")
-    # >= not ==: a play may guard MORE endpoints than it resolves store URLs for
-    # (netbox-allocate-ip.yml guards the NetBox API too, via _assert_url_label).
-    n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$f" || true)
-    if [ "$n_inc" -lt "$n_url" ]; then
-      unguarded="${unguarded}${base}"$'\n'
-      grep -qxF "$base" "$ratchet" || bad="${bad}NEW unguarded play not in the ratchet: ${base}"$'\n'
-    fi
-  done
-  # The other direction: a listed play that is now guarded must leave the list.
-  local listed
-  while read -r listed; do
-    case "$listed" in ''|'#'*) continue ;; esac
-    [ -f "$pb/$listed" ] || { bad="${bad}ratchet names a play that no longer exists: ${listed}"$'\n'; continue; }
-    printf '%s' "$unguarded" | grep -qxF "$listed" \
-      || bad="${bad}${listed} is now guarded — remove it from the ratchet"$'\n'
-  done < "$ratchet"
-  if [ -n "$bad" ]; then
-    printf '%s' "$bad" >&2
-    return 1
-  fi
-  # Not vacuous: the guard's original four plays, plus this change's, are in the set.
-  [ "$n_seen" -ge 8 ]
+  run python3 - "$pb" "$ratchet" "$shared" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+playbooks, ratchet_path, shared_path = map(Path, sys.argv[1:])
+shared_path = shared_path.resolve()
+ratchet = {
+    line.strip()
+    for line in ratchet_path.read_text().splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+}
+
+
+def count_guard(tasks, source, stack, overrides=None):
+    overrides = overrides or {}
+    count = 0
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        for key in ("ansible.builtin.import_tasks", "ansible.builtin.include_tasks", "import_tasks", "include_tasks"):
+            target = task.get(key)
+            if isinstance(target, dict):
+                target = target.get("file")
+            if not isinstance(target, str) or "{{" in target:
+                continue
+            resolved = (source.parent / target).resolve()
+            if resolved == shared_path:
+                count += 1
+            elif resolved.is_file() and resolved not in stack:
+                nested = overrides.get(resolved)
+                if nested is None:
+                    nested = yaml.safe_load(resolved.read_text())
+                count += count_guard(
+                    nested if isinstance(nested, list) else [],
+                    resolved,
+                    stack | {resolved},
+                    overrides,
+                )
+        for section in ("block", "rescue", "always"):
+            count += count_guard(task.get(section), source, stack, overrides)
+    return count
+
+
+seen = set()
+unguarded = set()
+for playbook in sorted(playbooks.glob("*.yml")):
+    plays = yaml.safe_load(playbook.read_text()) or []
+    for play in plays:
+        if not isinstance(play, dict) or "_bao_url" not in (play.get("vars") or {}):
+            continue
+        seen.add(playbook.name)
+        if count_guard(play.get("tasks"), playbook, {playbook.resolve()}) < 1:
+            unguarded.add(playbook.name)
+
+# Prove the recursive discovery catches the exact failure mode: removing the
+# nested include from the standalone survey makes that play unguarded and would
+# fail the ratchet as a new exception.
+survey_playbook = playbooks / "survey-o11y-pbs-physical-storage.yml"
+survey_play = next(
+    play
+    for play in yaml.safe_load(survey_playbook.read_text())
+    if isinstance(play, dict) and "_bao_url" in (play.get("vars") or {})
+)
+survey_task_file = (playbooks / "tasks/o11y-pbs-physical-storage-survey.yml").resolve()
+mutated_survey_tasks = yaml.safe_load(survey_task_file.read_text())
+guard_task = next(
+    task
+    for task in mutated_survey_tasks
+    if task.get("name") == "Refuse public cleartext OpenBao transport"
+)
+guard_task["ansible.builtin.include_tasks"] = "missing-guard.yml"
+mutated_guard_count = count_guard(
+    survey_play.get("tasks"),
+    survey_playbook,
+    {survey_playbook.resolve()},
+    {survey_task_file: mutated_survey_tasks},
+)
+if mutated_guard_count != 0 or survey_playbook.name in ratchet:
+    errors = ["transport guard check did not detect removal of the extracted survey's nested guard"]
+else:
+    errors = []
+
+# Dynamic include mappings are used to propagate verify tags to child tasks.
+# Count their file target, while refusing malformed mappings with no file value.
+mapping_guard = count_guard(
+    [{"ansible.builtin.include_tasks": {
+        "file": "tasks/assert-bao-transport.yml",
+        "apply": {"tags": ["verify"]},
+    }}],
+    survey_playbook,
+    {survey_playbook.resolve()},
+)
+malformed_mapping_guard = count_guard(
+    [{"ansible.builtin.include_tasks": {"apply": {"tags": ["verify"]}}}],
+    survey_playbook,
+    {survey_playbook.resolve()},
+)
+if mapping_guard != 1 or malformed_mapping_guard != 0:
+    errors.append("guard discovery must count a mapping-form include file and ignore a malformed mapping")
+
+errors += [f"NEW unguarded play not in the ratchet: {name}" for name in sorted(unguarded - ratchet)]
+errors += [f"{name} is now guarded — remove it from the ratchet" for name in sorted(ratchet - unguarded)]
+errors += [f"ratchet names a playbook that no longer exists: {name}" for name in sorted(ratchet) if not (playbooks / name).is_file()]
+if len(seen) < 8:
+    errors.append(f"transport guard coverage unexpectedly found only {len(seen)} playbooks")
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    raise SystemExit(1)
+print(f"transport guard coverage checked for {len(seen)} playbooks")
+PY
+  [ "$status" -eq 0 ] || { printf '%s\n' "$output"; return 1; }
 }
 
 @test "the transport pattern accepts internal endpoints and refuses public ones" {
@@ -399,11 +685,19 @@ _committed_files() {
   run python3 -c "
 import re, codecs, sys
 src = open('$REPO_ROOT/platform/playbooks/tasks/assert-bao-transport.yml').read()
-m = re.search(r\"_pat_strict: '(.*?)'\", src)
-ms = re.search(r\"_pat_single_label: '(.*?)'\", src)
-assert m and ms, 'patterns not found in the shared task'
-pat = m.group(1)
-pat_single = ms.group(1)
+patterns = dict(re.findall(r\"^\\s+(_pat_[a-z0-9_]+): '(.*?)'\", src, re.M))
+assert all(name in patterns for name in ('_pat_strict', '_pat_https', '_pat_single_label', '_pat_ipv4_octet')), 'patterns not found in the shared task'
+def expand(name):
+    pattern = patterns[name]
+    for _ in range(5):
+        expanded = re.sub(r\"\\{\\{\\s*(_pat_[a-z0-9_]+)\\s*\\}\\}\",
+                          lambda match: patterns[match.group(1)], pattern)
+        if expanded == pattern: break
+        pattern = expanded
+    return codecs.decode(pattern, 'unicode_escape')
+pat = expand('_pat_strict')
+pat_https = expand('_pat_https')
+pat_single = expand('_pat_single_label')
 # The single-label branch must be gated on local_mode in the assert expression —
 # unconditional single-label acceptance is what the resolver search-suffix
 # refusal below exists to prevent.
@@ -413,6 +707,7 @@ assert re.search(r'local_mode \| default\(false\).*is match\(_pat_single_label\)
 # that address is site data and lives in site-config, not here.
 accept = [
     'https://bao.example.com:8200',        # example: TLS anywhere is fine
+    'https://bao.example.com.:8200',       # DNS root dot is a valid FQDN
     'http://localhost:8200',               # example: loopback by name
     'http://127.0.0.1:8200',               # example: loopback by address
     'http://10.1.2.3:8200',                # example: RFC1918 10/8
@@ -420,8 +715,13 @@ accept = [
     'http://192.168.0.1:8200/v1',          # example: RFC1918 192.168/16 with path
     'http://172.16.0.1:8200',              # example: RFC1918 lower bound
     'http://172.31.255.254:8200',          # example: RFC1918 upper bound
+    'https://[::1]:8200',                   # example: bracketed IPv6 TLS host
 ]
 refuse = [
+    'https://',                             # empty authority
+    'https://bad..example',                 # malformed DNS authority
+    'https://public.example:bad',           # malformed port
+    'https://' + 'user:FAKE@public.example', # userinfo is not the host
     'http://bao.example.com:8200',         # example: public host, cleartext
     'http://10.evil.example/',             # example: prefix-match bypass
     'http://192.168.0.1.evil.example/',    # example: private-looking public host
@@ -441,11 +741,20 @@ refuse = [
     'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space, refused
     'http://local-openbao:8200',           # single-label: allowed ONLY under local_mode, strict refuses
 ]
+def url(*octets): return 'http://' + '.'.join(map(str, octets)) + ':8200'
+accept.extend(url(*octets) for octets in ((10, 0, 0, 0), (10, 255, 255, 255)))
+refuse.extend(url(*octets) for octets in (
+    (10, 999, 2, 3), (10, 1, 2, 256), (192, 168, 256, 1),
+    (172, 16, 999, 3), (127, 256, 0, 1),
+))
 bad = []
+def accepted(u):
+    return bool(re.match(pat, u) and
+                (not u.startswith('https://') or re.match(pat_https, u)))
 for u in accept:
-    if not re.match(pat, u): bad.append('should ACCEPT: ' + u)
+    if not accepted(u): bad.append('should ACCEPT: ' + u)
 for u in refuse:
-    if re.match(pat, u): bad.append('should REFUSE: ' + u)
+    if accepted(u): bad.append('should REFUSE: ' + u)
 # The local_mode branch's own pattern: single-label only, same trailing anchor.
 sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1',
              'http://host.containers.internal:8000']   # podman's engine-host name, exact
@@ -466,7 +775,7 @@ if bad:
 print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 30 cases correct"* ]]
+  [[ "$output" == *"all 43 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {

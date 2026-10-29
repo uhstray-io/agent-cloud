@@ -1,5 +1,6 @@
 """Live DHCP response must be checked before a NetBox reservation write."""
 
+import copy
 import json
 import os
 import shutil
@@ -10,6 +11,8 @@ from pathlib import Path
 import playbook_yaml
 import pytest
 import yaml
+from jinja2 import StrictUndefined
+from jinja2.nativetypes import NativeEnvironment
 
 PLAYBOOKS = Path(__file__).resolve().parents[1] / "playbooks"
 SERVER = {
@@ -104,6 +107,70 @@ def test_router_check_precedes_netbox_write():
     transport = tasks[names.index("Refuse a cleartext pfSense endpoint")]
     assert transport["vars"]["_assert_bao_url"] == f"{{{{ {site_url} }}}}"
     assert site_interface in tasks[check_task]["ansible.builtin.command"]["stdin"]
+
+
+def test_report_mode_defaults_omitted_assignments_to_empty_list():
+    """An absent optional survey value must remain safe under strict templating."""
+    parsed = playbook_yaml.plays(PLAYBOOKS / "netbox-allocate-ip.yml")[0]
+    expression = parsed["vars"]["_assignments"].removeprefix("{{ ").removesuffix(" }}")
+    env = NativeEnvironment(undefined=StrictUndefined)
+    env.filters["from_json"] = json.loads
+
+    template = env.from_string("{{ " + expression + " }}")
+    assert template.render() == []
+    assert template.render(assignments=[{"address": "203.0.113.8/24"}]) == [
+        {"address": "203.0.113.8/24"}
+    ]
+    assert template.render(assignments='[{"address":"203.0.113.8/24"}]') == [
+        {"address": "203.0.113.8/24"}
+    ]
+
+
+def _validate_inputs(tmp_path, extra_vars):
+    """Run the playbook's own vars and Validate inputs task, and nothing that contacts a host."""
+    parsed = playbook_yaml.plays(PLAYBOOKS / "netbox-allocate-ip.yml")[0]
+    tasks = {task["name"]: copy.deepcopy(task) for task in parsed["tasks"]}
+    hosts = {"netbox": {"service_url": "https://netbox.example"}}
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(yaml.safe_dump({"all": {"children": {"netbox_svc": {"hosts": hosts}}}}))
+    play = {
+        "hosts": "localhost",
+        "gather_facts": False,
+        "vars": copy.deepcopy(parsed["vars"]),
+        "tasks": [tasks["Require the inventory-owned NetBox endpoint"], tasks["Validate inputs"]],
+    }
+    playbook = tmp_path / "validate-inputs.yml"
+    playbook.write_text(yaml.safe_dump([play]))
+    extra = {"openbao_addr": "https://openbao.example:8200", **extra_vars}
+    return subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), str(playbook), "-e", json.dumps(extra)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is unavailable")
+def test_report_mode_validates_without_the_assignments_survey_field(tmp_path):
+    """Prod task 9475 failed in Validate inputs: "Error while evaluating conditional:
+    'assignments' is undefined". The Python render above passes on the pre-fix expression too,
+    so only Ansible's own evaluation of the real vars and the real task can show the regression.
+    """
+    result = _validate_inputs(tmp_path, {"prefix": "192.0.2.0/24", "count": 2})
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Querying 192.0.2.0/24 for 2 free address(es); mode=report." in output
+    assert "is undefined" not in output
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is unavailable")
+def test_reserve_without_assignments_is_still_refused(tmp_path):
+    """The default must not relax the refusal: reserve=true with no named addresses stops."""
+    result = _validate_inputs(tmp_path, {"prefix": "192.0.2.0/24", "count": 2, "reserve": True})
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "a non-empty `assignments` list" in output
+    assert "is undefined" not in output
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is unavailable")

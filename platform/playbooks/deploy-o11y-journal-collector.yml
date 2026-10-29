@@ -23,12 +23,155 @@
         that:
           - groups.get('o11y_svc', []) | length == 1
           - service_branch | default('dev') == 'dev'
-          - journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']
+          - journal_collector_action | default('apply') in ['stage', 'survey', 'survey-cursor', 'repair-positions', 'apply', 'stop']
+          - journal_collector_action | default('apply') != 'stage' or not ansible_check_mode
         fail_msg: >-
           This workflow requires one o11y_svc host, service_branch=dev, and
-          journal_collector_action=survey|repair-positions|apply|stop.
+          journal_collector_action=stage|survey|survey-cursor|repair-positions|apply|stop; stage cannot run in check mode.
         quiet: true
       tags: [always]
+
+- name: Stage exact reviewed checkout for the journal collector
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _journal_stage_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: Leave the stage play unless the explicit stage action was selected
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'stage'
+      tags: [always]
+
+    - name: Require a Dev-bound non-check-mode stage
+      ansible.builtin.assert:
+        that:
+          - service_branch | default('dev') == 'dev'
+          - not (local_mode | default(false) | bool)
+          - not ansible_check_mode
+        fail_msg: "Staging requires the reviewed Dev checkout and cannot run in check mode."
+        quiet: true
+
+    - name: Place the reviewed SHA through the shared monorepo mechanism
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+      vars:
+        _monorepo_dir: "{{ _journal_stage_monorepo_dir }}"
+        _branch: "{{ expected_repository_sha }}"
+
+    - name: Read the staged receiver checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _journal_stage_monorepo_dir }}"
+      register: _journal_stage_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the staged checkout to equal the reviewed SHA
+      ansible.builtin.assert:
+        that: _journal_stage_revision.stdout | trim == expected_repository_sha
+        fail_msg: "The receiver checkout does not match the reviewed SHA after stage."
+        quiet: true
+
+- name: Verify resolved journal Compose configuration before stage, survey, or apply
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _journal_provider_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _journal_provider_deploy_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/platform/services/o11y/deployment"
+    _journal_provider_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/verify-o11y-journal-compose.py') }}"
+  tasks:
+    - name: Leave the provider gate for actions without a Compose start
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') not in ['stage', 'survey', 'survey-cursor', 'apply']
+      tags: [always]
+
+    - name: Report provider configuration as unverified in check mode
+      ansible.builtin.debug:
+        msg: "Resolved journal Compose configuration: check_mode_unverified (runtime reads skipped)."
+      changed_when: false
+      when: ansible_check_mode
+
+    - name: Read the installed receiver checkout revision before Compose configuration
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _journal_provider_monorepo_dir }}"
+      register: _journal_provider_revision
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Require the installed receiver checkout to equal the reviewed SHA
+      ansible.builtin.assert:
+        that: _journal_provider_revision.stdout | default('') | trim == expected_repository_sha
+        fail_msg: "The installed receiver checkout does not match the reviewed SHA; provider config was not read."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Require a standard reviewed journal source for resolved Compose configuration
+      ansible.builtin.assert:
+        that:
+          - o11y_journal_directory | default('') in ['/var/log/journal', '/run/log/journal']
+        fail_msg: "Declare the reviewed standard journal directory before surveying Compose configuration."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Resolve Compose configuration and verify the exact v3 no-copy mount
+      ansible.builtin.command:
+        argv: [python3, "-", "{{ _journal_provider_deploy_dir }}"]
+        stdin: "{{ _journal_provider_helper }}"
+        stdin_add_newline: false
+      args:
+        chdir: "{{ _journal_provider_deploy_dir }}"
+      environment:
+        O11Y_JOURNAL_DIRECTORY: "{{ o11y_journal_directory }}"
+        O11Y_JOURNAL_CONFIG_SHA: survey
+        O11Y_OTLP_TLS_ENABLED: "{{ 'true' if (o11y_otlp_tls_enabled | default(false) | bool) else 'false' }}"
+      register: _journal_provider_config
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require the provider-resolved v3 no-copy mount
+      ansible.builtin.assert:
+        that:
+          - _journal_provider_config.rc | default(1) == 0
+          - (_journal_provider_config.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_provider_config.stdout | from_json).reason == 'provider_config_exact'
+        fail_msg: "The installed Compose provider did not resolve the exact v3 no-copy volume declaration."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Verify the exact receiver network before survey or apply
+      ansible.builtin.command:
+        argv: [python3, -, verify-network]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
+        stdin_add_newline: false
+      register: _journal_network_identity
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - journal_collector_action | default('apply') != 'stage'
+
+    - name: Require the existing receiver network identity
+      ansible.builtin.assert:
+        that:
+          - _journal_network_identity.rc | default(1) == 0
+          - (_journal_network_identity.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_network_identity.stdout | from_json).reason == 'network_identity_verified'
+        fail_msg: "The existing private o11y network is missing or has a conflicting identity."
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - journal_collector_action | default('apply') != 'stage'
+
+    - name: Report the fixed provider configuration result
+      ansible.builtin.debug:
+        msg: "Resolved journal Compose configuration: verified (v3 volume, /alloy-state, nocopy=true)."
+      changed_when: false
+      when: not ansible_check_mode
 
 - name: "Deploy the bounded journal collector"
   hosts: o11y_svc
@@ -39,15 +182,22 @@
     _journal_directory: "{{ o11y_journal_directory | default('') | string }}"
     _journal_mount: /var/log/journal
     _journal_image: docker.io/grafana/alloy:v1.9.2
+    _journal_proof_marker: agent-cloud-o11y-journal-proof-v1
     _journal_loki_query_url: >-
       {{ [
         'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D',
         '&start=', _journal_verification_start.stdout | default('') | trim,
         '&limit=1&direction=backward'
       ] | join('') }}
+    _journal_loki_proof_query_url: >-
+      {{ [
+        'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D%20%7C%3D%20%22',
+        _journal_proof_marker,
+        '%22&start=', _journal_verification_start.stdout | default('') | trim,
+        '&limit=1&direction=backward'
+      ] | join('') }}
     _journal_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _journal_deploy_dir: "{{ _journal_monorepo_dir }}/platform/services/o11y/deployment"
-    _journal_probe: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/probe-o11y-journal-directory.py') }}"
     _journal_positions_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
     _journal_candidate_path: "{{ _journal_deploy_dir }}/config/.journal.alloy.candidate"
     _journal_image_probe_argv:
@@ -73,11 +223,22 @@
         done;
         exit 1
     _journal_config_path: "{{ _journal_deploy_dir }}/config/journal.alloy"
+    _journal_tls_mounts: >-
+      {{ ['--mount', 'type=bind,src=' ~ _journal_deploy_dir ~ '/certs/o11y-journal,dst=/certs/journal-client,ro',
+          '--mount', 'type=bind,src=' ~ _journal_deploy_dir ~ '/certs/step-ca-bundle.crt,dst=/certs/step-ca-bundle.crt,ro']
+         if (o11y_otlp_tls_enabled | default(false) | bool) else [] }}
 
   tasks:
     - name: Leave the apply play when the reviewed action is stop
       ansible.builtin.meta: end_host
       when: journal_collector_action | default('apply') != 'apply'
+      tags: [always]
+
+    - name: Validate receiver and journal TLS files before journal config or container changes
+      ansible.builtin.include_tasks: tasks/assert-o11y-otlp-tls.yml
+      vars:
+        _deploy_dir: "{{ _journal_deploy_dir }}"
+      when: o11y_otlp_tls_enabled | default(false) | bool
       tags: [always]
 
     - name: Require the declared rootless Podman host and exact receiver endpoint
@@ -132,30 +293,6 @@
         fail_msg: >-
           The declared host journal directory is absent or unreadable. No bind mount
           was created and the collector was not started.
-        quiet: true
-      tags: [always]
-
-    - name: Require a recent exact-name entry in the selected journal
-      ansible.builtin.command:
-        argv: [python3, "-", "{{ _journal_directory }}"]
-        stdin: "{{ _journal_probe }}"
-        stdin_add_newline: false
-      register: _journal_probe_result
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      no_log: true
-      tags: [always]
-
-    - name: Require the sanitized journal probe to pass
-      ansible.builtin.assert:
-        that:
-          - _journal_probe_result.rc | default(1) == 0
-          - (_journal_probe_result.stdout | default('{}') | from_json).status == 'observed'
-          - (_journal_probe_result.stdout | default('{}') | from_json).matching_entries | int > 0
-        fail_msg: >-
-          The selected journal has no readable recent CONTAINER_NAME=o11y-alloy entry;
-          collector preflight failed without reporting journal content.
         quiet: true
       tags: [always]
 
@@ -224,7 +361,7 @@
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
       vars:
         _monorepo_dir: "{{ _journal_monorepo_dir }}"
-        _branch: "{{ service_branch | default('dev') }}"
+        _branch: "{{ expected_repository_sha }}"
       when: not ansible_check_mode
 
     - name: Read the receiver checkout revision
@@ -375,20 +512,11 @@
 
     - name: Validate the candidate config with the pinned Alloy image before any collector recreation
       ansible.builtin.command:
-        argv:
-          - podman
-          - run
-          - --pull=never
-          - --rm
-          - --network
-          - none
-          - --read-only
-          - --mount
-          - "type=bind,src={{ _journal_candidate_path }},dst=/etc/alloy/journal.alloy,ro"
-          - "{{ _journal_image }}"
-          - validate
-          - --stability.level=generally-available
-          - /etc/alloy/journal.alloy
+        argv: >-
+          {{ ['podman', 'run', '--pull=never', '--rm', '--network', 'none', '--read-only',
+              '--mount', 'type=bind,src=' ~ _journal_candidate_path ~ ',dst=/etc/alloy/journal.alloy,ro']
+             + _journal_tls_mounts
+             + [_journal_image, 'validate', '--stability.level=generally-available', '/etc/alloy/journal.alloy'] }}
       register: _journal_config_validation
       changed_when: false
       failed_when: false
@@ -413,6 +541,81 @@
       changed_when: false
       no_log: true
       when: not ansible_check_mode
+
+    - name: Capture a timestamp for the read-only Loki client preflight
+      ansible.builtin.command:
+        argv: [date, +%s%N]
+      register: _journal_verification_start
+      changed_when: false
+      check_mode: false
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
+
+    - name: Verify the Loki query client before promoting collector config
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
+      block:
+        - name: Query Loki with Grafana's bounded wget client
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/timeout
+              - --signal=KILL
+              - 12s
+              - podman
+              - exec
+              - o11y-grafana
+              - timeout
+              - -s
+              - KILL
+              - "8"
+              - wget
+              - -q
+              - -O
+              - "-"
+              - "{{ _journal_loki_query_url }}"
+          register: _journal_loki_preflight_request
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Classify the protected Loki preflight response
+          block:
+            - name: Classify the Loki client and response shape
+              ansible.builtin.set_fact:
+                _journal_loki_preflight_status: >-
+                  {{ 'request_failed' if _journal_loki_preflight_request.rc | default(1) | int != 0 else
+                     ('available' if (_journal_loki_preflight_request.stdout | default('{}') | from_json).status | default('') == 'success' else 'response_unverified') }}
+              no_log: true
+          rescue:
+            - name: Mark malformed Loki preflight output unverified
+              ansible.builtin.set_fact:
+                _journal_loki_preflight_status: response_unverified
+
+      rescue:
+        - name: Mark an unexpected Loki preflight error as unverified
+          ansible.builtin.set_fact:
+            _journal_loki_preflight_status: response_unverified
+
+    - name: Report only the fixed Loki preflight category
+      ansible.builtin.debug:
+        msg: "Loki preflight={{ _journal_loki_preflight_status | default('response_unverified') }}; no collector config promotion or start was requested."
+      changed_when: false
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
+
+    - name: Require Loki query client and successful JSON response before config promotion
+      ansible.builtin.assert:
+        that:
+          - _journal_loki_preflight_status | default('response_unverified') == 'available'
+        fail_msg: "Loki query preflight failed or returned an unverified response; no collector config promotion or start was requested."
+        quiet: true
+      when:
+        - journal_collector_action | default('apply') == 'apply'
+        - not ansible_check_mode
 
     - name: Promote the validated candidate config for the collector
       ansible.builtin.copy:
@@ -474,10 +677,41 @@
         quiet: true
       when: not ansible_check_mode
 
+    - name: Retire only a verified legacy-project collector registration
+      ansible.builtin.command:
+        argv: [python3, -, retire-legacy]
+        stdin: "{{ _journal_positions_helper }}"
+        stdin_add_newline: false
+      register: _journal_retire_legacy
+      changed_when: >-
+        _journal_retire_legacy.rc | default(1) == 0
+        and (_journal_retire_legacy.stdout | default('') is regex('^\\{"reason": "legacy_collector_removed_volume_preserved", "status": "retired"\\}$'))
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Require the old container to be absent with v3 state preserved
+      ansible.builtin.assert:
+        that:
+          - _journal_retire_legacy.rc | default(1) == 0
+          - >-
+            _journal_retire_legacy.stdout | default('') in [
+            '{"reason": "legacy_collector_removed_volume_preserved", "status": "retired"}',
+            '{"reason": "collector_project_verified", "status": "already_isolated"}',
+            '{"reason": "collector_absent_volume_safe_to_initialize", "status": "already_absent"}',
+            '{"reason": "collector_absent_positions_verified", "status": "already_absent"}'
+            ]
+        fail_msg: >-
+          The collector project transition was not proven safe
+          (status={{ _journal_retire_legacy.stdout | default('') | regex_findall('"status": "(retired|already_isolated|already_absent|refused|uncertain|unavailable)"') | first | default('unavailable') }},
+          reason={{ _journal_retire_legacy.stdout | default('') | regex_findall('"reason": "(collector_absent_volume_safe_to_initialize|collector_absent_positions_verified|collector_project_verified|collector_state_unverified|isolated_collector_state_unverified|collector_project_mismatch|legacy_collector_state_unverified|legacy_collector_identity_unverified|legacy_collector_remove_failed|collector_absence_unverified|positions_volume_preservation_unverified|legacy_collector_removed_volume_preserved|survey_failed)"') | first | default('unavailable') }}).
+          The existing v3 positions volume was preserved and no Compose start was requested.
+        quiet: true
+      when: not ansible_check_mode
+
     - name: Apply the collector and require exact-target Loki delivery
       when: not ansible_check_mode
       block:
-        - name: Capture the pre-start lower bound for this run's Loki receipt
+        - name: Capture the fresh post-preflight lower bound immediately before collector start
           ansible.builtin.command:
             argv: [date, +%s%N]
           register: _journal_verification_start
@@ -486,11 +720,12 @@
 
         - name: Start only the journal collector service
           ansible.builtin.command:
-            argv: [podman-compose, -f, compose.yml, -f, compose.journal.yml, up, --no-deps, -d, journal-collector]
+            argv: "{{ ['podman-compose', '-p', 'o11y-journal', '-f', 'compose.journal.yml'] + (['-f', 'compose.journal.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + ['up', '--no-deps', '-d', 'journal-collector'] }}"
             chdir: "{{ _journal_deploy_dir }}"
           environment:
             O11Y_JOURNAL_DIRECTORY: "{{ _journal_directory }}"
             O11Y_JOURNAL_CONFIG_SHA: "{{ _journal_candidate_stat.stat.checksum }}"
+            O11Y_OTLP_TLS_ENABLED: "{{ 'true' if (o11y_otlp_tls_enabled | default(false) | bool) else 'false' }}"
           register: _journal_up
           changed_when: _journal_up.stdout | length > 0 or _journal_up.stderr | length > 0
           when: not ansible_check_mode
@@ -546,13 +781,13 @@
                   - _journal_positions_live_parsed.live_diagnostic.helper_status in ['observed', 'volume_initialization_pending', 'volume_missing', 'volume_shared', 'mount_count_unverified', 'collector_mount_unverified', 'collector_identity_unverified', 'metadata_unavailable', 'volume_initialization_unverified', 'volume_identity_unsupported', 'volume_users_unavailable', 'volume_ambiguous', 'not_rootless', 'receiver_unavailable', 'receiver_identity_unverified', 'volume_inventory_unavailable', 'container_inventory_unavailable', 'unavailable']
                   - _journal_positions_live_parsed.live_diagnostic.helper_reason in ['survey_only', 'positions_identity_verified', 'not_rootless', 'receiver_unavailable', 'receiver_identity_unverified', 'volume_inventory_unavailable', 'container_inventory_unavailable', 'volume_ambiguous', 'volume_missing', 'volume_identity_unsupported', 'volume_initialization_unverified', 'volume_users_unavailable', 'volume_shared', 'mount_count_unverified', 'collector_mount_unverified', 'collector_identity_unverified', 'metadata_unavailable', 'volume_initialization_pending', 'metadata_ambiguous', 'positions_access_blocked', 'verification_refused']
                   - _journal_positions_live_parsed.live_diagnostic.failed_checks | type_debug == 'list'
-                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | length <= 13
+                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | length <= 15
                   - _journal_positions_live_parsed.live_diagnostic.failed_checks | select('string') | list | length == _journal_positions_live_parsed.live_diagnostic.failed_checks | length
-                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | difference(['metadata_unavailable', 'owner', 'component_layout', 'acl', 'mount_boundary', 'cursor_presence', 'cursor_validity', 'positions_access', 'mount_destination', 'mount_volume_name', 'mount_source', 'mount_type', 'mount_rw', 'container_user']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | difference(['metadata_unavailable', 'owner', 'component_layout', 'remotecfg_layout', 'acl', 'mount_boundary', 'cursor_presence', 'cursor_validity', 'positions_access', 'mount_destination', 'mount_volume_name', 'mount_source', 'mount_type', 'mount_rw', 'container_user']) | length == 0
                   - _journal_positions_live_parsed.live_diagnostic.unverified_checks | type_debug == 'list'
-                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | length <= 7
+                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | length <= 8
                   - _journal_positions_live_parsed.live_diagnostic.unverified_checks | select('string') | list | length == _journal_positions_live_parsed.live_diagnostic.unverified_checks | length
-                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | difference(['mount_destination', 'mount_volume_name', 'mount_source', 'mount_type', 'mount_rw', 'container_user', 'cursor_validity']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | difference(['mount_destination', 'mount_volume_name', 'mount_source', 'mount_type', 'mount_rw', 'container_user', 'cursor_validity', 'remotecfg_layout']) | length == 0
                   - _journal_positions_live_parsed.live_diagnostic.mount is mapping
                   - _journal_positions_live_parsed.live_diagnostic.mount.keys() | list | sort == ['destination', 'volume_name', 'source', 'type', 'rw', 'user'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.mount.destination in ['match', 'mismatch', 'unverified']
@@ -561,30 +796,45 @@
                   - _journal_positions_live_parsed.live_diagnostic.mount.type in ['match', 'mismatch', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.mount.rw in ['match', 'mismatch', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.mount.user in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.remotecfg_state in ['absent', 'safe', 'unsafe', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.top_level is mapping
-                  - _journal_positions_live_parsed.live_diagnostic.top_level.keys() | list | sort == ['seed_file', 'journal_component', 'other_files', 'other_directories', 'other_symlinks', 'other_kinds', 'receiver_component', 'exporter_component'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.keys() | list | sort == ['seed_file', 'journal_component', 'remotecfg_component', 'other_files', 'other_directories', 'other_symlinks', 'other_kinds', 'receiver_component', 'exporter_component', 'attributes_processor_component'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.top_level.seed_file == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.seed_file | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.seed_file <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.top_level.journal_component == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.journal_component | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.journal_component <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.remotecfg_component == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.remotecfg_component | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.remotecfg_component <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.top_level.other_files == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_files | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_files <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.top_level.other_directories == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_directories | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_directories <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.top_level.other_kinds == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_kinds | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_kinds <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.top_level.receiver_component == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.receiver_component | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.receiver_component <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.top_level.exporter_component == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.exporter_component | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.exporter_component <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.attributes_processor_component == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.attributes_processor_component | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.attributes_processor_component <= 32)
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata is mapping
-                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.keys() | list | sort == ['receiver', 'exporter'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.keys() | list | sort == ['receiver', 'exporter', 'attributes_processor', 'remotecfg'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.receiver.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.attributes_processor.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.remotecfg.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.receiver.owner in ['matches_collector', 'mismatch', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.owner in ['matches_collector', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.attributes_processor.owner in ['matches_collector', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.remotecfg.owner in ['matches_collector', 'mismatch', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.receiver.access in ['read_write_execute', 'blocked', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.access in ['read_write_execute', 'blocked', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.attributes_processor.access in ['read_write_execute', 'blocked', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.remotecfg.access in ['read_write_execute', 'blocked', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.receiver.acl in ['present', 'absent', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.acl in ['present', 'absent', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.attributes_processor.acl in ['present', 'absent', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.remotecfg.acl in ['present', 'absent', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.receiver.mount in ['clear', 'ambiguous', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.mount in ['clear', 'ambiguous', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.attributes_processor.mount in ['clear', 'ambiguous', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.remotecfg.mount in ['clear', 'ambiguous', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.receiver.children in ['empty', 'nonempty', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.children in ['empty', 'nonempty', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.attributes_processor.children in ['empty', 'nonempty', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.role_metadata.remotecfg.children in ['empty', 'nonempty', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories is mapping
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.keys() | list | sort == ['count', 'owner', 'access', 'acl', 'mount', 'children'] | sort
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.count == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.unmatched_directories.count | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.unmatched_directories.count <= 32)
@@ -618,6 +868,56 @@
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | list | min >= 0
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | list | max <= 32
                   - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | sum <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.keys() | list | sort == ['component', 'positions', 'child_count', 'temporary_file_metadata', 'temporary_files', 'unknown_children'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.keys() | list | sort == ['presence', 'type', 'owner', 'owner_rwx', 'unsafe_mode_bits', 'link_count', 'acl', 'mount', 'children'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.presence in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.type in ['absent', 'directory', 'file', 'symlink', 'other', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.owner in ['matches_collector', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.owner_rwx in ['complete', 'incomplete', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.unsafe_mode_bits in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.link_count in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.acl in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.mount in ['clear', 'ambiguous', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.component.children in ['empty', 'nonempty', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.keys() | list | sort == ['presence', 'type', 'owner', 'owner_rw', 'unsafe_mode_bits', 'link_count', 'acl', 'mount'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.presence in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.type in ['absent', 'regular_file', 'symlink', 'other', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.owner in ['matches_collector', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.owner_rw in ['complete', 'incomplete', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.unsafe_mode_bits in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.link_count in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.acl in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.positions.mount in ['clear', 'ambiguous', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.child_count == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.child_count | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.child_count <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_file_metadata in ['not_applicable', 'safe', 'unsafe', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_files == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_files | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.temporary_files <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.keys() | list | sort == ['files', 'directories', 'symlinks', 'other'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.files == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.files | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.files <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.directories == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.directories | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.directories <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.symlinks == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.symlinks | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.symlinks <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.other == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.other | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.other <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | list | min >= 0
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | list | max <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | sum <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.keys() | list | sort == ['presence', 'type', 'owner', 'link_count', 'owner_execute', 'group_other_permissions', 'special_bits', 'acl', 'mount'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.presence in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.type in ['absent', 'regular_file', 'directory', 'symlink', 'other', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.owner in ['matches_collector', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.link_count in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.owner_execute in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.group_other_permissions in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.special_bits in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.acl in ['absent', 'present', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.seed_metadata.mount in ['clear', 'ambiguous', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.keys() | list | sort == ['root_mode', 'journal_child_count'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.root_mode in ['safe', 'unsafe', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.journal_child_count == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.layout_diagnostic.journal_child_count | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.layout_diagnostic.journal_child_count <= 32)
                 fail_msg: "unavailable"
                 quiet: true
               no_log: true
@@ -641,14 +941,20 @@
                     top_level:
                       seed_file: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.seed_file }}"
                       journal_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.journal_component }}"
+                      remotecfg_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.remotecfg_component }}"
                       other_files: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_files }}"
                       other_directories: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_directories }}"
                       other_symlinks: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks }}"
                       other_kinds: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_kinds }}"
                       receiver_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.receiver_component }}"
                       exporter_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.exporter_component }}"
+                      attributes_processor_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.attributes_processor_component }}"
                     role_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.role_metadata }}"
                     unmatched_directories: "{{ _journal_positions_live_parsed.live_diagnostic.unmatched_directories }}"
+                    journal_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.journal_metadata }}"
+                    seed_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.seed_metadata }}"
+                    layout_diagnostic: "{{ _journal_positions_live_parsed.live_diagnostic.layout_diagnostic }}"
+                    remotecfg_state: "{{ _journal_positions_live_parsed.live_diagnostic.remotecfg_state }}"
               no_log: true
           rescue:
             - name: Record unavailable live positions result
@@ -669,6 +975,30 @@
                         acl: unverified
                         mount: unverified
                         children: unverified
+                      attributes_processor:
+                        owner: unverified
+                        access: unverified
+                        acl: unverified
+                        mount: unverified
+                        children: unverified
+                      remotecfg:
+                        owner: unverified
+                        access: unverified
+                        acl: unverified
+                        mount: unverified
+                        children: unverified
+                    top_level:
+                      seed_file: unverified
+                      journal_component: unverified
+                      other_files: unverified
+                      other_directories: unverified
+                      other_symlinks: unverified
+                      other_kinds: unverified
+                      receiver_component: unverified
+                      exporter_component: unverified
+                      attributes_processor_component: unverified
+                      remotecfg_component: unverified
+                    remotecfg_state: unverified
                     unmatched_directories:
                       count: unverified
                       owner: {matches_collector: unverified, mismatch: unverified, unverified: unverified}
@@ -676,6 +1006,43 @@
                       acl: {absent: unverified, present: unverified, unverified: unverified}
                       mount: {clear: unverified, ambiguous: unverified, unverified: unverified}
                       children: {empty: unverified, nonempty: unverified, unverified: unverified}
+                    journal_metadata:
+                      component:
+                        presence: unverified
+                        type: unverified
+                        owner: unverified
+                        owner_rwx: unverified
+                        unsafe_mode_bits: unverified
+                        link_count: unverified
+                        acl: unverified
+                        mount: unverified
+                        children: unverified
+                      positions:
+                        presence: unverified
+                        type: unverified
+                        owner: unverified
+                        owner_rw: unverified
+                        unsafe_mode_bits: unverified
+                        link_count: unverified
+                        acl: unverified
+                        mount: unverified
+                      child_count: unverified
+                      temporary_file_metadata: unverified
+                      temporary_files: unverified
+                      unknown_children: {files: unverified, directories: unverified, symlinks: unverified, other: unverified}
+                    seed_metadata:
+                      presence: unverified
+                      type: unverified
+                      owner: unverified
+                      link_count: unverified
+                      owner_execute: unverified
+                      group_other_permissions: unverified
+                      special_bits: unverified
+                      acl: unverified
+                      mount: unverified
+                    layout_diagnostic:
+                      root_mode: unverified
+                      journal_child_count: unverified
               no_log: true
 
         - name: Read the Podman rootless UID mapping
@@ -740,10 +1107,17 @@
               mount={{ _journal_positions_live_summary.live_diagnostic.get('mount', {}) }};
               seed_file={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('seed_file', 'unverified') }};
               journal_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('journal_component', 'unverified') }};
+              remotecfg_state={{ _journal_positions_live_summary.live_diagnostic.get('remotecfg_state', 'unverified') }};
+              remotecfg_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('remotecfg_component', 'unverified') }};
+              attributes_processor_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('attributes_processor_component', 'unverified') }};
               other_entries={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_files', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_directories', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_symlinks', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_kinds', 'unverified') }};
               receiver_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('receiver', {}) }};
               exporter_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('exporter', {}) }};
+              remotecfg_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('remotecfg', {}) }};
               unmatched_directories={{ _journal_positions_live_summary.live_diagnostic.get('unmatched_directories', {}) }};
+              journal_metadata={{ _journal_positions_live_summary.live_diagnostic.get('journal_metadata', {}) }};
+              seed_metadata={{ _journal_positions_live_summary.live_diagnostic.get('seed_metadata', {}) }};
+              layout_diagnostic={{ _journal_positions_live_summary.live_diagnostic.get('layout_diagnostic', {}) }};
               host_uid_map={{ 'available' if _journal_host_uid_map.rc | default(1) == 0 else 'unavailable' }};
               collector_uid_map={{ 'available' if _journal_collector_uid_map_observed.rc | default(1) == 0 else 'unavailable' }};
               uid_maps={{ 'unverified' if _journal_host_uid_map.rc | default(1) != 0 or _journal_collector_uid_map_observed.rc | default(1) != 0 or _journal_collector_uid_map_observed.stdout | trim | length == 0 else ('equal' if _journal_host_uid_map.stdout | trim == _journal_collector_uid_map_observed.stdout | trim else 'different') }};
@@ -763,6 +1137,41 @@
               The live collector mount identity, writable mode, user namespace mapping,
               or effective positions access could not be verified.
             quiet: true
+
+        - name: Read the collector's fixed certificate mount metadata
+          ansible.builtin.command:
+            argv: [podman, inspect, --format, "{{ '{{' }}json .Mounts{{ '}}' }}", o11y-journal-collector]
+          register: _journal_tls_mount_readback
+          changed_when: false
+          no_log: true
+          when: not ansible_check_mode
+
+        - name: Parse only the two fixed TLS mount records
+          ansible.builtin.set_fact:
+            _journal_tls_runtime_mounts: >-
+              {{ (_journal_tls_mount_readback.stdout | from_json)
+                 | selectattr('Destination', 'in', ['/certs/journal-client', '/certs/step-ca-bundle.crt'])
+                 | list }}
+          no_log: true
+          when: not ansible_check_mode
+
+        - name: Require exact read-only runtime TLS mounts
+          ansible.builtin.assert:
+            that:
+              - (_journal_tls_runtime_mounts | length) == (2 if (o11y_otlp_tls_enabled | default(false) | bool) else 0)
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Destination', 'equalto', '/certs/journal-client') | list | length) == 1
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Destination', 'equalto', '/certs/step-ca-bundle.crt') | list | length) == 1
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Source', 'equalto', _journal_deploy_dir ~ '/certs/o11y-journal')
+                 | selectattr('Destination', 'equalto', '/certs/journal-client') | selectattr('RW', 'equalto', false) | list | length) == 1
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Source', 'equalto', _journal_deploy_dir ~ '/certs/step-ca-bundle.crt')
+                 | selectattr('Destination', 'equalto', '/certs/step-ca-bundle.crt') | selectattr('RW', 'equalto', false) | list | length) == 1
+            fail_msg: "The live journal collector does not have exactly the declared read-only TLS mounts."
+            quiet: true
+          when: not ansible_check_mode
 
         - name: Read back the seven receiver container identities and states
           ansible.builtin.shell:
@@ -786,19 +1195,58 @@
               the collector will be stopped and its positions volume preserved.
             quiet: true
 
+        - name: Capture a fresh Loki lower bound immediately before the synthetic proof line
+          ansible.builtin.command:
+            argv: [date, +%s%N]
+          register: _journal_verification_start
+          changed_when: false
+          check_mode: false
+
+        - name: Emit the fixed diagnostic line through the existing Alloy container stdout
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/timeout
+              - --signal=KILL
+              - 12s
+              - podman
+              - exec
+              - --user
+              - "0:0"
+              - o11y-alloy
+              - /bin/bash
+              - -c
+              - 'printf "%s\\n" "{{ _journal_proof_marker }}" > /proc/1/fd/1'
+          register: _journal_proof_emit
+          changed_when: _journal_proof_emit.rc == 0
+          failed_when: false
+
+        - name: Require the synthetic proof line to be written
+          ansible.builtin.assert:
+            that: _journal_proof_emit.rc | default(1) == 0
+            fail_msg: >-
+              The fixed diagnostic line could not be emitted by the existing
+              o11y-alloy container; no receiver was restarted and the collector
+              will be stopped with its positions volume preserved.
+            quiet: true
+
         - name: Verify the exact bounded journal stream reached Loki
           ansible.builtin.command:
             argv:
+              - /usr/bin/timeout
+              - --signal=KILL
+              - 12s
               - podman
               - exec
               - o11y-grafana
+              - timeout
+              - -s
+              - KILL
+              - "8"
               - wget
               - -q
-              - --timeout=5
-              - --tries=1
               - -O
-              - -
-              - "{{ _journal_loki_query_url }}"
+              - "-"
+              - "{{ _journal_loki_proof_query_url }}"
           register: _journal_loki_result
           changed_when: false
           failed_when: false
@@ -819,11 +1267,12 @@
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result | length > 0
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.service == 'o11y/alloy'
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.signal == 'container'
-              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values | length > 0
-              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values[0][0] | int >= _journal_verification_start.stdout | trim | int
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'] | length > 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'][0][0] | int >= _journal_verification_start.stdout | trim | int
+              - _journal_proof_marker in (_journal_loki_result.stdout | default('{}') | from_json).data.result[0]['values'][0][1]
             fail_msg: >-
-              Loki has no exact o11y/alloy container stream in the last 15 minutes;
-              no post-start sample arrived within three minutes. The collector will be
+              Loki has no exact o11y/alloy container stream carrying the fresh
+              diagnostic marker; no post-proof sample arrived within three minutes. The collector will be
               stopped and its positions volume preserved.
             quiet: true
 
@@ -1079,7 +1528,7 @@
         - name: Fail closed after stopping the journal collector
           ansible.builtin.fail:
             msg: >-
-              The journal collector failed its exact-target delivery gate. Only that
+              The journal collector failed its startup, positions, or exact-target delivery verification gate. Only that
               collector was removed from the boot-restart set when present. Sanitized
               state/config/action classification={{ _journal_rollback_state_class | default('unavailable') }}/{{ _journal_rollback_health_config_class | default('unavailable') }}/{{ _journal_rollback_health_action_class | default('unavailable') }};
               Podman state/config/action rc={{ _journal_rollback_state_evidence.rc | default('unavailable') }}/{{ _journal_rollback_health_config.rc | default('unavailable') }}/{{ _journal_rollback_health_action.rc | default('unavailable') }};
@@ -1089,7 +1538,8 @@
               collector logs classification/count={{ _journal_rollback_log_class | default('unavailable') }}/{{ _journal_rollback_log_count | default(0) }};
               permission-denied mount targets={{ _journal_rollback_permission_targets | default([]) }};
               one-shot fixed readiness probe diagnostic={{ _journal_readiness_probe_class | default('unavailable') }};
-              post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
+              post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }};
+              Loki receipt result={{ 'not_run' if _journal_loki_result is not defined else ('request_failed' if _journal_loki_result.rc | default(1) | int != 0 else 'response_unverified') }}.
               The fixed probe only opens Alloy's local TCP listener and is diagnostic; it does not run the configured health command, mutate Podman health, or satisfy automatic health or Loki delivery.
               All receiver data remains; positions-volume preservation was asserted
               when a collector with that mount existed.
@@ -1189,12 +1639,12 @@
   tasks:
     - name: Leave the survey play when the reviewed action is apply or stop
       ansible.builtin.meta: end_host
-      when: journal_collector_action | default('apply') != 'survey'
+      when: journal_collector_action | default('apply') not in ['survey', 'survey-cursor']
       tags: [always]
 
-    - name: Survey existing positions volume metadata without mounting it
+    - name: Survey positions metadata or explicit cursor validity without mounting
       ansible.builtin.command:
-        argv: [python3, "-", survey]
+        argv: [python3, "-", "{{ journal_collector_action }}"]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
         stdin_add_newline: false
       register: _journal_positions_survey
@@ -1207,7 +1657,7 @@
       ansible.builtin.set_fact:
         _journal_positions_survey:
           rc: 0
-          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","journal_cursor":"unavailable","free_space":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_identity":"unverified"},"podman_version":{"client":"unavailable","server":"unavailable"}},"pending_repair_diagnostic":{"owner_rwx":"unverified","group_other_write_or_special_bits":"unverified","group_write":"unverified","other_write":"unverified","setuid":"unverified","setgid":"unverified","sticky":"unverified","volume_free_bytes":"unverified","volume_free_inodes":"unverified","graphroot_free_bytes":"unverified","graphroot_free_inodes":"unverified","failed_checks":["status_pending","volume_inventory_complete","name_collision_clear","project_valid","volume_object","volume_name_matches","mountpoint_absolute","labels_object","project_label_matches","volume_label_matches","needs_chown_false","needs_copy_up_true","volume_unused","mount_count_zero","collector_absent","metadata_object","metadata_observed","children_empty","child_count_zero","acl_absent","root_not_mount","child_not_mount","root_object","owner_rwx","group_other_write_or_special_absent","owner_mismatch","collector_access_blocked","volume_free_bytes","volume_free_inodes","graphroot_free_bytes","graphroot_free_inodes"]},"live_diagnostic":{"top_level":{"seed_file":"unverified","journal_component":"unverified","other_files":"unverified","other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified","receiver_component":"unverified","exporter_component":"unverified"},"role_metadata":{"receiver":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"exporter":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"}},"unmatched_directories":{"count":"unverified","owner":{"matches_collector":"unverified","mismatch":"unverified","unverified":"unverified"},"access":{"read_write_execute":"unverified","blocked":"unverified","unverified":"unverified"},"acl":{"absent":"unverified","present":"unverified","unverified":"unverified"},"mount":{"clear":"unverified","ambiguous":"unverified","unverified":"unverified"},"children":{"empty":"unverified","nonempty":"unverified","unverified":"unverified"}}}}'
+          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","journal_cursor":"unavailable","free_space":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_identity":"unverified"},"podman_version":{"client":"unavailable","server":"unavailable"}},"pending_repair_diagnostic":{"owner_rwx":"unverified","group_other_write_or_special_bits":"unverified","group_write":"unverified","other_write":"unverified","setuid":"unverified","setgid":"unverified","sticky":"unverified","volume_free_bytes":"unverified","volume_free_inodes":"unverified","graphroot_free_bytes":"unverified","graphroot_free_inodes":"unverified","failed_checks":["status_pending","volume_inventory_complete","name_collision_clear","project_valid","volume_object","volume_name_matches","mountpoint_absolute","labels_object","project_label_matches","volume_label_matches","needs_chown_false","needs_copy_up_true","volume_unused","mount_count_zero","collector_absent","metadata_object","metadata_observed","children_empty","child_count_zero","acl_absent","root_not_mount","child_not_mount","root_object","owner_rwx","group_other_write_or_special_absent","owner_mismatch","collector_access_blocked","volume_free_bytes","volume_free_inodes","graphroot_free_bytes","graphroot_free_inodes"]},"live_diagnostic":{"top_level":{"seed_file":"unverified","journal_component":"unverified","other_files":"unverified","other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified","receiver_component":"unverified","exporter_component":"unverified","attributes_processor_component":"unverified","remotecfg_component":"unverified"},"role_metadata":{"receiver":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"exporter":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"attributes_processor":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"remotecfg":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"}},"unmatched_directories":{"count":"unverified","owner":{"matches_collector":"unverified","mismatch":"unverified","unverified":"unverified"},"access":{"read_write_execute":"unverified","blocked":"unverified","unverified":"unverified"},"acl":{"absent":"unverified","present":"unverified","unverified":"unverified"},"mount":{"clear":"unverified","ambiguous":"unverified","unverified":"unverified"},"children":{"empty":"unverified","nonempty":"unverified","unverified":"unverified"}},"journal_metadata":{"component":{"presence":"unverified","type":"unverified","owner":"unverified","owner_rwx":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"positions":{"presence":"unverified","type":"unverified","owner":"unverified","owner_rw":"unverified","unsafe_mode_bits":"unverified","link_count":"unverified","acl":"unverified","mount":"unverified"},"temporary_files":"unverified","unknown_children":{"files":"unverified","directories":"unverified","symlinks":"unverified","other":"unverified"},"child_count":"unverified","temporary_file_metadata":"unverified"},"remotecfg_state":"unverified","seed_metadata":{"presence":"unverified","type":"unverified","owner":"unverified","link_count":"unverified","owner_execute":"unverified","group_other_permissions":"unverified","special_bits":"unverified","acl":"unverified","mount":"unverified"},"layout_diagnostic":{"root_mode":"unverified","journal_child_count":"unverified"}},"remotecfg":"unverified"}'
       when: ansible_check_mode
 
     - name: Require bounded positions-volume survey fields
@@ -1225,6 +1675,7 @@
           - (_journal_positions_survey.stdout | from_json).mount in ['clear', 'ambiguous', 'unavailable']
           - (_journal_positions_survey.stdout | from_json).children in ['safe_regular_files', 'ambiguous', 'unavailable']
           - (_journal_positions_survey.stdout | from_json).journal_cursor in ['valid', 'unavailable']
+          - (_journal_positions_survey.stdout | from_json).remotecfg in ['absent', 'safe', 'unsafe', 'unverified']
           - (_journal_positions_survey.stdout | from_json).free_space in ['sufficient', 'low_or_unverified', 'unavailable']
           - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.outcome in ['observed', 'unavailable', 'malformed', 'duplicate', 'missing', 'unverified', 'identity_mismatch', 'identity_unverified', 'identity_changed', 'flag_unverified', 'flag_mismatch']
           - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.identity in ['match', 'mismatch', 'unverified']
@@ -1264,13 +1715,66 @@
           - (_journal_positions_survey.stdout | from_json).pending_repair_diagnostic.failed_checks is sequence
           - (_journal_positions_survey.stdout | from_json).pending_repair_diagnostic.failed_checks | length <= 31
           - (_journal_positions_survey.stdout | from_json).pending_repair_diagnostic.failed_checks | difference(['status_pending', 'volume_inventory_complete', 'name_collision_clear', 'project_valid', 'volume_object', 'volume_name_matches', 'mountpoint_absolute', 'labels_object', 'project_label_matches', 'volume_label_matches', 'needs_chown_false', 'needs_copy_up_true', 'volume_unused', 'mount_count_zero', 'collector_absent', 'metadata_object', 'metadata_observed', 'children_empty', 'child_count_zero', 'acl_absent', 'root_not_mount', 'child_not_mount', 'root_object', 'owner_rwx', 'group_other_write_or_special_absent', 'owner_mismatch', 'collector_access_blocked', 'volume_free_bytes', 'volume_free_inodes', 'graphroot_free_bytes', 'graphroot_free_inodes']) | length == 0
-          - (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.keys() | list | sort == ['seed_file', 'journal_component', 'other_files', 'other_directories', 'other_symlinks', 'other_kinds', 'receiver_component', 'exporter_component'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.keys() | list | sort == ['seed_file', 'journal_component', 'remotecfg_component', 'other_files', 'other_directories', 'other_symlinks', 'other_kinds', 'receiver_component', 'exporter_component', 'attributes_processor_component'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.remotecfg_component == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.remotecfg_component | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.remotecfg_component <= 32)
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.receiver_component == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.receiver_component | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.receiver_component <= 32)
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.exporter_component == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.exporter_component | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.exporter_component <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.attributes_processor_component == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.attributes_processor_component | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.top_level.attributes_processor_component <= 32)
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata is mapping
-          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.keys() | list | sort == ['receiver', 'exporter'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.remotecfg_state in ['absent', 'safe', 'unsafe', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.keys() | list | sort == ['component', 'positions', 'child_count', 'temporary_file_metadata', 'temporary_files', 'unknown_children'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.keys() | list | sort == ['presence', 'type', 'owner', 'owner_rwx', 'unsafe_mode_bits', 'link_count', 'acl', 'mount', 'children'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.presence in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.type in ['absent', 'directory', 'file', 'symlink', 'other', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.owner in ['matches_collector', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.owner_rwx in ['complete', 'incomplete', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.unsafe_mode_bits in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.link_count in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.acl in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.mount in ['clear', 'ambiguous', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.component.children in ['empty', 'nonempty', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.keys() | list | sort == ['presence', 'type', 'owner', 'owner_rw', 'unsafe_mode_bits', 'link_count', 'acl', 'mount'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.presence in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.type in ['absent', 'regular_file', 'symlink', 'other', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.owner in ['matches_collector', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.owner_rw in ['complete', 'incomplete', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.unsafe_mode_bits in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.link_count in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.acl in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.positions.mount in ['clear', 'ambiguous', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.child_count == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.child_count | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.child_count <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_file_metadata in ['not_applicable', 'safe', 'unsafe', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_files == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_files | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.temporary_files <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.keys() | list | sort == ['files', 'directories', 'symlinks', 'other'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.files == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.files | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.files <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.directories == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.directories | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.directories <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.symlinks == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.symlinks | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.symlinks <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.other == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.other | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.other <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.journal_metadata.unknown_children.values() | select('integer') | map('int') | sum <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.keys() | list | sort == ['presence', 'type', 'owner', 'link_count', 'owner_execute', 'group_other_permissions', 'special_bits', 'acl', 'mount'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.presence in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.type in ['absent', 'regular_file', 'directory', 'symlink', 'other', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.owner in ['matches_collector', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.link_count in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.owner_execute in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.group_other_permissions in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.special_bits in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.acl in ['absent', 'present', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.seed_metadata.mount in ['clear', 'ambiguous', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.keys() | list | sort == ['root_mode', 'journal_child_count'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.root_mode in ['safe', 'unsafe', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.journal_child_count == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.journal_child_count | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.layout_diagnostic.journal_child_count <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.keys() | list | sort == ['receiver', 'exporter', 'attributes_processor', 'remotecfg'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.receiver.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.attributes_processor.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.remotecfg.keys() | list | sort == ['owner', 'access', 'acl', 'mount', 'children'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.receiver.owner in ['matches_collector', 'mismatch', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.receiver.access in ['read_write_execute', 'blocked', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.receiver.acl in ['present', 'absent', 'unverified']
@@ -1281,6 +1785,16 @@
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.acl in ['present', 'absent', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.mount in ['clear', 'ambiguous', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.children in ['empty', 'nonempty', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.attributes_processor.owner in ['matches_collector', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.attributes_processor.access in ['read_write_execute', 'blocked', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.attributes_processor.acl in ['present', 'absent', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.attributes_processor.mount in ['clear', 'ambiguous', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.attributes_processor.children in ['empty', 'nonempty', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.remotecfg.owner in ['matches_collector', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.remotecfg.access in ['read_write_execute', 'blocked', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.remotecfg.acl in ['present', 'absent', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.remotecfg.mount in ['clear', 'ambiguous', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.remotecfg.children in ['empty', 'nonempty', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories is mapping
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.keys() | list | sort == ['count', 'owner', 'access', 'acl', 'mount', 'children'] | sort
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.count == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.count | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.count <= 32)
@@ -1316,6 +1830,7 @@
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | sum <= 32
         fail_msg: "The positions-volume survey failed without reporting filesystem details."
         quiet: true
+      no_log: true
 
     - name: Report only bounded positions-volume metadata
       ansible.builtin.debug:
@@ -1331,14 +1846,18 @@
       changed_when: false
       failed_when: false
       no_log: true
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - journal_collector_action | default('apply') == 'survey'
 
     - name: Record check-mode survey as unverified without probing the container runtime
       ansible.builtin.set_fact:
         _journal_directory_survey:
           rc: 0
           stdout: '{"result":"check_mode_unverified","entry_count":0,"permission_denied_target":"unavailable"}'
-      when: ansible_check_mode
+      when:
+        - ansible_check_mode
+        - journal_collector_action | default('apply') == 'survey'
 
     - name: Require a valid sanitized standard-path survey result
       ansible.builtin.assert:
@@ -1350,14 +1869,17 @@
           - (_journal_directory_survey.stdout | from_json).permission_denied_target in ['journal', 'positions', 'config', 'other', 'none', 'unavailable']
         fail_msg: "The standard journal directory survey failed without exposing journal data."
         quiet: true
+      when: journal_collector_action | default('apply') == 'survey'
 
     - name: Report only the fixed journal source status
       ansible.builtin.debug:
         msg: "Journal directory survey status: {{ 'available' if (_journal_directory_survey.stdout | from_json).result in ['/var/log/journal', '/run/log/journal'] else (_journal_directory_survey.stdout | from_json).result }}"
+      when: journal_collector_action | default('apply') == 'survey'
 
     - name: Report only the bounded collector journal diagnostic
       ansible.builtin.debug:
         msg: "Collector journal diagnostic: entry_count={{ (_journal_directory_survey.stdout | from_json).entry_count }}, permission_denied_target={{ (_journal_directory_survey.stdout | from_json).permission_denied_target }}"
+      when: journal_collector_action | default('apply') == 'survey'
 
 - name: Repair only the journal positions volume root ownership
   hosts: o11y_svc

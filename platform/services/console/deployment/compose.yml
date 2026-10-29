@@ -1,0 +1,42 @@
+# console — the Dispatch Console (single container, SQLite preferences on a named volume).
+#
+# The image is BUILT ON THIS HOST by deploy.sh (build_console_image) from
+# platform/services/console/{app,deployment/Containerfile}: there is no registry push, so
+# CONSOLE_IMAGE is a local tag. Ansible's deploy-console.yml renders .env (non-secret config, the
+# OIDC client secret shared-read from authentik, and the Semaphore API token that
+# provision-console-semaphore-access.yml stores), config/scope.json and config/workflow.json BEFORE
+# this stack starts; deploy.sh does not generate or read secrets.
+#
+# Behind central Caddy: the app serves plain HTTP on :8080 inside the container. The host publish
+# is env-parameterized (CONSOLE_BIND / CONSOLE_PORT in .env), loopback by default.
+# Plan: plan/development/17-dispatch-console.md (Phase 1 — skeleton, login and deployment path).
+
+name: console
+
+services:
+  console:
+    image: ${CONSOLE_IMAGE:-localhost/agent-cloud-console:local}
+    container_name: console
+    restart: always
+    env_file:
+      - .env
+    ports:
+      # Loopback-only by default; central Caddy proxies in. Prod sets a host bind + port via .env.
+      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-3410}:8080"
+    volumes:
+      # SQLite database (/data/prefs.db): preferences and login sessions. The image's nonroot uid must own /data.
+      - console-data:/data
+      # Which tenants, orgs and sites the console shows. Rendered from the inventory; read-only.
+      - ./config/scope.json:/etc/console/scope.json:ro
+      # The service-onboarding steps the console labels a run with (CONSOLE_WORKFLOW_FILE); read-only.
+      - ./config/workflow.json:/etc/console/workflow.json:ro
+    # No healthcheck, on purpose. podman-compose 1.0.6 (tag v1.0.6, podman_compose.py) turns a
+    # `test: ["CMD", ...]` list into `--healthcheck-command "/bin/sh -c ..."`, and this image is
+    # distroless: it has no /bin/sh, so the check could never pass (Semaphore task 9892 on prod: the container
+    # ran and logged "OIDC discovery ready", and podman reported it unhealthy). Readiness is proven
+    # from outside the container instead: deploy.sh step 4 runs the binary's own probe through
+    # `podman exec` until it passes, bounded, and deploy-console.yml Phase 3 repeats it. The
+    # agentgateway gateway image is shell-less for the same reason and is probed the same way.
+
+volumes:
+  console-data:

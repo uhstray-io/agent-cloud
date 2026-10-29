@@ -21,14 +21,18 @@
 # versus range, the default datasource, NaN and bounded Loki stream results — is documented,
 # with sources, in files/verify-o11y-dashboard-data.py. Loki panels are evaluated only when
 # their exact titles are in panel_titles; whole-dashboard runs skip Loki. Tempo and other
-# datasources are skipped, not verified. A variable whose saved default the script cannot reproduce (a query
-# variable with a concrete selection, or All with no Custom all value) is refused unless
-# dashboard_variables supplies it.
+# datasources are skipped, not verified. A query variable's saved current selection is
+# accepted only when it is a bounded literal service name; the variable query itself is not
+# evaluated. Missing, computed, All, and unsafe defaults are refused unless an override is
+# supplied.
 #
 # Read-only and identical under --check: the dashboard is read and Prometheus or Loki is queried in
-# both. Output is names and counts only: no label value or sample value is printed, so a
-# per-identity panel reports the NUMBER of identities that answered, never their names; Loki
-# log lines and label values are also discarded.
+# both. Output is counts plus bounded public identities: only the exact latest-workflow-state
+# observation may report service/step pairs validated against the public registries. If both
+# exact latest-state and completion-age panels are selected, those pairs may also carry a
+# validated numeric completion age in seconds; unselected or unknown ages are null. A
+# per-identity panel reports the NUMBER of identities that answered, never their names. All
+# other labels, raw samples, and Loki log lines are discarded.
 # Override values are not printed either, only the first 12 hex digits of each one's sha256.
 # No backend error body is printed: errors may embed label sets or log content. Only a fixed
 # status or exception class is reported.
@@ -60,6 +64,11 @@
   connection: local
   gather_facts: false
   any_errors_fatal: true
+  vars:
+    # Parse the canonical registry on the Ansible controller, where the existing Ansible
+    # YAML parser is available. The receiver-side verifier remains stdlib-only.
+    _vdd_workflow_registry: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}
   tasks:
     - name: Refuse a malformed request before touching the receiver
       ansible.builtin.assert:
@@ -72,6 +81,20 @@
           - _expected_empty_panels | type_debug == 'list'
           - _expected_empty_panels | reject('string') | list | length == 0
           - _dashboard_variables is mapping
+          - >-
+            _vdd_workflow_registry is mapping
+            and (_vdd_workflow_registry.get('steps') | type_debug == 'list')
+            and (_vdd_workflow_registry.get('steps') | length > 0)
+            and (_vdd_workflow_registry.get('steps') | length <= 128)
+            and ((_vdd_workflow_registry.get('steps') | select('mapping') | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
+            and ((_vdd_workflow_registry.get('steps') | map(attribute='id') | select('string') | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
+            and ((_vdd_workflow_registry.get('steps') | map(attribute='id') | select('string')
+                 | select('match', '^[a-z][a-z0-9-]{0,63}$') | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
+            and ((_vdd_workflow_registry.get('steps') | map(attribute='id') | unique | list | length)
+                 == (_vdd_workflow_registry.get('steps') | length))
         fail_msg: >-
           Declare exactly one o11y_svc host and pass dashboard_uid (a Grafana uid), lookback
           (one duration unit, e.g. 1h), panel_titles and expected_empty_panels as JSON lists,
@@ -88,6 +111,8 @@
   become: false
   any_errors_fatal: true
   vars:
+    _vdd_workflow_registry: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}
     _vdd_deploy_dir: >-
       {{ (local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud'))
          ~ '/' ~ monorepo_deploy_path | default('platform/services/o11y/deployment') }}
@@ -125,6 +150,7 @@
               'lookback': _vdd_lookback,
               'panel_titles': _vdd_panel_titles,
               'expected_empty_panels': _vdd_expected_empty_panels,
+              '_vdd_workflow_steps': _vdd_workflow_registry.steps,
               'variables': _vdd_variables,
               'prometheus_url': 'http://' ~ (o11y_prom_bind | default('127.0.0.1')) ~ ':' ~ (o11y_prom_port | default(9090)),
               'loki_url': 'http://' ~ _vdd_loki_host ~ ':' ~ (o11y_loki_port | default(3100)),

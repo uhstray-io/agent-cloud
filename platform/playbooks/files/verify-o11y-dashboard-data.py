@@ -3,8 +3,11 @@
 
 Read-only: it reads the dashboard JSON the receiver's Grafana provisions from, and sends
 query and query_range requests to the receiver's Prometheus and Loki APIs. It prints one
-JSON report on stdout carrying panel titles, target status and counts only: no label value,
-log line, query expression or sample value leaves this script.
+JSON report on stdout carrying panel titles, target status and counts plus exact-contract
+observations. No unknown label, log line, query expression, provenance identifier or raw
+sample leaves this script. When both exact latest-workflow panels are selected, the bounded
+failure observation may include validated numeric completion-age seconds for public failed
+pairs; missing or invalid ages are null.
 
 Input (stdin, JSON):
   dashboards_dir   directory Grafana's file provider loads (config/grafana/dashboards)
@@ -41,8 +44,9 @@ Grafana semantics reproduced, and where they come from:
   - A target or panel with no datasource uses the default one, which is Prometheus
     (datasources.yml, isDefault). Loki targets are evaluated only when their panel title is
     explicitly named in `panel_titles`; whole-dashboard runs skip Loki and unsupported data sources.
-  - What this script does not reproduce, an evaluated panel may not use: a panel's own
-    time range (timeFrom, timeShift), its query options (maxDataPoints, a min interval on
+  - A panel's timeFrom is reproduced when it is one Prometheus duration unit; it sets that
+    panel's relative lookback, query step and $__range builtins. Instant queries still run at
+    the current end time. A panel may not use timeShift, its query options (maxDataPoints, a min interval on
     the panel or a target, intervalFactor), repetition (repeat, on the panel or its row) and
     library panels (whose queries live outside the dashboard file). Each is refused. A
     library panel is refused whatever its datasource, since the file does not say.
@@ -101,17 +105,101 @@ REFERENCE = re.compile(
 )
 # Types whose saved current value is the literal text Grafana interpolates.
 LITERAL_TYPES = {"custom", "constant", "interval", "textbox"}
+QUERY_DEFAULT = re.compile(r"[A-Za-z0-9_/-]{1,128}")
 POINTS_PER_PANEL = 1000
 QUERY_TIMEOUT = 30
 LOKI_RESULT_LIMIT = 100
+WORKFLOW_STEP_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+COMPLETION_AGE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
+MAX_WORKFLOW_STEPS = 128
+CURRENT_WORKFLOW_STATE_WINDOW_SECONDS = 45 * 60
 # The Prometheus HTTP API's errorType values (prometheus web/api/v1/api.go).
 ERROR_TYPES = {"timeout", "canceled", "execution", "bad_data", "internal", "unavailable", "not_found", "not_acceptable"}
+# These categorical observations are deliberately tied to the complete provisioned query
+# contract. A title match alone only permits an `unverified` observation.
+OBSERVATION_CONTRACTS = {
+    ("service-overview", "Scrape target health"): {
+        "name": "scrape_health",
+        "datasource": "prometheus",
+        "datasource_uid": "prometheus",
+        "ref": "A",
+        "mode": "instant",
+        "expr": 'min by (service) (up{service=~"$service",job!="o11y-availability"})',
+    },
+    ("service-conformance", "Latest inventory marker age"): {
+        "name": "inventory_marker_freshness",
+        "datasource": "loki",
+        "datasource_uid": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "expr": (
+            'min(last_over_time({job="agent-cloud-conformance", step="none", '
+            'status=~"^(no_history|has_history|history_incomplete)$"} | json | '
+            'inventory_code=~"^(0|1|2)$" | marker_time_seconds=~"^[0-9]+$" | '
+            '__error__="" | label_format age_seconds=`{{sub (unixEpoch now) '
+            '.marker_time_seconds}}` | unwrap age_seconds | __error__="" [45m]))'
+        ),
+    },
+    ("service-conformance", "Current failed step states"): {
+        "name": "current_workflow_failures",
+        "datasource": "loki",
+        "datasource_uid": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "expr": (
+            'sum(last_over_time({job="agent-cloud-conformance", service=~".+", step=~".+", step!="none"} | '
+            'json state_code | unwrap state_code | __error__="" [45m]) by (service, step) '
+            '== bool 0) or (sum(last_over_time({job="agent-cloud-conformance", step="none", '
+            'status=~"^(no_history|has_history|history_incomplete)$"} | json | '
+            'inventory_code=~"^(0|1|2)$" | marker_time_seconds=~"^[0-9]+$" | '
+            '__error__="" | unwrap inventory_code | __error__="" [45m]) by (service) * 0))'
+        ),
+    },
+    ("service-conformance", "Latest step status by service"): {
+        "name": "current_workflow_failed_steps",
+        "datasource": "loki",
+        "datasource_uid": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "window_seconds": CURRENT_WORKFLOW_STATE_WINDOW_SECONDS,
+        "scope": "latest_recorded_state",
+        "expr": (
+            'last_over_time({job="agent-cloud-conformance", service=~".+", step=~".+", step!="none"} | '
+            'json state_code | unwrap state_code | __error__="" [45m]) by (service, step)'
+        ),
+    },
+    ("service-conformance", "Latest workflow completion age by service and step"): {
+        "name": "workflow_completion_age",
+        "datasource": "loki",
+        "datasource_uid": "loki",
+        "ref": "A",
+        "mode": "instant",
+        "expr": (
+            'last_over_time({job="agent-cloud-conformance", service=~".+", step=~".+", step!="none"} | '
+            'json completed_at_seconds | drop status | label_format age_seconds=`{{if eq '
+            '(.completed_at_seconds | default "unknown") "unknown"}}-1{{else}}{{sub '
+            '(unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | '
+            '__error__="" [45m]) by (service, step)'
+        ),
+    },
+}
+INVENTORY_MARKER_STALE_SECONDS = 1800
+COMPLETION_AGE_DIAGNOSTIC_COUNTERS = (
+    "registry_unavailable_count",
+    "invalid_result_shape_count",
+    "invalid_label_shape_count",
+    "unknown_identity_count",
+    "duplicate_pair_count",
+    "age_rows_with_unavailable_value_count",
+    "failed_pairs_missing_age_row_count",
+    "failed_pairs_with_unavailable_age_value_count",
+)
 # Characters an override may never carry, wherever it lands.
 OVERRIDE_FORBIDDEN = re.compile(r'["{}()\\\r\n]')
 # A value substituted outside a string literal: a duration or a number, nothing else.
 BARE_VALUE = re.compile(r"^[0-9]+(?:\.[0-9]+)?(?:ms|s|m|h|d|w|y)?$")
 # Panel and target fields whose effect this script does not reproduce.
-PANEL_UNSUPPORTED = ("maxDataPoints", "interval", "timeFrom", "timeShift", "repeat", "libraryPanel")
+PANEL_UNSUPPORTED = ("maxDataPoints", "interval", "timeShift", "repeat", "libraryPanel")
 TARGET_UNSUPPORTED = ("interval",)
 
 
@@ -190,6 +278,376 @@ def datasource_type(target: dict[str, Any], panel: dict[str, Any]) -> str:
     return kind.lower()
 
 
+def _observation_target_matches(
+    expected: dict[str, Any], panel: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    source = target.get("datasource") if "datasource" in target else panel.get("datasource")
+    return (
+        isinstance(source, dict)
+        and source.get("type") == expected["datasource"]
+        and source.get("uid") == expected["datasource_uid"]
+        and str(target.get("refId", "")) == expected["ref"]
+        and str(target.get("expr") or "").strip() == expected["expr"]
+        and (
+            str(target.get("queryType", "")).lower() == "instant" and not target.get("range")
+            if expected["datasource"] == "loki"
+            else bool(target.get("instant")) and not target.get("range")
+        )
+        and not target.get("hide")
+    )
+
+
+def _observation_contract(
+    dashboard: dict[str, Any], panel: dict[str, Any], targets: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    title = str(panel.get("title", ""))
+    expected = OBSERVATION_CONTRACTS.get((str(dashboard.get("uid", "")), title))
+    if expected is None:
+        return None
+
+    matching_targets = [
+        index for index, target in enumerate(targets)
+        if _observation_target_matches(expected, panel, target)
+    ]
+    same_ref_and_query = [
+        target for target in targets
+        if not target.get("hide")
+        and str(target.get("refId", "")) == expected["ref"]
+        and str(target.get("expr") or "").strip() == expected["expr"]
+    ]
+    exact = len(matching_targets) == 1 and len(same_ref_and_query) == 1
+    contract = {"name": expected["name"], "verified": exact}
+    if exact:
+        contract["_target_index"] = matching_targets[0]
+    for key in ("window_seconds", "scope"):
+        if key in expected:
+            contract[key] = expected[key]
+    return contract
+
+
+def _observation_values(data: dict[str, Any]) -> list[float] | None:
+    """Read finite numeric samples without retaining labels, timestamps, or source values."""
+    kind, result = data.get("resultType"), data.get("result")
+    if kind == "scalar":
+        sample_values = [result]
+    elif kind == "vector" and isinstance(result, list):
+        sample_values = [series.get("value") for series in result if isinstance(series, dict)]
+        if len(sample_values) != len(result):
+            return None
+    else:
+        return None
+    values = []
+    for sample in sample_values:
+        if not _finite(sample):
+            return None
+        try:
+            value = float(sample[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        values.append(value)
+    return values
+
+
+def _categorical_observation(name: str, data: dict[str, Any]) -> str:
+    values = _observation_values(data)
+    if values is None:
+        return "unverified"
+    if not values:
+        return {
+            "scrape_health": "no_metrics",
+            "inventory_marker_freshness": "no_data",
+            "current_workflow_failures": "no_data",
+            "workflow_completion_age": "no_data",
+        }[name]
+    if name == "scrape_health":
+        if any(value not in (0.0, 1.0) for value in values):
+            return "unverified"
+        return "unhealthy" if 0.0 in values else "healthy"
+    if name == "inventory_marker_freshness":
+        if any(value < 0 for value in values):
+            return "unverified"
+        return "stale" if any(value > INVENTORY_MARKER_STALE_SECONDS for value in values) else "fresh"
+    if name == "current_workflow_failures":
+        if any(value < 0 for value in values):
+            return "unverified"
+        return "present" if any(value > 0 for value in values) else "none"
+    if name == "workflow_completion_age":
+        if any(value < 0 and value != -1 for value in values):
+            return "unverified"
+        return "unknown" if -1 in values else "known"
+    return "unverified"
+
+
+def _workflow_identity_allowlists(
+    dashboards_dir: str, workflow_steps: Any
+) -> tuple[set[str], set[str]] | None:
+    """Read service ids locally and validate the controller-parsed registry's steps list."""
+    if not isinstance(workflow_steps, list) or not workflow_steps or len(workflow_steps) > MAX_WORKFLOW_STEPS:
+        return None
+    step_ids: list[str] = []
+    for entry in workflow_steps:
+        if not isinstance(entry, dict):
+            return None
+        step_id = entry.get("id")
+        if not isinstance(step_id, str) or not WORKFLOW_STEP_ID.fullmatch(step_id):
+            return None
+        step_ids.append(step_id)
+    if len(step_ids) != len(set(step_ids)):
+        return None
+
+    dashboards = Path(dashboards_dir).resolve()
+    repo_root = next(
+        (
+            parent
+            for parent in dashboards.parents
+            if (parent / "platform/services").is_dir()
+            and (parent / "agents").is_dir()
+        ),
+        None,
+    )
+    if repo_root is None:
+        return None
+
+    try:
+        service_ids = {
+            path.name
+            for parent in (repo_root / "platform/services", repo_root / "agents")
+            for path in parent.iterdir()
+            if path.is_dir() and re.fullmatch(r"[a-z][a-z0-9-]{0,39}", path.name)
+        }
+    except OSError:
+        return None
+    if not service_ids:
+        return None
+    return service_ids, set(step_ids)
+
+
+def _workflow_state_code(sample: Any) -> int | None:
+    """Accept only a complete Loki vector sample with a finite timestamp and string code."""
+    if not isinstance(sample, list) or len(sample) != 2:
+        return None
+    timestamp, value = sample
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+        return None
+    if not isinstance(value, str) or value not in {"0", "1", "2"}:
+        return None
+    try:
+        timestamp_number = float(timestamp)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(timestamp_number) or timestamp_number < 0:
+        return None
+    return int(value)
+
+
+def _completion_age_seconds(sample: Any) -> float | None:
+    """Accept one complete Loki vector sample; -1 is the query's explicit unknown."""
+    if not isinstance(sample, list) or len(sample) != 2:
+        return None
+    timestamp, value = sample
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+        return None
+    try:
+        timestamp_number = float(timestamp)
+        age = float(value) if isinstance(value, str) and COMPLETION_AGE.fullmatch(value) else math.nan
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(timestamp_number) or timestamp_number < 0:
+        return None
+    if not math.isfinite(age) or age < 0 and age != -1:
+        return None
+    return None if age == -1 else age
+
+
+def _completion_age_map(
+    data: Any, dashboards_dir: str, workflow_steps: Any
+) -> tuple[dict[tuple[str, str], float | None] | None, dict[str, int]]:
+    """Read exact public age rows and return fixed rejection counts without labels."""
+    diagnostics = dict.fromkeys(COMPLETION_AGE_DIAGNOSTIC_COUNTERS, 0)
+    allowlists = _workflow_identity_allowlists(dashboards_dir, workflow_steps)
+    if allowlists is None:
+        diagnostics["registry_unavailable_count"] = 1
+        return None, diagnostics
+    if not isinstance(data, dict):
+        diagnostics["invalid_result_shape_count"] = 1
+        return None, diagnostics
+    services, steps = allowlists
+    result = data.get("result")
+    if data.get("resultType") != "vector" or not isinstance(result, list):
+        diagnostics["invalid_result_shape_count"] = 1
+        return None, diagnostics
+    ages: dict[tuple[str, str], float | None] = {}
+    rejected = False
+    for series in result:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or set(metric) != {"service", "step"}:
+            diagnostics["invalid_label_shape_count"] += 1
+            rejected = True
+            continue
+        service, step = metric.get("service"), metric.get("step")
+        if not isinstance(service, str) or not isinstance(step, str):
+            diagnostics["invalid_label_shape_count"] += 1
+            rejected = True
+            continue
+        if service not in services or step not in steps:
+            diagnostics["unknown_identity_count"] += 1
+            rejected = True
+            continue
+        key = (service, step)
+        sample = series.get("value")
+        age = _completion_age_seconds(sample)
+        if age is None:
+            diagnostics["age_rows_with_unavailable_value_count"] += 1
+        if key in ages:
+            # A duplicate is ambiguous even if one row carried a plausible age.
+            diagnostics["duplicate_pair_count"] += 1
+            ages[key] = None
+            continue
+        ages[key] = age
+    return (None if rejected else ages), diagnostics
+
+
+def _attach_completion_ages(
+    observation: dict[str, Any], age_status: str,
+    age_map: dict[tuple[str, str], float | None] | None,
+    diagnostics: dict[str, int],
+) -> None:
+    """Join strict numeric ages to returned public pairs without changing failure status."""
+    pairs = observation.get("failed_steps", [])
+    known = 0
+    for pair in pairs:
+        key = (pair["service"], pair["step"])
+        if age_map is None:
+            age = None
+        elif key not in age_map:
+            diagnostics["failed_pairs_missing_age_row_count"] += 1
+            age = None
+        else:
+            age = age_map[key]
+            if age is None:
+                diagnostics["failed_pairs_with_unavailable_age_value_count"] += 1
+        pair["completion_age_seconds"] = age
+        known += int(age is not None)
+    observation["completion_age_status"] = age_status
+    observation["failed_pairs_with_known_completion_age"] = known
+    observation["failed_pairs_with_unknown_completion_age"] = len(pairs) - known
+    observation["completion_age_diagnostics"] = diagnostics
+
+
+def _failed_step_observation(
+    data: dict[str, Any], dashboards_dir: str, workflow_steps: Any,
+    window_seconds: int, scope: str,
+) -> dict[str, Any]:
+    """Return only registry-backed service/step failures, dropping all other Loki labels."""
+    metadata = {"window_seconds": window_seconds, "scope": scope}
+    allowlists = _workflow_identity_allowlists(dashboards_dir, workflow_steps)
+    if allowlists is None:
+        result = data.get("result")
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "unverified",
+            "reason": "registry_unavailable",
+            "unknown_series_count": len(result) if isinstance(result, list) else 0,
+            "unknown_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "unknown_sample_count": 0,
+            "duplicate_pair_count": 0,
+            "failed_step_count": 0,
+            "failed_steps": [],
+            "truncated_count": 0,
+            **metadata,
+        }
+    services, steps = allowlists
+    result = data.get("result")
+    if data.get("resultType") != "vector" or not isinstance(result, list):
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "unverified",
+            "reason": "unexpected_result_shape",
+            "unknown_series_count": len(result) if isinstance(result, list) else 0,
+            "unknown_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "unknown_sample_count": 0,
+            "duplicate_pair_count": 0,
+            "failed_step_count": 0,
+            "failed_steps": [],
+            "truncated_count": 0,
+            **metadata,
+        }
+    if not result:
+        return {
+            "name": "current_workflow_failed_steps",
+            "status": "no_data",
+            "failed_step_count": 0,
+            "failed_steps": [],
+            "truncated_count": 0,
+            "unknown_series_count": 0,
+            "unknown_label_shape_count": 0,
+            "unknown_identity_count": 0,
+            "unknown_sample_count": 0,
+            "duplicate_pair_count": 0,
+            **metadata,
+        }
+
+    pair_series: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    unknown = 0
+    unknown_label_shape = 0
+    unknown_identity = 0
+    unknown_sample = 0
+    duplicate_pairs = 0
+    for series in result:
+        metric = series.get("metric") if isinstance(series, dict) else None
+        if not isinstance(metric, dict) or set(metric) != {"service", "step"}:
+            unknown += 1
+            unknown_label_shape += 1
+            continue
+        service, step = metric.get("service"), metric.get("step")
+        if (
+            not isinstance(service, str)
+            or not isinstance(step, str)
+            or service not in services
+            or step not in steps
+        ):
+            unknown += 1
+            unknown_identity += 1
+            continue
+        key = (service, step)
+        pair_series.setdefault(key, []).append(series)
+
+    states: dict[tuple[str, str], int] = {}
+    for key, rows in pair_series.items():
+        if len(rows) > 1:
+            # Count only excess rows, preserving the prior total-unknown semantics.
+            duplicate_count = len(rows) - 1
+            unknown += duplicate_count
+            duplicate_pairs += duplicate_count
+            continue
+        raw_state = _workflow_state_code(rows[0].get("value"))
+        if raw_state is None:
+            unknown += 1
+            unknown_sample += 1
+            continue
+        states[key] = int(raw_state)
+
+    failures = sorted({key for key, state in states.items() if state == 0})
+    cap = 50
+    failed_steps = [{"service": service, "step": step} for service, step in failures[:cap]]
+    status = "unverified" if unknown else ("present" if failures else "none")
+    return {
+        "name": "current_workflow_failed_steps",
+        "status": status,
+        "failed_step_count": len(failures),
+        "failed_steps": failed_steps,
+        "truncated_count": max(0, len(failures) - cap),
+        "unknown_series_count": unknown,
+        "unknown_label_shape_count": unknown_label_shape,
+        "unknown_identity_count": unknown_identity,
+        "unknown_sample_count": unknown_sample,
+        "duplicate_pair_count": duplicate_pairs,
+        **metadata,
+    }
+
+
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Do not follow a server-supplied location to another endpoint."""
 
@@ -242,7 +700,19 @@ def template_values(dashboard: dict[str, Any], overrides: dict[str, Any]) -> tup
             isinstance(current, str)
             and current
             and not current.startswith("$")
-            and variable.get("type") in LITERAL_TYPES
+            and (
+                variable.get("type") in LITERAL_TYPES
+                or (
+                    variable.get("type") == "query"
+                    # Grafana regex-escapes multi-select query values; this
+                    # evaluator substitutes literals directly, so only accept
+                    # the default single-select behavior.
+                    and variable.get("multi", False) is False
+                    and variable.get("includeAll", False) is False
+                    and current.casefold() != "all"
+                    and QUERY_DEFAULT.fullmatch(current)
+                )
+            )
         ):
             values[name], sources[name] = current, "saved_value"
         # Anything else is resolved only if a query uses it, and refused there.
@@ -273,6 +743,19 @@ def interpolate(expr: str, values: dict[str, str], builtins: dict[str, str]) -> 
     return REFERENCE.sub(replace, expr)
 
 
+def grafana_builtins(lookback: int, scrape: int) -> tuple[int, dict[str, str]]:
+    step = max(scrape, math.ceil(lookback / POINTS_PER_PANEL))
+    builtins = {
+        "__interval": f"{step}s",
+        "__interval_ms": str(step * 1000),
+        "__rate_interval": f"{max(step + scrape, 4 * scrape)}s",
+        "__range": f"{lookback}s",
+        "__range_s": str(lookback),
+        "__range_ms": str(lookback * 1000),
+    }
+    return step, builtins
+
+
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
     """Resolve every selected panel's queries without contacting either backend."""
     lookback = duration_seconds(payload.get("lookback"))
@@ -293,15 +776,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     dashboard = load_dashboard(str(payload.get("dashboards_dir", "")), str(payload.get("dashboard_uid", "")))
     values, sources = template_values(dashboard, overrides)
-    step = max(scrape, math.ceil(lookback / POINTS_PER_PANEL))
-    builtins = {
-        "__interval": f"{step}s",
-        "__interval_ms": str(step * 1000),
-        "__rate_interval": f"{max(step + scrape, 4 * scrape)}s",
-        "__range": f"{lookback}s",
-        "__range_s": str(lookback),
-        "__range_ms": str(lookback * 1000),
-    }
+    step, _ = grafana_builtins(lookback, scrape)
 
     panels = flatten_panels(dashboard.get("panels", []))
     missing = [t for t in titles if t not in {p.get("title") for p in panels}]
@@ -330,7 +805,19 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         ]
         if evaluated:
             refuse_unsupported(panel, evaluated)
-        entry: dict[str, Any] = {"title": panel.get("title", ""), "targets": []}
+        panel_lookback = (
+            duration_seconds(panel["timeFrom"])
+            if evaluated and _set(panel.get("timeFrom"))
+            else lookback
+        )
+        panel_step, builtins = grafana_builtins(panel_lookback, scrape)
+        entry: dict[str, Any] = {
+            "title": panel.get("title", ""),
+            "lookback": panel_lookback,
+            "step": panel_step,
+            "targets": [],
+            "observation": _observation_contract(dashboard, panel, targets),
+        }
         for target in targets:
             kind = datasource_type(target, panel)
             ref = target.get("refId", "")
@@ -364,7 +851,13 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                         f"panel {entry['title']!r} target {ref!r} uses an unsupported instant log stream query"
                     )
             entry["targets"].append(
-                {"ref": ref, "datasource": kind, "modes": modes, "expr": interpolate(expr, values, builtins)}
+                {
+                    "ref": ref,
+                    "datasource": kind,
+                    "modes": modes,
+                    "expr": interpolate(expr, values, builtins),
+                    "source_expr": expr,
+                }
             )
         planned.append(entry)
     if not any(t.get("expr") for p in planned for t in p["targets"]):
@@ -433,7 +926,10 @@ def _query(base: str, backend: str, mode: str, expr: str, end: float, lookback: 
         # errorType only, never `error`: execution errors embed label sets.
         kind = body.get("errorType")
         return {"error": kind if isinstance(kind, str) and kind in ERROR_TYPES else "unrecognised error"}
-    return {"data": body.get("data") or {}}
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return {"error": "response data is not an object"}
+    return {"data": data}
 
 
 def _finite(sample: Any) -> bool:
@@ -474,20 +970,61 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
     end = time.time() if now is None else now
     bases = {"prometheus": str(payload.get("prometheus_url", "")), "loki": str(payload.get("loki_url", ""))}
     panels = []
+    failed_step_observation = None
+    completion_age_data = None
+    age_contract_selected = any(
+        entry.get("title") == "Latest workflow completion age by service and step"
+        and isinstance(entry.get("observation"), dict)
+        and entry["observation"].get("name") == "workflow_completion_age"
+        for entry in planned["panels"]
+    )
+    age_contract_verified = any(
+        entry.get("title") == "Latest workflow completion age by service and step"
+        and isinstance(entry.get("observation"), dict)
+        and entry["observation"].get("name") == "workflow_completion_age"
+        and entry["observation"].get("verified")
+        for entry in planned["panels"]
+    )
     for entry in planned["panels"]:
         targets = []
-        for target in entry["targets"]:
+        contract = entry.get("observation")
+        observation = None
+        if contract:
+            observation = {"name": contract["name"], "status": "unverified"}
+            if contract["name"] == "current_workflow_failed_steps":
+                failed_step_observation = observation
+            for key in ("window_seconds", "scope"):
+                if key in contract:
+                    observation[key] = contract[key]
+            if not contract["verified"]:
+                observation["reason"] = "contract_mismatch"
+        for target_index, target in enumerate(entry["targets"]):
             if "expr" not in target:
                 targets.append({k: target[k] for k in ("ref", "datasource", "status")})
                 continue
             for mode in target["modes"]:
                 answer = _query(
                     bases[target["datasource"]], target["datasource"], mode, target["expr"], end,
-                    planned["lookback"], planned["step"],
+                    entry["lookback"], entry["step"],
                 )
                 row = {"ref": target["ref"], "mode": mode}
+                observation_contract = OBSERVATION_CONTRACTS.get(
+                    (str(planned["dashboard"].get("uid", "")), entry["title"])
+                )
+                observe_target = bool(
+                    observation
+                    and contract["verified"]
+                    and contract.get("_target_index") == target_index
+                    and observation_contract
+                    and target["ref"] == observation_contract["ref"]
+                    and target["datasource"] == observation_contract["datasource"]
+                    and target.get("source_expr") == observation_contract["expr"]
+                    and mode == observation_contract["mode"]
+                )
                 if "error" in answer:
                     row.update(status="error", error=answer["error"])
+                    if observe_target:
+                        observation["reason"] = "query_error"
                 else:
                     series, with_values = _count(answer["data"])
                     row.update(
@@ -495,6 +1032,24 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                         series=series,
                         series_with_values=with_values,
                     )
+                    if observe_target:
+                        if contract["name"] == "current_workflow_failed_steps":
+                            observation.update(
+                                _failed_step_observation(
+                                    answer["data"],
+                                    str(payload.get("dashboards_dir", "")),
+                                    payload.get("_vdd_workflow_steps"),
+                                    contract["window_seconds"],
+                                    contract["scope"],
+                                )
+                            )
+                            failed_step_observation = observation
+                        elif contract["name"] == "workflow_completion_age":
+                            completion_age_data = answer["data"]
+                            observation["status"] = _categorical_observation(contract["name"], answer["data"])
+                        else:
+                            observation["status"] = _categorical_observation(contract["name"], answer["data"])
+                        observation.pop("reason", None)
                 targets.append(row)
         queried = [t for t in targets if t["status"] in ("data", "empty", "error")]
         if not queried:
@@ -507,7 +1062,40 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
             status = "expected_empty"
         else:
             status = "empty" if all(t["status"] == "empty" for t in queried) else "partial"
-        panels.append({"title": entry["title"], "status": status, "targets": targets})
+        panel_report = {
+            "title": entry["title"],
+            "status": status,
+            "lookback_seconds": entry["lookback"],
+            "targets": targets,
+        }
+        if observation is not None:
+            panel_report["observation"] = observation
+        panels.append(panel_report)
+
+    if failed_step_observation is not None:
+        for key in (
+            "unknown_series_count", "unknown_label_shape_count", "unknown_identity_count",
+            "unknown_sample_count", "duplicate_pair_count", "failed_step_count",
+            "failed_steps", "truncated_count",
+        ):
+            failed_step_observation.setdefault(key, 0 if key != "failed_steps" else [])
+        if age_contract_selected and age_contract_verified and completion_age_data is not None:
+            age_map, age_diagnostics = _completion_age_map(
+                completion_age_data,
+                str(payload.get("dashboards_dir", "")),
+                payload.get("_vdd_workflow_steps"),
+            )
+            age_status = "unverified" if age_map is None else ("no_data" if not age_map else "observed")
+            _attach_completion_ages(
+                failed_step_observation,
+                age_status,
+                age_map if age_status in ("observed", "no_data") else None,
+                age_diagnostics,
+            )
+        else:
+            age_status = "unverified" if age_contract_selected else "not_selected"
+            age_diagnostics = dict.fromkeys(COMPLETION_AGE_DIAGNOSTIC_COUNTERS, 0)
+            _attach_completion_ages(failed_step_observation, age_status, None, age_diagnostics)
 
     verified = [p for p in panels if p["status"] != "skipped"]
     failing = [p["title"] for p in verified if p["status"] not in ("pass", "expected_empty")]

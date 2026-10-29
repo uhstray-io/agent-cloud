@@ -7,6 +7,11 @@
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: "Pre-validate: Cluster ready for VM provisioning"
   ansible.builtin.import_playbook: proxmox-validate.yml
@@ -25,9 +30,12 @@
   vars:
     _project_root: "{{ project_root | default(playbook_dir + '/..') }}"
     # OpenBao connection
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
 
     # Secrets from OpenBao
     _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
@@ -41,8 +49,25 @@
       'secret/data/services/ssh:public_key',
       url=_bao_url, auth_method='approle',
       role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-    _tmpl_vmid: "{{ template_vmid | default(9000) }}"
-    _tmpl_node: "{{ template_node | default('alphacentauri') }}"
+    # PBS is bound to one private declaration. Its VM and template identity never
+    # come from launch-time variables; other services retain the existing defaults.
+    _pbs_mode: "{{ target_service | default('') == 'pbs' }}"
+    _pbs_decl_hosts: "{{ groups['pbs_svc'] | default([]) }}"
+    _pbs_decl_host: "{{ _pbs_decl_hosts[0] if (_pbs_decl_hosts | length == 1) else '' }}"
+    _pbs_o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _pbs_o11y_host: "{{ _pbs_o11y_hosts[0] if (_pbs_o11y_hosts | length == 1) else '' }}"
+    _pbs_data_node: "{{ hostvars[_pbs_o11y_host].proxmox_pbs_storage_node | default('') if _pbs_o11y_host else '' }}"
+    _pbs_data_storage: "{{ hostvars[_pbs_o11y_host].proxmox_pbs_vm_storage_id | default('') if _pbs_o11y_host else '' }}"
+    _tmpl_vmid: "{{ hostvars[_pbs_decl_host].pbs_debian_template_vmid | default('') if _pbs_mode else template_vmid | default(9000) }}"
+    _tmpl_node: "{{ hostvars[_pbs_decl_host].pbs_debian_template_node | default('') if _pbs_mode else template_node | default('alphacentauri') }}"
+    _pbs_template_name: "{{ hostvars[_pbs_decl_host].pbs_debian_template_name | default('') }}"
+    _pbs_template_description: >-
+      Debian 13 generic cloud image;
+      SHA-512=97675b27e69153002c4e13644e36200c8f9067f661dca00918c54f1cacbdb88d4bff8c0fbf5cf5d63a0397bdf0cc472d7a6372bae5281bf7ced756249c10f8a2;
+      source=https://cloud.debian.org/cdimage/cloud/trixie/20260601-2496/debian-13-generic-amd64-20260601-2496.qcow2;
+      detached signature unavailable
+    _pbs_vm_description: "Managed by agent-cloud; target_service=pbs; declaration=private inventory"
+    _ci_user: "{{ 'debian' if _pbs_mode else (ci_user | default(ansible_user)) }}"
 
     # ── WHERE THE VM SPEC COMES FROM ────────────────────────────────────────
     # Precedence, per field: launch override -> INVENTORY host vars -> the
@@ -84,7 +109,7 @@
     # hosts (a pool of CI runners, say) could only ever provision one of them, and a run
     # aimed at the second would silently rebuild the first under the second's overrides.
     # `-e target_host=<name>` selects the declaration explicitly.
-    _group_hosts: "{{ groups[target_service ~ '_svc'] | default([]) }}"
+    _group_hosts: "{{ _pbs_decl_hosts if _pbs_mode else groups[target_service ~ '_svc'] | default([]) }}"
     _decl_host: "{{ target_host | default(_group_hosts | first | default('')) }}"
     _decl: "{{ hostvars[_decl_host] | default({}) }}"
 
@@ -106,7 +131,7 @@
     _storage: "{{ _decl.vm_disk_storage | default(_defaults.disk_storage | default('')) }}"
     _bridge: "{{ _decl.vm_net_bridge | default(_defaults.net_bridge | default('vmbr0')) }}"
     _netmask: "{{ _decl.vm_netmask | default(_defaults.netmask | default(24)) }}"
-    _tags: "{{ _decl.vm_tags | default(_svc.tags | default(_defaults.base_tags | default('ubuntu;24.04'))) }}"
+    _tags: "{{ _decl.vm_tags | default(_svc.tags | default(_defaults.base_tags | default('pbs;debian13' if _pbs_mode else 'ubuntu;24.04'))) }}"
 
   tasks:
     # Every hard failure below (a refused declaration, the clone, migrate, configure, start,
@@ -133,6 +158,58 @@
             msg: "target_service must be specified (e.g., -e target_service=openbao)"
           when: target_service is not defined
 
+        - name: "Refuse launch-time PBS allocation overrides"
+          ansible.builtin.assert:
+            that:
+              - _pbs_allocation_overrides | length == 0
+              - _pbs_decl_hosts | length == 1
+              - _decl_host == _pbs_decl_hosts[0]
+              - not ansible_check_mode
+              - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+            fail_msg: >-
+              PBS provisioning requires its sole private inventory declaration, an exact
+              reviewed checkout, and a write-mode Dev run. Launch-time VM identity, template,
+              address, resource, or storage overrides are refused: {{ _pbs_allocation_overrides | join(', ') }}.
+            quiet: true
+          vars:
+            _pbs_forbidden_extra_vars:
+              - openbao_addr
+              - bao_role_id
+              - bao_secret_id
+              - netbox_url
+              - proxmox_validate_certs
+              - target_service
+              - target_host
+              - target_vmid
+              - target_node
+              - template_vmid
+              - template_node
+              - allow_unverified_address
+              - vm_clone_storage
+              - vmid
+              - vm_name
+              - vm_node
+              - vm_cores
+              - vm_memory
+              - vm_disk
+              - vm_ip
+              - vm_gateway
+              - vm_nameserver
+              - vm_netmask
+              - vm_disk_storage
+              - vm_net_bridge
+              - vm_tags
+              - vm_onboot
+              - vm_agent
+              - pbs_debian_template_vmid
+              - pbs_debian_template_name
+              - pbs_debian_template_node
+              - pbs_debian_template_import_storage
+              - proxmox_pbs_storage_node
+              - proxmox_pbs_vm_storage_id
+            _pbs_allocation_overrides: "{{ _pbs_forbidden_extra_vars | intersect('' | extra_var_names) | sort }}"
+          when: _pbs_mode | bool
+
         # Every field above now defaults to '' so a missing vm-specs file does not
         # raise. That is deliberate — absent is normal on the runner — but it also
         # turns a hard failure into a soft one, so the previously-implicit contract
@@ -152,7 +229,8 @@
               - (_dns | string | length) > 0
               - (_storage | string | length) > 0
             fail_msg: >-
-              Incomplete VM declaration for '{{ target_service }}'. Resolved:
+              {% if _pbs_mode %}The private PBS VM declaration is incomplete; check its vm_* fields in site-config.
+              {% else %}Incomplete VM declaration for '{{ target_service }}'. Resolved:
               vmid={{ _vmid | default('') }} node={{ _node | default('') }}
               cores={{ _cores | default('') }} memory={{ _mem | default('') }}
               disk={{ _disk | default('') }} ip={{ _ip | default('') }}
@@ -162,16 +240,78 @@
               '{{ target_service }}_svc' inventory group — that is the
               Semaphore-runnable path, since the vm-specs.yml ledger lives in the
               private site-config repo the runner never checks out. From a
-              workstation you may instead pass -e project_root=<site-config path>.
+              workstation you may instead pass -e project_root=<site-config path>.{% endif %}
             success_msg: "VM declaration for '{{ target_service }}' is complete."
 
-        # The token id names a real Proxmox user, so it comes from the store, never a default.
+        # Keep this token-ID guard before the play's first URI call; later PVE
+        # requests receive the credential from module_defaults.
         - name: "Require the stored Proxmox token id"
           ansible.builtin.assert:
             that: _pve_token_id | length > 0
             fail_msg: >-
               secret/services/proxmox has no token_id. Store the Proxmox API token id
               (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+        - name: "Require the PBS template and VM declaration to agree"
+          ansible.builtin.assert:
+            that:
+              - _pbs_decl_hosts | length == 1
+              - _decl_host == _pbs_decl_hosts[0]
+              - _tmpl_vmid | string is match('^[1-9][0-9]{2,5}$')
+              - _tmpl_node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+              - _pbs_template_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+              - _node == _tmpl_node
+              - _pbs_o11y_hosts | length == 1
+              - _node == _pbs_data_node
+              - _pbs_data_storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+              - _name | length > 0
+              - _disk is match('^[1-9][0-9]*G$')
+              - _storage == _decl.vm_disk_storage
+            fail_msg: "The sole PBS declaration must specify a same-node VM, Debian template identity, OS disk, and destination storage."
+            quiet: true
+          when: _pbs_mode | bool
+
+        - name: "Refuse a cleartext NetBox endpoint for PBS address proof"
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+          vars:
+            _assert_bao_url: "{{ _netbox_url }}"
+            _assert_url_label: "NetBox"
+          when: _pbs_mode | bool
+
+        - name: "Build the NetBox API headers for PBS address proof"
+          ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+          vars:
+            _nb_token: >-
+              {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/netbox:automation_api_token',
+                 url=_bao_url, auth_method='approle',
+                 role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+          when: _pbs_mode | bool
+
+        - name: "Read the PBS address from the NetBox authority"
+          ansible.builtin.uri:
+            url: "{{ _netbox_url }}/api/ipam/ip-addresses/?address={{ _ip | urlencode }}"
+            method: GET
+            headers: "{{ _nb_headers }}"
+            status_code: [200]
+          register: _pbs_netbox_ip
+          failed_when: false
+          no_log: true
+          check_mode: false
+          when: _pbs_mode | bool
+
+        - name: "Require one unassigned reserved PBS address record"
+          ansible.builtin.assert:
+            that:
+              - _pbs_netbox_ip.status | default(-1) == 200
+              - _pbs_netbox_ip.json.results | default([]) | length == 1
+              - (_pbs_netbox_ip.json.results | default([]) | first | default({})).address | default('') == (_ip ~ '/' ~ (_netmask | string))
+              - (((_pbs_netbox_ip.json.results | default([]) | first | default({})).status | default({})).value | default('')) == 'reserved'
+              - (_pbs_netbox_ip.json.results | default([]) | first | default({})).description | default('') == 'Reserved for o11y PBS VM'
+              - (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_type | default(none) == none
+              - (_pbs_netbox_ip.json.results | default([]) | first | default({})).assigned_object_id | default(none) == none
+            fail_msg: "NetBox does not prove one unassigned reservation for the PBS address; active assignments require an authoritative VMID mapping."
+            quiet: true
+          when: _pbs_mode | bool
 
         - name: "Show provisioning plan"
           ansible.builtin.debug:
@@ -180,6 +320,12 @@
                 VMID: {{ _vmid }}, Name: {{ _name }}, Node: {{ _node }}
                 CPU: {{ _cores }} cores, Memory: {{ _mem }}MB, Disk: {{ _disk }}
                 IP: {{ _ip }}/{{ _netmask }}, GW: {{ _gw }}, DNS: {{ _dns }}
+          when: not (_pbs_mode | bool)
+
+        - name: "Show the sanitized PBS provisioning plan"
+          ansible.builtin.debug:
+            msg: "PBS declaration and preflight accepted; private host and address details are omitted from this run output."
+          when: _pbs_mode | bool
 
         - name: "Verify template exists"
           ansible.builtin.uri:
@@ -191,8 +337,158 @@
 
         - name: "Fail if template not found"
           ansible.builtin.fail:
-            msg: "Template VM {{ _tmpl_vmid }} not found. Run provision-template.yml first."
+            msg: "{{ 'The declared Debian template is not available on its private target node.' if _pbs_mode else 'Template VM ' ~ _tmpl_vmid ~ ' not found. Run provision-template.yml first.' }}"
           when: _tmpl_check is failed or (_tmpl_check.json.data.template | default(0) | int != 1)
+
+        - name: "Read the exact PBS template VMID availability"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/cluster/nextid?vmid={{ _tmpl_vmid }}"
+            method: GET
+            status_code: [200, 400]
+          register: _pbs_template_nextid
+          no_log: true
+          check_mode: false
+          when: _pbs_mode | bool
+
+        - name: "Identify unexpected disks on the declared PBS template"
+          ansible.builtin.set_fact:
+            _pbs_template_extra_disk_keys: >-
+              {{ _tmpl_check.json.data | default({}, true) | dict2items
+                 | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+                 | rejectattr('key', 'equalto', 'scsi0') | map(attribute='key') | list }}
+          when: _pbs_mode | bool
+
+        - name: "Require the exact declared Debian template configuration"
+          ansible.builtin.assert:
+            that:
+              - _tmpl_check.json.data.name | default('') == _pbs_template_name
+              - _tmpl_check.json.data.description | default('') == _pbs_template_description
+              - _tmpl_check.json.data.template | default(0) | int == 1
+              - _tmpl_check.json.data.ostype | default('') == 'l26'
+              - _tmpl_check.json.data.ide2 | default('') is search('cloudinit')
+              - _tmpl_check.json.data.scsi0 | default('') is search('^' ~ _storage ~ ':')
+              - _tmpl_check.json.data.net0 | default('') is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
+              - _tmpl_check.json.data.ipconfig0 | default('ip=dhcp') in ['', 'ip=dhcp']
+              - _pbs_template_extra_disk_keys | length == 0
+              - _pbs_template_nextid.status | default(-1) == 400
+            fail_msg: "Proxmox does not prove the exact pinned Debian cloud-init template on the declared PBS node."
+            quiet: true
+          when: _pbs_mode | bool
+
+        - name: "Read the exact PBS target VM config and exact VMID availability"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/config"
+            method: GET
+            status_code: [200, 404, 500]
+          register: _pbs_target_config
+          no_log: true
+          check_mode: false
+          when: _pbs_mode | bool
+
+        - name: "Check exact PBS target VMID availability"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/cluster/nextid?vmid={{ _vmid }}"
+            method: GET
+            status_code: [200, 400]
+          register: _pbs_target_nextid
+          no_log: true
+          check_mode: false
+          when: _pbs_mode | bool
+
+        - name: "Read the current state of an existing PBS VM"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node | urlencode }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+            status_code: 200
+          register: _pbs_target_status
+          no_log: true
+          check_mode: false
+          when:
+            - _pbs_mode | bool
+            - _pbs_target_config.status == 200
+
+        - name: "Extract the pinned template and current VM OS disk sizes"
+          ansible.builtin.set_fact:
+            _pbs_template_disk_size: >-
+              {{ (_tmpl_check.json.data.scsi0 | default('')).split('size=')[-1].split(',')[0]
+                 if 'size=' in (_tmpl_check.json.data.scsi0 | default('')) else '' }}
+            _pbs_existing_disk_size: >-
+              {{ (_pbs_target_config.json.data.scsi0 | default('')).split('size=')[-1].split(',')[0]
+                 if 'size=' in (_pbs_target_config.json.data.scsi0 | default('')) else '' }}
+            _pbs_extra_disk_keys: >-
+              {{ _pbs_target_config.json.data | default({}, true) | dict2items
+                 | selectattr('key', 'match', '^(scsi|sata|virtio)[0-9]+$|^ide[013]$')
+                 | rejectattr('key', 'equalto', 'scsi0')
+                 | rejectattr('key', 'equalto', 'scsi1') | map(attribute='key') | list }}
+            _pbs_scsi1: "{{ _pbs_target_config.json.data.scsi1 | default('') }}"
+          when: _pbs_mode | bool
+
+        - name: "Validate the pinned PBS data disk after extracting its current config"
+          ansible.builtin.set_fact:
+            _pbs_data_disk_valid: >-
+              {{ _pbs_scsi1 | length == 0 or
+                 (_pbs_scsi1 is search('^' ~ _pbs_data_storage ~ ':vm-' ~ (_vmid | string) ~ '-disk-[0-9]+,size=512G(,|$)')) }}
+          when: _pbs_mode | bool
+
+        - name: "Classify a completed PBS VM or a safe interrupted clone"
+          ansible.builtin.set_fact:
+            _pbs_target_managed: >-
+              {{ _pbs_target_config.status == 200
+                 and (_pbs_target_config.json.data.name | default('')) == _name
+                 and (_pbs_target_config.json.data.description | default('')) == _pbs_vm_description
+                 and (_pbs_target_config.json.data.template | default(0) | int) == 0
+                 and (_pbs_target_config.json.data.ostype | default('')) == 'l26'
+                 and (_pbs_target_config.json.data.ide2 | default('')) is search('cloudinit')
+                 and (_pbs_target_config.json.data.scsi0 | default('')) is search('^' ~ _storage ~ ':')
+                 and (_pbs_target_config.json.data.scsi0 | default('')) is search('(^|,)size=' ~ (_disk | string) ~ '(,|$)')
+                 and (_pbs_target_config.json.data.net0 | default('')) is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
+                 and (_pbs_target_config.json.data.ipconfig0 | default('')) == ('ip=' ~ _ip ~ '/' ~ (_netmask | string) ~ ',gw=' ~ _gw)
+                 and (_pbs_data_disk_valid | bool)
+                 and (_pbs_extra_disk_keys | length) == 0 }}
+            _pbs_partial_clone: >-
+              {{ _pbs_target_config.status == 200
+                 and (_pbs_target_config.json.data.name | default('')) == _name
+                 and (_pbs_target_config.json.data.description | default('')) == _pbs_template_description
+                 and (_pbs_target_config.json.data.template | default(0) | int) == 0
+                 and (_pbs_target_config.json.data.ostype | default('')) == 'l26'
+                 and (_pbs_target_config.json.data.ide2 | default('')) is search('cloudinit')
+                 and (_pbs_target_config.json.data.scsi0 | default('')) is search('^' ~ _storage ~ ':')
+                 and (_pbs_existing_disk_size | length > 0)
+                 and (_pbs_existing_disk_size == _pbs_template_disk_size)
+                 and (_pbs_target_config.json.data.net0 | default('')) is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
+                 and (_pbs_target_config.json.data.ipconfig0 | default('ip=dhcp')) in ['', 'ip=dhcp']
+                 and (_pbs_scsi1 | length) == 0
+                 and (_pbs_extra_disk_keys | length) == 0
+                 and (_pbs_target_status.json.data.status | default('')) == 'stopped' }}
+            _pbs_resumable_managed: >-
+              {{ _pbs_target_config.status == 200
+                 and (_pbs_target_config.json.data.name | default('')) == _name
+                 and (_pbs_target_config.json.data.description | default('')) == _pbs_vm_description
+                 and (_pbs_target_config.json.data.template | default(0) | int) == 0
+                 and (_pbs_target_config.json.data.ostype | default('')) == 'l26'
+                 and (_pbs_target_config.json.data.ide2 | default('')) is search('cloudinit')
+                 and (_pbs_target_config.json.data.scsi0 | default('')) is search('^' ~ _storage ~ ':')
+                 and (_pbs_existing_disk_size | regex_replace('G$', '') | int) >= (_pbs_template_disk_size | regex_replace('G$', '') | int)
+                 and (_pbs_existing_disk_size | regex_replace('G$', '') | int) <= (_disk | regex_replace('G$', '') | int)
+                 and (_pbs_target_config.json.data.net0 | default('')) is search('(^|,)bridge=' ~ _bridge ~ '(,|$)')
+                 and (_pbs_target_config.json.data.ipconfig0 | default('')) == ('ip=' ~ _ip ~ '/' ~ (_netmask | string) ~ ',gw=' ~ _gw)
+                 and (_pbs_scsi1 | length) == 0
+                 and (_pbs_target_status.json.data.status | default('')) in ['stopped', 'running']
+                 and (_pbs_extra_disk_keys | length) == 0 }}
+          when: _pbs_mode | bool
+
+        - name: "Refuse any PBS target VMID, node, disk, or address mismatch before writes"
+          ansible.builtin.assert:
+            that:
+              - >-
+                (_pbs_target_config.status == 200 and _pbs_target_nextid.status == 400) or
+                (_pbs_target_config.status in [404, 500] and _pbs_target_nextid.status == 200 and
+                 _pbs_target_nextid.json.data | int == _vmid | int)
+              - _pbs_target_config.status != 200 or (_pbs_target_managed | bool) or (_pbs_partial_clone | bool) or (_pbs_resumable_managed | bool)
+            fail_msg: "The PBS VMID is occupied or its existing Debian disk, cloud-init network, node, identity, or address differs from the private declaration."
+            quiet: true
+          when: _pbs_mode | bool
+          no_log: true
 
         # The inventory records what was DECLARED, not what exists: an undeclared host
         # held the address this playbook applied to a fresh VM (docs/MISTAKES.md 3.6).
@@ -206,10 +502,32 @@
           register: _all_vms
           check_mode: false
 
+        - name: "Cross-check PBS VMID occupancy against the cluster census"
+          ansible.builtin.set_fact:
+            _pbs_target_rows: "{{ _all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list }}"
+          no_log: true
+          when: _pbs_mode | bool
+
+        - name: "Refuse a census/config/nextid contradiction for PBS"
+          ansible.builtin.assert:
+            that:
+              - _pbs_target_rows | length <= 1
+              - _pbs_target_config.status == 200 or _pbs_target_rows | length == 0
+              - _pbs_target_rows | length == 0 or (_pbs_target_rows[0].type | default('')) == 'qemu'
+              - _pbs_target_rows | length == 0 or (_pbs_target_rows[0].node | default('')) == _node
+            fail_msg: "The Proxmox census conflicts with the exact PBS VM config or VMID check."
+            quiet: true
+          no_log: true
+          when: _pbs_mode | bool
+
         - name: "Check for existing VM"
           ansible.builtin.set_fact:
-            _vm_exists: "{{ _all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length > 0 }}"
-            _existing: "{{ _all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | first | default({}) }}"
+            _vm_exists: "{{ (_pbs_target_config.status == 200) if (_pbs_mode | bool) else (_all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length > 0) }}"
+            _existing: >-
+              {{ ((_all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | first)
+                  | default({'name': _name, 'node': _node})) if (_pbs_mode | bool)
+                 else (_all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int)
+                       | list | first | default({})) }}
 
         # "Exists" is only a reason to skip the clone when it is OUR VM. A different
         # VM at the declared vmid is a collision, and the steps below would have
@@ -257,9 +575,11 @@
           ansible.builtin.assert:
             that: _claimants | length == 0
             fail_msg: >-
+              {% if (_pbs_mode | default(false) | bool) %}The declared PBS address is also claimed by another inventory host.
+              {% else %}
               {{ _ip }} is declared for '{{ _decl_host }}' but also claimed by
               {{ _claimants | unique | join(', ') }} in the inventory. Refusing: two
-              declarations for one address is a conflict waiting for a provisioning run.
+              declarations for one address is a conflict waiting for a provisioning run.{% endif %}
 
         - name: "Probe the declared address from the controller (ICMP)"
           ansible.builtin.command:
@@ -267,7 +587,9 @@
           register: _addr_probe
           changed_when: false
           failed_when: false
-          when: not (_vm_exists | bool)
+          when:
+            - not (_vm_exists | bool)
+            - not (_pbs_mode | bool)
           check_mode: false
 
         # Evidence, not proof: an answer is a certain refusal; silence is only as good
@@ -288,11 +610,13 @@
               (rc {{ _addr_probe.rc }}: {{ _addr_probe.msg | default(_addr_probe.stderr | default('')) | truncate(120) }}).
               Refusing to provision onto an unverified address; pass
               -e allow_unverified_address=true only for an approved exception.{% endif %}
-          when: not (_vm_exists | bool)
+          when:
+            - not (_vm_exists | bool)
+            - not (_pbs_mode | bool)
 
         - name: "Skip clone if VM already exists"
           ansible.builtin.debug:
-            msg: "VM {{ _vmid }} ({{ _name }}) already exists — skipping clone."
+            msg: "{{ 'The declared PBS VM already exists; skipping clone.' if _pbs_mode else 'VM ' ~ _vmid ~ ' (' ~ _name ~ ') already exists — skipping clone.' }}"
           when: _vm_exists | bool
 
         # ── Clone template ────────────────────────────────────────────────────
@@ -303,6 +627,12 @@
         # and when the declaration names another node the new VM is migrated there
         # offline (a stopped VM with local disks moves with `targetstorage`) before it is
         # configured. Same-node declarations behave exactly as before.
+        - name: "Guard target and clone-source VMIDs before cloning"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}", "{{ _tmpl_vmid }}"]
+          tags: [always]
+
         - name: "Clone template to new VM (on the template's node)"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _tmpl_vmid }}/clone"
@@ -387,6 +717,12 @@
             _do_migrate: "{{ (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) == _tmpl_node }}"
           when: _do_migrate | bool
 
+        - name: "Guard target and clone-source VMIDs before migration"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}", "{{ _tmpl_vmid }}"]
+          tags: [always]
+
         - name: "Migrate the new VM offline to the declared node (local disks onto the declared storage)"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _vmid }}/migrate"
@@ -463,6 +799,12 @@
             - _vm_lock.attempts | default(0) >= 60
           when: not ansible_check_mode
 
+        - name: "Guard target VMID before configuration"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Configure VM resources and cloud-init"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -477,12 +819,19 @@
               # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.
               onboot: "{{ _onboot }}"
               net0: "virtio,bridge={{ _bridge }},firewall=0"
-              ciuser: "{{ ci_user | default(ansible_user) }}"
+              ciuser: "{{ _ci_user }}"
               sshkeys: "{{ _ssh_pub | urlencode }}"
               ipconfig0: "ip={{ _ip }}/{{ _netmask }},gw={{ _gw }}"
               nameserver: "{{ _dns }}"
+              description: "{{ _pbs_vm_description if (_pbs_mode | bool) else omit }}"
             status_code: [200]
           when: not ansible_check_mode
+
+        - name: "Guard target VMID before tag update"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
 
         - name: "Set Proxmox tags"
           ansible.builtin.uri:
@@ -493,6 +842,12 @@
               tags: "{{ _tags }}"
             status_code: [200]
           when: not ansible_check_mode
+
+        - name: "Guard target VMID before disk resize"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
 
         - name: "Resize disk to size — {{ _disk }}"
           ansible.builtin.uri:
@@ -505,7 +860,9 @@
             status_code: [200]
           register: _resize_result
           ignore_errors: true
-          when: not ansible_check_mode
+          when:
+            - not ansible_check_mode
+            - not (_pbs_mode | bool) or not (_pbs_target_managed | default(false) | bool)
 
         - name: "Warn if disk resize failed"
           ansible.builtin.debug:
@@ -595,6 +952,12 @@
             - ansible_check_mode
             - _pre_start.json.data.status != "running"
 
+        - name: "Guard target VMID before start"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Start VM"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
@@ -671,7 +1034,7 @@
             name: "{{ _decl_host | default(_name, true) }}"
             groups: _provisioned_vm
             ansible_host: "{{ _ip }}"
-            ansible_user: "{{ ci_user | default(ansible_user) }}"
+            ansible_user: "{{ _ci_user }}"
             _pv_service: "{{ target_service }}"
             _pv_vmid: "{{ _vmid }}"
             _pv_name: "{{ _name }}"
@@ -689,9 +1052,10 @@
                  | combine({'skip': false, 'errors': (_pv_step.errors | default([])) + [_pv_failure]}) }}
           vars:
             _pv_failure: >-
-              {{ ansible_failed_task.name | default('a task') }}:
-              {{ '(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
-                 else (ansible_failed_result.msg | default('failed')) }}
+              {{ 'PBS provisioning failed during a lifecycle task; private details are omitted.' if (_pbs_mode | default(false) | bool) else
+                 (ansible_failed_task.name | default('a task')) ~ ': '
+                 ~ ('(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
+                    else (ansible_failed_result.msg | default('failed'))) }}
 
 # ── Step result: provision-vm ────────────────────────────────────────────────
 # Its own play so it runs after the dry-run `end_host` stops above, which end the provisioning
@@ -748,7 +1112,7 @@
   become: false
   vars:
     _semaphore_url: "{{ semaphore_url | default('') }}"
-    _runner_token: "{{ runner_token | default(lookup('env', 'SEMAPHORE_RUNNER_TOKEN') | default('')) }}"
+    _runner_token: "{{ '' if (_pv_service | default('')) == 'pbs' else (runner_token | default(lookup('env', 'SEMAPHORE_RUNNER_TOKEN') | default(''))) }}"
 
   tasks:
     - name: "Log in over Ansible's connection"
@@ -757,6 +1121,31 @@
       register: _login
       ignore_errors: true
       when: not ansible_check_mode
+
+    - name: "Read the PBS guest OS release"
+      ansible.builtin.slurp:
+        src: /etc/os-release
+      register: _pbs_os_release
+      ignore_errors: true
+      ignore_unreachable: true
+      when:
+        - _pv_service | default('') == 'pbs'
+        - _login is succeeded
+
+    - name: "Require Debian 13 before continuing the PBS cloud-init checks"
+      ansible.builtin.assert:
+        that:
+          - _pbs_os_release is succeeded
+          - (_pbs_os_release.content | default('') | b64decode) is search('(?m)^ID="?debian"?$')
+          - (_pbs_os_release.content | default('') | b64decode) is search('(?m)^VERSION_ID="?13"?$')
+        fail_msg: "The PBS guest did not identify as Debian 13; post-boot provisioning stops here."
+        quiet: true
+      register: _pbs_os_check
+      ignore_errors: true
+      ignore_unreachable: true
+      when:
+        - _pv_service | default('') == 'pbs'
+        - _login is succeeded
 
     # Read-only: waits for, and reports, cloud-init's own verdict. Exit codes per
     # https://docs.cloud-init.io/en/latest/reference/cli.html — 0 ran without error,
@@ -778,6 +1167,7 @@
       when:
         - _login is not skipped
         - _login is succeeded
+        - _pv_service | default('') != 'pbs' or (_pbs_os_check is succeeded)
 
     # A freshly provisioned host has not been through harden-ssh, so sudo may still want
     # the bootstrap password; the shared resolver reads it from OpenBao (no_log inside).
@@ -785,6 +1175,7 @@
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       when:
         - not ansible_check_mode
+        - _pv_service | default('') != 'pbs'
         - _runner_token | length > 0
         - _cloudinit is not skipped
         - _cloudinit is succeeded
@@ -808,6 +1199,7 @@
       ignore_unreachable: true
       when:
         - not ansible_check_mode
+        - _pv_service | default('') != 'pbs'
         - _runner_token | length > 0
         - _cloudinit is not skipped
         - _cloudinit is succeeded
@@ -825,6 +1217,7 @@
       ignore_errors: true
       ignore_unreachable: true
       when:
+        - _pv_service | default('') != 'pbs'
         - _runner_env is not skipped
         - _runner_env is succeeded
         - _runner_env is reachable
@@ -842,13 +1235,17 @@
              else ('FAILED' if (_cloudinit is failed or _cloudinit is unreachable)
              else ('done' if (_cloudinit.rc | default(1)) == 0
              else 'done with recoverable errors')) }}
+        _pv_os: >-
+          {{ 'not checked' if (_pv_service | default('')) != 'pbs' or ansible_check_mode
+             else ('ok' if (_pbs_os_check is defined and _pbs_os_check is succeeded) else 'FAILED') }}
         _pv_runner: >-
-          {{ 'not checked' if ansible_check_mode
+          {{ 'not applicable' if (_pv_service | default('')) == 'pbs'
+             else ('not checked' if ansible_check_mode
              else ('skipped (no runner token supplied)' if (_runner_token | length) == 0
              else ('not attempted (login or cloud-init did not pass)' if (_runner_env is not defined or _runner_env is skipped)
              else ('FAILED writing /etc/semaphore/runner.env' if (_runner_env is failed or _runner_env is unreachable)
              else ('FAILED starting semaphore-runner' if (_runner_svc is failed or _runner_svc is unreachable)
-             else 'configured')))) }}
+             else 'configured'))))) }}
         _pv_login_error: "{{ (_login.msg | default('')) | truncate(240) if (_login is defined and _login is failed) else '' }}"
 
     - name: "Provisioning complete"
@@ -863,6 +1260,15 @@
             cloud-init: {{ _pv_cloudinit }}
             Runner: {{ _pv_runner }}
           Next: deploy-service.yml -e target_service={{ _pv_service }}
+      when: _pv_service | default('') != 'pbs'
+
+    - name: "PBS provisioning complete (sanitized)"
+      ansible.builtin.debug:
+        msg: >-
+          PBS guest: {{ _pv_os }}; cloud-init: {{ _pv_cloudinit }}; SSH: {{ _pv_login }};
+          QEMU agent: {{ 'ok' if (_pv_agent_ok | bool) else 'pending' }}.
+          Private host, VMID, node, address, and storage details are omitted.
+      when: _pv_service | default('') == 'pbs'
 
 - name: "Post-validate: VM running"
   ansible.builtin.import_playbook: proxmox-validate.yml
@@ -890,7 +1296,8 @@
     _ci_state: "{{ _pv._pv_cloudinit | default('not checked') }}"
     _ci_skip: "{{ _ci_login == 'not checked' and _ci_state == 'not checked' }}"
     _ci_done: "{{ _ci_state is match('done') }}"
-    _ci_ssh: "{{ _ci_login == 'ok' }}"
+    _ci_os_ok: "{{ _pv._pv_service | default('') != 'pbs' or _pv._pv_os | default('') == 'ok' }}"
+    _ci_ssh: "{{ _ci_login == 'ok' and (_ci_os_ok | bool) }}"
   tasks:
     - name: "Record the cloud-init step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
@@ -905,20 +1312,23 @@
           ssh_reachable: "{{ none if (_ci_skip | bool) else (_ci_ssh | bool) }}"
         step_result_error: >-
           {{ '' if (_ci_skip | bool) or ((_ci_done | bool) and (_ci_ssh | bool))
-             else ('SSH login: ' ~ _ci_login ~ '; cloud-init: ' ~ _ci_state) }}
+             else ('PBS Debian 13 guest verification failed.' if (_pv._pv_service | default('')) == 'pbs' and not (_ci_os_ok | bool)
+             else ('SSH login: ' ~ _ci_login ~ '; cloud-init: ' ~ _ci_state)) }}
         step_result_undo: Destroy VM
 
     - name: "Fail loudly when a post-boot check failed"
       ansible.builtin.assert:
         that:
           - (_pv._pv_login | default('')) != 'FAILED'
+          - (_pv._pv_os | default('')) != 'FAILED'
           - not ((_pv._pv_cloudinit | default('')) is match('FAILED'))
           - not ((_pv._pv_runner | default('')) is match('FAILED'))
           # The recorded provision-vm verdict (cores, memory, disk, onboot read back from
           # Proxmox). Failed last so the post-boot steps still ran against the VM.
           - (_pv_step.errors | default([]) | length == 0) or (_pv_step.skip | default(false) | bool)
         fail_msg: >-
-          {% if not ((_pv_step.errors | default([]) | length == 0)
+          {% if (_pv._pv_service | default('')) == 'pbs' %}PBS post-boot validation failed. Confirm the Debian 13 cloud image, cloud-init SSH account, and first-boot result before retrying.
+          {% elif not ((_pv_step.errors | default([]) | length == 0)
           or (_pv_step.skip | default(false) | bool)) %}VM {{ _pv_step.vmid }} does not match its
           declaration: {{ _pv_step.errors | join('; ') }}.{% elif (_pv._pv_login | default('')) == 'FAILED' %}The orchestrator could not log in to
           {{ _pv.ansible_user | default('?') }}@{{ _pv.ansible_host | default('?') }}
@@ -931,5 +1341,11 @@
           on the VM.{% else %}The Semaphore runner on {{ _pv_host }} was not configured:
           {{ _pv._pv_runner | default('') }}.{% endif %} The VM itself exists; re-running
           Provision VM adopts it instead of cloning again.
-        success_msg: "Post-boot checks for {{ _pv_host }}: login {{ _pv._pv_login | default('?') }}, cloud-init {{ _pv._pv_cloudinit | default('?') }}, runner {{ _pv._pv_runner | default('?') }}."
+        success_msg: >-
+          {{ 'PBS post-boot checks passed for the declared Debian 13 guest.'
+             if (_pv._pv_service | default('')) == 'pbs'
+             else ('Post-boot checks for ' ~ _pv_host ~ ': login '
+                   ~ (_pv._pv_login | default('?')) ~ ', cloud-init '
+                   ~ (_pv._pv_cloudinit | default('?')) ~ ', runner '
+                   ~ (_pv._pv_runner | default('?')) ~ '.') }}
       when: (_pv_host | length) > 0

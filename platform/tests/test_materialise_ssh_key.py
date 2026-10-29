@@ -24,6 +24,7 @@ import harness_sandbox
 import pytest
 import test_check_mode_contract as check_mode_contract
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -68,8 +69,6 @@ def _ansible(tmp_path: Path, args: list[str], tasks, env_extra: dict | None = No
     env.update(env_extra or {})
     return harness_sandbox.run(["ansible-playbook", *args], tmp_path, cwd=REPO, env=env, denied=denied)
 
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 # Records what the key looked like AT THE MOMENT ssh used it, then answers like a host that
 # refuses passwords and accepts the key (SSH_STUB=ok) or refuses everything (SSH_STUB=fail).
@@ -308,13 +307,18 @@ PRIVATE_KEY_WRITERS = {
 }
 # A writer is recognised by the variable its content templates, so a copy that renamed the
 # key to something bland would slip past this set; the tempfile set is the second net.
-KEY_VAR_HINTS = ("priv", "private_key", "_svc_key", "ssh_key", "deploy_key")
+KEY_VAR_HINTS = ("_priv_key", "private_key", "_svc_key", "ssh_key", "deploy_key")
 TEMPFILE_USERS = {
     MATERIALISE: "the probe key's scratch directory",
     "tasks/backup-ssh-key-to-site-config.yml": "pair derivation scratch",
     "tasks/site-config-clone.yml": "clone and deploy-key scratch",
     "generate-service-ssh-key.yml": "ssh-keygen output scratch",
+    "deploy-o11y.yml": "controller-rendered candidate and protected source-review input",
     "run-agw-conformance.yml": "conformance key files and results, removed in an always: block",
+    "survey-o11y-scrape-baseline.yml": "controller-rendered candidate for source proof",
+    "verify-o11y-profile-pilot.yml": "disposable profile candidates in tmpfs, removed in an always: block",
+    "accept-o11y-profile-pilot.yml": "rendered candidates and helper files in tmpfs, removed in an always: block",
+    "restart-o11y-pyroscope-durability.yml": "fixed verifier workspace in tmpfs, removed in an always: block",
 }
 
 
@@ -420,7 +424,6 @@ def test_a_non_default_port_is_pinned_as_host_and_port(tmp_path):
     assert out.returncode == 0, out.stdout[-1500:]
     (seen,) = [c for c in calls if "key" in c]
     assert seen["known_hosts"] == "[192.0.2.10]:2222 " + " ".join(HOSTKEY.split()[:2]) + "\n", seen
-
 
 
 def test_the_harness_refuses_a_write_outside_the_scratch():

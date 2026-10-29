@@ -21,8 +21,8 @@
 > vLLM API as the inference edge (per-client keys, per-key token budgets, request
 > telemetry), alongside skynet, not instead of it. Mentions of "no separate gateway" below
 > predate that decision. Record: `plan/architecture/05-platform-infra.md`,
-> "Inference gateway: agentgateway alongside skynet" (still **Proposed**, awaiting operator
-> confirmation). Service: `platform/services/agentgateway/`. Change:
+> "Inference gateway: agentgateway alongside skynet" (**Accepted** 2026-10-12; in the
+> production `/v1` path since 2026-10-14). Service: `platform/services/agentgateway/`. Change:
 > `plan/development/openspec/changes/inference-gateway-agentgateway`.
 
 

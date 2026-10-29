@@ -18,12 +18,23 @@
    Deliberately absent (design §3): `retry` (a retried partial stream repeats tool
    side effects) and `timeout.requestTimeout` / `backendRequestTimeout` (streams
    run past any fixed value; the upstream keep-alive owns idle).
+   The key loop reads `agw_identities`: inventory agw_clients plus one personal identity per
+   declared platform_admins entry (vars/secret-declarations/agentgateway.yml). The fallback to
+   agw_clients is for a caller that renders this file without that vars file; the deploy checks
+   the render against agw_identities (deploy-agentgateway.yml).
    Do NOT edit by hand — re-run the playbook. #}
 {# agw_ui_enabled (default true): false renders no UI listener and no OIDC block,
    so /v1 can be deployed and proven before the Authentik client exists. The
    admin listener still carries its own unauthenticated UI copy on the container
    loopback, which is never published. #}
 {% set _ui = agw_ui_enabled | default(true) | bool %}
+{# agw_mcp_enabled (default false; agentgateway-mcp G4): serves MCP at /mcp on the `default` gateway and adds the
+   loopback gateway the MCP target calls. false renders none of it: the file is what it was before MCP. The loopback
+   listener port (agw_loopback_port, default 4002) is also where the one target kind rendered here, an OpenAPI
+   target over this gateway's own /v1, is aimed; the host is never an input, so no declaration can aim a target at
+   the external listener or at /mcp (a target pointing back at /mcp recurses without a bound, spike 1.5). #}
+{% set _mcp = agw_mcp_enabled | default(false) | bool %}
+{% set _lb_port = agw_loopback_port | default(4002) %}
 {# agw_listener_tls (default false; production-internal-ca task 5.2, gateway task 6.1): both
    listeners serve HTTPS from the step-ca-issued server leaf in the mounted /certs directory
    (`current/` is swapped by renewal; the image has no shell) and require a client certificate
@@ -38,6 +49,50 @@
 {% set _allow_sans = internal_leaves | default([]) | selectattr('profile', 'equalto', 'client')
      | selectattr('name', 'in', agw_client_cert_allowlist | default(['caddy']))
      | map(attribute='sans') | flatten | unique | sort %}
+{# OpenRouter models (agentgateway-openrouter): an agw_models entry with `provider: openrouter` is
+   served by the gateway's native OpenRouter provider; every other entry renders exactly as before.
+   OpenRouter bills per token, so it is denied to every identity not named in
+   agw_openrouter_identities or, with agw_openrouter_admins true, derived from platform_admins
+   (_agw_admin_identities, from the vars file; absent there, only the explicit list counts): each key entry's allowedModels below drops the OpenRouter names for
+   it (starting from its agw_client_policies allow-list, else every declared model). With no
+   OpenRouter model declared, `_or_names` is empty and this changes nothing. Computed here from
+   agw_models, not read from the vars file, so a caller that renders without that file is denied too
+   instead of silently allowed. The deploy refuses an empty union; an undeclared one renders as
+   "nobody". The two identities this file renders for itself, `mcp-self` and `legacy-shared`, are
+   never in the union whatever the inventory says (the deploy refuses naming them too). #}
+{% set _or_names = agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+     | map(attribute='name') | list %}
+{% set _or_ids = ((agw_openrouter_identities | default([]))
+     + ((_agw_admin_identities | default([]) | map(attribute='name') | list)
+        if (agw_openrouter_admins | default(false) | bool) else []))
+     | reject('in', ['mcp-self', 'legacy-shared']) | list %}
+{% set _all_names = agw_models | map(attribute='name') | list %}
+{# Budget tiers: agw_tier_tokens_per_hour maps a tier name (admin, developer, business) to an hourly
+   token figure. An identity derived from platform_admins is tier `admin`; any other identity joins a
+   tier with agw_client_policies.<name>.tier. An identity's budget is its own tokens_per_hour, else its
+   tier's figure, else agw_rate_tokens_per_hour. Undeclared, no tier has a figure and every budget is
+   what it was before. The deploy refuses a tier name absent from the map (_agw_tier_problems). #}
+{% set _tier_budgets = agw_tier_tokens_per_hour | default({}) %}
+{% set _admin_ids = _agw_admin_identities | default([]) | map(attribute='name') | list %}
+{# Shared model pools: an agw_models entry with `pool_identity: <name>` gets an hourly token cap shared by
+   every caller, because v1.5.0 budgets attach to API keys only, never to a model (crates/agentgateway/src/
+   http/budget/mod.rs, `Budget`: name, limit, window, action). The entry renders twice:
+   - its public name, served by a `custom` provider pointed at this gateway's own loopback listener under the
+     pool identity's key (an env reference), asking for `pool/<name>`;
+   - `pool/<name>`, the declared upstream, allowed to the pool identity ALONE.
+   So every call is charged twice: to the caller's own budget, and to the pool identity's, whose
+   agw_client_policies.<pool>.tokens_per_hour is the shared cap. Every other key entry has the `pool/` names
+   removed from its allowedModels, the legacy shared key included, so no key can skip the pool by asking for
+   the hidden name. The pool identity is allowed only `pool/` names, so a public-name call that lands on the
+   loopback cannot forward to itself. Measured on the v1.5.0 image 2026-10-26: the pool's 429 reaches the
+   caller as a 429, a direct call to `pool/<name>` with another key is 403, and the caller's own budget is
+   charged from the relayed usage. The deploy refuses a pool it cannot render safely (_agw_pool_problems). #}
+{% set _pool_prefix = 'pool/' %}
+{% set _pooled = agw_models | selectattr('pool_identity', 'defined') | list %}
+{% set _pool_names = _pooled | map(attribute='name') | map('regex_replace', '^', _pool_prefix) | list %}
+{% set _pool_ids = _pooled | map(attribute='pool_identity') | unique | list %}
+{# The loopback listener serves the MCP target's self-call and the pools' self-call alike. #}
+{% set _loopback = _mcp or (_pooled | length > 0) %}
 {% macro listener_tls() %}
     tls:
       cert: /certs/{{ agw_server_leaf | default('agw-server') }}/current/cert.pem
@@ -46,6 +101,110 @@
     authorization:
       rules:
         - require: 'source.subjectAltNames.exists(n, n in {{ _allow_sans | to_json | replace("'", "") }})'
+{% endmacro %}
+{# The one apiKey policy, for every surface that authenticates clients: `llm` and `mcp` both call this, so
+   the key loop is written ONCE and the two lists cannot drift. identities = the names to enrol; legacy = whether
+   the shared-key grace-period entry follows them; limits = whether each entry carries its model allow-list and token
+   budget. The llm policy takes all three. The mcp policy takes none: a budget under mcp.policies.apiKey is accepted
+   but never charged or enforced (spike 1.4), a silent no-op that reads as a control, and the legacy shared key and the
+   internal MCP self-call identity are never admitted there (design G2). Emits the whole `apiKey:` block at policy
+   indent, ending with a newline: call it with `| trim('\n')` so the template's own newline closes the last line. #}
+{% set _internal_ids = ['mcp-self'] + _pool_ids %}
+{% macro apikey_policy(identities, legacy, limits) %}
+    apiKey:
+      # strict: a request with no key or an unknown key is 401 here and never
+      # reaches the upstream (spec scenario "Unknown key is rejected").
+      mode: strict
+      location:
+        header:
+          name: authorization
+          prefix: 'Bearer '
+      keys:
+{% for c in identities %}
+{% set _pol = (agw_client_policies | default({}))[c] | default({}) %}
+{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) and c not in _internal_ids %}
+      # LOCAL-DEV ONLY (inventory agw_plaintext_keys: true): the value itself, so the
+      # UI's playground can offer it as a saved key. Prod keeps hashes — the rendered
+      # config is then never a credential.
+      - key: {{ secrets['client_' ~ c] }}
+{% else %}
+      - keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}
+{% endif %}
+        metadata:
+          name: {{ c }}
+{% if limits %}
+{% set _has_am = _pol.allowed_models is defined %}
+{% set _am = _pol.allowed_models | default([]) %}
+{% if _or_names and c not in _or_ids %}
+{% set _has_am = true %}
+{% set _am = (_am if _pol.allowed_models is defined else _all_names) | reject('in', _or_names) | list %}
+{% endif %}
+{% if c in _pool_ids %}
+{% set _has_am = true %}
+{% set _am = _pooled | selectattr('pool_identity', 'equalto', c) | map(attribute='name') | map('regex_replace', '^', _pool_prefix) | list %}
+{% elif _pool_names %}
+{% set _am = (_am if _has_am else _all_names) | reject('in', _pool_names) | list %}
+{% set _has_am = true %}
+{% endif %}
+{% if _has_am %}
+        # Per-identity model allow-list (inventory agw_client_policies.<name>.allowed_models).
+        allowedModels: {{ _am | to_json }}
+{% endif %}
+{% endif %}
+{% if limits %}
+        # Per-identity token budget, BEST-EFFORT: a rolling UTC-hour window charged
+        # AFTER each response from the upstream's reported usage (upstream docs,
+        # cost-controls/budget-limits: the request that crosses the limit completes,
+        # the NEXT one is rejected, and a response without usage is not charged at
+        # all). Each model's `transformation` below makes every streamed chat request
+        # carry usage on every chunk, so a stream is charged even when the client opts
+        # out or disconnects early (task 2.3a). It is a spend guard, not a
+        # hard cap; the hard admission control is the global request bucket below.
+        # Default figure from inventory (design §4), then the identity's tier
+        # figure, then its own agw_client_policies.<name>.tokens_per_hour. The only
+        # per-identity control v1.5.0 offers, and the reason the db exists.
+{% set _tier = 'admin' if c in _admin_ids else (_pol.tier | default('')) %}
+        budgets:
+        - name: hourly-tokens
+          limit:
+            unit: Tokens
+            amount: {{ _pol.tokens_per_hour | default(_tier_budgets[_tier] if _tier in _tier_budgets else (agw_rate_tokens_per_hour | default(2000000))) }}
+          window:
+            rolling: 1h
+          onBudgetExceeded: Block
+{% endif %}
+{% endfor %}
+{% if legacy and (_legacy_shared_active | default(false) | bool) %}
+{% set _lp = (agw_client_policies | default({}))['legacy-shared'] | default({}) %}
+      # Shared-key grace period (gateway task 5.1): the key every client used before the
+      # gateway, enrolled as ONE identity until inventory legacy_shared_expires. Its hash is the
+      # fingerprint recorded in OpenBao (pinned to the pre-rotation key), or, before the first
+      # recording, the current vLLM key's. On or after the date this block is not rendered.
+      - keyHash: sha256:{{ _legacy_fp_recorded | default('', true) or (secrets.vllm_api_key | hash('sha256')) }}
+        metadata:
+          name: legacy-shared
+{% set _has_am = _lp.allowed_models is defined %}
+{% set _am = _lp.allowed_models | default([]) %}
+{% if _or_names and 'legacy-shared' not in _or_ids %}
+{% set _has_am = true %}
+{% set _am = (_am if _lp.allowed_models is defined else _all_names) | reject('in', _or_names) | list %}
+{% endif %}
+{% if _pool_names %}
+{% set _am = (_am if _has_am else _all_names) | reject('in', _pool_names) | list %}
+{% set _has_am = true %}
+{% endif %}
+{% if _has_am %}
+        allowedModels: {{ _am | to_json }}
+{% endif %}
+        budgets:
+        - name: hourly-tokens
+          limit:
+            unit: Tokens
+            amount: {{ _lp.tokens_per_hour | default(_tier_budgets[_lp.tier] if (_lp.tier | default('')) in _tier_budgets else (agw_rate_tokens_per_hour | default(2000000))) }}
+          window:
+            rolling: 1h
+          onBudgetExceeded: Block
+{% endif %}
 {% endmacro %}
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
 config:
@@ -82,6 +241,19 @@ gateways:
 {% if _tls %}
 {{ listener_tls() }}
 {%- endif %}
+{% if _loopback %}
+  # The MCP target's own call to /v1 (agentgateway-mcp task 3.7), and a pooled model's call to its hidden
+  # `pool/<name>` entry (the shared model pools above): plain HTTP, attached to `llm` only,
+  # never published. v1.5.0 gateways have no bind address, so this listener is on every container
+  # interface; the rule below is what keeps it to the gateway process's own 127.0.0.1 (a neighbour
+  # container is 403 with or without a key, spike 1.5). It needs no client certificate, so the
+  # external listener's SAN allowlist is not widened for the self-call.
+  loopback:
+    port: {{ _lb_port }}
+    authorization:
+      rules:
+        - require: 'source.address == "127.0.0.1"'
+{% endif %}
 {% if _ui %}
   ui:
     port: 4001
@@ -131,7 +303,7 @@ frontendPolicies:
       # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L905-L910
       # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L1104-L1109
       http.path: request.path
-{% if agw_otlp_host | default('') %}
+{% if agw_otlp_host | default('') and agw_otlp_logs | default(false) | bool %}
     # Access logs share Alloy's OTLP receiver with traces. The service field
     # becomes Loki's bounded service label; stdout logging stays available.
     otlp:
@@ -140,16 +312,18 @@ frontendPolicies:
         add:
           service: '"agentgateway"'
           identity: apiKey.name
+          signal: '"access-log"'
           # OTLP has its own field overrides; keep the same-name replacement explicit.
           http.path: request.path
 {% endif %}
-{% if agw_otlp_host | default('') %}
+{% if agw_otlp_host | default('') and agw_otlp_traces | default(false) | bool %}
   tracing:
     # The receiver is Alloy, which batches these spans to Tempo. Bound both
     # newly started and client-propagated traces; no prompt/completion fields.
     host: {{ agw_otlp_host }}
-    randomSampling: {{ agw_trace_sampling | default(0.05) }}
-    clientSampling: {{ agw_trace_sampling | default(0.05) }}
+    randomSampling: {{ agw_trace_sampling | default(0.1) }}
+    # Do not let an incoming traceparent opt a request into tracing.
+    clientSampling: false
     resources:
       service.name: '"agentgateway"'
     # Spans filter same-name defaults, then append CEL attributes (trc.rs:288-294,
@@ -174,74 +348,13 @@ llm:
   # no second browser-reachable port. The OIDC policy above is scoped to the UI
   # routes: /v1 on :4001 is still apiKey-gated (401 without a key, verified
   # 2026-09-17), so the playground needs an enrolled client key pasted in.
-  gateways: {{ '[default, ui]' if _ui else '[default]' }}
-  policies:
-    apiKey:
-      # strict: a request with no key or an unknown key is 401 here and never
-      # reaches the upstream (spec scenario "Unknown key is rejected").
-      mode: strict
-      location:
-        header:
-          name: authorization
-          prefix: 'Bearer '
-      keys:
-{% for c in agw_clients | default([]) %}
-{% set _pol = (agw_client_policies | default({}))[c] | default({}) %}
-{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}
-      # LOCAL-DEV ONLY (inventory agw_plaintext_keys: true): the value itself, so the
-      # UI's playground can offer it as a saved key. Prod keeps hashes — the rendered
-      # config is then never a credential.
-      - key: {{ secrets['client_' ~ c] }}
+{% if _loopback %}
+  gateways: {{ '[default, ui, loopback]' if _ui else '[default, loopback]' }}
 {% else %}
-      - keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}
+  gateways: {{ '[default, ui]' if _ui else '[default]' }}
 {% endif %}
-        metadata:
-          name: {{ c }}
-{% if _pol.allowed_models is defined %}
-        # Per-identity model allow-list (inventory agw_client_policies.<name>.allowed_models).
-        allowedModels: {{ _pol.allowed_models | to_json }}
-{% endif %}
-        # Per-identity token budget, BEST-EFFORT: a rolling UTC-hour window charged
-        # AFTER each response from the upstream's reported usage (upstream docs,
-        # cost-controls/budget-limits: the request that crosses the limit completes,
-        # the NEXT one is rejected, and a response without usage is not charged at
-        # all). Each model's `transformation` below makes every streamed chat request
-        # carry usage on every chunk, so a stream is charged even when the client opts
-        # out or disconnects early (task 2.3a). It is a spend guard, not a
-        # hard cap; the hard admission control is the global request bucket below.
-        # Default figure from inventory (design §4); per-identity override in
-        # agw_client_policies.<name>.tokens_per_hour. The only per-identity control
-        # v1.5.0 offers, and the reason the db exists.
-        budgets:
-        - name: hourly-tokens
-          limit:
-            unit: Tokens
-            amount: {{ _pol.tokens_per_hour | default(agw_rate_tokens_per_hour | default(2000000)) }}
-          window:
-            rolling: 1h
-          onBudgetExceeded: Block
-{% endfor %}
-{% if _legacy_shared_active | default(false) | bool %}
-{% set _lp = (agw_client_policies | default({}))['legacy-shared'] | default({}) %}
-      # Shared-key grace period (gateway task 5.1): the key every client used before the
-      # gateway, enrolled as ONE identity until inventory legacy_shared_expires. Its hash is the
-      # fingerprint recorded in OpenBao (pinned to the pre-rotation key), or, before the first
-      # recording, the current vLLM key's. On or after the date this block is not rendered.
-      - keyHash: sha256:{{ _legacy_fp_recorded | default('', true) or (secrets.vllm_api_key | hash('sha256')) }}
-        metadata:
-          name: legacy-shared
-{% if _lp.allowed_models is defined %}
-        allowedModels: {{ _lp.allowed_models | to_json }}
-{% endif %}
-        budgets:
-        - name: hourly-tokens
-          limit:
-            unit: Tokens
-            amount: {{ _lp.tokens_per_hour | default(agw_rate_tokens_per_hour | default(2000000)) }}
-          window:
-            rolling: 1h
-          onBudgetExceeded: Block
-{% endif %}
+  policies:
+{{ apikey_policy(agw_identities | default(agw_clients | default([])), true, true) | trim('\n') }}
     # Request-rate ceiling for the gateway as a whole. v1.5.0 has no per-identity
     # REQUEST bucket under the `llm` shortcut, verified against the binary
     # 2026-09-17: localRateLimit `key` is on main only (unreleased; the published
@@ -258,9 +371,51 @@ llm:
         fillInterval: 60s
   models:
 {% for m in agw_models %}
-  # The gateway's model name equals the upstream's served name unless
-  # `upstream_model` remaps it (local-dev: gpt-oss-20b -> openai/gpt-oss-20b).
+{% if m.pool_identity is defined %}
+  # Shared pool (above): the public name relays to this gateway's own loopback listener as the pool
+  # identity, so the call is charged to the caller AND to the pool. The key is an env reference expanded
+  # from the 0600 .env; this file holds no credential. Streamed chat asks for usage so the caller's own
+  # budget is charged on this hop too.
   - name: {{ m.name }}
+    provider:
+      custom:
+        formats:
+        - type: completions
+        - type: responses
+    params:
+      baseUrl: http://127.0.0.1:{{ _lb_port }}/v1
+      model: {{ _pool_prefix ~ m.name }}
+      apiKey: ${{ 'AGW_POOL_KEY_' ~ (m.pool_identity | upper | replace('-', '_')) }}
+    transformation:
+      stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true}) : llmRequest.stream_options'
+{% endif %}
+{% set _mname = (_pool_prefix ~ m.name) if m.pool_identity is defined else m.name %}
+{% if (m.provider | default('')) == 'openrouter' %}
+  # OpenRouter model (agentgateway-openrouter): the native `openrouter` provider is a custom-provider
+  # preset in v1.5.0 that supplies the base URL https://openrouter.ai/api/v1 (HTTPS, so backend TLS
+  # follows) and the OpenAI-compatible formats; crates/llm/src/custom.rs:52-67,81,144-153 and
+  # crates/agentgateway/src/types/local.rs:872-875,1020-1022,1062-1064. `name` is what clients send,
+  # params.model the OpenRouter id (vendor/model). The key is an env reference expanded by the
+  # gateway from the 0600 .env; this file holds no credential. The deploy refuses a wildcard name
+  # and an empty upstream_model, so exactly the models listed here are reachable, and the key
+  # entries above allow them only to agw_openrouter_identities.
+  - name: {{ _mname }}
+    provider: openrouter
+    params:
+      model: {{ m.upstream_model }}
+      apiKey: $OPENROUTER_API_KEY
+    # Streamed chat is sent with include_usage so the per-key token budget charges it. Unlike the
+    # vLLM models above there is no continuous_usage_stats: that field is a vLLM extension.
+    # Measured 2026-10-15 through the gateway (agentgateway-openrouter task 3.5): OpenRouter accepts continuous_usage_stats (HTTP 200) but
+    # still sends usage only on the final chunk, so adding it would change nothing; it is left out, so
+    # usage arrives only on the final chunk and a client that disconnects before it is not charged. The
+    # same CEL shape otherwise (chat only, a client's other stream_options keys kept).
+    transformation:
+      stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true}) : llmRequest.stream_options'
+{% else %}
+  # The gateway's model name equals the upstream's served name unless
+  # `upstream_model` remaps it (e.g. a short client name for a longer served name).
+  - name: {{ _mname }}
     provider:
       custom:
         # `responses` lets /v1/responses pass through to vLLM's own endpoint
@@ -273,8 +428,9 @@ llm:
         - type: responses
     params:
       baseUrl: {{ agw_upstream_base_url }}
-{% if m.upstream_model | default('') %}
-      model: {{ m.upstream_model }}
+{% if m.upstream_model | default('') or m.pool_identity is defined %}
+      # A pooled entry is listed as pool/<name>; the upstream still receives the declared name.
+      model: {{ m.upstream_model | default(m.name, true) }}
 {% endif %}
 {% if secrets.vllm_api_key | default('') %}
       apiKey: $VLLM_API_KEY
@@ -300,4 +456,70 @@ llm:
     # charged with this, and not without it (platform/tests/test_agw_stream_usage.py).
     transformation:
       stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true, "continuous_usage_stats": true}) : llmRequest.stream_options'
+{% endif %}
 {% endfor %}
+{% if _mcp %}
+# MCP (agentgateway-mcp). One virtual MCP server at /mcp on the `default` gateway only (so /mcp is not also
+# served on the operator-UI listener), authenticated by the SAME key policy as /v1 minus the identities that
+# must never reach it: the legacy shared key, and mcp-self, which exists only as the target's own credential.
+# It admits the admin-derived personal identities ONLY (_agw_admin_identities), never an agw_clients service
+# client: the chat tool's self-call runs as mcp-self, so a service client admitted here would escape its own
+# allowedModels and hourly budget. Admin MCP model spend is bounded by mcp-self's budget instead.
+# - statefulMode stateless: no session id, no held server stream (so nothing sits against the 125 s edge
+#   timeout), and GET /mcp is 405 (spike 1.6). The stateful session id is neither revocable nor bound to an
+#   identity.
+# - prefixMode conditional (the upstream default, pinned here so a change of default cannot rename tools): a
+#   tool name is the OpenAPI operationId while there is one target, and is prefixed with the target name once
+#   there are several.
+# - No budgets under these keys: accepted, never charged (spike 1.4). The only budgeted path is mcp-self's.
+# - No `timeout`, `retry` or dnsRebindingProtection: the gateway is reached by a non-local Host.
+# Targets come only from the structured declaration agw_mcp_openapi_targets (name + schema file name); the
+# deploy refuses anything else before this renders (vars/secret-declarations/agentgateway.yml,
+# _agw_mcp_problems). The schema is the shipped file under deployment/mcp-schemas/, read by the deploy and
+# embedded here as a string, so the config is self-contained (nothing to mount, and a schema change is a
+# config change). backendAuth is the mcp-self key by environment reference; the value lives in the 0600 .env.
+mcp:
+  gateways: [default]
+  statefulMode: stateless
+  prefixMode: conditional
+  targets:
+{% for t in agw_mcp_openapi_targets | default([]) %}
+  - name: {{ t.name }}
+    openapi:
+      schema: {{ _agw_mcp_schemas[t.schema] | to_json }}
+      host: 127.0.0.1:{{ _lb_port }}
+    policies:
+      backendAuth:
+        key:
+          value: $AGW_MCP_SELF_KEY
+          location:
+            header:
+              name: authorization
+              prefix: 'Bearer '
+{% endfor %}
+  policies:
+{{ apikey_policy((_agw_admin_identities | default([]) | map(attribute='name') | list) | reject('in', _internal_ids) | list, false, false) | trim('\n') }}
+{% endif %}
+{% set _skynet = agw_skynet_route_enabled | default(false) | bool %}
+{% if _skynet %}
+# The skynet orchestration route (agentgateway task 3.3, render half): `/skynet/...` on the default gateway,
+# admitted only to the declared route identities. It has its own strict key policy, built by the same macro as
+# /v1 minus the budgets and model lists (it is not an LLM surface), so a key the route does not name gets 401
+# here and never reaches skynet. backendAuth.key is the env reference $SKYNET_API_TOKEN, which REPLACES the
+# caller's Authorization on the upstream call, so skynet sees only its own bearer and never the caller's key
+# (proven on the pinned v1.5.0 image 2026-10-19). No path rewrite: skynet serves under /skynet/ itself.
+# Disabled, there is no `routes:` key at all, so a disabled render is what it was before this route existed.
+routes:
+- name: skynet
+  # Pinned to the external listener: never the `ui` listener or the MCP self-call's `loopback` one
+  # (`gateways` on a route is accepted by v1.5.0, validated 2026-10-19).
+  gateways: [default]
+  matches:
+  - path: {pathPrefix: /skynet/}
+  policies:
+{{ apikey_policy(agw_skynet_route_identities | default([]), false, false) | trim('\n') }}
+    backendAuth:
+      key: $SKYNET_API_TOKEN
+  backends:
+  - host: {{ agw_skynet_backend }}
+{% endif %}

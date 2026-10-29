@@ -50,7 +50,8 @@ the production firewall allow set are not in this repository; `context/architect
 Two surfaces, two mechanisms:
 
 - **`/v1` (model API): `api_key`, enforced by the gateway.** Policy `apiKey`, `mode: strict`,
-  header `Authorization: Bearer <key>`; one identity per name in inventory `agw_clients`
+  header `Authorization: Bearer <key>`; one identity per name in the merged identity list `agw_identities`
+  (inventory `agw_clients` plus the personal identities derived from the declared admin list)
   (`context/architecture.md`, "Identity and limits"). Caddy in front keeps TLS, the path
   allowlist and a header-shape Bearer check only (`context/architecture.md`, "Role"). This
   surface has no Authentik application.
@@ -76,11 +77,11 @@ two surfaces. The Authentik catalog records `oidc`.
 
 A deploy is healthy when Phase 3 of `deploy-agentgateway.yml` passes. Conditions 1-3 are
 proved on every real run; 4 and 5 (the keyed round-trip) only when a verifying identity
-resolves, which is `agw_verify_client`, else the first `agw_clients` entry
-(`deploy-agentgateway.yml:594-596`). Each keyed task is conditioned on that identity being
-non-empty (`deploy-agentgateway.yml:610-722`), so with `agw_clients` empty and no
+resolves, which is `agw_verify_client`, else the first `agw_identities` entry (`agw_clients`
+first, then the personal identities derived from the admin list). Each keyed task is conditioned on that identity being
+non-empty, so with `agw_identities` empty and no
 `agw_verify_client` the keyed probes are skipped and the report says "No enrolled identity
-(agw_clients is empty): the keyed round-trip was not run" (`deploy-agentgateway.yml:740`).
+(agw_identities is empty): the keyed round-trip was not run".
 Such a run has not proved the upstream is reachable. Conditions:
 
 1. Readiness answers on `:19001/healthz/ready`, probed from the sibling `agentgateway-db`
@@ -88,11 +89,17 @@ Such a run has not proved the upstream is reachable. Conditions:
 2. When `agw_otlp_host` is declared: the o11y Prometheus holds an
    `agentgateway_config_synchronized == 1` sample newer than this run's readiness time.
 3. A keyless `GET /v1/models` answers **401** at the gateway (never reaches the upstream).
-4. One enrolled identity (`agw_verify_client`, default the first `agw_clients` entry) lists
+4. One enrolled identity (`agw_verify_client`, default the first `agw_identities` entry) lists
    every model it may use on `/v1/models` (200).
 5. The same identity completes one chat request, and the reply is a `chat.completion` with
    at least one choice and `usage.completion_tokens > 0`, which the gateway can only produce
    by reaching `agw_upstream_base_url`.
+
+With `agw_mcp_enabled` true the same phase also proves `/mcp`: a request with no key is 401, an
+authenticated `initialize` returns a session, `tools/list` lists at least one tool, and one chat call made
+through MCP shows in the gateway's access log as `mcp-self` on the loopback listener. With the flag false it
+asserts `/mcp` is not served (`context/architecture.md`, "MCP (change `agentgateway-mcp`, gateway side)").
+The probing identity is then an admin-derived one, never `mcp-self`.
 
 A 429 with body `rate limit exceeded` (the gateway's own request bucket) fails the deploy as
 **unproven** unless the run passes `-e agw_verify_allow_unproven=true`; any other 429 fails
@@ -166,7 +173,7 @@ Decided by OPA on the committed catalog
   templates from `main` or `dev`. This file forbids those two templates to any agent by
   practice; rotation, revocation and rollback are operator actions.
 - **Add a client by any route other than inventory.** Adding a client is adding the name to
-  `agw_clients` and deploying; that inventory change lands through a pull request
+  `agw_clients` (or declaring the admin) and deploying; that inventory change lands through a pull request
   (`manage-agentgateway-client-key.yml` header; "Require an explicit client and action").
 - **Edit gateway configuration in the operator UI.** `UI_READ_ONLY=true` makes the UI's write
   handlers answer 403 and `config.yaml` is mounted `:ro`; configuration is code
@@ -181,11 +188,30 @@ Decided by OPA on the committed catalog
 - **Rotate the key at vLLM.** Nothing in this repository can; vLLM reads it from the
   dgx-spark repository (`rollback-inference-route.yml` header, "WHAT THIS DOES NOT DO").
 
+## Operations: admin identities, MCP, OpenRouter
+
+One row per operation, each naming only templates, variables and commands that exist (the full table,
+with sources, is "Operator operations" in `context/architecture.md`). Who may launch which template is
+decided by OPA, as under "What an agent may do" and "What an agent may not do" above; this table lists
+the operations, not the permissions. Each template has a generated `(Dev)` variant.
+
+| Operation | Template or command | Variables and notes |
+|---|---|---|
+| Add an admin identity | `Deploy Authentik`, then `Deploy agentgateway` | an entry in `platform_admins` (site-config `agent_cloud.vars`); `agw_admin_identities_enabled: true`; optional `agw_identity` renames the gateway identity |
+| Remove an admin identity | `Deploy Authentik`, then `Manage agentgateway Client Key` | drop the entry from `platform_admins` and list its username in `platform_retired_accounts` in the same change; then `client=<identity> action=revoke` |
+| Set the MCP hostname | `Manage Caddy Sites`, `Apply Cloudflare Tofu` | `agw_mcp_hostname` is inventory documentation that no gateway playbook reads; the hostname is the Caddy block (`caddy_managed_sites`, or `caddy_routes` with `mcp_api: true` locally) plus `platform/infra/cloudflare` (`dns.tf`, `waf.tf`, `ratelimit.tf`) |
+| Enable or disable MCP | `Deploy agentgateway` | `agw_mcp_enabled`; refused before any render unless the admin identities, a target, `mcp-self` and its `tokens_per_hour` are declared |
+| Hand out a key | `Back Up Credentials to site-config` | `credential_service=agentgateway`, `credential_fields=client_<identity>`; never leave `credential_fields` empty |
+| Install or remove client configuration | `make agw-mcp-client`, `make agw-mcp-client-remove` | `HOST=`, `IDENTITY=`, optional `KEY_FILE=`; Keychain service `agentgateway-mcp` |
+| Roll back | `Rollback Inference Route` | `mode=gateway-config`, `direct` or `restore`; across the MCP flag, redeploy the older flag state |
+| Serve an OpenRouter model | `Deploy agentgateway` | an `agw_models` entry with `provider: openrouter` and `upstream_model`; `agw_openrouter_identities`, `agw_openrouter_admins` |
+| Seed the OpenRouter key | `Seed OpenBao Key` | `bao_path=services/agentgateway`, `bao_key=openrouter_api_key`, value as the `BAO_VALUE` environment secret |
+
 ## Secrets boundary
 
 - All values live at `secret/services/agentgateway`: `vllm_api_key` (`existing`),
   `agw_db_password`, `agw_oidc_cookie_seed` and one `client_<name>` (48 chars) per
-  `agw_clients` entry, generated once and reused
+  `agw_identities` entry, generated once and reused
   (`vars/secret-declarations/agentgateway.yml`). The UI's OIDC client secret is Authentik's,
   shared-read as `agentgateway_oidc_client_secret`, and only when `agw_ui_enabled`
   (`deploy-agentgateway.yml`, `_shared_reads`).
@@ -224,7 +250,7 @@ what exists for this service:
 | Put the last live config back, gateway stays in the path | `Rollback Inference Route`, `mode=gateway-config`: copies `config.yaml.previous` into place and recreates the gateway, Caddy untouched. The deploy keeps the config it replaces as `config.yaml.previous`, written only when a render changed `config.yaml` (a first deploy keeps nothing). It keeps nothing under the local-dev `agw_plaintext_keys` flag, and never promotes a staged copy that carries a raw `- key:` entry. With no `.previous`, the mode refuses and says to roll back in `direct` mode or fix forward | `deploy-agentgateway.yml:62-63`, `:248-262`; `rollback-inference-route.yml:14`, `:368-375` |
 | Take the gateway out of the public path | `mode=direct`: publishes the live vLLM key as `direct_<name>` beside each enrolled `client_<name>`, then points the inference route at vLLM through `Manage Caddy Sites` | `rollback-inference-route.yml` header |
 | Put the gateway back | `mode=restore`: points the route back, then removes the copies only once the key they hold is no longer live and the running gateway holds the new one; otherwise stops naming the steps owed | `rollback-inference-route.yml` header |
-| A client key leaked | Operator runs `Manage agentgateway Client Key` `action=rotate`; for a retired client, remove it from `agw_clients` FIRST, then `action=revoke` (old key is 401 after the reload) | `manage-agentgateway-client-key.yml` |
+| A client key leaked | Operator runs `Manage agentgateway Client Key` `action=rotate`; for a retired client, remove it from `agw_clients` and the admin list FIRST, then `action=revoke` (old key is 401 after the reload) | `manage-agentgateway-client-key.yml` |
 | Budget state corrupted | Operator runs `Clean Deploy agentgateway`; keys return from OpenBao unchanged, every identity's budget window restarts at zero | `clean-deploy-agentgateway.yml` header |
 
 The rollback modes' live drill is still owed (`inference-gateway-agentgateway` tasks.md 4.6
@@ -232,6 +258,10 @@ note, 2026-10-02).
 
 ## Known quirks
 
+- `/config_dump` on the admin listener (container loopback, never published) prints
+  `config.database.url`, the budget Postgres password, in clear text; it redacts the key policies and
+  `backendAuth`. Existing in every deployment and handed to the operator as its own change; the loopback
+  pin is what protects it (`context/architecture.md`, "Known issues").
 - The gateway image has no shell: every probe runs from `agentgateway-db` (busybox `wget`)
   or as a `uri` call from the target (`deploy-agentgateway.yml`, Phase 3 comment).
 - Probes address the gateway by compose-network IP, not by name: by name, a VM named

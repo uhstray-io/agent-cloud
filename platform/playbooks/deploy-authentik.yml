@@ -38,6 +38,12 @@
   hosts: authentik_svc
   gather_facts: false
   become: false
+  # The secret declaration is computed (one password per declared administrator), so it
+  # lives in its own file where check-secrets.yml evaluates the SAME declaration; the
+  # administrator list itself is shared with the gateway deploy.
+  vars_files:
+    - vars/platform-admins.yml
+    - vars/secret-declarations/authentik.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -45,50 +51,16 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # secret_key + DB password must be STABLE across redeploys (regenerating
-    # secret_key invalidates sessions/tokens; a new DB password breaks auth) —
-    # manage-secrets generates once into OpenBao and reuses on later runs.
-    _secret_definitions:
-      - { name: secret_key, type: random, length: 60 }
-      - { name: bootstrap_password, type: random, length: 32 }
-      - { name: bootstrap_token, type: random, length: 40 }
-      - { name: db_password, type: random, length: 32 }
-      # OIDC client secrets — Authentik owns them (it's the IdP). The matching
-      # client services read them via manage-secrets `_shared_reads`. The worker
-      # injects them into the OAuth2-provider blueprints via !Env.
-      # (NetBox uses forward_auth locally — a proxy provider with no client
-      # secret; its OIDC secret is added on the prod composable path.)
-      - { name: grafana_oidc_client_secret, type: random, length: 40 }
-      - { name: erpnext_oidc_client_secret, type: random, length: 40 }
-      - { name: semaphore_oidc_client_secret, type: random, length: 40 }
-      - { name: openbao_oidc_client_secret, type: random, length: 40 }
-      - { name: tududi_oidc_client_secret, type: random, length: 40 }
-      - { name: postiz_oidc_client_secret, type: random, length: 40 }
-      - { name: agentgateway_oidc_client_secret, type: random, length: 40 }
-      # Day-to-day admin user (agent-cloud-admin.yaml blueprint), member of
-      # platform-admins -> top role in every SSO'd app. Worker reads it via !Env.
-      - { name: agent_cloud_admin_password, type: random, length: 32 }
-      # Operator admin 'stray' (stray-admin.yaml) + platform service account API
-      # token (service-account.yaml). Stable across redeploys; worker reads !Env.
-      - { name: stray_admin_password, type: random, length: 32 }
-      - { name: service_account_token, type: random, length: 60 }
-      # Named platform users (platform-users.yaml). Initial passwords generated
-      # once + reused (stable), OpenBao-owned; worker reads via !Env.
-      - { name: wisward_password, type: random, length: 32 }
-      - { name: andrew_password, type: random, length: 32 }
-      - { name: jacob_password, type: random, length: 32 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
-    # Blueprints always applied regardless of environment (groups, flows, admin
-    # users, service account). Per-app blueprints are selected from the catalog
-    # by `authentik_apps`. zz-sso-bindings is RENDERED (not copied) from the set.
+    # Blueprints always applied regardless of environment (groups, flows, named
+    # users). Per-app blueprints are selected from the catalog by `authentik_apps`.
+    # zz-sso-bindings and platform-admins are RENDERED from templates/ (not copied):
+    # the first from the enabled set, the second from the administrator list.
     _shared_blueprints:
       - agent-cloud.yaml
       - platform-groups.yaml
-      - agent-cloud-admin.yaml
-      - stray-admin.yaml
       - platform-users.yaml
-      - service-account.yaml
     _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 
   tasks:
@@ -131,28 +103,99 @@
       loop_control:
         label: "{{ item[0] }}"
 
+    # The administrator list is checked BEFORE the next task reads its usernames (it joins the
+    # ACTIVE set there) and before anything acts on it. This task writes nothing.
+    - name: "Validate the declared administrator list"
+      # One task file shared with the credential print (tasks/validate-platform-admins.yml):
+      # shape, duplicates, and keys that would name a non-user secret field.
+      ansible.builtin.include_tasks: tasks/validate-platform-admins.yml
+
+    # The retirement list, declared in site-config as `platform_retired_accounts`: usernames whose
+    # accounts this deploy DELETES (templates/platform-retired.yaml.j2). It joins the same retired
+    # set the legacy `*_LEGACY_USERNAME` mechanism feeds, so ONE guard below and ONE verify cover
+    # both. `default([], true)` also turns an explicit null into the empty list.
+    - name: "Read the declared retired-account list"
+      ansible.builtin.set_fact:
+        _platform_retired_declared: "{{ platform_retired_accounts | default([], true) }}"
+
     - name: "Split them into the accounts being kept and the ones being deleted"
       ansible.builtin.set_fact:
+        # The declared administrators are active accounts too, but their usernames are
+        # not env.j2 lines any more, so the regex above cannot see them: add them here.
         _active_usernames: >-
-          {{ _uname_effective | rejectattr('env', 'search', 'LEGACY_USERNAME$')
-             | map(attribute='value') | reject('equalto', '') | list }}
+          {{ (_uname_effective | rejectattr('env', 'search', 'LEGACY_USERNAME$')
+              | map(attribute='value') | reject('equalto', '') | list)
+             + (_platform_admins | map(attribute='username') | map('string') | map('trim') | list) }}
+        # Only a well-formed list is cleaned here; the guard below refuses anything else, and
+        # a non-sequence is passed through as empty so this task cannot fail before it runs.
+        _platform_retired_accounts: >-
+          {{ (_platform_retired_declared | select('string') | map('trim') | list)
+             if (_platform_retired_declared is sequence and _platform_retired_declared is not string
+                 and _platform_retired_declared is not mapping)
+             else [] }}
+
+    - name: "Resolve the retired set and the blueprint that carries the list"
+      ansible.builtin.set_fact:
         _retired_usernames: >-
-          {{ _uname_effective | selectattr('env', 'search', 'LEGACY_USERNAME$')
-             | map(attribute='value') | reject('equalto', '') | list }}
+          {{ ((_uname_effective | selectattr('env', 'search', 'LEGACY_USERNAME$')
+               | map(attribute='value') | reject('equalto', '') | list)
+              + _platform_retired_accounts) | unique | list }}
+        # No list, no file: an empty declaration renders and verifies nothing new, so a deploy
+        # with `platform_retired_accounts` unset is byte-for-byte what it was before it existed
+        # (and the prune below removes the file once the list is emptied).
+        _retired_blueprints: "{{ ['platform-retired.yaml'] if (_platform_retired_accounts | length) > 0 else [] }}"
+
+    # What a retired name may not be, compared CASE-INSENSITIVELY (both sides lowercased): the
+    # prod Authentik version's username matching is unverified, so `Stray` is refused as
+    # `stray`. Protected = the active accounts plus the declared platform-admins exceptions
+    # (members the list deliberately does not carry, but who still must not be deleted).
+    # System accounts are never a user to retire: `akadmin` (bootstrap; its token is the one the
+    # verify uses), `AnonymousUser` (the unauthenticated principal) and `ak-outpost-*` (outpost
+    # service accounts the platform's proxy providers authenticate with).
+    - name: "Find retired names that are protected or system accounts"
+      ansible.builtin.set_fact:
+        _retired_collisions: >-
+          {{ _retired_usernames | map('lower')
+             | intersect((_active_usernames
+                          + (_platform_admins_exceptions | default([]) | map('string') | map('trim') | list))
+                         | map('lower') | list)
+             | unique | list }}
+        _retired_system: >-
+          {{ (_retired_usernames | map('lower') | select('in', ['akadmin', 'anonymoususer']) | list)
+             + (_retired_usernames | map('lower') | select('match', '^ak-outpost-') | list) }}
 
     - name: "Refuse to both create and delete the same account"
       ansible.builtin.assert:
         that:
           - _uname_decls | length > 0
+          # The declared list: a real list of non-empty, distinct strings, naming no system account.
+          - _platform_retired_declared is sequence and _platform_retired_declared is not string and _platform_retired_declared is not mapping
+          - (_platform_retired_declared | select('string') | list | length) == (_platform_retired_declared | length)
+          - (_platform_retired_accounts | reject('equalto', '') | list | length) == (_platform_retired_accounts | length)
+          - (_platform_retired_accounts | unique | list | length) == (_platform_retired_accounts | length)
+          - _retired_system | length == 0
           - (_active_usernames | intersect(_retired_usernames)) | length == 0
+          - _retired_collisions | length == 0
         fail_msg: >-
           {{ 'No USERNAME declarations found in env.j2 — this guard would pass
               vacuously, which is worse than failing.'
              if (_uname_decls | length == 0)
-             else ('A retired username is also an ACTIVE username: '
-                   ~ (_active_usernames | intersect(_retired_usernames) | join(', '))
-                   ~ '. Applying the blueprints would create and delete that account
-                   in one run. Fix the *_legacy_username value in site-config.') }}
+             else ('platform_retired_accounts must be a list of non-empty, distinct username
+                   strings.'
+                   if (not (_platform_retired_declared is sequence and _platform_retired_declared is not string
+                            and _platform_retired_declared is not mapping)
+                       or (_platform_retired_declared | select("string") | list | length) != (_platform_retired_declared | length)
+                       or (_platform_retired_accounts | reject("equalto", "") | list | length) != (_platform_retired_accounts | length)
+                       or (_platform_retired_accounts | unique | list | length) != (_platform_retired_accounts | length))
+                   else ('A retired username is a SYSTEM account (akadmin, AnonymousUser, ak-outpost-*): '
+                         ~ (_retired_system | join(', ')) ~ '. These are never retired as users.'
+                         if (_retired_system | length > 0)
+                   else ('A retired username is also an ACTIVE username: '
+                   ~ ((_active_usernames | intersect(_retired_usernames)) + _retired_collisions) | unique | join(', ')
+                   ~ '. (Active includes the declared platform_admins_exceptions; names are compared
+                   without regard to case.) Applying the blueprints would create and delete that account
+                   in one run. Remove it from platform_admins / the active users, or from
+                   platform_retired_accounts or the *_legacy_username value in site-config.'))) }}
         success_msg: >-
           {{ _retired_usernames | length }} retired username(s), none colliding
           with the {{ _active_usernames | length }} active one(s).
@@ -212,10 +255,12 @@
         # passes both checks below with its braces intact and the bug surfaces one
         # phase later in the verifier, where it did (2026-08-27). Resolving here
         # means a broken reference fails at the guard, before anything is applied.
+        # The brace test is a concatenation, not a '{{' literal: ansible-core 2.20 rejects
+        # template delimiters inside a conditional (docs/MISTAKES.md 5.18).
         that:
           - "(lookup('vars', item, default='')) | length > 0"
           - "'agent-cloud.test' not in (lookup('vars', item, default=''))"
-          - "'{{ '{{' }}' not in (lookup('vars', item, default=''))"
+          - "('{' ~ '{') not in (lookup('vars', item, default=''))"
         fail_msg: >-
           Promotion guard: inventory var '{{ item }}' must resolve to a prod URL (in
           site-config), not an agent-cloud.test default and not an unresolved
@@ -254,7 +299,8 @@
     # resolved at first-apply (the local default) freezes — that is exactly why the
     # prod semaphore provider stayed on the agent-cloud.test redirect_uri. Baking the
     # URL in makes the content differ per env, which re-triggers application.
-    # Blueprints with no Jinja render unchanged (verified: none use {{ }} / {% %}).
+    # Blueprints with no Jinja render unchanged (verified: none use {{ }} / {% %}); the
+    # one that needs a loop (the administrators) is a template under templates/.
     - name: "Assemble active blueprints (shared + enabled apps) — rendered from inventory"
       ansible.builtin.template:
         src: "{{ _authentik_tpls }}/blueprints/{{ item }}"
@@ -285,7 +331,26 @@
         state: absent
       loop: >-
         {{ _bp_present.files | map(attribute='path') | map('basename') | list
-           | difference(_active_blueprints + ['zz-sso-bindings.yaml']) }}
+           | difference(_active_blueprints + ['zz-sso-bindings.yaml', 'platform-admins.yaml'] + (_retired_blueprints | default([]))) }}
+
+    # Rendered from the declared administrator list: one authentik_core.user per entry (plus
+    # the service account's API token). Identity is baked in from the inventory; passwords
+    # stay `!Env` (this file is 0644). Kept out of the prune above by name, like
+    # zz-sso-bindings.
+    - name: "Render platform-admins from the administrator list"
+      ansible.builtin.template:
+        src: "{{ _authentik_tpls }}/templates/platform-admins.yaml.j2"
+        dest: "{{ _deploy_dir }}/blueprints-active/platform-admins.yaml"
+        mode: "0644"
+
+    # Rendered from `platform_retired_accounts`: one `state: absent` authentik_core.user per name.
+    # Skipped when the list is empty (the prune above then removes a stale copy).
+    - name: "Render platform-retired from the retired-account list"
+      ansible.builtin.template:
+        src: "{{ _authentik_tpls }}/templates/platform-retired.yaml.j2"
+        dest: "{{ _deploy_dir }}/blueprints-active/platform-retired.yaml"
+        mode: "0644"
+      when: _retired_blueprints | length > 0
 
     - name: "Create convenience symlink ~/authentik -> deploy dir"
       # Satisfies "a folder for authentik at ~/authentik" while keeping the
@@ -340,6 +405,9 @@
   hosts: authentik_svc
   gather_facts: false
   become: false
+  # The verify asserts platform-admins' membership against the declared list.
+  vars_files:
+    - vars/platform-admins.yml
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     # Verify live OIDC providers against intent in prod by default; opt in for
@@ -495,6 +563,12 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: "authentik healthy — server up, API answering on :9000, embedded outpost serving forward_auth (behind Caddy for TLS)."
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy
 
 # ── Phase 4: Render + distribute Caddy fragment (prod only) ─────────────────
 # auth.uhstray.io -> this VM:9000, tls internal. Skipped unless a central Caddy

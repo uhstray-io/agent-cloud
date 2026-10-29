@@ -122,6 +122,18 @@ compose() {
 # directory deleted and recreated under a running container, whose mount still references the
 # deleted inode while every digest matches. Any other value leaves the comparison in charge.
 #
+# Staged start (optional): a service whose containers must start in order (a worker only
+# after its app has finished migrating) defines a function `compose_staged_up` before calling
+# this. When the comparison finds a change, the helper calls it INSTEAD of the one-shot
+# `up -d --force-recreate --remove-orphans`; it is never called on an unchanged project. The
+# digest label overlay is already in COMPOSE_OVERLAYS while the hook runs, so every `compose up`
+# inside it labels the containers it creates (without it the next run sees "inputs changed" and
+# recreates again). The hook owns recreating, ordering, waiting and orphan removal; it must
+# return non-zero on failure — the helper calls it where errexit is suspended, so a failing
+# command mid-hook does not stop it unless the hook chains `|| return 1` (`error` and the
+# wait_for_* helpers exit the script themselves). Defined nowhere, the one-shot start runs
+# exactly as before.
+#
 # Prints `DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false` on its own line; playbooks read it
 # for the task's changed status. Run from the deploy directory, like compose().
 COMPOSE_INPUTS_LABEL="io.agent-cloud.inputs-sha256"
@@ -207,7 +219,7 @@ compose_inputs_digest() {
 # A container whose service is no longer declared is an orphan: it counts as a change, and
 # the recreate's --remove-orphans removes it, so the run after is stable.
 _compose_recreate_reason() {
-  local want="$1" services="$2" names name svc seen=$'\n' running have ref image_run image_now
+  local want="$1" services="$2" names name svc seen=$'\n' running oneshot status code have ref image_run image_now
   names=$($CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project.working_dir=$(pwd)" \
     --format '{{.Names}}' 2>/dev/null) || names=""
   while IFS= read -r name; do
@@ -219,7 +231,18 @@ _compose_recreate_reason() {
     esac
     seen+="${svc}"$'\n'
     running=$($CONTAINER_ENGINE inspect --format '{{.State.Running}}' "$name" 2>/dev/null) || running=""
-    if [ "$running" != "true" ]; then echo "container not running: ${name}"; return 0; fi
+    if [ "$running" != "true" ]; then
+      # A one-shot init container (label agent-cloud.one-shot: "true", restart "no") is finished,
+      # not down, once it exited 0 — the same rule verify-service-persistence.yml applies. Any
+      # other stopped container, or a one-shot that failed, is a change.
+      # Exited, not merely stopped: a container left `created` by an interrupted up never ran.
+      oneshot=$($CONTAINER_ENGINE inspect --format '{{ index .Config.Labels "agent-cloud.one-shot" }}' "$name" 2>/dev/null) || oneshot=""
+      status=$($CONTAINER_ENGINE inspect --format '{{.State.Status}}' "$name" 2>/dev/null) || status=""
+      code=$($CONTAINER_ENGINE inspect --format '{{.State.ExitCode}}' "$name" 2>/dev/null) || code=""
+      if [ "$oneshot" != "true" ] || [ "$status" != "exited" ] || [ "$code" != "0" ]; then
+        echo "container not running: ${name}"; return 0
+      fi
+    fi
     have=$($CONTAINER_ENGINE inspect --format "{{ index .Config.Labels \"${COMPOSE_INPUTS_LABEL}\" }}" "$name" 2>/dev/null) || have=""
     if [ "$have" != "$want" ]; then echo "inputs changed: ${name}"; return 0; fi
     ref=$($CONTAINER_ENGINE inspect --format '{{.Config.Image}}' "$name" 2>/dev/null) || ref=""
@@ -264,7 +287,14 @@ compose_up_if_changed() {
   # --remove-orphans: a service dropped from the compose files would otherwise leave its old
   # labelled container behind and every later run would recreate (podman-compose 1.6.0 and
   # docker compose v2 both accept it).
-  if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate --remove-orphans; then
+  if declare -F compose_staged_up >/dev/null; then
+    # The caller's staged start. The label overlay is already in COMPOSE_OVERLAYS for the
+    # whole call, so every `compose up` inside it labels what it creates.
+    if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose_staged_up; then
+      rm -rf "$label_dir"
+      error "compose_staged_up failed."
+    fi
+  elif ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate --remove-orphans; then
     rm -rf "$label_dir"
     error "compose up --force-recreate failed."
   fi
@@ -300,7 +330,7 @@ dump_container_diagnostics() {
   local name="$1" lines="${2:-60}"
   warn "Diagnostics for ${name}:"
   $CONTAINER_ENGINE inspect --format \
-    'state={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}} error={{.State.Error}}' \
+    'state={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} started={{.State.StartedAt}} error={{.State.Error}}' \
     "$name" 2>&1 | redact_secrets >&2 || true
   warn "Last ${lines} log lines of ${name} (redacted, engine timestamps):"
   # Timestamps place the container's own events against the wait that timed out (task 1213:

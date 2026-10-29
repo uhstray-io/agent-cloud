@@ -49,7 +49,7 @@ the template's role in the registry, not by status, a snapshot's pass or skip la
 never in conformance; a snapshot that fails is still the step's failure, since the
 assessment then has no input (PR 195 Codex review).
 
-An inventory group is mapped to its first host's service_name (groups + host_services, both
+An inventory group is mapped to its first tracked host's service_name (groups + host_services, both
 plain data: hostvars themselves never cross), so a service is named the way its own step
 results name it (step_ca_svc -> step-ca), never by string surgery.
 """
@@ -57,6 +57,7 @@ results name it (step_ca_svc -> step-ca), never by string surgery.
 import json
 import re
 import sys
+from datetime import datetime
 
 RUN = re.compile(r"^\s*RUN:\s*(\{.*\})\s*$")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -75,6 +76,157 @@ PICKED_KEYS = ("id", "status", "template_id", "end", "params")
 RETAINED_ERROR = "last run is older than the collector's history window; status kept from NetBox"
 STATE_CODES = {"fail": 0, "pass": 1, "skip": 2}
 INVENTORY_CODES = {"no_history": 0, "has_history": 1, "history_incomplete": 2}
+COMPLETION_BODY = '{"collection_completed":true,"version":1}'
+
+
+def classify_netbox_results(expected_services: list[str], results: list[dict]) -> dict:
+    """Classify complete NetBox list responses without treating an unknown read as empty.
+
+    A complete zero-match or multi-match response is a known nonblocking outcome. Only a
+    unique match selects a required PATCH. Response headers and request metadata are not
+    accepted as part of this bounded input.
+    """
+    expected_is_valid = isinstance(expected_services, list) and all(
+        isinstance(service, str) and service for service in expected_services
+    )
+    expected = list(expected_services) if expected_is_valid else []
+    expected_set = set(expected)
+    grouped: dict[str, list[dict]] = {}
+    unexpected = False
+    for result in results if isinstance(results, list) else []:
+        if (not isinstance(result, dict) or not isinstance(result.get("item"), str)
+                or result["item"] not in expected_set):
+            unexpected = True
+            continue
+        grouped.setdefault(result["item"], []).append(result)
+
+    found, missing, ambiguous, unknown = [], [], [], []
+    complete = isinstance(results, list) and expected_is_valid and not unexpected
+    if len(expected_set) != len(expected):
+        complete = False
+    for service in expected:
+        rows = grouped.get(service, [])
+        if len(rows) != 1:
+            unknown.append(service)
+            complete = False
+            continue
+        response = rows[0]
+        body = response.get("json")
+        if (type(response.get("status")) is not int or response["status"] != 200
+                or not isinstance(body, dict) or type(body.get("count")) is not int
+                or type(body.get("next_is_terminal")) is not bool or not body["next_is_terminal"]
+                or body["count"] < 0 or not isinstance(body.get("results"), list)
+                or len(body["results"]) != body["count"]
+                or any(not isinstance(row, dict) for row in body["results"])):
+            unknown.append(service)
+            complete = False
+            continue
+        count = body["count"]
+        if count == 0:
+            missing.append(service)
+        elif count > 1:
+            ambiguous.append(service)
+        else:
+            vm = body["results"][0]
+            vm_id = vm.get("id")
+            custom_fields = vm.get("custom_fields", {})
+            if type(vm_id) is not int or vm_id <= 0 or not isinstance(custom_fields, dict):
+                unknown.append(service)
+                complete = False
+                continue
+            status = custom_fields.get("ac_workflow_status")
+            if status is None:
+                status = {}
+            if not isinstance(status, dict):
+                unknown.append(service)
+                complete = False
+                continue
+            found.append({"item": service, "id": vm_id, "status": status})
+    return {"complete": complete, "found": found, "missing": missing,
+            "ambiguous": ambiguous, "unknown": unknown}
+
+
+def completion_eligible(netbox_read_complete: bool, required_services: list[str],
+                        write_results: list[dict]) -> bool:
+    """Whether all unique-match NetBox writes completed with an explicit HTTP 200."""
+    if netbox_read_complete is not True or not isinstance(required_services, list):
+        return False
+    if any(not isinstance(service, str) or not service for service in required_services):
+        return False
+    if len(set(required_services)) != len(required_services) or not isinstance(write_results, list):
+        return False
+    writes: dict[str, list[dict]] = {}
+    for result in write_results:
+        if (not isinstance(result, dict) or not isinstance(result.get("item"), str)
+                or result["item"] not in required_services):
+            return False
+        writes.setdefault(result["item"], []).append(result)
+    for service in required_services:
+        rows = writes.get(service, [])
+        if len(rows) != 1:
+            return False
+        result = rows[0]
+        if (type(result.get("status")) is not int or result["status"] != 200
+                or result.get("failed", False) is not False or result.get("skipped", False) is not False):
+            return False
+    return True
+
+
+def classify_otlp_ack(response: dict) -> dict:
+    """Classify the collector's sanitized projection of one OTLP/HTTP response.
+
+    The playbook passes only response status, a Content-Type predicate, schema predicates,
+    and an optional bounded rejected-record counter. Empty partial success and an omitted
+    counter mean zero; malformed present values remain unknown. It never sends response
+    headers, raw body text, or server-provided error messages to this command.
+    """
+    unknown = {"accepted": False, "outcome": "unknown", "rejected_records": None}
+    if (not isinstance(response, dict) or type(response.get("status")) is not int
+            or response["status"] != 200 or response.get("content_type_valid") is not True
+            or response.get("body_is_object") is not True
+            or response.get("body_fields_known") is not True
+            or type(response.get("partial_success_present")) is not bool):
+        return unknown
+    if not response["partial_success_present"]:
+        return {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+    if (response.get("partial_success_is_object") is not True
+            or response.get("partial_fields_known") is not True
+            or type(response.get("rejected_present")) is not bool
+            or type(response.get("warning_present")) is not bool):
+        return unknown
+    if response["rejected_present"]:
+        value = response.get("rejected_records")
+        if type(value) is int:
+            rejected = value
+        elif isinstance(value, str) and re.fullmatch(r"(?:0|[1-9][0-9]{0,18})", value):
+            rejected = int(value)
+        else:
+            return unknown
+    else:
+        rejected = 0
+    if rejected < 0 or rejected > 2**63 - 1:
+        return unknown
+    if response["warning_present"] and response.get("warning_valid") is not True:
+        return unknown
+    if rejected:
+        return {"accepted": False, "outcome": "rejected", "rejected_records": rejected}
+    return {"accepted": True, "outcome": "accepted", "rejected_records": 0}
+
+
+def completion_delivery_eligible(required_work_ok: bool, transport: str, transport_configured: bool,
+                                 record_count: int, response_status: int | None = None,
+                                 otlp_acknowledged: bool = False) -> bool:
+    """Whether the prior conformance batch is acknowledged before the final receipt attempt."""
+    if (required_work_ok is not True or transport_configured is not True
+            or type(record_count) is not int or record_count < 0):
+        return False
+    if record_count == 0:
+        return True
+    if transport == "local_loki":
+        return type(response_status) is int and response_status == 204
+    if transport == "production_otlp":
+        return otlp_acknowledged is True
+    return False
 
 
 def results_in(lines: list[str]) -> list[dict]:
@@ -163,8 +315,21 @@ def _service_of(task: dict, by_group: dict) -> str | None:
     return by_group.get(match.group(1).replace("-", "_") + "_svc") if match else None
 
 
+# Ansible builds these itself; neither is ever one service, and a launch that falls back to
+# target_service "ungrouped" must stay unattributed rather than land on whichever host is first.
+_IMPLICIT_GROUPS = frozenset({"all", "ungrouped"})
+
+
 def group_services(groups: dict, host_services: dict) -> dict:
-    return {g: host_services[hosts[0]] for g, hosts in groups.items() if hosts and hosts[0] in host_services}
+    """A group's service is its first TRACKED host's: a host the collector skipped (opted out
+    with service_conformance_tracked: false, or with no service_name) is not in host_services,
+    so it never hides the service of a tracked host listed after it. The implicit groups `all`
+    and `ungrouped` map to no service."""
+    return {
+        g: services[0]
+        for g, hosts in groups.items()
+        if g not in _IMPLICIT_GROUPS and (services := [host_services[h] for h in hosts if h in host_services])
+    }
 
 
 def inventory_services(by_group: dict) -> list[str]:
@@ -176,6 +341,19 @@ def inventory_services(by_group: dict) -> list[str]:
 def is_check_mode(task: dict) -> bool:
     """Semaphore records Ansible check mode on the task as params.dry_run (v2.17 db/Task.go)."""
     return bool((task.get("params") or {}).get("dry_run"))
+
+
+def _completion_time_seconds(value: object) -> int | str:
+    """Return a timezone-aware task end time as Unix seconds, or `unknown`."""
+    if not isinstance(value, str) or not value:
+        return "unknown"
+    try:
+        timestamp = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            return "unknown"
+        return int(timestamp.timestamp())
+    except (OverflowError, OSError, ValueError):
+        return "unknown"
 
 
 def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
@@ -323,9 +501,15 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
                                                               "marker_time_seconds": now_ns // 1_000_000_000})]]})
     for service, steps in sorted(agg["services"].items()):
         for step, result in sorted(steps.items()):
-            payload = {"task_id": result["task_id"], "error": result["error"],
+            retained = result.get("retained")
+            task_id = result.get("task_id")
+            if retained or not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+                task_id = "unknown"
+            completed_at = "unknown" if retained else _completion_time_seconds(result.get("end"))
+            payload = {"task_id": task_id, "completed_at_seconds": completed_at,
+                       "error": result["error"],
                        "check_mode": result["check_mode"], "state_code": STATE_CODES[result["status"]]}
-            if result.get("retained"):
+            if retained:
                 payload["retained"] = True
             line = json.dumps(payload, sort_keys=True)
             streams.append({
@@ -334,6 +518,17 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
                 "values": [[str(now_ns), line]],
             })
     return streams
+
+
+def completion_receipt_stream(now_ns: int) -> dict:
+    """One fixed run-completion record, separate from service and per-step status."""
+    if type(now_ns) is not int:
+        raise ValueError("completion receipt timestamp must be an integer")
+    timestamp = int(now_ns)
+    if timestamp <= 0:
+        raise ValueError("completion receipt timestamp must be positive")
+    return {"stream": {"job": "agent-cloud-conformance", "kind": "run", "status": "success"},
+            "values": [[str(timestamp), COMPLETION_BODY]]}
 
 
 def otlp_logs_payload(streams: list[dict]) -> dict:
@@ -345,17 +540,25 @@ def otlp_logs_payload(streams: list[dict]) -> dict:
     records = []
     for stream in streams:
         labels = stream["stream"]
-        if set(labels) != {"job", "service", "step", "status"}:
-            raise ValueError("conformance labels do not match the fixed label contract")
-        if labels["job"] != "agent-cloud-conformance":
-            raise ValueError("conformance log job label is not bounded")
-        if labels["status"] not in {"pass", "fail", "skip", "no_history", "has_history", "history_incomplete"}:
-            raise ValueError("conformance log status label is not bounded")
-        attributes = [
-            {"key": key, "value": {"stringValue": str(labels[key])}}
-            for key in ("job", "service", "step", "status")
-        ]
-        for timestamp, body in stream["values"]:
+        values = stream["values"]
+        if set(labels) == {"job", "kind", "status"}:
+            if (not isinstance(values, list)
+                    or labels != {"job": "agent-cloud-conformance", "kind": "run", "status": "success"}
+                    or len(values) != 1 or not isinstance(values[0], list) or len(values[0]) != 2
+                    or not str(values[0][0]).isdigit() or int(values[0][0]) <= 0
+                    or values[0][1] != COMPLETION_BODY):
+                raise ValueError("completion receipt does not match the fixed run contract")
+            keys = ("job", "kind", "status")
+        else:
+            if set(labels) != {"job", "service", "step", "status"}:
+                raise ValueError("conformance labels do not match the fixed label contract")
+            if labels["job"] != "agent-cloud-conformance":
+                raise ValueError("conformance log job label is not bounded")
+            if labels["status"] not in {"pass", "fail", "skip", "no_history", "has_history", "history_incomplete"}:
+                raise ValueError("conformance log status label is not bounded")
+            keys = ("job", "service", "step", "status")
+        attributes = [{"key": key, "value": {"stringValue": str(labels[key])}} for key in keys]
+        for timestamp, body in values:
             records.append({"timeUnixNano": str(timestamp), "attributes": attributes,
                             "body": {"stringValue": body}})
     if not records:
@@ -391,6 +594,22 @@ def main() -> int:
             streams = loki_streams(out, int(data["now_ns"]))
             out["loki_streams"] = streams
             out["otlp_payload"] = otlp_logs_payload(streams)
+    elif mode == "netbox":
+        out = classify_netbox_results(data.get("expected_services", []), data.get("results", []))
+    elif mode == "completion":
+        out = {"eligible": completion_eligible(data.get("netbox_read_complete"),
+                                               data.get("required_services", []),
+                                               data.get("write_results", []))}
+    elif mode == "receipt":
+        stream = completion_receipt_stream(data["now_ns"])
+        out = {"streams": [stream], "otlp_payload": otlp_logs_payload([stream])}
+    elif mode == "otlp_ack":
+        out = classify_otlp_ack(data)
+    elif mode == "completion_delivery":
+        out = {"eligible": completion_delivery_eligible(
+            data.get("required_work_ok"), data.get("transport", ""),
+            data.get("transport_configured"), data.get("record_count"),
+            data.get("response_status"), data.get("otlp_acknowledged", False))}
     else:
         raise SystemExit(f"unknown mode {mode!r}")
     json.dump(out, sys.stdout, sort_keys=True)

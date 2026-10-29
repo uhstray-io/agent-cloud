@@ -79,8 +79,8 @@ orb:
           # Port specification — key infrastructure and service ports
           ports: [22, 53, 80, 161, 443, 3389, 5060, 8000, 8080, 8081, 8200, 8443]
 
-          # Optimization
-          fast_mode: true
+          # Optimization. Do NOT add fast_mode alongside `ports`: it adds nmap -F,
+          # which nmap refuses together with an explicit port list (scan exits 1).
           timing: 3
           max_retries: 2
           use_target_masks: true

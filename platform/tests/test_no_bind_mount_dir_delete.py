@@ -1,14 +1,15 @@
 """A deploy must never delete or replace a directory a running container bind-mounts.
 
 compose_up_if_changed (platform/lib/common.sh) leaves containers running when their inputs
-are unchanged. A bind mount pins the host directory's inode at container start, so deleting
+are unchanged, and so does NetBox's own change-aware deploy (netbox_recreate_reason in its
+lib/common.sh). A bind mount pins the host directory's inode at container start, so deleting
 and recreating the directory (file `state: absent` then `state: directory`, `rm -rf`) leaves
 the running container looking at the deleted, empty inode while the host shows new files —
 the 2026-10-05 authentik regression, where the worker saw an empty /blueprints/custom and
 dropped every custom blueprint instance. Converge such directories in place instead: write
 files into them and remove only the entries that left the set.
 
-Scope: every service whose deploy.sh calls compose_up_if_changed. Scanned: its
+Scope: every service whose deploy.sh calls compose_up_if_changed or netbox_recreate_reason. Scanned: its
 `deploy-<service>.yml`, every task file it includes or imports (followed transitively, so
 shared tasks such as tasks/place-monorepo.yml are covered), every `tasks/<service>-*.yml`,
 and the service's deploy.sh. Checked against the relative (`./...`) bind-mount sources its
@@ -44,11 +45,15 @@ SERVICES = REPO / "platform" / "services"
 PLAYBOOKS = REPO / "platform" / "playbooks"
 
 
+# The calls that make a deploy.sh leave running containers alone when nothing changed.
+CHANGE_AWARE = ("compose_up_if_changed", "netbox_recreate_reason")
+
+
 def _services() -> list[str]:
     return sorted(
         p.parent.parent.name
         for p in SERVICES.glob("*/deployment/deploy.sh")
-        if "compose_up_if_changed" in p.read_text()
+        if any(call in p.read_text() for call in CHANGE_AWARE)
     )
 
 
@@ -56,11 +61,28 @@ def _deploy_rel(service: str) -> str:
     return f"platform/services/{service}/deployment"
 
 
+class _ComposeLoader(yaml.SafeLoader):
+    """SafeLoader that also reads compose-spec merge tags (!override, !reset) as plain values,
+    as test_restart_policy.bats does, so an overlay that uses them is scanned, not an error."""
+
+
+_ComposeLoader.add_multi_constructor(
+    "!",
+    lambda loader, _suffix, node: (
+        loader.construct_mapping(node) if isinstance(node, yaml.MappingNode)
+        else loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode)
+        else loader.construct_scalar(node)
+    ),
+)
+
+
 def _bind_sources(service: str) -> set[str]:
     """Repo-relative bind-mount sources."""
     out: set[str] = set()
-    for f in (SERVICES / service / "deployment").rglob("compose*.yml"):
-        doc = yaml.safe_load(f.read_text()) or {}
+    for f in sorted((SERVICES / service / "deployment").rglob("*compose*.yml")):
+        if "netbox-docker" in f.parts:  # the untracked upstream clone, not this repo's compose
+            continue
+        doc = yaml.load(f.read_text(), Loader=_ComposeLoader) or {}  # noqa: S506 - SafeLoader subclass
         for svc in (doc.get("services") or {}).values():
             for vol in (svc or {}).get("volumes") or []:
                 src = vol.get("source", "") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
@@ -228,7 +250,8 @@ def _offences(service: str, sources: set[str], files: list[Path], deploy_sh: Pat
 
 
 def test_scope_is_not_empty():
-    assert {"authentik", "o11y"} <= set(_services())
+    assert {"authentik", "o11y", "netbox"} <= set(_services())
+    assert f"{_deploy_rel('netbox')}/netbox-docker/configuration" in _bind_sources("netbox")
     assert f"{_deploy_rel('authentik')}/blueprints-active" in _bind_sources("authentik")
     assert f"{_deploy_rel('o11y')}/config/scrape.d" in _bind_sources("o11y")
     for svc, extra in (("o11y", "o11y-alert-provision.yml"), ("authentik", "manage-secrets.yml")):

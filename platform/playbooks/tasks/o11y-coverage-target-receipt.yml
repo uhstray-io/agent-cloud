@@ -1,3 +1,11 @@
+- name: Freeze the strict observation query end
+  ansible.builtin.set_fact:
+    _coverage_query_end: "{{ now(utc=true).timestamp() | int }}"
+
+- name: Derive the strict observation query start
+  ansible.builtin.set_fact:
+    _coverage_query_start: "{{ (_coverage_query_end | int) - observation_window_seconds }}"
+
 - name: Query the exact Loki target selector
   ansible.builtin.command:
     argv:
@@ -8,10 +16,12 @@
       - -q
       - -O
       - "-"
-      - "http://loki:3100/loki/api/v1/query_range?query={{ signal_selector | urlencode }}&start={{ ((now(utc=true).timestamp() | int) - (observation_window_seconds | int)) * 1000000000 }}&end={{ (now(utc=true).timestamp() | int) * 1000000000 }}&limit=1"
+      - "http://loki:3100/loki/api/v1/query_range?query={{ signal_selector | urlencode }}&start={{ (_coverage_query_start | int) * 1000000000 }}&end={{ (_coverage_query_end | int) * 1000000000 }}&direction=backward&limit=1"
   register: _exact_logs
   changed_when: false
   check_mode: false
+  failed_when: false
+  no_log: true
   when: expected_signal == 'logs'
 
 - name: Query the exact Prometheus target selector
@@ -24,10 +34,12 @@
       - -q
       - -O
       - "-"
-      - "http://prometheus:9090/api/v1/query?query={{ (signal_selector ~ '[' ~ (observation_window_seconds | int) ~ 's]') | urlencode }}"
+      - "http://prometheus:9090/api/v1/query?query={{ (signal_selector ~ '[' ~ observation_window_seconds ~ 's]') | urlencode }}&time={{ _coverage_query_end }}"
   register: _exact_prometheus
   changed_when: false
   check_mode: false
+  failed_when: false
+  no_log: true
   when: expected_signal in ['metrics', 'health']
 
 - name: Query the exact Tempo target selector
@@ -40,40 +52,134 @@
       - -q
       - -O
       - "-"
-      - "http://tempo:3200/api/search?q={{ signal_selector | urlencode }}&start={{ (now(utc=true).timestamp() | int) - (observation_window_seconds | int) }}&end={{ now(utc=true).timestamp() | int }}&limit=1"
+      - "http://tempo:3200/api/search?q={{ signal_selector | urlencode }}&start={{ _coverage_query_start }}&end={{ _coverage_query_end }}&limit=1&sps=1"
   register: _exact_traces
   changed_when: false
   check_mode: false
+  failed_when: false
+  no_log: true
   when: expected_signal == 'traces'
 
-- name: Require a fresh exact-target signal observation
+- name: Query the exact Pyroscope profile selector
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - wget
+      - -q
+      - -O
+      - "-"
+      - -T
+      - "10"
+      - "--header=Content-Type: application/json"
+      - "--post-data={{ {
+          'profileTypeID': _coverage_target.signals.profiles.profile_type_id,
+          'labelSelector': signal_selector,
+          'start': (_coverage_query_start | int) * 1000,
+          'end': (_coverage_query_end | int) * 1000,
+          'groupBy': ['target_id'],
+          'limit': 1,
+          'step': 60
+        } | to_json }}"
+      - "http://pyroscope:4040/querier.v1.QuerierService/SelectSeries"
+  register: _exact_profiles
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+  when: expected_signal == 'profiles'
+
+- name: Protect the selected backend response for common validation
+  ansible.builtin.set_fact:
+    _coverage_backend_response: "{{
+      _exact_logs.stdout | default('') if expected_signal == 'logs' else
+      _exact_prometheus.stdout | default('') if expected_signal in ['metrics', 'health'] else
+      _exact_traces.stdout | default('') if expected_signal == 'traces' else
+      _exact_profiles.stdout | default('')
+    }}"
+    _coverage_backend_rc: "{{
+      _exact_logs.rc | default(127) if expected_signal == 'logs' else
+      _exact_prometheus.rc | default(127) if expected_signal in ['metrics', 'health'] else
+      _exact_traces.rc | default(127) if expected_signal == 'traces' else
+      _exact_profiles.rc | default(127)
+    }}"
+  no_log: true
+
+- name: Capture the strict observation time after the backend response
+  ansible.builtin.set_fact:
+    _coverage_observed_at: "{{ now(utc=true).timestamp() | int }}"
+
+- name: Validate the strict signal response without exposing backend content
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+      - --validate-signal-observation
+    stdin: "{{ {
+      'response': _coverage_backend_response,
+      'command_rc': _coverage_backend_rc | int,
+      'target_id': expected_target_id,
+      'signal': expected_signal,
+      'query_start': _coverage_query_start | int,
+      'query_end': _coverage_query_end | int,
+      'observed_at': _coverage_observed_at | int,
+      'window_seconds': observation_window_seconds,
+      'requested_freshness_seconds': freshness_seconds,
+      'declared_freshness_seconds': _coverage_target.signals[expected_signal].freshness_seconds
+    } | to_json }}"
+  delegate_to: localhost
+  register: _validated_observation
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+
+- name: Parse the protected signal validation response
+  block:
+    - name: Parse validator output without exposing malformed content
+      ansible.builtin.set_fact:
+        _coverage_validation: "{{ _validated_observation.stdout | default('') | from_json }}"
+      no_log: true
+  rescue:
+    - name: Replace an empty or malformed validator response with a fixed refusal
+      ansible.builtin.set_fact:
+        _coverage_validation:
+          status: refused
+          reason: invalid_response
+          evidence_count: 0
+      no_log: true
+
+- name: Validate the fixed signal validation response schema
   ansible.builtin.assert:
     that:
-      - _exact_receipt.status == 'success' if expected_signal != 'traces' else _exact_receipt.traces | default([]) | length > 0
-      - _exact_receipt.traces | default([]) | length > 0 if expected_signal == 'traces' else _exact_receipt.data.result | default([]) | length > 0
-      - expected_signal not in ['metrics', 'health'] or _exact_receipt.data.resultType == 'matrix'
-      - expected_signal not in ['metrics', 'health'] or (_exact_receipt.data.result | map(attribute='metric.target_id') | list | unique == [expected_target_id])
-      - expected_signal not in ['metrics', 'health'] or (_exact_latest_samples | length == _exact_receipt.data.result | length and _exact_latest_samples | selectattr('0', 'ge', (now(utc=true).timestamp() | int) - (freshness_seconds | int)) | list | length == _exact_latest_samples | length and _exact_latest_samples | selectattr('0', 'le', now(utc=true).timestamp() | int) | list | length == _exact_latest_samples | length)
-      - expected_signal != 'health' or (_exact_latest_samples | map(attribute='1') | select('string') | list | length == _exact_latest_samples | length and _exact_latest_samples | map(attribute='1') | select('string') | list | unique == ['1'])
-      - expected_signal != 'logs' or (_exact_receipt.data.result | map(attribute='stream.target_id') | list | unique == [expected_target_id])
-      - expected_signal != 'traces' or _exact_receipt.traces | default([]) | length > 0
-    fail_msg: >-
-      {{ expected_target_id }} has no fresh verified {{ expected_signal }} signal in the declared observation window;
-      sibling service labels do not count as an exact-target receipt.
-  vars:
-    _exact_receipt: >-
-      {{ (
-        _exact_logs.stdout if expected_signal == 'logs' else
-        _exact_prometheus.stdout if expected_signal in ['metrics', 'health'] else
-        _exact_traces.stdout
-      ) | default('{}') | from_json }}
-    _exact_latest_samples: >-
-      {% set latest = [] %}
-      {% for series in _exact_receipt.data.result | default([]) %}
-      {% set samples = series.get('values', []) + series.get('histograms', []) %}
-      {% if samples %}{% set _ = latest.append(samples | sort(attribute='0') | last) %}{% endif %}
-      {% endfor %}
-      {{ latest }}
+      - _coverage_validation is mapping
+      - _coverage_validation.keys() | list | sort == ['evidence_count', 'reason', 'status']
+      - _coverage_validation.status in ['verified', 'refused']
+      - _coverage_validation.reason in [
+          'verified', 'invalid_input', 'transport_error', 'invalid_interval',
+          'oversized_response', 'malformed_json', 'backend_status', 'invalid_response',
+          'identity_mismatch', 'timestamp_out_of_bounds', 'no_evidence',
+          'unhealthy_latest_sample'
+        ]
+      - _coverage_validation.evidence_count is integer
+      - _coverage_validation.evidence_count is not boolean
+      - 0 <= _coverage_validation.evidence_count <= 1000
+      - (_coverage_validation.status == 'verified') == (_coverage_validation.reason == 'verified')
+      - _coverage_validation.status != 'verified' or _coverage_validation.evidence_count > 0
+    fail_msg: "Signal validation response refused: invalid fixed response schema."
+  no_log: true
+
+- name: Promote only fixed validation fields
+  ansible.builtin.set_fact:
+    _coverage_observation_status: "{{ _coverage_validation.status }}"
+    _coverage_observation_reason: "{{ _coverage_validation.reason }}"
+  no_log: true
+
+- name: Require the strict signal observation
+  ansible.builtin.assert:
+    that: _coverage_observation_status == 'verified'
+    fail_msg: "Strict signal observation refused: {{ _coverage_observation_reason }}."
 
 - name: Emit sanitized unattributed observation metadata
   ansible.builtin.set_stats:
@@ -84,7 +190,8 @@
         signal: "{{ expected_signal }}"
         repository_sha: "{{ expected_repository_sha }}"
         inventory_revision: "{{ expected_inventory_revision }}"
-        observation_window_seconds: "{{ observation_window_seconds | int }}"
-        freshness_seconds: "{{ freshness_seconds | int }}"
+        observation_window_seconds: "{{ observation_window_seconds }}"
+        freshness_seconds: "{{ freshness_seconds }}"
         task_reference_unattributed: true
-        observed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        query_ended_at: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime(_coverage_query_end | int, utc=true) }}"
+        observed_at: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime(_coverage_observed_at | int, utc=true) }}"

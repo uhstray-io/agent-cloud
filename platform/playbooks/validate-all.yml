@@ -133,6 +133,22 @@
       ansible.builtin.debug:
         msg: "tududi: {{ 'HEALTHY' if _tududi_health is succeeded else 'UNHEALTHY' }}"
 
+- name: "Validate console"
+  hosts: console_svc
+  gather_facts: false
+  tasks:
+    - name: Check console health (probe /healthz -> 200, inside the container)
+      # Same probe the deploy verifies with: the binary's own subcommand, run in the container.
+      ansible.builtin.command: "{{ container_engine | default('podman') }} exec console /usr/local/app/server probe /healthz 200"
+      register: _console_health
+      ignore_errors: true
+      changed_when: false
+      check_mode: false
+
+    - name: Report console status
+      ansible.builtin.debug:
+        msg: "console: {{ 'HEALTHY' if _console_health is succeeded else 'UNHEALTHY' }}"
+
 - name: "Validate honcho"
   hosts: honcho_svc
   gather_facts: false
@@ -171,6 +187,26 @@
     - name: Report postiz status
       ansible.builtin.debug:
         msg: "postiz: {{ 'HEALTHY' if _postiz_health is succeeded else 'UNHEALTHY' }}"
+
+- name: "Validate plane"
+  hosts: plane_svc
+  gather_facts: false
+  tasks:
+    - name: Check plane health
+      ansible.builtin.uri:
+        # /api/instances/ is unauthenticated and served by the API. The web frontend
+        # answers / even when the API is down, so / would report a dead stack as healthy.
+        url: "{{ plane_public_url }}/api/instances/"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: _plane_health
+      ignore_errors: true
+      check_mode: false
+
+    - name: Report plane status
+      ansible.builtin.debug:
+        msg: "plane: {{ 'HEALTHY' if _plane_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Summary"
   hosts: localhost

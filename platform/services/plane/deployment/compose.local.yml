@@ -1,0 +1,27 @@
+# compose.local.yml — local-dev overlay (applied only when LOCAL_MODE=true).
+#
+# proxy    joins the shared local-dev network so the local Caddy reaches it by name
+#          (plane-proxy:80), as it reaches every other local service.
+# monitor  Plane's licence agent (prime-client) registers the instance's domain with
+#          prime.plane.so and exits on one it cannot register ("failed to initialize the
+#          instance, with domain localhost", spike 2026-10-27); with restart: always it would
+#          crash-loop. Local-dev runs the Free plan with no licence (decision D2), so it is off.
+
+networks:
+  default:
+  local-dev:
+    external: true
+
+services:
+  # The API signs people in through Authentik: it reaches https://auth.<zone>:8443 through the
+  # local Caddy (an alias on local-dev). Its step-ca trust is in compose.local-ca.yml.
+  api:
+    networks:
+      - default
+      - local-dev
+  proxy:
+    networks:
+      - default
+      - local-dev
+  monitor:
+    profiles: ["disabled"]

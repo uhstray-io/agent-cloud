@@ -26,6 +26,9 @@ import yaml
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/rollback-inference-route.yml"
 SITES_LIB = str(playbook_yaml.REPO / "platform/services/caddy/deployment/lib")
+sys.path.insert(0, SITES_LIB)
+import caddyfile_sites  # noqa: E402
+
 LIVE = "synthetic-vllm-live-key-1"
 ROTATED = "synthetic-vllm-rotated-key-2"
 GATEWAY = "gw.example.test:4000"
@@ -33,8 +36,9 @@ HEAD = "vllm-head.example.test:8000"
 ADDRESS = "inference.example.test"
 MARK = "# {} ANSIBLE MANAGED — agent-cloud extra sites"
 
-# The site-config shape the playbook's header asks for: the inference block selects its
+# The site-config shape the playbook's header asks for: the inference block selects the /v1/*
 # upstream on inference_route_mode, and the gateway hop carries its own transport block.
+# /health goes straight to vLLM in BOTH modes (the gateway's key policy cannot serve it).
 SITES = """\
 {{ inference_route_address }} {
 	@api path /v1/*
@@ -53,11 +57,7 @@ SITES = """\
 {% endif %}
 	}
 	handle /health {
-{% if inference_route_mode | default('gateway') == 'direct' %}
 		reverse_proxy vllm-head.example.test:8000
-{% else %}
-		reverse_proxy https://gw.example.test:4000
-{% endif %}
 	}
 	handle {
 		respond 404
@@ -83,9 +83,19 @@ with (tmp / "calls").open("a") as f:
 def load():
     routes = []
     for site in caddyfile_sites.parse_sites((tmp / "caddy" / "Caddyfile").read_text()):
-        dials = [re.sub(r"/.*$", "", re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", u)) for u in site["upstreams"]]
-        routes.append({"match": [{"host": site["addresses"]}], "handle": [{"handler": "subroute", "routes": [
-            {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": d}]}]} for d in dials]}]})
+        # `caddy adapt` nests each `handle` block as route (path match) -> subroute -> route ->
+        # reverse_proxy, one dial per upstream; a handler with no path is a catch-all.
+        inner = []
+        for h in site["handlers"]:
+            dials = [re.sub(r"/.*$", "", re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", u)) for u in h["upstreams"]]
+            if not dials:
+                continue
+            route = {"handle": [{"handler": "subroute", "routes": [
+                {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": d} for d in dials]}]}]}]}
+            if h["paths"]:
+                route["match"] = [{"path": h["paths"]}]
+            inner.append(route)
+        routes.append({"match": [{"host": site["addresses"]}], "handle": [{"handler": "subroute", "routes": inner}]})
     (tmp / "live.json").write_text(json.dumps({"apps": {"http": {"servers": {"srv0": {"routes": routes}}}}}))
 
 if a[0] == "load":
@@ -215,6 +225,13 @@ def _state(tmp, **changes):
     path.write_text(json.dumps({**json.loads(path.read_text()), **changes}))
 
 
+def _where(tmp) -> dict:
+    """Where the Caddyfile sends the inference route: the upstreams of /v1/*, of /health, and
+    of anything else, as the sites tool reports them."""
+    site = caddyfile_sites.find_site(caddyfile_sites.parse_sites((tmp / "caddy" / "Caddyfile").read_text()), ADDRESS)
+    return caddyfile_sites.summarize(site["handlers"])
+
+
 def _caddyfile(mode: str) -> str:
     """A Caddyfile whose managed region already serves the route in `mode`, as a real
     manage-caddy-sites run leaves it (the block text is what the inventory renders)."""
@@ -315,6 +332,8 @@ def _run(env, mode=None, check=False, tags=None, caddy=None, gateway=None, group
            *(["--check"] if check else []), *(["--tags", tags] if tags else [])]
     run_env = {**harness_sandbox.env_for(tmp), "STUB_DIR": str(tmp), "STUB_SITES_LIB": SITES_LIB,
                "ANSIBLE_STDOUT_CALLBACK": "default"}
+    if (tmp / "bin").exists():  # the recording python3 shim, ahead of the real one
+        run_env["PATH"] = f"{tmp / 'bin'}{os.pathsep}{run_env['PATH']}"
     r = harness_sandbox.run(cmd, tmp, cwd=playbook_yaml.REPO, env=run_env)
     out = r.stdout + r.stderr
     for value in (LIVE, ROTATED, *seed_harness.NEVER_PRINTED, "synthetic-client-workstation", "synthetic-db"):
@@ -354,10 +373,9 @@ def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(e
     assert rc == 0, out
     assert Bao.store["direct_workstation"] == LIVE and Bao.store["direct_pi"] == LIVE
     assert "direct_retired" not in Bao.store and Bao.store["client_workstation"] == "synthetic-client-workstation"
-    route = _route(tmp)
-    assert HEAD in route and GATEWAY not in route
+    assert GATEWAY not in _route(tmp) and _where(tmp) == {"v1": [HEAD], "health": [HEAD], "other": []}
     assert len(_calls(tmp, "restart caddy")) == 1
-    assert f"{ADDRESS} dials {HEAD} only (running config)." in out
+    assert f"{ADDRESS} sends /v1/* to {HEAD} and /health to {HEAD} (running config)." in out
 
     # Re-run: nothing published twice, nothing restarted.
     before = len(_patches())
@@ -366,13 +384,64 @@ def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(e
     assert "already published" in out and len(_calls(tmp, "restart caddy")) == 1 and _unchanged(out), out
 
 
+def test_direct_publishes_no_copy_for_the_internal_mcp_identity(env):
+    """mcp-self is enrolled on /v1 but is no client's: a direct_mcp-self copy of the vLLM key would be for nobody."""
+    Bao.store["direct_mcp-self"] = LIVE  # one a run before this change could have published
+    rc, out = _run(env, mode="direct", gateway={"agw_clients": ["workstation", "mcp-self"]})
+    assert rc == 0, out
+    assert Bao.store["direct_workstation"] == LIVE
+    assert "direct_mcp-self" not in Bao.store
+
+
+ADMINS = [{"key": "carol", "username": "carol", "name": "Carol", "email": "carol@example.invalid"}]
+
+
+def test_direct_treats_a_derived_personal_identity_as_declared_not_retired(env):
+    # A personal identity derived from the declared admin list is an enrolled client: it gets its
+    # direct-path copy, and a copy it already holds is kept, never withdrawn as a retired name.
+    gateway = {"agw_clients": ["workstation"], "platform_admins": ADMINS, "agw_admin_identities_enabled": True}
+    Bao.store["direct_carol"] = LIVE
+    Bao.store["direct_retired"] = LIVE
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc == 0, out
+    assert Bao.store["direct_workstation"] == LIVE and Bao.store["direct_carol"] == LIVE
+    assert "direct_retired" not in Bao.store and "direct_pi" not in Bao.store
+
+
+def test_rollback_refuses_an_undeclared_admin_list_before_publishing_or_withdrawing(env):
+    Bao.store["direct_retired"] = LIVE
+    gateway = {"agw_clients": ["workstation"], "agw_admin_identities_enabled": True}  # no platform_admins
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc != 0 and "platform_admins is not declared for this host" in out, out
+    assert Bao.store["direct_retired"] == LIVE and "direct_workstation" not in Bao.store and _patches() == []
+
+
+@pytest.mark.parametrize("entry", [{"username": "legacy-shared"}, {"username": "mcp-self"}, {"username": "Bad Name"}])
+def test_rollback_refuses_a_reserved_or_malformed_derived_name_before_any_write(env, entry):
+    Bao.store["direct_retired"] = LIVE
+    admins = [{"key": "bad", "name": "Bad", "email": "bad@example.invalid", **entry}]
+    gateway = {"agw_clients": ["workstation"], "agw_admin_identities_enabled": True, "platform_admins": admins}
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc != 0 and "platform_admins entry bad" in out, out
+    assert Bao.store["direct_retired"] == LIVE and "direct_workstation" not in Bao.store and _patches() == []
+
+
+def test_direct_withdraws_a_personal_copy_once_the_gate_or_the_entry_is_gone(env):
+    # Same store, the derivation off: carol is no longer an identity, so her copy is a retired one.
+    Bao.store["direct_carol"] = LIVE
+    gateway = {"agw_clients": ["workstation"], "platform_admins": ADMINS, "agw_admin_identities_enabled": False}
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc == 0, out
+    assert "direct_carol" not in Bao.store and Bao.store["direct_workstation"] == LIVE
+
+
 def test_restore_routes_back_but_keeps_copies_that_still_hold_the_live_key(env):
     tmp = env[0]
     assert _run(env, mode="direct")[0] == 0
     rc, out = _run(env, mode="restore")
     assert rc != 0 and "still hold the" in out and "LIVE vLLM key" in out, out
-    route = _route(tmp)
-    assert GATEWAY in route and HEAD not in route  # the route is back on the gateway first
+    # the route is back on the gateway first; /health stays on vLLM
+    assert _where(tmp) == {"v1": [GATEWAY], "health": [HEAD], "other": []}
     assert Bao.store["direct_workstation"] == LIVE and Bao.store["direct_pi"] == LIVE
 
 
@@ -403,7 +472,7 @@ def test_restore_after_rotation_and_redeploy_removes_every_copy_then_is_a_no_op(
     rc, out = _run(env, mode="restore")
     assert rc == 0, out
     assert not [k for k in Bao.store if k.startswith("direct_")]
-    assert GATEWAY in _route(tmp) and HEAD not in _route(tmp)
+    assert _where(tmp)["v1"] == [GATEWAY]
 
     before, restarts = len(_patches()), len(_calls(tmp, "restart caddy"))
     rc, out = _run(env, mode="restore")
@@ -434,7 +503,7 @@ def test_a_route_that_does_not_answer_fails_the_rollback(env, probe):
         assert rc != 0 and "no-such-host.invalid does not resolve" in out, out[-3000:]
     assert "The inference route failed its edge check" in out
     # the store was written before Caddy, as in any direct run; no copy is retired by a failed route
-    assert HEAD in _route(tmp)
+    assert _where(tmp)["v1"] == [HEAD]
 
 
 def test_a_running_caddy_that_keeps_the_old_route_fails_the_run(env):
@@ -442,7 +511,7 @@ def test_a_running_caddy_that_keeps_the_old_route_fails_the_run(env):
     _state(tmp, restart_noop=True)  # the file changes; the process does not load it
     rc, out = _run(env, mode="direct")
     assert rc != 0 and "The file and the process disagree" in out, out
-    assert HEAD in _route(tmp)  # the file read-back alone would have passed
+    assert _where(tmp)["v1"] == [HEAD]  # the file read-back alone would have passed
 
 
 def test_a_rotation_between_the_read_and_the_publication_publishes_nothing(env):
@@ -451,7 +520,7 @@ def test_a_rotation_between_the_read_and_the_publication_publishes_nothing(env):
     rc, out = _run(env, mode="direct")
     assert rc != 0 and "guarded OpenBao key changed" in out, out
     assert _patches() == [] and not [k for k in Bao.store if k.startswith("direct_")]
-    assert not _calls(tmp, "restart") and GATEWAY in _route(tmp)
+    assert not _calls(tmp, "restart") and _where(tmp)["v1"] == [GATEWAY]
 
 
 def test_a_write_racing_the_publication_publishes_nothing(env):
@@ -470,7 +539,7 @@ def test_a_caddy_failure_in_restore_retires_no_copy(env):
     _state(tmp, gateway_key=ROTATED, caddy_invalid=True)
     rc, out = _run(env, mode="restore")
     assert rc != 0 and "rolled back" in out, out
-    assert HEAD in _route(tmp) and "direct_workstation" in Bao.store and "direct_pi" in Bao.store
+    assert _where(tmp)["v1"] == [HEAD] and "direct_workstation" in Bao.store and "direct_pi" in Bao.store
 
 
 def test_a_route_declaration_that_ignores_the_mode_is_refused_before_any_write(env):
@@ -480,6 +549,134 @@ def test_a_route_declaration_that_ignores_the_mode_is_refused_before_any_write(e
     rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": hardcoded})
     assert rc != 0 and "must select its upstream on inference_route_mode" in out, out
     assert _patches() == [] and _route(tmp) == before and not _calls(tmp, "restart")
+
+
+HEALTH = "\thandle /health {\n\t\treverse_proxy vllm-head.example.test:8000\n\t}"
+HEALTH_VIA_GATEWAY = "\thandle /health {\n\t\treverse_proxy https://gw.example.test:4000\n\t}"
+
+
+def test_a_declaration_sending_health_through_the_gateway_is_refused_before_any_write(env):
+    # The gateway's key policy answers a keyless /health with 401, so the public probe would fail.
+    tmp = env[0]
+    assert HEALTH in SITES
+    assert _run(env, mode="direct")[0] == 0
+    restarts, patches = len(_calls(tmp, "restart")), len(_patches())
+    rc, out = _run(env, mode="restore", caddy={"caddy_managed_sites": SITES.replace(HEALTH, HEALTH_VIA_GATEWAY)})
+    assert rc != 0 and f"sends /v1/* to {GATEWAY} and /health to {GATEWAY}" in out, out
+    assert f"it must send /v1/* to {GATEWAY} and /health to {HEAD}" in out and "nothing was changed" in out, out
+    assert _where(tmp)["v1"] == [HEAD] and len(_calls(tmp, "restart")) == restarts and len(_patches()) == patches
+
+
+def test_the_same_refusal_applies_in_direct_mode(env):
+    tmp = env[0]
+    before = _route(tmp)
+    rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": SITES.replace(HEALTH, HEALTH_VIA_GATEWAY)})
+    assert rc != 0 and f"sends /v1/* to {HEAD} and /health to {GATEWAY}" in out, out
+    assert _patches() == [] and _route(tmp) == before and not _calls(tmp, "restart")
+
+
+def test_a_caddyfile_sending_health_through_the_gateway_fails_the_read_back(env):
+    # The declaration is right; the file on the host is not (a hand edit, or an older render).
+    tmp = env[0]
+    (tmp / "caddy" / "Caddyfile").write_text(_caddyfile("gateway").replace(HEALTH, HEALTH_VIA_GATEWAY))
+    rc, out = _run(env, mode="restore", tags="verify")
+    assert rc != 0 and f"/v1/* goes to {GATEWAY}, /health to {GATEWAY}" in out, out
+    assert "The file and the process disagree" not in out  # the file check stopped the run first
+
+
+def test_a_stray_third_upstream_in_the_block_fails_the_run(env):
+    metrics = "\thandle /metrics {\n\t\treverse_proxy other.example.test:9100\n\t}\n"
+    stray = SITES.replace("\thandle {\n\t\trespond 404", metrics + "\thandle {\n\t\trespond 404")
+    assert "other.example.test:9100" in stray
+    before = _route(env[0])
+    rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": stray})
+    assert rc != 0 and "other upstreams other.example.test:9100" in out and "nothing was changed" in out, out
+    assert _patches() == [] and _route(env[0]) == before and not _calls(env[0], "restart")
+
+
+def test_a_caddyfile_still_routing_v1_to_the_gateway_fails_the_read_back_on_its_own(env):
+    tmp = env[0]
+    (tmp / "caddy" / "Caddyfile").write_text(_caddyfile("direct"))
+    _load_live(tmp)  # the process already serves the direct route
+    (tmp / "caddy" / "Caddyfile").write_text(_caddyfile("gateway"))  # the file on the host does not
+    rc, out = _run(env, mode="direct", tags="verify")
+    assert rc != 0 and f"/v1/* goes to {GATEWAY}, /health to {HEAD}" in out, out
+    assert "The file and the process disagree" not in out
+
+
+METRICS = "\thandle /metrics {\n\t\treverse_proxy other.example.test:9100\n\t}\n"
+NOT_FOUND = "\thandle {\n\t\trespond 404"
+
+
+def test_a_stray_upstream_in_the_caddyfile_alone_fails_the_read_back(env):
+    tmp = env[0]
+    old = _caddyfile("gateway")
+    (tmp / "caddy" / "Caddyfile").write_text(old.replace(NOT_FOUND, METRICS + NOT_FOUND))
+    rc, out = _run(env, mode="restore", tags="verify")
+    assert rc != 0 and "other upstreams other.example.test:9100" in out, out
+    assert "The file and the process disagree" not in out
+
+
+def test_a_stray_upstream_in_the_running_caddy_alone_fails_the_run(env):
+    tmp = env[0]
+    (tmp / "caddy" / "Caddyfile").write_text(_caddyfile("gateway").replace(NOT_FOUND, METRICS + NOT_FOUND))
+    _load_live(tmp)
+    _state(tmp, restart_noop=True)  # the file is rewritten clean; the process keeps the stray route
+    rc, out = _run(env, mode="restore")
+    assert rc != 0 and "The file and the process disagree" in out, out
+    assert "other upstreams other.example.test:9100" in out and _where(tmp)["other"] == []
+
+
+def test_a_declaration_without_the_inference_block_is_refused_before_any_write(env):
+    rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": "other.example.test {\n\trespond 404\n}\n"})
+    assert rc != 0 and "sends /v1/* to nothing and /health to nothing" in out and "nothing was changed" in out, out
+    assert _patches() == [] and not _calls(env[0], "restart")
+
+
+PY_SHIM = r"""#!REAL
+import json, os, subprocess, sys
+data = sys.stdin.buffer.read()
+with open(os.path.join(os.environ["STUB_DIR"], "py_calls"), "a") as f:
+    f.write(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ), "stdin": data.decode(errors="replace")}) + "\n")
+sys.exit(subprocess.run([sys.executable, *sys.argv[1:]], input=data).returncode)
+"""
+
+
+def test_the_declaration_reaches_the_reader_on_stdin_never_in_argv_or_the_environment(env):
+    tmp = env[0]
+    (tmp / "bin").mkdir()
+    shim = tmp / "bin" / "python3"
+    shim.write_text(PY_SHIM.replace("#!REAL", f"#!{sys.executable}", 1))
+    shim.chmod(0o755)
+    marker = "marker-declaration-text-7f3a"
+    rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": SITES + f"# {marker}\n"})
+    assert rc == 0, out
+    calls = [json.loads(line) for line in (tmp / "py_calls").read_text().splitlines()]
+    declared = [c for c in calls if "declared" in c["argv"]]
+    assert len(declared) == 1 and marker in declared[0]["stdin"]
+    for call in calls:
+        assert marker not in json.dumps(call["argv"]) and marker not in json.dumps(call["env"]), call["argv"]
+    assert marker not in out
+
+
+def test_a_block_with_one_upstream_for_every_path_passes_in_direct_mode(env):
+    single = "{{ inference_route_address }} {\n\treverse_proxy vllm-head.example.test:8000\n}\n"
+    rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": single})
+    assert rc == 0, out
+    assert _where(env[0]) == {"v1": [HEAD], "health": [HEAD], "other": []}
+
+
+def test_a_running_caddy_still_sending_health_through_the_gateway_fails_the_run(env):
+    # The file is right (rendered from SITES) while the process keeps the old /health route.
+    tmp = env[0]
+    old = _caddyfile("gateway").replace(HEALTH, HEALTH_VIA_GATEWAY)
+    (tmp / "caddy" / "Caddyfile").write_text(old)
+    _load_live(tmp)
+    _state(tmp, restart_noop=True)
+    rc, out = _run(env, mode="restore")
+    assert rc != 0 and "The file and the process disagree" in out, out
+    assert f"and /health to {GATEWAY};" in out, out
+    assert _where(tmp) == {"v1": [GATEWAY], "health": [HEAD], "other": []}  # the file passed its own check
 
 
 def test_a_dry_run_of_direct_writes_nothing(env):
@@ -495,7 +692,7 @@ def test_a_dry_run_of_direct_writes_nothing(env):
 def test_verify_reads_the_state_and_changes_nothing(env):
     tmp = env[0]
     rc, out = _run(env, mode="direct", tags="verify")
-    assert rc != 0 and f"expects every upstream to be {HEAD}" in out, out  # not rolled back yet
+    assert rc != 0 and f"expects /v1/* to go to {HEAD} only" in out, out  # not rolled back yet
     assert _patches() == [] and not _calls(tmp, "restart")
     assert _run(env, mode="direct")[0] == 0
     before, restarts = len(_patches()), len(_calls(tmp, "restart"))
@@ -889,7 +1086,8 @@ def test_the_gateway_upstream_defaults_to_the_gateway_bind_and_port(env):
     _load_live(tmp)
     rc, out = _run(env, mode="restore", caddy={"caddy_managed_sites": sites, "inference_route_gateway_upstream": None},
                    gateway={"agw_bind": "gw-bind.example.test", "agw_port": "4100"})
-    assert rc == 0 and f"{ADDRESS} dials gw-bind.example.test:4100 only (running config)." in out, out
+    assert rc == 0, out
+    assert f"{ADDRESS} sends /v1/* to gw-bind.example.test:4100 and /health to {HEAD} (running config)." in out, out
 
 
 @pytest.mark.parametrize("mode", ["direct", "restore"])
@@ -906,7 +1104,7 @@ def test_an_undialable_gateway_bind_without_a_declared_upstream_is_refused_befor
 @pytest.mark.parametrize("bind", [None, "0.0.0.0"])
 def test_a_declared_gateway_upstream_is_used_whatever_the_bind(env, bind):
     rc, out = _run(env, mode="restore", gateway={"agw_bind": bind})
-    assert rc == 0 and f"{ADDRESS} dials {GATEWAY} only (running config)." in out, out
+    assert rc == 0 and f"{ADDRESS} sends /v1/* to {GATEWAY} and /health to {HEAD} (running config)." in out, out
 
 
 @pytest.mark.parametrize("bind", [None, "0.0.0.0", "::", ""])

@@ -25,7 +25,10 @@ pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason
 
 
 def decide(tmp_path, *, agent=None, pending=(), running=True, want_agent=True):
-    play = playbook_yaml.plays(PLAYBOOK)[0]
+    play = next((candidate for candidate in playbook_yaml.plays(PLAYBOOK)
+                 if set(TASKS) <= {task.get("name") for task in
+                                  playbook_yaml.tasks(candidate.get("tasks", []))}), None)
+    assert play is not None, f"resize decision tasks not found in {PLAYBOOK.name}"
     tasks = {t["name"]: t for t in playbook_yaml.tasks(play["tasks"]) if t.get("name") in TASKS}
     assert set(tasks) == set(TASKS)
     cfg = {"cores": 2, "memory": 4096, "sockets": 1, **({"agent": agent} if agent is not None else {})}

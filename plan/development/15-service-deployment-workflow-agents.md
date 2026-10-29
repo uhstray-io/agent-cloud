@@ -1,7 +1,7 @@
 # 15 — Service Deployment Workflow & Agents
 
 **Date:** 2026-09-22
-**Status:** PROPOSED
+**Status:** ACTIVE — implemented under OpenSpec change `service-deployment-workflow`. 2026-10-24: 23 steps in the registry and the drawing; the skynet-side work (agents, graph, pilot run) is open.
 **Author:** Joseph A. Wisneski IV
 **Context:** `docs/agent-cloud-service-deploy.svg` (source: `docs/agent-cloud-service-deploy.excalidraw`)
 draws the target shape of every service deployment on the platform: a fixed sequence of
@@ -141,7 +141,9 @@ finding, which is exactly what the sweep (Phase 6) is for.
 
 ## Workflow
 
-Twenty-two steps: the eighteen drawn plus four added under D6 (marked **added**). Owner is
+Twenty-three steps: the eighteen first drawn plus five added (marked **added**): four under D6, and
+**Edge DNS**, split from Edge route on 2026-10-04 with its own role, `network-agent`. All twenty-three
+are in the drawing since 2026-10-24 (workflow task 10.2). Owner is
 the OPA identity that may launch the step. "Executor" names the Semaphore-run playbook;
 status is verified against the tree on 2026-09-22.
 
@@ -161,14 +163,15 @@ status is verified against the tree on 2026-09-22.
 | 12 | Instrument OS/Infra Observability | o11y-agent | `instrument-host-o11y.yml` (node-exporter + Alloy on the host → o11y); **requires the OTLP receiver in Alloy** | **new; blocked on o11y phase 2** | host series present in Prometheus within one scrape interval |
 | 13 | Service Deployment | service-agent | `deploy-<service>.yml` | exists | deploy verify phase green; second run reports no change |
 | 14 | Service Validate | service-agent | `verify-service-health.yml` (built; `validate-all.yml` stays the fleet overview); `preflight-target-group.yml` before | exists | health URI 200 through the declared path; probed from the host itself when it sets `health_probe_on_host` |
-| 15 | **Edge route** (added) | service-agent | `manage-caddy-sites.yml`; prod DNS via `apply-cloudflare-tofu.yml` | exists | hostname resolves; route answers through Caddy; tofu plan is zero-diff |
-| **16** | **FW Assess** (reasoning) | security-agent | `snapshot-firewall.yml` (listening sockets, ufw state, published container ports, inventory firewall vars, Caddy upstream) → proposal `firewall-policy` | **new** | proposal valid; every allow rule maps to a listening socket with a declared consumer |
-| 17 | FW Harden | security-agent | `apply-firewall.yml` (from inventory); a rule change is a finding → site-config PR | exists | ufw active, default deny inbound, allows equal declared; SSH still answers |
-| 18 | Instrument Service Observability | service-agent + o11y-agent | OTEL env vars in the service env template (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, per `06-observability-instrumentation.md`) + a `scrape.d` fragment; verify series present | **new per service** | at least one series labelled with the service present in Prometheus |
-| 19 | Systemd enablement | infra-agent | `verify-service-persistence.yml` (built, the step's executor); setup by `ensure-service-persistence.yml` | exists | rootless: linger + podman's user boot unit; rootful: the system `podman-restart.service`; every container `restart: always`, a declared one-shot on `"no"` that exited 0, or named by the service's `agent-cloud-boot-<service>.service` (podman's boot unit skips `unless-stopped`); optional reboot test |
-| **20** | **Role & Access Assessment** (reasoning) | service-agent + security-agent | `snapshot-access.yml` (Authentik `app-catalog.yml` entry, blueprint present, OpenBao policy for the AppRole, OPA catalog entry, auth mode from practices) → proposal `access-policy` | **new** | proposal valid; auth mode matches practices; groups exist |
-| 21 | OIDC Configuration → Authentik Update | security-agent | `deploy-authentik.yml` applies blueprints; a new or changed blueprint is a finding → agent-cloud PR | exists | blueprint record `successful`; provider redirect URI verified (existing verify script) |
-| 22 | **Credential backup** (added) | security-agent | `backup-credentials-to-site-config.yml` | exists | named fields present in site-config on a pushed branch |
+| 15 | **Edge route** (added) | service-agent | `manage-caddy-sites.yml` | exists | hostname resolves; route answers through Caddy |
+| 16 | **Edge DNS** (added 2026-10-04) | network-agent | `apply-cloudflare-tofu.yml` | exists | the Cloudflare plan is zero-diff |
+| **17** | **FW Assess** (reasoning) | security-agent | `snapshot-firewall.yml` (listening sockets, ufw state, published container ports, inventory firewall vars, Caddy upstream) → proposal `firewall-policy` | **new** | proposal valid; every allow rule maps to a listening socket with a declared consumer |
+| 18 | FW Harden | security-agent | `apply-firewall.yml` (from inventory); a rule change is a finding → site-config PR | exists | ufw active, default deny inbound, allows equal declared; SSH still answers |
+| 19 | Instrument Service Observability | service-agent + o11y-agent | OTEL env vars in the service env template (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, per `06-observability-instrumentation.md`) + a `scrape.d` fragment; verify series present | **new per service** | at least one series labelled with the service present in Prometheus |
+| 20 | Systemd enablement | infra-agent | `verify-service-persistence.yml` (built, the step's executor); setup by `ensure-service-persistence.yml` | exists | rootless: linger + podman's user boot unit; rootful: the system `podman-restart.service`; every container `restart: always`, a declared one-shot on `"no"` that exited 0, or named by the service's `agent-cloud-boot-<service>.service` (podman's boot unit skips `unless-stopped`); optional reboot test |
+| **21** | **Role & Access Assessment** (reasoning) | service-agent + security-agent | `snapshot-access.yml` (Authentik `app-catalog.yml` entry, blueprint present, OpenBao policy for the AppRole, OPA catalog entry, auth mode from practices) → proposal `access-policy` | **new** | proposal valid; auth mode matches practices; groups exist |
+| 22 | OIDC Configuration → Authentik Update | security-agent | `deploy-authentik.yml` applies blueprints; a new or changed blueprint is a finding → agent-cloud PR | exists | blueprint record `successful`; provider redirect URI verified (existing verify script) |
+| 23 | **Credential backup** (added) | security-agent | `backup-credentials-to-site-config.yml` | exists | named fields present in site-config on a pushed branch |
 
 **Rollback lane (cross-cutting).** Each registry entry names its undo template where one
 exists: `destroy-vm.yml` (steps 3-5), `snapshot-vm.yml` before 13, the service's
@@ -221,8 +224,8 @@ from the grammar schema). Three bodies:
 | Schema | Produced at | Body |
 |---|---|---|
 | `service-assessment.json` | step 9 | `vm_spec {cores, memory_mb, disk_gb}`, `deploy_template`, `runtime` (podman/docker), `expected_ports[]`, `depends_on[]`, `readiness_checks[]`, `risks[]`, `verdict` (`converge` or `change-required` with `diff`) |
-| `firewall-policy.json` | step 16 | `allow[] {port, proto, source, consumer, justification}`, `deny_egress[]`, `verdict` |
-| `access-policy.json` | step 20 | `auth_mode` (oidc, forward_auth, api_key, none), `authentik_app {slug, groups[]}`, `openbao_policy_paths[]`, `opa_actions {}`, `findings[]`, `verdict` |
+| `firewall-policy.json` | step 17 | `allow[] {port, proto, source, consumer, justification}`, `deny_egress[]`, `verdict` |
+| `access-policy.json` | step 21 | `auth_mode` (oidc, forward_auth, api_key, none), `authentik_app {slug, groups[]}`, `openbao_policy_paths[]`, `opa_actions {}`, `findings[]`, `verdict` |
 
 ### Snapshot templates
 
@@ -241,13 +244,15 @@ the caller's list. The destructive-template `human_approved` rule is unchanged. 
 and `nemoclaw` entries are frozen with a comment that they are no longer agent runtimes
 (D7).
 
+Step numbers follow the 23-step table above (renumbered 2026-10-24 when Edge DNS took number 16).
+
 | Identity | `allowed_actions` | `allowed_templates` (by step) |
 |---|---|---|
-| `infra-agent` | semaphore: run_task, check_task; netbox: read, create, update (step 3 VM record) | 1-7, 10, 19 |
-| `security-agent` | semaphore: run_task, check_task; netbox: read | 8, 16-17, 20-22 |
-| `o11y-agent` | semaphore: run_task, check_task; netbox: read | 12, 18 |
-| `service-agent` | semaphore: run_task, check_task; netbox: read | 9, 11, 13-15, 18, 20 |
-| `network-agent` | semaphore: run_task, check_task; netbox: read | edge-dns (added 2026-10-04 by operator decision: the step split from edge-route, run by Apply Cloudflare Tofu; the role is not bound to `netclaw`, which stays frozen per D7) |
+| `infra-agent` | semaphore: run_task, check_task; netbox: read, create, update (step 3 VM record) | 1-7, 10, 20 |
+| `security-agent` | semaphore: run_task, check_task; netbox: read | 8, 17-18, 21-23 |
+| `o11y-agent` | semaphore: run_task, check_task; netbox: read | 12, 19 |
+| `service-agent` | semaphore: run_task, check_task; netbox: read | 9, 11, 13-15, 19, 21 |
+| `network-agent` | semaphore: run_task, check_task; netbox: read | 16, edge-dns (added 2026-10-04 by operator decision: the step split from edge-route, run by Apply Cloudflare Tofu; the role is not bound to `netclaw`, which stays frozen per D7) |
 
 ### Registry (`platform/workflows/service-onboarding/registry.yml`)
 
@@ -355,6 +360,10 @@ One entry per step:
 5. Update `docs/agent-cloud-service-deploy.excalidraw` to the 22 steps and re-export the SVG.
 
 **Acceptance criteria:** `openspec validate` green; rego tests green; every existing step `reviewed:`; diagram and registry list the same 22 ids.
+
+2026-10-24: the count is 23 (Edge DNS, 2026-10-04). The registry and `docs/agent-cloud-service-deploy.excalidraw`
+both carry all 23 steps, checked by `platform/tests/test_workflow_registry.py`; the SVG export is not yet
+regenerated from the updated drawing.
 
 ### Phase 2: Tracking MVP
 

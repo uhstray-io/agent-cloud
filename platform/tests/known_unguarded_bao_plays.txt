@@ -40,12 +40,9 @@ harden-ssh.yml
 mint-honcho-team-jwt.yml
 promote-semaphore-admins.yml
 provision-orb-agent-approle.yml
-provision-vm.yml
 proxmox-validate.yml
-resize-vm.yml
 seed-discovery-credentials.yml
 seed-n8n-secrets.yml
-snapshot-vm.yml
 sync-secrets-to-openbao.yml
 update-proxmox-token.yml
 validate-secrets.yml

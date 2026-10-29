@@ -34,10 +34,10 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  # Using default ports:"
-    echo "  $0 -k your_cf_api_key -n 192.168.1.100:nocodb.example.com -w 192.168.1.101:n8n.example.com"
+    echo "  $0 -k your_cf_api_key -n 198.51.100.10:nocodb.example.com -w 203.0.113.11:n8n.example.com"
     echo ""
     echo "  # Using custom ports:"
-    echo "  $0 -k your_cf_api_key -n 192.168.1.100:nocodb.example.com:8081 -w 192.168.1.101:n8n.example.com:5679"
+    echo "  $0 -k your_cf_api_key -n 198.51.100.10:nocodb.example.com:8081 -w 203.0.113.11:n8n.example.com:5679"
     exit 1
 }
 

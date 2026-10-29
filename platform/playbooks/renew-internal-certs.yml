@@ -125,6 +125,41 @@
           {%- set _ = errs.append((n or '(unnamed)') ~ ': a leaf must be named, and declared once') -%}
         {%- elif h not in groups['all'] -%}
           {%- set _ = errs.append(n ~ ': its host ' ~ h ~ ' is not in the inventory') -%}
+        {%- elif n in ['o11y-otlp-server', 'o11y-journal'] and h in groups.get('o11y_svc', [])
+                and not (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool) -%}
+          {%- set expected_profile = 'server' if n == 'o11y-otlp-server' else 'client' -%}
+          {%- set expected_dir = hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/' ~ n -%}
+          {%- set partner_name = 'o11y-journal' if n == 'o11y-otlp-server' else 'o11y-otlp-server' -%}
+          {%- set partner_profile = 'client' if n == 'o11y-otlp-server' else 'server' -%}
+          {%- set partner_dir = hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/' ~ partner_name -%}
+          {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
+                 and l.profile | default('') == expected_profile and r == 'none' and l.dir == expected_dir
+                 and (_leaves | selectattr('name', 'equalto', partner_name)
+                      | selectattr('host', 'equalto', h) | selectattr('profile', 'equalto', partner_profile)
+                      | selectattr('dir', 'equalto', partner_dir) | selectattr('reload', 'equalto', 'none')
+                      | list | length) == 1 -%}
+            {#- Fixed TLS leaves are staged while the receiver is off; no live proof or renewal applies. -#}
+          {%- else -%}
+            {%- set _ = errs.append(n ~ ': an inactive o11y TLS leaf must be the fixed same-host leaf paired with its declared counterpart') -%}
+          {%- endif -%}
+        {%- elif n == 'o11y-otlp-server' and (h not in groups.get('o11y_svc', []) or l.profile | default('') != 'server') -%}
+          {%- set _ = errs.append(n ~ ': the fixed o11y receiver leaf must be a server leaf on o11y_svc') -%}
+        {%- elif n == 'o11y-journal' and (h not in groups.get('o11y_svc', []) or l.profile | default('') != 'client') -%}
+          {%- set _ = errs.append(n ~ ': the fixed o11y journal leaf must be a client leaf on o11y_svc') -%}
+        {%- elif l.profile | default('') == 'server' and h in groups.get('o11y_svc', []) -%}
+          {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
+                 and (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool)
+                 and n == 'o11y-otlp-server' and r == 'none'
+                 and hostvars[h].o11y_otlp_tls_server_name | default('') in (l.sans | default([]))
+                 and l.dir == hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/o11y-otlp-server'
+                 and (_leaves | selectattr('name', 'equalto', 'o11y-journal')
+                      | selectattr('host', 'equalto', h) | selectattr('profile', 'equalto', 'client')
+                      | selectattr('dir', 'equalto', (hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/o11y-journal'))
+                      | list | length) == 1 -%}
+            {%- set cls.v = 'o11y-server' -%}
+          {%- else -%}
+            {%- set _ = errs.append(n ~ ': the o11y OTLP server leaf is admitted only as the fixed enabled receiver leaf with its declared journal client proof') -%}
+          {%- endif -%}
         {%- elif l.profile | default('') == 'server' -%}
           {%- if h == _gw and n == (hostvars[h].agw_server_leaf | default('agw-server')) and r in ['restart', 'none'] -%}
             {%- if (_leaves | selectattr('name', 'equalto', hostvars[h].agw_verifier_leaf | default('agw-verifier'))
@@ -144,6 +179,18 @@
             {%- set cls.v = 'caddy-client' -%}
           {%- else -%}
             {%- set _ = errs.append(n ~ ': a caddy-reloaded leaf must be on the one caddy_svc host, which must declare inference_route_address (or renew_caddy_proof_host), with renew_caddy_proof_status an HTTP status and renew_caddy_proof_path an absolute path') -%}
+          {%- endif -%}
+        {%- elif l.profile | default('') == 'client' and n == 'o11y-journal' and h in groups.get('o11y_svc', []) -%}
+          {%- if groups.get('o11y_svc', []) | length == 1 and h == groups['o11y_svc'][0]
+                 and (hostvars[h].o11y_otlp_tls_enabled | default(false) | bool)
+                 and n == 'o11y-journal' and r == 'none'
+                 and (l.sans | default([]) | length) > 0
+                 and l.dir == hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud') ~ '/platform/services/o11y/deployment/certs/o11y-journal'
+                 and (_leaves | selectattr('name', 'equalto', 'o11y-otlp-server')
+                      | selectattr('host', 'equalto', h) | selectattr('profile', 'equalto', 'server') | list | length) == 1 -%}
+            {%- set cls.v = 'o11y-journal-client' -%}
+          {%- else -%}
+            {%- set _ = errs.append(n ~ ': the o11y journal client leaf is admitted only as the fixed enabled same-host client paired with o11y-otlp-server') -%}
           {%- endif -%}
         {%- elif l.profile | default('') == 'client' and r == 'none' -%}
           {%- if _gw | length > 0 and (hostvars[_gw].agw_listener_tls | default(false) | bool)
@@ -250,7 +297,11 @@
     # listener TLS on (otherwise nothing presents or verifies them).
     _provable: >-
       {{ (_mine | selectattr('class', 'equalto', 'caddy-client') | list)
-         + ((_mine | rejectattr('class', 'equalto', 'caddy-client') | list) if (_gw_tls | bool) else []) }}
+         + (_mine | selectattr('class', 'equalto', 'o11y-server') | list)
+         + (_mine | selectattr('class', 'equalto', 'o11y-journal-client') | list)
+         + ((_mine | rejectattr('class', 'equalto', 'caddy-client')
+             | rejectattr('class', 'equalto', 'o11y-server')
+             | rejectattr('class', 'equalto', 'o11y-journal-client') | list) if (_gw_tls | bool) else []) }}
     _reloads: "{{ _provable | map(attribute='reload') | reject('equalto', 'none') | unique | list }}"
     # `--tags verify`: prove the leaves in place, issue nothing.
     _verify_only: "{{ 'verify' in ansible_run_tags and 'all' not in ansible_run_tags }}"
@@ -304,6 +355,143 @@
       except (OSError, ssl.SSLError, ValueError) as e:
           print("ERROR " + type(e).__name__ + ": " + str(e))
           sys.exit(1)
+    # This o11y-only proof requires a verified TLS 1.3 / ALPN h2 connection and a complete
+    # server SETTINGS frame with the actual journal client. Negative probes count only explicit
+    # certificate-auth alerts after the server identity and ALPN are verified; all other results
+    # remain unverified.
+    _renew_o11y_tls_prover: |
+      import os, socket, ssl, subprocess, sys, tempfile, time
+      host, port, name, ca, client_cert, client_key = sys.argv[1:7]
+      preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+      settings = b"\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+      auth_alerts = {
+          "TLSV13_ALERT_CERTIFICATE_REQUIRED", "TLSV1_ALERT_CERTIFICATE_REQUIRED",
+          "TLSV1_ALERT_UNKNOWN_CA", "TLSV13_ALERT_UNKNOWN_CA",
+          "TLSV1_ALERT_BAD_CERTIFICATE", "TLSV13_ALERT_BAD_CERTIFICATE",
+          "TLSV1_ALERT_CERTIFICATE_UNKNOWN", "TLSV13_ALERT_CERTIFICATE_UNKNOWN",
+          "SSLV3_ALERT_BAD_CERTIFICATE", "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+      }
+      def read_exact(sock, size, deadline):
+          chunks = []
+          while size:
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  raise TimeoutError("HTTP/2 proof deadline exceeded")
+              sock.settimeout(remaining)
+              chunk = sock.recv(size)
+              if not chunk:
+                  raise RuntimeError("short HTTP/2 frame")
+              chunks.append(chunk)
+              size -= len(chunk)
+          return b"".join(chunks)
+      def probe(cert=None, key=None, expect_rejection=False):
+          ctx = ssl.create_default_context(cafile=ca)
+          ctx.minimum_version = ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+          ctx.set_alpn_protocols(["h2"])
+          if cert:
+              ctx.load_cert_chain(cert, key)
+          deadline = time.monotonic() + 8
+          phase = "CONNECT"
+          try:
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  return ("unverified", None, "DEADLINE")
+              with socket.create_connection((host, int(port)), timeout=remaining) as raw:
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      return ("unverified", None, "DEADLINE")
+                  raw.settimeout(remaining)
+                  phase = "TLS_HANDSHAKE"
+                  with ctx.wrap_socket(raw, server_hostname=name) as tls:
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          return ("unverified", None, "DEADLINE")
+                      tls.settimeout(remaining)
+                      phase = "ALPN"
+                      if tls.selected_alpn_protocol() != "h2":
+                          return ("unverified", None, "ALPN")
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          return ("unverified", None, "DEADLINE")
+                      tls.settimeout(remaining)
+                      if expect_rejection:
+                          phase = "AUTH_ALERT_READ"
+                          if tls.recv(1):
+                              return ("unverified", None, "AUTH_DATA")
+                          return ("unverified", None, "AUTH_EOF")
+                      phase = "SETTINGS_WRITE"
+                      tls.sendall(preface + settings)
+                      phase = "SETTINGS_READ"
+                      header = read_exact(tls, 9, deadline)
+                      length = int.from_bytes(header[:3], "big")
+                      frame_type, flags = header[3], header[4]
+                      stream_id = int.from_bytes(header[5:9], "big") & 0x7fffffff
+                      phase = "SETTINGS_INVALID"
+                      if frame_type != 4 or flags & 1 or stream_id != 0 or length > 16384 or length % 6:
+                          return ("unverified", None, "SETTINGS_INVALID")
+                      phase = "SETTINGS_READ"
+                      payload = read_exact(tls, length, deadline)
+                      phase = "SETTINGS_INVALID"
+                      for offset in range(0, length, 6):
+                          setting_id = int.from_bytes(payload[offset:offset + 2], "big")
+                          value = int.from_bytes(payload[offset + 2:offset + 6], "big")
+                          if setting_id == 2 and value != 0:
+                              return ("unverified", None, "SETTINGS_INVALID")
+                          if setting_id == 4 and value > 0x7fffffff:
+                              return ("unverified", None, "SETTINGS_INVALID")
+                          if setting_id == 5 and not 16384 <= value <= 16777215:
+                              return ("unverified", None, "SETTINGS_INVALID")
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          return ("unverified", None, "DEADLINE")
+                      tls.settimeout(remaining)
+                      phase = "ACK"
+                      tls.sendall(b"\x00\x00\x00\x04\x01\x00\x00\x00\x00")
+                      phase = "SERIAL"
+                      serial = tls.getpeercert().get("serialNumber")
+                      return ("accepted", serial, None) if serial else ("unverified", None, "SERIAL")
+          except ssl.SSLError as exc:
+              if exc.reason in auth_alerts and (not expect_rejection or phase == "AUTH_ALERT_READ"):
+                  return ("rejected", None, phase)
+              return ("unverified", None, phase)
+          except TimeoutError:
+              return ("unverified", None, "DEADLINE")
+          except (OSError, RuntimeError, ValueError):
+              return ("unverified", None, phase)
+      valid, serial, reason = probe(client_cert, client_key)
+      if valid != "accepted" or not serial:
+          print("UNVERIFIED_VALID_CLIENT_HTTP2")
+          print("O11Y_MTLS_DIAG:" + (reason or "SERIAL"), file=sys.stderr)
+          sys.exit(1)
+      no_client, _, no_client_reason = probe(expect_rejection=True)
+      if no_client != "rejected":
+          print("UNVERIFIED_NO_CLIENT_AUTH")
+          print("O11Y_MTLS_DIAG:NO_CLIENT_" + (no_client_reason or no_client).upper(), file=sys.stderr)
+          sys.exit(1)
+      with tempfile.TemporaryDirectory(prefix="o11y-otlp-refusal-") as d:
+          os.chmod(d, 0o700)
+          ca_key, ca_cert = d + "/ca.key", d + "/ca.crt"
+          foreign_key, csr = d + "/client.key", d + "/client.csr"
+          foreign_cert, ext = d + "/client.crt", d + "/ext.cnf"
+          with open(ext, "w") as f:
+              f.write("extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\n")
+          commands = [
+              ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=synthetic-foreign-ca", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", ca_key, "-out", ca_cert],
+              ["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=synthetic-foreign-client", "-keyout", foreign_key, "-out", csr],
+              ["openssl", "x509", "-req", "-in", csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-days", "1", "-extfile", ext, "-out", foreign_cert],
+          ]
+          for command in commands:
+              result = subprocess.run(command, capture_output=True, text=True)
+              if result.returncode:
+                  print("UNVERIFIED_FOREIGN_CERT_FIXTURE")
+                  sys.exit(1)
+          os.chmod(foreign_key, 0o600)
+          foreign, _, foreign_reason = probe(foreign_cert, foreign_key, expect_rejection=True)
+          if foreign != "rejected":
+              print("UNVERIFIED_FOREIGN_CA_AUTH")
+              print("O11Y_MTLS_DIAG:FOREIGN_CA_" + (foreign_reason or foreign).upper(), file=sys.stderr)
+              sys.exit(1)
+      print("O11Y_MTLS_PROVEN:" + serial)
     # One request through a Caddy route: TLS to Caddy's own port on this host under the route's
     # name (verified against the system trust plus the internal bundle, since local-dev's Caddy
     # serves an internal certificate), a placeholder Bearer value so Caddy's edge check passes
@@ -484,6 +672,32 @@
           when: (_renew_issued | default(false) | bool) and not ansible_check_mode and 'caddy reload --force' in _reloads
 
         # ── Proof ────────────────────────────────────────────────────────────
+        - name: "Prove receiver HTTP/2, the issued server leaf, and client-auth enforcement"
+          tags: [verify]
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "{{ _renew_o11y_tls_prover }}"
+              - "{{ '127.0.0.1' if (o11y_otlp_bind | default('')) in ['0.0.0.0', '::', ''] else o11y_otlp_bind }}"
+              - "{{ o11y_otlp_port | default('4317') }}"
+              - "{{ o11y_otlp_tls_server_name }}"
+              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir | dirname }}/step-ca-bundle.crt"
+              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-journal-client') | first).dir }}/current/cert.pem"
+              - "{{ (_provable | selectattr('class', 'equalto', 'o11y-journal-client') | first).dir }}/current/key.pem"
+          register: _renew_o11y_served
+          changed_when: false
+          retries: "{{ _retries }}"
+          delay: "{{ _delay }}"
+          until: >-
+            _renew_o11y_served.rc == 0
+            and (_renew_o11y_served.stdout | trim).startswith('O11Y_MTLS_PROVEN:')
+            and ((_renew_o11y_served.stdout | trim).split(':')[-1] | int(-1, 16))
+                == (_renew_expect[(_provable | selectattr('class', 'equalto', 'o11y-server') | first).dir].serial | default('') | int(-2, 16))
+          when:
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'o11y-server') | list | length > 0
+
         - name: "Prove the gateway serves the new server leaf"
           tags: [verify]
           ansible.builtin.command:
@@ -651,7 +865,10 @@
                 {%- elif not (_renew_prove | bool) -%}{%- set proof = 'check mode' if (_renew_due | bool) else 'left alone' -%}
                 {%- elif l.class == 'caddy-client' -%}{%- set proof = how ~ 'caddy serial in current, ' ~ (renew_caddy_proof_host | default(inference_route_address, true)) ~ ' answered ' ~ (renew_caddy_proof_status | default(401)) -%}
                 {%- elif l.class == 'gateway-server' -%}{%- set proof = how ~ 'served on every listener' -%}
-                {%- else -%}{%- set proof = how ~ 'probe path answered 401, refused without a client certificate' -%}{%- endif -%}
+                {%- elif l.class == 'o11y-server' -%}{%- set proof = how ~ 'receiver TLS 1.3/h2 complete SETTINGS; server serial matched; journal client accepted; missing and foreign-CA clients refused' -%}
+                {%- elif l.class == 'o11y-journal-client' -%}{%- set proof = how ~ 'journal client accepted by receiver TLS 1.3/h2 complete SETTINGS; server serial matched; missing and foreign-CA clients refused' -%}
+                {%- elif l.class == 'probe-client' -%}{%- set proof = how ~ 'probe path answered 401, refused without a client certificate' -%}
+                {%- else -%}{%- set proof = '' -%}{%- endif -%}
                 {%- set _ = out.append({'leaf': l.name, 'host': inventory_hostname, 'profile': l.profile,
                                         'serial': c.serial | default(''), 'not_after': c.not_after | default(0),
                                         'remaining_seconds': c.remaining | default(0), 'renewed': renewed,

@@ -315,8 +315,38 @@
       `context/architecture.md` ("Conformance against direct vLLM"): first token +0.023/+0.026/+0.029
       s, gap p95 and max within ±0.002 s. Task 2709's saved output is truncated before the stream
       case, so its own stream deltas are not in the table.
-- [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
+- [x] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
+      2026-10-12 (task output read from Semaphore by the lead): Run agentgateway Conformance
+      (Dev) task 4910 with `agw_conformance_long_stream=true` (PR #566): PASS 15/15.
+      `stream-long`: direct 174.6 s, gateway 171.6 s; first byte 0.149 s direct, 0.185 s
+      gateway; longest gap 0.111 s direct, 0.116 s gateway; both 200 and `[DONE]`. That
+      proves the unbuffered half (the gateway adds no buffering past 130 s). Keep-alive
+      pass-through is UNPROVEN: vLLM sent 0 keep-alive comments on either side (steady
+      generation; vLLM emits `: keep-alive` only after 15 s idle). Stays open until a stream
+      with an idle stretch over 15 s (queue wait or long prefill) shows the comments pass
+      through.
+      2026-10-13: PR #578 merged. It adds the opt-in `agw_conformance_long_stream_saturate`
+      (0, 8, 12 or 16), which queues the measured stream behind that many filler streams so
+      vLLM emits `: keep-alive` while the measured stream waits. The production run with
+      `agw_conformance_long_stream=true` and saturate=8 is pending: it occupies all 8 DGX
+      slots, so it runs outside busy hours. Not ticked.
+      2026-10-13 (task output read from production Semaphore by the lead): keep-alive
+      pass-through PROVEN. After PR #578 and the survey publish (Publish Semaphore Template
+      Surveys (Dev) 5292 put `agw_conformance_long_stream_saturate` on the live template),
+      Run agentgateway Conformance (Dev) dry run 5309, then real run 5311 at 95554ab4, with
+      `agw_conformance_long_stream=true` and saturate 8, outside busy hours and with
+      dgx-spark's session confirming nothing in flight: PASS 15/15. `stream-long`: 8 fillers
+      accepted on each side. Direct: 2 keep-alives, longest gap 15 s, first byte 15.043 s,
+      246.9 s in all. Gateway: 2 keep-alives, longest gap 15 s, first byte 15.072 s, 279.4 s
+      in all. `keepalives_seen_from_vllm` true, and the "keep-alive pass-through is unproven"
+      warning task was skipped. vLLM's 15 s keep-alive interval (dgx-spark
+      `sse-keep-alive-interval` 15, on the chat and completions routes) reaches the client
+      through the gateway: the same number of comment lines, the same longest gap and first
+      byte, and no buffering. Scope: `conformance.sh` counts lines that start with `:` and
+      compares counts and timings. It does not compare the comment bytes, so "unchanged"
+      holds for count and cadence, which is what a keep-alive is for (clients ignore SSE
+      comments). Ticked on that scope.
 - [x] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
       per-key budget, and whether a model `overrides: {stream_options: {include_usage: true}}`
       entry makes vLLM report usage on streams without changing the client-visible contract
@@ -331,11 +361,16 @@
       task 2882 PASS 14/14, with `stream_usage.gateway` true on `stream-xhigh` and on the new
       `stream-options-without-usage` case. A production budget charge on a dropped stream was not
       measured; the 429 after a dropped stream is the local measurement.
-- [ ] 2.4 Validation gate: 2.2 proves scenario "Conformance against direct vLLM"; 2.3
+- [x] 2.4 Validation gate: 2.2 proves scenario "Conformance against direct vLLM"; 2.3
       with a stream past 130 s proves scenario "Stream is not buffered"
+      2026-10-12: "Stream is not buffered" is proven by task 4910 (see 2.3); 2.4 waits on
+      2.3's keep-alive half. Not ticked.
+      2026-10-13: 2.2 proved "Conformance against direct vLLM" (task 2709); "Stream is not
+      buffered" is proven by 4910 and the keep-alive half by 5311 (2.3; keep-alive count and
+      cadence, not comment bytes). Ticked.
 
 ## 3. Telemetry
-- [ ] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint (`/metrics` on the
+- [x] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint (`/metrics` on the
       stats port; series `agentgateway_requests_total`, `agentgateway_request_duration_seconds_*`,
       `agentgateway_gen_ai_server_request_duration_*`, `agentgateway_gen_ai_client_token_usage_*`
       — read on the running container 2026-09-17); Alloy
@@ -358,11 +393,29 @@
       the stats port 19002 and `agentgateway_gen_ai_server_time_to_first_token_bucket` series.
       Still open: no Loki readback of a span log line, and the client-view row is not proven on
       live traffic (task 3.3; dashboard-data proof PR pending). Not ticked.
+      2026-10-13 (task output read from production Semaphore by the lead): the Loki readback
+      is PROVEN. Verify o11y Service (Dev) with `expected_service` agentgateway,
+      `emit_agentgateway_canary` true, `expect_traces` true, `expect_logs` true and
+      `expect_metrics` false. The first dry run, 5250, failed all 100 canary requests: the
+      canary sent plain http to a listener that has served TLS only since task 6.1 (a TLS
+      alert record came back in the reply). PR #594 (merged as 08465c5f) sends the canary over
+      the listener's TLS, as `probe-agentgateway-gate.yml` does. Dry run 5257 and real run
+      5262 then both passed: "agentgateway verified: recent Loki log, metrics not requested,
+      recent Tempo trace." That Loki query, `{service="agentgateway"}`, also matches the
+      gateway's OTLP access logs (the `gateway_logs` processor in `config.alloy.j2` carries the
+      same `service` label), so those two runs do not prove the span-log stream (review of
+      #595; MISTAKES 1.21, occurrence 2). PR #597 (merged as d55530f9) added
+      `expected_log_signal`; Publish Semaphore Template Surveys (Dev) 5292 put it on the live
+      template. Dry run 5295 and real run 5299, with `expected_log_signal` span, then passed:
+      "agentgateway verified: recent Loki log (signal span), metrics not requested, recent
+      Tempo trace." `{service="agentgateway",signal="span"}` is set only by the
+      `gateway_span_logs` processor, so spans reach Loki as log lines. The scrape half was
+      proven 2026-10-06 (3142) and the client-view row by 4913 (task 3.3). Ticked.
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
       such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,
       `type`); first week runs with loose figures tightened from observed rates
-- [ ] 3.3 Validation gate: one hour of traffic renders p50 and p95 first-token latency and
+- [x] 3.3 Validation gate: one hour of traffic renders p50 and p95 first-token latency and
       per-identity counts, proving scenario "Client-view latency on the dashboard"
       2026-10-06: the first-token histogram reaches Prometheus (task 3.1 note, Verify o11y
       Metrics Target (Dev) 3142). No receipt yet of the dashboard panels returning data over an
@@ -389,6 +442,14 @@
       `platform/tests/test_o11y_dashboard_asserts.py::test_client_view_error_ratio_numerator_is_zero_when_no_error_series`
       (mutated: red without the fallback). Not re-run live. Cause (2), the two first-token
       panels, still needs streaming traffic (task 4.3). Not ticked.
+      2026-10-12 (task output read from Semaphore by the lead): Verify o11y Dashboard Data
+      (Dev) task 4913, `agentgateway-client-view`, lookback 1h: all 6 panels have data (status
+      pass), including first-token latency p50 and p95 and the error ratios, so the
+      2026-10-08 fix is proven live (task 4842 earlier showed the 5xx ratio with data and only
+      the first-token panels empty). The traffic in that hour was synthetic: Run agentgateway
+      Conformance (Dev) tasks 4840 and 4910 (streamed cases through the gateway), not real
+      client traffic. Ticked on scenario "Client-view latency on the dashboard"; real client
+      traffic arrives with the route switch (4.3).
 
 ## 4. Identities, limits, re-route
 - [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints
@@ -403,6 +464,27 @@
       deploy, hand each out with `backup-credentials-to-site-config.yml`, and enrol the
       legacy shared key as identity `legacy-shared` with the tightest budget and
       `legacy_shared_expires: <date>` in inventory (task 5.1 enforces the expiry)
+      2026-10-14 (task output read from production Semaphore by the lead): `legacy-shared` is now
+      enrolled with an expiry and a budget (site-config #77): `legacy_shared_expires` 2026-10-28
+      and an `agw_client_policies` entry of 30,000,000 tokens per hour. Sizing: Verify o11y
+      Production Budgets (Dev) task 5349 (agent-cloud #606) read a 7-day near-rolling peak of
+      19.0M prompt+generation tokens per hour (241k generation tokens per hour, 38.7 requests
+      per minute, 8 running, 3 waiting). Every current client reaches vLLM with the shared key,
+      so after the switch all traffic is `legacy-shared`; the 2M default would have blocked it.
+      30M is about 1.6x the peak: a grace-period figure, deliberately above the "tightest
+      budget" this task names. Deploy agentgateway (Dev) task 5357 rendered it. Still open:
+      handing out the first key set. Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): the personal admin
+      keys were minted by Deploy agentgateway (Dev) task 5671; the operator's key and
+      `client_jacob` are handed out (Back Up Credentials to site-config (Dev) tasks 5638 and
+      5673). Not ticked: the rest of the first key set is not handed out.
+      2026-10-14/15 (task output read from production Semaphore by the lead): the admin identity
+      `wisward` is retired. Authentik retired it through `platform_retired_accounts` (PR #640
+      and site-config #90, merged 86ea5da6): Deploy Authentik (Dev) dry run 5711, real run 5713
+      ('OK absent wisward', 'VERIFY OK: 13 blueprints, 5 accounts present, 2 retired'), rerun
+      5714 changed=0. The gateway deploy 5718 dropped the identity, and Manage agentgateway
+      Client Key (Dev) revoke dry run 5721, real run 5722 recorded "revoke of identity 'wisward'
+      recorded in OpenBao". Not ticked: the rest of the first key set is not handed out.
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
       per hour, figures derived from the measured ceiling and written as comments.
       2026-09-17: v1.5.0 has no per-identity REQUEST bucket under `llm.policies` (`key`
@@ -411,17 +493,91 @@
       global request bucket (`agw_rate_requests_per_minute_total`) + `hourly-tokens`
       budget per key (`agw_rate_tokens_per_hour`). Left for this task: derive both
       figures from the measured ceiling and write them into site-config inventory
-- [ ] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
+      2026-10-14: provisional figures are drafted in site-config #78 (draft, awaiting operator
+      review): 10M tokens per hour per identity, 120 requests per minute, and `o11y-probe`
+      pinned at 2M. Deriving them from the measured capacity ceiling is still pending. Not
+      ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): site-config #78
+      merged, and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it: 10M tokens per
+      hour per identity, 120 requests per minute globally, `o11y-probe` 2M, `legacy-shared`
+      30M. `legacy-shared` 30M is sized at about 1.6x the measured 19.0M/h 7-day peak (see
+      note above); 10M/h per identity, 120 req/min and `o11y-probe` 2M are the figures drafted
+      in site-config #78, not derived in this repo from a capacity ceiling. Remaining: the
+      ceiling derivation. Not ticked.
+- [x] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
       `inference_api` unchanged in shape (upstream already comes from `r.upstream`);
       redeploy Caddy through Semaphore
-- [ ] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
+      2026-10-12 (task output read from Semaphore by the lead): Probe agentgateway Gate (Dev)
+      task 4875 (PR #559) read keyless `/health` as 401: in gateway mode the public `/health`
+      would NOT answer 200. The route switch (site-config #66) needs a `/health` handler
+      before it goes live, either a proxy to vLLM `/health` as direct mode does or the
+      gateway's readiness endpoint. Also Probe Reachability (Dev) task 4851: caddy to
+      gateway:4000 open; Verify agentgateway Runtime (Dev) task 4854: receipt matches the
+      deployed revision `2e1799a3`. Not ticked.
+      2026-10-13: the `/health` handler named above already exists on the route-switch branch:
+      site-config `feat/inference-route-mode` commit bb54629 serves `/health` from the vLLM
+      head node in BOTH route modes (only `/v1/*` follows `inference_route_mode`); the
+      gateway's readiness port stays off the public edge. Gateway mode therefore keeps
+      Caddy's path to vLLM `/health` open. Remaining: the operator's go on site-config #66,
+      then the Caddy redeploy. Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): the route is
+      switched. site-config #66 (route mode, direct) merged as a852c64d and #77 (the flip:
+      Caddy `inference_route_mode` gateway, with the 4.7 expiry) merged as e05a726d; #79 adds an
+      inventory-sync step to the runbook (83c9f38e). Production Semaphore runs from its own
+      stored copy of the inventory, so `sync-inventory.yml` pushed site-config main after #66
+      and after #77, each time with a key-path diff of exactly that PR's keys. Deploy
+      agentgateway (Dev) dry run 5356 and real run 5357: "The shared key is admitted as
+      legacy-shared until 2026-10-28."; the keyed round-trip there is the deploy's own verify
+      from the gateway host, not a request through Caddy. Manage Caddy Sites (Dev)
+      dry run 5365: the diff is only the inference block (`/v1/*` to the https gateway;
+      `/health` unchanged, to the vLLM head node); real run 5366 at 04:29 UTC validated and
+      restarted Caddy. Public edge afterwards: `/health` 200, keyless `/v1/models` 401,
+      `/metrics` 403 (Cloudflare challenge). Rollback Inference Route (Dev) `gateway-config`
+      dry run 5370 reads the live route as `/v1/*` through the gateway and `/health` direct to
+      vLLM. This tick is on config scope: the declared block, the Caddy redeploy and route
+      report 5370, which reads upstream destinations only. A keyed request through the public
+      edge is 4.5's proof and is still owed.
+      2026-10-14 (task output read from production Semaphore by the lead; model names): site-config
+      #85 merged as `a38c60a3`: `agw_models` lists only `qwen3.8-flash-next` (vLLM serves both
+      aliases; that is the canonical client id per dgx-spark). The inventory was synced; the
+      key-path diff was exactly `agw_models`. Deploy agentgateway (Dev) dry run 5642 and real
+      run 5643: as `stray`, `/v1/models` lists `qwen3.8-flash-next`, and a chat completion
+      (32 tokens) came back from the upstream model `nvidia/Qwen3.8-Flash-Next-NVFP4`.
+      dgx-spark (reported by the dgx-spark session) verified that the long alias answers 404
+      through the gateway. Already ticked; this is a dated record only.
+- [x] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
       dgx-spark `docs/TEAM-ENDPOINT.md` (key changes, base URL does not)
+      2026-10-14: dgx-spark's public-path verify play is requested; no result yet. Not
+      ticked.
+      2026-10-14: the operator reported that dgx-spark's public-path verify play passes. There
+      is no Semaphore task id for it, and the update to dgx-spark `docs/TEAM-ENDPOINT.md` is
+      unconfirmed. Not ticked.
+      2026-10-14 (reported by the dgx-spark session): after the route flip, dgx-spark's
+      public-path verify play PASSED, 16:39 to 16:49 EDT, against the public `/v1` base URL
+      with the shared key: `/health` 200, keyless `/v1/models` 401, 7 of 7 reasoning efforts
+      200, a long stream of 289.9 s (first token 0.48 s, 3625 chunks) that crossed the 125 s
+      proxy timer alive, and 2 of 2 concurrent streams. The 12-stream burst was not run (it
+      needs an operator window). dgx-spark `docs/TEAM-ENDPOINT.md` is updated: dgx-spark PR
+      #33, merged as `0479c96`. Ticked: the verify play ran against the live hostname and the
+      endpoint doc is updated.
 - [ ] 4.5 Validation gate: an unenrolled key gets 401 at the gateway with no vLLM log
       line, proving scenario "Unknown key is rejected"; a burst from one identity gets
       429 while another identity is served, proving scenario "One client cannot exceed its
       share"; the gateway access log shows the public request, proving scenario "Public
       path traverses the gateway"; one inventory change and a Caddy redeploy restores the
       direct path, proving scenario "Rollback is one value during the grace period"
+      2026-10-12 (task output read from Semaphore by the lead): pre-switch leg of "Unknown
+      key is rejected" read from Probe agentgateway Gate (Dev) task 4875 (PR #559): keyless
+      `/v1/models` 401 and invalid-key `/v1/models` 401. The "Public path traverses the
+      gateway", burst and rollback scenarios need the route switch (4.3). Not ticked.
+      2026-10-14: PARTIAL. After the switch, the keyless request is refused at the edge
+      (`/v1/models` 401 after Caddy run 5366). The rollback path is proven by the 4.6 drill,
+      but through the playbook, not as "one inventory change and a Caddy redeploy". The 429
+      isolation scenario and the access-log scenario are not proven. Not ticked.
+      2026-10-14 (evening): PR #632 (the isolation probe) encodes the scenario "One client
+      cannot exceed its share". Local proof tasks 6565 and 6566: the burst got 200 then 429
+      `budget_exceeded`, and the control identity got 200. The production leg needs a
+      low-budget probe identity in site-config, which does not exist yet. Not ticked.
 - [ ] 4.6 `rollback-inference-route.yml` with `mode=gateway-config|direct|restore` as in the
       proposal's Rollback Plan, each mode idempotent (re-run converges, no duplicate key
       publication, `restore` is a no-op once the upstream is the gateway and the key is
@@ -485,11 +641,36 @@
       the gateway answered readiness, `failed=0`. Deploy agentgateway (Dev) task 3946 then
       rendered the current config from code again (recreated, verify passed). Still owed for this
       box: the live `direct` then `restore` drill, in a window Joe names
+      2026-10-14 (task output read from production Semaphore by the lead): the live drill ran
+      after a 30-minute soak on the gateway route. `mode=direct`: dry run 5378, real run 5380
+      (route direct; it published the live vLLM key as `direct_stray`, `direct_opencode`,
+      `direct_pi`, `direct_skynet` and `direct_o11y-probe` in `secret/services/agentgateway`).
+      `mode=restore`: dry run 5384, real run 5385 put the route back on the gateway (declared
+      and running config: `/v1/*` to the gateway on port 4000, `/health` to the head node on
+      port 8000), then stopped by design at the grace-period check: "The route is back on the
+      gateway, but direct_* still hold the LIVE vLLM key ... Rotate it, then run this again."
+      The edge answered 200 and 401 throughout, except for seconds-long 525 windows during each
+      Caddy restart. RESIDUAL: five copies of the live vLLM key sit in OpenBao as `direct_<name>`
+      until dgx-spark rotates the key (5.1); a `restore` after that rotation retires them. The
+      scenario "Rollback after retirement is the playbook" needs that rotation. Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): Rollback Inference
+      Route (Dev) task 5385 (`mode=restore`) changed and restarted Caddy, and the route was
+      verified back on the gateway (declared and running config). The task then failed BY
+      DESIGN at the grace-period check: the five `direct_*` OpenBao fields still hold the live
+      vLLM key, so it must be rotated first. Red until that rotation; not a regression. Not
+      ticked.
 
-- [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
+- [x] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route
+      2026-10-14: set in site-config #77 (`legacy_shared_expires` 2026-10-28 = the switch date
+      2026-10-14 UTC + 14 days), in the same change that switched the route (4.3). Deploy
+      agentgateway (Dev) real run 5357 reported it.
 
 ## 5. Retire the shared key, records
+      2026-10-14 (task output read from production Semaphore by the lead): the expiry is now
+      2026-11-13, not the 2026-10-28 above. site-config #81 moved `legacy_shared_expires`; Deploy
+      agentgateway (Dev) 5523 applied it and 5643 reconfirmed it ("The shared key is admitted as
+      legacy-shared until 2026-11-13."). dgx-spark's TEAM-ENDPOINT.md (PR #33) states 2026-11-13.
 - [ ] 5.1 Retirement, enforced by the deploy rather than remembered: the config template
       renders `legacy-shared` only while today is before `legacy_shared_expires`; a deploy
       on or after that date drops the identity and fails if the vLLM key in OpenBao still
@@ -507,7 +688,33 @@
       the retirement date is recorded in `context/architecture.md` once 4.7 sets it
       2026-10-03: the deploy half is PR #400 (merged). The vLLM rotation waits on the dgx-spark
       handoff, which has not been sent
-- [ ] 5.2 Accept the architecture record; append a dated pointer line to
+      2026-10-14: still open. Two follow-ups. (1) The drill in 4.6 left five copies of the live
+      vLLM key in OpenBao (`direct_<name>`); they stay until dgx-spark rotates the key, after
+      which `restore` retires them. (2) From the agent-cloud #611 review: the grace-period probe
+      false-reds if the vLLM key is rotated BEFORE `legacy_shared_expires`, because the stored
+      fingerprint pins the old key. Rotate after the expiry, or skip the probe when the
+      fingerprints differ. Not ticked.
+      2026-10-14: the expiry moved. site-config #81 set `legacy_shared_expires` to 2026-11-13
+      (it was 2026-10-28) and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it (task
+      output read from production Semaphore by the lead). Earlier notes naming 2026-10-28 are
+      left as written. Not ticked.
+      2026-10-16: the operator did NOT approve dgx-spark ADR-0018 (OpenBao as the only source of the vLLM
+      key, read by dgx-spark's deploy job). It stays Proposed. So the retirement on or after 2026-11-13
+      is the two-step rotation in dgx-spark#34's plan:
+      - dgx-spark writes the new value to its local key file and does one planned restart of both ranks,
+        in a window the operator names. The operator may choose a two-restart variant instead: both keys
+        in the first restart, the new key only in the second, which removes the 401 window
+        (dgx-spark design decision 6, task 5.1);
+      - dgx-spark hands the value to the operator out of band;
+      - the operator seeds `secret/services/agentgateway:vllm_api_key` with `Seed OpenBao Key`;
+      - the operator runs Deploy agentgateway (Dev), then Rollback Inference Route (Dev) in `restore` mode.
+      Not ticked.
+      2026-10-24: the agent-cloud side is complete. Follow-up (2) of 2026-10-14 landed in #631
+      (`3fd86bb6`): when the vLLM key no longer matches the recorded fingerprint, the grace-period
+      probe is skipped instead of failing. The retirement date, 2026-11-13, is now recorded in
+      `context/architecture.md`, "Shared-key retirement". Left: the rotation itself (dgx-spark and the
+      operator, on or after 2026-11-13) and the `vllm_api_allowed_cidr` narrowing. Not ticked.
+- [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
       2026-10-04: the non-decision half is done — a dated pointer callout in
@@ -515,10 +722,19 @@
       replaces the two `.gitkeep` stubs, pointing at `platform/services/agentgateway/` and the
       dgx-spark `node-telemetry-and-placement-benchmark` roadmap record. Open: accepting the
       architecture record is Joe's decision, so this box stays unticked.
+      2026-10-12: ticked. The operator accepted the architecture record (decision of 2026-10-12).
+      `plan/architecture/05-platform-infra.md`, section "Inference gateway: agentgateway alongside
+      skynet", gains a dated refresh (the "design.md decisions 1–8" pointer was stale: the design
+      now numbers decisions 1 to 12) and an appended "Accepted 2026-10-12" line; its heading and
+      Status paragraph are left as written. The remaining clause of this task was only the
+      acceptance (the plan 06 pointer and the `platform/services/inference/` README landed
+      2026-10-04, above)
 - [ ] 5.3 Validation gate: 5.1 proves scenario "Grace period ends"; the record and the
       plan 06 line prove scenario "Decision is findable and plan 06 is amended"; on
       archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
+      2026-10-14: the date this gate waits on is now 2026-11-13, not 2026-10-28 (see the 5.1
+      note). Not ticked.
 
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
 - [x] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a
@@ -570,7 +786,7 @@
       drill's first reading line was wrong ("no reading") on the runner's ansible-core 2.18.15
       because the statuses compared as strings; the class lines and the verdict were right,
       and the reading is fixed in the probe playbook
-- [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
+- [x] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
       directly (`production-internal-ca`), the benchmark VM's attribution check
@@ -636,7 +852,19 @@
       (`agentgateway-observability`). Recorded, not ticked: this task stays open until
       each of those checks exists and sends through `tasks/agw-probe.yml`, or its text is
       restated.
-- [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
+      2026-10-12: restated by operator decision. 6.1a = the shared probe exists and every
+      gateway verification gate in this change goes through it (deploy, renewal proof,
+      conformance's keyless gate, client-TLS probe); the conformance cases themselves stay curl,
+      as recorded 2026-10-05. Checks owned by sibling changes (benchmark, personal keys,
+      observability) are tracked there. Ticked. Evidence read from `origin/dev`: the shared
+      probe `tasks/agw-probe.yml` is included by `deploy-agentgateway.yml:713,763,812`,
+      `renew-internal-certs.yml:558` (as `file:`), `run-agw-conformance.yml:221` and
+      `probe-agentgateway-client-tls.yml:164,181,198`. `rollback-inference-route.yml` sends no
+      gateway request: its `uri` calls (`:255,:269,:893,:908`) hit OpenBao only, and its
+      readiness check execs `wget` in the db container (`:398`). The sibling checks are named in
+      their own tasks: `inference-benchmarking/tasks.md:45`, `inference-personal-keys/tasks.md:172`,
+      `production-internal-ca/tasks.md:313`
+- [x] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
       host's mounted `current/` directory. The architecture document's deprecated
@@ -646,11 +874,61 @@
       origin: 302 to the Authentik authorize endpoint with `client_id=agentgateway` (the public
       URL sits behind the Cloudflare challenge). Open: the `inference` block still dials vLLM
       directly until task 4.3
+      2026-10-14 production: the `inference` block now proxies `https://` to the gateway with
+      `tls_server_name`, `tls_trust_pool` and `tls_client_auth`, as `admin.inference` already
+      did (2026-10-02 note). Manage Caddy Sites (Dev) dry run 5365 (only that block changed) and
+      real run 5366; Rollback Inference Route (Dev) `gateway-config` dry run 5370 reads the
+      route as `/v1/*` through the gateway and `/health` direct to vLLM. Task output read from
+      production Semaphore by the lead. This tick is on config scope: the declared block, the
+      redeploy and route report 5370, which reads upstream destinations only; a keyed request
+      through the public edge is 4.5's proof, still owed.
 - [ ] 6.3 The model's `tls: {root, hostname, cert, key}` (the `agw-upstream` client leaf,
       production-internal-ca task 5.4a; mutual TLS decided 2026-09-28) and an `https://`
       base URL, once dgx-spark
       serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
       `--enable-ssl-refresh`)
+      2026-10-16: dgx-spark answered the handoff with dgx-spark#34 (merged 455129b5), change
+      `inference-upstream-tls-and-key-retirement`, ADR-0017. The operator APPROVED ADR-0017 the same day,
+      with agent-cloud's side held until the operator says go. The design:
+      - spark-1 becomes a certificates-only consumer host of agent-cloud's internal-CA issuance, under
+        its own unprivileged account. Its name and public key come from dgx-spark.
+      - vLLM serves `--ssl-certfile`/`--ssl-keyfile`/`--enable-ssl-refresh`: server-only first, mutual
+        TLS once every caller presents a leaf.
+      - The daily renewal job re-issues the leaf once less than a third of its 30-day lifetime is left.
+        vLLM serves the new leaf without a restart. Whether its refresher follows the symlink swap is
+        unproven until dgx-spark's drill (its decision 3, task 3.4); the fallback is a fixed-name copy.
+      agent-cloud's pieces, in order:
+      - `internal_leaves` for `vllm-server`, `vllm-lifecycle` and `agw-upstream`;
+      - a spark-1 inventory host in its own group;
+      - `distribute-ca-root.yml` placing `step-ca-bundle.crt` beside the spark-1 leaves (dgx-spark task
+        2.2 waits on it);
+      - renewal proof paths for a non-gateway server leaf (`vllm-server`) and for a client leaf with
+        reload `none` on a non-gateway host (`vllm-lifecycle`);
+      - this task's `https://` upstream with `tls`;
+      - Caddy `/health` and the o11y `dgx-spark-vllm` scrape over HTTPS;
+      - Rollback Inference Route `direct` mode gaining an HTTPS transport (a point from dgx-spark's review).
+      Not started; not ticked.
+      2026-10-26 (dgx-spark handoff, operator-relayed): dgx-spark PR 38 (merged `76660cb`)
+      created the consumer account `vllm-tls` on spark-1: key-only, admitted only from the
+      Semaphore host, keys read from a root-owned file, leaf directories under the account's
+      `certs` directory. It has no login until dgx-spark commits `keys/vllm-tls.pub` and
+      re-applies. Done here, with the operator's go for these launches: `Generate Service SSH
+      Key (Dev)` `service_name=vllm-tls` (dry run 9407, real run 9408) and `Back Up Service SSH
+      Key (Dev)` (dry run 9409, real run 9410; site-config #116). The operator sent the reply
+      the same day. It carries the public half, confirms the Semaphore host as the issuance
+      source, and counter-proposes the server SAN. dgx-spark proposed `vllm.<site>.<zone>`.
+      The reply follows `internal-dns-naming` decision 14 for the server leaf:
+      `vllm-primary.<site>.<zone>` plus `dgx01.vllm-primary.<site>.<zone>`. For the client
+      leaf it proposes `lifecycle.vllm-primary.<site>.<zone>`. Decision 14 does not cover that
+      name; it copies the shape of the existing client leaves (`verifier.gateway`,
+      `probe.o11y`), which the naming scheme does not define either (open question recorded on
+      naming task 5.3). Two additions the build side needs that the list above lacks:
+      (a) the inventory name `spark-1` is already taken by `dgx_drill_svc` as `o11y-drill`, so
+      the certificates host needs its own inventory name, which `internal_leaves[].host` names;
+      (b) issuance, renewal and `distribute-ca-root.yml` must connect with the `vllm-tls` key
+      from OpenBao, the way the fault drill does, because Semaphore's own key is not
+      authorized for that account. The build itself still waits on the operator's go. Not
+      ticked.
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
       gateway, proving scenario "A request without a client certificate is refused"; a
       throwaway client-profile leaf declared with a SAN on no allowlist entry (issued as in
@@ -676,6 +954,11 @@
       step-ca (Dev)` tasks 3829 (8 names while the leaf existed) and 3838 (back to 7), and the
       renewal dry run task 3839 passes classification. The drill also found the probe's
       reading bug, fixed on branch `fix/tls-probe-reading-types`
+      2026-10-12 (task output read from Semaphore by the lead): the `agw-verifier` leg of
+      this gate is proven by Probe agentgateway Gate (Dev) task 4875 (PR #559): an
+      invalid-key `/v1/models` request answered 401, the key check. The refusal of a vLLM
+      certificate not issued by the internal CA and the public path end to end remain. Not
+      ticked.
 
 ## 7. Internal name resolution (follow-up; needs hickory-dns in production)
 - [ ] 7.1 Server-side OIDC off the Cloudflare path: a split-horizon record for

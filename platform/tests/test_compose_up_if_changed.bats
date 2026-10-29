@@ -30,11 +30,17 @@ svc_setup() {
   cat > "$T/bin/engine" <<'STUB'
 #!/usr/bin/env bash
 S="$STUB_STATE"
+echo "$*" >> "$S/engine.log"
 if [ "$1" = image ] && [ "$2" = inspect ]; then cat "$S/image_now"; exit 0; fi
+if [ "$1" = rm ]; then rm -rf "$S/c/${@: -1}"; exit 0; fi
+# plane's deploy.sh asks the API whether the instance is closed; the test sets the answer.
+if [ "$1" = exec ] && [ "$2" = plane-api ]; then [ -f "$S/plane_closed" ]; exit $?; fi
 if [ "$1" = ps ]; then
   [ "$*" = "ps -a --filter label=com.docker.compose.project.working_dir=$STUB_DIR --format {{.Names}}" ] || exit 0
   for d in "$S"/c/*; do [ -d "$d" ] && basename "$d"; done; exit 0
 fi
+# A bare `inspect NAME` is an existence check: non-zero when there is no such container.
+if [ "$1" = inspect ] && [ $# -eq 2 ]; then [ -d "$S/c/$2" ]; exit $?; fi
 if [ "$1" = inspect ]; then
   if [ "$2" = --format ]; then fmt="$3" name="$4"; else fmt="${2#--format=}" name="$3"; fi
   c="$S/c/$name"; [ -d "$c" ] || exit 1
@@ -42,6 +48,9 @@ if [ "$1" = inspect ]; then
     *Health*) echo healthy ;;
     *compose.service*) cat "$c/service" ;;
     *State.Running*) cat "$c/running" ;;
+    *one-shot*) cat "$c/oneshot" 2>/dev/null || echo "<no value>" ;;
+    *State.Status*) cat "$c/status" 2>/dev/null || { [ "$(cat "$c/running")" = true ] && echo running || echo exited; } ;;
+    *ExitCode*) cat "$c/exitcode" 2>/dev/null || echo 0 ;;
     *Labels*) cat "$c/label" 2>/dev/null || echo "<no value>" ;;
     *Config.Image*) echo cr.example/img:v1 ;;
     *'.Image}}'*) cat "$c/image_run" ;;
@@ -70,12 +79,43 @@ if case " $* " in *" config --services "*) true ;; *) false ;; esac; then
   done | awk '!seen[$0]++'
   exit 0
 fi
+if case " $* " in *" down "*) true ;; *) false ;; esac; then rm -rf "$S"/c/*; echo down >> "$S/down.log"; exit 0; fi
 case " $* " in *" up "*) ;; *) exit 0 ;; esac
-case " $* " in *" --force-recreate "*) ;; *) exit 0 ;; esac
+if ! case " $* " in *" --force-recreate "*) true ;; *) false ;; esac; then
+  # A staged `up` (a caller's compose_staged_up hook): it must carry the label overlay, and it
+  # creates only the services it names (every labelled one when it names none).
+  [ -n "$overlay" ] || { echo "up without the label overlay" >&2; exit 1; }
+  [ -z "${STUB_UP_FAIL:-}" ] || { echo "stub: up failed" >&2; exit 1; }
+  named="" seen_up=""
+  for a in "$@"; do
+    if [ -n "$seen_up" ]; then case "$a" in -*) ;; *) named="$named $a" ;; esac; fi
+    [ "$a" = up ] && seen_up=1
+  done
+  label=$(sed -n 's/^ *io\.agent-cloud\.inputs-sha256: "\(.*\)"$/\1/p' "$overlay" | sort -u)
+  [ "$(printf '%s\n' "$label" | grep -c .)" -eq 1 ] || { echo "labels differ" >&2; exit 1; }
+  svcs=$(sed -n 's/^  \([a-z0-9-]*\):$/\1/p' "$overlay")
+  [ -n "$named" ] || named="$svcs"
+  echo "up:$named" >> "$S/up.log"
+  for pair in $STUB_NAMES; do
+    n="${pair%%=*}" svc="${pair#*=}"
+    case " $named " in *" $svc "*) ;; *) continue ;; esac
+    mkdir -p "$S/c/$n"; echo true > "$S/c/$n/running"; echo "$label" > "$S/c/$n/label"
+    echo "$svc" > "$S/c/$n/service"; cp "$S/image_now" "$S/c/$n/image_run"
+  done
+  exit 0
+fi
 [ -n "$overlay" ] || { echo "recreate without the label overlay" >&2; exit 1; }
 label=$(sed -n 's/^ *io\.agent-cloud\.inputs-sha256: "\(.*\)"$/\1/p' "$overlay" | sort -u)
 [ "$(printf '%s\n' "$label" | grep -c .)" -eq 1 ] || { echo "labels differ" >&2; exit 1; }
 svcs=$(sed -n 's/^  \([a-z0-9-]*\):$/\1/p' "$overlay")
+# A recreate that names services (a staged hook's `up --force-recreate svc...`) creates only
+# those, like compose; with none named it recreates every labelled service.
+named="" seen_up=""
+for a in "$@"; do
+  if [ -n "$seen_up" ]; then case "$a" in -*) ;; *) named="$named $a" ;; esac; fi
+  [ "$a" = up ] && seen_up=1
+done
+[ -z "$named" ] || echo "up:$named" >> "$S/up.log"
 if case " $* " in *" --remove-orphans "*) true ;; *) false ;; esac; then
   for d in "$S"/c/*; do
     [ -d "$d" ] || continue
@@ -85,6 +125,7 @@ fi
 for pair in $STUB_NAMES; do
   n="${pair%%=*}" svc="${pair#*=}"
   printf '%s\n' "$svcs" | grep -qx "$svc" || continue
+  [ -z "$named" ] || case " $named " in *" $svc "*) ;; *) continue ;; esac
   mkdir -p "$S/c/$n"; echo true > "$S/c/$n/running"; echo "$label" > "$S/c/$n/label"
   echo "$svc" > "$S/c/$n/service"; cp "$S/image_now" "$S/c/$n/image_run"
 done
@@ -148,9 +189,13 @@ a_setup() {
   local pb
   for pb in deploy-authentik.yml deploy-o11y.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY2'
-import sys, yaml
-plays = yaml.safe_load(open(sys.argv[1]))
-t = [t for p in plays for t in p.get("tasks", []) if t.get("name") == "Run deploy.sh (container lifecycle)"][0]
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2] / "platform/tests"))
+import playbook_yaml
+plays = playbook_yaml.load(Path(sys.argv[1]))
+t = [t for p in plays for t in playbook_yaml.tasks(p.get("tasks", []))
+     if t.get("name") == "Run deploy.sh (container lifecycle)"][0]
 import jinja2
 expr = t["environment"]["FORCE_RECREATE"]
 render = lambda **kw: jinja2.Environment().from_string(expr).render(**kw)
@@ -194,6 +239,52 @@ PY2
   deploy
   changed true; [ "$(recreates)" -eq 3 ]
   deploy; changed false
+}
+
+@test "a one-shot that exited 0 is finished, not a change; a failed or unlabelled stop recreates" {
+  a_setup
+  deploy; [ "$status" -eq 0 ]
+  echo false > "$S/c/authentik-worker/running"; echo true > "$S/c/authentik-worker/oneshot"
+  deploy; [ "$status" -eq 0 ]; changed false; [ "$(recreates)" -eq 1 ]
+  echo 1 > "$S/c/authentik-worker/exitcode"
+  deploy; changed true; [ "$(recreates)" -eq 2 ]
+  # Created but never run (an interrupted up): exit code 0, yet not finished.
+  echo false > "$S/c/authentik-worker/running"; echo 0 > "$S/c/authentik-worker/exitcode"; echo created > "$S/c/authentik-worker/status"
+  deploy; changed true; [ "$(recreates)" -eq 3 ]
+  rm -f "$S/c/authentik-worker/status" "$S/c/authentik-worker/oneshot"
+  echo false > "$S/c/authentik-redis/running"
+  deploy; changed true; [ "$(recreates)" -eq 4 ]
+}
+
+# ── plane: the proxy is held until the instance is closed ────────────────────
+p_setup() {
+  svc_setup plane plane-db=plane-db plane-api=api plane-migrator=migrator plane-proxy=proxy
+  # Plane's own file is fetched at deploy time, never committed; a stand-in with four services.
+  printf 'services:\n  plane-db:\n    image: x\n  api:\n    image: x\n  migrator:\n    image: x\n  proxy:\n    image: x\n' > "$D/compose.yml"
+}
+
+@test "plane: an instance that is not closed never gets its proxy, and an old one is removed" {
+  p_setup
+  # A proxy left over from an earlier run must not keep serving the unclaimed instance.
+  mkdir -p "$S/c/plane-proxy"; echo true > "$S/c/plane-proxy/running"; echo proxy > "$S/c/plane-proxy/service"
+  deploy
+  [ "$status" -eq 0 ]
+  printf '%s\n' "${lines[@]}" | grep -qx 'PLANE_PROXY_HELD=true'
+  [ ! -d "$S/c/plane-proxy" ]
+  [ -d "$S/c/plane-api" ]
+  refute_grep -qE '(^up:| )proxy( |$)' "$S/up.log"
+}
+
+@test "plane: a closed instance gets its proxy; closing it after a held run opens it" {
+  p_setup
+  deploy; [ "$status" -eq 0 ]
+  [ ! -d "$S/c/plane-proxy" ]
+  touch "$S/plane_closed"
+  deploy
+  [ "$status" -eq 0 ]
+  [ -d "$S/c/plane-proxy" ]
+  refute_grep -qx 'PLANE_PROXY_HELD=true' <(printf '%s\n' "${lines[@]}")
+  grep -qE '^up: proxy$' "$S/up.log"
 }
 
 @test "authentik: an unreadable input refuses rather than guessing" {
@@ -322,14 +413,140 @@ SH
   [ "$(recreates)" -eq 1 ]
 }
 
+# ── staged start hook (compose_staged_up) ────────────────────────────────────
+# A deploy that must start in order defines compose_staged_up; the helper then calls it instead
+# of the one-shot recreate, with the digest label overlay already in COMPOSE_OVERLAYS.
+@test "no hook defined: the one-shot recreate runs exactly as before" {
+  a_setup
+  deploy; [ "$status" -eq 0 ]
+  grep -qE ' up -d --force-recreate --remove-orphans$' "$S/compose.log"
+  [ ! -e "$S/up.log" ]
+}
+
+hook_setup() {
+  svc_setup authentik authentik-postgresql=postgresql authentik-redis=redis authentik-server=server authentik-worker=worker
+  cat > "$D/hook-deploy.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+source ../../../lib/common.sh
+compose_staged_up() {
+  echo "hook: overlays=${COMPOSE_OVERLAYS}" >> "$STUB_STATE/hook.log"
+  compose up -d postgresql redis || return 1
+  [ -z "${HOOK_FAIL:-}" ] || return 1
+  compose up -d server worker || return 1
+}
+compose_up_if_changed
+SH
+  SCRIPT=hook-deploy.sh
+}
+
+@test "hook: called instead of the one-shot, each stage labelled, then a true no-op" {
+  hook_setup
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(cat "$S/up.log")" = "$(printf 'up: postgresql redis\nup: server worker')" ]
+  refute_grep -q -e '--force-recreate' -e '--remove-orphans' "$S/compose.log"
+  grep -q 'inputs-label.yml' "$S/hook.log"
+  local c
+  for c in authentik-postgresql authentik-redis authentik-server authentik-worker; do
+    grep -qE '^[0-9a-f]{64}$' "$S/c/$c/label"
+  done
+  : > "$S/compose.log"; rm -f "$S/up.log" "$S/hook.log"
+  deploy; [ "$status" -eq 0 ]; changed false
+  refute_grep -q ' up ' "$S/compose.log"
+  [ ! -e "$S/hook.log" ]
+}
+
+@test "hook: a changed input or FORCE_RECREATE calls it again; an unrelated image id too" {
+  hook_setup
+  deploy; [ "$status" -eq 0 ]
+  echo "# changed" >> "$D/.env"
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(grep -c '^hook:' "$S/hook.log")" -eq 2 ]
+  FORCE=true deploy; changed true
+  [ "$(grep -c '^hook:' "$S/hook.log")" -eq 3 ]
+  echo img-9 > "$S/image_now"
+  deploy; changed true
+  [ "$(grep -c '^hook:' "$S/hook.log")" -eq 4 ]
+}
+
+@test "hook: a failing hook fails the deploy and prints no DEPLOY_CHANGED" {
+  hook_setup
+  HOOK_FAIL=1 run env STUB_STATE="$S" STUB_DIR="$D" STUB_NAMES="$NAMES" CONTAINER_ENGINE="$T/bin/engine" \
+    COMPOSE_CMD="$T/bin/compose" HOOK_FAIL=1 bash "$D/hook-deploy.sh"
+  [ "$status" -ne 0 ]
+  refute_grep -q 'DEPLOY_CHANGED' <<< "$output"
+  # the labels were written by the stages that ran, so the next run still sees the gap
+  deploy; [ "$status" -eq 0 ]; changed true
+}
+
+# ── n8n: ordered start behind the change gate ────────────────────────────────
+n_setup() {
+  svc_setup n8n workflow-n8n-postgres=n8n-postgres workflow-n8n-redis=n8n-redis workflow-n8n=n8n workflow-n8n-worker=n8n-worker
+}
+
+@test "n8n: first deploy starts the stages in order, labelled; the second run touches nothing" {
+  n_setup
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(cat "$S/up.log")" = "$(printf 'up: n8n-postgres n8n-redis n8n\nup: n8n-worker')" ]
+  [ -e "$S/down.log" ]
+  grep -qE '^[0-9a-f]{64}$' "$S/c/workflow-n8n-worker/label"
+  : > "$S/compose.log"; rm -f "$S/up.log" "$S/down.log"
+  deploy; [ "$status" -eq 0 ]; changed false
+  refute_grep -q -e ' up ' -e ' down ' "$S/compose.log"
+  [ ! -e "$S/down.log" ]
+}
+
+@test "n8n: a changed .env or init script restarts the whole ordered stack; the volumes are not removed" {
+  n_setup
+  deploy; [ "$status" -eq 0 ]
+  local f
+  for f in .env config/n8n-init-data.sh; do
+    rm -f "$S/up.log"
+    echo "# changed" >> "$D/$f"
+    deploy; [ "$status" -eq 0 ]; changed true
+    [ "$(wc -l < "$S/up.log" | tr -d ' ')" -eq 2 ]
+    deploy; changed false
+  done
+  # Neither compose (down -v) nor the engine (rm -v) may take a volume with the containers.
+  refute_grep -q -e ' -v' -e '--volumes' "$S/compose.log"
+  grep -q '^rm ' "$S/engine.log"
+  refute_grep -qE '^rm .*( -v|--volumes| -[a-z]*v)' "$S/engine.log"
+}
+
+@test "n8n: a changed published bind address (N8N_LISTEN in .env) recreates, then is a no-op" {
+  n_setup
+  echo 'N8N_LISTEN=127.0.0.1' >> "$D/.env"
+  deploy; [ "$status" -eq 0 ]; changed true
+  deploy; changed false
+  sed -i.bak 's/^N8N_LISTEN=.*/N8N_LISTEN=0.0.0.0/' "$D/.env"
+  deploy; [ "$status" -eq 0 ]; changed true
+  deploy; changed false
+}
+
+@test "n8n: a failing first up fails the deploy, prints no DEPLOY_CHANGED=true, never starts the worker" {
+  n_setup
+  STUB_UP_FAIL=1 deploy
+  [ "$status" -ne 0 ]
+  refute_grep -q 'DEPLOY_CHANGED=true' <<< "$output"
+  [ ! -e "$S/up.log" ]
+  # It stops at the failed up: no health wait on containers that were never created.
+  refute_grep -q 'State.Health' "$S/engine.log"
+  deploy; [ "$status" -eq 0 ]; changed true
+}
+
 # ── playbooks read the line ──────────────────────────────────────────────────
 @test "deploy playbooks derive changed from DEPLOY_CHANGED, not changed_when: true" {
   local pb
   for pb in deploy-authentik.yml deploy-o11y.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY'
-import sys, yaml
-plays = yaml.safe_load(open(sys.argv[1]))
-tasks = [t for p in plays for t in p.get("tasks", []) if t.get("name") == "Run deploy.sh (container lifecycle)"]
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2] / "platform/tests"))
+import playbook_yaml
+plays = playbook_yaml.load(Path(sys.argv[1]))
+tasks = [t for p in plays for t in playbook_yaml.tasks(p.get("tasks", []))
+         if t.get("name") == "Run deploy.sh (container lifecycle)"]
 assert len(tasks) == 1, tasks
 assert tasks[0]["changed_when"] == "'DEPLOY_CHANGED=true' in _deploy.stdout_lines", tasks[0]["changed_when"]
 PY

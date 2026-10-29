@@ -13,6 +13,7 @@ locals {
   platform_subdomains = [
     "auth",   # Authentik IdP
     "canvas", # OpenHands
+    "console",
     "devlog",
     "inference", # vLLM on the DGX Spark pair (adopted 2026-09-15; waf.tf + ratelimit.tf govern it)
     # agentgateway operator UI — NEW record (created by apply, not imported), proxied like
@@ -21,11 +22,11 @@ locals {
     # proxy. Two-level name: covered at the edge by the zone's Total TLS (ACM), which issues
     # a per-hostname certificate for every proxied record (read from the API 2026-09-22).
     "admin.inference",
+    "mcp",    # agentgateway MCP endpoint (NEW record, created by apply; waf.tf + ratelimit.tf)
     "memory", # honcho
     "mixpost",
     "n8n",
     "netbox",
-    "nocodb",
     "o11y", # Grafana
     "postiz",
     "pve", # Proxmox

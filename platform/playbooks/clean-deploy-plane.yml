@@ -1,0 +1,34 @@
+---
+# clean-deploy-plane.yml — DESTRUCTIVE: remove Plane's containers and every named volume
+# (database, Redis, RabbitMQ, uploads, the proxy's state, logs), then deploy fresh.
+#
+# Secrets come back from OpenBao unchanged, so the rebuilt stack keeps its keys, but every
+# workspace, project and work item is gone and first-run configuration runs again. Take a
+# backup first if anything in it matters (Back Up Plane DB, backup-plane-db.yml).
+#
+# Requires -e confirm_reset=<host> (tasks/clean-service.yml).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Clean plane (destroy containers + volumes)"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  # Plane's Compose file names no project, so deploy.sh takes `plane` from .env. The local
+  # teardown passes no --project-name, so set it here too: otherwise `down -v` would target a
+  # project named after the directory and leave every volume in place.
+  environment:
+    COMPOSE_PROJECT_NAME: plane
+  tasks:
+    - name: "Destroy containers, volumes and (prod) the clone"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  ansible.builtin.import_playbook: deploy-plane.yml
+  vars:
+    _extra_var_guard_nested: true

@@ -1,0 +1,302 @@
+---
+# Compare the exact production inventory stored in Semaphore with one reviewed
+# site-config integration revision. Collection is GET-only; private bytes stay hidden.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed source and comparator bytes
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/survey-o11y-inventory-provenance.py
+
+- name: Survey current production inventory provenance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _survey_root: "{{ playbook_dir | dirname | dirname }}"
+    _survey_reasons:
+      - exact_bytes_match
+      - inventory_bytes_differ
+      - branch_tip_mismatch
+      - identity_ambiguous
+      - inventory_source_unknown
+      - malformed_yaml
+      - openbao_unavailable
+      - private_checkout_unavailable
+      - semaphore_api_error
+      - invalid_input
+  tasks:
+    - name: Validate exact public and private revisions
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - site_config_base_sha | default('') is match('^[0-9a-f]{40}$')
+          - site_config_base_branch | default('') is match('^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$')
+          - "'..' not in (site_config_base_branch | default(''))"
+          - "'//' not in (site_config_base_branch | default(''))"
+          - not (site_config_base_branch | default('')).endswith('/')
+          - estate_coverage_semaphore_project_id is defined
+          - estate_coverage_semaphore_project_id is integer
+          - estate_coverage_semaphore_project_id is not boolean
+          - estate_coverage_semaphore_project_id > 0
+          - estate_coverage_semaphore_repository_id is defined
+          - estate_coverage_semaphore_repository_id is integer
+          - estate_coverage_semaphore_repository_id is not boolean
+          - estate_coverage_semaphore_repository_id > 0
+        fail_msg: "{\"schema_version\":1,\"status\":\"unavailable\",\"reason\":\"invalid_input\",\"public_sha\":\"\",\"private_sha\":\"\"}"
+        quiet: true
+
+    - name: Read the public controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _survey_root }}"
+      register: _survey_public_head
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed public controller revision
+      ansible.builtin.assert:
+        that: _survey_public_head.stdout == expected_repository_sha
+        fail_msg: "{\"schema_version\":1,\"status\":\"unavailable\",\"reason\":\"invalid_input\",\"public_sha\":\"\",\"private_sha\":\"\"}"
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+          secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _survey_bao_auth
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read Semaphore API credentials and site-config deploy key from OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}/v1/secret/data/services/{{ item }}"
+        headers:
+          X-Vault-Token: "{{ _survey_bao_auth.json.auth.client_token | default('') }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      loop:
+        - semaphore
+        - ssh/site-config
+      loop_control:
+        label: "OpenBao read"
+      register: _survey_bao_secrets
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Retain the two OpenBao results in memory
+      ansible.builtin.set_fact:
+        _survey_semaphore_secret: >-
+          {{ (((_survey_bao_secrets.results | default([]) | selectattr('item', 'equalto', 'semaphore') | list | first | default({})).get('json', {})).get('data', {})).get('data', {}) }}
+        _survey_site_config_secret: >-
+          {{ (((_survey_bao_secrets.results | default([]) | selectattr('item', 'equalto', 'ssh/site-config') | list | first | default({})).get('json', {})).get('data', {})).get('data', {}) }}
+      no_log: true
+
+    - name: Require OpenBao credentials without revealing them
+      ansible.builtin.assert:
+        that:
+          - _survey_semaphore_secret.url | default('') | length > 0
+          - _survey_semaphore_secret.api_token | default('') | length > 0
+          - _survey_site_config_secret.private_key | default('') | length > 0
+          - _survey_bao_auth.json.auth.client_token | default('') | length > 0
+        fail_msg: "{\"schema_version\":1,\"status\":\"unavailable\",\"reason\":\"openbao_unavailable\",\"public_sha\":\"{{ expected_repository_sha }}\",\"private_sha\":\"{{ site_config_base_sha }}\"}"
+        quiet: true
+      no_log: true
+
+    - name: Refuse cleartext Semaphore transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _survey_semaphore_secret.url }}"
+        _assert_url_label: Semaphore
+
+    - name: Read current production Semaphore inventories
+      ansible.builtin.uri:
+        url: "{{ _survey_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/inventory"
+        headers:
+          Authorization: "Bearer {{ _survey_semaphore_secret.api_token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [200]
+        use_netrc: false
+        use_proxy: false
+      register: _survey_inventories
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read current Semaphore templates
+      ansible.builtin.uri:
+        url: "{{ _survey_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _survey_semaphore_secret.api_token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [200]
+        use_netrc: false
+        use_proxy: false
+      register: _survey_templates
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read current Semaphore repositories
+      ansible.builtin.uri:
+        url: "{{ _survey_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _survey_semaphore_secret.api_token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [200]
+        use_netrc: false
+        use_proxy: false
+      register: _survey_repositories
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Compare the exact reviewed private integration snapshot inside a cleanup block
+      block:
+        - name: Clone the reviewed private integration branch with pinned Git host keys
+          ansible.builtin.include_tasks:
+            file: tasks/site-config-clone.yml
+            apply:
+              no_log: true
+          vars:
+            _sc_deploy_key: "{{ _survey_site_config_secret.private_key }}"
+            _sc_reviewed_base_sha: "{{ site_config_base_sha }}"
+            _sc_base_branch: "{{ site_config_base_branch }}"
+            _sc_branch_prefix: "o11y/inventory-provenance-read"
+
+        - name: Confirm the remote integration branch still points at the reviewed commit
+          ansible.builtin.command:
+            argv: [git, ls-remote, --heads, origin, "refs/heads/{{ site_config_base_branch }}"]
+            chdir: "{{ _sc_clone }}"
+          environment: "{{ _sc_git_env }}"
+          register: _survey_private_remote_tip
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Read the private inventory tree entry at the reviewed commit
+          ansible.builtin.command:
+            argv: [git, ls-tree, "{{ site_config_base_sha }}", --, inventory/production.yml]
+            chdir: "{{ _sc_clone }}"
+          register: _survey_private_inventory_tree
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Read the exact private production inventory bytes at the reviewed commit
+          ansible.builtin.command:
+            argv: [git, show, "{{ site_config_base_sha }}:inventory/production.yml"]
+            chdir: "{{ _sc_clone }}"
+            strip_empty_ends: false
+          register: _survey_private_inventory
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Normalize only the exact private branch tip
+          ansible.builtin.set_fact:
+            _survey_private_tip_sha: >-
+              {{ _survey_private_remote_tip.stdout.split()[0]
+                 if _survey_private_remote_tip.rc == 0
+                 and _survey_private_remote_tip.stdout.splitlines() | length == 1
+                 and _survey_private_remote_tip.stdout.split() | length == 2
+                 and _survey_private_remote_tip.stdout.split()[1] == 'refs/heads/' ~ site_config_base_branch
+                 and _survey_private_remote_tip.stdout.split()[0] is match('^[0-9a-f]{40}$')
+                 else '' }}
+          no_log: true
+
+        - name: Run the strict fixed-schema inventory comparison
+          ansible.builtin.command:
+            argv: [python3, "{{ _survey_root }}/platform/playbooks/files/survey-o11y-inventory-provenance.py"]
+            stdin: >-
+              {{ {'public_sha': expected_repository_sha,
+                  'private_sha': site_config_base_sha,
+                  'private_tip_sha': _survey_private_tip_sha,
+                  'private_tree_entry': (_survey_private_inventory_tree.stdout | trim if _survey_private_inventory_tree.rc == 0 else ''),
+                  'project_id': estate_coverage_semaphore_project_id,
+                  'repository_id': estate_coverage_semaphore_repository_id,
+                  'semaphore_statuses': [_survey_inventories.status | default(none),
+                                         _survey_templates.status | default(none),
+                                         _survey_repositories.status | default(none)],
+                  'inventories': _survey_inventories.json | default(none),
+                  'templates': _survey_templates.json | default(none),
+                  'repositories': _survey_repositories.json | default(none),
+                  'private_inventory': _survey_private_inventory.stdout | default('')} | to_json }}
+          register: _survey_comparison_raw
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Validate the bounded provenance receipt
+          ansible.builtin.set_fact:
+            _survey_comparison: "{{ _survey_comparison_raw.stdout | from_json }}"
+          no_log: true
+
+        - name: Require the closed provenance receipt schema
+          ansible.builtin.assert:
+            that:
+              - _survey_comparison.keys() | sort == ['private_sha', 'public_sha', 'reason', 'schema_version', 'status']
+              - _survey_comparison.schema_version == 1
+              - _survey_comparison.status in ['observed', 'mismatch', 'unavailable']
+              - _survey_comparison.reason in _survey_reasons
+              - _survey_comparison.public_sha == expected_repository_sha
+              - _survey_comparison.private_sha == site_config_base_sha
+            fail_msg: "{\"schema_version\":1,\"status\":\"unavailable\",\"reason\":\"invalid_input\",\"public_sha\":\"{{ expected_repository_sha }}\",\"private_sha\":\"{{ site_config_base_sha }}\"}"
+            quiet: true
+          no_log: true
+
+      rescue:
+        - name: Normalize private checkout or comparator failures
+          ansible.builtin.set_fact:
+            _survey_comparison:
+              schema_version: 1
+              status: unavailable
+              reason: private_checkout_unavailable
+              public_sha: "{{ expected_repository_sha }}"
+              private_sha: "{{ site_config_base_sha }}"
+          no_log: true
+      always:
+        - name: Remove the private clone and temporary deploy-key file
+          ansible.builtin.file:
+            path: "{{ _sc_wd }}"
+            state: absent
+          when: _sc_wd is defined
+          changed_when: false
+
+    - name: Report only the fixed provenance receipt
+      ansible.builtin.debug:
+        msg: "{{ _survey_comparison | to_json }}"

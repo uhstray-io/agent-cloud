@@ -3,6 +3,9 @@
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
+- name: Require the reviewed checkout before Census credentials or helper execution
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
 - name: Check out and inventory declarations
   hosts: localhost
   connection: local
@@ -10,6 +13,56 @@
   vars:
     _coverage_root: "{{ playbook_dir | dirname | dirname }}"
     _coverage_inventory: "{{ estate_coverage_inventory | default({}) }}"
+    _coverage_receipt_bindings: "{{ _coverage_inventory.get('receipt_bindings', {}) | default({}) }}"
+    _coverage_has_receipt_bindings: >-
+      {{ _coverage_receipt_bindings is mapping and (_coverage_receipt_bindings | length > 0) }}
+    _coverage_safe_refusal_codes:
+      - binding_limit
+      - conflicting_stats
+      - deadline
+      - http_status
+      - transient_receipt_key
+      - transient_receipt_legacy_pointer
+      - transient_receipt_limit
+      - transient_receipt_shape
+      - transient_receipt_size
+      - invalid_binding
+      - invalid_controller_input
+      - invalid_credentials
+      - invalid_declaration
+      - invalid_endpoint
+      - invalid_template_repository
+      - invalid_utc_time
+      - launch_inputs
+      - malformed_json
+      - observation_binding
+      - observation_shape
+      - observation_time_order
+      - output_rows
+      - output_shape
+      - output_time_order
+      - readback_shape
+      - repository_mismatch
+      - repository_revision_mismatch
+      - response_encoding
+      - response_framing
+      - response_size
+      - route_refused
+      - task_drift
+      - task_identity_mismatch
+      - task_inventory_override
+      - task_not_accepted
+      - task_override
+      - task_params
+      - task_time_order
+      - template_drift
+      - template_mismatch
+      - terminal_stats
+      - transport
+      - truncated_response
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
   tasks:
     - name: Read the controller revision
       ansible.builtin.command:
@@ -26,23 +79,135 @@
           - _coverage_revision.stdout == expected_repository_sha
         fail_msg: "Semaphore checked out a different reviewed revision; no census was produced."
 
-    - name: Generate the sanitized read-only estate census
+    - name: Require private Semaphore IDs for receipt attribution
+      ansible.builtin.assert:
+        that:
+          - estate_coverage_semaphore_project_id is defined
+          - estate_coverage_semaphore_project_id is integer
+          - estate_coverage_semaphore_project_id is not boolean
+          - estate_coverage_semaphore_project_id > 0
+          - estate_coverage_semaphore_repository_id is defined
+          - estate_coverage_semaphore_repository_id is integer
+          - estate_coverage_semaphore_repository_id is not boolean
+          - estate_coverage_semaphore_repository_id > 0
+        fail_msg: "Receipt bindings require positive private Semaphore project and repository IDs."
+      when: _coverage_has_receipt_bindings
+
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: _coverage_has_receipt_bindings
+
+    - name: Authenticate to OpenBao (AppRole)
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _coverage_bao_auth
+      changed_when: false
+      no_log: true
+      check_mode: false
+      when: _coverage_has_receipt_bindings
+
+    - name: Read the Semaphore URL and API token from OpenBao
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/semaphore"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _coverage_bao_auth.json.auth.client_token }}"
+        status_code: [200]
+        use_netrc: false
+        use_proxy: false
+      register: _coverage_semaphore_secret
+      changed_when: false
+      no_log: true
+      check_mode: false
+      when: _coverage_has_receipt_bindings
+
+    - name: Hold Semaphore credentials in memory
+      ansible.builtin.set_fact:
+        _coverage_semaphore_credentials:
+          url: "{{ _coverage_semaphore_secret.json.data.data.url | default('') }}"
+          api_token: "{{ _coverage_semaphore_secret.json.data.data.api_token | default('') }}"
+      no_log: true
+      when: _coverage_has_receipt_bindings
+
+    - name: Require the Semaphore URL and API token
+      ansible.builtin.assert:
+        that:
+          - _coverage_semaphore_credentials.url | length > 0
+          - _coverage_semaphore_credentials.api_token | length > 0
+        fail_msg: "secret/services/semaphore must contain url and api_token."
+      no_log: true
+      when: _coverage_has_receipt_bindings
+
+    - name: Refuse a cleartext Semaphore token endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _coverage_semaphore_credentials.url }}"
+        _assert_url_label: "Semaphore"
+      when: _coverage_has_receipt_bindings
+
+    - name: Run the read-only Semaphore receipt census controller
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ _coverage_root }}/platform/playbooks/files/o11y-coverage-census.py"
-          - "{{ _coverage_root }}"
+          - "{{ _coverage_root }}/platform/playbooks/files/o11y-coverage-semaphore.py"
+          - --controller
         stdin: >-
-          {{ {
-            'inventory_revision': _coverage_inventory.get('revision'),
-            'repository_sha': expected_repository_sha,
-            'targets': _coverage_inventory.get('targets', []),
-            'template_names': ((lookup('ansible.builtin.file', _coverage_root ~ '/platform/semaphore/templates.yml') | from_yaml).templates | map(attribute='name') | list)
-          } | to_json }}
-      register: _coverage_report
+          {% set payload = {
+            'expected_repository_sha': expected_repository_sha,
+            'inventory': {
+              'repository_sha': expected_repository_sha,
+              'targets': _coverage_inventory.get('targets', []),
+              'receipt_bindings': _coverage_receipt_bindings,
+              'template_names': ((lookup('ansible.builtin.file', _coverage_root ~ '/platform/semaphore/templates.yml') | from_yaml).templates | map(attribute='name') | list)
+            }
+          } %}
+          {% if 'revision' in _coverage_inventory %}
+          {% set _ = payload['inventory'].update({'inventory_revision': _coverage_inventory.revision}) %}
+          {% endif %}
+          {% if receipt_task_ids | default('') | length > 0 %}
+          {% set _ = payload.update({'receipt_task_ids': receipt_task_ids}) %}
+          {% endif %}
+          {% if _coverage_has_receipt_bindings %}
+          {% set _ = payload.update({
+            'semaphore_url': _coverage_semaphore_credentials.url,
+            'api_token': _coverage_semaphore_credentials.api_token,
+            'project_id': estate_coverage_semaphore_project_id,
+            'repository_id': estate_coverage_semaphore_repository_id
+          }) %}
+          {% endif %}
+          {{ payload | to_json }}
+      register: _coverage_controller_raw
       changed_when: false
       check_mode: false
+      failed_when: false
+      no_log: true
+
+    - name: Parse the protected controller report
+      ansible.builtin.set_fact:
+        _coverage_report: "{{ _coverage_controller_raw.stdout | from_json }}"
+      no_log: true
+
+    - name: Fail closed on a controller refusal
+      ansible.builtin.assert:
+        that:
+          - _coverage_controller_raw.rc == 0
+          - _coverage_report.status != 'refused'
+        fail_msg: >-
+          {{ _coverage_report.reason if (_coverage_report.status == 'refused'
+             and _coverage_report.reason in _coverage_safe_refusal_codes)
+             else 'receipt_verification_failed' }}
 
     - name: Report the candidate census
       ansible.builtin.debug:
-        msg: "{{ _coverage_report.stdout | from_json }}"
+        msg: "{{ _coverage_report }}"

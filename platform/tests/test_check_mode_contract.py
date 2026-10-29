@@ -363,6 +363,14 @@ def test_post_is_a_write():
     assert found == ["create: uri write without a check-mode guard"]
 
 
+def test_mutating_post_forced_into_check_mode_is_caught():
+    found = _tasks(
+        "- name: create\n  ansible.builtin.uri:\n    url: http://x\n    method: POST\n"
+        "  check_mode: false\n"
+    )
+    assert found == ["create: uri write forced to run in check mode (check_mode: false)"]
+
+
 def test_read_only_command_needs_check_mode_false():
     found = _tasks("- name: probe\n  ansible.builtin.command: cat /etc/os-release\n  changed_when: false\n")
     assert found == ["probe: read-only command without check_mode: false"]
@@ -629,3 +637,30 @@ def test_every_runtime_root_check_computes_the_root_inline():
         (line,) = [ln for ln in text.splitlines() if marker in ln]
         assert line.strip().endswith("== " + SCRATCH_ROOT_INLINE), (rel, line)
         assert not re.search(r"_\w*root\b", text), f"{rel} holds the temp root in a variable"
+
+
+def _orb_agent_readers(tasks, inherited=False):
+    """(name, skipped under --check) for every task that reads the netbox-orb-agent container."""
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        skipped = inherited or _mentions_check_mode(task.get("when"))
+        for key in TASK_LISTS:
+            if isinstance(task.get(key), list):
+                yield from _orb_agent_readers(task[key], skipped)
+        module, args = _module(task)
+        text = _command_text(args)
+        if module in COMMANDS and "netbox-orb-agent" in text and re.search(r"\b(?:inspect|logs)\b", text):
+            yield task.get("name"), skipped
+
+
+def test_orb_agent_running_state_checks_are_skipped_in_a_dry_run():
+    # The start is skipped under --check, so inspecting the container it would have created
+    # failed the dry run whenever no agent was running (production task 5529, 2026-10-14).
+    path = REPO / "platform/playbooks/tasks/deploy-orb-agent.yml"
+    readers = list(_orb_agent_readers(_load(path)))
+    assert {name for name, _ in readers} == {
+        "Wait for orb-agent to be running",
+        "Check agent logs for vault auth",
+    }
+    assert all(skipped for _, skipped in readers), readers

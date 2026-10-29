@@ -68,29 +68,25 @@ setup() {
 }
 
 @test "inventory example: no public/routable IP addresses (RFC 1918 + loopback only)" {
-  # grep for IPv4 patterns; strip known-good loopback; fail on anything else.
+  # grep for IPv4 patterns; strip known-good addresses; fail on anything else.
   # This guards against accidentally committing prod IPs into the template.
-  while IFS= read -r line; do
-    # Strip comment lines
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    # dns_upstreams legitimately lists PUBLIC resolvers (1.1.1.1, 1.0.0.1) — that
-    # is required forwarding config, not a leak (asserted by the dns_upstreams
-    # test below). Skip it so the leak-check targets host/service IPs only.
-    [[ "$line" =~ dns_upstreams ]] && continue
-    # Extract IP-looking strings
-    while IFS= read -r ip; do
-      # Allow loopback (127.x.x.x) and RFC 1918 (10., 172.16-31., 192.168.)
-      # Allow loopback, RFC 1918, and the unspecified/bind-all address 0.0.0.0
-      # (used for VM-side service binds, e.g. dns_listen — not a routable IP).
-      if [[ "$ip" =~ ^127\. ]] || [[ "$ip" =~ ^10\. ]] || \
-         [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]] || \
-         [[ "$ip" =~ ^192\.168\. ]] || [[ "$ip" = "0.0.0.0" ]]; then
-        continue
-      fi
-      echo "Unexpected public IP in inventory: $ip (line: $line)"
-      return 1
-    done < <(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' <<< "$line")
-  done < "$INVENTORY"
+  # One pipeline, not a subshell per line: on macOS a forked subshell can spin
+  # in fork's malloc handler, and ~1800 forks per run hung the pre-push suite.
+  # Skipped lines: comments, and dns_upstreams, which legitimately lists PUBLIC
+  # resolvers (1.1.1.1, 1.0.0.1) — required forwarding config, not a leak
+  # (asserted by the dns_upstreams test below).
+  # Allowed: loopback, RFC 1918, and the bind-all address 0.0.0.0 (used for
+  # VM-side service binds, e.g. dns_listen — not a routable IP).
+  # An unreadable or empty file would leave `bad` empty and pass unchecked.
+  [ -r "$INVENTORY" ] && [ -s "$INVENTORY" ] || { echo "Cannot read inventory: $INVENTORY"; return 1; }
+  local bad
+  bad=$(grep -vE '^[[:space:]]*#|dns_upstreams' "$INVENTORY" \
+    | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+    | grep -vE '^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|0\.0\.0\.0$)') || true
+  if [ -n "$bad" ]; then
+    echo "Unexpected public IP in inventory: $bad"
+    return 1
+  fi
 }
 
 # ── Required service groups ────────────────────────────────────────────────────
@@ -209,6 +205,72 @@ setup() {
   # Semaphore inventory; the two lists drift silently when only one is edited.
   grep -qE "inference\.\{\{ _dev_zone \}\}.*'inference_api': true" \
     "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+}
+
+@test "inventory example and bootstrap INI: inference route fronts the agentgateway /v1 listener, not the Mac-host stand-in" {
+  # Prod's inference route fronts the gateway; local must too, or skynet's keyed, budgeted
+  # calls would skip the gateway. The stand-in port must not come back in either copy.
+  grep -qE 'host: "inference\.agent-cloud\.test", upstream: "agentgateway:4000", inference_api: true' "$INVENTORY"
+  run grep -q 'host.containers.internal:8001' "$INVENTORY"
+  [ "$status" -ne 0 ]
+  local bp="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  grep -qE "'host': 'inference\.\{\{ _dev_zone \}\}', 'upstream': 'agentgateway:4000', 'inference_api': true" "$bp"
+  run grep -q 'host.containers.internal:8001' "$bp"
+  [ "$status" -ne 0 ]
+}
+
+@test "inventory example and bootstrap INI: agentgateway upstream is the public edge, key required, qwen3.8-flash-next served" {
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
+  local bp="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  python3 - "$INVENTORY" "$bp" <<'PY'
+import ast, re, sys, yaml
+
+ROLES = ["infra-agent", "security-agent", "o11y-agent", "service-agent", "network-agent", "skynet-eval"]
+EDGE = "https://inference.uhstray.io/v1"
+MODELS = [{"name": "qwen3.8-flash-next"}]
+
+example = yaml.safe_load(open(sys.argv[1]))["all"]["children"]["agentgateway_svc"]["hosts"]["agentgateway-local"]
+assert example["agw_upstream_base_url"] == EDGE, example["agw_upstream_base_url"]
+assert example["agw_upstream_requires_key"] is True
+assert example["agw_models"] == MODELS, example["agw_models"]
+assert example["agw_clients"][0] == "dev-local", example["agw_clients"]
+assert set(ROLES) <= set(example["agw_clients"]), example["agw_clients"]
+
+ini = open(sys.argv[2]).read()
+def ini_value(key):
+    found = re.findall(rf"^\s*{key}=(.*)$", ini, re.M)
+    assert len(found) == 1, (key, found)
+    return found[0]
+assert ini_value("agw_upstream_base_url") == EDGE
+assert ini_value("agw_upstream_requires_key") == "true"
+assert ast.literal_eval(ini_value("agw_models")) == MODELS
+# The INI enrolls dev-local and the six role identities. Its isolation-probe and mcp-self drift
+# from the example is known and is NOT pinned here (listed as a follow-up in the PR).
+assert ast.literal_eval(ini_value("agw_clients")) == ["dev-local"] + ROLES
+PY
+}
+
+@test "inventory example: caddy_routes MCP entry opts into mcp_api on the default listener, same list as the bootstrap INI" {
+  # mcp_api renders the exact-/mcp allowlist; a plain proxy here would expose every path the
+  # gateway's default listener serves (/sse, /v1) on the MCP hostname.
+  grep -qE 'host: "mcp\.agent-cloud\.test".*upstream: "agentgateway:4000".*mcp_api: true' "$INVENTORY"
+  # bootstrap-local-dev.yml emits its OWN copy of the route table into the local Semaphore
+  # inventory; the two lists drift silently when only one is edited.
+  grep -qE "'host': 'mcp\.\{\{ _dev_zone \}\}', 'upstream': 'agentgateway:4000', 'mcp_api': true" \
+    "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+}
+
+@test "inventory example and bootstrap INI: OPA is served over HTTPS by a plain Caddy proxy, no edge gate" {
+  # Skynet trusts OPA's allow, so the decision API is reached over HTTPS (server-verified via
+  # step-ca) rather than plain http on the shared network. Phase 1 OPA stays unauthenticated, so
+  # the route must carry no forward_auth, allowlist flag or other edge gate.
+  grep -qE 'host: "opa\.agent-cloud\.test", upstream: "opa:8181" \}' "$INVENTORY"
+  run grep -E 'opa\.agent-cloud\.test' "$INVENTORY"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c 'forward_auth\|_api: true')" -eq 0 ]
+  local bp="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  grep -qF "{'host': 'opa.{{ _dev_zone }}', 'upstream': 'opa:8181'}" "$bp"
 }
 
 @test "bootstrap: the INI route table is emitted as a Python literal, not JSON" {

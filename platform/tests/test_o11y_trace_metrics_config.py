@@ -13,6 +13,23 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/o11y/deployment"
 PLAYBOOK = ROOT / "platform/playbooks/deploy-o11y.yml"
 PLUGIN = ROOT / "platform/playbooks/filter_plugins/tempo_config.py"
+SCRAPE_LIMITS = {
+    "body_size_limit_bytes": 16 * 1024 * 1024,
+    "sample_limit": 10000,
+    "label_limit": 64,
+    "label_name_length_limit": 128,
+    "label_value_length_limit": 2048,
+}
+
+
+def _mandatory(value):
+    from jinja2 import Undefined
+
+    if isinstance(value, Undefined):
+        raise ValueError("production scrape budgets must be declared in inventory")
+    return value
+
+
 plugin_spec = importlib.util.spec_from_file_location("tempo_config", PLUGIN)
 tempo_config = importlib.util.module_from_spec(plugin_spec)
 plugin_spec.loader.exec_module(tempo_config)
@@ -22,6 +39,7 @@ def _render_env(derived_metrics: bool) -> dict[str, str]:
     """Render the service environment with derived metrics either disabled or gated on."""
     template = Environment(undefined=StrictUndefined)
     template.filters["bool"] = bool
+    template.filters["mandatory"] = _mandatory
     source = (DEPLOY / "templates/env.j2").read_text(encoding="utf-8")
     rendered = template.from_string(source).render(
         secrets={
@@ -29,6 +47,8 @@ def _render_env(derived_metrics: bool) -> dict[str, str]:
             "grafana_oidc_client_secret": "test-only",
         },
         local_mode=False,
+        o11y_scrape_limits_reviewed=True,
+        o11y_scrape_limits=SCRAPE_LIMITS.copy(),
         o11y_trace_derived_metrics_enabled=derived_metrics,
     )
     return dict(
@@ -95,25 +115,95 @@ def test_tempo_datasource_keeps_log_link_and_provisions_service_map_metric_and_p
         }
     ]
     assert tempo["tracesToLogsV2"]["datasourceUid"] == "loki"
+    assert tempo["tracesToLogsV2"]["tags"] == [
+        {"key": "service.name", "value": "service"}
+    ]
+    assert tempo["tracesToLogsV2"]["spanStartTimeShift"] == "-2s"
+    assert tempo["tracesToLogsV2"]["spanEndTimeShift"] == "2s"
+    assert tempo["tracesToLogsV2"]["filterByTraceID"] is False
+    assert tempo["tracesToLogsV2"]["filterBySpanID"] is False
+    assert tempo["tracesToLogsV2"]["customQuery"] is True
+    query = (
+        '{$${__tags}} | json | '
+        '(traceid=~"0*$${__trace.traceId}" or '
+        'body=~".*(^|[[:space:]])tid=0*$${__trace.traceId}([[:space:]]|$).*")'
+    )
+    runtime_query_assertion = (
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.query == "
+        f"{query.replace('$$', '$')!r}"
+    )
+    assert tempo["tracesToLogsV2"]["query"] == query
     assert tempo["tracesToProfiles"]["datasourceUid"] == "pyroscope"
     assert tempo["tracesToProfiles"]["tags"] == [
         {"key": "service.name", "value": "service_name"}
     ]
 
-
-def test_production_metrics_enablement_requires_all_recorded_gates_and_live_readback():
-    """Require recorded capacity/backup gates and validate the live Tempo config in memory."""
     playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
-    deploy_tasks = [task for play in playbook for task in play.get("tasks", [])]
-    gate = next(task for task in deploy_tasks if "numeric capacity and backup/restore receipts" in task["name"])
+    tempo_check = next(
+        task
+        for play in playbook
+        for task in play.get("tasks", [])
+        if task.get("name") == "Require live Tempo trace-to-metric and trace-to-log mappings"
+    )
+    assert {
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanStartTimeShift == '-2s'",
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.spanEndTimeShift == '2s'",
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterByTraceID == false",
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.filterBySpanID == false",
+        "(_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.customQuery == true",
+        runtime_query_assertion,
+    } <= set(tempo_check["ansible.builtin.assert"]["that"])
+
+
+def test_production_retention_requires_numeric_backup_restore_reference_before_writes():
+    """Require a numeric reference before volume inspection or repo placement."""
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
+    phase_one = next(play for play in playbook if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    deploy_tasks = phase_one["tasks"]
+    gate_index, gate = next(
+        (index, task)
+        for index, task in enumerate(deploy_tasks)
+        if "backup/restore receipt references" in task["name"]
+    )
+    receipt_check = "o11y_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')"
     assert set(gate["ansible.builtin.assert"]["that"]) == {
         "o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')",
-        "o11y_trace_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')",
+        receipt_check,
+        "o11y_prom_retention_size | default('0B') | string | trim is match('^[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB)$')",
     }
-    assert gate["when"] == [
+    assert gate["when"] == "not (local_mode | default(false) | bool) and (_o11y_retention_expansion | bool)"
+    volume_index = next(
+        i
+        for i, task in enumerate(deploy_tasks)
+        if task["name"] == "Read o11y volume backing capacity before retention expansion"
+    )
+    placement_index = next(
+        i for i, task in enumerate(deploy_tasks) if task["name"] == "Place the monorepo + ensure podman/compose"
+    )
+    assert gate_index < volume_index < placement_index
+
+    env = Environment(undefined=StrictUndefined)
+    env.filters["string"] = str
+    env.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
+    check_receipt = env.compile_expression(receipt_check)
+    assert check_receipt() is False
+    assert check_receipt(o11y_backup_restore_receipt_id="not-a-number") is False
+    assert check_receipt(o11y_backup_restore_receipt_id="0") is False
+    assert check_receipt(o11y_backup_restore_receipt_id="123") is True
+
+    all_tasks = [task for play in playbook for task in play.get("tasks", [])]
+    metrics_gate = next(task for task in all_tasks if "before enabling Tempo-derived metrics" in task["name"])
+    assert set(metrics_gate["ansible.builtin.assert"]["that"]) == {
+        "o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')",
+        receipt_check,
+    }
+    assert metrics_gate["when"] == [
         "not (local_mode | default(false) | bool)",
         "o11y_trace_derived_metrics_enabled | default(false) | bool",
     ]
+    assert not any("o11y_trace_backup_restore_receipt_id" in str(task) for task in all_tasks)
+
+    deploy_tasks = all_tasks
     tempo_readback = next(
         task
         for task in deploy_tasks

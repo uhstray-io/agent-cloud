@@ -31,6 +31,16 @@ schema_config:
         period: 24h
 
 limits_config:
+  # Explicit equivalents of Loki v3.3.2 ingestion defaults; aggregate caps,
+  # not per-target budgets. Keep rollout gated on measured baselines.
+  ingestion_rate_strategy: global
+  ingestion_rate_mb: 4
+  ingestion_burst_size_mb: 6
+  max_global_streams_per_user: 5000
+  per_stream_rate_limit: 3MB
+  per_stream_rate_limit_burst: 15MB
+  max_line_size: 256KB
+  max_label_names_per_series: 15
   retention_period: ${O11Y_LOKI_RETENTION:-7d}
   reject_old_samples: true
   reject_old_samples_max_age: ${O11Y_LOKI_RETENTION:-7d}

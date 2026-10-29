@@ -1,0 +1,180 @@
+---
+# Add only the fixed private site-config repository to the runner App installation.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [verify]
+
+- name: Grant the runner App access to site-config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    _verify_only: "{{ 'verify' in ansible_run_tags }}"
+    _api_helper: "{{ playbook_dir }}/../lib/github_app_repository.py"
+  tasks:
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _project_root }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+      tags: [verify]
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _project_root }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+      tags: [verify]
+
+    - name: Require the exact clean reviewed Dev revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout | trim == expected_repository_sha
+          - _controller_changes.stdout | length == 0
+          - github_app_client_id | default('') | length > 0
+          - _bao_url | length > 0
+          - _bao_role_id | length > 0
+          - _bao_secret_id | length > 0
+        fail_msg: "Require the exact clean reviewed Dev revision, App client id, and OpenBao AppRole inputs."
+        quiet: true
+      tags: [verify]
+
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      tags: [verify]
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        follow_redirects: none
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+      changed_when: false
+      check_mode: false
+      tags: [verify]
+
+    - name: Read runner App credentials from OpenBao
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/github-runner"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        status_code: [200]
+      register: _runner_app_secret
+      no_log: true
+      changed_when: false
+      check_mode: false
+      tags: [verify]
+
+    - name: Require the runner App administration token and private key
+      ansible.builtin.assert:
+        that:
+          - (_runner_app_secret.json.data.data.installation_admin_token | default('')) | length > 0
+          - (_runner_app_secret.json.data.data.app_private_key | default('')) | length > 0
+        fail_msg: "OpenBao is missing the runner App administration token or private key."
+        quiet: true
+      no_log: true
+      tags: [verify]
+
+    # Inspection always validates identity and complete installation visibility. In
+    # check mode it reports would_add without the playbook reaching the grant task.
+    - name: Inspect the fixed repository grant state
+      ansible.builtin.command:
+        argv: "{{ [ansible_playbook_python, _api_helper, '--issuer', github_app_client_id, '--check-mode'] + (['--verify-only'] if _verify_only | bool else []) }}"
+        stdin: "{{ {'installation_admin_token': _runner_app_secret.json.data.data.installation_admin_token, 'app_private_key': _runner_app_secret.json.data.data.app_private_key} | to_json }}"
+      register: _inspection
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      tags: [verify]
+
+    - name: Require complete, unambiguous inspection
+      ansible.builtin.assert:
+        that: _inspection.rc == 0
+        fail_msg: >-
+          Repository access inspection refused:
+          {{ (_inspection.stdout | from_json).phase | default('unknown') }}/
+          {{ (_inspection.stdout | from_json).outcome | default('unknown') }}
+          (HTTP {{ (_inspection.stdout | from_json).http_status | default(0) }}).
+        quiet: true
+      tags: [verify]
+
+    - name: Add the repository to the App installation
+      ansible.builtin.command:
+        argv: [ "{{ ansible_playbook_python }}", "{{ _api_helper }}", --issuer, "{{ github_app_client_id }}" ]
+        stdin: "{{ {'installation_admin_token': _runner_app_secret.json.data.data.installation_admin_token, 'app_private_key': _runner_app_secret.json.data.data.app_private_key} | to_json }}"
+      register: _grant
+      changed_when: (_grant.stdout | from_json).grant_attempted | bool
+      failed_when: false
+      no_log: true
+      when:
+        - not ansible_check_mode
+        - not (_verify_only | bool)
+      tags: [verify]
+
+    - name: Require the additive grant and fresh-token verification
+      ansible.builtin.assert:
+        that:
+          - _grant.rc == 0
+          - (_grant.stdout | from_json).verified | bool
+        fail_msg: >-
+          Repository grant refused:
+          {{ (_grant.stdout | from_json).phase | default('unknown') }}/
+          {{ (_grant.stdout | from_json).outcome | default('unknown') }}
+          (HTTP {{ (_grant.stdout | from_json).http_status | default(0) }}).
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - not (_verify_only | bool)
+      tags: [verify]
+
+    - name: Report check-mode preview
+      ansible.builtin.debug:
+        msg: >-
+          App installation repository outcome={{ (_inspection.stdout | from_json).outcome }}
+          grant_attempted={{ (_inspection.stdout | from_json).grant_attempted }}
+          verified={{ (_inspection.stdout | from_json).verified }}.
+      when:
+        - ansible_check_mode
+        - not (_verify_only | bool)
+      tags: [verify]
+
+    - name: Report verified installation grant
+      ansible.builtin.debug:
+        msg: >-
+          App installation repository outcome={{ (_grant.stdout | from_json).outcome }}
+          grant_attempted={{ (_grant.stdout | from_json).grant_attempted }}
+          verified={{ (_grant.stdout | from_json).verified }}.
+      when:
+        - not ansible_check_mode
+        - not (_verify_only | bool)
+      tags: [verify]
+
+    - name: Report verify-only repository state
+      ansible.builtin.debug:
+        msg: "App installation repository outcome=present grant_attempted=false verified=true."
+      when:
+        - _verify_only | bool
+      tags: [verify]

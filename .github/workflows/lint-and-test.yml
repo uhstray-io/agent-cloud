@@ -86,6 +86,12 @@ jobs:
           dockerfile: platform/services/inference-hunyuan3d/deployment/Dockerfile
           failure-threshold: warning
 
+      - name: Dockerfile lint (console)
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: platform/services/console/deployment/Containerfile
+          failure-threshold: warning
+
       - name: HCL format check
         uses: hashicorp/setup-terraform@v4
       - run: find platform/services/openbao -name '*.hcl' -exec terraform fmt -check {} +
@@ -227,8 +233,8 @@ jobs:
           ansible-galaxy collection install -r collections/requirements.yml
 
       # Keep pytest's configured root testpaths active so newly registered suites
-      # remain covered. Deselect only NetBox and Semaphore node IDs; --ignore does not
-      # remove a directory listed directly in testpaths. Each has its own job below.
+      # remain covered. Deselect only the bounded NetBox, Semaphore, playbook safety, and
+      # agentgateway slices; each has its own job below.
       #
       # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
       # subprocesses, so they spread across cores instead of queueing behind each other.
@@ -245,6 +251,111 @@ jobs:
           pytest -v -x -n auto --dist worksteal --durations=20
           --deselect=platform/services/netbox/deployment/tests/
           --deselect=platform/semaphore/tests/
+          --deselect=platform/tests/test_rollback_inference_route.py
+          --deselect=platform/tests/test_executor_internal_overrides.py
+          --deselect=platform/tests/test_agw_admin_identities.py
+          --deselect=platform/tests/test_agw_apikey_entries_filter.py
+          --deselect=platform/tests/test_agw_client_tls_probe.py
+          --deselect=platform/tests/test_agw_config_previous.py
+          --deselect=platform/tests/test_agw_conformance.py
+          --deselect=platform/tests/test_agw_deploy_env.py
+          --deselect=platform/tests/test_agw_gate_probe.py
+          --deselect=platform/tests/test_agw_internal_dns_records.py
+          --deselect=platform/tests/test_agw_isolation_probe.py
+          --deselect=platform/tests/test_agw_legacy_retirement.py
+          --deselect=platform/tests/test_agw_listener_tls.py
+          --deselect=platform/tests/test_agw_mcp_client.py
+          --deselect=platform/tests/test_agw_mcp_client_key.py
+          --deselect=platform/tests/test_agw_mcp_client_templates.py
+          --deselect=platform/tests/test_agw_mcp_guard.py
+          --deselect=platform/tests/test_agw_mcp_render.py
+          --deselect=platform/tests/test_agw_mcp_verify.py
+          --deselect=platform/tests/test_agw_openrouter.py
+          --deselect=platform/tests/test_agw_stream_usage.py
+
+  python-playbook-safety:
+    name: Python Playbook Safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          pip install -r platform/requirements-test.txt
+          pip install -r platform/requirements-controller.txt
+          ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Run Python Playbook Safety tests
+        run: >-
+          pytest -v -x -n auto --dist worksteal --durations=20
+          platform/tests/test_rollback_inference_route.py
+          platform/tests/test_executor_internal_overrides.py
+
+  python-agentgateway:
+    name: Python Agentgateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          pip install -r platform/requirements-test.txt
+          pip install -r platform/requirements-controller.txt
+          ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Run Python Agentgateway tests
+        run: >-
+          pytest -v -x -n auto --dist worksteal --durations=20
+          platform/tests/test_agw_admin_identities.py
+          platform/tests/test_agw_apikey_entries_filter.py
+          platform/tests/test_agw_client_tls_probe.py
+          platform/tests/test_agw_config_previous.py
+          platform/tests/test_agw_conformance.py
+          platform/tests/test_agw_deploy_env.py
+          platform/tests/test_agw_gate_probe.py
+          platform/tests/test_agw_internal_dns_records.py
+          platform/tests/test_agw_isolation_probe.py
+          platform/tests/test_agw_legacy_retirement.py
+          platform/tests/test_agw_listener_tls.py
+          platform/tests/test_agw_mcp_client.py
+          platform/tests/test_agw_mcp_client_key.py
+          platform/tests/test_agw_mcp_client_templates.py
+          platform/tests/test_agw_mcp_guard.py
+          platform/tests/test_agw_mcp_render.py
+          platform/tests/test_agw_mcp_verify.py
+          platform/tests/test_agw_openrouter.py
+          platform/tests/test_agw_stream_usage.py
+
+  node-pi-provider:
+    name: Node pi provider
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Run pi provider tests
+        working-directory: platform/services/agentgateway/context/clients/pi-provider
+        run: node --test gateway.test.ts
 
   python-semaphore:
     name: Python Semaphore
@@ -289,6 +400,7 @@ jobs:
   bats:
     name: Bash Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -336,24 +448,33 @@ jobs:
   test:
     name: Unit Tests
     if: always()
-    needs: [python-core, python-netbox, python-semaphore, bats, rego]
+    needs: [python-core, python-playbook-safety, python-agentgateway, node-pi-provider, python-netbox, python-semaphore, bats, rego, rust-console]
     runs-on: ubuntu-latest
     steps:
       - name: Require every test group to succeed
         env:
           PYTHON_CORE_RESULT: ${{ needs.python-core.result }}
+          PYTHON_PLAYBOOK_SAFETY_RESULT: ${{ needs.python-playbook-safety.result }}
+          PYTHON_AGENTGATEWAY_RESULT: ${{ needs.python-agentgateway.result }}
+          NODE_PI_PROVIDER_RESULT: ${{ needs.node-pi-provider.result }}
           PYTHON_NETBOX_RESULT: ${{ needs.python-netbox.result }}
           PYTHON_SEMAPHORE_RESULT: ${{ needs.python-semaphore.result }}
           BATS_RESULT: ${{ needs.bats.result }}
           REGO_RESULT: ${{ needs.rego.result }}
+          RUST_CONSOLE_RESULT: ${{ needs.rust-console.result }}
         run: |
-          printf 'Python core: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\n' \
-            "$PYTHON_CORE_RESULT" "$PYTHON_NETBOX_RESULT" "$PYTHON_SEMAPHORE_RESULT" "$BATS_RESULT" "$REGO_RESULT"
+          printf 'Python core: %s\nPython Playbook Safety: %s\nPython Agentgateway: %s\nNode pi provider: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\nRust console: %s\n' \
+            "$PYTHON_CORE_RESULT" "$PYTHON_PLAYBOOK_SAFETY_RESULT" "$PYTHON_AGENTGATEWAY_RESULT" "$NODE_PI_PROVIDER_RESULT" \
+            "$PYTHON_NETBOX_RESULT" "$PYTHON_SEMAPHORE_RESULT" "$BATS_RESULT" "$REGO_RESULT" "$RUST_CONSOLE_RESULT"
           test "$PYTHON_CORE_RESULT" = success
+          test "$PYTHON_PLAYBOOK_SAFETY_RESULT" = success
+          test "$PYTHON_AGENTGATEWAY_RESULT" = success
+          test "$NODE_PI_PROVIDER_RESULT" = success
           test "$PYTHON_NETBOX_RESULT" = success
           test "$PYTHON_SEMAPHORE_RESULT" = success
           test "$BATS_RESULT" = success
           test "$REGO_RESULT" = success
+          test "$RUST_CONSOLE_RESULT" = success
 
   # ── Go: UhhCraft (Go + templ + sqlc) ─────────────────────────────────
   # Path-gated: only fires when platform/services/uhhcraft/deployment/** changes.
@@ -506,3 +627,41 @@ jobs:
         run: |
           docker run --rm --entrypoint /app/uhhcraft uhhcraft:ci version
           docker images uhhcraft:ci --format '{{.Repository}}:{{.Tag}}  {{.Size}}'
+
+  # ── Rust: Dispatch Console (Dioxus fullstack crate in app/) ──────────
+  # Not path-gated on purpose. `test` (Unit Tests) below requires every job in
+  # its needs list to be `success`, and a skipped job is not, so a gated job
+  # here would fail every PR that does not touch console. It runs on every PR.
+  rust-console:
+    name: Rust (console)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: platform/services/console/app
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.96 (toolchain pinned to the Containerfile's rust:1.96)
+        # The runner image preinstalls rustup with its own default toolchain, which
+        # is not 1.96. Install the pin with the components and target the checks need,
+        # then make it this directory's override so every cargo call below uses it.
+        run: |
+          rustup toolchain install 1.96 --profile minimal -c rustfmt,clippy -t wasm32-unknown-unknown
+          rustup override set 1.96
+          rustc --version
+          cargo clippy --version
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (server)
+        run: cargo clippy --locked --features server --all-targets -- -D warnings
+
+      - name: Clippy (web, wasm32)
+        run: cargo clippy --locked --features web --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Test (server)
+        # ponytail: no rust-cache action yet, every run compiles from cold. Add a cache
+        # only if this job's wall time becomes the bottleneck.
+        run: cargo test --locked --features server

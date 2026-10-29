@@ -9,6 +9,7 @@ secrets/
 !**/.env.example
 platform/services/o11y/deployment/config/journal.alloy
 platform/services/o11y/deployment/config/.journal.alloy.candidate
+platform/services/o11y/deployment/certs/
 
 # Container data volumes
 data/
@@ -90,3 +91,7 @@ requirements.yml_*.md5
 
 # Session continuation file — local working state, never committed
 .claude/CONTINUE.md
+
+# A live repo-root MCP config would connect every automated session here to the gateway;
+# client templates live under platform/services/agentgateway/context/clients/
+/.mcp.json

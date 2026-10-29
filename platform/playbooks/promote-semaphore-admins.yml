@@ -9,10 +9,18 @@
 # grant — the code-managed equivalent of the manual UI toggle (Critical Rule #1:
 # no ad-hoc changes; config flows through code).
 #
-# Who becomes admin is DATA, not code: the inventory var `semaphore_admin_users`
-# (list of Semaphore USERNAMES — the platform-admins roster; see the matching task for why
-# email is not accepted) is
-# the source of truth. No names are hardcoded here.
+# Who becomes admin is DATA, not code, and admin is derived, never hand-granted
+# (plan/architecture/04-credentials-access.md, issue #604). The roster is the filter
+# semaphore_admin_roster over two inventory declarations, both in top-level all.vars (this
+# play runs on implicit localhost, which receives no group's vars):
+#   platform_admins         the ONE administrator list, which deploy-authentik.yml renders
+#                           into the Authentik platform-admins group: every person on it is a
+#                           Semaphore admin under the same username (the service account is
+#                           skipped). Not declared for localhost: nothing is derived.
+#   semaphore_admin_users   Semaphore USERNAMES that are admins without being platform admins
+#                           (the local bootstrap account, for one).
+# Matching is by username only; see the matching task for why email is not accepted. No names
+# are hardcoded here.
 #
 # API creds: env first (SEMAPHORE_URL + SEMAPHORE_TOKEN, as setup-templates.yml
 # and the local bootstrap use), else OpenBao secret/services/semaphore (keys
@@ -43,7 +51,7 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _sem_url_env: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) | default('', true) }}"
     _sem_token_env: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
-    _admin_users: "{{ semaphore_admin_users | default([]) }}"
+    _admin_users: "{{ semaphore_admin_users | default([]) | semaphore_admin_roster(platform_admins | default(none)) }}"
 
   tasks:
     - name: "Require a non-empty admin roster"
@@ -51,9 +59,9 @@
         that:
           - (_admin_users | length) > 0
         fail_msg: >-
-          semaphore_admin_users is empty. Declare the platform-admins roster
-          (Semaphore USERNAMES — email matching is deliberately unsupported)
-          in inventory (site-config all.vars) or pass
+          No Semaphore admin is declared. Declare platform_admins (the administrator
+          list) or semaphore_admin_users (Semaphore USERNAMES; email matching is
+          deliberately unsupported) in inventory (site-config all.vars) or pass
           -e '{"semaphore_admin_users":["alice","bob"]}'.
 
     # ── Resolve the Semaphore API URL + token (env first, else OpenBao) ─────
@@ -66,12 +74,14 @@
     # fires when the env value is absent, so an env-token run needs no OpenBao.
     - name: "Resolve the Semaphore URL + token (env first, else OpenBao AppRole lookup)"
       ansible.builtin.set_fact:
+        # The declared URL may end in "/". "<url>//api/users/<id>" is answered with a 301,
+        # which uri follows for GET but not for the PUT, so trim it (task 9870, #604).
         _sem_url: >-
-          {{ _sem_url_env if (_sem_url_env | length) > 0
-             else lookup('community.hashi_vault.hashi_vault',
-                         'secret/data/services/semaphore:url',
-                         url=_bao_url, auth_method='approle',
-                         role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+          {{ (_sem_url_env if (_sem_url_env | length) > 0
+              else lookup('community.hashi_vault.hashi_vault',
+                          'secret/data/services/semaphore:url',
+                          url=_bao_url, auth_method='approle',
+                          role_id=_bao_role_id, secret_id=_bao_secret_id)) | regex_replace('/+$', '') }}
         _sem_token: >-
           {{ _sem_token_env if (_sem_token_env | length) > 0
              else lookup('community.hashi_vault.hashi_vault',
@@ -147,6 +157,9 @@
         label: "{{ item.username }} <{{ item.email }}>"
       register: _sem_promoted
       changed_when: true
+      # A failure here is hidden by no_log, so the status codes are judged below, where they
+      # can be shown (task 9843 failed with nothing but "details hidden", #604).
+      failed_when: false
       no_log: true  # bearer token rides in headers — never dump it (failure/-vvv)
       when: not ansible_check_mode
 
@@ -154,12 +167,56 @@
       ansible.builtin.debug:
         msg: >-
           Promotion PUT statuses:
-          {{ _sem_promoted.results | default([]) | map(attribute='status') | list }}
-      when: (_sem_promoted.results | default([]) | length) > 0
+          {{ _sem_promoted.results | default([]) | map(attribute='status', default=-1) | list }}
+      # Under --check the promotion loop is skipped and its results carry no status.
+      when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
+
+    - name: "Require Semaphore to accept every promotion"
+      vars:
+        _refused: >-
+          {{ _to_promote | map(attribute='username')
+             | zip(_sem_promoted.results | map(attribute='status', default=-1))
+             | rejectattr('1', 'in', [200, 204]) | list }}
+      ansible.builtin.assert:
+        that: _refused | length == 0
+        fail_msg: >-
+          Semaphore refused these promotions (username, HTTP status; -1 means no answer): {{ _refused }}.
+          A 401 is either a token Semaphore does not accept or a token whose user may not edit
+          that account (not an admin, or the account is its own).
+      when: not ansible_check_mode and (_sem_promoted.results | default([]) | length) > 0
+
+    # A PUT the server answered is not proof it applied: read the accounts back.
+    - name: "Read the Semaphore users back"
+      ansible.builtin.uri:
+        url: "{{ _sem_url }}/api/users"
+        headers:
+          Authorization: "Bearer {{ _sem_token }}"
+        status_code: [200]
+      register: _sem_users_after
+      no_log: true  # bearer token rides in headers: never dump it (failure/-vvv)
+      check_mode: false
+      when: not ansible_check_mode and (_to_promote | length) > 0
+
+    - name: "Require every promoted admin to read back as admin"
+      vars:
+        # Targeted accounts minus those that read back as admin, so an account missing
+        # from the read-back fails too, not only one that reads back as non-admin.
+        _still_not_admin: >-
+          {{ _to_promote | map(attribute='username') | list
+             | difference(_sem_users_after.json | selectattr('admin')
+                          | map(attribute='username') | list) }}
+      ansible.builtin.assert:
+        that: _still_not_admin | length == 0
+        fail_msg: "Semaphore accepted the promotion but these accounts are still not admin: {{ _still_not_admin }}"
+      when: _sem_users_after is not skipped and _sem_users_after.json is defined
 
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          Promoted {{ _to_promote | length }} user(s) to Semaphore admin this run:
+          {{ 'Would promote (check mode)' if ansible_check_mode else 'Promoted' }}
+          {{ _to_promote | length }} user(s) to Semaphore admin this run:
           {{ _to_promote | map(attribute='username') | list }}.
           Declared admins already admin were left untouched (idempotent).
+          Declared admins with no Semaphore account yet (each signs in once through
+          SSO, then this runs again):
+          {{ _admin_users | difference(_sem_users.json | map(attribute='username') | list) }}.

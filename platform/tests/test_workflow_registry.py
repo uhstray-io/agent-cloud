@@ -150,6 +150,27 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert "not new-event counts" in historical_failures["description"]
     assert historical_failures["options"]["wrapLogMessage"] is False
 
+    receipt = {"job": "agent-cloud-conformance", "kind": "run", "status": "success"}
+    per_service_panels = {
+        "Current failed step states",
+        "Latest step status by service",
+        "Latest workflow completion age",
+        "Latest workflow completion age by service and step",
+        "Workflow completion and task provenance",
+        "Recent failed task snapshots",
+    }
+    for panel in conformance["panels"]:
+        if panel["title"] not in per_service_panels:
+            continue
+        expr = panel["targets"][0]["expr"]
+        assert 'service=~".+"' in expr, panel["title"]
+        assert 'step=~".+"' in expr, panel["title"]
+    # The final run receipt has no per-service labels, so positive nonempty matchers keep it
+    # out of every service/step/failure row even though it shares the conformance job.
+    assert not receipt.get("service", "")
+    assert not receipt.get("step", "")
+    assert receipt["status"] != "fail"
+
     step_table = next(panel for panel in conformance["panels"]
                       if panel["title"] == "Latest step status by service")
     assert [item["id"] for item in step_table["transformations"]] == [
@@ -183,9 +204,13 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     overview = json.loads(SERVICE_OVERVIEW_DASHBOARD.read_text())
     assert overview["uid"] == "service-overview"
     health = next(panel for panel in overview["panels"] if panel["title"] == "Scrape target health")
-    assert health["targets"][0]["expr"] == 'min by (service) (up{service=~"$service"})'
+    assert health["targets"][0]["expr"] == (
+        'min by (service) (up{service=~"$service",job!="o11y-availability"})'
+    )
     failed = next(panel for panel in overview["panels"] if panel["title"] == "Unhealthy scrape targets")
-    assert failed["targets"][0]["expr"] == 'up{service=~"$service"} == 0'
+    assert failed["targets"][0]["expr"] == (
+        'up{service=~"$service",job!="o11y-availability"} == 0'
+    )
     variables = {item["name"]: item for item in overview["templating"]["list"]}
     assert variables["service"]["label"] == "Metrics service"
     assert variables["service"]["datasource"]["uid"] == "prometheus"
@@ -193,7 +218,7 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert variables["log_service"]["datasource"]["uid"] == "loki"
     assert "label_values" in variables["log_service"]["query"]
     loki_panels = [panel for panel in overview["panels"] if panel["datasource"]["type"] == "loki"]
-    assert len(loki_panels) == 6
+    assert len(loki_panels) == 8
     assert all("selected Logs service" in panel["description"] for panel in loki_panels)
     source_panels = {panel["title"]: panel for panel in loki_panels}
     container_query = source_panels["Recent container logs"]["targets"][0]["expr"]
@@ -209,18 +234,30 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert "} or {" not in container_query
     assert 'signal="access-log"' in source_panels["Recent gateway access records"]["targets"][0]["expr"]
     assert 'signal="span"' in source_panels["Recent optional span logs"]["targets"][0]["expr"]
-    assert 'job="agent-cloud-conformance"' in source_panels["Recent workflow conformance records"]["targets"][0]["expr"]
+    recent_conformance = source_panels["Recent workflow conformance records"]["targets"][0]["expr"]
+    assert recent_conformance.startswith('{service=~"$log_service", job="agent-cloud-conformance"}')
+    assert 'job="agent-cloud-conformance"' in recent_conformance
+    unclassified = source_panels["Recent unclassified records"]
+    assert unclassified["targets"][0]["expr"] == (
+        '{service=~"$log_service", container!~".+", '
+        'signal!~"^(container|access-log|span)$", job!="agent-cloud-conformance"}'
+    )
     all_streams = source_panels["All Loki streams (mixed-source drill-down)"]
     assert all_streams["targets"][0]["expr"] == '{service=~"$log_service"}'
     assert all_streams["targets"][0]["maxLines"] == 100
     volume_targets = {target["legendFormat"].split(" · ", 1)[0]: target["expr"]
                       for target in next(p for p in overview["panels"]
                                          if p["title"] == "Log volume by source")["targets"]}
-    assert set(volume_targets) == {"Container", "Journal container", "Access", "Span", "Conformance"}
-    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Container"]
+    assert set(volume_targets) == {
+        "Legacy container", "Journal container", "Access", "Span", "Conformance", "Unclassified"
+    }
+    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Legacy container"]
     assert 'signal="container"' in volume_targets["Journal container"]
+    assert 'container!~".+"' in volume_targets["Unclassified"]
+    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Unclassified"]
+    assert 'job!="agent-cloud-conformance"' in volume_targets["Unclassified"]
     assert all('job!="agent-cloud-conformance"' in volume_targets[source]
-               for source in ("Container", "Journal container", "Access", "Span"))
+               for source in ("Legacy container", "Journal container", "Access", "Span"))
     # Label combinations that carry more than one source hint still contribute once.
     records = [
         {"container": "app", "signal": ""},
@@ -228,6 +265,7 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
         {"container": "gateway", "signal": "access-log"},
         {"container": "gateway", "signal": "span"},
         {"container": "alloy", "signal": "container", "job": "agent-cloud-conformance"},
+        {"job": "alloy"},
     ]
     selected = [
         [i for i, row in enumerate(records) if row.get("container") and
@@ -240,6 +278,9 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
         [i for i, row in enumerate(records) if row.get("signal") == "span" and
          row.get("job") != "agent-cloud-conformance"],
         [i for i, row in enumerate(records) if row.get("job") == "agent-cloud-conformance"],
+        [i for i, row in enumerate(records) if not row.get("container") and
+         row.get("signal", "") not in {"container", "access-log", "span"} and
+         row.get("job") != "agent-cloud-conformance"],
     ]
     assert sorted(i for source in selected for i in source) == list(range(len(records)))
     assert sum(map(len, selected)) == len({i for source in selected for i in source})
@@ -249,13 +290,10 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
 
 def test_drawn_steps_match_the_drawing():
     drawn = _drawn_labels()
-    labelled = [s for s in STEPS if s.get("diagram_label")]
-    assert len(labelled) == 18, "the drawing shows eighteen workflow steps"
+    # Every step is drawn (workflow task 10.2): each label names a box in the drawing.
     for step in STEPS:
-        if step.get("diagram_label"):
-            assert step["diagram_label"] in drawn, f"{step['id']}: {step['diagram_label']!r} not in the drawing"
-        else:
-            assert step.get("added") is True, f"{step['id']} is undrawn but not marked added"
+        assert step.get("diagram_label"), f"{step['id']} has no box in the drawing"
+        assert step["diagram_label"] in drawn, f"{step['id']}: {step['diagram_label']!r} not in the drawing"
 
 
 def test_every_schema_parses_and_is_referenced():
@@ -308,7 +346,9 @@ def test_only_the_collector_writes_workflow_status():
     code = {f: "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
             for f, text in files.items()}
     assert sorted(f for f, text in code.items() if "_agg.loki_streams" in text) == [collector]
-    assert not [f for f, text in files.items() if "agent-cloud-conformance" in text]
+    assert sorted(f for f, text in code.items() if "agent-cloud-conformance" in text) == [
+        "platform/playbooks/deploy-o11y.yml"
+    ]  # The dashboard read-back may name the stream; only the collector writes it.
 
 
 def test_production_conformance_uses_the_exact_private_otlp_receiver():
@@ -331,19 +371,54 @@ def test_production_conformance_uses_the_exact_private_otlp_receiver():
                for item in guard["ansible.builtin.assert"]["that"])
     assert any("_o11y_bind is match(_o11y_private_ipv4_pattern)" in item
                for item in guard["ansible.builtin.assert"]["that"])
+    netbox_lookup = next(t for t in tasks if t.get("name") == "NetBox: find each service's VM")
+    assert netbox_lookup["failed_when"] is False  # NetBox remains nonblocking for the workflow.
+    assert netbox_lookup["ansible.builtin.uri"]["status_code"] == [200]
     push = next(t for t in tasks if t.get("name") ==
                 "Production Alloy: deliver conformance records over OTLP/HTTP")
     assert push["ansible.builtin.uri"]["body_format"] == "json"
     assert push["ansible.builtin.uri"]["url"] == "{{ _collector_otlp_url }}"
     assert push["ansible.builtin.uri"]["status_code"] == [200]
+    assert push["ansible.builtin.uri"]["body"] == "{{ _agg.otlp_payload }}"
     assert push["failed_when"] is False
     assert "retries" not in push
     assert "not (local_mode | default(false) | bool)" in push["when"]
     local = next(t for t in tasks if t.get("name") == "Local Loki: one line per step result")
     assert "local_mode | default(false) | bool" in local["when"]
     assert "collector_loki_url is defined" in local["when"]
+    assert local["vars"]["push_loki_streams"] == "{{ _agg.loki_streams }}"
+    assert not any("delivery batch" in (task.get("name") or "").lower() for task in tasks)
+    names = [t.get("name") for t in tasks]
+    assert names.index("NetBox: classify complete reads and unique matches") < names.index(
+        "Aggregate: latest result per service and step")
+    assert names.index("NetBox: write each service's workflow status") < names.index(
+        "Completion: require complete NetBox reads and successful unique-match writes")
+    assert names.index("Completion: require complete NetBox reads and successful unique-match writes") < names.index(
+        "Local Loki: one line per step result")
+    completion_hold = next(t for t in tasks if t.get("name") == "Completion: hold the required-work result")
+    assert "not ansible_check_mode" in completion_hold["ansible.builtin.set_fact"]["_completion_ready"]
+    local_delivery = names.index("Local Loki: one line per step result")
+    production_delivery = names.index("Production Alloy: deliver conformance records over OTLP/HTTP")
+    prior_ack = names.index("Completion: classify prior data delivery")
+    receipt_batch = names.index("Completion: build separate receipt payload")
+    local_receipt = names.index("Local Loki: publish collector completion receipt")
+    production_receipt = names.index("Production Alloy: publish collector completion receipt")
+    assert local_delivery < production_delivery < prior_ack < receipt_batch
+    assert prior_ack < local_receipt < production_receipt
+    assert receipt_batch < local_receipt < production_receipt
+    assert names.index("Completion: hold publication boundary") < local_receipt
+    receipt_post = next(t for t in tasks if t.get("name") == "Production Alloy: publish collector completion receipt")
+    assert receipt_post["ansible.builtin.uri"]["body"] == "{{ _completion_receipt.otlp_payload }}"
+    assert receipt_post["failed_when"] is False
+    assert "retries" not in receipt_post
+    assert "not ansible_check_mode" in receipt_post["when"]
+    assert "_completion_publish_ready" in receipt_post["when"]
     classify = next(t for t in tasks if t.get("name") == "Classify the OTLP response without exposing its body")
-    assert "rejectedLogRecords" in classify["ansible.builtin.set_fact"]["_otlp_delivery_ok"]
+    assert "rejectedLogRecords" in classify["ansible.builtin.command"]["stdin"]
+    assert "response.json | to_json" not in classify["ansible.builtin.command"]["stdin"]
+    assert "errorMessage" in classify["ansible.builtin.command"]["stdin"]
+    assert "{{ _delivery" not in (REPO / "platform/playbooks/collect-service-conformance.yml").read_text()
+    assert "_otlp_delivery_ok" not in classify.get("ansible.builtin.set_fact", {})
     assert tasks.index(classify) < next(i for i, t in enumerate(tasks) if t.get("name") == "Report")
     report = next(t for t in tasks if t.get("name") == "Report")
     fail = next(t for t in tasks if t.get("name") == "Fail after reporting unsuccessful production OTLP delivery")
@@ -390,13 +465,21 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         assert "Production conformance delivery requires collector_otlp_url" in output
 
 
-def _run_with_broken_inventory(tmp_path, playbook, extra=None):
-    inventory_path = tmp_path / "inventory.yml"
-    inventory_path.write_text("not: [valid\n")
+def _run_with_broken_inventory(tmp_path, playbook, extra=None, environment=None, inventory="broken"):
+    """Run a playbook. inventory: "broken" (unparseable file), "missing" (path that does not
+    exist, what a Semaphore task is left with when another task removed the shared file) or
+    None (no -i at all, as an operator-side tool is started)."""
     env = os.environ.copy()
     env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
-               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
-    cmd = ["ansible-playbook", "-i", str(inventory_path), str(REPO / playbook)]
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1", **(environment or {}))
+    cmd = ["ansible-playbook"]
+    if inventory == "broken":
+        inventory_path = tmp_path / "inventory.yml"
+        inventory_path.write_text("not: [valid\n")
+        cmd += ["-i", str(inventory_path)]
+    elif inventory == "missing":
+        cmd += ["-i", str(tmp_path / "inventory_2.yml")]
+    cmd.append(str(REPO / playbook))
     if extra is not None:
         cmd += ["-e", json.dumps(extra)]
     result = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
@@ -415,7 +498,9 @@ def test_production_collector_names_an_unparsed_inventory(tmp_path):
     assert "Production conformance delivery requires collector_otlp_url" not in output
 
 
-def test_local_collector_does_not_require_a_parsed_inventory():
+def test_local_collector_skips_the_parsed_inventory_guard_in_local_mode():
+    # A local inventory always holds localhost (bootstrap-local-dev.yml), so the guard is
+    # unnecessary there; production, where an empty inventory is an error, keeps it.
     collector = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]
     guard = next(t for t in collector["tasks"] if t.get("name") == "Require the inventory to have parsed")
     assert guard["ansible.builtin.include_tasks"] == "tasks/require-parsed-inventory.yml"
@@ -437,15 +522,83 @@ def test_scheduled_callers_name_an_unparsed_inventory(tmp_path, playbook, extra)
     assert UNPARSED in output
 
 
+# A local controller's OpenBao address (a single-label name) is only legal under local_mode,
+# which an unparsed inventory does not supply. Before the parse check ran first, that
+# surfaced as a transport refusal and hid the real cause (local tasks 5583/5585, prod 3878).
+LOCAL_OPENBAO_NO_TOKEN = {"OPENBAO_ADDR": "http://local-openbao:8200", "SEMAPHORE_TOKEN": ""}
+TRANSPORT_REFUSAL = "Refusing to send secret material"
+
+
+RUNTIME_ACCESS_CALLERS = [
+    ("platform/playbooks/inspect-discovery-metadata.yml", {"discovery_project_id": "1"}),
+    ("platform/playbooks/manage-semaphore-access.yml", None),
+    # The publisher template imports setup-templates.yml (an operator-side tool that is
+    # legitimately run with no inventory); a Semaphore launch of it must still be checked.
+    ("platform/playbooks/publish-semaphore-templates.yml",
+     {"semaphore_template_names_json": json.dumps(["Publish Semaphore Template Surveys (Dev)"])}),
+]
+
+
+@pytest.mark.parametrize("inventory", ["broken", "missing"])
+@pytest.mark.parametrize("playbook, extra", RUNTIME_ACCESS_CALLERS)
+def test_runtime_access_names_an_unparsed_inventory_before_the_transport_check(
+        tmp_path, playbook, extra, inventory):
+    rc, output = _run_with_broken_inventory(
+        tmp_path, playbook, extra, LOCAL_OPENBAO_NO_TOKEN, inventory=inventory)
+    assert rc != 0
+    assert UNPARSED in output
+    assert TRANSPORT_REFUSAL not in output
+
+
+@pytest.mark.parametrize("playbook", [
+    "platform/semaphore/setup-templates.yml",
+    "platform/semaphore/bootstrap-semaphore-repositories.yml",
+    "platform/semaphore/sync-inventory.yml",
+])
+def test_operator_side_tools_started_without_an_inventory_are_not_asked_for_one(tmp_path, playbook):
+    """They run from a workstation with no -i, so runtime-access must not demand one."""
+    rc, output = _run_with_broken_inventory(
+        tmp_path, playbook, None,
+        {"SEMAPHORE_URL": "http://127.0.0.1:9", "SEMAPHORE_TOKEN": "not-a-real-token"},
+        inventory=None)
+    assert UNPARSED not in output
+
+
+@pytest.mark.parametrize("playbook", [
+    "platform/semaphore/setup-templates.yml",
+    "platform/semaphore/bootstrap-semaphore-repositories.yml",
+    "platform/semaphore/sync-inventory.yml",
+    "platform/playbooks/inspect-discovery-metadata.yml",
+    "platform/playbooks/manage-semaphore-access.yml",
+    "platform/playbooks/collect-service-conformance.yml",
+    "platform/semaphore/provision-seed-environment.yml",
+])
+def test_no_playbook_decides_for_itself_whether_an_inventory_is_needed(playbook):
+    """The decision is made by runtime-access from how the run was started; a play var
+    would leak into every playbook that imports the play that set it."""
+    assert "runtime_access_inventory_optional" not in (REPO / playbook).read_text()
+
+
 @pytest.mark.parametrize(
     ("response", "expected_status", "expected_rc", "private_marker"),
     [
-        ({"status": 200, "json": {}}, "delivered", 0, None),
-        ({"status": 503, "content": "private response body"}, "failed", 1, "private response body"),
-        ({"msg": "connection refused"}, "failed", 1, "connection refused"),
-        ({"status": 200, "json": {"partialSuccess": {"rejectedLogRecords": 2,
-                                                       "errorMessage": "private partial detail"}}},
-         "failed", 1, "private partial detail"),
+        ({"status": 200, "content_type": "application/json", "json": {}}, "delivered", 0, None),
+        ({"status": 503, "content": "private response body"}, "failed/UNKNOWN", 1, "private response body"),
+        ({"msg": "connection refused"}, "failed/UNKNOWN", 1, "connection refused"),
+        ({"status": 200, "content_type": "application/json",
+          "json": {"partialSuccess": {"rejectedLogRecords": 2,
+                                         "errorMessage": "private partial detail"}}},
+         "failed/UNKNOWN", 1, "private partial detail"),
+        ({"status": 200, "content_type": "text/plain", "content": "not JSON"},
+         "failed/UNKNOWN", 1, "not JSON"),
+        ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {
+            "rejectedLogRecords": "0", "errorMessage": "private warning"}}}, "delivered", 0, "private warning"),
+        ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {}}},
+         "delivered", 0, None),
+        ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {
+            "rejectedLogRecords": 0, "errorMessage": ""}}}, "delivered", 0, None),
+        ({"status": 200, "content_type": "application/json", "json": {"partialSuccess": {
+            "rejectedLogRecords": True, "errorMessage": "private detail"}}}, "failed/UNKNOWN", 1, "private detail"),
     ],
 )
 def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, expected_status,
@@ -454,23 +607,30 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
     tasks = collector["tasks"]
     selected = [next(t for t in tasks if t.get("name") == name) for name in (
         "Classify the OTLP response without exposing its body",
+        "Completion: hold the classified OTLP acknowledgement",
         "Report",
         "Fail after reporting unsuccessful production OTLP delivery",
     )]
     fixture = [{
         "name": "Exercise conformance OTLP response reporting",
         "hosts": "localhost",
+        "connection": "local",
         "gather_facts": False,
         "vars": {
             "local_mode": False,
             "_otlp": response,
-            "_agg": {"report": {}, "otlp_payload": {"resourceLogs": [{}]}},
+            "_completion_ready": True,
+            "_completion_publish_ready": False,
+            "_agg": {"loki_streams": [], "otlp_payload": {"resourceLogs": [{}]}, "report": {}},
             "_nb_writes": {"results": []},
             "_vm_missing": [],
             "_vm_ambiguous": [],
-            "_vm_unreachable": [],
+            "_vm_unknown": [],
+            "_conformance_loki_status": 0,
+            "_conformance_loki_skipped": True,
             "_pick": {"stdout": json.dumps({"window_full": []})},
             "_push_loki_result": {"status": 204},
+            "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
         },
         "tasks": selected,
     }]
@@ -484,8 +644,9 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
         cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
     )
     output = result.stdout + result.stderr
-    assert (result.returncode != 0) == (expected_rc != 0)
-    assert f'"otlp": "{expected_status}"' in output
+    assert (result.returncode != 0) == (expected_rc != 0), output
+    assert f'"otlp": "{expected_status}"' in output, output
+    assert '"completion_receipt": "not_attempted"' in output
     if expected_rc:
         assert "Conformance OTLP delivery failed; see the preceding report for status." in output
         assert output.index(f'"otlp": "{expected_status}"') < output.index(
@@ -493,6 +654,130 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
         )
     if private_marker:
         assert private_marker not in output
+
+
+def test_pinned_empty_partial_success_is_accepted_by_both_otlp_posts(tmp_path):
+    tasks = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]["tasks"]
+    names = (
+        "Classify the OTLP response without exposing its body",
+        "Completion: hold the classified OTLP acknowledgement",
+        "Completion: classify final receipt response",
+        "Completion: hold final receipt result",
+    )
+    selected = [next(task for task in tasks if task.get("name") == name) for name in names]
+    payload = {
+        "status": 200, "content_type": "application/json",
+        "json": {"partialSuccess": {}},
+    }
+    fixture = [{
+        "name": "Classify both successful empty OTLP acknowledgements",
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_otlp": payload, "_otlp_receipt": payload,
+                 "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py")},
+        "tasks": selected + [{
+            "name": "Show bounded data acknowledgement",
+            "ansible.builtin.debug": {"var": "_otlp_delivery_ack"},
+        }, {
+            "name": "Show bounded receipt acknowledgement",
+            "ansible.builtin.debug": {"var": "_completion_receipt_ack"},
+        }],
+    }]
+    fixture_path = tmp_path / "otlp-empty-partial-success.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture))
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    result = subprocess.run(
+        ["ansible-playbook", "-v", "-i", "localhost,", str(fixture_path)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"_otlp_delivery_ack": true' in result.stdout
+    assert '"_completion_receipt_ack": true' in result.stdout
+
+
+@pytest.mark.parametrize("status", [0, False, "", []])
+def test_netbox_status_projection_preserves_malformed_falsey_values(tmp_path, status):
+    tasks = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]["tasks"]
+    selected = [next(task for task in tasks if task.get("name") == name) for name in (
+        "NetBox: keep only bounded lookup data",
+        "NetBox: classify complete reads and unique matches",
+        "NetBox: hold classified lookup outcomes",
+    )]
+    fixture = [{
+        "name": "Project and classify a malformed NetBox status",
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {
+            "_vms": {"results": [{"item": "service-a", "status": 200,
+                                     "json": {"count": 1, "next": None,
+                                              "results": [{"id": 7, "custom_fields": {
+                                                  "ac_workflow_status": status}}]}}]},
+            "_select": {"stdout": json.dumps({"inventory_services": ["service-a"]})},
+            "_netbox_url": "https://netbox.example.invalid",
+            "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
+        },
+        "tasks": selected + [{
+            "name": "Show bounded read classification",
+            "ansible.builtin.debug": {
+                "msg": "{{ {'complete': _netbox_state.complete, 'unknown': _vm_unknown, "
+                       "'found': _vm_found} | to_json }}",
+            },
+        }],
+    }]
+    fixture_path = tmp_path / "netbox-falsey-status.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture))
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    result = subprocess.run(
+        ["ansible-playbook", "-v", "-i", "localhost,", str(fixture_path)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"complete": false' in result.stdout
+    assert '"unknown": ["service-a"]' in result.stdout
+    assert '"found": []' in result.stdout
+
+
+def test_otlp_uri_results_are_protected_at_verbose_levels(tmp_path):
+    tasks = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]["tasks"]
+    uri_names = (
+        "Production Alloy: deliver conformance records over OTLP/HTTP",
+        "Production Alloy: publish collector completion receipt",
+    )
+    for name in uri_names:
+        task = next(task for task in tasks if task.get("name") == name)
+        assert task.get("no_log") is True
+
+    marker = "private receiver response marker"
+    protected_tasks = [{
+        "name": "Protect the raw receiver response in the task result",
+        "ansible.builtin.set_fact": {"_raw_otlp_response": {
+            "status": 503, "content_type": "application/json",
+            "json": {"partialSuccess": {"errorMessage": marker}},
+            "headers": {"X-Response-Marker": marker},
+        }},
+        "no_log": True,
+    }, {
+        "name": "Expose only a fixed status",
+        "ansible.builtin.debug": {"msg": {"status": "failed/UNKNOWN"}},
+    }]
+    fixture = [{"name": "Protect OTLP response material", "hosts": "localhost",
+                "connection": "local", "gather_facts": False, "tasks": protected_tasks}]
+    fixture_path = tmp_path / "protected-otlp-response.yml"
+    fixture_path.write_text(yaml.safe_dump(fixture))
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    for verbosity in ("-v", "-vvv"):
+        result = subprocess.run(
+            ["ansible-playbook", verbosity, "-i", "localhost,", str(fixture_path)],
+            cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert marker not in output
+        assert '"status": "failed/UNKNOWN"' in output
 
 
 def _emitted_evidence() -> dict[str, set[str]]:

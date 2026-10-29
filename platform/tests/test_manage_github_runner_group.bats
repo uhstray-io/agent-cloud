@@ -11,7 +11,27 @@ load assert_helpers
 
 setup() {
   PLAYBOOK="$BATS_TEST_DIRNAME/../playbooks/manage-github-runner-group.yml"
+  TEMPLATES="$BATS_TEST_DIRNAME/../semaphore/templates.yml"
   [ -f "$PLAYBOOK" ]
+  [ -f "$TEMPLATES" ]
+}
+
+@test "runner-group: Semaphore requires the App client id survey input" {
+  cat > "$BATS_TEST_TMPDIR/survey.py" <<'PYSCRIPT'
+import re, sys
+src = open(sys.argv[1]).read()
+templates = re.split(r'(?m)^  - name: ', src)
+group = next((x for x in templates if x.startswith('Manage GitHub Runner Group\n')), None)
+if group is None:
+    print('runner-group template not found'); sys.exit(1)
+field = re.search(r'(?ms)^      - name: github_app_client_id\n(.*?)(?=^      - name: |\Z)', group)
+if field is None or not re.search(r'(?m)^        required: true$', field.group(1)):
+    print('runner-group App client id survey is missing or optional'); sys.exit(1)
+print('OK')
+PYSCRIPT
+  run python3 "$BATS_TEST_TMPDIR/survey.py" "$TEMPLATES"
+  [ "$status" -eq 0 ]
+  [ "$output" = "OK" ]
 }
 
 @test "runner-group: a public repository in the declaration aborts the run" {
@@ -84,8 +104,8 @@ PYSCRIPT
   ! grep -qE 'runner-groups/[0-9]+' "$PLAYBOOK"
 }
 
-@test "runner-group: the declaration lists private repos and excludes agent-cloud" {
-  grep -qF "github_runner_repos | default(['zerds', 'atlas', 'zerds-website', 'weft', 'scientific-business'])" "$PLAYBOOK"
+@test "runner-group: the exact private-repo declaration includes site-config and excludes agent-cloud" {
+  grep -qF "github_runner_repos | default(['zerds', 'atlas', 'zerds-website', 'weft', 'scientific-business', 'site-config', 'skynet'])" "$PLAYBOOK"
   # agent-cloud must not appear in the default declaration at all.
   ! grep -qE "default\(\['.*agent-cloud" "$PLAYBOOK"
 }

@@ -1,0 +1,12 @@
+# Managed by deploy-o11y.yml. Also run once after each non-check deploy.
+[Unit]
+Description=Daily o11y named-volume capacity sample
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=5m
+Persistent=true
+Unit=o11y-capacity-sample.service
+
+[Install]
+WantedBy=timers.target

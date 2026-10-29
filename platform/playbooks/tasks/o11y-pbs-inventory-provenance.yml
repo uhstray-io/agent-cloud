@@ -1,0 +1,261 @@
+---
+# Verify the exact static production inventory supplied to this run against the
+# reviewed private site-config revision and the current Dev Semaphore bindings.
+# The private clone, API bodies and inventory bytes remain in no_log task state.
+- name: "Prove current PBS workflow inventory provenance"
+  block:
+    - name: Validate fixed PBS provenance selectors
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - site_config_base_sha is match('^[0-9a-f]{40}$')
+          - _pbs_provenance_template_name is string
+          - _pbs_provenance_playbook is string
+          - estate_coverage_semaphore_project_id is defined
+          - estate_coverage_semaphore_project_id is integer
+          - estate_coverage_semaphore_project_id is not boolean
+          - estate_coverage_semaphore_project_id > 0
+          - estate_coverage_semaphore_repository_id is defined
+          - estate_coverage_semaphore_repository_id is integer
+          - estate_coverage_semaphore_repository_id is not boolean
+          - estate_coverage_semaphore_repository_id > 0
+          - ansible_inventory_sources | length == 1
+          - ansible_inventory_sources[0] is file
+        fail_msg: "PBS provenance requires one reviewed production inventory source and fixed private selectors."
+        quiet: true
+
+    - name: Refuse cleartext OpenBao transport before authentication
+      ansible.builtin.include_tasks: assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+
+    - name: Authenticate to OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+          secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      register: _pbs_prov_bao_auth
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read Semaphore API credentials and private repository deploy key
+      ansible.builtin.uri:
+        url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) }}/v1/secret/data/services/{{ item }}"
+        headers:
+          X-Vault-Token: "{{ _pbs_prov_bao_auth.json.auth.client_token | default('') }}"
+        status_code: [200]
+        follow_redirects: none
+        use_netrc: false
+        use_proxy: false
+      loop:
+        - semaphore
+        - ssh/site-config
+      loop_control:
+        label: "OpenBao read"
+      register: _pbs_prov_secret_reads
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Retain OpenBao credentials in protected task state
+      ansible.builtin.set_fact:
+        _pbs_prov_semaphore_secret: >-
+          {{ (((_pbs_prov_secret_reads.results | default([]) | selectattr('item', 'equalto', 'semaphore') | list | first | default({})).get('json', {})).get('data', {})).get('data', {}) }}
+        _pbs_prov_site_config_secret: >-
+          {{ (((_pbs_prov_secret_reads.results | default([]) | selectattr('item', 'equalto', 'ssh/site-config') | list | first | default({})).get('json', {})).get('data', {})).get('data', {}) }}
+      no_log: true
+
+    - name: Require OpenBao values without revealing them
+      ansible.builtin.assert:
+        that:
+          - _pbs_prov_bao_auth.json.auth.client_token | default('') | length > 0
+          - _pbs_prov_semaphore_secret.url | default('') | length > 0
+          - _pbs_prov_semaphore_secret.api_token | default('') | length > 0
+          - _pbs_prov_site_config_secret.private_key | default('') | length > 0
+        fail_msg: "PBS inventory provenance could not read its required OpenBao values."
+        quiet: true
+      no_log: true
+
+    - name: Refuse cleartext Semaphore transport
+      ansible.builtin.include_tasks: assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _pbs_prov_semaphore_secret.url }}"
+        _assert_url_label: Semaphore
+
+    - name: Read current production inventory records
+      ansible.builtin.uri:
+        url: "{{ _pbs_prov_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/inventory"
+        headers:
+          Authorization: "Bearer {{ _pbs_prov_semaphore_secret.api_token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [200]
+        use_netrc: false
+        use_proxy: false
+      register: _pbs_prov_inventories
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read current template records
+      ansible.builtin.uri:
+        url: "{{ _pbs_prov_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _pbs_prov_semaphore_secret.api_token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [200]
+        use_netrc: false
+        use_proxy: false
+      register: _pbs_prov_templates
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read current repository records
+      ansible.builtin.uri:
+        url: "{{ _pbs_prov_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _pbs_prov_semaphore_secret.api_token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [200]
+        use_netrc: false
+        use_proxy: false
+      register: _pbs_prov_repositories
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Compare the exact reviewed private and runtime inventory inside a cleanup block
+      block:
+        - name: Clone the reviewed site-config integration branch with pinned Git host keys
+          ansible.builtin.include_tasks:
+            file: site-config-clone.yml
+            apply:
+              no_log: true
+          vars:
+            _sc_deploy_key: "{{ _pbs_prov_site_config_secret.private_key }}"
+            _sc_reviewed_base_sha: "{{ site_config_base_sha }}"
+            _sc_base_branch: main
+            _sc_branch_prefix: "pbs/inventory-provenance-read"
+
+        - name: Confirm private integration branch tip matches the reviewed revision
+          ansible.builtin.command:
+            argv: [git, ls-remote, --heads, origin, refs/heads/main]
+            chdir: "{{ _sc_clone }}"
+          environment: "{{ _sc_git_env }}"
+          register: _pbs_prov_private_tip
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Read the exact private production inventory tree entry
+          ansible.builtin.command:
+            argv: [git, ls-tree, "{{ site_config_base_sha }}", --, inventory/production.yml]
+            chdir: "{{ _sc_clone }}"
+          register: _pbs_prov_tree
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Read the exact private production inventory bytes
+          ansible.builtin.command:
+            argv: [git, show, "{{ site_config_base_sha }}:inventory/production.yml"]
+            chdir: "{{ _sc_clone }}"
+            strip_empty_ends: false
+          register: _pbs_prov_private_inventory
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Run the strict inventory provenance comparator
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/files/inspect_o11y_pbs_provenance.py"]
+            stdin: >-
+              {{ {'public_sha': expected_repository_sha,
+                  'private_sha': site_config_base_sha,
+                  'inventory_source_count': ansible_inventory_sources | length,
+                  'private_tip_sha': (_pbs_prov_private_tip.stdout.split()[0]
+                    if _pbs_prov_private_tip.rc == 0
+                    and _pbs_prov_private_tip.stdout.splitlines() | length == 1
+                    and _pbs_prov_private_tip.stdout.split() | length == 2
+                    and _pbs_prov_private_tip.stdout.split()[1] == 'refs/heads/main'
+                    else ''),
+                  'private_tree_entry': (_pbs_prov_tree.stdout | trim if _pbs_prov_tree.rc == 0 else ''),
+                  'private_inventory': _pbs_prov_private_inventory.stdout | default(''),
+                  'runtime_inventory': query('ansible.builtin.file', ansible_inventory_sources[0], rstrip=false) | first,
+                  'project_id': estate_coverage_semaphore_project_id,
+                  'repository_id': estate_coverage_semaphore_repository_id,
+                  'template_name': _pbs_provenance_template_name,
+                  'playbook': _pbs_provenance_playbook,
+                  'semaphore_statuses': [_pbs_prov_inventories.status | default(none),
+                    _pbs_prov_templates.status | default(none), _pbs_prov_repositories.status | default(none)],
+                  'inventories': _pbs_prov_inventories.json | default(none),
+                  'templates': _pbs_prov_templates.json | default(none),
+                  'repositories': _pbs_prov_repositories.json | default(none)} | to_json }}
+          register: _pbs_prov_comparison_raw
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Retain the fixed PBS provenance receipt
+          ansible.builtin.set_fact:
+            _pbs_inventory_provenance: "{{ _pbs_prov_comparison_raw.stdout | from_json }}"
+          no_log: true
+      rescue:
+        - name: Normalize provenance failures to a fixed refusal
+          ansible.builtin.set_fact:
+            _pbs_inventory_provenance:
+              schema_version: 1
+              status: unavailable
+              reason: private_checkout_unavailable
+              public_sha: "{{ expected_repository_sha }}"
+              private_sha: "{{ site_config_base_sha }}"
+              inventory_provenance: unverified
+              inventory_fingerprint: null
+              source_fingerprint: null
+          no_log: true
+      always:
+        - name: Remove the private inventory clone and deploy-key file
+          ansible.builtin.file:
+            path: "{{ _sc_wd }}"
+            state: absent
+          when: _sc_wd is defined
+          changed_when: false
+
+    - name: Require exact reviewed runtime inventory bytes
+      ansible.builtin.assert:
+        that:
+          - _pbs_inventory_provenance.schema_version == 1
+          - _pbs_inventory_provenance.status == 'observed'
+          - _pbs_inventory_provenance.reason == 'exact_bytes_match'
+          - _pbs_inventory_provenance.inventory_provenance == 'exact_bytes_match'
+          - _pbs_inventory_provenance.public_sha == expected_repository_sha
+          - _pbs_inventory_provenance.private_sha == site_config_base_sha
+          - _pbs_inventory_provenance.inventory_fingerprint is match('^[0-9a-f]{64}$')
+          - _pbs_inventory_provenance.source_fingerprint is match('^[0-9a-f]{64}$')
+        fail_msg: "The supplied production inventory does not match the reviewed private source."
+        quiet: true
+      no_log: true
+  rescue:
+    - name: Stop with a content-free inventory provenance refusal
+      ansible.builtin.fail:
+        msg: "PBS source inventory provenance is unavailable or does not match its reviewed private source."
