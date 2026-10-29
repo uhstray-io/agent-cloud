@@ -67,6 +67,17 @@ all:
           monorepo_deploy_path: platform/services/caddy/deployment
           container_engine: podman
 
+    # console_svc — the Dispatch Console (plan 17). Its host and Phase 3 values live in site-config, never here.
+    # Phase 3 read-only inventory is optional: an unset URL leaves that panel "unconfigured" and reads no token.
+    #   console_netbox_url: <NetBox base URL>            # token: Provision NetBox Automation Token (profile console)
+    #   console_proxmox_url: <Proxmox API base URL>      # token: Provision Console Proxmox Token (PVEAuditor)
+    #   console_grafana_url: https://o11y.<zone>         # base for Grafana deep links; no credential
+    #   console_proxmox_ca_pem: |                        # the PUBLIC CA certificate. REQUIRED by Provision Console Proxmox
+    #                                                    # Token (it refuses to mint without it). Optional for the console
+    #                                                    # runtime: unset means the runtime's default trust (not yet read)
+    #     -----BEGIN CERTIFICATE-----
+    #   console_tenants[].orgs[].sites[].netbox_site: <NetBox site slug>   # optional; one slug per site (D23)
+
     # postiz — social-media scheduling and publishing. Five containers, only the
     # app publishing a port. Native OIDC to Authentik; the automation API is
     # reached over the public host, so no direct LAN rule is needed.
