@@ -1,4 +1,5 @@
-//! Compute: the node and VM levels of the selected tenant, as two tables.
+//! Compute: the node and VM levels of the selected tenant, as two tables, narrowed
+//! to the scope bar.
 //!
 //! Node usage comes from the live Proxmox fields. The API sends those to platform
 //! admins only, so a tenant member sees a node's name and status, and a dash where
@@ -13,8 +14,8 @@ use dioxus::prelude::*;
 use super::empty::COMPUTE;
 use super::icons::icon;
 use super::inventory::{
-    bytes_text, count_text, cpu_percent, mb_text, mem_percent, meta_of, uptime_text, view,
-    Snapshot, View, ViewNotice,
+    bytes_text, count_text, cpu_percent, loaded_tree, mb_text, mem_percent, meta_of, node_key,
+    scoped_inventory, uptime_text, view, vm_key, Snapshot, View, ViewNotice,
 };
 use super::inventory_api::{Inventory, Vm};
 use super::shell::Ctx;
@@ -23,6 +24,8 @@ use super::status::{unconfigured_notice, Freshness, Meter, Notice, Rag, RagBadge
 /// One node row. Usage fields are `None` when the API did not send them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeRow {
+    /// Unique across the tree, so two nodes of one name still key apart.
+    pub key: String,
     pub site: String,
     pub cluster: String,
     pub name: String,
@@ -38,6 +41,8 @@ pub struct NodeRow {
 /// One VM row, with NetBox's allocation and the server's RAG.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VmRow {
+    /// Unique across the tree: two VMs of one name in one cluster key apart by position.
+    pub key: String,
     pub site: String,
     pub cluster: String,
     pub name: String,
@@ -51,17 +56,18 @@ pub struct VmRow {
     pub grafana_url: Option<String>,
 }
 
-/// Every node of every mapped site, in site and cluster order.
+/// Every node of every site, in site and cluster order.
 pub fn node_rows(inv: &Inventory) -> Vec<NodeRow> {
     let mut rows = Vec::new();
     for site in &inv.sites {
         for cluster in &site.clusters {
-            for node in &cluster.nodes {
+            for (ordinal, node) in cluster.nodes.iter().enumerate() {
                 let memory = match (node.mem, node.maxmem) {
                     (Some(mem), Some(maxmem)) => Some((mem, maxmem)),
                     _ => None,
                 };
                 rows.push(NodeRow {
+                    key: node_key(&site.id, &cluster.name, &node.name, ordinal),
                     site: site.id.clone(),
                     cluster: cluster.name.clone(),
                     name: node.name.clone(),
@@ -83,21 +89,22 @@ pub fn node_rows(inv: &Inventory) -> Vec<NodeRow> {
     rows
 }
 
-/// Every VM of every mapped site, in site and cluster order.
+/// Every VM of every site, in site and cluster order.
 pub fn vm_rows(inv: &Inventory) -> Vec<VmRow> {
     let mut rows = Vec::new();
     for site in &inv.sites {
         for cluster in &site.clusters {
-            for vm in &cluster.vms {
-                rows.push(vm_row(&site.id, &cluster.name, vm));
+            for (ordinal, vm) in cluster.vms.iter().enumerate() {
+                rows.push(vm_row(&site.id, &cluster.name, vm, ordinal));
             }
         }
     }
     rows
 }
 
-fn vm_row(site: &str, cluster: &str, vm: &Vm) -> VmRow {
+fn vm_row(site: &str, cluster: &str, vm: &Vm, ordinal: usize) -> VmRow {
     VmRow {
+        key: vm_key(site, cluster, vm, ordinal),
         site: site.to_string(),
         cluster: cluster.to_string(),
         name: vm.name.clone(),
@@ -139,6 +146,7 @@ pub fn Compute() -> Element {
 
 #[component]
 fn ComputeBody(snap: Snapshot) -> Element {
+    let ctx = use_context::<Ctx>();
     let meta = meta_of(&snap).cloned().unwrap_or_default();
     let reason = snap.reason.clone().unwrap_or_default();
     let Some(inv) = snap.inventory.clone() else {
@@ -147,6 +155,9 @@ fn ComputeBody(snap: Snapshot) -> Element {
             Notice { message: "The inventory could not be loaded, so no capacity is shown.".to_string() }
         };
     };
+    let scope = ctx.scope.read().clone();
+    let tree = loaded_tree(&ctx.tree.read());
+    let inv = scoped_inventory(&inv, &scope, tree.as_ref());
     let nodes = node_rows(&inv);
     let vms = vm_rows(&inv);
     let node_count = count_text(nodes.len(), "node", "nodes");
@@ -178,7 +189,7 @@ fn ComputeBody(snap: Snapshot) -> Element {
                     }
                     tbody {
                         for row in nodes.iter() {
-                            tr { key: "{row.site}/{row.cluster}/{row.name}",
+                            tr { key: "{row.key}",
                                 td { "{row.site}" }
                                 td { "{row.cluster}" }
                                 td { class: "mono", "{row.name}" }
@@ -208,7 +219,7 @@ fn ComputeBody(snap: Snapshot) -> Element {
                 }
             }
             if nodes.is_empty() {
-                p { class: "empty", "No node is recorded for this tenant's mapped sites." }
+                p { class: "empty", "No node is recorded for the sites in this scope." }
             }
             p { class: "hint", "Usage is shown to platform administrators only. Disk usage is not in the inventory answer." }
         }
@@ -236,7 +247,7 @@ fn ComputeBody(snap: Snapshot) -> Element {
                     }
                     tbody {
                         for row in vms.iter() {
-                            tr { key: "{row.site}/{row.cluster}/{row.name}",
+                            tr { key: "{row.key}",
                                 td { "{row.site}" }
                                 td { "{row.cluster}" }
                                 td { class: "mono", "{row.name}" }
@@ -260,7 +271,7 @@ fn ComputeBody(snap: Snapshot) -> Element {
                 }
             }
             if vms.is_empty() {
-                p { class: "empty", "No VM is recorded for this tenant's mapped sites." }
+                p { class: "empty", "No VM is recorded for the sites in this scope." }
             }
             p { class: "hint", "vCPUs, memory and disk are NetBox's allocation, not live usage." }
         }
@@ -340,6 +351,38 @@ mod tests {
         assert_eq!(vm.memory.as_deref(), Some("4.0 GiB"));
         assert_eq!(vm.disk.as_deref(), Some("40 GB"));
         assert_eq!(vm.vmid, None);
+    }
+
+    #[test]
+    fn two_vms_of_one_name_in_one_cluster_get_distinct_rows() {
+        let first = Vm {
+            name: "tududi".into(),
+            vmid: Some(101),
+            rag: "red".into(),
+            ..Vm::default()
+        };
+        let second = Vm {
+            vmid: Some(202),
+            rag: "green".into(),
+            ..first.clone()
+        };
+        let inv = Inventory {
+            sites: vec![Site {
+                id: "dc1".into(),
+                clusters: vec![Cluster {
+                    name: "pve-prod".into(),
+                    vms: vec![first, second],
+                    ..Cluster::default()
+                }],
+                ..Site::default()
+            }],
+            ..Inventory::default()
+        };
+        let rows = vm_rows(&inv);
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].key, rows[1].key, "same name, distinct keys");
+        assert_eq!(rows[0].rag, Rag::Red, "each row keeps its own RAG");
+        assert_eq!(rows[1].rag, Rag::Green);
     }
 
     #[test]

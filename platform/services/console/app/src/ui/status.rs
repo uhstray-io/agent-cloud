@@ -98,6 +98,7 @@ pub fn source_look(status: SourceStatus, has_read: bool) -> (&'static str, Tone,
         (SourceStatus::Ok, false) => ("loader-circle", Tone::Run, "Waiting for first read"),
         (SourceStatus::Unconfigured, _) => ("circle-dashed", Tone::Idle, "Not configured"),
         (SourceStatus::Error, _) => ("octagon-x", Tone::Crit, "Read failed"),
+        (SourceStatus::Unknown, _) => ("circle-dashed", Tone::Idle, "Unknown source state"),
     }
 }
 
@@ -418,6 +419,11 @@ mod tests {
             "Not configured"
         );
         assert_eq!(source_look(SourceStatus::Error, true).2, "Read failed");
+        assert_eq!(
+            source_look(SourceStatus::Unknown, true),
+            ("circle-dashed", Tone::Idle, "Unknown source state"),
+            "an unknown word is grey, labelled"
+        );
     }
 
     #[test]

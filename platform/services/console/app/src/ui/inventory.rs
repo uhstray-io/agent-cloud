@@ -1,27 +1,33 @@
 //! The inventory the signed-in shell holds for the selected tenant, the 30 s poll
-//! that refreshes it, and the admin-only reads the Topology tabs make.
+//! that refreshes it, the admin-only reads the Topology tabs make, and the scope
+//! bar's narrowing of what the tenant pages show.
 //!
 //! Pages read the snapshot; they do not call the API. The poll and the one-off
 //! refresh on a tenant switch are the only writers. A late answer for a tenant
 //! that is no longer selected is dropped, so one tenant's data never shows under
-//! another tenant's name.
+//! another tenant's name. A 401 ends the session the way the shell's tenant
+//! list does: the shell shows sign-in.
 //!
-//! Selection, rollups and unit text are plain functions with tests. The
-//! components only draw what those functions return.
+//! Selection, rollups, the scope filter and unit text are plain functions with
+//! tests. The components only draw what those functions return.
 
 use dioxus::prelude::*;
 use serde::de::DeserializeOwned;
 
-use super::api;
-use super::inventory_api::{self, Inventory, Meta, Read, ServicesBody};
+use super::api::{self, Me, Tree};
+use super::inventory_api::{self, Inventory, Meta, Read, ServiceRow, ServicesBody, Vm};
+use super::scope::Scope;
 use super::shell::{Ctx, Loaded};
 use super::status::{worst, Notice, Rag};
 
 /// How often the tenant answers and the admin answers are re-read while the tab is visible.
 pub const POLL_MS: u32 = 30_000;
 
-/// What the shell keeps for the selected tenant. A failed refresh keeps the last
-/// good body for that tenant and sets `reason`.
+/// Separates the parts of a row key. A unit separator cannot appear in a name the API sends.
+pub const SEP: char = '\u{1f}';
+
+/// What the shell keeps for the selected tenant. A failed refresh keeps the last good
+/// body for that tenant and sets `reason`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub tenant: String,
@@ -74,13 +80,25 @@ pub fn merge(
     }
 }
 
+/// The session ended. The shell's tenant list does the same on a 401: it sets the
+/// session to signed out, and the shell then shows sign-in.
+pub fn end_session(me: Signal<Me>) {
+    let mut me = me;
+    me.set(Me::SignedOut);
+}
+
 /// Reads both tenant answers and writes the merged snapshot. The write is skipped
-/// when the selected tenant changed while the reads were in flight.
-pub async fn refresh(ctx: Ctx, tenant: String) {
+/// when the selected tenant changed while the reads were in flight. Returns `false`
+/// when the session ended, which tells the poll to stop.
+pub async fn refresh(ctx: Ctx, tenant: String) -> bool {
     let inv = inventory_api::read::<Inventory>(&inventory_api::inventory_path(&tenant)).await;
     let svc = inventory_api::read::<ServicesBody>(&inventory_api::services_path(&tenant)).await;
+    if matches!(inv, Read::SignedOut) || matches!(svc, Read::SignedOut) {
+        end_session(ctx.me);
+        return false;
+    }
     if ctx.tenant.peek().as_deref() != Some(tenant.as_str()) {
-        return;
+        return true;
     }
     let prev = match &*ctx.inventory.peek() {
         Loaded::Ready(snap) => Some(snap.clone()),
@@ -89,17 +107,20 @@ pub async fn refresh(ctx: Ctx, tenant: String) {
     let next = merge(prev.as_ref(), &tenant, inv, svc);
     let mut inventory = ctx.inventory;
     inventory.set(Loaded::Ready(next));
+    true
 }
 
 /// The poll the signed-in shell starts once. It waits for the tab to be visible,
 /// refreshes the selected tenant if there is one, then sleeps `POLL_MS` or until
-/// the tab is hidden.
+/// the tab is hidden. It stops when the session ends.
 pub async fn poll(ctx: Ctx) {
     loop {
         api::wait_visible().await;
         let tenant = (*ctx.tenant.peek()).clone();
         if let Some(tenant) = tenant {
-            refresh(ctx, tenant).await;
+            if !refresh(ctx, tenant).await {
+                return;
+            }
         }
         api::sleep_unless_hidden(POLL_MS).await;
     }
@@ -144,12 +165,21 @@ pub fn meta_of(snap: &Snapshot) -> Option<&Meta> {
         .or_else(|| snap.services.as_ref().map(|svc| &svc.meta))
 }
 
-/// What an admin-only tab shows. `Forbidden` is the 403 answer, and polling stops there.
+/// What an admin-only tab, or one tenant service, shows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Admin<T> {
     Loading,
+    /// 403: the caller is not a platform admin. Polling stops.
     Forbidden,
-    Shown { body: T, reason: Option<String> },
+    /// 404: the tenant or the service is not the caller's, or does not exist. Polling stops,
+    /// and a body loaded earlier is replaced by this answer.
+    Missing,
+    /// 401: the session ended. Polling stops, and the shell signs out.
+    SignedOut,
+    Shown {
+        body: T,
+        reason: Option<String>,
+    },
     Unavailable(String),
 }
 
@@ -158,23 +188,26 @@ pub fn admin_next<T: Clone>(prev: &Admin<T>, read: Read<T>) -> Admin<T> {
     match read {
         Read::Ok(body) => Admin::Shown { body, reason: None },
         Read::Forbidden => Admin::Forbidden,
-        other => {
-            let reason =
-                failure_text(&other).unwrap_or_else(|| inventory_api::NO_ANSWER.to_string());
-            match prev {
-                Admin::Shown { body, .. } => Admin::Shown {
-                    body: body.clone(),
-                    reason: Some(reason),
-                },
-                _ => Admin::Unavailable(reason),
-            }
-        }
+        Read::Missing => Admin::Missing,
+        Read::SignedOut => Admin::SignedOut,
+        Read::Failed(text) => match prev {
+            Admin::Shown { body, .. } => Admin::Shown {
+                body: body.clone(),
+                reason: Some(text),
+            },
+            _ => Admin::Unavailable(text),
+        },
     }
 }
 
-/// Polls one admin-only path into `state`. It stops on 403. Otherwise it reads
-/// while the tab is visible, like the tenant poll.
-pub async fn poll_admin<T>(path: String, mut state: Signal<Admin<T>>)
+/// Whether the poll reads again. Forbidden, not found and a signed-out session end it.
+pub fn keeps_polling_admin<T>(state: &Admin<T>) -> bool {
+    !matches!(state, Admin::Forbidden | Admin::Missing | Admin::SignedOut)
+}
+
+/// Polls one path into `state` while the tab is visible. It stops on the answers
+/// `keeps_polling_admin` names, and a 401 also ends the session.
+pub async fn poll_admin<T>(path: String, mut state: Signal<Admin<T>>, me: Signal<Me>)
 where
     T: DeserializeOwned + Clone + PartialEq + 'static,
 {
@@ -182,13 +215,84 @@ where
         api::wait_visible().await;
         let read = inventory_api::read::<T>(&path).await;
         let next = admin_next(&state.peek(), read);
-        let keep = !matches!(next, Admin::Forbidden);
+        let keep = keeps_polling_admin(&next);
+        let signed_out = matches!(next, Admin::SignedOut);
         state.set(next);
+        if signed_out {
+            end_session(me);
+        }
         if !keep {
             return;
         }
         api::sleep_unless_hidden(POLL_MS).await;
     }
+}
+
+/// The tenant's scope tree when it has loaded, else `None`. The pages narrow by it.
+pub fn loaded_tree(state: &Loaded<Tree>) -> Option<Tree> {
+    match state {
+        Loaded::Ready(tree) => Some(tree.clone()),
+        _ => None,
+    }
+}
+
+/// The scope bar's choice for a site: its org, and its environments from the tenant's
+/// tree (the inventory answer carries neither). `None` for a part the answer did not give.
+pub fn tree_site<'a>(tree: &'a Tree, site_id: &str) -> Option<(&'a str, &'a [String])> {
+    tree.orgs.iter().find_map(|org| {
+        org.sites
+            .iter()
+            .find(|site| site.id == site_id)
+            .map(|site| (org.id.as_str(), site.envs.as_slice()))
+    })
+}
+
+/// True when a site sits inside the scope bar's choice. An empty part means all:
+/// no org, no site and no env. `org` and `envs` are the site's own. A part that needs
+/// a value the answer did not give (an env with no tree) excludes the site, rather
+/// than guess.
+pub fn in_scope(scope: &Scope, site_id: &str, org: Option<&str>, envs: Option<&[String]>) -> bool {
+    if !scope.org.is_empty() && org != Some(scope.org.as_str()) {
+        return false;
+    }
+    if let Some(site) = &scope.site {
+        if site != site_id {
+            return false;
+        }
+    }
+    match &scope.env {
+        Some(env) => envs.is_some_and(|envs| envs.iter().any(|e| e == env)),
+        None => true,
+    }
+}
+
+/// The inventory narrowed to the scope bar. Sites outside it are removed whole.
+pub fn scoped_inventory(inv: &Inventory, scope: &Scope, tree: Option<&Tree>) -> Inventory {
+    let mut out = inv.clone();
+    out.sites.retain(|site| {
+        let envs = tree
+            .and_then(|t| tree_site(t, &site.id))
+            .map(|(_, envs)| envs);
+        in_scope(scope, &site.id, Some(site.org.as_str()), envs)
+    });
+    out
+}
+
+/// The services narrowed to the scope bar. A service belongs to its VM's site. The
+/// services answer names only the site, so the org and environments come from the tree.
+pub fn scoped_services(rows: &[ServiceRow], scope: &Scope, tree: Option<&Tree>) -> Vec<ServiceRow> {
+    rows.iter()
+        .filter(|row| {
+            let found = tree.and_then(|t| tree_site(t, &row.site));
+            in_scope(
+                scope,
+                &row.site,
+                found.map(|(org, _)| org),
+                found.map(|(_, envs)| envs),
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 /// The kind of a selectable row in the compute tree.
@@ -200,14 +304,32 @@ pub enum Kind {
     Vm,
 }
 
-/// One selected row. `cluster` is set for a cluster, node or VM; `name` is the
-/// cluster, node or VM name, and empty for a site (which uses `site` alone).
+/// One selected row. `cluster` is set for a cluster, node or VM. `name` is the
+/// cluster, node or VM name, and empty for a site. `ordinal` is the row's position
+/// in its cluster's `nodes` or `vms`: it tells two VMs of one name apart. It is
+/// zero for a site or a cluster.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pick {
     pub kind: Kind,
     pub site: String,
     pub cluster: Option<String>,
     pub name: String,
+    pub ordinal: usize,
+}
+
+/// The key one VM row is listed under: its site, cluster, name, ID and position.
+/// Unique across the tree, including two VMs of one name in one cluster.
+pub fn vm_key(site: &str, cluster: &str, vm: &Vm, ordinal: usize) -> String {
+    let vmid = vm.vmid.map_or_else(|| "-".to_string(), |id| id.to_string());
+    format!(
+        "{site}{SEP}{cluster}{SEP}{}{SEP}{vmid}{SEP}{ordinal}",
+        vm.name
+    )
+}
+
+/// The key one node row is listed under: its site, cluster, name and position.
+pub fn node_key(site: &str, cluster: &str, name: &str, ordinal: usize) -> String {
+    format!("{site}{SEP}{cluster}{SEP}{name}{SEP}{ordinal}")
 }
 
 /// The selection after one click. A plain click replaces it. A shift-click adds
@@ -225,8 +347,9 @@ pub fn after_click(picks: &[Pick], pick: Pick, shift: bool) -> Vec<Pick> {
     }
 }
 
-/// True when the pick still names a row of `inv`. A row the next poll removed, or a
-/// row of another tenant that shares an id, does not resolve.
+/// True when the pick still names a row of `inv`. A row the next poll removed, a
+/// row of another tenant that shares an id, or a position whose name has changed
+/// does not resolve.
 pub fn resolves(inv: &Inventory, pick: &Pick) -> bool {
     let Some(site) = inv.sites.iter().find(|s| s.id == pick.site) else {
         return false;
@@ -243,8 +366,14 @@ pub fn resolves(inv: &Inventory, pick: &Pick) -> bool {
     };
     match pick.kind {
         Kind::Site | Kind::Cluster => true,
-        Kind::Node => cluster.nodes.iter().any(|n| n.name == pick.name),
-        Kind::Vm => cluster.vms.iter().any(|v| v.name == pick.name),
+        Kind::Node => cluster
+            .nodes
+            .get(pick.ordinal)
+            .is_some_and(|n| n.name == pick.name),
+        Kind::Vm => cluster
+            .vms
+            .get(pick.ordinal)
+            .is_some_and(|v| v.name == pick.name),
     }
 }
 
@@ -273,9 +402,9 @@ pub fn pick_rags(inv: &Inventory, pick: &Pick) -> Vec<Rag> {
             if !in_scope {
                 continue;
             }
-            for vm in &cluster.vms {
+            for (ordinal, vm) in cluster.vms.iter().enumerate() {
                 let counted = match pick.kind {
-                    Kind::Vm => vm.name == pick.name,
+                    Kind::Vm => ordinal == pick.ordinal && vm.name == pick.name,
                     Kind::Cluster | Kind::Site => true,
                     Kind::Node => false,
                 };
@@ -350,10 +479,10 @@ pub fn count_text(count: usize, singular: &str, plural: &str) -> String {
 pub fn ViewNotice(view: View) -> Element {
     match view {
         View::NoTenant => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see its inventory." }
+            Notice { message: "Pick a tenant in the sidebar to see its inventory.".to_string() }
         },
         View::Loading => rsx! {
-            Notice { message: "Loading inventory\u{2026}" }
+            Notice { message: "Loading inventory\u{2026}".to_string() }
         },
         View::Failed(reason) => rsx! {
             Notice {
@@ -367,7 +496,9 @@ pub fn ViewNotice(view: View) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::inventory_api::{Cluster, Site, Vm};
+    use crate::ui::api::{Org, Site as TreeSite};
+    use crate::ui::inventory_api::{Cluster, Site};
+    use crate::ui::scope::Scope;
 
     fn vm(name: &str, rag: &str) -> Vm {
         Vm {
@@ -383,6 +514,7 @@ mod tests {
                 Site {
                     id: "dc1".into(),
                     name: "DC 1".into(),
+                    org: "ops".into(),
                     mapped: true,
                     clusters: vec![Cluster {
                         name: "pve-prod".into(),
@@ -394,6 +526,7 @@ mod tests {
                 Site {
                     id: "dc2".into(),
                     name: "DC 2".into(),
+                    org: "labs".into(),
                     clusters: vec![Cluster {
                         name: "pve-lab".into(),
                         vms: vec![vm("scratch", "grey")],
@@ -406,12 +539,50 @@ mod tests {
         }
     }
 
-    fn pick(kind: Kind, site: &str, cluster: Option<&str>, name: &str) -> Pick {
+    /// A pick of a VM at `ordinal` in the cluster.
+    fn vm_pick(site: &str, cluster: &str, name: &str, ordinal: usize) -> Pick {
         Pick {
-            kind,
+            kind: Kind::Vm,
             site: site.into(),
-            cluster: cluster.map(str::to_string),
+            cluster: Some(cluster.into()),
             name: name.into(),
+            ordinal,
+        }
+    }
+
+    fn site_pick(site: &str) -> Pick {
+        Pick {
+            kind: Kind::Site,
+            site: site.into(),
+            cluster: None,
+            name: String::new(),
+            ordinal: 0,
+        }
+    }
+
+    fn tree() -> Tree {
+        Tree {
+            example: false,
+            orgs: vec![
+                Org {
+                    id: "ops".into(),
+                    name: "Ops".into(),
+                    sites: vec![TreeSite {
+                        id: "dc1".into(),
+                        name: "DC 1".into(),
+                        envs: vec!["prod".into()],
+                    }],
+                },
+                Org {
+                    id: "labs".into(),
+                    name: "Labs".into(),
+                    sites: vec![TreeSite {
+                        id: "dc2".into(),
+                        name: "DC 2".into(),
+                        envs: vec!["dev".into()],
+                    }],
+                },
+            ],
         }
     }
 
@@ -426,8 +597,8 @@ mod tests {
 
     #[test]
     fn a_plain_click_replaces_and_a_shift_click_toggles() {
-        let a = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi");
-        let b = pick(Kind::Vm, "dc1", Some("pve-prod"), "honcho");
+        let a = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let b = vm_pick("dc1", "pve-prod", "honcho", 1);
         let one = after_click(&[], a.clone(), false);
         assert_eq!(one, vec![a.clone()]);
         let replaced = after_click(&one, b.clone(), false);
@@ -439,10 +610,64 @@ mod tests {
     }
 
     #[test]
+    fn two_vms_of_one_name_in_one_cluster_are_distinct_rows() {
+        // Two VMs named "tududi" in pve-prod: different IDs, different RAGs.
+        let mut first = vm("tududi", "red");
+        first.vmid = Some(101);
+        let mut second = vm("tududi", "green");
+        second.vmid = Some(202);
+        let inv = Inventory {
+            sites: vec![Site {
+                id: "dc1".into(),
+                clusters: vec![Cluster {
+                    name: "pve-prod".into(),
+                    vms: vec![first.clone(), second.clone()],
+                    ..Cluster::default()
+                }],
+                ..Site::default()
+            }],
+            ..Inventory::default()
+        };
+        // Distinct keys, so the list renders both.
+        assert_ne!(
+            vm_key("dc1", "pve-prod", &first, 0),
+            vm_key("dc1", "pve-prod", &second, 1)
+        );
+        // Distinct picks, so each selects on its own.
+        let a = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let b = vm_pick("dc1", "pve-prod", "tududi", 1);
+        assert_ne!(a, b);
+        let picked = after_click(std::slice::from_ref(&a), b.clone(), true);
+        assert_eq!(
+            picked,
+            vec![a.clone(), b.clone()],
+            "shift adds the second one"
+        );
+        assert_eq!(
+            pick_rags(&inv, &a),
+            vec![Rag::Red],
+            "the first VM's own RAG"
+        );
+        assert_eq!(
+            pick_rags(&inv, &b),
+            vec![Rag::Green],
+            "the second VM's own RAG"
+        );
+        assert_eq!(selection_rag(&inv, &picked), Rag::Red);
+        let without_first = after_click(&picked, a, true);
+        assert_eq!(
+            without_first,
+            vec![b.clone()],
+            "removing one keeps the other"
+        );
+        assert_eq!(live_picks(&inv, std::slice::from_ref(&b)), vec![b]);
+    }
+
+    #[test]
     fn a_selection_rolls_up_to_the_worst_vm() {
         let inv = inventory();
-        let tududi = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi");
-        let honcho = pick(Kind::Vm, "dc1", Some("pve-prod"), "honcho");
+        let tududi = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let honcho = vm_pick("dc1", "pve-prod", "honcho", 1);
         assert_eq!(selection_rag(&inv, std::slice::from_ref(&tududi)), Rag::Red);
         assert_eq!(
             selection_rag(&inv, std::slice::from_ref(&honcho)),
@@ -454,21 +679,58 @@ mod tests {
     #[test]
     fn a_cluster_or_site_pick_rolls_up_all_its_vms() {
         let inv = inventory();
-        let cluster = pick(Kind::Cluster, "dc1", Some("pve-prod"), "pve-prod");
+        let cluster = Pick {
+            kind: Kind::Cluster,
+            site: "dc1".into(),
+            cluster: Some("pve-prod".into()),
+            name: "pve-prod".into(),
+            ordinal: 0,
+        };
         assert_eq!(selection_rag(&inv, &[cluster]), Rag::Red);
-        let site = pick(Kind::Site, "dc1", None, "");
-        assert_eq!(selection_rag(&inv, &[site]), Rag::Red);
-        let lab = pick(Kind::Site, "dc2", None, "");
-        assert_eq!(selection_rag(&inv, &[lab]), Rag::Grey);
+        assert_eq!(selection_rag(&inv, &[site_pick("dc1")]), Rag::Red);
+        assert_eq!(selection_rag(&inv, &[site_pick("dc2")]), Rag::Grey);
+    }
+
+    #[test]
+    fn a_node_or_an_empty_selection_has_no_rag_to_roll_up() {
+        let inv = inventory();
+        let node = Pick {
+            kind: Kind::Node,
+            site: "dc1".into(),
+            cluster: Some("pve-prod".into()),
+            name: "pve-01".into(),
+            ordinal: 0,
+        };
+        assert!(pick_rags(&inv, &node).is_empty());
+        assert_eq!(selection_rag(&inv, &[node]), Rag::Grey);
+        assert_eq!(selection_rag(&inv, &[]), Rag::Grey);
+    }
+
+    #[test]
+    fn picks_of_different_kinds_are_different_rows() {
+        let site = site_pick("dc1");
+        let cluster = Pick {
+            kind: Kind::Cluster,
+            site: "dc1".into(),
+            cluster: Some("pve-prod".into()),
+            name: "pve-prod".into(),
+            ordinal: 0,
+        };
+        assert_ne!(site, cluster);
     }
 
     #[test]
     fn a_pick_whose_row_left_the_inventory_is_dropped() {
         let inv = inventory();
-        let kept = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi");
-        let gone = pick(Kind::Vm, "dc1", Some("pve-prod"), "removed");
-        let live = live_picks(&inv, &[kept.clone(), gone]);
-        assert_eq!(live, vec![kept], "a removed row is not counted");
+        let kept = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let gone = vm_pick("dc1", "pve-prod", "removed", 5);
+        let moved = vm_pick("dc1", "pve-prod", "honcho", 0);
+        let live = live_picks(&inv, &[kept.clone(), gone, moved]);
+        assert_eq!(
+            live,
+            vec![kept],
+            "a removed row, and a position that changed name, are not counted"
+        );
     }
 
     #[test]
@@ -486,29 +748,9 @@ mod tests {
             }],
             ..Inventory::default()
         };
-        let from_first = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi");
+        let from_first = vm_pick("dc1", "pve-prod", "tududi", 0);
         assert!(!resolves(&other, &from_first));
         assert!(live_picks(&other, &[from_first]).is_empty());
-        let node_of_other = pick(Kind::Node, "dc1", Some("pve-other"), "pve-01");
-        assert!(!resolves(&other, &node_of_other), "no node of that name");
-    }
-
-    #[test]
-    fn a_node_or_an_empty_selection_has_no_rag_to_roll_up() {
-        let inv = inventory();
-        let node = pick(Kind::Node, "dc1", Some("pve-prod"), "pve-01");
-        assert!(pick_rags(&inv, &node).is_empty());
-        assert_eq!(selection_rag(&inv, &[node]), Rag::Grey);
-        assert_eq!(selection_rag(&inv, &[]), Rag::Grey);
-    }
-
-    #[test]
-    fn picks_of_different_kinds_are_different_rows() {
-        let site = pick(Kind::Site, "dc1", None, "");
-        let cluster = pick(Kind::Cluster, "dc1", Some("pve-prod"), "pve-prod");
-        let node = pick(Kind::Node, "dc1", Some("pve-prod"), "pve-prod");
-        assert_ne!(site, cluster);
-        assert_ne!(cluster, node);
     }
 
     #[test]
@@ -583,15 +825,141 @@ mod tests {
                 reason: Some(inventory_api::NO_ANSWER.into())
             }
         );
+        assert!(keeps_polling_admin(&failed), "a failed read is retried");
         assert_eq!(
             admin_next(&Admin::<u32>::Loading, Read::Failed("x".into())),
             Admin::Unavailable("x".into())
         );
+        let forbidden = admin_next(&first, Read::<u32>::Forbidden);
         assert_eq!(
-            admin_next(&first, Read::<u32>::Forbidden),
+            forbidden,
             Admin::Forbidden,
             "a non-admin sees the forbidden state"
         );
+        assert!(!keeps_polling_admin(&forbidden));
+    }
+
+    #[test]
+    fn a_not_found_after_a_good_load_replaces_the_body_and_stops() {
+        let good = Admin::Shown {
+            body: 7u32,
+            reason: None,
+        };
+        let gone = admin_next(&good, Read::<u32>::Missing);
+        assert_eq!(gone, Admin::Missing, "the old body is not kept");
+        assert!(!keeps_polling_admin(&gone), "a 404 is not retried");
+    }
+
+    #[test]
+    fn a_signed_out_read_ends_the_poll_without_a_retry() {
+        let next = admin_next(
+            &Admin::Shown {
+                body: 1u32,
+                reason: None,
+            },
+            Read::<u32>::SignedOut,
+        );
+        assert_eq!(next, Admin::SignedOut);
+        assert!(!keeps_polling_admin(&next));
+    }
+
+    #[test]
+    fn the_scope_bar_narrows_by_org_and_site_and_env_and_empty_is_tenant_wide() {
+        let inv = inventory();
+        let t = tree();
+        let everything = scoped_inventory(&inv, &Scope::default(), Some(&t));
+        assert_eq!(everything.sites.len(), 2, "an empty scope is tenant-wide");
+
+        let by_org = Scope {
+            org: "ops".into(),
+            ..Scope::default()
+        };
+        let ops = scoped_inventory(&inv, &by_org, Some(&t));
+        let ids: Vec<&str> = ops.sites.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["dc1"], "the org filter keeps its own sites");
+
+        let by_site = Scope {
+            org: "labs".into(),
+            site: Some("dc2".into()),
+            env: None,
+        };
+        let lab = scoped_inventory(&inv, &by_site, Some(&t));
+        assert_eq!(lab.sites.len(), 1);
+        assert_eq!(lab.sites[0].id, "dc2");
+
+        let wrong_site = Scope {
+            org: "ops".into(),
+            site: Some("dc2".into()),
+            env: None,
+        };
+        assert!(
+            scoped_inventory(&inv, &wrong_site, Some(&t))
+                .sites
+                .is_empty(),
+            "a site outside the org is not shown"
+        );
+    }
+
+    #[test]
+    fn the_env_filter_reads_the_tree_and_excludes_when_there_is_none() {
+        let inv = inventory();
+        let t = tree();
+        let prod = Scope {
+            env: Some("prod".into()),
+            ..Scope::default()
+        };
+        let ids: Vec<String> = scoped_inventory(&inv, &prod, Some(&t))
+            .sites
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["dc1"], "only the site that runs prod");
+        assert!(
+            scoped_inventory(&inv, &prod, None).sites.is_empty(),
+            "no tree means no env to match, so the site is excluded"
+        );
+    }
+
+    #[test]
+    fn services_follow_their_site_and_the_tree_gives_their_org() {
+        let rows = vec![
+            ServiceRow {
+                name: "tududi".into(),
+                site: "dc1".into(),
+                ..ServiceRow::default()
+            },
+            ServiceRow {
+                name: "scratch".into(),
+                site: "dc2".into(),
+                ..ServiceRow::default()
+            },
+        ];
+        let t = tree();
+        let ops = Scope {
+            org: "ops".into(),
+            ..Scope::default()
+        };
+        let names: Vec<String> = scoped_services(&rows, &ops, Some(&t))
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(names, ["tududi"]);
+        assert_eq!(
+            scoped_services(&rows, &Scope::default(), Some(&t)).len(),
+            2,
+            "empty scope keeps every row"
+        );
+        assert!(
+            scoped_services(&rows, &ops, None).is_empty(),
+            "without the tree the org is unknown, so no row is claimed for it"
+        );
+    }
+
+    #[test]
+    fn a_tree_that_has_not_loaded_narrows_nothing_and_claims_no_org() {
+        assert_eq!(loaded_tree(&Loaded::<Tree>::Loading), None);
+        assert_eq!(loaded_tree(&Loaded::<Tree>::Failed), None);
+        assert!(loaded_tree(&Loaded::Ready(tree())).is_some());
     }
 
     #[test]

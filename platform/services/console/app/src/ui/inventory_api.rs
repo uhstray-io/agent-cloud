@@ -26,6 +26,9 @@ pub enum SourceStatus {
     #[default]
     Unconfigured,
     Error,
+    /// Any other word. Shown as grey "Unknown source state" rather than failing the answer.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -470,6 +473,16 @@ mod tests {
             panic!("expected Ok");
         };
         assert_eq!(empty.source, SourceStatus::Unconfigured);
+    }
+
+    #[test]
+    fn an_unknown_source_word_reads_as_unknown_not_a_failed_answer() {
+        let body = json!({"source": {"netbox": "degraded-new-word", "proxmox": "ok"}, "sites": []});
+        let Read::Ok(inv) = classify::<Inventory>(&reply(200, body)) else {
+            panic!("an unknown word must not fail the answer");
+        };
+        assert_eq!(inv.meta.source.netbox, SourceStatus::Unknown);
+        assert_eq!(inv.meta.source.proxmox, SourceStatus::Ok);
     }
 
     #[test]

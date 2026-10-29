@@ -4,24 +4,27 @@
 //! Click selects one row. Shift-click adds or removes a row, and the panel then
 //! shows the count and the worst RAG of the selection. Every row is a NetBox or
 //! Proxmox fact the inventory answer carries; nothing is drawn from console-local
-//! data.
+//! data. The scope bar narrows the compute tree; the network and flows tabs are
+//! not tenant-scoped.
 //!
 //! The API carries no VM-to-node placement, so a cluster lists its nodes and its
 //! VMs as two lists, not a VM under its node.
 
 use dioxus::prelude::*;
 
+use super::api::Tree;
 use super::empty::TOPOLOGY;
 use super::icons::icon;
 use super::inventory::{
-    after_click, bytes_text, count_text, cpu_percent, live_picks, mb_text, mem_percent, meta_of,
-    pick_rags, poll_admin, selection_rag, uptime_text, view, Admin, Kind, Pick, Snapshot, View,
-    ViewNotice,
+    after_click, bytes_text, count_text, cpu_percent, live_picks, loaded_tree, mb_text,
+    mem_percent, meta_of, node_key, pick_rags, poll_admin, scoped_inventory, selection_rag,
+    uptime_text, view, vm_key, Admin, Kind, Pick, Snapshot, View, ViewNotice, SEP,
 };
 use super::inventory_api::{
-    self, Cluster, Device, Flow, FlowsBody, Inventory, NetworkBody, Node, Site, SourceStatus, Vm,
-    Workflow,
+    self, Cluster, Device, Flow, FlowsBody, Inventory, NetworkBody, Node, Prefix, Site,
+    SourceStatus, Vm, Workflow,
 };
+use super::scope::Scope;
 use super::shell::Ctx;
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, worst, Freshness, Meter, Notice, Rag,
@@ -80,6 +83,7 @@ fn cluster_pick(site_id: &str, cluster_name: &str) -> Pick {
         site: site_id.to_string(),
         cluster: Some(cluster_name.to_string()),
         name: cluster_name.to_string(),
+        ordinal: 0,
     }
 }
 
@@ -95,10 +99,12 @@ fn site_pick(site_id: &str) -> Pick {
         site: site_id.to_string(),
         cluster: None,
         name: String::new(),
+        ordinal: 0,
     }
 }
 
 /// The panel's content for one pick, or `None` when the pick is no longer in the inventory.
+/// A node or VM is found by its position, and its name must still match there.
 pub fn detail(inv: &Inventory, pick: &Pick) -> Option<Detail> {
     let site = inv.sites.iter().find(|s| s.id == pick.site)?;
     match pick.kind {
@@ -122,12 +128,18 @@ pub fn detail(inv: &Inventory, pick: &Pick) -> Option<Detail> {
         }
         Kind::Node => {
             let cluster = cluster_of(site, pick)?;
-            let node = cluster.nodes.iter().find(|n| n.name == pick.name)?;
+            let node = cluster
+                .nodes
+                .get(pick.ordinal)
+                .filter(|n| n.name == pick.name)?;
             Some(node_detail(node, &site.name, &cluster.name))
         }
         Kind::Vm => {
             let cluster = cluster_of(site, pick)?;
-            let vm = cluster.vms.iter().find(|v| v.name == pick.name)?;
+            let vm = cluster
+                .vms
+                .get(pick.ordinal)
+                .filter(|v| v.name == pick.name)?;
             Some(vm_detail(vm, &site.name, &cluster.name))
         }
     }
@@ -256,12 +268,35 @@ pub fn group_flows(flows: &[Flow]) -> Vec<(String, Vec<Flow>)> {
     groups
 }
 
+/// The key one flow row is listed under: its endpoints and label, joined by a unit
+/// separator, and its position, so a repeated line still keys apart.
+pub fn flow_key(index: usize, flow: &Flow) -> String {
+    format!(
+        "{}{SEP}{}{SEP}{}{SEP}{index}",
+        flow.from, flow.to, flow.label
+    )
+}
+
+/// The key one prefix row is listed under: the prefix, its scope and its position.
+pub fn prefix_key(index: usize, prefix: &Prefix) -> String {
+    let scope = prefix.site.clone().unwrap_or_default();
+    format!("{}{SEP}{scope}{SEP}{index}", prefix.prefix)
+}
+
+/// One flow group as the panel draws it: its kind, the count text, and its keyed rows.
+type FlowGroup = (String, String, Vec<(String, Flow)>);
+
 /// The name a pick shows as in a chip: a site's id, else the row's own name.
 fn pick_name(pick: &Pick) -> String {
     match pick.kind {
         Kind::Site => pick.site.clone(),
         _ => pick.name.clone(),
     }
+}
+
+/// The loaded scope tree of the shown tenant, for the scope filter.
+fn tree_now(ctx: &Ctx) -> Option<Tree> {
+    loaded_tree(&ctx.tree.read())
 }
 
 /// The Topology page. The tenant's snapshot feeds the compute tab. The network and
@@ -273,8 +308,16 @@ pub fn Topology() -> Element {
     let network = use_signal(|| Admin::<NetworkBody>::Loading);
     let flows = use_signal(|| Admin::<FlowsBody>::Loading);
     use_hook(move || {
-        spawn(poll_admin(inventory_api::NETWORK_PATH.to_string(), network));
-        spawn(poll_admin(inventory_api::FLOWS_PATH.to_string(), flows));
+        spawn(poll_admin(
+            inventory_api::NETWORK_PATH.to_string(),
+            network,
+            ctx.me,
+        ));
+        spawn(poll_admin(
+            inventory_api::FLOWS_PATH.to_string(),
+            flows,
+            ctx.me,
+        ));
     });
 
     let state = ctx.inventory.read().clone();
@@ -307,32 +350,20 @@ fn TopologyBody(
     network: Signal<Admin<NetworkBody>>,
     flows: Signal<Admin<FlowsBody>>,
 ) -> Element {
+    let ctx = use_context::<Ctx>();
     let picks = use_signal(Vec::<Pick>::new);
     let mut tab = tab;
     let current = tab();
-    let meta = meta_of(&snap).cloned().unwrap_or_default();
-    let reason = snap.reason.clone().unwrap_or_default();
+    let scope = ctx.scope.read().clone();
+    let tree = tree_now(&ctx);
     let body = match current {
-        TopoTab::Compute => match snap.inventory.clone() {
-            Some(inv) => rsx! {
-                div { class: "topo-layout",
-                    ComputeTree { inventory: inv.clone(), picks }
-                    ResourcePanel { inventory: inv, picks }
-                }
-            },
-            None => rsx! {
-                Notice { message: "The inventory could not be loaded, so the compute tree is not shown.".to_string() }
-            },
+        TopoTab::Compute => rsx! {
+            ComputeView { snap, scope, tree, picks }
         },
         TopoTab::Network => rsx! { NetworkPanel { state: network } },
         TopoTab::Flows => rsx! { FlowsPanel { state: flows } },
     };
-    let unconfigured = unconfigured_notice(&meta);
     rsx! {
-        Freshness { meta, reason }
-        if let Some(message) = unconfigured {
-            Notice { message }
-        }
         div { class: "seg", role: "group", aria_label: "Topology view",
             for option in [TopoTab::Compute, TopoTab::Network, TopoTab::Flows] {
                 button {
@@ -347,13 +378,45 @@ fn TopologyBody(
     }
 }
 
+/// The compute tab: the tenant's freshness and source banners, then the tree and the
+/// panel, both narrowed to the scope bar. Freshness belongs to this tab alone, because
+/// it describes the tenant inventory, not the network or flows answers.
+#[component]
+fn ComputeView(
+    snap: Snapshot,
+    scope: Scope,
+    tree: Option<Tree>,
+    picks: Signal<Vec<Pick>>,
+) -> Element {
+    let meta = meta_of(&snap).cloned().unwrap_or_default();
+    let reason = snap.reason.clone().unwrap_or_default();
+    let unconfigured = unconfigured_notice(&meta);
+    let Some(inv) = snap.inventory.clone() else {
+        return rsx! {
+            Freshness { meta, reason }
+            Notice { message: "The inventory could not be loaded, so the compute tree is not shown.".to_string() }
+        };
+    };
+    let inv = scoped_inventory(&inv, &scope, tree.as_ref());
+    rsx! {
+        Freshness { meta, reason }
+        if let Some(message) = unconfigured {
+            Notice { message }
+        }
+        div { class: "topo-layout",
+            ComputeTree { inventory: inv.clone(), picks }
+            ResourcePanel { inventory: inv, picks }
+        }
+    }
+}
+
 /// The compute tree: every site, its devices, and each cluster with its nodes and VMs.
 #[component]
 fn ComputeTree(inventory: Inventory, picks: Signal<Vec<Pick>>) -> Element {
     rsx! {
         section { class: "card tree", aria_label: "Compute tree",
             if inventory.sites.is_empty() {
-                p { class: "faint", "This tenant has no sites in the inventory." }
+                p { class: "faint", "No site to show. The scope bar narrows the tenant's sites." }
             }
             for site in inventory.sites.iter() {
                 SiteBranch { site: site.clone(), rag: worst(pick_rags(&inventory, &site_pick(&site.id))), picks }
@@ -408,16 +471,40 @@ fn ClusterBranch(site_id: String, cluster: Cluster, rag: Rag, picks: Signal<Vec<
         count_text(cluster.vms.len(), "VM", "VMs")
     );
     let pick = cluster_pick(&site_id, &cluster.name);
+    let nodes: Vec<(String, usize, Node)> = cluster
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(ordinal, node)| {
+            (
+                node_key(&site_id, &cluster.name, &node.name, ordinal),
+                ordinal,
+                node.clone(),
+            )
+        })
+        .collect();
+    let vms: Vec<(String, usize, Vm)> = cluster
+        .vms
+        .iter()
+        .enumerate()
+        .map(|(ordinal, vm)| {
+            (
+                vm_key(&site_id, &cluster.name, vm, ordinal),
+                ordinal,
+                vm.clone(),
+            )
+        })
+        .collect();
     rsx! {
         div { class: "tree-cluster",
             TreeRow { pick, label: cluster.name.clone(), meta, rag: Some(rag), rollup: true, picks }
-            if !cluster.nodes.is_empty() {
+            if !nodes.is_empty() {
                 p { class: "tree-meta", "Nodes" }
                 ul { class: "tree-leaves", aria_label: "Nodes of {cluster.name}",
-                    for node in cluster.nodes.iter() {
-                        li { key: "{node.name}",
+                    for (key, ordinal, node) in nodes.iter() {
+                        li { key: "{key}",
                             TreeRow {
-                                pick: Pick { kind: Kind::Node, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: node.name.clone() },
+                                pick: Pick { kind: Kind::Node, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: node.name.clone(), ordinal: *ordinal },
                                 label: node.name.clone(),
                                 meta: node.status.clone().unwrap_or_else(|| "no status".to_string()),
                                 rag: None,
@@ -427,13 +514,13 @@ fn ClusterBranch(site_id: String, cluster: Cluster, rag: Rag, picks: Signal<Vec<
                     }
                 }
             }
-            if !cluster.vms.is_empty() {
+            if !vms.is_empty() {
                 p { class: "tree-meta", "VMs" }
                 ul { class: "tree-leaves", aria_label: "VMs of {cluster.name}",
-                    for vm in cluster.vms.iter() {
-                        li { key: "{vm.name}",
+                    for (key, ordinal, vm) in vms.iter() {
+                        li { key: "{key}",
                             TreeRow {
-                                pick: Pick { kind: Kind::Vm, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: vm.name.clone() },
+                                pick: Pick { kind: Kind::Vm, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: vm.name.clone(), ordinal: *ordinal },
                                 label: vm.name.clone(),
                                 meta: vm_meta(vm),
                                 rag: Some(Rag::from_wire(&vm.rag)),
@@ -615,20 +702,32 @@ fn NetworkPanel(state: Signal<Admin<NetworkBody>>) -> Element {
         Admin::Forbidden => rsx! {
             Notice { message: "Network is limited to platform administrators.".to_string() }
         },
+        Admin::Missing => rsx! {
+            Notice { message: "The network answer was not found.".to_string() }
+        },
+        Admin::SignedOut => rsx! {
+            Notice { message: "Your session ended. Sign in again to see the network.".to_string() }
+        },
         Admin::Unavailable(reason) => rsx! {
             Notice { message: format!("The network could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
-            let rows = body.prefixes.clone();
-            let empty = rows.is_empty();
+            let keyed: Vec<(String, Prefix)> = body
+                .prefixes
+                .iter()
+                .enumerate()
+                .map(|(index, prefix)| (prefix_key(index, prefix), prefix.clone()))
+                .collect();
+            let empty = keyed.is_empty();
+            let truncated = body.truncated.unwrap_or(false);
             let unconfigured = unconfigured_notice(&body.meta);
             rsx! {
                 Freshness { meta: body.meta.clone(), reason }
                 if let Some(message) = unconfigured {
                     Notice { message }
                 }
-                if body.truncated.unwrap_or(false) {
+                if truncated {
                     p { class: "stale", role: "status", "The prefix list is truncated. It is not the whole of NetBox." }
                 }
                 section { class: "card",
@@ -643,8 +742,8 @@ fn NetworkPanel(state: Signal<Admin<NetworkBody>>) -> Element {
                                 }
                             }
                             tbody {
-                                for prefix in rows.iter() {
-                                    tr { key: "{prefix.prefix}",
+                                for (key, prefix) in keyed.iter() {
+                                    tr { key: "{key}",
                                         td { class: "mono", "{prefix.prefix}" }
                                         td { class: "num", {prefix.vlan.map_or("\u{2014}".to_string(), |v| v.to_string())} }
                                         td { "{prefix.description}" }
@@ -672,16 +771,27 @@ fn FlowsPanel(state: Signal<Admin<FlowsBody>>) -> Element {
         Admin::Forbidden => rsx! {
             Notice { message: "Data flows are limited to platform administrators.".to_string() }
         },
+        Admin::Missing => rsx! {
+            Notice { message: "The data-flow answer was not found.".to_string() }
+        },
+        Admin::SignedOut => rsx! {
+            Notice { message: "Your session ended. Sign in again to see the data flows.".to_string() }
+        },
         Admin::Unavailable(reason) => rsx! {
             Notice { message: format!("The data flows could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
-            let groups: Vec<(String, String, Vec<Flow>)> = group_flows(&body.flows)
+            let groups: Vec<FlowGroup> = group_flows(&body.flows)
                 .into_iter()
                 .map(|(kind, members)| {
                     let counted = count_text(members.len(), "flow", "flows");
-                    (kind, counted, members)
+                    let keyed: Vec<(String, Flow)> = members
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, flow)| (flow_key(index, &flow), flow))
+                        .collect();
+                    (kind, counted, keyed)
                 })
                 .collect();
             let notice: Option<String> = if body.source == SourceStatus::Unconfigured {
@@ -708,8 +818,8 @@ fn FlowsPanel(state: Signal<Admin<FlowsBody>>) -> Element {
                             table { class: "tbl",
                                 thead { tr { th { "From" } th { "To" } th { "Label" } } }
                                 tbody {
-                                    for flow in members.iter() {
-                                        tr { key: "{flow.from}-{flow.to}-{flow.label}",
+                                    for (key, flow) in members.iter() {
+                                        tr { key: "{key}",
                                             td { class: "mono", "{flow.from}" }
                                             td { class: "mono", "{flow.to}" }
                                             td { "{flow.label}" }
@@ -728,6 +838,7 @@ fn FlowsPanel(state: Signal<Admin<FlowsBody>>) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::inventory_api::Device;
 
     fn vm(name: &str, rag: &str, live: Option<&str>) -> Vm {
         Vm {
@@ -784,12 +895,14 @@ mod tests {
         }
     }
 
-    fn pick(kind: Kind, site: &str, cluster: Option<&str>, name: &str) -> Pick {
+    /// A pick at `ordinal` of the cluster's `vms` (or `nodes`, for a node pick).
+    fn pick(kind: Kind, site: &str, cluster: Option<&str>, name: &str, ordinal: usize) -> Pick {
         Pick {
             kind,
             site: site.into(),
             cluster: cluster.map(str::to_string),
             name: name.into(),
+            ordinal,
         }
     }
 
@@ -797,7 +910,7 @@ mod tests {
     fn a_vm_detail_carries_its_rag_grafana_link_and_workflow() {
         let d = detail(
             &inventory(),
-            &pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi"),
+            &pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0),
         )
         .unwrap();
         assert_eq!(d.kind_label, "VM");
@@ -827,7 +940,11 @@ mod tests {
             }],
             ..Inventory::default()
         };
-        let d = detail(&inv, &pick(Kind::Vm, "dc1", Some("pve-prod"), "ambiguous")).unwrap();
+        let d = detail(
+            &inv,
+            &pick(Kind::Vm, "dc1", Some("pve-prod"), "ambiguous", 0),
+        )
+        .unwrap();
         assert!(d
             .rows
             .iter()
@@ -844,10 +961,36 @@ mod tests {
     }
 
     #[test]
+    fn two_vms_of_one_name_show_their_own_detail() {
+        let mut first = vm("tududi", "red", Some("running"));
+        first.vmid = Some(101);
+        let mut second = vm("tududi", "green", Some("stopped"));
+        second.vmid = Some(202);
+        let inv = Inventory {
+            sites: vec![Site {
+                id: "dc1".into(),
+                clusters: vec![Cluster {
+                    name: "pve-prod".into(),
+                    vms: vec![first, second],
+                    ..Cluster::default()
+                }],
+                ..Site::default()
+            }],
+            ..Inventory::default()
+        };
+        let a = detail(&inv, &pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0)).unwrap();
+        let b = detail(&inv, &pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 1)).unwrap();
+        assert!(a.rows.iter().any(|(k, v)| *k == "VM ID" && v == "101"));
+        assert!(b.rows.iter().any(|(k, v)| *k == "VM ID" && v == "202"));
+        assert_eq!(a.rag, Some(Rag::Red));
+        assert_eq!(b.rag, Some(Rag::Green));
+    }
+
+    #[test]
     fn a_node_shows_usage_bars_only_when_the_api_sent_them() {
         let full = detail(
             &inventory(),
-            &pick(Kind::Node, "dc1", Some("pve-prod"), "pve-01"),
+            &pick(Kind::Node, "dc1", Some("pve-prod"), "pve-01", 0),
         )
         .unwrap();
         assert_eq!(full.rag, None, "a node has no RAG");
@@ -862,7 +1005,11 @@ mod tests {
             status: Some("online".into()),
             ..Node::default()
         };
-        let thin = detail(&inv, &pick(Kind::Node, "dc1", Some("pve-prod"), "pve-01")).unwrap();
+        let thin = detail(
+            &inv,
+            &pick(Kind::Node, "dc1", Some("pve-prod"), "pve-01", 0),
+        )
+        .unwrap();
         assert!(thin.bars.is_empty(), "absent usage draws no bar");
         assert!(
             !thin.rows.iter().any(|(k, _)| *k == "Uptime"),
@@ -875,11 +1022,15 @@ mod tests {
     }
 
     #[test]
-    fn a_site_detail_counts_its_children_and_rolls_up_its_vms() {
-        let d = detail(&inventory(), &pick(Kind::Site, "dc1", None, "")).unwrap();
+    fn a_site_detail_counts_its_children_and_says_what_its_status_is_built_from() {
+        let d = detail(&inventory(), &pick(Kind::Site, "dc1", None, "", 0)).unwrap();
         assert_eq!(d.rag, Some(Rag::Red), "the worst of its VMs");
         assert!(d.rows.iter().any(|(k, v)| *k == "VMs" && v == "2 VMs"));
-        let unmapped = detail(&inventory(), &pick(Kind::Site, "dc2", None, "")).unwrap();
+        assert!(d
+            .rows
+            .iter()
+            .any(|(k, v)| *k == "Status basis" && v == "Worst of its VMs"));
+        let unmapped = detail(&inventory(), &pick(Kind::Site, "dc2", None, "", 0)).unwrap();
         assert_eq!(unmapped.rag, Some(Rag::Grey), "no VMs is no signal");
         assert!(unmapped
             .rows
@@ -892,12 +1043,12 @@ mod tests {
         assert_eq!(
             detail(
                 &inventory(),
-                &pick(Kind::Vm, "dc1", Some("pve-prod"), "gone")
+                &pick(Kind::Vm, "dc1", Some("pve-prod"), "gone", 0)
             ),
             None
         );
         assert_eq!(
-            detail(&inventory(), &pick(Kind::Site, "dc9", None, "")),
+            detail(&inventory(), &pick(Kind::Site, "dc9", None, "", 0)),
             None
         );
     }
@@ -937,6 +1088,47 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_flow_line_still_gets_its_own_key() {
+        let line = Flow {
+            kind: "oidc".into(),
+            from: "console".into(),
+            to: "authentik".into(),
+            label: "sign-in".into(),
+        };
+        assert_ne!(
+            flow_key(0, &line),
+            flow_key(1, &line),
+            "same line, different position"
+        );
+        let joined = Flow {
+            from: "console\u{1f}x".into(),
+            to: "authentik".into(),
+            label: "sign-in".into(),
+            ..line.clone()
+        };
+        assert_ne!(
+            flow_key(0, &line),
+            flow_key(0, &joined),
+            "a separator inside a field cannot make two lines share a key"
+        );
+    }
+
+    #[test]
+    fn prefix_keys_follow_the_prefix_its_scope_and_its_position() {
+        let p = Prefix {
+            prefix: "198.51.100.0/24".into(),
+            site: Some("dc-1".into()),
+            ..Prefix::default()
+        };
+        assert_ne!(prefix_key(0, &p), prefix_key(1, &p));
+        let other_scope = Prefix {
+            site: None,
+            ..p.clone()
+        };
+        assert_ne!(prefix_key(0, &p), prefix_key(0, &other_scope));
+    }
+
+    #[test]
     fn the_tabs_have_the_brief_labels() {
         assert_eq!(TopoTab::Compute.label(), "Compute");
         assert_eq!(TopoTab::Network.label(), "Network");
@@ -945,10 +1137,12 @@ mod tests {
 
     #[test]
     fn a_site_chip_shows_the_site_and_other_rows_their_name() {
-        assert_eq!(pick_name(&pick(Kind::Site, "dc1", None, "")), "dc1");
+        assert_eq!(pick_name(&pick(Kind::Site, "dc1", None, "", 0)), "dc1");
         assert_eq!(
-            pick_name(&pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi")),
+            pick_name(&pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0)),
             "tududi"
         );
+        // The separator used in keys is not a character a name can carry.
+        assert_eq!(SEP, '\u{1f}');
     }
 }

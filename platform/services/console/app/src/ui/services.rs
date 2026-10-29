@@ -10,7 +10,8 @@ use dioxus::prelude::*;
 use super::empty::SERVICES;
 use super::icons::icon;
 use super::inventory::{
-    count_text, mb_text, meta_of, poll_admin, view, Admin, Snapshot, View, ViewNotice,
+    count_text, loaded_tree, mb_text, meta_of, poll_admin, scoped_services, view, Admin, Snapshot,
+    View, ViewNotice, SEP,
 };
 use super::inventory_api::{self, ServiceBody, ServiceRow};
 use super::shell::Ctx;
@@ -124,6 +125,7 @@ pub fn Services() -> Element {
 
 #[component]
 fn ServicesContent(snap: Snapshot) -> Element {
+    let ctx = use_context::<Ctx>();
     let reason = snap.reason.clone().unwrap_or_default();
     let Some(body) = snap.services.clone() else {
         return rsx! {
@@ -131,6 +133,9 @@ fn ServicesContent(snap: Snapshot) -> Element {
             Notice { message: "The services could not be loaded.".to_string() }
         };
     };
+    let scope = ctx.scope.read().clone();
+    let tree = loaded_tree(&ctx.tree.read());
+    let rows = scoped_services(&body.services, &scope, tree.as_ref());
     let meta = body.meta.clone();
     let unconfigured = unconfigured_notice(&meta);
     rsx! {
@@ -138,7 +143,7 @@ fn ServicesContent(snap: Snapshot) -> Element {
         if let Some(message) = unconfigured {
             Notice { message }
         }
-        ServicesPanel { rows: body.services }
+        ServicesPanel { rows }
     }
 }
 
@@ -224,8 +229,11 @@ fn ServicesPanel(rows: Vec<ServiceRow>) -> Element {
                         }
                     }
                     tbody {
-                        for row in shown.iter() {
-                            ServiceTableRow { row: row.clone() }
+                        for (index, row) in shown.iter().enumerate() {
+                            ServiceTableRow {
+                                key: "{row.site}{SEP}{row.cluster}{SEP}{row.name}{SEP}{index}",
+                                row: row.clone(),
+                            }
                         }
                     }
                 }
@@ -302,16 +310,23 @@ pub fn ServiceDetail(name: String) -> Element {
 /// The service's own read, polled while the tab is visible.
 #[component]
 fn ServiceView(tenant: String, name: String) -> Element {
+    let ctx = use_context::<Ctx>();
     let state = use_signal(|| Admin::<ServiceBody>::Loading);
     let path = inventory_api::service_path(&tenant, &name);
     use_hook(move || {
-        spawn(poll_admin(path, state));
+        spawn(poll_admin(path, state, ctx.me));
     });
     let shown = state.read().clone();
     match shown {
         Admin::Loading => rsx! { Notice { message: "Loading the service\u{2026}".to_string() } },
         Admin::Forbidden => rsx! {
             Notice { message: "This service is not available to you.".to_string() }
+        },
+        Admin::Missing => rsx! {
+            Notice { message: "Service not found in this tenant.".to_string() }
+        },
+        Admin::SignedOut => rsx! {
+            Notice { message: "Your session ended. Sign in again to see this service.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
             Notice { message: format!("The service could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }

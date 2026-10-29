@@ -120,7 +120,10 @@ pub async fn select_tenant(mut ctx: Ctx, tenant_id: String, saved: Option<String
     ctx.tree.set(Loaded::Loading);
     // The inventory of the old tenant must not show under the new name, so it waits for a fresh read.
     ctx.inventory.set(Loaded::Loading);
-    spawn(inventory::refresh(ctx, tenant_id.clone()));
+    let refreshed = tenant_id.clone();
+    spawn(async move {
+        inventory::refresh(ctx, refreshed).await;
+    });
     let path = format!("/v1/tenants/{}/tree", api::segment(&tenant_id));
     let reply = api::request("GET", &path, None).await;
     // A later pick of another tenant wins, so this answer is dropped.
