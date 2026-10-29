@@ -724,14 +724,29 @@ def test_deploy_sh_checks_and_hashes_flows_and_the_ca():
     assert text.count("config/flows.json config/proxmox-ca.pem") == 2
 
 
+_NO_KEY = object()  # a site that does not declare netbox_site at all (not "declares it empty")
+NETBOX_SITE_CHECKS = (
+    "Collect the sites that declare netbox_site across console_tenants",
+    "Collect the netbox_site slugs declared across console_tenants",
+    "Refuse an empty or null netbox_site",
+    "Refuse a netbox_site that is not a string",
+    "Refuse a netbox_site with surrounding or internal whitespace",
+    "Refuse a netbox_site slug declared on more than one site",
+)
+
+
 def _netbox_site_tasks() -> list[dict]:
-    return [_named(DEPLOY, "Collect the netbox_site slugs declared across console_tenants"),
-            _named(DEPLOY, "Refuse a netbox_site slug declared on more than one site")]
+    return [_named(DEPLOY, n) for n in NETBOX_SITE_CHECKS]
 
 
-def _tenants(slugs_by_site: list[list]) -> list[dict]:
-    sites = [{"id": f"site-{i}", "name": f"Site {i}", "envs": ["prod"]} | ({"netbox_site": s} if s else {})
-             for i, s in enumerate(slugs_by_site)]
+def _tenants(values: list) -> list[dict]:
+    # One site per value: _NO_KEY leaves netbox_site out, anything else (None, "", " hq", 7, "hq") sets it.
+    sites = []
+    for i, value in enumerate(values):
+        site = {"id": f"site-{i}", "name": f"Site {i}", "envs": ["prod"]}
+        if value is not _NO_KEY:
+            site["netbox_site"] = value
+        sites.append(site)
     return [{"id": "t", "name": "T", "orgs": [{"id": "o", "name": "O", "sites": sites}]}]
 
 
@@ -744,10 +759,32 @@ def test_duplicate_netbox_site_slugs_are_refused_by_name(tmp_path):
 
 @NEEDS_ANSIBLE
 def test_unique_or_unmapped_netbox_sites_pass(tmp_path):
-    ok = _run_tasks(tmp_path, _netbox_site_tasks(), {"console_tenants": _tenants(["hq", None, "dc"])})
+    ok = _run_tasks(tmp_path, _netbox_site_tasks(), {"console_tenants": _tenants(["hq", _NO_KEY, "dc"])})
     assert ok.returncode == 0, ok.stdout + ok.stderr
-    none = _run_tasks(tmp_path, _netbox_site_tasks(), {"console_tenants": _tenants([None, None])})
+    none = _run_tasks(tmp_path, _netbox_site_tasks(), {"console_tenants": _tenants([_NO_KEY, _NO_KEY])})
     assert none.returncode == 0, none.stdout + none.stderr
+
+
+@NEEDS_ANSIBLE
+def test_a_null_or_blank_netbox_site_is_a_named_error_not_ignored(tmp_path):
+    for value in (None, "", "   "):
+        proc = _run_tasks(tmp_path, _netbox_site_tasks(), {"console_tenants": _tenants([value])})
+        assert proc.returncode != 0, (value, proc.stdout)
+        assert "netbox_site is empty on site 'site-0'" in proc.stdout, (value, proc.stdout)
+
+
+@NEEDS_ANSIBLE
+def test_a_non_string_netbox_site_is_a_named_error(tmp_path):
+    proc = _run_tasks(tmp_path, _netbox_site_tasks(), {"console_tenants": _tenants([7])})
+    assert proc.returncode != 0 and "netbox_site on site 'site-0' must be a string slug" in proc.stdout, proc.stdout
+
+
+@NEEDS_ANSIBLE
+def test_a_netbox_site_with_whitespace_is_refused_compared_exactly_not_trimmed(tmp_path):
+    for value in (" hq", "hq ", "h q", "h\tq"):
+        proc = _run_tasks(tmp_path, _netbox_site_tasks(), {"console_tenants": _tenants([value])})
+        assert proc.returncode != 0, (value, proc.stdout)
+        assert "has surrounding or internal whitespace" in proc.stdout, (value, proc.stdout)
 
 
 @NEEDS_ANSIBLE
@@ -870,6 +907,61 @@ def test_missing_sources_give_no_edges_of_that_kind_not_an_error(tmp_path):
                  "_console_caddy_sites": "", "_console_o11y_targets": []}
     edges = json.loads(_render(tmp_path, CONSOLE / "templates/flows.json.j2", variables))["edges"]
     assert edges == []
+
+
+@NEEDS_ANSIBLE
+def _caddy_hosts(tmp_path: Path, caddy: str) -> list[str]:
+    variables = {"_console_authentik_catalog": {}, "_console_authentik_apps": [],
+                 "_console_caddy_sites": caddy, "_console_o11y_targets": []}
+    out = _render(tmp_path, CONSOLE / "templates/flows.json.j2", variables)
+    assert IPV4.search(out) is None and PORT.search(out) is None, out
+    edges = json.loads(out)["edges"]
+    assert all(e["from"] == "caddy" for e in edges), edges
+    return [e["to"] for e in edges]
+
+
+@NEEDS_ANSIBLE
+def test_a_scheme_prefixed_site_emits_its_hostname_without_scheme_or_port(tmp_path):
+    assert _caddy_hosts(tmp_path, "https://console.example.test:8443 {\n    respond 200\n}\n") == \
+        ["console.example.test"]
+
+
+@NEEDS_ANSIBLE
+def test_comma_separated_site_addresses_emit_each_hostname(tmp_path):
+    assert _caddy_hosts(tmp_path, "a.example.test, b.example.test:8443 {\n    respond 200\n}\n") == \
+        ["a.example.test", "b.example.test"]
+
+
+@NEEDS_ANSIBLE
+def test_a_wildcard_site_is_emitted_as_written(tmp_path):
+    assert _caddy_hosts(tmp_path, "*.agent-cloud.test {\n    respond 200\n}\n") == ["*.agent-cloud.test"]
+
+
+@NEEDS_ANSIBLE
+def test_a_tab_indented_site_line_is_read_as_a_site(tmp_path):
+    assert _caddy_hosts(tmp_path, "\tconsole.example.test {\n\t\trespond 200\n\t}\n") == ["console.example.test"]
+
+
+@NEEDS_ANSIBLE
+def test_a_label_with_a_dotted_quad_emits_nothing(tmp_path):
+    for label in ("203.0.113.7 {", "https://203.0.113.7:8443 {", "host.203.0.113.7.example.test {"):
+        assert _caddy_hosts(tmp_path, label + "\n    respond 200\n}\n") == [], label
+
+
+@NEEDS_ANSIBLE
+def test_a_dotted_quad_in_a_comma_list_drops_only_that_address(tmp_path):
+    assert _caddy_hosts(tmp_path, "a.example.test, 203.0.113.7:9000 {\n    respond 200\n}\n") == ["a.example.test"]
+
+
+@NEEDS_ANSIBLE
+def test_a_directive_with_a_brace_is_never_a_site(tmp_path):
+    caddy = "inference.example.test {\n    reverse_proxy inference.internal.example.test:8000 {\n    }\n}\n"
+    assert _caddy_hosts(tmp_path, caddy) == ["inference.example.test"]
+
+
+@NEEDS_ANSIBLE
+def test_a_port_only_label_emits_nothing(tmp_path):
+    assert _caddy_hosts(tmp_path, ":8443 {\n    respond 403\n}\n") == []
 
 
 def test_the_flows_template_reads_no_upstream_or_instance_field():

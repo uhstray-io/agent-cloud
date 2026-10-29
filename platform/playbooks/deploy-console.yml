@@ -122,13 +122,41 @@
 
     # A netbox_site slug names one NetBox site. Two sites claiming it would join one site's NetBox
     # clusters and VMs under another (D23: a wrong join shows another site's hosts), so refuse before
-    # anything is rendered or placed. A site without netbox_site is "not mapped" and is not checked here.
-    - name: "Collect the netbox_site slugs declared across console_tenants"
+    # anything is rendered or placed. A site without the key is "not mapped" and is not checked here. A
+    # site that declares the key must declare a non-empty string slug with no whitespace; anything else is a
+    # named error, never silently ignored.
+    - name: "Collect the sites that declare netbox_site across console_tenants"
       ansible.builtin.set_fact:
-        _console_netbox_site_slugs: >-
+        _console_netbox_sites: >-
           {{ console_tenants | default([]) | selectattr('orgs', 'defined') | map(attribute='orgs') | flatten
              | selectattr('sites', 'defined') | map(attribute='sites') | flatten
-             | selectattr('netbox_site', 'defined') | map(attribute='netbox_site') | list }}
+             | selectattr('netbox_site', 'defined') | list }}
+
+    - name: "Collect the netbox_site slugs declared across console_tenants"
+      ansible.builtin.set_fact:
+        _console_netbox_site_slugs: "{{ _console_netbox_sites | map(attribute='netbox_site') | list }}"
+
+    - name: "Refuse an empty or null netbox_site"
+      ansible.builtin.assert:
+        that: item.netbox_site is not none and (item.netbox_site | string | trim | length) > 0
+        fail_msg: "netbox_site is empty on site '{{ item.id | default('?') }}' (null or blank). Give it a NetBox site slug, or remove the key."
+        quiet: true
+      loop: "{{ _console_netbox_sites }}"
+
+    - name: "Refuse a netbox_site that is not a string"
+      ansible.builtin.assert:
+        that: item.netbox_site is string
+        fail_msg: "netbox_site on site '{{ item.id | default('?') }}' must be a string slug."
+        quiet: true
+      loop: "{{ _console_netbox_sites }}"
+
+    # Compared exactly as written: a slug is refused, never trimmed, if it carries whitespace of any kind.
+    - name: "Refuse a netbox_site with surrounding or internal whitespace"
+      ansible.builtin.assert:
+        that: (item.netbox_site | trim == item.netbox_site) and (item.netbox_site.split() | length == 1)
+        fail_msg: "netbox_site on site '{{ item.id | default('?') }}' has surrounding or internal whitespace. A NetBox slug carries none."
+        quiet: true
+      loop: "{{ _console_netbox_sites }}"
 
     # One assert per unique slug: a slug declared twice fails its own iteration and is named. (A set_fact
     # accumulator inside a loop does not carry across items, so it cannot collect the duplicates.)

@@ -72,7 +72,9 @@ all:
     #   console_netbox_url: <NetBox base URL>            # token: Provision NetBox Automation Token (profile console)
     #   console_proxmox_url: <Proxmox API base URL>      # token: Provision Console Proxmox Token (PVEAuditor)
     #   console_grafana_url: https://o11y.<zone>         # base for Grafana deep links; no credential
-    #   console_proxmox_ca_pem: |                        # the PUBLIC CA certificate only, when Proxmox uses a private CA
+    #   console_proxmox_ca_pem: |                        # the PUBLIC CA certificate. REQUIRED by Provision Console Proxmox
+    #                                                    # Token (it refuses to mint without it). Optional for the console
+    #                                                    # runtime: unset means the runtime's default trust (not yet read)
     #     -----BEGIN CERTIFICATE-----
     #   console_tenants[].orgs[].sites[].netbox_site: <NetBox site slug>   # optional; one slug per site (D23)
 
