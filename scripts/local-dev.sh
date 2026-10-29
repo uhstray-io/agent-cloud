@@ -35,6 +35,8 @@ preflight() {
   for tool in podman podman-compose ansible-playbook ansible-inventory python3 curl git jq; do
     command -v "$tool" >/dev/null 2>&1 || { info "missing tool: $tool"; missing=1; }
   done
+  # GNU rsync 3.x for local placement (scripts/require-gnu-rsync.sh says why and how to fix it).
+  "${REPO_ROOT}/scripts/require-gnu-rsync.sh" >/dev/null || missing=1
   [ "$missing" -eq 0 ] || die "install the toolchain first: brew bundle (repo root)"
   podman machine inspect --format '{{.State}}' 2>/dev/null | grep -q running \
     || die "podman machine is not running — run: podman machine start"

@@ -49,6 +49,20 @@
     force: true
   when: not (local_mode | default(false) | bool)
 
+- name: "Refuse an rsync that ignores .gitignore on --delete (local mode)"
+  # openrsync (macOS /usr/bin/rsync) does not honour the .gitignore filter on --delete, so it
+  # deletes rendered files the deploy owns (Authentik's blueprints-active), leaving running
+  # containers on stale bind mounts. The check and its remediation message live in one script
+  # the local preflight runs too (scripts/require-gnu-rsync.sh); its stderr is the failure text.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ playbook_dir | dirname | dirname }}/scripts/require-gnu-rsync.sh"
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - local_mode | default(false) | bool
 - name: "Copy working tree into place (local mode)"
   # The playbook's checkout is the only source that can honestly support a
   # branch-specific validation claim. An inventory path could point at a
@@ -57,6 +71,7 @@
   # removes files deleted from it, so a removed deploy input (e.g. a retired
   # blueprint) rots in the clone forever and keeps getting applied. --delete
   # mirrors the source so deletions propagate.
+  # The .gitignore filter below needs GNU rsync 3.x: the refuse task above stops openrsync, which ignores it on --delete.
   #
   # Two classes of file must NOT be deleted, and `--filter=':- .gitignore'` (rsync
   # honours each dir's .gitignore as exclude rules) covers both without us
