@@ -265,8 +265,8 @@
       no_log: true
 
     # Refuse a minted token that carries no token id before the first Proxmox request (the token id names the
-    # account; there is no built-in default). no_log: the assert reads a credential reference, so on failure
-    # Ansible censors the result, fail_msg included. The fail_msg names the missing key for whoever reads this file.
+    # account; there is no built-in default). no_log: the assert reads a credential reference, so Ansible censors
+    # its FAILED result; the fail_msg still prints on the [ERROR] Task failed line (checked with ansible-core 2.21.0).
     - name: "Proxmox: require the stored console token id before any Proxmox request (no_log: credential check)"
       ansible.builtin.assert:
         that: _probe_pve_token_id | length > 0
