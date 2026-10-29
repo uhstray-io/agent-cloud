@@ -47,16 +47,19 @@
   tasks:
     # Outside local-dev the defaults are wrong, not merely unset: `opa:8181` resolves only on the
     # local-dev network, and a loopback bind leaves OPA unreachable to every caller host. Refuse
-    # before anything changes rather than deploy a service its callers cannot reach.
-    - name: "Refuse a production deploy without its declared bind and verify URL"
+    # before anything changes rather than deploy a service its callers cannot reach. Production
+    # also requires listener TLS: callers verify OPA by name (skynet refuses an http:// OPA URL),
+    # so a plain-HTTP production listener is a deploy nobody can use.
+    - name: "Refuse a production deploy without its declared bind, TLS and verify URL"
       ansible.builtin.assert:
         that:
           - (opa_bind | default('', true) | string) not in ['', '127.0.0.1', 'localhost']
-          - (opa_internal_url | default('', true) | string) is match('^https?://')
+          - opa_tls | default(false) | bool
+          - (opa_internal_url | default('', true) | string) is match('^https://')
         fail_msg: >-
           Outside local_mode, declare opa_bind (the VM's LAN address the firewall admits callers
-          to) and opa_internal_url (the URL the verify play probes from the OPA host) for this
-          host in inventory, then re-run.
+          to), opa_tls: true, and opa_internal_url (the https:// URL the verify play probes from
+          the OPA host) for this host in inventory, then re-run.
       when: not (local_mode | default(false) | bool)
 
     - name: "Place the monorepo + ensure podman/compose"

@@ -176,3 +176,12 @@ task_with() {
   task_with "$pb" 'Sample decision over TLS: unknown agent' > "$BATS_TEST_TMPDIR/tls-deny.yml"
   assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/tls-deny.yml"
 }
+
+@test "opa: a production deploy requires listener TLS and an https verify URL" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Refuse a production deploy without its declared bind' > "$BATS_TEST_TMPDIR/prod.yml"
+  assert_grep -qF -e "- opa_tls | default(false) | bool" "$BATS_TEST_TMPDIR/prod.yml"
+  assert_grep -qF "is match('^https://')" "$BATS_TEST_TMPDIR/prod.yml"
+  refute_grep -qF "https?://" "$BATS_TEST_TMPDIR/prod.yml"
+  assert_grep -qF "when: not (local_mode | default(false) | bool)" "$BATS_TEST_TMPDIR/prod.yml"
+}

@@ -902,7 +902,7 @@ D29) waits on both OPA and skynet.
 
 ### What the code does
 
-- `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback) and `opa_internal_url`.
+- `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback), `opa_tls`, and an `https://` `opa_internal_url`.
 - With `opa_tls` set, it checks the leaf's declaration in `internal_leaves`: server profile, this host, `<deploy>/certs/<leaf>`, reload `none`, the server name in its SANs.
 - It issues the leaf if none is current (`tasks/mint-internal-cert.yml`, key made on the OPA host), places the CA bundle (`tasks/distribute-ca-root.yml`), and starts OPA with `compose.tls.yml`. That overlay adds userns keep-id for the image's uid 1000, the `./certs` directory mount, and the TLS flags.
 - Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, and `opa test /policies`.
