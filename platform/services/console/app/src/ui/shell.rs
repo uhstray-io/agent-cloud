@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 
 use super::api::{self, Account, Claims, Me, NamedRef, TenantList, Tree};
 use super::icons::icon;
+use super::inventory::{self, Snapshot};
 use super::scope::{self, Scope, ScopeBar};
 use super::work::{self, WorkState};
 use super::Route;
@@ -33,6 +34,8 @@ pub struct Ctx {
     pub scope: Signal<Scope>,
     /// The Active Work list. One poll writes it; the page and the sidebar badge read it.
     pub work: Signal<WorkState>,
+    /// The inventory of `tenant`. The inventory poll and a tenant switch write it; the Phase 3 pages read it.
+    pub inventory: Signal<Loaded<Snapshot>>,
 }
 
 #[component]
@@ -43,6 +46,7 @@ pub fn Shell() -> Element {
     let tree = use_signal(|| Loaded::Loading);
     let scope = use_signal(Scope::default);
     let work = use_signal(|| WorkState::Loading);
+    let inventory = use_signal(|| Loaded::Loading);
     let ctx = use_context_provider(|| Ctx {
         me,
         tenants,
@@ -50,6 +54,7 @@ pub fn Shell() -> Element {
         tree,
         scope,
         work,
+        inventory,
     });
 
     use_effect(move || {
@@ -113,6 +118,9 @@ async fn load_tenants(mut ctx: Ctx, saved: Option<String>) {
 pub async fn select_tenant(mut ctx: Ctx, tenant_id: String, saved: Option<String>) {
     ctx.tenant.set(Some(tenant_id.clone()));
     ctx.tree.set(Loaded::Loading);
+    // The inventory of the old tenant must not show under the new name, so it waits for a fresh read.
+    ctx.inventory.set(Loaded::Loading);
+    spawn(inventory::refresh(ctx, tenant_id.clone()));
     let path = format!("/v1/tenants/{}/tree", api::segment(&tenant_id));
     let reply = api::request("GET", &path, None).await;
     // A later pick of another tenant wins, so this answer is dropped.
@@ -155,6 +163,7 @@ fn Workspace(account: Account) -> Element {
     // start another poll loop. The poll's own waits are in the browser (`api::sleep_unless_hidden`).
     use_hook(move || {
         spawn(work::poll(ctx.work));
+        spawn(inventory::poll(ctx));
     });
     let no_access = has_no_tenant_access(&ctx.tenants.read());
     // The outlet stays in both cases, so the profile still works without a tenant.
