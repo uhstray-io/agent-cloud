@@ -54,6 +54,8 @@ Every inventory, services, network and flows answer starts with these fields:
 - `diagnostics.dropped_mismatched` counts the NetBox rows dropped because their own scope did not
   match the query that returned them (see "Row checks"). It is a count, not an error: the answer
   is still served, and a non-zero count means NetBox returned rows the console did not ask for.
+  **Platform admins only.** A tenant member's envelope omits `diagnostics` entirely, on every
+  tenant route. `/v1/network` is admin-only, so its envelope always carries it.
 
 The envelope is per authority, not single, so the UI can say which source is down.
 
@@ -111,6 +113,9 @@ The envelope is per authority, not single, so the UI can say which source is dow
   `dcim.site` scope id. A VM must name its cluster by `cluster.id`. A device must name its site by
   `site.id`. A row that fails the check is dropped and counted in `diagnostics`. Tenant isolation
   holds even when NetBox ignores a filter.
+- A cluster whose scope is a location, a region or any type other than `dcim.site` is dropped and
+  counted, even when its legacy `site` field names the site. The console does not yet resolve those
+  scopes to a site, so it fails closed until it does. Such a cluster is never shown, to anyone.
 - `nodes` are the Proxmox nodes that host this cluster's matched VMs, sorted by name. A node with
   no matched VM of the cluster is not listed. Every caller gets `name` and `status`. Platform
   admins also get `cpu`, `maxcpu`, `mem`, `maxmem` and `uptime`; for anyone else those keys are
@@ -164,8 +169,8 @@ When two VMs of one tenant share a name, the first in list order is returned.
 
 - `vlan` is the VLAN id (`vid`), or `null`.
 - `site` is the slug of the site the prefix's own scope names. A scope of type `dcim.site` gives
-  its slug, or its name when NetBox gives no slug. A prefix scoped to anything else (a location,
-  say) gives `null`, and so does a prefix with no scope. A prefix with no scope type gives the slug
+  its slug. A scope with no slug gives `null`, never its name, because this field is a slug. A prefix
+  scoped to anything else (a location, say) gives `null`, and so does a prefix with no scope. A prefix with no scope type gives the slug
   of its nested `site` object, if it carries one. The prefix's own record decides, never a per-site list.
 - `truncated` is `true` when NetBox still had prefixes after 20 pages of 1000. The prefixes shown
   are then the first 20,000.

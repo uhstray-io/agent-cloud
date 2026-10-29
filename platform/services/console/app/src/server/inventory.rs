@@ -127,7 +127,9 @@ pub struct Meta {
     pub stale: bool,
     pub updated_at: Stamps,
     pub links: Links,
-    pub diagnostics: Diagnostics,
+    /// Platform admins only. A tenant member's envelope omits the field entirely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<Diagnostics>,
 }
 
 /// Counts that do not change an answer's state but a reader should see. A row NetBox returned
@@ -182,10 +184,10 @@ pub struct Stamps {
     pub proxmox: Option<String>,
 }
 
-fn meta(cache: &InventoryCache, grafana_base: Option<&str>) -> Meta {
+fn meta(cache: &InventoryCache, grafana_base: Option<&str>, admin: bool) -> Meta {
     Meta {
         links: links(grafana_base),
-        diagnostics: diagnostics(cache),
+        diagnostics: admin.then(|| diagnostics(cache)),
         source: Sources {
             netbox: cache.netbox.status,
             proxmox: cache.proxmox.status,
@@ -221,7 +223,7 @@ fn network_meta(cache: &InventoryCache, grafana_base: Option<&str>) -> Meta {
             proxmox: cache.proxmox.updated_at.clone(),
         },
         links: links(grafana_base),
-        diagnostics: diagnostics(cache),
+        diagnostics: Some(diagnostics(cache)),
     }
 }
 
@@ -636,7 +638,7 @@ pub async fn get_inventory(
         &Join::of(&cache, app.config.grafana_url.as_deref(), admin),
     );
     Json(InventoryBody {
-        meta: meta(&cache, app.config.grafana_url.as_deref()),
+        meta: meta(&cache, app.config.grafana_url.as_deref(), admin),
         sites,
     })
     .into_response()
@@ -662,7 +664,7 @@ pub async fn list_services(
         .map(|(row, _)| row)
         .collect();
     Json(ServicesBody {
-        meta: meta(&cache, app.config.grafana_url.as_deref()),
+        meta: meta(&cache, app.config.grafana_url.as_deref(), admin),
         services,
     })
     .into_response()
@@ -690,7 +692,7 @@ pub async fn get_service(
         return error(StatusCode::NOT_FOUND, "unknown_service");
     };
     Json(ServiceBody {
-        meta: meta(&cache, app.config.grafana_url.as_deref()),
+        meta: meta(&cache, app.config.grafana_url.as_deref(), admin),
         service,
         vm,
     })
@@ -1388,17 +1390,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diagnostics_show_to_platform_admins_only() {
+        let (state, _, _) = live_state().await;
+        let (member_url, member_cookie) = signed_in(state.clone(), &["ops"]).await;
+        let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
+
+        // Tenant envelopes: the member gets none, the admin gets the count.
+        for path in [
+            "/v1/tenants/acme/inventory",
+            "/v1/tenants/acme/services",
+            "/v1/tenants/acme/services/tududi",
+        ] {
+            let (status, text) = get_json(&member_url, Some(&member_cookie), path).await;
+            assert_eq!(status, 200, "{path}: {text}");
+            assert!(
+                !text.contains("diagnostics"),
+                "{path} showed diagnostics to a member: {text}"
+            );
+            let (status, text) = get_json(&admin_url, Some(&admin_cookie), path).await;
+            assert_eq!(status, 200, "{path}: {text}");
+            let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+            assert!(
+                body["diagnostics"]["dropped_mismatched"].is_u64(),
+                "{path}: {text}"
+            );
+        }
+        // The default fixtures drop exactly the rack cluster on the lab site.
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["diagnostics"]["dropped_mismatched"], 1);
+
+        // The network answer is admin-only, so its envelope always carries the count.
+        let (_, text) = get_json(&admin_url, Some(&admin_cookie), "/v1/network").await;
+        let network: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(network["diagnostics"]["dropped_mismatched"], 1);
+    }
+
+    #[tokio::test]
     async fn tenant_views_hold_when_netbox_ignores_its_filters() {
         let nb_mock = nb::Mock::default();
         nb_mock
             .ignore_filters
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let (state, _, _) = live_state_using(nb_mock, None).await;
-        let (url, cookie) = signed_in(state, &["ops"]).await;
+        let (url, cookie) = signed_in(state.clone(), &["ops"]).await;
 
         let (status, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/inventory").await;
         assert_eq!(status, 200);
-        for foreign in ["pve-lab", "lab-wiki", "lab-01"] {
+        for foreign in ["pve-lab", "lab-wiki", "lab-01", "pve-rack"] {
             assert!(
                 !text.contains(foreign),
                 "{foreign} leaked into acme: {text}"
@@ -1412,11 +1456,25 @@ mod tests {
         assert_eq!(dc1["clusters"][0]["vms"].as_array().expect("vms").len(), 5);
         assert_eq!(dc1["devices"].as_array().expect("devices").len(), 2);
         assert!(
-            body["diagnostics"]["dropped_mismatched"]
+            body.get("diagnostics").is_none(),
+            "members see no diagnostics: {text}"
+        );
+
+        // The count itself is for platform admins, and it is not silent.
+        let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let admin: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(
+            admin["diagnostics"]["dropped_mismatched"]
                 .as_u64()
                 .unwrap_or(0)
                 > 0,
-            "the dropped rows are counted, not silent: {text}"
+            "the dropped rows are counted for admins: {text}"
         );
     }
 

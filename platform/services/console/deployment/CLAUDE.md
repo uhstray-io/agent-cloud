@@ -148,7 +148,7 @@ Unconfigured and stale:
 
 A VM takes live state only when its name is unique across every declared NetBox site and unique among the Proxmox guests. Otherwise its live status is `null`.
 
-`diagnostics.dropped_mismatched` counts NetBox rows that did not name the site or cluster the console asked for. They are dropped, not shown, and the count is surfaced.
+`diagnostics.dropped_mismatched` counts NetBox rows that did not name the site or cluster the console asked for. They are dropped, not shown. The count is for platform admins only: a tenant member's envelope omits it. A cluster scoped to a location or region is dropped and counted the same way, even when its legacy site field names the site, until the console resolves those scopes to a site.
 
 RAG (`inventory::rag`), first match wins: `red` when a workflow step failed, or Proxmox says `stopped` while NetBox says `active`; `amber` when the data is stale, NetBox says `planned` or `staged`, a step is pending or unknown, or the live state is neither running nor stopped-while-active; `grey` when there is no live state; `green` when the VM is running and nothing above applies.
 

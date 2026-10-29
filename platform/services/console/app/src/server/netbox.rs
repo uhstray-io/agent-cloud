@@ -356,10 +356,17 @@ struct ClusterRow {
 }
 
 impl ClusterRow {
-    /// True when either form names the requested site. A row naming neither is a mismatch.
+    /// True when the cluster is the requested site's. A cluster whose scope is a location or a
+    /// region (any scope type but `dcim.site`) is refused, even when its legacy `site` field
+    /// names the site: the console does not yet resolve those scopes to a site, so it fails
+    /// closed. A row with no scope type is judged by its legacy `site` field alone.
     fn belongs_to_site(&self, site_id: u64) -> bool {
-        self.site.as_ref().is_some_and(|site| site.id == site_id)
-            || (self.scope_type.as_deref() == Some("dcim.site") && self.scope_id == Some(site_id))
+        let legacy_site = self.site.as_ref().is_some_and(|site| site.id == site_id);
+        match self.scope_type.as_deref() {
+            Some("dcim.site") => legacy_site || self.scope_id == Some(site_id),
+            Some(_) => false,
+            None => legacy_site,
+        }
     }
 }
 
@@ -439,7 +446,6 @@ struct PrefixRow {
 #[derive(Deserialize)]
 struct ScopeRef {
     slug: Option<String>,
-    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -481,10 +487,7 @@ fn device_from(row: DeviceRow) -> NbDevice {
 /// prefix carries no scope type.
 fn prefix_site(row: &PrefixRow) -> Option<String> {
     match row.scope_type.as_deref() {
-        Some("dcim.site") => row
-            .scope
-            .as_ref()
-            .and_then(|scope| scope.slug.clone().or_else(|| scope.name.clone())),
+        Some("dcim.site") => row.scope.as_ref().and_then(|scope| scope.slug.clone()),
         Some(_) => None,
         None => row.site.as_ref().and_then(|site| site.slug.clone()),
     }
@@ -574,8 +577,13 @@ pub mod fixtures {
     pub const CLUSTERS_SITE5: &str = r#"{"count":1,"next":null,"previous":null,
         "results":[{"id":7,"name":"pve-prod","site":{"id":5,"name":"DC 1","slug":"dc-1"},
                     "type":{"id":1,"name":"Proxmox"}}]}"#;
-    pub const CLUSTERS_SITE6: &str = r#"{"count":1,"next":null,"previous":null,
+    /// The lab site's clusters. `pve-rack` is scoped to a location, though its legacy `site`
+    /// names the lab: it is refused until the console resolves scope to site.
+    pub const CLUSTERS_SITE6: &str = r#"{"count":2,"next":null,"previous":null,
         "results":[{"id":8,"name":"pve-lab","site":{"id":6,"name":"Lab","slug":"dc-2"},
+                    "type":{"id":1,"name":"Proxmox"}},
+                   {"id":10,"name":"pve-rack","site":{"id":6,"name":"Lab","slug":"dc-2"},
+                    "scope_type":"dcim.location","scope_id":3,
                     "type":{"id":1,"name":"Proxmox"}}]}"#;
     pub const CLUSTERS_TRUNCATED: &str = r#"{"count":2,"next":"https://netbox.test/api/virtualization/clusters/?offset=1000","previous":null,
         "results":[{"id":9,"name":"pve-big","site":{"id":99,"name":"Big","slug":"big-site"},"type":{"id":1,"name":"Proxmox"}}]}"#;
@@ -947,8 +955,9 @@ mod tests {
         )
         .await
         .expect("fetch");
-        // One row each dropped: the dc-2 site, the lab cluster, the lab VM, the lab device.
-        assert_eq!(data.dropped_mismatched, 4);
+        // One row each dropped: the dc-2 site, the lab cluster and the rack cluster, the lab VM,
+        // the lab device.
+        assert_eq!(data.dropped_mismatched, 5);
         let site = &data.sites["dc-1"];
         assert_eq!(site.clusters.len(), 1, "only the site's own cluster");
         assert_eq!(site.clusters[0].name, "pve-prod");
@@ -975,6 +984,52 @@ mod tests {
         .expect("fetch");
         assert!(data.ambiguous_vm_names.contains("wiki"));
         assert!(!data.ambiguous_vm_names.contains("tududi"));
+    }
+
+    #[tokio::test]
+    async fn a_cluster_scoped_to_a_location_is_dropped_and_counted() {
+        let addr = serve(router(Mock::default())).await;
+        let data = fetch_all(
+            &reqwest::Client::new(),
+            &config_for(addr),
+            &slugs(&["dc-2"]),
+        )
+        .await
+        .expect("fetch");
+        let names: Vec<&str> = data.sites["dc-2"]
+            .clusters
+            .iter()
+            .map(|cluster| cluster.name.as_str())
+            .collect();
+        assert_eq!(names, ["pve-lab"], "the rack cluster is not shown");
+        assert_eq!(data.dropped_mismatched, 1, "and it is counted");
+    }
+
+    #[test]
+    fn a_cluster_is_judged_by_its_scope_when_it_has_one() {
+        let row = |json: &str| -> ClusterRow { serde_json::from_str(json).expect("cluster") };
+        assert!(
+            row(r#"{"id":1,"name":"a","scope_type":"dcim.site","scope_id":5}"#).belongs_to_site(5)
+        );
+        assert!(
+            !row(r#"{"id":1,"name":"a","scope_type":"dcim.site","scope_id":6}"#).belongs_to_site(5)
+        );
+        assert!(
+            !row(
+                r#"{"id":1,"name":"a","scope_type":"dcim.location","scope_id":5,"site":{"id":5}}"#
+            )
+            .belongs_to_site(5),
+            "a location scope is refused even when the legacy site matches"
+        );
+        assert!(
+            !row(r#"{"id":1,"name":"a","scope_type":"dcim.region","scope_id":5}"#)
+                .belongs_to_site(5)
+        );
+        assert!(row(r#"{"id":1,"name":"a","site":{"id":5}}"#).belongs_to_site(5));
+        assert!(
+            !row(r#"{"id":1,"name":"a"}"#).belongs_to_site(5),
+            "no site named, no match"
+        );
     }
 
     #[tokio::test]
@@ -1104,9 +1159,10 @@ mod tests {
         assert_eq!(prefix_site(&location), None, "a location names no site");
         let legacy = prefix(r#"{"prefix":"b","site":{"id":5,"slug":"dc-1"}}"#);
         assert_eq!(prefix_site(&legacy).as_deref(), Some("dc-1"));
+        // The field is a slug: a scope with a name and no slug gives no site, not the name.
         let named_only =
             prefix(r#"{"prefix":"c","scope_type":"dcim.site","scope":{"name":"DC 2"}}"#);
-        assert_eq!(prefix_site(&named_only).as_deref(), Some("DC 2"));
+        assert_eq!(prefix_site(&named_only), None);
     }
 
     fn fields(json: &str) -> WorkflowFields {
