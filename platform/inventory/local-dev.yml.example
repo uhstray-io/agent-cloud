@@ -311,7 +311,9 @@ all:
           # console_netbox_url: https://netbox.agent-cloud.test
           # console_proxmox_url: <Proxmox API base URL, from site-config>
           # console_grafana_url: https://grafana.agent-cloud.test   # base for Grafana deep links; no credential
-          # console_proxmox_ca_pem: |      # the PUBLIC CA certificate only, when Proxmox uses a private CA
+          # console_proxmox_ca_pem: |      # the PUBLIC CA certificate. REQUIRED by Provision Console Proxmox Token
+          #                                # (it refuses to mint without it). Optional for the console runtime: unset
+          #                                # means the runtime's default trust (not yet read by the server code)
           #   -----BEGIN CERTIFICATE-----
           # Example scope only: no real tenants, sites or addresses. Production declares its own in
           # site-config. Sites and environments here are names, not hosts.

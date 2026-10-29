@@ -31,6 +31,7 @@ TOKEN_ID_VAR = {
     "configure-pbs-backup-access.yml": "_pve_token_id",
     "destroy-vm.yml": "_pve_token_id",
     "enable-o11y-pbs-import-content.yml": "_pve_token_id",
+    "provision-console-proxmox-token.yml": "_pve_token_id",
     "provision-template.yml": "_pve_token_id",
     "provision-vm.yml": "_pve_token_id",
     "provision-pbs-debian-template.yml": "_pve_token_id",

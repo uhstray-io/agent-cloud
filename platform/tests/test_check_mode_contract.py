@@ -75,16 +75,20 @@ SCRATCH_ROOT_INLINE = "(lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp'
 SET_FACT_KEYS = ("ansible.builtin.set_fact", "ansible.legacy.set_fact", "set_fact")
 # The only dest/path a forced write may carry, each valid only in its own file.
 PROVISION = "platform/playbooks/provision-console-proxmox-token.yml"
-# The TLS trust file for verified Proxmox reads under --check (plan 17 D22, 2026-10-29): one literal path
-# under the runner's temp root, written and removed by that playbook alone. Extension of the runner-scratch
-# class, recorded in plan/architecture/08-ansible-automation-standards.md.
-CONSOLE_CA = SCRATCH_ROOT + "/console-proxmox-ca.pem"
+# The TLS trust file for verified Proxmox reads under --check (plan 17 D22, 2026-10-29): a per-run directory
+# the playbook creates under the runner's temp root, with the CA file inside it. Written and removed by that
+# playbook alone; recorded in plan/architecture/08-ansible-automation-standards.md.
+CONSOLE_CA_DIR = "{{ _ca_dir.path }}"
+CONSOLE_CA_FILE = "{{ _ca_dir.path }}/ca.pem"
 SCRATCH_TARGETS = {
     MATERIALISE: {"{{ _msk_dir.path }}/id"},
     REMOVE: {"{{ _rsk_dir }}"},
     PIN: {"{{ _pshk_kh }}"},
-    PROVISION: {CONSOLE_CA},
+    PROVISION: {CONSOLE_CA_FILE, CONSOLE_CA_DIR},
 }
+# The per-run directory the TLS trust file lives in: created by tempfile(state=directory) under the temp root,
+# with this one prefix. Its name is pinned like _msk_dir's: one definition, in its own file.
+CONSOLE_CA_PREFIX = ".console-ca-"
 # Every name a scratch target is built from, and its ONE definition: (file, kind, value), where
 # value is the exact set_fact expression, or the name of the task whose register defines it.
 PINNED_DEFINITIONS = {
@@ -93,6 +97,7 @@ PINNED_DEFINITIONS = {
                  "{{ (lookup('ansible.builtin.vars', ssh_key_result_var, default={}) | default({}, true)).dir"
                  " | default('') }}"),
     "_pshk_kh": (PIN, "set_fact", "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"),
+    "_ca_dir": (PROVISION, "register", "Create the per-run CA scratch directory"),
 }
 
 
@@ -159,7 +164,11 @@ def _file_write(task: dict) -> tuple[str, object] | tuple[None, None]:
 def _in_runner_scratch(module: str, args, rel: str | None) -> bool:
     args = args if isinstance(args, dict) else {}
     if module == "tempfile":
-        # Only the shared task may create the scratch root: its own prefix, the pinned root.
+        # Only the shared task may create the scratch root: its own prefix, the pinned root. The Dispatch
+        # Console's token playbook may create one directory of its own prefix under the same root.
+        if rel == PROVISION:
+            return (args.get("state") == "directory" and args.get("prefix") == CONSOLE_CA_PREFIX
+                    and str(args.get("path", "")).strip() == SCRATCH_ROOT)
         return (rel == MATERIALISE and args.get("state") == "directory" and args.get("prefix") == ".sshkey_"
                 and str(args.get("path", "")).strip() == SCRATCH_ROOT)
     target = str(args.get("dest") or args.get("path") or "").strip()
@@ -547,38 +556,56 @@ def test_a_pinned_target_passes_only_in_its_own_file_on_the_runner():
     assert _scratch(task + "  check_mode: false\n", PIN), "a forced write on the TARGET is not runner scratch"
 
 
-def test_the_console_ca_write_and_its_removal_pass_at_the_pinned_path_only():
-    # The TLS trust file of the Dispatch Console token playbook: written for verified reads under --check,
-    # removed in the same run. Passes in its own file, with no vars:, aimed at its one literal path.
-    write = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{CONSOLE_CA}"\n'
-    removal = f'- name: ca gone\n  ansible.builtin.file:\n    path: "{CONSOLE_CA}"\n    state: absent\n'
+def test_the_console_ca_directory_and_its_file_pass_at_the_pinned_targets_only():
+    # The TLS trust file of the Dispatch Console token playbook (plan 17 D22, 2026-10-29): a per-run directory
+    # created by tempfile under the temp root, the CA written inside it, both removed in the same run. Passes in
+    # its own file, with no vars:, at its pinned targets.
+    make = (f'- name: make\n  ansible.builtin.tempfile:\n    state: directory\n    prefix: {CONSOLE_CA_PREFIX}\n'
+            f'    path: "{SCRATCH_ROOT}"\n')
+    write = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{CONSOLE_CA_FILE}"\n'
+    removal = f'- name: ca gone\n  ansible.builtin.file:\n    path: "{CONSOLE_CA_DIR}"\n    state: absent\n'
+    assert not _scratch(make + FORCED, PROVISION)
     assert not _scratch(write + FORCED, PROVISION)
     assert not _scratch(removal + FORCED, PROVISION)
-    # The same path is not a target in any other file: another playbook may not write it.
+    # The same targets are not valid in any other file: another playbook may not write them.
     assert _scratch(write + FORCED, PIN) == ["ca: copy" + OUTSIDE]
     assert _scratch(removal + FORCED, REMOVE) == ["ca gone: file" + OUTSIDE]
+
+
+def test_the_console_ca_directory_is_created_only_with_its_prefix_under_the_temp_root():
+    for bad in (f'    prefix: .sshkey_\n    path: "{SCRATCH_ROOT}"\n',
+                f'    prefix: {CONSOLE_CA_PREFIX}\n    path: "/tmp/elsewhere"\n'):
+        task = f'- name: make\n  ansible.builtin.tempfile:\n    state: directory\n{bad}'
+        assert _scratch(task + FORCED, PROVISION) == ["make: tempfile" + OUTSIDE], bad
+    task = (f'- name: make\n  ansible.builtin.tempfile:\n    state: directory\n'
+            f'    prefix: {CONSOLE_CA_PREFIX}\n    path: "{SCRATCH_ROOT}"\n')
+    assert _scratch(task + FORCED, MATERIALISE) == ["make: tempfile" + OUTSIDE], "another file's directory"
 
 
 def test_the_console_ca_write_to_an_unpinned_path_is_caught():
     # The mutation the guard exists for: the same write aimed anywhere else in the same file.
     for dest in ("/tmp/console-proxmox-ca.pem", SCRATCH_ROOT + "/other.pem", "{{ _ca_path }}",
-                 CONSOLE_CA + "/../x", CONSOLE_CA.replace("console-proxmox-ca", "console-proxmox-ca2")):
+                 CONSOLE_CA_FILE + "/../x", CONSOLE_CA_FILE.replace("ca.pem", "ca2.pem"),
+                 CONSOLE_CA_DIR + "/../x"):
         task = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{dest}"\n'
         assert _scratch(task + FORCED, PROVISION) == ["ca: copy" + OUTSIDE], dest
 
 
 def test_vars_on_the_console_ca_write_are_refused_at_every_level():
     # A vars: entry anywhere above the write could redirect it, so each placement is a violation.
-    task = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{CONSOLE_CA}"\n'
+    task = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{CONSOLE_CA_FILE}"\n'
     assert _scratch(task + FORCED + "  vars:\n    anything: 1\n", PROVISION) == ["ca: copy" + CARRIES_VARS]
     nested = ("- name: outer\n  vars:\n    anything: 1\n  block:\n"
-              f'    - name: ca\n      ansible.builtin.copy:\n        content: x\n        dest: "{CONSOLE_CA}"\n'
+              f'    - name: ca\n      ansible.builtin.copy:\n        content: x\n        dest: "{CONSOLE_CA_FILE}"\n'
               "      delegate_to: localhost\n      check_mode: false\n")
     assert _scratch(nested, PROVISION) == ["ca: copy" + CARRIES_VARS]
     play = ("- hosts: localhost\n  vars:\n    anything: 1\n  tasks:\n"
-            f'    - name: ca\n      ansible.builtin.copy:\n        content: x\n        dest: "{CONSOLE_CA}"\n'
+            f'    - name: ca\n      ansible.builtin.copy:\n        content: x\n        dest: "{CONSOLE_CA_FILE}"\n'
             "      delegate_to: localhost\n      check_mode: false\n")
     assert _scratch(play, PROVISION) == ["ca: copy" + CARRIES_VARS]
+    make = (f'- name: make\n  vars:\n    anything: 1\n  ansible.builtin.tempfile:\n    state: directory\n'
+            f'    prefix: {CONSOLE_CA_PREFIX}\n    path: "{SCRATCH_ROOT}"\n' + FORCED)
+    assert _scratch(make, PROVISION) == ["make: tempfile" + CARRIES_VARS]
 
 
 def test_vars_on_a_forced_write_or_its_block_are_refused():
@@ -672,7 +699,8 @@ def test_every_runtime_root_check_computes_the_root_inline():
     # B4: an extra var outranks every set_fact, so a root held in a variable could be moved.
     for rel, marker in ((MATERIALISE, "_msk_dir.path | realpath | dirname"),
                         (REMOVE, "_rsk_dir | realpath | dirname"),
-                        (PIN, "_pshk_kh | realpath | dirname | dirname")):
+                        (PIN, "_pshk_kh | realpath | dirname | dirname"),
+                        (PROVISION, "_ca_dir.path | realpath | dirname")):
         text = (REPO / rel).read_text()
         (line,) = [ln for ln in text.splitlines() if marker in ln]
         assert line.strip().endswith("== " + SCRATCH_ROOT_INLINE), (rel, line)
