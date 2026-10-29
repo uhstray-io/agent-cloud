@@ -1,7 +1,7 @@
 ## 0. Owner decisions, branch and working ground
 
 - [ ] 0.1 Get the owner's answers to design Open Questions 1 to 5 (purchase, CPU bin,
-      placement, FileVault, separate App). Nothing below that spends money or touches
+      placement, FileVault, slot sizing). Nothing below that spends money or touches
       the organisation's GitHub settings starts before 0.1.
 - [ ] 0.2 Create or reuse one feature branch from `dev`, safely re-runnable:
       `git checkout dev && git pull && { git show-ref --verify --quiet
@@ -115,18 +115,20 @@
       playbook can read them. No credential in any log.
 - [ ] 4.4 Add `platform/playbooks/deploy-macos-runner.yml`: place the App key (`0400`,
       owned by the supervisor account) from the secret store, render the supervisor's
-      configuration and launchd service, start it, verify both slots register.
+      configuration and launchd service, start it, verify that exactly the declared number
+      of slots (one or two; more is refused by 4.2) register.
 - [ ] 4.5 Tests: the slot-limit refusal; the JIT configuration never appears in an
       argument position on the host or in the guest (the runner's command line inside the
       VM, read while a job runs), and is gone from the guest runner's environment once it
-      has started; a VM is deleted when the runner exits non-zero and
-      when the supervisor is killed mid-job and restarted.
+      has started, including in every wrapper process; a VM is deleted when the runner
+      exits non-zero, when the supervisor is killed mid-job and restarted, and when a
+      cancelled job leaves a wedged child process (the slot's deadline destroys the VM, D2).
 - [ ] 4.6 Validation gate: spec scenarios **"An over-limit declaration is refused"** and
       **"A cancelled job's machine is destroyed"** verified (4.5 plus a live cancellation).
 
 ## 5. Establish the macOS credential
 
-- [ ] 5.1 If the owner chose a separate App (0.1): check in its App manifest (name, the
+- [ ] 5.1 Check in the macOS App's manifest (required, D4) (name, the
       single permission organisation self-hosted runners read and write, no webhook) and a
       playbook that renders the manifest-flow URL from it, so the App's definition is code.
       An organisation owner completes the one approval click GitHub requires to create and
@@ -174,8 +176,10 @@
       age and inputs, runner version against the 30-day window and any upstream release older than 14 days
       that the image does not carry yet, Tart licence core total
       against the free tier (warn at 80, D9), FileVault and power settings as declared.
-- [ ] 7.2 Add the image rebuild as a scheduled Semaphore template (at most every 21 days,
-      and run within 14 days of each runner release, D5), and a host
+- [ ] 7.2 Add the image rebuild as a scheduled Semaphore template (with no more than 21
+      days between runs, and within 14 days of each runner release, D5), the Xcode and
+      macOS release check in `verify-macos-runner.yml`, and the "bump macOS or Xcode"
+      operation with its acceptance criteria (D5), and a host
       update playbook that drains the slots before installing macOS updates.
 - [ ] 7.3 Record queue time and slot utilisation over the first month; revisit slot size
       and the second-host question with the numbers.
@@ -198,16 +202,19 @@
 - [ ] 8.1 Run the full local gate: ruff, shellcheck, ansible-lint, yamllint, pytest, BATS.
 - [ ] 8.2 Run the mandatory pre-push audit as its own step, then trufflehog.
 - [ ] 8.3 Run `/simplify` and `/security-review` over the branch diff.
-- [ ] 8.4 Commit and push; ask before opening the PR (user-gated).
-- [ ] 8.5 On the go-ahead, open the PR into `dev`, wait for CodeRabbit and every check,
-      address findings, merge with a merge commit through `scripts/merge-when-green.py`.
-- [ ] 8.6 Ask before the `dev` to `main` promotion (user-gated). On approval, open it,
-      wait for CodeRabbit and every required check to complete and pass, address
-      findings, and only then merge with a merge commit.
-- [ ] 8.7 Archive and retain one Hindsight memory into `agent-cloud-750a33b9`: the outcome
+- [ ] 8.4 Commit; ask before pushing (user-gated), then push.
+- [ ] 8.5 Ask before opening the PR into `dev` (user-gated). On approval, open it, wait for
+      CodeRabbit and every check, and address findings.
+- [ ] 8.6 Ask before merging it (a separate approval: opening a PR does not authorize its
+      merge). On approval, merge with a merge commit through `scripts/merge-when-green.py`.
+- [ ] 8.7 Ask before the `dev` to `main` promotion (user-gated). On approval, open it, wait
+      for CodeRabbit and every required check to complete and pass, and address findings.
+- [ ] 8.8 Ask before merging the promotion (a separate approval). On approval, merge with
+      a merge commit.
+- [ ] 8.9 Archive and retain one Hindsight memory into `agent-cloud-750a33b9`: the outcome
       labelled worked / dead end / corrected, the headless-reboot answer, the measured
       release time, and any constraint found the hard way.
-- [ ] 8.8 Validation gate: the change is on `main`, both slots are serving work per
+- [ ] 8.10 Validation gate: the change is on `main`, the declared slots are serving work per
       verification, and spec scenario **"The running version does not drift"** holds in
       the sense the image cadence gives it: every running VM reports the runner version
       declared for its image.

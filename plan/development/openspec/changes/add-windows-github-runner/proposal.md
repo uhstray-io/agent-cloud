@@ -27,9 +27,9 @@ something each job re-does.
 
 - **New: one Windows x64 runner host, a Proxmox VM declared like every other host.** It
   joins the existing organisation runner group (`uhstray-selfhosted`) and is selected by
-  label (`self-hosted`, `Windows`, `X64`, `uhstray-lan`). Same access list: the five
-  private repositories, the public repository excluded, for the reasons recorded in the
-  Linux change's D2.
+  label (`self-hosted`, `Windows`, `X64`, `uhstray-lan`). Same access list: the
+  repositories declared in `github_runner_repos` (private only, the public repository
+  excluded), for the reasons recorded in the Linux change's D2.
 - **New: a Windows VM template built once, as code.** The platform has only one template
   today, a node-local Ubuntu image built by an unattended ISO install. This change adds a
   second template built the same way: the Windows installation ISO plus a generated

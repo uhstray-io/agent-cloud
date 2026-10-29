@@ -107,8 +107,8 @@ Staged, each stage independently sufficient:
 2. **Withdraw availability.** Stop the supervisor service on the host. No new VM registers,
    any running job finishes, and the just-in-time runners vanish from the group on their
    own after their one job.
-3. **Revoke identity.** Revoke the macOS App's installation (or the shared App, if the owner
-   chose not to separate them, which also stops Linux and Windows). After that the host
+3. **Revoke identity.** Revoke the macOS App's installation; it is separate from the Linux
+   and Windows App (design D4), so that stops only macOS. After that the host
    cannot register a runner even if the supervisor is running.
 4. **Retire the host.** Wipe the Mac mini and remove its declaration. The hardware is a
    general-purpose computer with resale value; nothing in the estate depends on it.

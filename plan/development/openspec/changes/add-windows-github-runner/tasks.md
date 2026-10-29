@@ -164,8 +164,10 @@ under the decision it settles.
       `D:\z` with modify rights for the runner account only, antivirus exclusions or a Dev
       Drive per 1.4, Git `bin` ahead of `System32`, automatic updates disabled).
 - [ ] 5.2 Check in the Visual Studio Build Tools `.vsconfig` listing exactly the C++ build
-      tools and Windows SDK components the jobs need, and install from a fixed-version
-      bootstrapper declared in the manifest.
+      tools and Windows SDK components the jobs need. Build a versioned offline layout
+      from the declared fixed-version bootstrapper (D5), verify the layout's manifest
+      against its declared digest, install from it with `--noWeb`, and fail the play
+      unless `vswhere` reports the declared version and component versions.
 - [ ] 5.3 Add its Semaphore template, run it, then re-run it unchanged.
 - [ ] 5.4 Smoke on the host as the runner account (not an administrator): `cl`, `link`,
       `cmake --version`, `nasm -v`, `perl -v`, `glslc --version`, `clang --version`,
@@ -207,7 +209,11 @@ under the decision it settles.
       account can read after start; the reset removes a planted profile file, a planted
       build-root file and a planted process, and verifies; an unverifiable reset writes the
       quarantine and starts no runner; the job account cannot write the state directory;
-      the supervisor resets on its first start (the reboot case) before starting a runner.
+      the supervisor resets on its first start (the reboot case) before starting a runner;
+      a file the account planted in `C:\Windows\Temp` is removed by the owned-path sweep;
+      the configuration is in no process's environment once the listener has started; the
+      supervisor refuses to start on a seed runner version that differs from the
+      declaration.
 - [ ] 6.8 Add or extend the Semaphore templates (deploy, drain, verify), run the deploy from
       Semaphore, then re-run it unchanged.
 - [ ] 6.9 Validation gate: the runner shows in the group with labels
@@ -286,16 +292,22 @@ under the decision it settles.
 - [ ] 9.2 Run the mandatory pre-push audit as its own step (staged-diff greps, then
       `trufflehog git file://. --since-commit HEAD --only-verified --fail`).
 - [ ] 9.3 Run `/simplify` and `/security-review` over the branch diff.
-- [ ] 9.4 Commit and push; ask before opening the PR (user-gated).
-- [ ] 9.5 On the go-ahead, open the PR into `dev`, wait for CodeRabbit and every check,
-      address findings, merge with a merge commit through `scripts/merge-when-green.py`.
-- [ ] 9.6 Ask before the `dev` to `main` promotion (user-gated). On approval, open it,
-      wait for CodeRabbit and every required check to complete and pass, address
-      findings, and only then merge with a merge commit.
-- [ ] 9.7 Archive the change and retain one Hindsight memory into `agent-cloud-750a33b9`:
+- [ ] 9.4 Commit; ask before pushing (user-gated), then push.
+- [ ] 9.5 Ask before opening the PR into `dev` (user-gated). On approval, open it, wait for
+      CodeRabbit and every check, and address findings.
+- [ ] 9.6 Ask before merging it (a separate approval: opening a PR does not authorize its
+      merge). On approval, merge with a merge commit through `scripts/merge-when-green.py`.
+- [ ] 9.7 Ask before the `dev` to `main` promotion (user-gated). On approval, open it, wait
+      for CodeRabbit and every required check to complete and pass, and address findings.
+- [ ] 9.8 Ask before merging the promotion (a separate approval). On approval, merge with
+      a merge commit.
+- [ ] 9.9 Archive the change and retain one Hindsight memory into `agent-cloud-750a33b9`:
       the outcome labelled worked / dead end / corrected, which clone-identity path won in
       1.3, the measured release time, and any constraint found the hard way.
-- [ ] 9.8 Validation gate: the change is on `main`, the Windows runner is online per
+- [ ] 9.10 Validation gate: the change is on `main`, the Windows runner is online per
       verification, and spec scenarios **"Two hosts installed at different times match"**
-      and **"The running version does not drift"** hold for the Windows runner (declared
-      version, self-update disabled).
+      and **"The running version does not drift"** hold for the Windows runner, read as
+      the just-in-time policy (design D7, "Runner version"): every job starts the declared
+      version from the seed, a per-job self-update is discarded by the next reset, and the
+      supervisor refuses to start a runner whose seed version differs from the
+      declaration.

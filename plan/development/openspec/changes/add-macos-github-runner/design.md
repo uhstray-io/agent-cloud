@@ -76,8 +76,8 @@ absorbed it.
   programmatically for headless hosts. How this behaves across an unattended reboot with
   FileVault on is **unverified** and is the first spike (task 1.2).
 
-**Platform facts.** The plane's runner group (`uhstray-selfhosted`, access list of the
-five private repositories, public repository excluded) and its converging playbook; the
+**Platform facts.** The plane's runner group (`uhstray-selfhosted`, access list declared in
+`github_runner_repos`, private repositories only, public repository excluded) and its converging playbook; the
 App credential at `secret/services/github-runner`; the App-token helper
 `platform/lib/github_app_token.py` (standard library plus `cryptography`); the
 `firewall_deny_egress` declaration; the verify-before-harden rule. There is no Apple
@@ -164,6 +164,16 @@ just-in-time configuration minted for that VM, wait for the runner to exit after
 job, then stop and delete the VM. A slot keeps one VM booted and registered while idle, so
 a queued job starts in seconds rather than waiting for a boot.
 
+**Teardown is bounded.** Waiting for the runner is not open-ended: once a VM has taken a
+job, the slot allows it at most the declared `macos_runner_max_job_minutes` (default 210,
+the longest workflow timeout plus 30 minutes for the runner's own cancellation grace).
+At that deadline, or when the runner has exited but the guest still runs any process of
+the job account, the slot force-stops the VM (`tart stop --timeout 0`) and deletes it.
+The VM is the job's whole machine, so destroying it ends every process the job started,
+wedged or not. A VM that cannot be deleted marks its slot failed: the slot clones nothing
+more, and verification reports it. One stuck job can therefore cost at most its own slot,
+for at most the deadline.
+
 **Why.** It is the strongest isolation available anywhere in the fleet, and on this
 hardware it is cheap: a clone is an APFS copy-on-write copy that takes seconds, and a boot
 is under a minute. Nothing a job does (files, processes, keychains, a changed Xcode, a
@@ -222,13 +232,19 @@ environment input, never with `--jitconfig`: the runner removes that variable fr
 own environment once read, whereas an argument stays in the process's command line, which
 every local user can read for the life of the process. This is the input the Linux
 ephemeral supervisor uses (`add-ephemeral-github-runners`). The image pins a runner
-version that clears the variable (2.336.0 or later); task 4.5 tests the guest's process
-arguments, not only the host's. The App
+version that clears the variable (2.336.0 or later), and the guest's launcher `exec`s
+`bin/Runner.Listener run` directly rather than through `run.sh`, so no wrapper shell keeps
+the variable in its environment while the job runs. Task 4.5 tests the guest's process
+arguments and the environment of every guest process, not only the host's. The App
 private key is placed on the host by Ansible (secret store to Ansible memory to a `0400`
 file owned by the supervisor account), and **never enters a VM**.
 
-**Recommended: a separate App for macOS**, installed on the organisation with the same
-single permission, its key at `secret/services/github-runner-macos`.
+**A separate App for macOS, required**, installed on the organisation with the same
+single permission, its key at `secret/services/github-runner-macos`. Sharing the Linux and
+Windows App is not an option: this host holds the key it mints with, so with a shared App
+a Mac compromise could mint registrations for every member of the plane, and revoking it
+would stop Linux and Windows CI too. The spec requires that revoking the macOS credential
+stop only macOS.
 
 **Why the key is on this host when the Linux design keeps it off runner hosts.** Minting
 must happen per job, continuously, which the orchestrator (a batch system) cannot do.
@@ -266,7 +282,21 @@ until the new one has run a release, then deleted.
 so a calendar month is too slow. The image is rebuilt **within 14 days of every runner
 release** (the verify playbook watches the upstream release feed and reports a pending
 bump), and in any case at least every 21 days, which leaves a week for smoke test and
-promotion inside the window. It is also rebuilt on every Xcode or macOS bump. The same
+promotion inside the window. It is also rebuilt on every Xcode or macOS bump, by a controlled operation:
+
+- **Detection is automated.** The verify playbook reads Apple's developer releases feed and
+  reports a stable Xcode or macOS newer than the declared `macos_xcode_version` and
+  `macos_version`, and how long it has been pending.
+- **The download stays an operator step.** Xcode's archive is downloadable only with an
+  Apple ID, under the Xcode licence, so a human downloads it and declares its version and
+  SHA-256; the playbook refuses an archive whose digest differs.
+- **The promotion is the image rollout above.** Build beside the current image, smoke-test
+  in one slot (task 6.3), run a release dry run, then promote by changing the declared
+  image name. Acceptance: the smoke workflow and the dry run pass on the new image, and
+  `xcodebuild -version` in a job reports the declared version.
+
+Until a new Xcode is promoted, `latest-stable` in a workflow resolves to the newest Xcode
+the image carries, so jobs keep working; what they lag is the hosted image. The same
 14-day rule applies to the plane-wide `github_runner_version` that the Linux and Windows
 members read. The host's own macOS is kept at or above the guest's version.
 
@@ -445,7 +475,5 @@ Rollback is in `proposal.md`, Rollback Plan.
    **Recommendation: on, plus the UPS**, unless the spike shows the supervisor cannot run
    headless after an authenticated restart; then off, with the key's exposure accepted
    explicitly and the separate App making revocation cheap.
-5. **A separate App for macOS.** **Recommendation: yes** (D4); it costs one App
-   registration and makes a Mac compromise revocable on its own.
-6. **Slot sizing.** **Recommendation: two slots at just under half the cores and 24 GB
+5. **Slot sizing.** **Recommendation: two slots at just under half the cores and 24 GB
    each**, re-measured after the first month (task 7.3).

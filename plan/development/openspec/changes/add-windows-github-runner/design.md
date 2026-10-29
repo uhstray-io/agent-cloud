@@ -329,7 +329,7 @@ apply themselves:
 | `LongPathsEnabled = 1` | `Set-ItemProperty HKLM:\...\FileSystem` | registry, plus `core.longpaths=true` in Git's system config |
 | Antivirus exclusions | `Add-MpPreference` | exclusions for the runner work directory, `D:\z`, the runner account's `.cargo`, `.rustup` and `TEMP`, and the compiler processes |
 | `D:` build volume | the hosted image's `D:` | the second disk initialised, formatted and lettered `D:`; `D:\z` created with modify rights for the runner account only |
-| Visual Studio Build Tools + Windows SDK | preinstalled on the hosted image | a fixed-version bootstrapper with a checked-in `.vsconfig` listing exactly the workloads and components (C++ build tools, the Windows 11 SDK, CMake is installed separately) |
+| Visual Studio Build Tools + Windows SDK | preinstalled on the hosted image | from a **versioned offline layout**: the fixed-version bootstrapper of one declared servicing release (not a channel bootstrapper, which installs the channel's latest) builds a layout of exactly the components in the checked-in `.vsconfig` (C++ build tools, the Windows 11 SDK; CMake is installed separately); the layout's manifest is digest-checked against the declaration, the install runs from it with `--noWeb`, and `vswhere` must report the declared version and component versions before the host serves a job. A new servicing release is a new declared layout, a reviewed change |
 | CMake, Git for Windows, LLVM, Strawberry Perl, PowerShell 7, WebView2 runtime, VC++ x64 redistributable | preinstalled on the hosted image | pinned installers; LLVM sets machine `LIBCLANG_PATH` |
 | NSIS and WiX (for `dx bundle`) | the bundler downloads them on first use | pinned installers with their digests, installed machine-wide, and placed in the bundler's tool directory in the seed (D7) so it finds them and downloads nothing; task 7.4 fails the dry run if the bundler fetched anything |
 | rustup and the declared Rust toolchains | preinstalled | installed for the runner account at deploy time and captured in the seed (D7), so each job starts with the declared nightly and `rustup toolchain install` in a job works without elevation; whatever a job installs or replaces is discarded with its account |
@@ -407,15 +407,29 @@ for Linux, with Windows mechanisms in place of the Linux ones:
   takes the oldest configuration, deletes it from the stock, starts one runner as
   `ghrunner` with the configuration in `ACTIONS_RUNNER_INPUT_JITCONFIG` (never an
   argument; the runner removes the variable from its environment), and waits for it to
-  exit after its one job.
+  exit after its one job. It starts `bin\Runner.Listener.exe run` directly, not through
+  `run.cmd`, so no wrapper process keeps the variable while the job runs.
+- **Runner version.** A just-in-time configuration carries no `--disableupdate`, so a
+  runner behind the newest release may update itself during its job. The update lands in
+  that job's account and is discarded by the next reset; every job starts the version in
+  the seed, which is the declared `github_runner_version`. Before each start the
+  supervisor checks the seed's runner version against the declaration and refuses to start
+  on a mismatch. This is the policy of `add-ephemeral-github-runners` (its D6), adopted
+  rather than re-decided; the 14-day bump cadence (Risks) keeps per-job updates rare.
 - **A reset before every runner start**, in this order:
   1. stop every process whose owner is `ghrunner` (CIM `Win32_Process` owner, killed from
      the supervisor), until none is left; a surviving process is what held files locked
      under the hook design;
   2. unload the account's registry hive and delete its profile directory, the runner
      work directory, every declared build root (`github_runner_windows_build_roots`,
-     `D:\z` by default) and every file `ghrunner` owns under the declared sweep roots;
-  3. verify: no process, no profile, no owned path, each declared root empty;
+     `D:\z` by default), and **every file and directory owned by the account's SID on
+     every local fixed volume** (`C:` and `D:`), re-reading each path's owner before
+     removing it, as the Linux sweep does. That covers the shared locations a standard
+     user can write, such as `C:\Windows\Temp`, `C:\ProgramData` and `C:\Users\Public`,
+     without listing them; the deploy also removes the `Users` group's write access from
+     `C:\Users\Public`, which no job needs;
+  3. verify: no process, no profile, no path owned by the account anywhere, each declared
+     root empty;
   4. recreate the profile from a machine-owned **seed** (the account's home as the deploy
      built it, with the declared Rust toolchains and the bundler's pinned tools, root-only
      writable, as in that change's D5), and only then start the runner.
@@ -497,8 +511,8 @@ administrative rights; the platform interior is unreachable from the host.
 
 1. **No job runs in a container.** Upstream's container jobs and service containers are
    Linux only, so on Windows every job runs on the host as `ghrunner`. A job can read
-   whatever that account can read. Nothing may be placed on this host that all five
-   permitted repositories are not entitled to.
+   whatever that account can read. Nothing may be placed on this host that every
+   repository in `github_runner_repos` is not entitled to.
 2. **Within a job, the job owns its tools.** `~\.cargo\bin` (where `dx` and
    `cargo-binstall` land), the cargo registry and the rustup toolchains are writable by
    the job that is running, so a step can replace a tool a later step of **the same job**
