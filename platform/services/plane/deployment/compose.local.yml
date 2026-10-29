@@ -13,6 +13,12 @@ networks:
     external: true
 
 services:
+  # The API signs people in through Authentik: it reaches https://auth.<zone>:8443 through the
+  # local Caddy (an alias on local-dev). Its step-ca trust is in compose.local-ca.yml.
+  api:
+    networks:
+      - default
+      - local-dev
   proxy:
     networks:
       - default

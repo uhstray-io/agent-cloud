@@ -78,7 +78,7 @@ PY
 
 @test "plane: sign-up is closed by the instance PATCH, and .env refuses Plane's shipped credentials" {
   # Plane's Compose passes no ENABLE_SIGNUP to any container, so only the PATCH closes it.
-  grep -qF '{"ENABLE_SIGNUP": "0"}' "$DEPLOY_DIR/configure_instance.py"
+  grep -qF 'ENABLE_SIGNUP="0"' "$DEPLOY_DIR/configure_instance.py"
   refute_grep -qF 'ENABLE_SIGNUP' "$ENV_TPL"
   grep -qF "'SITE_ADDRESS': ':80'" "$ENV_TPL"
   grep -qF 'is empty or still Plane' "$ENV_TPL"
@@ -194,4 +194,40 @@ PY
   # The restart is in always:, through deploy.sh, so the migrator runs and the proxy hold holds.
   assert_precedes "$f" '      always:' 'Bring the stack back \(forced recreate through deploy\.sh\)'
   grep -qF 'FORCE_RECREATE: "true"' "$f"
+}
+
+@test "plane: sign-in through Authentik is wired end to end, the secret never copied" {
+  local ak="$REPO_ROOT/platform/services/authentik/deployment"
+  local bp="$ak/blueprints/plane-oidc.yaml"
+  # Strict redirect on Plane's own callback path (developer-docs govern/oidc-sso.md).
+  grep -qF "plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/')" "$bp"
+  grep -qF 'matching_mode: strict' "$bp"
+  grep -qF 'client_secret: !Env PLANE_OIDC_CLIENT_SECRET' "$bp"
+  grep -qF "scope_name, email" "$bp"
+  # Catalogued with production guards, the secret owned by authentik.
+  grep -qE '^  plane:$' "$ak/app-catalog.yml"
+  grep -qF 'prod_required: [plane_redirect_uri, plane_launch_url]' "$ak/app-catalog.yml"
+  grep -qF 'name: plane_oidc_client_secret, type: random' "$REPO_ROOT/platform/playbooks/vars/secret-declarations/authentik.yml"
+  grep -qF 'PLANE_OIDC_CLIENT_SECRET={{ secrets.plane_oidc_client_secret }}' "$ak/templates/env.j2"
+  # Plane shared-reads it (never stores a copy) and converges its instance settings with it.
+  # Read only when OIDC is configured, so a host without it never depends on Deploy Authentik.
+  grep -qF "if plane_authentik_base is defined else [] }}" "$PLAYBOOK"
+  # Unset is the kill switch: OIDC is switched off, not left as it was.
+  grep -qF "{'IS_OIDC_ENABLED': '0'} if plane_authentik_base is not defined" "$PLAYBOOK"
+  grep -qF "'OIDC_CLIENT_SECRET': _shared.plane_oidc_client_secret" "$PLAYBOOK"
+  refute_grep -qF 'name: plane_oidc_client_secret' "$PLAYBOOK"
+  # Locally the API trusts step-ca for the server-side token and userinfo calls.
+  # In its own overlay, applied last: compose.agentcloud.yml's volume !override would drop it.
+  # The COMBINED bundle: REQUESTS_CA_BUNDLE replaces the API's whole trust store.
+  grep -qF 'REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-bundle-combined.crt' "$DEPLOY_DIR/compose.local-ca.yml"
+  grep -qF './certs/ca-bundle-combined.crt:/etc/ssl/certs/ca-bundle-combined.crt:ro' "$DEPLOY_DIR/compose.local-ca.yml"
+  # The local list restates every API volume compose.agentcloud.yml declares, or one is dropped.
+  python3 - "$OVERLAY" "$DEPLOY_DIR/compose.local-ca.yml" <<'PY'
+import sys, yaml
+class L(yaml.SafeLoader): pass
+L.add_multi_constructor('!', lambda l, s, n: l.construct_sequence(n) if isinstance(n, yaml.SequenceNode) else (l.construct_mapping(n) if isinstance(n, yaml.MappingNode) else l.construct_scalar(n)))
+main, local = (yaml.load(open(f), Loader=L)["services"]["api"]["volumes"] for f in sys.argv[1:3])
+assert set(main) <= set(local), set(main) - set(local)
+PY
+  grep -qF 'COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS} compose.local-ca.yml"' "$DEPLOY_DIR/deploy.sh"
 }

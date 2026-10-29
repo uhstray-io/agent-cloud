@@ -83,6 +83,13 @@ authentik_app_catalog:
     file: openhands-forward-auth.yaml
     type: forward_auth
     tier: member
+  plane:
+    file: plane-oidc.yaml
+    type: oidc
+    tier: member
+    provider: plane
+    prod_required: [plane_redirect_uri, plane_launch_url]
+    verify_redirect: plane_redirect_uri
   postiz:
     file: postiz-oidc.yaml
     type: oidc

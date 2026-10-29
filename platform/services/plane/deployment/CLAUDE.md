@@ -36,8 +36,19 @@ reviewed change. The pinned release is `v3.3.3` (Joseph, 2026-10-27).
 The project is named `plane` by `COMPOSE_PROJECT_NAME` in `.env`: Plane's file names no
 project, and podman-compose ignores a `name:` set in an overlay.
 
-`compose.local.yml` joins the proxy to the `local-dev` network and switches off `monitor`, the
-licence agent, which exits on a domain it cannot register with Plane's licence server.
+`compose.local.yml` joins the proxy and the API to the `local-dev` network (the API reaches
+Authentik through the local Caddy) and switches off `monitor`, the licence agent, which exits on
+a domain it cannot register with Plane's licence server. `compose.local-ca.yml`, which
+`deploy.sh` applies LAST in local mode, gives the API the combined step-ca and public trust
+bundle (`REQUESTS_CA_BUNDLE`) and restates its full volume list: in `compose.local.yml` the
+mount would be replaced by `compose.agentcloud.yml`'s volume `!override`, because `common.sh`
+applies the local overlay before the declared ones.
+
+**Local-only exception to the proxy hold.** Because the API joins `local-dev`, other local-dev
+containers can reach `plane-api:8000` directly, so on a first or clean LOCAL deploy the window
+between the API becoming healthy and the setup step is open to them, not only to the proxy. The
+local stack runs only the platform's own services, and production has no such shared network:
+there the proxy remains the only way in.
 
 ## Credentials
 
@@ -46,6 +57,10 @@ Everything is in OpenBao at `secret/services/plane`, generated once and reused:
 `plane_aes_secret_key`, `plane_pi_internal_secret`, `plane_cursor_webhook_secret`, the Postgres,
 RabbitMQ and MinIO passwords, `plane_machine_signature` (the licence binds to it, so it is never
 rotated), and `plane_automation_password` for the first admin.
+
+The OIDC client secret is Authentik's (`secret/services/authentik:plane_oidc_client_secret`,
+injected into the provider by `blueprints/plane-oidc.yaml`). The deploy shared-reads it, only when
+`plane_authentik_base` is set, and never stores a copy under `secret/services/plane`.
 
 Plane ships **working default credentials** in `variables.env` and in its Compose fallbacks,
 identical on every install. `env.j2` refuses to render if any of them comes out empty or
@@ -86,7 +101,8 @@ every POST would fail Plane's CSRF check (a page it serves with status 200).
 `plane_svc` hosts need: `plane_public_url`, `plane_trusted_proxies` (the platform Caddy's
 address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automation_email`,
 `plane_company_name`, `plane_workspace_slug`, `plane_workspace_name`. Optional:
-`plane_version` (default `v3.3.3`).
+`plane_version` (default `v3.3.3`); `plane_authentik_base` (the IdP's base URL) turns sign-in
+through Authentik on, and leaving it unset switches it OFF on the next deploy.
 
 ## Operate
 

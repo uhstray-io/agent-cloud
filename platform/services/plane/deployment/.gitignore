@@ -5,3 +5,6 @@
 # deploy-plane.yml on every run. Plane's EULA forbids redistributing it, so it is
 # never committed (design.md, spike 0.1).
 compose.yml
+
+# step-ca trust bundle, distributed per-deploy by tasks/distribute-ca-root.yml in local_mode only.
+certs/
