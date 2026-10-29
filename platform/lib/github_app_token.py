@@ -24,6 +24,7 @@ goes to stderr, and no diagnostic ever contains key or token material.
 Usage:
     github_app_token.py installation-id     --issuer <id> --org <org> [--key <path>]
     github_app_token.py installation-token  --issuer <id> --org <org> [--key <path>]
+        [--permissions <json>] [--repository <name>]...
     github_app_token.py registration-token   --issuer <id> --org <org> [--key <path>]
     github_app_token.py remove-token         --issuer <id> --org <org> [--key <path>]
     github_app_token.py jit-config      ... --group <name> --label <l>... --prefix <p> --count <n>
@@ -38,6 +39,13 @@ plan/development/openspec/changes/add-ephemeral-github-runners/design.md.
 
 --key defaults to '-' (stdin). --issuer is the App's client id (upstream's
 recommendation) or its app id; the App's OAuth client secret plays no part here.
+
+installation-token with --permissions and/or --repository asks GitHub for a DOWNSCOPED token:
+the request body carries the permissions object and the repository names. The token is refused
+(nonzero exit, nothing on stdout) when the grant the response reports is wider than requested:
+a permission that was not requested, a level above or below the one requested, or a repository
+outside the requested set. A requested permission the response leaves out is a narrower grant
+and is accepted. Without either flag the request carries no body, exactly as before.
 """
 
 from __future__ import annotations
@@ -163,13 +171,95 @@ def installation_id(issuer: str, key_pem: bytes, org: str) -> str:
     return ""
 
 
-def installation_token(issuer: str, key_pem: bytes, org: str) -> str:
+def parse_permissions(raw: str) -> dict:
+    """--permissions: a non-empty JSON object of permission name -> level, both strings."""
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        obj = None
+    if not isinstance(obj, dict) or not obj or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in obj.items()
+    ):
+        die("--permissions must be a non-empty JSON object mapping permission names to levels", 2)
+    return obj
+
+
+def scope_body(permissions: dict | None, repositories: list[str] | None) -> dict | None:
+    """The request body of a downscoped mint, or None: an unscoped mint sends no body."""
+    if permissions is None and repositories is None:
+        return None
+    body: dict = {}
+    if permissions is not None:
+        body["permissions"] = permissions
+    if repositories is not None:
+        body["repositories"] = repositories
+    return body
+
+
+def check_grant(data: dict, permissions: dict | None, repositories: list[str] | None) -> None:
+    """Refuse a minted token whose reported grant is wider than the one requested.
+
+    Runs before the token is returned, so a refused token never reaches stdout. Messages name
+    permission keys and repository names only, never a token or a level.
+    """
+    if permissions is not None:
+        granted = data.get("permissions")
+        if not isinstance(granted, dict):
+            die(
+                "the installation response carries no permissions object, so the grant cannot be "
+                "checked; the token is refused"
+            )
+        extra = sorted(k for k in granted if k not in permissions)
+        if extra:
+            die(
+                f"the token was granted permission(s) that were not requested: {', '.join(extra)}; "
+                "the token is refused"
+            )
+        differing = sorted(k for k in granted if granted[k] != permissions[k])
+        if differing:
+            die(
+                "the token was granted a different level than requested for: "
+                f"{', '.join(differing)}; the token is refused"
+            )
+    if repositories is not None:
+        repos = data.get("repositories")
+        if not isinstance(repos, list):
+            die(
+                "the installation response carries no repositories list, so the coverage cannot be "
+                "checked; the token is refused"
+            )
+        covered = {r.get("name") for r in repos if isinstance(r, dict)}
+        if covered != set(repositories):
+            die(
+                f"the token covers repositories {sorted(str(c) for c in covered)}, not the requested "
+                f"{sorted(repositories)}; the token is refused"
+            )
+
+
+# The downscoped mint. Documented at
+# https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
+# (read 2026-10-29): POST /app/installations/{installation_id}/access_tokens takes an optional
+# JSON body with "repositories" (names) and "permissions" (name -> "read" or "write", among
+# others); the response carries "token", "expires_at", "permissions" and "repositories". The
+# documented success status is 201 Created. urllib raises HTTPError for every non-2xx answer,
+# so no status check is needed here. The page does not say how a request for more than the App
+# was granted is answered, so the check below reads the grant the response REPORTS.
+def installation_token(
+    issuer: str,
+    key_pem: bytes,
+    org: str,
+    *,
+    permissions: dict | None = None,
+    repositories: list[str] | None = None,
+) -> str:
     jwt = sign_assertion(issuer, key_pem)
     iid = installation_id(issuer, key_pem, org)
-    data = api(f"/app/installations/{iid}/access_tokens", jwt, method="POST") or {}
+    body = scope_body(permissions, repositories)
+    data = api(f"/app/installations/{iid}/access_tokens", jwt, method="POST", body=body) or {}
     token = data.get("token")
     if not token:
         die("no token in the installation response")
+    check_grant(data, permissions, repositories)
     return token
 
 
@@ -348,7 +438,19 @@ def main() -> None:
     ap.add_argument(
         "--grace-minutes", type=int, default=30, help="prune-runners: keep unheld records minted more recently"
     )
+    ap.add_argument(
+        "--permissions",
+        help="installation-token: JSON object of permission name -> level; the token is refused if granted more",
+    )
+    ap.add_argument(
+        "--repository",
+        action="append",
+        default=[],
+        help="installation-token: a repository name the token must cover exactly (repeat)",
+    )
     args = ap.parse_args()
+    if (args.permissions is not None or args.repository) and args.action != "installation-token":
+        die("--permissions and --repository apply to installation-token only", 2)
 
     if args.action in ("jit-config", "list-runners", "prune-runners"):
         prefix = check_prefix(args.prefix or "")
@@ -369,7 +471,14 @@ def main() -> None:
     if args.action == "installation-id":
         out = installation_id(args.issuer, key_pem, args.org)
     elif args.action == "installation-token":
-        out = installation_token(args.issuer, key_pem, args.org)
+        permissions = parse_permissions(args.permissions) if args.permissions is not None else None
+        out = installation_token(
+            args.issuer,
+            key_pem,
+            args.org,
+            permissions=permissions,
+            repositories=args.repository or None,
+        )
     elif args.action == "registration-token":
         out = runner_token(args.issuer, key_pem, args.org, "registration-token")
     else:
