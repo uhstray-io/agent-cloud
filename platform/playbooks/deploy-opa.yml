@@ -3,12 +3,19 @@
 #
 # Phase 1: Place repo. The committed policies/ travel with it (policy-as-code);
 #          OPA Phase 1 has NO secrets (it returns decisions, not credentials),
-#          so there is no manage-secrets step.
-# Phase 2: deploy.sh — container lifecycle (pull, up, wait running).
-# Phase 3: Verify — HTTP /health, a sample allow + deny decision, and the Rego
-#          unit tests (opa test) inside the container.
+#          so there is no manage-secrets step. With opa_tls (production) it also
+#          issues the server leaf from step-ca and places the trust bundle in ./certs.
+# Phase 2: deploy.sh — container lifecycle (pull, up, wait running). With opa_tls it
+#          adds compose.tls.yml, which serves HTTPS from that leaf.
+# Phase 3: Verify — /health, a sample allow + deny decision, and the Rego unit tests
+#          (opa test) inside the container. With opa_tls the probes are HTTPS, verified
+#          against the step-ca bundle, and a plain-HTTP request must not get a 200.
 #
-# Plan: plan/development/OPA-INTEGRATION-PLAN.md.
+# Listener TLS (opa_tls, production only): the declaration is one internal_leaves entry
+# named opa_server_leaf (server profile, reload none, this host, dir <deploy>/certs/<leaf>),
+# and opa_internal_url is https://<opa_tls_server_name>:<opa_port>. Local-dev stays plain.
+#
+# Plan: plan/development/03-guardrails-governance.md (OPA section).
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -33,10 +40,137 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
+    _opa_tls: "{{ opa_tls | default(false) | bool }}"
+    _opa_server_leaf: "{{ opa_server_leaf | default('opa-server') }}"
+    _opa_tls_name: "{{ opa_tls_server_name | default('opa.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
 
   tasks:
+    # Outside local-dev the defaults are wrong, not merely unset: `opa:8181` resolves only on the
+    # local-dev network, and a loopback bind leaves OPA unreachable to every caller host. Refuse
+    # before anything changes rather than deploy a service its callers cannot reach. Production
+    # also requires listener TLS: callers verify OPA by name (skynet refuses an http:// OPA URL),
+    # so a plain-HTTP production listener is a deploy nobody can use.
+    - name: "Refuse a production deploy without its declared bind, TLS and verify URL"
+      ansible.builtin.assert:
+        that:
+          - (opa_bind | default('', true) | string) not in ['', '127.0.0.1', 'localhost']
+          - opa_tls | default(false) | bool
+          - (opa_internal_url | default('', true) | string) is match('^https://')
+        fail_msg: >-
+          Outside local_mode, declare opa_bind (the VM's LAN address the firewall admits callers
+          to), opa_tls: true, and opa_internal_url (the https:// URL the verify play probes from
+          the OPA host) for this host in inventory, then re-run.
+      when: not (local_mode | default(false) | bool)
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    # ── Listener TLS (opa_tls, production) ─────────────────────────────────────
+    # Every declaration check runs before the leaf is issued, so a bad declaration issues nothing.
+    - name: "Refuse opa_tls outside production"
+      ansible.builtin.assert:
+        that:
+          - not (local_mode | default(false) | bool)
+        fail_msg: >-
+          opa_tls is for production. Local-dev reaches OPA through Caddy's TLS; leave opa_tls
+          unset for local_mode.
+        quiet: true
+      when: _opa_tls
+
+    - name: "Refuse opa_tls without exactly one step-ca host to sign the server leaf"
+      ansible.builtin.assert:
+        that:
+          - groups.get('step_ca_svc', []) | length == 1
+        fail_msg: >-
+          opa_tls needs exactly one step_ca_svc host to sign the server leaf (it holds
+          {{ groups.get('step_ca_svc', []) | length }}).
+        quiet: true
+      when: _opa_tls
+
+    - name: "Refuse opa_tls without its server leaf and bind declared for this host"
+      ansible.builtin.assert:
+        that:
+          - _opa_leaf_decl | length == 1
+          - _opa_leaf_decl[0].profile == 'server' and _opa_leaf_decl[0].host == inventory_hostname
+          # The container mounts <deploy>/certs at /certs, so the leaf must live directly under it.
+          - _opa_leaf_decl[0].dir == _deploy_dir ~ '/certs/' ~ _opa_server_leaf
+          # OPA re-reads its certificate itself (--tls-cert-refresh-period), so no reload action.
+          - _opa_leaf_decl[0].reload == 'none'
+          - _opa_tls_name in (_opa_leaf_decl[0].sans | default([]))
+          # The verify play probes the URL the declaration names, so the two must be the same.
+          - (opa_internal_url | default('', true) | string) == 'https://' ~ _opa_tls_name ~ ':' ~ (opa_port | default('8281') | string)
+          # The name becomes a compose path segment and a directory name.
+          - _opa_server_leaf is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+        fail_msg: >-
+          With opa_tls, internal_leaves must declare `{{ _opa_server_leaf }}` once (profile server,
+          host {{ inventory_hostname }}, dir {{ _deploy_dir }}/certs/{{ _opa_server_leaf }}, reload
+          none, sans including {{ _opa_tls_name }}), and opa_internal_url must be
+          https://{{ _opa_tls_name }}:{{ opa_port | default('8281') }}.
+        quiet: true
+      vars:
+        _opa_leaf_decl: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _opa_server_leaf) | list }}"
+      when: _opa_tls
+
+    # keep-id (compose.tls.yml) needs podman 4.3 or later, and the older podman refuses the flag.
+    - name: "Read the podman version for keep-id"
+      ansible.builtin.command:
+        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
+      register: _opa_podman_version
+      changed_when: false
+      check_mode: false
+      when: _opa_tls
+
+    - name: "Refuse keep-id on a podman older than 4.3"
+      ansible.builtin.assert:
+        that:
+          # keep-id is a podman option: another engine's version number would pass the comparison.
+          - (container_engine | default('podman')) == 'podman'
+          - _opa_podman_version.stdout is version('4.3', '>=')
+        fail_msg: >-
+          opa_tls needs podman 4.3 or later for userns keep-id; this host runs
+          {{ container_engine | default('podman') }} {{ _opa_podman_version.stdout }}.
+        quiet: true
+      when: _opa_tls
+
+    # The server leaf: key generated on this host, signed by the one step_ca_svc host. An issued
+    # leaf is kept (_mint_reissue false); renewal is Renew Internal Certs' job. Safe under --check.
+    - name: "Issue the server leaf (key here, signed on the CA host)"
+      ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
+      vars:
+        _mint_name: "{{ _opa_server_leaf }}"
+        _mint_ca_host: "{{ groups['step_ca_svc'] | first }}"
+        _mint_reissue: false
+      when: _opa_tls
+
+    # The trust bundle (root + intermediate) that the verify play and the callers trust the leaf by.
+    - name: "Distribute the step-ca trust bundle into ./certs"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_host: "{{ groups['step_ca_svc'] | first }}"
+      when: _opa_tls
+
+    - name: "Read the issued server leaf and the trust bundle"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _deploy_dir }}/certs/{{ _opa_server_leaf }}/current/cert.pem"
+        - "{{ _deploy_dir }}/certs/{{ _opa_server_leaf }}/current/key.pem"
+        - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+      register: _opa_tls_files
+      when: _opa_tls
+
+    # A check-mode run writes nothing, so the files are expected to be absent there.
+    - name: "Refuse opa_tls before its leaf and trust bundle are on the host"
+      ansible.builtin.assert:
+        that: _opa_tls_files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          Missing on {{ inventory_hostname }}: {{ _opa_tls_files.results | rejectattr('stat.exists')
+          | map(attribute='item') | join(', ') }}.
+        quiet: true
+      when:
+        - _opa_tls
+        - not ansible_check_mode
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start OPA"
@@ -46,6 +180,7 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _opa_tls: "{{ opa_tls | default(false) | bool }}"
 
   tasks:
     - name: "Run deploy.sh (container lifecycle)"
@@ -59,6 +194,10 @@
         # secrets). Inventory opa_bind/opa_port flow straight into compose.
         OPA_BIND: "{{ opa_bind | default('127.0.0.1') }}"
         OPA_PORT: "{{ opa_port | default('8281') }}"
+        # Listener TLS: the overlay mounts ./certs and serves the leaf named by OPA_SERVER_LEAF.
+        # Empty COMPOSE_OVERLAYS adds nothing (common.sh's compose() loops over its words).
+        COMPOSE_OVERLAYS: "{{ 'compose.tls.yml' if _opa_tls else '' }}"
+        OPA_SERVER_LEAF: "{{ opa_server_leaf | default('opa-server') }}"
       register: _deploy
       changed_when: true
       when: not ansible_check_mode
@@ -76,8 +215,29 @@
     _engine: "{{ container_engine | default('podman') }}"
     # Reachable by name on local-dev (this play runs in the Semaphore container).
     _opa_url: "{{ opa_internal_url | default('http://opa:8181') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _opa_tls: "{{ opa_tls | default(false) | bool }}"
+    _opa_tls_name: "{{ opa_tls_server_name | default('opa.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    _opa_tls_port: "{{ opa_port | default('8281') | string }}"
+    # Where the probe connects. 0.0.0.0 and :: listen on every address, so loopback answers for them.
+    _opa_tls_ip: "{{ '127.0.0.1' if (opa_bind | default('127.0.0.1') | string) in ['0.0.0.0', '::', ''] else (opa_bind | string) }}"
+    # curl, not uri: --resolve sends the declared name to the bind address, while the certificate
+    # is still verified against that name and the step-ca bundle.
+    _opa_tls_args:
+      - curl
+      - --silent
+      - --show-error
+      - --fail
+      - --max-time
+      - "10"
+      - --resolve
+      - "{{ _opa_tls_name }}:{{ _opa_tls_port }}:{{ _opa_tls_ip }}"
+      - --cacert
+      - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
 
   tasks:
+    # Plain HTTP (local-dev, and any deploy without opa_tls). The TLS set is further down.
     - name: "OPA health (/health -> 200)"
       ansible.builtin.uri:
         url: "{{ _opa_url }}/health"
@@ -87,6 +247,7 @@
       delay: 3
       until: _opa_health.status == 200
       check_mode: false
+      when: not _opa_tls
 
     - name: "Sample decision: nemoclaw read nocodb -> allow"
       ansible.builtin.uri:
@@ -98,7 +259,7 @@
         status_code: [200]
       register: _opa_allow
       failed_when: not (_opa_allow.json.result.allowed | default(false) | bool)
-      when: not ansible_check_mode
+      when: not ansible_check_mode and not _opa_tls
 
     - name: "Sample decision: unknown agent -> deny"
       ansible.builtin.uri:
@@ -110,7 +271,68 @@
         status_code: [200]
       register: _opa_deny
       failed_when: _opa_deny.json.result.allowed | default(true) | bool
-      when: not ansible_check_mode
+      when: not ansible_check_mode and not _opa_tls
+
+    # ── Listener TLS (opa_tls): the same checks over HTTPS ───────────────────
+    - name: "OPA health over TLS (/health -> 200, against the step-ca bundle)"
+      ansible.builtin.command:
+        argv: "{{ _opa_tls_args + [_opa_url ~ '/health'] }}"
+      register: _opa_health_tls
+      retries: 10
+      delay: 3
+      until: _opa_health_tls.rc == 0
+      changed_when: false
+      check_mode: false
+      when: _opa_tls
+
+    # The listener is TLS only. The URL is spelt out in argv: curl needs no shell and no secret.
+    - name: "Plain HTTP to the TLS listener must not answer 200"
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --max-time
+          - "10"
+          - "http://{{ _opa_tls_ip }}:{{ _opa_tls_port }}/health"
+      register: _opa_plain_http
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _opa_tls
+
+    - name: "Refuse a plain-HTTP 200 from the TLS listener"
+      ansible.builtin.assert:
+        that:
+          - _opa_plain_http.stdout | trim != '200'
+        fail_msg: "The OPA listener answered plain HTTP with 200 on {{ _opa_tls_ip }}:{{ _opa_tls_port }}; TLS is not enforced."
+        quiet: true
+      when: _opa_tls
+
+    - name: "Sample decision over TLS: nemoclaw read nocodb -> allow"
+      ansible.builtin.command:
+        argv: >-
+          {{ _opa_tls_args + ['--header', 'Content-Type: application/json',
+             '--data', ({'input': {'agent': 'nemoclaw', 'action': 'read', 'service': 'nocodb'}} | to_json),
+             _opa_url ~ '/v1/data/agentcloud/decision'] }}
+      register: _opa_allow_tls
+      changed_when: false
+      failed_when: _opa_allow_tls.rc != 0 or not ((_opa_allow_tls.stdout | from_json).result | default({})).allowed | default(false) | bool
+      when: _opa_tls and not ansible_check_mode
+
+    - name: "Sample decision over TLS: unknown agent -> deny"
+      ansible.builtin.command:
+        argv: >-
+          {{ _opa_tls_args + ['--header', 'Content-Type: application/json',
+             '--data', ({'input': {'agent': 'rogue-agent', 'action': 'read', 'service': 'nocodb'}} | to_json),
+             _opa_url ~ '/v1/data/agentcloud/decision'] }}
+      register: _opa_deny_tls
+      changed_when: false
+      failed_when: _opa_deny_tls.rc != 0 or ((_opa_deny_tls.stdout | from_json).result | default({})).allowed | default(true) | bool
+      when: _opa_tls and not ansible_check_mode
 
     - name: "Run Rego unit tests (opa test /policies)"
       ansible.builtin.command: "{{ _engine }} exec opa /opa test /policies"

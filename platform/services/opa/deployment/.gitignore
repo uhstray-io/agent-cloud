@@ -1,0 +1,4 @@
+# The step-ca server leaf and the trust bundle, placed by deploy-opa.yml when opa_tls is on
+# (certs/<leaf>/current, certs/step-ca-bundle.crt). Issued per host, never committed. Listed so
+# the rsync filter in tasks/place-monorepo.yml (':- .gitignore') neither copies nor deletes them.
+certs/
