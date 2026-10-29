@@ -84,17 +84,25 @@ skip_unless_service_file() {
   assert_grep -qF '{ src: env.j2, dest: .env, mode: "0600" }' "$PLAYBOOK"
 }
 
-@test "skynet: the step-ca root goes into ./certs in local mode only, before deploy.sh" {
-  # compose.local.yml mounts ./certs and sets SSL_CERT_FILE, so the bundle must land before the
-  # containers start. The combined bundle is for a consumer that replaces its whole trust store,
-  # which skynet is not.
+@test "skynet: the trust bundle is distributed in both modes, before deploy.sh; only production builds the combined bundle" {
+  # Local: compose.local.yml mounts ./certs and sets SSL_CERT_FILE to the step-ca bundle. Production:
+  # compose.prod.yml sets SSL_CERT_FILE to the combined bundle (the CA root and intermediate plus this
+  # VM's public roots), with the root read from the step_ca_svc host. Both must land before deploy.sh.
   assert_grep -qF 'tasks/distribute-ca-root.yml' "$PLAYBOOK"
+  [ "$(grep -c 'include_tasks: tasks/distribute-ca-root.yml' "$PLAYBOOK")" -eq 2 ]
   assert_precedes "$PLAYBOOK" 'tasks/distribute-ca-root\.yml' 'bash deploy\.sh'
-  local block
-  block=$(task_block "$PLAYBOOK" 'Distribute the step-ca root for internal TLS trust (local)')
-  assert_contains "$block" '_ca_root_dest_dir: "{{ _deploy_dir }}"'
-  assert_contains "$block" 'when: local_mode | default(false) | bool'
-  refute_grep -qF '_ca_root_combined_dest' "$PLAYBOOK"
+  local local_block prod_block
+  local_block=$(task_block "$PLAYBOOK" 'Distribute the step-ca root for internal TLS trust (local)')
+  assert_contains "$local_block" '_ca_root_dest_dir: "{{ _deploy_dir }}"'
+  assert_contains "$local_block" 'when: local_mode | default(false) | bool'
+  refute_contains "$local_block" '_ca_root_combined_dest'
+  prod_block=$(task_block "$PLAYBOOK" 'Distribute the step-ca root and the public roots for internal TLS trust (production)')
+  assert_contains "$prod_block" '_ca_root_dest_dir: "{{ _deploy_dir }}"'
+  assert_contains "$prod_block" "_ca_host: \"{{ groups['step_ca_svc'] | first }}\""
+  assert_contains "$prod_block" "_ca_root_combined_dest: \"{{ _deploy_dir ~ '/certs/ca-bundle-combined.crt' }}\""
+  assert_contains "$prod_block" 'when: not (local_mode | default(false) | bool)'
+  # The combined bundle is named exactly once in the playbook: the production include.
+  [ "$(grep -c '_ca_root_combined_dest' "$PLAYBOOK")" -eq 1 ]
 }
 
 @test "skynet: transport guard guards every play that reaches OpenBao" {
@@ -122,11 +130,13 @@ skip_unless_service_file() {
   refute_grep -qF '_skynet_semaphore_token' "$PLAYBOOK"
   refute_grep -qF 'LOCAL-DEV STOPGAP' "$PLAYBOOK"
   refute_grep -qF 'community.hashi_vault.hashi_vault' "$PLAYBOOK"
-  # No refusal or read before the monorepo is placed depends on local_mode (the old stopgap did).
+  # Before the monorepo is placed, local_mode gates only the two production refusals (the old
+  # stopgap refusal gated on it too). Every other refusal runs in every environment.
   local refusals_block
   refusals_block=$(sed -n '/^    - name: "Refuse skynet_image/,/^    - name: "Place the monorepo/p' "$PLAYBOOK")
   assert_contains "$refusals_block" 'Refuse skynet_publish_port'
-  refute_grep -qF 'local_mode' <<<"$refusals_block"
+  [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 2 ]
+  [ "$(grep -c 'when: not (local_mode | default(false) | bool)' <<<"$refusals_block")" -eq 2 ]
   if [ -f "$DEPLOY_DIR/templates/env.j2" ]; then
     refute_grep -qF '_skynet_semaphore_token' "$DEPLOY_DIR/templates/env.j2"
   fi
@@ -223,7 +233,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the nine refusals are present as named assert tasks, all before the repo is placed" {
+@test "skynet: the eleven refusals are present as named assert tasks, all before the repo is placed" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -235,7 +245,10 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 9 ]
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 11 ]
+  # The two production refusals name the CA host and the OPA address.
+  assert_grep -qx 'Refuse a production run without a step_ca_svc host to read the CA root from' <<<"$refusals"
+  assert_grep -qx 'Refuse skynet_opa_ip unless it is one non-wildcard IPv4 address in production' <<<"$refusals"
   # The two publish refusals name the declared bind and port, so a reader finds each one.
   assert_grep -qx 'Refuse skynet_publish_bind unless it is one non-wildcard IPv4 address' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_publish_port unless it is a whole port number from 1024 to 65535' <<<"$refusals"
@@ -286,8 +299,8 @@ tasks = [
     t for t in play1["tasks"]
     if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
-if len(tasks) != 9:
-    sys.exit(f"expected 9 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 11:
+    sys.exit(f"expected 11 refusal asserts in Phase 1, found {len(tasks)}")
 play = [{"name": "extracted refusals", "hosts": "localhost", "connection": "local",
          "gather_facts": False, "tasks": tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
@@ -300,6 +313,8 @@ base = {
     "skynet_semaphore_catalog": "local",
     "skynet_semaphore_project": 1,
     "skynet_model": "test-model",
+    # Local mode skips the production refusals, so the baseline needs no CA host and no OPA address.
+    "local_mode": True,
 }
 with open(f"{out}/base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
@@ -434,6 +449,131 @@ PY
 }
 
 # ── Clean deploy and local wiring ────────────────────────────────────────────
+
+# Production variant of accepted(): local_mode false, and an inventory declaring one step_ca_svc host.
+# skynet_opa_ip is a valid address unless the case overrides it (a later -e wins).
+prod_inventory() {
+  printf 'localhost ansible_connection=local\n\n[step_ca_svc]\nlocalhost\n' > "$BATS_TEST_TMPDIR/prod-inventory.ini"
+}
+
+prod_accepted() {
+  prod_inventory
+  ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 \
+    -e "{\"$1\": $2}" >/dev/null 2>&1
+}
+
+@test "skynet: production refuses a run with no step_ca_svc host, and accepts one with a host" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  # No inventory group: the refusal names the missing CA host.
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'step_ca_svc'
+  run prod_accepted skynet_opa_ip '"203.0.113.20"'
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: production refuses skynet_opa_ip unless it is one non-wildcard IPv4 address" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  run prod_accepted skynet_opa_ip '"0.0.0.0"'
+  [ "$status" -ne 0 ]
+  run prod_accepted skynet_opa_ip '"opa.example.test"'
+  [ "$status" -ne 0 ]
+  run prod_accepted skynet_opa_ip '"203.0.113"'
+  [ "$status" -ne 0 ]
+  run prod_accepted skynet_opa_ip '""'
+  [ "$status" -ne 0 ]
+  run prod_accepted skynet_opa_ip '"203.0.113.20"'
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: production refuses an undeclared skynet_opa_ip; local mode needs neither it nor a CA host" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  prod_inventory
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'skynet_opa_ip'
+  # Local mode: the baseline carries no skynet_opa_ip and no step_ca_svc group, and must pass.
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: the production overlay is a skynet-only override: certs read-only, combined bundle, OPA mapping from two required variables" {
+  local overlay="$DEPLOY_DIR/compose.prod.yml"
+  skip_unless_service_file "$overlay"
+  assert_grep -qF -- '- ./certs:/certs:ro' "$overlay"
+  assert_grep -qF 'SSL_CERT_FILE: /certs/ca-bundle-combined.crt' "$overlay"
+  assert_grep -qF -- '- "${SKYNET_OPA_HOSTNAME:?set skynet_opa_url in the inventory}:${SKYNET_OPA_IP:?set skynet_opa_ip in the inventory}"' "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert list(doc["services"]) == ["skynet"], doc["services"]
+assert set(doc["services"]["skynet"]) == {"volumes", "environment", "extra_hosts"}, doc["services"]["skynet"]
+PY
+}
+
+@test "skynet: deploy.sh adds the production overlay only outside LOCAL_MODE" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  # Run the real gate block, extracted from the file, under each LOCAL_MODE value.
+  local gate="$BATS_TEST_TMPDIR/overlay-gate.sh" prod_out local_out
+  sed -n '/^if \[ "\${LOCAL_MODE:-}" != "true" \]; then$/,/^fi$/p' "$deploy" > "$gate"
+  [ -s "$gate" ]
+  prod_out=$(env -u LOCAL_MODE -u COMPOSE_OVERLAYS bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+  local_out=$(env -u COMPOSE_OVERLAYS LOCAL_MODE=true bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+  assert_contains "$prod_out" 'compose.prod.yml'
+  refute_contains "$local_out" 'compose.prod.yml'
+}
+
+@test "skynet: env renders the OPA host mapping outside local mode only, with the hostname from skynet_opa_url" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local env="$DEPLOY_DIR/templates/env.j2"
+  skip_unless_service_file "$env"
+  cat > "$BATS_TEST_TMPDIR/render.yml" <<'YAML'
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Render the skynet env file for this case
+      ansible.builtin.template:
+        src: "{{ env_src }}"
+        dest: "{{ env_dest }}"
+        mode: "0600"
+YAML
+  cat > "$BATS_TEST_TMPDIR/render-vars.json" <<JSON
+{"env_src": "$env", "env_dest": "$BATS_TEST_TMPDIR/rendered.env", "local_mode": false,
+ "secrets": {"api_token": "a", "db_password": "b", "read_token": "c", "semaphore_api_token": "d"},
+ "skynet_image": "ghcr.io/uhstray-io/skynet-tier2@sha256:$(printf 'a%.0s' {1..64})",
+ "skynet_gateway_url": "https://inference.example.test", "skynet_model": "test-model",
+ "skynet_opa_url": "https://opa.example.test:8281", "skynet_opa_ip": "203.0.113.20",
+ "skynet_semaphore_url": "https://semaphore.example.test", "skynet_semaphore_project": 1,
+ "skynet_semaphore_catalog": "production"}
+JSON
+  run ansible-playbook "$BATS_TEST_TMPDIR/render.yml" -e "@$BATS_TEST_TMPDIR/render-vars.json"
+  [ "$status" -eq 0 ]
+  assert_grep -qx 'SKYNET_OPA_HOSTNAME=opa.example.test' "$BATS_TEST_TMPDIR/rendered.env"
+  assert_grep -qx 'SKYNET_OPA_IP=203.0.113.20' "$BATS_TEST_TMPDIR/rendered.env"
+  # Same inputs in local mode: the OPA mapping is not rendered.
+  sed 's/"local_mode": false/"local_mode": true/' "$BATS_TEST_TMPDIR/render-vars.json" > "$BATS_TEST_TMPDIR/render-vars-local.json"
+  run ansible-playbook "$BATS_TEST_TMPDIR/render.yml" -e "@$BATS_TEST_TMPDIR/render-vars-local.json"
+  [ "$status" -eq 0 ]
+  refute_grep -qE '^SKYNET_OPA_(HOSTNAME|IP)=' "$BATS_TEST_TMPDIR/rendered.env"
+}
+
+@test "skynet: the two local files pin the same skynet digest" {
+  local digest="sha256:36d0bb9e63c888b44be988598dd28c0e15e4b95fcfae9279296a589d4a459596"
+  assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/inventory/local-dev.yml.example"
+  assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+  refute_grep -qF 'd1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
+  refute_grep -qF 'd1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+}
 
 @test "skynet: local templates offer Deploy and Clean Deploy, the clean one behind confirm_reset" {
   python3 - "$REPO_ROOT/platform/semaphore/templates-local.yml" <<'PY'

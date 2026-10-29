@@ -5,7 +5,9 @@
 #          (api_token, db_password and read_token generated once into OpenBao, reused
 #          thereafter; semaphore_api_token is the svc-skynet account's token, read and
 #          never generated; the agentgateway role keys shared-read, because the gateway
-#          enrolls them for skynet's agents); template .env.
+#          enrolls them for skynet's agents); template .env; distribute the trust bundle the
+#          overlay names (local: step-ca root; production: root + intermediate + this VM's public
+#          roots, because SSL_CERT_FILE replaces the whole trust store).
 # Phase 2: registry login (GHCR package is private) + image pre-flight + deploy.sh
 #          (container lifecycle only).
 # Phase 3: Verify inside the skynet container: /skynet/healthz answers 200, an
@@ -169,21 +171,55 @@
           skynet API is published on; 8380 by default). Set it in the inventory and re-run.
       when: skynet_publish_port is defined
 
+    # Production only. skynet reaches OPA over https with an internal-CA leaf for a name that has no
+    # production DNS record, so compose.prod.yml maps that name to the declared address, and the CA
+    # root is read from the step_ca_svc host. Both are checked before anything changes.
+    - name: "Refuse a production run without a step_ca_svc host to read the CA root from"
+      ansible.builtin.assert:
+        that:
+          - (groups['step_ca_svc'] | default([]) | length) > 0
+        fail_msg: >-
+          Production skynet reads the step-ca root and intermediate from the step_ca_svc group, and that
+          group is empty. Declare the CA host in the inventory and re-run.
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Refuse skynet_opa_ip unless it is one non-wildcard IPv4 address in production"
+      ansible.builtin.assert:
+        that:
+          - (skynet_opa_ip | default('', true) | string) is match('^(?!0[.]0[.]0[.]0$)[0-9]{1,3}([.][0-9]{1,3}){3}$')
+        fail_msg: >-
+          skynet_opa_ip must be the IPv4 address of the OPA host. The production OPA name has no DNS
+          record, so the container maps that name to this address. 0.0.0.0 is refused. Set it in the
+          inventory and re-run.
+      when: not (local_mode | default(false) | bool)
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
-    # skynet's calls to the local OPA, Semaphore and gateway run over https with step-ca leaves.
-    # Distribute the step-ca trust bundle into ./certs; compose.local.yml mounts it and sets
-    # SSL_CERT_FILE. Local-only (the prod endpoints use a public chain).
+    # Local: skynet's calls to the local OPA, Semaphore and gateway run over https with step-ca
+    # leaves. Distribute the step-ca root and intermediate into ./certs; compose.local.yml mounts it
+    # and sets SSL_CERT_FILE. Every local endpoint is a step-ca leaf, so no public roots are needed.
     - name: "Distribute the step-ca root for internal TLS trust (local)"
       ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
       vars:
         _ca_root_dest_dir: "{{ _deploy_dir }}"
         _ca_engine: "{{ container_engine | default('podman') }}"
       when: local_mode | default(false) | bool
+
+    # Production: OPA's leaf is signed by the internal CA, and SSL_CERT_FILE (compose.prod.yml)
+    # replaces the whole trust store. The bundle therefore carries the CA root and intermediate AND
+    # this VM's public roots (the gateway and Semaphore are public-chain hosts). The root is read from
+    # the step_ca_svc host's container, and the bundle lands in ./certs, which compose.prod.yml mounts.
+    - name: "Distribute the step-ca root and the public roots for internal TLS trust (production)"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_host: "{{ groups['step_ca_svc'] | first }}"
+        _ca_root_combined_dest: "{{ _deploy_dir ~ '/certs/ca-bundle-combined.crt' }}"
+      when: not (local_mode | default(false) | bool)
 
     - name: "Create convenience symlink ~/skynet -> deploy dir"
       # Points ~/skynet at the deployment dir in the composable monorepo clone.

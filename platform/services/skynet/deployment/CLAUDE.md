@@ -40,6 +40,7 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 | `secret/services/skynet:read_token` | `SKYNET_READ_TOKEN` |
 | `secret/services/skynet:semaphore_api_token` (existing; written by `Provision skynet Semaphore Access`) | `SKYNET_SEMAPHORE_TOKEN` |
 | inventory `skynet_publish_bind`, `skynet_publish_port` (optional; defaults `127.0.0.1`, `8380`) | `SKYNET_PUBLISH_BIND`, `SKYNET_PUBLISH_PORT`, substituted into compose `ports:` |
+| inventory `skynet_opa_url` (host part) and `skynet_opa_ip` (production only; required, IPv4) | `SKYNET_OPA_HOSTNAME`, `SKYNET_OPA_IP`, substituted into `compose.prod.yml` `extra_hosts` |
 | shared read `secret/services/agentgateway:client_<role>` (`secrets['client_<role>']`) | `SKYNET_GATEWAY_KEY_<ROLE>`, omitted when the key exists but is empty. A missing key stops the deploy (the shared read is all-or-nothing) |
 | inventory `skynet_gateway_url`, `skynet_model`, `skynet_opa_url`, `skynet_semaphore_url`, `skynet_semaphore_project`, `skynet_semaphore_catalog`, `skynet_image` | the matching `SKYNET_*` variables |
 
@@ -68,16 +69,25 @@ skynet publishes the image from its `.github/workflows/publish-tier2.yml` (merge
 PR #10) to GHCR as `ghcr.io/uhstray-io/skynet-tier2`. The inventory pins that digest in
 `skynet_image`.
 
-## Trust (local-dev only)
+## Trust
 
-skynet reaches the gateway, OPA and Semaphore over HTTPS through local Caddy, whose
-certificates come from step-ca. `compose.local.yml` mounts `./certs` and sets
-`SSL_CERT_FILE=/certs/step-ca-bundle.crt`. `SSL_CERT_FILE` replaces the process's whole trust
-store, so the file must hold the step-ca root and intermediate. The render places that bundle
-with `tasks/distribute-ca-root.yml`, which the playbook must call with `_ca_root_dest_dir` = the
-deploy dir. Do not pass
-`_ca_root_combined_dest`: that is agentgateway's upstream case, and skynet needs no public roots.
-The base `compose.yml` never sets `SSL_CERT_FILE`.
+skynet calls OPA, the gateway and Semaphore over HTTPS. `SSL_CERT_FILE` replaces the process's
+whole trust store, so each overlay names a bundle that holds everything skynet must verify. The
+base `compose.yml` never sets `SSL_CERT_FILE`.
+
+- **Local-dev** (`compose.local.yml`, loaded when LOCAL_MODE=true): every local endpoint is a
+  step-ca leaf. The bundle is `./certs/step-ca-bundle.crt`, the root and intermediate, written by
+  `tasks/distribute-ca-root.yml` with `_ca_root_dest_dir` = the deploy dir. No public roots.
+- **Production** (`compose.prod.yml`, appended by `deploy.sh` outside LOCAL_MODE): OPA's leaf is
+  an internal-CA leaf for a name with no production DNS record. The playbook calls
+  `tasks/distribute-ca-root.yml` with `_ca_host` = the `step_ca_svc` host and
+  `_ca_root_combined_dest` = `certs/ca-bundle-combined.crt`. That bundle holds the root and
+  intermediate plus this VM's public roots, because the gateway and Semaphore are public-chain
+  hosts. `SSL_CERT_FILE` names it, and `extra_hosts` maps the OPA name to `skynet_opa_ip`.
+- Refused before anything changes, outside local mode: no `step_ca_svc` host, and a
+  `skynet_opa_ip` that is not one non-wildcard IPv4 address.
+- The combined bundle is built from the play host's public roots. A host without them is refused
+  by `tasks/distribute-ca-root.yml`, not left with a bundle that lacks them.
 
 ## Networks and reachability
 
@@ -111,7 +121,7 @@ The base `compose.yml` never sets `SSL_CERT_FILE`.
 - Don't render `SKYNET_BIND` or `SKYNET_PORT` into `.env`. The image sets `SKYNET_BIND=0.0.0.0`, and
   `env_file` would hand a rendered value to the container. The publish knobs are
   `SKYNET_PUBLISH_BIND` and `SKYNET_PUBLISH_PORT`.
-- Don't put `SSL_CERT_FILE` in the base file. It belongs to the local overlay.
+- Don't put `SSL_CERT_FILE` in the base file. Each overlay sets it: `compose.local.yml` and `compose.prod.yml`.
 - Don't copy a secret into a template as a default. Required values have none.
 - Don't commit `.env` or `certs/`. The `.gitignore` here and the root `*.env` rule cover them.
 - Don't give skynet the operator's Semaphore token, and don't read one from a workstation file.

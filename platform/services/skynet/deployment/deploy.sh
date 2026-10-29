@@ -19,6 +19,12 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/common.sh"
 
+# Production (outside LOCAL_MODE): compose.prod.yml maps the OPA name and points SSL_CERT_FILE at the
+# combined trust bundle. Local-dev loads compose.local.yml instead, which common.sh adds by itself.
+if [ "${LOCAL_MODE:-}" != "true" ]; then
+  COMPOSE_OVERLAYS="compose.prod.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     --no-pull) SKIP_PULL=true ;;
@@ -58,8 +64,9 @@ step_start() {
   # compose-spec change, so plain `up -d` would leave the old containers running with stale env.
   # compose_up_if_changed hashes .env with the compose files and recreates only when that digest
   # or an image changed, and prints DEPLOY_CHANGED=true|false for the playbook.
-  # certs/ is hashed only where it exists: the local overlay mounts it, production does not, and
-  # a missing input is an error to the helper, not an empty input.
+  # certs/ is hashed only where it exists. Both overlays mount it (local: the step-ca bundle;
+  # production: the combined bundle, which SSL_CERT_FILE names), so a renewed bundle inside it is a
+  # changed input and recreates the containers. Without the directory there is no bundle to hash.
   if [ -d certs ]; then
     compose_up_if_changed certs
   else

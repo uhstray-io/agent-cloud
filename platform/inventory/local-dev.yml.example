@@ -454,9 +454,9 @@ all:
           service_name: skynet
           monorepo_deploy_path: platform/services/skynet/deployment
           container_engine: podman
-          # skynet main 45fd8698 (2026-10-20); bump to the digest skynet CI prints in its publish job
-          # summary, never a tag. The deploy refuses a tag or any non-digest value.
-          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:d1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da
+          # skynet main 9168d6ce (publish-tier2 run 40941707146, 2026-10-29); bump to the digest skynet CI
+          # prints in its publish job, never a tag. The deploy refuses a tag or any non-digest value.
+          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:36d0bb9e63c888b44be988598dd28c0e15e4b95fcfae9279296a589d4a459596
           skynet_gateway_url: https://inference.agent-cloud.test
           skynet_model: qwen3.8-flash-next
           skynet_opa_url: https://opa.agent-cloud.test

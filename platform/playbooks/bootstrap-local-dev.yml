@@ -1540,7 +1540,7 @@
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
           local_mode=true
-          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:d1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da
+          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:36d0bb9e63c888b44be988598dd28c0e15e4b95fcfae9279296a589d4a459596
           skynet_gateway_url=https://inference.agent-cloud.test
           skynet_model=qwen3.8-flash-next
           skynet_opa_url=https://opa.agent-cloud.test
