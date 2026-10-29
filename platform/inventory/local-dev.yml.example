@@ -531,8 +531,8 @@ all:
           # Sign-in through Authentik: the IdP base Plane's API calls server-side for the token and
           # userinfo (same host:port the browser uses). Unset = OIDC switched off on the next deploy.
           plane_authentik_base: "https://auth.agent-cloud.test:8443"
-          # Plane's Admin role is a plan feature resolved through its licence agent, which local-dev
-          # switches off (compose.local.yml), so platform-admins join as members here.
+          # Plane's Admin role is a plan feature (WORKSPACE_ADMIN_ROLE) the Free plan lacks, so
+          # platform-admins join as members here.
           plane_admin_role: member
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one

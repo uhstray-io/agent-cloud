@@ -4,12 +4,13 @@ Run by reconcile-plane-members.yml INSIDE the plane-api container, after plane_s
 with one JSON document on stdin:
 
   {base, host, origin,                  plane_session.py
-   email, password,                     the automation admin, who owns the workspace
+   email, password,                     the automation account, the workspace's creator (role admin)
    workspace_slug,
    desired: {email: role_slug},         "admin" for platform-admins (inventory may say "member"
                                         where the plan lacks the Admin role), "member" for
                                         developers and business users; platform-user is never in it
-   apply: bool}
+   apply: bool,
+   allow_mass_removal: bool}            see the guard below
 
 It signs in as the automation admin and compares the workspace's ACTIVE human members and
 pending invitations with `desired`:
@@ -22,7 +23,10 @@ Never touched: the automation account, any owner (Plane refuses to demote or rem
 bots (`membership_type=people`). Plane v3.3.3 removes a member by deactivating the row, so an
 inactive row counts as absent and a returning person is invited again.
 
-Without `apply` it changes nothing and reports the plan; with it, it applies the plan. Prints
+Without `apply` it changes nothing and reports the plan; with it, it applies the plan. An apply
+that would remove more than one person and more than half of the removable roster, or that was
+given no desired members at all, is refused unless `allow_mass_removal`: an empty or broken group
+read must not empty the workspace. Prints
 ONE JSON line (emails and roles, never a credential). Self sign-up is off, so an invitation is
 what lets a person sign in through Authentik; removing them is what takes it back.
 """
@@ -84,27 +88,33 @@ for email, i in sorted(pending.items()):
     if email not in desired and email not in have:
         plan["remove"].append({"email": email, "invitation": i["id"]})
 
+removable = sum(1 for e in have if e != me and e not in owners) + sum(1 for e in pending if e not in have)
+mass = not desired or (len(plan["remove"]) > 1 and 2 * len(plan["remove"]) > removable)
+if cfg.get("apply") and mass and str(cfg.get("allow_mass_removal")).lower() != "true":
+    fail(f"refusing to remove {len(plan['remove'])} of {removable} people "
+         f"({len(desired)} desired); re-run with allow_mass_removal=true if the groups really changed")
+
 done = []
 if cfg.get("apply"):
     if plan["invite"]:
         status, _, body = call("POST", f"/api/workspaces/{slug}/invitations/",
                                {"emails": [{"email": p["email"], "role_slug": p["role"]} for p in plan["invite"]]})
         if status not in (200, 201):
-            fail(f"inviting {len(plan['invite'])} people failed ({status}){error_of(body)}")
+            fail(f"inviting {len(plan['invite'])} people failed ({status}){error_of(body)}", actions=done)
         done.append(f"invited {len(plan['invite'])}")
     for p in plan["set_role"]:
         path = (f"/api/workspaces/{slug}/members/{p['member']}/" if "member" in p
                 else f"/api/workspaces/{slug}/invitations/{p['invitation']}/")
         status, _, body = call("PATCH", path, {"role_slug": p["role"]})
         if status != 200:
-            fail(f"setting {p['email']} to {p['role']} failed ({status}){error_of(body)}")
+            fail(f"setting {p['email']} to {p['role']} failed ({status}){error_of(body)}", actions=done)
         done.append(f"set {p['email']} to {p['role']}")
     for p in plan["remove"]:
         path = (f"/api/workspaces/{slug}/members/{p['member']}/" if "member" in p
                 else f"/api/workspaces/{slug}/invitations/{p['invitation']}/")
         status, _, body = call("DELETE", path)
         if status not in (200, 204):
-            fail(f"removing {p['email']} failed ({status}){error_of(body)}")
+            fail(f"removing {p['email']} failed ({status}){error_of(body)}", actions=done)
         done.append(f"removed {p['email']}")
 
 summary = {k: [p["email"] + (f" ({p['role']})" if "role" in p else "") for p in v] for k, v in plan.items()}

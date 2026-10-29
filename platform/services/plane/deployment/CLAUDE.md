@@ -105,7 +105,7 @@ address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automatio
 `plane_version` (default `v3.3.3`); `plane_authentik_base` (the IdP's base URL) turns sign-in
 through Authentik on, and leaving it unset switches it OFF on the next deploy. `plane_admin_role`
 (default `admin`) is the role `platform-admins` get from the member reconcile; local-dev sets
-`member`, because Plane resolves the Admin role through the licence agent local-dev switches off.
+`member`, because the Admin role is a plan feature (`WORKSPACE_ADMIN_ROLE`) the Free plan lacks.
 
 ## Operate
 

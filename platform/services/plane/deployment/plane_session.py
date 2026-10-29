@@ -24,9 +24,9 @@ cfg = json.loads(sys.stdin.readline())
 BASE, HOST, ORIGIN = cfg["base"], cfg["host"], cfg["origin"]
 
 
-def fail(message):
+def fail(message, **extra):
     """One JSON line, never a credential: the playbook shows it while the task stays no_log."""
-    print(json.dumps({"error": message}))
+    print(json.dumps({"error": message, **extra}))
     sys.exit(1)
 
 

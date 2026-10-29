@@ -78,7 +78,8 @@ class StubPlane(DrainingHandler):
 
     def do_PATCH(self):
         self.state["calls"].append(("PATCH", self.path, json.loads(self._body())))
-        self._send(200, {})
+        status = self.state.get("patch_status", 200)
+        self._send(status, {} if status == 200 else {"error": "refused"})
 
     def do_DELETE(self):
         self.state["calls"].append(("DELETE", self.path, None))
@@ -172,3 +173,92 @@ def test_a_refused_invite_fails_with_plane_error_and_no_password(plane):
     assert out.returncode == 1
     assert "Admin role is not available on this plan" in out.stdout
     assert PASSWORD not in out.stdout + out.stderr
+
+
+def test_the_automation_account_is_skipped_by_email_not_by_role(plane):
+    # Plane makes the workspace's creator an admin (role 20), not an owner, so only the email
+    # comparison protects it: removing it would 400 ("cannot remove yourself") and fail every run.
+    state, base = plane
+    state["members"] = [member("m1", ME, "admin"), member("m2", "dev@example.test", "member")]
+    out = summary(run(base, {"dev@example.test": "member"}, apply=True))
+    assert state["calls"] == [] and out["plan"]["remove"] == []
+    out = summary(run(base, {ME: "member", "dev@example.test": "member"}, apply=True))
+    assert state["calls"] == [] and out["plan"]["set_role"] == []
+
+
+def test_an_owner_who_left_every_group_is_not_removed(plane):
+    state, base = plane
+    state["members"] = [member("m1", "owner@example.test", "owner"), member("m2", "dev@example.test", "member")]
+    out = summary(run(base, {"dev@example.test": "member"}, apply=True))
+    assert state["calls"] == [] and out["plan"]["remove"] == []
+
+
+def roster_of(n):
+    return [member(f"m{i}", f"p{i}@example.test", "member") for i in range(n)]
+
+
+def test_an_apply_that_would_empty_most_of_the_workspace_is_refused(plane):
+    state, base = plane
+    state["members"] = roster_of(4)
+    out = run(base, {"p0@example.test": "member"}, apply=True)  # would remove 3 of 4
+    assert out.returncode == 1 and "refusing to remove 3 of 4" in out.stdout
+    assert state["calls"] == []
+
+
+def test_an_empty_desired_set_is_refused_even_for_one_removal(plane):
+    state, base = plane
+    state["members"] = roster_of(1)
+    out = run(base, {}, apply=True)
+    assert out.returncode == 1 and "refusing to remove 1 of 1" in out.stdout
+    assert state["calls"] == []
+
+
+def test_mass_removal_goes_through_only_with_the_opt_in(plane):
+    state, base = plane
+    state["members"] = roster_of(4)
+    cfg = {"p0@example.test": "member"}
+    for flag in (False, "false", "False"):
+        StubPlane.state["calls"] = []
+        out = subprocess.run([sys.executable, "-I", "-c", SOURCE], capture_output=True, text=True, timeout=30,
+                             input=json.dumps({"base": base, "host": "plane.test", "origin": "https://plane.test",
+                                               "email": ME, "password": PASSWORD, "workspace_slug": "ws",
+                                               "desired": cfg, "apply": True, "allow_mass_removal": flag}) + "\n")
+        assert out.returncode == 1 and state["calls"] == [], flag
+    out = subprocess.run([sys.executable, "-I", "-c", SOURCE], capture_output=True, text=True, timeout=30,
+                         input=json.dumps({"base": base, "host": "plane.test", "origin": "https://plane.test",
+                                           "email": ME, "password": PASSWORD, "workspace_slug": "ws",
+                                           "desired": cfg, "apply": True, "allow_mass_removal": "true"}) + "\n")
+    assert out.returncode == 0, out.stdout
+    assert [c[0] for c in state["calls"]] == ["DELETE"] * 3
+
+
+def test_a_failure_mid_apply_reports_what_was_already_done(plane):
+    state, base = plane
+    state["members"] = [member("m1", "dev@example.test", "member")]
+    state["patch_status"] = 403
+    out = run(base, {"dev@example.test": "admin", "new@example.test": "member"}, apply=True)
+    assert out.returncode == 1
+    err = json.loads(out.stdout.splitlines()[-1])
+    assert err["actions"] == ["invited 1"] and "dev@example.test" in err["error"]
+
+
+@pytest.mark.parametrize("script", ["reconcile_members.py", "configure_instance.py"])
+def test_the_joined_source_defines_every_name_it_uses(script):
+    # Each script is a fragment that only runs after plane_session.py, so ruff's undefined-name
+    # check is off for the file (noqa F821); this checks the joined source the playbook runs.
+    import builtins
+    import symtable
+
+    source = (DEPLOY / "plane_session.py").read_text() + "\n" + (DEPLOY / script).read_text()
+    top = symtable.symtable(source, script, "exec")
+    defined = {s.get_name() for s in top.get_symbols() if s.is_assigned() or s.is_imported()}
+    defined |= {c.get_name() for c in top.get_children()} | set(dir(builtins))
+
+    def used(table):
+        for s in table.get_symbols():
+            if s.is_referenced() and (s.is_global() or table is top):
+                yield s.get_name()
+        for child in table.get_children():
+            yield from used(child)
+
+    assert sorted(set(used(top)) - defined) == []

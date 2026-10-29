@@ -96,6 +96,12 @@ templates:
         type: string
         required: false
         default_value: "false"
+      - name: allow_mass_removal
+        title: "Allow mass removal"
+        description: "true only when the groups really shrank: an apply removing more than half the workspace, or with no desired members, is refused otherwise"
+        type: string
+        required: false
+        default_value: "false"
   - name: "Back Up Plane DB (Local)"
     playbook: platform/playbooks/backup-plane-db.yml
   - name: "Restore Plane DB (Local)"

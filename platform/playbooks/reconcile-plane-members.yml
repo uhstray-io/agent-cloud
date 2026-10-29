@@ -5,17 +5,21 @@
 #   platform-developers, platform-business  -> member
 #   platform-user, or no group              -> no access: not invited, removed if present
 #
-# Plane gates the Admin role behind a plan feature flag (WORKSPACE_ADMIN_ROLE), resolved through
-# its licence agent. Local-dev runs without that agent, so its inventory sets
-# plane_admin_role: member; production keeps the default and a refusal names the plan.
+# Plane gates the Admin role behind a plan feature flag (WORKSPACE_ADMIN_ROLE). Local-dev runs the
+# Free plan, which lacks it, so its inventory sets plane_admin_role: member; production keeps the
+# default and a refusal names the plan.
 #
 # Play 1 reads each group's ACTIVE members that have an email, inside authentik-server with its
 # own bootstrap token (the token never leaves that container; inspect-authentik-blueprints.yml
-# reads the API the same way). Play 2 signs in to Plane as the automation admin and runs
+# reads the API the same way). A group read that lacks its member list fails here, before
+# anything can be planned from it. Play 2 signs in to Plane as the automation account and runs
 # reconcile_members.py inside plane-api: invite who is missing, set roles that differ, remove
 # who left (members and pending invitations; the automation account itself is never touched).
 #
 # READ-ONLY unless -e apply=true: without it the run reports the plan and changes nothing.
+# `apply` is a write opt-in (change task 2.4), not a dry-run switch: --check is honoured as well
+# and never applies. An apply that would empty most of the workspace is refused unless
+# -e allow_mass_removal=true (reconcile_members.py).
 # Self sign-up is off, so an invitation is what lets a person sign in through Authentik and
 # removal is what takes it back. Plane's native IdP group sync would do this at sign-in, but it
 # is plan-gated (402 on the Free plan, spike 0.9), so this is D3's fallback until the licensed
@@ -73,7 +77,9 @@
                 res = json.load(r).get("results", [])
                 if len(res) != 1:
                     print(json.dumps({"error": "expected exactly one group named %s, found %d" % (g, len(res))})); sys.exit(3)
-                out[g] = sorted({u["email"].lower() for u in res[0].get("users_obj") or []
+                if not isinstance(res[0].get("users_obj"), list):
+                    print(json.dumps({"error": "group %s came back without its member list (users_obj)" % g})); sys.exit(3)
+                out[g] = sorted({u["email"].lower() for u in res[0]["users_obj"]
                                  if u.get("is_active") and u.get("email")})
             print(json.dumps(out))
       become: "{{ _ak_become }}"
@@ -114,6 +120,7 @@
       password: "{{ _plane_secret.json.data.data.plane_automation_password }}"
       workspace_slug: "{{ plane_workspace_slug }}"
       desired: "{{ _desired }}"
+      allow_mass_removal: "{{ allow_mass_removal | default(false) | bool }}"
   tasks:
     # The AppRole is sent and the automation password read over this connection.
     - name: "Refuse a cleartext OpenBao endpoint"
@@ -146,6 +153,7 @@
         status_code: [200]
       register: _plane_secret
       delegate_to: localhost
+      changed_when: false
       no_log: true
       check_mode: false
 
@@ -173,7 +181,11 @@
         argv: *reconcile_argv
         stdin: "{{ _reconcile_input | combine({'apply': true}) | to_json }}"
       register: _reconcile_apply
-      changed_when: ((_reconcile_apply.stdout_lines | default(['{}']) | last) | from_json).changed | default(false) | bool
+      # Only a JSON last line is parsed: anything else would fail inside no_log and hide the reason
+      # the visible assert below prints.
+      changed_when: >-
+        (_reconcile_apply.stdout_lines | default([''], true) | last).startswith('{')
+        and ((_reconcile_apply.stdout_lines | last) | from_json).changed | default(false) | bool
       failed_when: false
       no_log: true
       when:
@@ -196,7 +208,9 @@
         that:
           - _reconcile_rc | int == 0
           - _reconcile_summary.error is not defined
-        fail_msg: "plane member reconcile failed: {{ _reconcile_summary.error | default('exit ' ~ _reconcile_rc) }}"
+        fail_msg: >-
+          plane member reconcile failed: {{ _reconcile_summary.error | default('exit ' ~ _reconcile_rc) }}{{
+          ('; already done before the failure: ' ~ _reconcile_summary.actions) if _reconcile_summary.actions | default([]) else '' }}
         quiet: true
 
     - name: "Report"
