@@ -170,3 +170,28 @@ PY
   [ "$status" -eq 0 ]
   assert_contains "$output" "PID=1"
 }
+
+@test "skynet access: the shared tasks refuse a project id that is not a positive whole number, before any request" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local wrap="$BATS_TEST_TMPDIR/pid.yml"
+  python3 - "$TASKS" "$wrap" <<'PY'
+import sys, yaml
+shared = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+names = [t.get("name") for t in shared if isinstance(t, dict)]
+check = "Refuse a Semaphore project id that is not a positive whole number"
+# It is the first task: nothing that sends a request runs before it.
+assert names[0] == check, names[:3]
+wrap = {"hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_svc_user": "svc-skynet"}, "tasks": [shared[0]]}
+with open(sys.argv[2], "w", encoding="utf-8") as f:
+    yaml.safe_dump([wrap], f, sort_keys=False)
+PY
+  run ansible-playbook -i localhost, "$wrap" -e _pid=7
+  [ "$status" -eq 0 ]
+  local bad
+  for bad in '' abc 0 07 true -1; do
+    run ansible-playbook -i localhost, "$wrap" -e "_pid=$bad"
+    [ "$status" -ne 0 ]
+    assert_contains "$output" "is not a positive whole number"
+  done
+}
