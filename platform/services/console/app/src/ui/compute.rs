@@ -15,7 +15,7 @@ use super::empty::COMPUTE;
 use super::icons::icon;
 use super::inventory::{
     bytes_text, count_text, cpu_percent, loaded_tree, mb_text, mem_percent, meta_of, node_key,
-    scoped_inventory, uptime_text, view, vm_key, Snapshot, View, ViewNotice,
+    scope_gate, scoped_inventory, uptime_text, view, vm_key, ScopeGate, Snapshot, View, ViewNotice,
 };
 use super::inventory_api::{Inventory, Vm};
 use super::shell::Ctx;
@@ -156,7 +156,23 @@ fn ComputeBody(snap: Snapshot) -> Element {
         };
     };
     let scope = ctx.scope.read().clone();
-    let tree = loaded_tree(&ctx.tree.read());
+    let tree_state = ctx.tree.read().clone();
+    match scope_gate(&scope, Some(&inv), &tree_state) {
+        ScopeGate::Loading => {
+            return rsx! {
+                Freshness { meta, reason }
+                Notice { message: "Loading scope\u{2026}".to_string() }
+            };
+        }
+        ScopeGate::Unresolved => {
+            return rsx! {
+                Freshness { meta, reason }
+                Notice { message: "The scope could not be loaded for this tenant, so no capacity is shown.".to_string() }
+            };
+        }
+        ScopeGate::Ready => {}
+    }
+    let tree = loaded_tree(&tree_state);
     let inv = scoped_inventory(&inv, &scope, tree.as_ref());
     let nodes = node_rows(&inv);
     let vms = vm_rows(&inv);

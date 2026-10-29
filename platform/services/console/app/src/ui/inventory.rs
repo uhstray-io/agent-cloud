@@ -15,7 +15,7 @@ use dioxus::prelude::*;
 use serde::de::DeserializeOwned;
 
 use super::api::{self, Me, Tree};
-use super::inventory_api::{self, Inventory, Meta, Read, ServiceRow, ServicesBody, Vm};
+use super::inventory_api::{self, Cluster, Inventory, Meta, Read, ServiceRow, ServicesBody, Vm};
 use super::scope::Scope;
 use super::shell::{Ctx, Loaded};
 use super::status::{worst, Notice, Rag};
@@ -278,21 +278,66 @@ pub fn scoped_inventory(inv: &Inventory, scope: &Scope, tree: Option<&Tree>) -> 
     out
 }
 
-/// The services narrowed to the scope bar. A service belongs to its VM's site. The
-/// services answer names only the site, so the org and environments come from the tree.
-pub fn scoped_services(rows: &[ServiceRow], scope: &Scope, tree: Option<&Tree>) -> Vec<ServiceRow> {
+/// The org a service's site belongs to. The inventory's own site is authoritative when it
+/// has loaded. Otherwise the tenant tree gives it. `None` when neither names the site.
+pub fn service_org<'a>(
+    site_id: &str,
+    inv: Option<&'a Inventory>,
+    tree: Option<&'a Tree>,
+) -> Option<&'a str> {
+    inv.and_then(|inv| inv.sites.iter().find(|s| s.id == site_id))
+        .map(|site| site.org.as_str())
+        .or_else(|| tree.and_then(|t| tree_site(t, site_id)).map(|(org, _)| org))
+}
+
+/// The services narrowed to the scope bar. A service belongs to its VM's site. Its org
+/// comes from the inventory when loaded, else the tree. Its envs come from the tree.
+pub fn scoped_services(
+    rows: &[ServiceRow],
+    scope: &Scope,
+    inv: Option<&Inventory>,
+    tree: Option<&Tree>,
+) -> Vec<ServiceRow> {
     rows.iter()
         .filter(|row| {
-            let found = tree.and_then(|t| tree_site(t, &row.site));
-            in_scope(
-                scope,
-                &row.site,
-                found.map(|(org, _)| org),
-                found.map(|(_, envs)| envs),
-            )
+            let org = service_org(&row.site, inv, tree);
+            let envs = tree
+                .and_then(|t| tree_site(t, &row.site))
+                .map(|(_, envs)| envs);
+            in_scope(scope, &row.site, org, envs)
         })
         .cloned()
         .collect()
+}
+
+/// The services in the scope bar's choice, or why they cannot be narrowed yet.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScopedServices {
+    Rows(Vec<ServiceRow>),
+    /// The scope needs a source that has not loaded yet. Shown as "Loading scope…".
+    Loading,
+    /// The scope needs a source that failed. Shown as a notice, never as an empty list.
+    Unresolved,
+}
+
+/// The services for the page: narrowed when the scope can be checked, otherwise loading
+/// or unresolved. A service list is never reported as empty while the scope is pending.
+pub fn services_in_scope(
+    rows: &[ServiceRow],
+    scope: &Scope,
+    inv: Option<&Inventory>,
+    tree: &Loaded<Tree>,
+) -> ScopedServices {
+    match scope_gate(scope, inv, tree) {
+        ScopeGate::Loading => ScopedServices::Loading,
+        ScopeGate::Unresolved => ScopedServices::Unresolved,
+        ScopeGate::Ready => ScopedServices::Rows(scoped_services(
+            rows,
+            scope,
+            inv,
+            loaded_tree(tree).as_ref(),
+        )),
+    }
 }
 
 /// The kind of a selectable row in the compute tree.
@@ -314,7 +359,11 @@ pub struct Pick {
     pub site: String,
     pub cluster: Option<String>,
     pub name: String,
+    /// The position in the cluster's `nodes` or `vms`. Used when the row has no VM ID.
     pub ordinal: usize,
+    /// A VM's Proxmox or NetBox ID. When present it names the VM at any position, so a
+    /// reorder keeps the pick on the same VM.
+    pub vmid: Option<u64>,
 }
 
 /// The key one VM row is listed under: its site, cluster, name, ID and position.
@@ -338,8 +387,12 @@ pub fn after_click(picks: &[Pick], pick: Pick, shift: bool) -> Vec<Pick> {
     if !shift {
         return vec![pick];
     }
-    if picks.contains(&pick) {
-        picks.iter().filter(|p| **p != pick).cloned().collect()
+    if picks.iter().any(|p| same_row(p, &pick)) {
+        picks
+            .iter()
+            .filter(|p| !same_row(p, &pick))
+            .cloned()
+            .collect()
     } else {
         let mut next = picks.to_vec();
         next.push(pick);
@@ -370,10 +423,7 @@ pub fn resolves(inv: &Inventory, pick: &Pick) -> bool {
             .nodes
             .get(pick.ordinal)
             .is_some_and(|n| n.name == pick.name),
-        Kind::Vm => cluster
-            .vms
-            .get(pick.ordinal)
-            .is_some_and(|v| v.name == pick.name),
+        Kind::Vm => vm_of(cluster, pick).is_some(),
     }
 }
 
@@ -387,30 +437,71 @@ pub fn live_picks(inv: &Inventory, picks: &[Pick]) -> Vec<Pick> {
         .collect()
 }
 
+/// The VM a VM pick names in its cluster. A pick with a VM ID finds that VM at any
+/// position, so a reorder keeps it. A pick without one falls back to its position and name.
+pub fn vm_of<'a>(cluster: &'a Cluster, pick: &Pick) -> Option<&'a Vm> {
+    match pick.vmid {
+        Some(id) => cluster.vms.iter().find(|vm| vm.vmid == Some(id)),
+        None => cluster
+            .vms
+            .get(pick.ordinal)
+            .filter(|vm| vm.name == pick.name),
+    }
+}
+
+/// Whether the scope bar can narrow the data yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeGate {
+    /// Every part the scope names can be checked.
+    Ready,
+    /// A part needs the tenant tree, and the tree is still being read.
+    Loading,
+    /// A part needs a source that failed to load, so it cannot be checked honestly.
+    Unresolved,
+}
+
+/// What the scope needs before it can narrow. An org comes from the inventory's own sites
+/// or from the tree. An env comes only from the tree. A site needs neither. An empty scope
+/// needs nothing.
+pub fn scope_gate(scope: &Scope, inv: Option<&Inventory>, tree: &Loaded<Tree>) -> ScopeGate {
+    let tree_ready = matches!(tree, Loaded::Ready(_));
+    let org_known = inv.is_some() || tree_ready;
+    let needs_org = !scope.org.is_empty();
+    let needs_env = scope.env.is_some();
+    if (needs_org && !org_known) || (needs_env && !tree_ready) {
+        return if matches!(tree, Loaded::Loading) {
+            ScopeGate::Loading
+        } else {
+            ScopeGate::Unresolved
+        };
+    }
+    ScopeGate::Ready
+}
+/// True when two picks name the same row. A VM with a VM ID is the same row at any
+/// position. Other rows, and VMs without an ID, are the same when their position and name agree.
+pub fn same_row(a: &Pick, b: &Pick) -> bool {
+    if a.kind != b.kind || a.site != b.site || a.cluster != b.cluster {
+        return false;
+    }
+    match (a.kind, a.vmid, b.vmid) {
+        (Kind::Vm, Some(x), Some(y)) => x == y,
+        _ => a.name == b.name && a.ordinal == b.ordinal,
+    }
+}
+
 /// The VM RAGs one pick stands for: a VM its own, a cluster or a site all of its
 /// VMs. A node stands for none, because the API carries no RAG for a node.
 pub fn pick_rags(inv: &Inventory, pick: &Pick) -> Vec<Rag> {
+    let rag_of = |vm: &Vm| Rag::from_wire(&vm.rag);
     let mut out = Vec::new();
     for site in inv.sites.iter().filter(|s| s.id == pick.site) {
         for cluster in &site.clusters {
-            let in_scope = match pick.kind {
-                Kind::Site => true,
-                Kind::Cluster | Kind::Node | Kind::Vm => {
-                    pick.cluster.as_deref() == Some(cluster.name.as_str())
-                }
-            };
-            if !in_scope {
-                continue;
-            }
-            for (ordinal, vm) in cluster.vms.iter().enumerate() {
-                let counted = match pick.kind {
-                    Kind::Vm => ordinal == pick.ordinal && vm.name == pick.name,
-                    Kind::Cluster | Kind::Site => true,
-                    Kind::Node => false,
-                };
-                if counted {
-                    out.push(Rag::from_wire(&vm.rag));
-                }
+            let this_cluster = pick.cluster.as_deref() == Some(cluster.name.as_str());
+            match pick.kind {
+                Kind::Site => out.extend(cluster.vms.iter().map(rag_of)),
+                Kind::Cluster if this_cluster => out.extend(cluster.vms.iter().map(rag_of)),
+                Kind::Vm if this_cluster => out.extend(vm_of(cluster, pick).map(rag_of)),
+                _ => {}
             }
         }
     }
@@ -547,6 +638,7 @@ mod tests {
             cluster: Some(cluster.into()),
             name: name.into(),
             ordinal,
+            vmid: None,
         }
     }
 
@@ -557,6 +649,7 @@ mod tests {
             cluster: None,
             name: String::new(),
             ordinal: 0,
+            vmid: None,
         }
     }
 
@@ -692,6 +785,7 @@ mod tests {
             cluster: Some("pve-prod".into()),
             name: "pve-prod".into(),
             ordinal: 0,
+            vmid: None,
         };
         assert_eq!(selection_rag(&inv, &[cluster]), Rag::Red);
         assert_eq!(selection_rag(&inv, &[site_pick("dc1")]), Rag::Red);
@@ -707,6 +801,7 @@ mod tests {
             cluster: Some("pve-prod".into()),
             name: "pve-01".into(),
             ordinal: 0,
+            vmid: None,
         };
         assert!(pick_rags(&inv, &node).is_empty());
         assert_eq!(selection_rag(&inv, &[node]), Rag::Grey);
@@ -722,6 +817,7 @@ mod tests {
             cluster: Some("pve-prod".into()),
             name: "pve-prod".into(),
             ordinal: 0,
+            vmid: None,
         };
         assert_ne!(site, cluster);
     }
@@ -946,18 +1042,18 @@ mod tests {
             org: "ops".into(),
             ..Scope::default()
         };
-        let names: Vec<String> = scoped_services(&rows, &ops, Some(&t))
+        let names: Vec<String> = scoped_services(&rows, &ops, None, Some(&t))
             .into_iter()
             .map(|r| r.name)
             .collect();
         assert_eq!(names, ["tududi"]);
         assert_eq!(
-            scoped_services(&rows, &Scope::default(), Some(&t)).len(),
+            scoped_services(&rows, &Scope::default(), None, Some(&t)).len(),
             2,
             "empty scope keeps every row"
         );
         assert!(
-            scoped_services(&rows, &ops, None).is_empty(),
+            scoped_services(&rows, &ops, None, None).is_empty(),
             "without the tree the org is unknown, so no row is claimed for it"
         );
     }
@@ -1000,5 +1096,215 @@ mod tests {
         assert_eq!(count_text(1, "VM", "VMs"), "1 VM");
         assert_eq!(count_text(0, "VM", "VMs"), "0 VMs");
         assert_eq!(count_text(3, "VM", "VMs"), "3 VMs");
+    }
+
+    fn tree_loaded() -> Loaded<Tree> {
+        Loaded::Ready(tree())
+    }
+
+    fn service(name: &str, site: &str) -> ServiceRow {
+        ServiceRow {
+            name: name.into(),
+            site: site.into(),
+            ..ServiceRow::default()
+        }
+    }
+
+    #[test]
+    fn a_vm_pick_with_a_vm_id_survives_a_reorder() {
+        let a = Vm {
+            name: "tududi".into(),
+            vmid: Some(101),
+            rag: "red".into(),
+            ..Vm::default()
+        };
+        let b = Vm {
+            name: "honcho".into(),
+            vmid: Some(202),
+            rag: "green".into(),
+            ..Vm::default()
+        };
+        let site = |vms: Vec<Vm>| Inventory {
+            sites: vec![Site {
+                id: "dc1".into(),
+                clusters: vec![Cluster {
+                    name: "pve-prod".into(),
+                    vms,
+                    ..Cluster::default()
+                }],
+                ..Site::default()
+            }],
+            ..Inventory::default()
+        };
+        let before = site(vec![a.clone(), b.clone()]);
+        let picked = Pick {
+            kind: Kind::Vm,
+            site: "dc1".into(),
+            cluster: Some("pve-prod".into()),
+            name: "tududi".into(),
+            ordinal: 0,
+            vmid: Some(101),
+        };
+        assert!(resolves(&before, &picked));
+
+        // The list is reordered by the next poll: tududi moves to position 1.
+        let after = site(vec![b, a]);
+        assert!(resolves(&after, &picked), "found by VM ID, not by position");
+        assert_eq!(
+            live_picks(&after, std::slice::from_ref(&picked)),
+            vec![picked.clone()]
+        );
+        assert_eq!(
+            pick_rags(&after, &picked),
+            vec![Rag::Red],
+            "the same VM's own RAG, not the VM now at position 0"
+        );
+        let found = vm_of(&after.sites[0].clusters[0], &picked).expect("the VM");
+        assert_eq!(found.vmid, Some(101));
+
+        // The row now renders at position 1. It is still the same row, so a shift-click removes it.
+        let moved = Pick {
+            ordinal: 1,
+            ..picked.clone()
+        };
+        assert!(same_row(&moved, &picked));
+        assert!(after_click(std::slice::from_ref(&picked), moved, true).is_empty());
+    }
+
+    #[test]
+    fn a_vm_pick_without_a_vm_id_falls_back_to_position_and_name() {
+        let a = vm("tududi", "red");
+        let b = vm("honcho", "green");
+        let site = |vms: Vec<Vm>| Inventory {
+            sites: vec![Site {
+                id: "dc1".into(),
+                clusters: vec![Cluster {
+                    name: "pve-prod".into(),
+                    vms,
+                    ..Cluster::default()
+                }],
+                ..Site::default()
+            }],
+            ..Inventory::default()
+        };
+        let picked = vm_pick("dc1", "pve-prod", "tududi", 0);
+        assert!(resolves(&site(vec![a.clone(), b.clone()]), &picked));
+        assert!(
+            !resolves(&site(vec![b, a]), &picked),
+            "with no VM ID, a reorder moves the position to another name, so the pick does not resolve"
+        );
+    }
+
+    #[test]
+    fn services_with_no_tree_and_no_inventory_are_loading_not_empty() {
+        let rows = vec![service("tududi", "dc1")];
+        let scope = Scope {
+            org: "ops".into(),
+            ..Scope::default()
+        };
+        assert_eq!(
+            services_in_scope(&rows, &scope, None, &Loaded::Loading),
+            ScopedServices::Loading,
+            "the scope cannot be checked yet, so the page says so"
+        );
+        assert_eq!(
+            services_in_scope(&rows, &scope, None, &Loaded::Failed),
+            ScopedServices::Unresolved,
+            "a failed tree is a notice, never an empty list"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_site_scope_does_not_wait_for_the_tree() {
+        let rows = vec![service("tududi", "dc1"), service("scratch", "dc2")];
+        assert_eq!(
+            services_in_scope(&rows, &Scope::default(), None, &Loaded::Loading),
+            ScopedServices::Rows(rows.clone()),
+            "an empty scope narrows nothing"
+        );
+        let by_site = Scope {
+            site: Some("dc1".into()),
+            ..Scope::default()
+        };
+        assert_eq!(
+            services_in_scope(&rows, &by_site, None, &Loaded::Loading),
+            ScopedServices::Rows(vec![service("tududi", "dc1")]),
+            "a site is compared by id, so it needs no tree"
+        );
+    }
+
+    #[test]
+    fn an_env_scope_waits_for_the_tree_because_only_the_tree_has_envs() {
+        let rows = vec![service("tududi", "dc1")];
+        let prod = Scope {
+            env: Some("prod".into()),
+            ..Scope::default()
+        };
+        assert_eq!(
+            services_in_scope(&rows, &prod, Some(&inventory()), &Loaded::Loading),
+            ScopedServices::Loading
+        );
+        assert_eq!(
+            services_in_scope(&rows, &prod, Some(&inventory()), &tree_loaded()),
+            ScopedServices::Rows(rows.clone())
+        );
+    }
+
+    #[test]
+    fn the_inventory_org_is_read_before_the_tree_org() {
+        // The inventory says dc1 is in "labs"; the tree says "ops". The inventory is the
+        // answer the services came from, so it wins.
+        let mut inv = inventory();
+        inv.sites[0].org = "labs".into();
+        let rows = vec![service("tududi", "dc1")];
+        let labs = Scope {
+            org: "labs".into(),
+            ..Scope::default()
+        };
+        assert_eq!(
+            services_in_scope(&rows, &labs, Some(&inv), &tree_loaded()),
+            ScopedServices::Rows(rows.clone()),
+            "the inventory's org matches"
+        );
+        let ops = Scope {
+            org: "ops".into(),
+            ..Scope::default()
+        };
+        assert_eq!(
+            services_in_scope(&rows, &ops, Some(&inv), &tree_loaded()),
+            ScopedServices::Rows(vec![]),
+            "the tree's org is not used once the inventory has loaded"
+        );
+    }
+
+    #[test]
+    fn the_inventory_alone_resolves_an_org_scope_while_the_tree_loads() {
+        let rows = vec![service("tududi", "dc1")];
+        let ops = Scope {
+            org: "ops".into(),
+            ..Scope::default()
+        };
+        assert_eq!(
+            services_in_scope(&rows, &ops, Some(&inventory()), &Loaded::Loading),
+            ScopedServices::Rows(rows.clone())
+        );
+    }
+
+    #[test]
+    fn service_org_prefers_the_inventory_site() {
+        let t = tree();
+        let mut inv = inventory();
+        inv.sites[0].org = "labs".into();
+        assert_eq!(service_org("dc1", Some(&inv), Some(&t)), Some("labs"));
+        assert_eq!(
+            service_org("dc1", None, Some(&t)),
+            Some("ops"),
+            "the tree when no inventory"
+        );
+        assert_eq!(
+            service_org("dc9", Some(&inv), Some(&t)),
+            None,
+            "neither names it"
+        );
     }
 }

@@ -10,8 +10,8 @@ use dioxus::prelude::*;
 use super::empty::SERVICES;
 use super::icons::icon;
 use super::inventory::{
-    count_text, loaded_tree, mb_text, meta_of, poll_admin, scoped_services, view, Admin, Snapshot,
-    View, ViewNotice, SEP,
+    count_text, mb_text, meta_of, poll_admin, services_in_scope, view, Admin, ScopedServices,
+    Snapshot, View, ViewNotice, SEP,
 };
 use super::inventory_api::{self, ServiceBody, ServiceRow};
 use super::shell::Ctx;
@@ -134,23 +134,32 @@ fn ServicesContent(snap: Snapshot) -> Element {
         };
     };
     let scope = ctx.scope.read().clone();
-    let tree = loaded_tree(&ctx.tree.read());
-    let rows = scoped_services(&body.services, &scope, tree.as_ref());
+    let tree = ctx.tree.read().clone();
     let meta = body.meta.clone();
     let unconfigured = unconfigured_notice(&meta);
-    rsx! {
-        Freshness { meta, reason }
-        if let Some(message) = unconfigured {
-            Notice { message }
-        }
-        ServicesPanel { rows }
+    match services_in_scope(&body.services, &scope, snap.inventory.as_ref(), &tree) {
+        ScopedServices::Loading => rsx! {
+            Freshness { meta, reason }
+            Notice { message: "Loading scope\u{2026}".to_string() }
+        },
+        ScopedServices::Unresolved => rsx! {
+            Freshness { meta, reason }
+            Notice { message: "The scope could not be loaded for this tenant, so services are not shown.".to_string() }
+        },
+        ScopedServices::Rows(rows) => rsx! {
+            Freshness { meta, reason }
+            if let Some(message) = unconfigured {
+                Notice { message }
+            }
+            ServicesPanel { rows, recorded: body.services.len() }
+        },
     }
 }
 
 /// The domain tiles, the filters and the table. The filters are held here, so
 /// they survive a poll that replaces the rows.
 #[component]
-fn ServicesPanel(rows: Vec<ServiceRow>) -> Element {
+fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize) -> Element {
     let filter = use_signal(ServiceFilter::default);
     let mut filter_w = filter;
     let current = filter.read().clone();
@@ -238,8 +247,10 @@ fn ServicesPanel(rows: Vec<ServiceRow>) -> Element {
                     }
                 }
             }
-            if rows.is_empty() {
+            if recorded == 0 {
                 p { class: "empty", "No service is recorded for this tenant." }
+            } else if rows.is_empty() {
+                p { class: "empty", "No service in this scope." }
             }
         }
     }

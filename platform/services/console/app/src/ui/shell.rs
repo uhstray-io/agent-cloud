@@ -118,6 +118,9 @@ async fn load_tenants(mut ctx: Ctx, saved: Option<String>) {
 pub async fn select_tenant(mut ctx: Ctx, tenant_id: String, saved: Option<String>) {
     ctx.tenant.set(Some(tenant_id.clone()));
     ctx.tree.set(Loaded::Loading);
+    // The old tenant's scope ids must not outlive the switch, so the scope is tenant-wide
+    // before the new tree is read.
+    ctx.scope.set(switch_scope());
     // The inventory of the old tenant must not show under the new name, so it waits for a fresh read.
     ctx.inventory.set(Loaded::Loading);
     let refreshed = tenant_id.clone();
@@ -130,12 +133,27 @@ pub async fn select_tenant(mut ctx: Ctx, tenant_id: String, saved: Option<String
     if ctx.tenant.peek().as_deref() != Some(tenant_id.as_str()) {
         return;
     }
-    match api::parse::<Tree>(&reply) {
-        Some(tree) => {
-            ctx.scope.set(scope::initial(&tree, saved.as_deref()));
-            ctx.tree.set(Loaded::Ready(tree));
-        }
+    let parsed = api::parse::<Tree>(&reply);
+    ctx.scope
+        .set(scope_after_tree(parsed.as_ref(), saved.as_deref()));
+    match parsed {
+        Some(tree) => ctx.tree.set(Loaded::Ready(tree)),
         None => ctx.tree.set(Loaded::Failed),
+    }
+}
+
+/// The scope a tenant switch starts from: tenant-wide (no org, site or env).
+pub fn switch_scope() -> Scope {
+    Scope::default()
+}
+
+/// The scope once the tenant's tree has answered: the saved default when it resolves in
+/// this tree, else the first org. A tree that did not load leaves the tenant-wide scope the
+/// switch set, never the previous tenant's ids.
+pub fn scope_after_tree(tree: Option<&Tree>, saved: Option<&str>) -> Scope {
+    match tree {
+        Some(tree) => scope::initial(tree, saved),
+        None => switch_scope(),
     }
 }
 
@@ -484,5 +502,66 @@ mod tests {
             &["platform-admins-old"]
         )));
         assert!(!is_platform_admin(&claims("s", None, None, None, &[])));
+    }
+
+    fn two_org_tree() -> Tree {
+        use crate::ui::api::{Org, Site};
+        Tree {
+            example: false,
+            orgs: vec![
+                Org {
+                    id: "ops".into(),
+                    name: "Ops".into(),
+                    sites: vec![Site {
+                        id: "dc1".into(),
+                        name: "DC 1".into(),
+                        envs: vec!["prod".into()],
+                    }],
+                },
+                Org {
+                    id: "labs".into(),
+                    name: "Labs".into(),
+                    sites: vec![Site {
+                        id: "dc2".into(),
+                        name: "DC 2".into(),
+                        envs: vec!["dev".into()],
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_switch_starts_tenant_wide() {
+        assert_eq!(switch_scope(), Scope::default());
+        assert!(switch_scope().org.is_empty());
+    }
+
+    #[test]
+    fn a_failed_tree_read_leaves_the_scope_tenant_wide_not_the_previous_tenants() {
+        let previous = Scope {
+            org: "ops".into(),
+            site: Some("dc1".into()),
+            env: Some("prod".into()),
+        };
+        let after = scope_after_tree(None, Some("ops/dc1/prod"));
+        assert_eq!(after, Scope::default(), "a failed tree read is tenant-wide");
+        assert_ne!(after, previous, "the previous tenant's ids do not survive");
+    }
+
+    #[test]
+    fn a_tree_read_applies_the_saved_default_else_the_first_org() {
+        let tree = two_org_tree();
+        assert_eq!(scope_after_tree(Some(&tree), Some("labs")).org, "labs");
+        assert_eq!(
+            scope_after_tree(Some(&tree), None).org,
+            "ops",
+            "the first org"
+        );
+        assert_eq!(
+            scope_after_tree(Some(&tree), Some("gone/away")).org,
+            "ops",
+            "an unresolved saved default falls back to the first org"
+        );
     }
 }

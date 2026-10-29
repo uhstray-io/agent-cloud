@@ -17,15 +17,16 @@ use super::empty::TOPOLOGY;
 use super::icons::icon;
 use super::inventory::{
     after_click, bytes_text, count_text, cpu_percent, live_picks, loaded_tree, mb_text,
-    mem_percent, meta_of, node_key, pick_rags, poll_admin, scoped_inventory, selection_rag,
-    uptime_text, view, vm_key, Admin, Kind, Pick, Snapshot, View, ViewNotice, SEP,
+    mem_percent, meta_of, node_key, pick_rags, poll_admin, same_row, scope_gate, scoped_inventory,
+    selection_rag, uptime_text, view, vm_key, vm_of, Admin, Kind, Pick, ScopeGate, Snapshot, View,
+    ViewNotice, SEP,
 };
 use super::inventory_api::{
     self, Cluster, Device, Flow, FlowsBody, Inventory, NetworkBody, Node, Prefix, Site,
     SourceStatus, Vm, Workflow,
 };
 use super::scope::Scope;
-use super::shell::Ctx;
+use super::shell::{Ctx, Loaded};
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, worst, Freshness, Meter, Notice, Rag,
     RagBadge, StepList,
@@ -84,6 +85,7 @@ fn cluster_pick(site_id: &str, cluster_name: &str) -> Pick {
         cluster: Some(cluster_name.to_string()),
         name: cluster_name.to_string(),
         ordinal: 0,
+        vmid: None,
     }
 }
 
@@ -100,6 +102,7 @@ fn site_pick(site_id: &str) -> Pick {
         cluster: None,
         name: String::new(),
         ordinal: 0,
+        vmid: None,
     }
 }
 
@@ -136,10 +139,7 @@ pub fn detail(inv: &Inventory, pick: &Pick) -> Option<Detail> {
         }
         Kind::Vm => {
             let cluster = cluster_of(site, pick)?;
-            let vm = cluster
-                .vms
-                .get(pick.ordinal)
-                .filter(|v| v.name == pick.name)?;
+            let vm = vm_of(cluster, pick)?;
             Some(vm_detail(vm, &site.name, &cluster.name))
         }
     }
@@ -294,11 +294,6 @@ fn pick_name(pick: &Pick) -> String {
     }
 }
 
-/// The loaded scope tree of the shown tenant, for the scope filter.
-fn tree_now(ctx: &Ctx) -> Option<Tree> {
-    loaded_tree(&ctx.tree.read())
-}
-
 /// The Topology page. The tenant's snapshot feeds the compute tab. The network and
 /// flows tabs read their own admin-only answers, and polling stops for a non-admin.
 #[component]
@@ -355,7 +350,7 @@ fn TopologyBody(
     let mut tab = tab;
     let current = tab();
     let scope = ctx.scope.read().clone();
-    let tree = tree_now(&ctx);
+    let tree = ctx.tree.read().clone();
     let body = match current {
         TopoTab::Compute => rsx! {
             ComputeView { snap, scope, tree, picks }
@@ -385,7 +380,7 @@ fn TopologyBody(
 fn ComputeView(
     snap: Snapshot,
     scope: Scope,
-    tree: Option<Tree>,
+    tree: Loaded<Tree>,
     picks: Signal<Vec<Pick>>,
 ) -> Element {
     let meta = meta_of(&snap).cloned().unwrap_or_default();
@@ -397,6 +392,22 @@ fn ComputeView(
             Notice { message: "The inventory could not be loaded, so the compute tree is not shown.".to_string() }
         };
     };
+    match scope_gate(&scope, Some(&inv), &tree) {
+        ScopeGate::Loading => {
+            return rsx! {
+                Freshness { meta, reason }
+                Notice { message: "Loading scope\u{2026}".to_string() }
+            };
+        }
+        ScopeGate::Unresolved => {
+            return rsx! {
+                Freshness { meta, reason }
+                Notice { message: "The scope could not be loaded for this tenant, so the compute tree is not shown.".to_string() }
+            };
+        }
+        ScopeGate::Ready => {}
+    }
+    let tree = loaded_tree(&tree);
     let inv = scoped_inventory(&inv, &scope, tree.as_ref());
     rsx! {
         Freshness { meta, reason }
@@ -504,7 +515,7 @@ fn ClusterBranch(site_id: String, cluster: Cluster, rag: Rag, picks: Signal<Vec<
                     for (key, ordinal, node) in nodes.iter() {
                         li { key: "{key}",
                             TreeRow {
-                                pick: Pick { kind: Kind::Node, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: node.name.clone(), ordinal: *ordinal },
+                                pick: Pick { kind: Kind::Node, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: node.name.clone(), ordinal: *ordinal, vmid: None },
                                 label: node.name.clone(),
                                 meta: node.status.clone().unwrap_or_else(|| "no status".to_string()),
                                 rag: None,
@@ -520,7 +531,7 @@ fn ClusterBranch(site_id: String, cluster: Cluster, rag: Rag, picks: Signal<Vec<
                     for (key, ordinal, vm) in vms.iter() {
                         li { key: "{key}",
                             TreeRow {
-                                pick: Pick { kind: Kind::Vm, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: vm.name.clone(), ordinal: *ordinal },
+                                pick: Pick { kind: Kind::Vm, site: site_id.clone(), cluster: Some(cluster.name.clone()), name: vm.name.clone(), ordinal: *ordinal, vmid: vm.vmid },
                                 label: vm.name.clone(),
                                 meta: vm_meta(vm),
                                 rag: Some(Rag::from_wire(&vm.rag)),
@@ -556,7 +567,7 @@ fn TreeRow(
     picks: Signal<Vec<Pick>>,
 ) -> Element {
     let mut picks = picks;
-    let selected = picks.read().contains(&pick);
+    let selected = picks.read().iter().any(|p| same_row(p, &pick));
     let clicked = pick.clone();
     rsx! {
         button {
@@ -903,6 +914,7 @@ mod tests {
             cluster: cluster.map(str::to_string),
             name: name.into(),
             ordinal,
+            vmid: None,
         }
     }
 
@@ -1165,5 +1177,47 @@ mod tests {
         );
         // The separator used in keys is not a character a name can carry.
         assert_eq!(SEP, '\u{1f}');
+    }
+
+    #[test]
+    fn a_vm_pick_keeps_its_panel_after_a_reorder() {
+        let a = Vm {
+            name: "tududi".into(),
+            vmid: Some(101),
+            rag: "red".into(),
+            ..Vm::default()
+        };
+        let b = Vm {
+            name: "honcho".into(),
+            vmid: Some(202),
+            rag: "green".into(),
+            ..Vm::default()
+        };
+        let site = |vms: Vec<Vm>| Inventory {
+            sites: vec![Site {
+                id: "dc1".into(),
+                clusters: vec![Cluster {
+                    name: "pve-prod".into(),
+                    vms,
+                    ..Cluster::default()
+                }],
+                ..Site::default()
+            }],
+            ..Inventory::default()
+        };
+        // Picked while tududi was first, then the next poll put honcho first.
+        let picked = Pick {
+            ordinal: 0,
+            vmid: Some(101),
+            ..pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0)
+        };
+        let reordered = site(vec![b, a]);
+        let d = detail(&reordered, &picked).expect("the pick still names a VM");
+        assert_eq!(
+            d.title, "tududi",
+            "the panel shows the picked VM, not the one now first"
+        );
+        assert!(d.rows.iter().any(|(k, v)| *k == "VM ID" && v == "101"));
+        assert_eq!(d.rag, Some(Rag::Red));
     }
 }
