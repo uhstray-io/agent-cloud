@@ -49,3 +49,63 @@ Every step runs through the Semaphore template. Nothing is deployed by hand over
 - [ ] 5.6 Add the templates `Deploy console` (with `dev_variant`, and the survey fields `service_branch` and `deploy_force_recreate`), `Clean Deploy console`, `Deploy console (Local)` and `Clean Deploy console (Local)` to `platform/semaphore/templates.yml`. Publish them with `setup-templates.yml`.
 - [ ] 5.7 Add the console's sub-directory line to `AGENTS.md`, linking `plan/development/17-dispatch-console.md` and the console `README.md`.
 - [ ] 5.8 Validation gate on local-dev through the Semaphore template: scenarios "Deploy builds the image on the host", "Verify checks health and the API gate" and "Deploy converges on re-run" hold.
+
+## Phase 3 checklist: scope and inventory (read-only)
+
+Decisions D22–D25. Every source is all-or-none in the environment. A source that isn't configured answers `"source":"unconfigured"`, the same contract as Phase 2.
+
+- [ ] 6.1 Credentials:
+  - Add a view-only `console` entry to `provision-netbox-automation-token.yml`. It views dcim sites and devices, virtualization clusters and virtual machines, ipam prefixes and IP addresses, and extras tags, and stores `secret/services/netbox:console_api_token`.
+  - Write `provision-console-proxmox-token.yml`, creating the user `console@pve` with role `PVEAuditor` on `/` and a privilege-separated token `console`, stored as `secret/services/proxmox:console_token_id` and `console_token`. It is idempotent and never rotates an existing token.
+  - Add both templates to `templates.yml`.
+- [ ] 6.2 Deploy wiring:
+  - `deploy-console.yml` shared-reads both tokens.
+  - `env.j2` gains `CONSOLE_NETBOX_URL`/`CONSOLE_NETBOX_TOKEN` and `CONSOLE_PROXMOX_URL`/`CONSOLE_PROXMOX_TOKEN_ID`/`CONSOLE_PROXMOX_TOKEN`.
+  - `scope.json.j2` carries each site's optional `netbox_site`.
+  - A new `flows.json.j2` renders the declared flows (D24).
+  - Tests pin the shared reads and the templates.
+- [ ] 6.3 Server:
+  - Write `netbox.rs` and `proxmox.rs` read clients, and an `inventory.rs` aggregator with a 60 s cache.
+  - Routes: `GET /v1/tenants/{t}/inventory`, `GET /v1/tenants/{t}/services`, `GET /v1/tenants/{t}/services/{name}` and `GET /v1/tenants/{t}/flows`, all tenant-scoped (D25).
+  - Unit tests against mock authorities, including the unconfigured, unreachable and partial cases.
+- [ ] 6.4 UI:
+  - The Topology page: sites → clusters → nodes → VMs, with click and shift-click selection and red/amber/green status from Proxmox state and the workflow fields.
+  - The network view (prefixes and addresses) and the data-flows view.
+  - Compute levels, the Services table, service detail, the resource panel and business-domain tiles.
+  - Every status shows an icon and a label. Every per-asset view links to Grafana and draws no chart.
+- [ ] 6.5 Validation gate: on local-dev and in production, every host, VM and service shown exists in NetBox or Proxmox, and computer-use browser tests pass (D30).
+
+## Phase 4 checklist: proposals
+
+Waits for OPA and skynet in production (D29).
+
+- [ ] 7.1 To be detailed when OPA and skynet are deployed in production. See the operator handoffs of 2026-10-29.
+
+## Phase 5 checklist: governance pages
+
+Decisions D27–D28.
+
+- [ ] 8.1 Console AppRole via `manage-approle.yml`: read `secret/services/console/*` and list `secret/metadata/*`. Its credentials go in `secret/services/approles/console`.
+- [ ] 8.2 The Secrets page: metadata only (path, versions, timestamps). A canary test proves no value ever leaves the API.
+- [ ] 8.3 The Access page: Authentik users and groups through a view-only token declared by blueprint, and the role map.
+- [ ] 8.4 The AI Gateway and LLM access pages: `agw_clients` rendered at deploy into `config/gateway.json`, with usage through Grafana (D26). Role pages list only that role's work.
+- [ ] 8.5 The Policy page lists the policy files through the GitHub API. The Tenant and Organization settings pages read business-domain tags as NetBox tags. Request a service shows the catalog.
+- [ ] 8.6 Change controls are disabled, with the reason shown, until Phase 4. Validation gate: the canary test and computer-use tests pass.
+
+## Phase 6 checklist: delivery and telemetry
+
+Decisions D26–D27.
+
+- [ ] 9.1 Write `refresh-console-github-token.yml`, scheduled every 45 minutes: a read-only installation token into `secret/services/console/github:token`.
+- [ ] 9.2 Grafana Viewer service-account token for the console at `secret/services/o11y:console_grafana_token`, provisioned as code.
+- [ ] 9.3 The CI/CD page: reviews, required checks and the promotion path. The required-check names come from `.github/rulesets/protect-main.json` through the GitHub API.
+- [ ] 9.4 The Telemetry page: rollups through the Grafana data-source proxy, with Grafana deep links. No per-asset chart.
+- [ ] 9.5 Validation gate: the check names match the ruleset (test), and computer-use tests pass.
+
+## Phase 7 checklist: harden and promote
+
+- [ ] 10.1 Accessibility: a keyboard-only path through Work, the composer, the stepper and topology selection.
+- [ ] 10.2 Error, permission-denied and unconfigured states on every page.
+- [ ] 10.3 A load test of the API.
+- [ ] 10.4 The plan 17 validation table passes on `dev`. Write the operator test plan `plan/product/dispatch-console/TEST-PLAN.md`.
+- [ ] 10.5 Open the dev → main promotion PR. The merge is the operator's call.
