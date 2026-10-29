@@ -46,11 +46,16 @@ something each job re-does.
   paths enabled, a dedicated build volume mounted as `D:`, and antivirus exclusions for
   the build paths. All pinned, all re-runnable to convergence. A job installs nothing and
   edits nothing on the machine.
-- **The runner runs as a Windows service under a dedicated, non-administrative local
-  account.** Registration reuses the existing credential chain (application key in the
-  secret store, minted on the orchestrator, registration token handed over in memory).
-- **Each job's leftovers are destroyed by a host-configured hook**, including the build
-  volume's short-path directory that the release job uses outside the workspace.
+- **Each job runs under a dedicated, non-administrative local account, one job per
+  runner.** Runners start from just-in-time configurations minted on the orchestrator and
+  stocked root-only on the host, the lifecycle `add-ephemeral-github-runners` built for
+  Linux. No registration token reaches the host.
+- **Every job starts from a reset account.** A supervisor running as `LocalSystem`, not as
+  the job account, stops the account's processes and removes its profile, its work
+  directory and every declared build root (including the release job's short-path
+  `D:\z`) before each runner start, verifies, and rebuilds the profile from a root-only
+  seed. A reset that cannot be verified quarantines the host, in state the job account
+  cannot write.
 - **Egress denial reuses the existing declaration.** The same `firewall_deny_egress` list
   the Linux runners carry is enforced on Windows by the host firewall, through a Windows
   branch of the shared firewall operation rather than a runner-only script.
@@ -102,8 +107,8 @@ introduced by `add-github-actions-runners`.
   that supports Windows over SSH as a non-experimental feature.
 - **Secret store**: one new location for the runner account's generated password and the
   Windows administrative bootstrap password. The application key is reused unchanged.
-- **Private inventory**: one host declaration, in the existing runner group or a sibling
-  group carrying the Windows-specific vars.
+- **Private inventory**: one host declaration, in its own `github_runner_win_svc` group, so
+  no Windows play can select a Linux runner or the reverse.
 - **Licensing**: one Windows Server licence decision, recorded in the declaration (see
   design, Open Questions).
 - **No change to any workflow in this repository.** The `zerds` workflow edits are

@@ -28,7 +28,7 @@ and artefact collection). Their dependencies, step by step:
 | A `D:` volume | `CARGO_TARGET_DIR: D:\z`, chosen because the GPU build's nested CMake scratch path exceeds `MAX_PATH` (260) otherwise | yes, by accident of the image |
 | Long paths enabled | paired with the short path | **no**: the job writes `LongPathsEnabled` into `HKLM` |
 | Antivirus exclusions for the build | the job calls `Add-MpPreference`, "the dominant reason the Windows job runs 3 to 4 times the macOS one" | **no**: the job does it, because the hosted runner is an administrator |
-| NSIS and WiX for `dx bundle` | fetched by the bundler itself into the account's local data directory on first use | fetched at run time (assumption, confirmed by the first release dry run, task 7.4) |
+| NSIS and WiX for `dx bundle` | fetched by the bundler itself into the account's local data directory on first use | fetched at run time; **here they are pinned in the toolchain manifest instead** (D5), and the release dry run proves the bundler fetched nothing (task 7.4) |
 
 **Machine administration the jobs do today.** Four steps change the machine rather than
 the workspace, and each depends on the hosted runner being an administrator:
@@ -106,7 +106,9 @@ storage (`SharedISOs`) that every node can read.
 - **A GPU in the VM.** The Vulkan build needs the SDK's headers, import library and shader
   compiler, not a GPU; the shipped exe falls back to CPU when no Vulkan driver is present.
   No job executes GPU code. PCI passthrough is therefore unnecessary.
-- **Per-job ephemeral VMs.** Recorded as follow-up (D10), not built here.
+- **Per-job ephemeral VMs.** Recorded as follow-up (D10), not built here. A per-job
+  **reset of the runner account** is in scope (D7): it is the Linux ephemeral lifecycle
+  (`add-ephemeral-github-runners`) brought to Windows.
 - **Windows containers.** The runner's `container:` and service-container support is
   Linux only upstream, so there is nothing to configure.
 - **Active Directory.** The host is a standalone server with local accounts; nothing here
@@ -266,8 +268,8 @@ build ends, including on failure.
 **Rebuild cadence.** Because the template is code, rebuilding it is cheap, and a rebuilt
 template carries the latest cumulative update. The template is rebuilt monthly (a
 scheduled orchestrator template), and the runner VM is rebuilt from it on the same
-cadence. That also bounds how long anything a job leaves in the runner account's profile
-can persist (D10).
+cadence. It keeps the machine patched; what a job leaves in the runner account is removed
+far sooner, by the reset before every job (D7).
 
 **Alternatives considered.** *A hand-built golden image* (rejected: it cannot be rebuilt
 by the next person, which is the defect this platform exists to remove); *Packer*
@@ -329,7 +331,8 @@ apply themselves:
 | `D:` build volume | the hosted image's `D:` | the second disk initialised, formatted and lettered `D:`; `D:\z` created with modify rights for the runner account only |
 | Visual Studio Build Tools + Windows SDK | preinstalled on the hosted image | a fixed-version bootstrapper with a checked-in `.vsconfig` listing exactly the workloads and components (C++ build tools, the Windows 11 SDK, CMake is installed separately) |
 | CMake, Git for Windows, LLVM, Strawberry Perl, PowerShell 7, WebView2 runtime, VC++ x64 redistributable | preinstalled on the hosted image | pinned installers; LLVM sets machine `LIBCLANG_PATH` |
-| rustup | preinstalled | installed for the runner account (D6), so `rustup toolchain install` in a job works without elevation |
+| NSIS and WiX (for `dx bundle`) | the bundler downloads them on first use | pinned installers with their digests, installed machine-wide, and placed in the bundler's tool directory in the seed (D7) so it finds them and downloads nothing; task 7.4 fails the dry run if the bundler fetched anything |
+| rustup and the declared Rust toolchains | preinstalled | installed for the runner account at deploy time and captured in the seed (D7), so each job starts with the declared nightly and `rustup toolchain install` in a job works without elevation; whatever a job installs or replaces is discarded with its account |
 
 Git for Windows' `bin` is placed ahead of `System32` on the machine `PATH`, and WSL is not
 installed, so `shell: bash` resolves to Git Bash rather than to the WSL launcher, a
@@ -364,20 +367,19 @@ of `Administrators`, holds the "Log on as a service" right, and has modify right
 the runner home, the runner work directory and `D:\z`. Its password is generated once in
 Ansible memory and stored in the secret store (generate if absent, reuse always), never
 on disk. The runner is installed from the pinned `win-x64` archive, verified against the
-checksum published with that release before extraction (the Linux change's D7), and
-configured unattended with `--runasservice`, `--windowslogonaccount`, the declared name,
-labels and group, `--replace` and `--disableupdate`. The registration token and the
-service account password are passed through the runner's `ACTIONS_RUNNER_INPUT_TOKEN`
-and `ACTIONS_RUNNER_INPUT_WINDOWSLOGONPASSWORD` environment inputs, never as arguments,
-for the reason the Linux `deploy.sh` records: an argument is visible to every local user
-for the life of the process.
+checksum published with that release before extraction (the Linux change's D7), into the
+seed (D7). It is **never configured** with `config.cmd`: each runner starts from a
+just-in-time configuration (D7), passed as the `ACTIONS_RUNNER_INPUT_JITCONFIG`
+environment input, never as an argument, for the reason the Linux `deploy.sh` records: an
+argument is visible to every local user for the life of the process.
 
 **The credential chain is reused, not re-built.** The orchestrator reads the application
 key from `secret/services/github-runner`, signs the assertion, exchanges it for an
-installation token and then a single-use registration token **for this host**, and hands
-it over in memory. The Windows host is denied the secret store by its egress declaration
-(D8), exactly as the Linux hosts are, so it could not fetch the key even if it held a
-credential.
+installation token and mints just-in-time configurations **for this host's runner names**
+with the scheduled stock template from `add-ephemeral-github-runners` (its D3), writing
+them to the host's root-only stock. The Windows host is denied the secret store by its
+egress declaration (D8), exactly as the Linux hosts are, so it could not fetch the key
+even if it held a credential.
 
 **Labels.** The runner applies `self-hosted`, `Windows` and `X64` itself; the declaration
 adds `uhstray-lan`. The Linux runners also carry `uhstray-lan`, so a job that names only
@@ -390,35 +392,63 @@ SERVICE`, a built-in identity shared with other Windows services. A dedicated ac
 the only way to make "the job can read what the runner account can read" a small,
 known set, which is the guarantee the plane's isolation requirement actually makes.
 
-### D7: Each job's leftovers are destroyed by a host-configured hook
+### D7: Every job starts from a reset runner account (the Linux ephemeral lifecycle, on Windows)
 
-**Decision.** `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` points at a PowerShell script rendered by
-Ansible (job hooks accept `.ps1` on Windows). It removes the per-job directories under the
-work directory (keeping `_tool`, `_temp` and `_actions`, as the Linux hook does), empties
-every declared extra build root (`D:\z` by default, as a list so a future workflow's
-extra path is a declaration), and empties the runner account's `TEMP`. Like the Linux
-hook it never fails the job: every step is best effort and logged.
+**Decision.** The Windows runner uses the lifecycle `add-ephemeral-github-runners` built
+for Linux, with Windows mechanisms in place of the Linux ones:
 
-**Why the extra roots matter.** The release job builds into `D:\z`, **outside** the
-workspace. A wipe of the workspace alone would leave a whole release's target directory,
-and anything a job placed in it, for the next job, possibly from another repository. The
-cost is that every job starts cold on `D:\z`, exactly as on a hosted runner; the
-workflow's `rust-cache` restore still works because it restores from the forge's cache
-service, not from the host.
+- **One job per runner, from a just-in-time configuration** (that change's D1 and D3).
+  The orchestrator mints configurations from the application key and stocks them on the
+  host in `C:\ProgramData\github-runner\jit\`, whose access control admits only
+  `SYSTEM` and `Administrators`. No registration token reaches the host, and `config.cmd`
+  never runs on it.
+- **A supervisor that is not the job account.** A Windows service running as
+  `LocalSystem`, whose script lives under `Program Files` (not writable by `ghrunner`),
+  takes the oldest configuration, deletes it from the stock, starts one runner as
+  `ghrunner` with the configuration in `ACTIONS_RUNNER_INPUT_JITCONFIG` (never an
+  argument; the runner removes the variable from its environment), and waits for it to
+  exit after its one job.
+- **A reset before every runner start**, in this order:
+  1. stop every process whose owner is `ghrunner` (CIM `Win32_Process` owner, killed from
+     the supervisor), until none is left; a surviving process is what held files locked
+     under the hook design;
+  2. unload the account's registry hive and delete its profile directory, the runner
+     work directory, every declared build root (`github_runner_windows_build_roots`,
+     `D:\z` by default) and every file `ghrunner` owns under the declared sweep roots;
+  3. verify: no process, no profile, no owned path, each declared root empty;
+  4. recreate the profile from a machine-owned **seed** (the account's home as the deploy
+     built it, with the declared Rust toolchains and the bundler's pinned tools, root-only
+     writable, as in that change's D5), and only then start the runner.
 
-**Processes, stated honestly.** The runner terminates processes a job started, by
-tracking an environment variable it injects; a job can clear that variable and escape
-the tracking. On Windows a surviving process also holds file locks, so the wipe can
-partially fail. The hook logs every path it could not remove and, when anything is left,
-writes a **quarantine marker** in a directory only the runner account and the hooks use.
-A second host-configured hook, `ACTIONS_RUNNER_HOOK_JOB_STARTED`, runs before any step of
-the next job: if the marker exists it retries the wipe, and if anything is still left it
-**fails that job before the job's first step runs**, naming the quarantine. A host with an
-incomplete wipe therefore takes no job that could read the leftovers; it fails closed
-until an operator (or the verify playbook's remediation, which reboots the host to
-release the locks and re-runs the wipe) clears the marker. Verification (task 8.1) reports
-a quarantined runner. As on Linux, no reaper is shipped: one that cannot tell a leftover
-process from the runner's own is more dangerous than the gap.
+  The reset runs **before** each runner start, not after a job, so a host that rebooted
+  in the middle of a job resets on the supervisor's first start before it takes another.
+- **Quarantine is the supervisor's state, not the account's.** A reset that cannot be
+  verified, or `github_runner_max_start_failures` runners in a row that exit without a job,
+  makes the supervisor write its reason under `C:\ProgramData\github-runner\state\`
+  (`SYSTEM` and `Administrators` only) and stop starting runners. A quarantined host takes
+  no job because no runner is running to take one: nothing the job account can write
+  decides it. Verification (task 8.1) reports it; a deploy clears it only after its own
+  reset verifies clean, as on Linux. The job hooks are not part of the isolation and are
+  not used for it.
+
+**Why this, and not the hooks.** The hook design had the job account clean up after
+itself, so the account under suspicion also held the evidence: a surviving job process
+could delete the quarantine marker, and a reboot before the completed hook ran left no
+marker at all, so the next job skipped the wipe. Moving the reset to a separate account,
+running it before every runner start, and keeping quarantine outside the job account's
+reach removes all three gaps by construction, and it reuses a lifecycle already reviewed
+for Linux instead of designing a second one.
+
+**What it costs.** Every job starts cold: the profile and `D:\z` are rebuilt, so the
+workflow's `rust-cache` restore (from the forge's cache service) does the warming, as on a
+hosted runner. The seed copy takes seconds; a job that installs extra tools pays for them
+each time.
+
+**Spike first.** How the supervisor starts a process as `ghrunner` with the configuration
+in its environment (a per-job service entry with an `Environment` value only
+administrators can read, or a scheduled task), and whether a loaded profile hive can always
+be unloaded after the kill, are unverified on this edition and settled by task 1.6 before
+anything depends on them.
 
 ### D8: Inbound default-deny and egress denial on the Windows firewall, from the same declaration
 
@@ -443,13 +473,12 @@ follow-up from the Linux change, and this host is one more reason to do it.
 
 **Decision.** Automatic Windows Update is disabled by policy. A patch playbook
 (`ansible.windows.win_updates`) is launched from the orchestrator. It first **drains** the
-runner: it removes the plane label (`uhstray-lan`) from the runner through the
-organisation API, so no newly queued job can match it, then waits until the runner
-reports no job in progress (bounded by the longest job timeout, 180 minutes). Only then
-does it stop the runner service, install updates, reboot if required, start the runner,
-restore the label and verify the runner is online with its declared labels. A run that
-fails after draining leaves the label off, so the host stays out of rotation rather than
-taking work half-patched, and verification reports the label drift. The monthly template
+host: it tells the supervisor (D7) to start no further runner, then waits until the
+running one, if any, has finished its job (bounded by the longest job timeout, 180
+minutes). Only then does it install updates, reboot if required, let the supervisor reset
+the account and resume, and verify a runner is online with its declared labels. A run that
+fails after draining leaves the supervisor drained, so the host stays out of rotation
+rather than taking work half-patched, and verification reports it. The monthly template
 rebuild (D3) is the other half: a freshly built host starts patched.
 
 **Why.** An automatic reboot in the middle of a three hour release turns into a failed
@@ -459,8 +488,9 @@ safe to launch at any time.
 
 ### D10: Isolation, and what does not hold on Windows
 
-**What holds**, to be verified from inside a job exactly as on Linux: the workspace and
-the extra build roots are destroyed between jobs; the job runs as an account with no
+**What holds**, to be verified from inside a job exactly as on Linux: the runner account,
+its profile (tools included), the workspace and the declared build roots are destroyed and
+rebuilt from the seed before every job (D7); the job runs as an account with no
 administrative rights; the platform interior is unreachable from the host.
 
 **What does not hold, stated plainly.**
@@ -469,19 +499,20 @@ administrative rights; the platform interior is unreachable from the host.
    Linux only, so on Windows every job runs on the host as `ghrunner`. A job can read
    whatever that account can read. Nothing may be placed on this host that all five
    permitted repositories are not entitled to.
-2. **The runner account's profile persists across jobs.** rustup toolchains, `~\.cargo\bin`
-   (where `dx` and `cargo-binstall` land) and the cargo registry are writable by every
-   job. A job could replace a tool that the next job, possibly from another permitted
-   repository, then executes. This is equally true of the Linux runners for undeclared
-   jobs today. It is bounded, not prevented, by the monthly rebuild (D3), and the
-   machine-wide toolchains (D5) are not writable by the account at all.
-3. **A signing secret on this host is visible to later jobs if the wipe fails.** The
-   release job writes `cert.pfx` into the workspace and deletes it at the end of the step;
-   a step that dies in between leaves it for the hook. The hook runs on failure and
-   cancellation, and if it cannot remove the file the quarantine (D7) stops the next job
-   before its first step, so a surviving `cert.pfx` is never readable by a later job.
+2. **Within a job, the job owns its tools.** `~\.cargo\bin` (where `dx` and
+   `cargo-binstall` land), the cargo registry and the rustup toolchains are writable by
+   the job that is running, so a step can replace a tool a later step of **the same job**
+   executes. No later job sees it: the reset discards the profile, and the next job's tools
+   come from the root-only seed (D7). Machine-wide toolchains (D5) are not writable by the
+   account at all.
+3. **A signing secret is exposed to its own job only.** The release job writes `cert.pfx`
+   into the workspace. Every step of that job, including steps of actions it calls, can read
+   it, which is equally true on a hosted runner. A later job cannot: the file is removed by
+   the next reset or, if the reset fails, the host is quarantined and runs nothing.
+   Signing is still kept off this host until the lifecycle has passed its acceptance
+   (Open Question 5).
 
-**The strong fix is a different lifecycle**: a fresh VM cloned from the template per job,
+**The strongest lifecycle** is a fresh VM cloned from the template per job,
 registered with a just-in-time configuration and destroyed afterwards. That is what
 `add-macos-github-runner` builds on Apple hardware, where clones are cheap. On this
 cluster a full clone of a 400 G Windows VM per job is too slow to be practical until
@@ -526,8 +557,10 @@ an `ubuntu:22.04` container on both.
 - **One runner is a queue.** A release and a pull request's check on the same day wait
   for each other. → Accepted; queue time is measured (task 8.3), and a second runner is a
   declaration plus a licence decision.
-- **Persistent profile state can carry a poisoned tool between jobs.** → D10 item 2:
-  bounded by the monthly rebuild, eliminated only by the ephemeral follow-up.
+- **The account reset is new on Windows.** Killing a user's processes, unloading its hive
+  and deleting its profile are standard operations, but the combination has not run on this
+  edition. → Spike first (task 1.6); any reset that cannot be verified quarantines the host
+  (D7), so a fault in it fails closed, not open.
 - **The toolchain manifest drifts from the hosted image.** → Intended (D5). The fallback
   variable covers a job that needs something the manifest lacks, and the manifest is
   where the fix lands.
@@ -594,6 +627,8 @@ exists either way.
    A second runner on crabnebula costs no further licence (Standard covers two VMs on a
    fully licensed host); one on any other node needs that node licensed as well.
 5. **Release signing on this host.** The Authenticode certificate is a repository secret
-   today and is only used when configured. **Recommendation: allow it**, given D10 item 3
-   and the hook's failure-path wipe, but the owner should know that a self-hosted signer
-   is a host the certificate's private key passes through.
+   today and is only used when configured. **Recommendation: not on this host until the
+   reset lifecycle (D7) has passed its acceptance** (task 8.7): until then the signing step
+   runs only on hosted runners (`if: runner.environment == 'github-hosted'`, the D11
+   pattern), so self-hosted release builds are unsigned. After acceptance, allow it, knowing
+   that a self-hosted signer is a host the certificate's private key passes through.

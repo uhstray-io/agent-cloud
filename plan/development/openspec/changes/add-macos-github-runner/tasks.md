@@ -3,9 +3,11 @@
 - [ ] 0.1 Get the owner's answers to design Open Questions 1 to 5 (purchase, CPU bin,
       placement, FileVault, separate App). Nothing below that spends money or touches
       the organisation's GitHub settings starts before 0.1.
-- [ ] 0.2 Create one feature branch from `dev`:
-      `git checkout dev && git pull && git checkout -b feat/macos-github-runner`, and
-      confirm `make git-setup` has been run in the clone.
+- [ ] 0.2 Create or reuse one feature branch from `dev`, safely re-runnable:
+      `git checkout dev && git pull && { git show-ref --verify --quiet
+      refs/heads/feat/macos-github-runner && git checkout feat/macos-github-runner ||
+      git checkout -b feat/macos-github-runner; }`, and confirm `make git-setup` has been
+      run in the clone.
 - [ ] 0.3 Read `add-github-actions-runners` and `add-windows-github-runner`. This change
       reuses their group, labels, credential helper and egress declaration and must not
       fork them.
@@ -115,7 +117,9 @@
       owned by the supervisor account) from the secret store, render the supervisor's
       configuration and launchd service, start it, verify both slots register.
 - [ ] 4.5 Tests: the slot-limit refusal; the JIT configuration never appears in an
-      argument position on the host; a VM is deleted when the runner exits non-zero and
+      argument position on the host or in the guest (the runner's command line inside the
+      VM, read while a job runs), and is gone from the guest runner's environment once it
+      has started; a VM is deleted when the runner exits non-zero and
       when the supervisor is killed mid-job and restarted.
 - [ ] 4.6 Validation gate: spec scenarios **"An over-limit declaration is refused"** and
       **"A cancelled job's machine is destroyed"** verified (4.5 plus a live cancellation).

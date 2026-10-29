@@ -112,29 +112,53 @@ serve both operating systems; a Windows-only copy of the list MUST NOT exist.
 ### Requirement: Job cleanup covers every declared build root, not only the workspace
 
 On a runner whose workflows build outside the job workspace, every such directory SHALL
-be declared, and the host-configured job-completed hook SHALL empty each declared
-directory and the runner account's temporary directory after every job, including on
-failure and cancellation.
+be declared. Before every runner start, a supervisor that is not the job account SHALL
+stop every process of the runner account, remove its profile, its work directory and
+every declared build root, verify that nothing of the account remains, and rebuild the
+profile from a machine-owned seed. A runner SHALL NOT start until that verification
+passes.
 
 #### Scenario: A release's target directory does not survive into the next job
 
 - **GIVEN** a job that writes into a declared build root outside its workspace
-- **WHEN** the next job runs on the same runner
+- **AND** the reset before the next runner start verifies clean
+- **WHEN** the next job runs on the same runner host
 - **THEN** that build root is empty at the start of the next job
 
-### Requirement: An incomplete cleanup quarantines the runner
+#### Scenario: A tool replaced by one job is not run by the next
 
-A cleanup that could not remove everything SHALL make the runner ineligible to run job
-steps: the next job on that runner MUST fail before its first step unless a retried wipe
-succeeds, and verification SHALL report the runner as quarantined.
+- **GIVEN** a job that replaces an executable in the runner account's profile
+- **WHEN** the next job runs on the same runner host
+- **THEN** the next job runs the seed's copy of that executable, not the replacement
 
-#### Scenario: An incomplete wipe quarantines the runner
+#### Scenario: An abrupt reboot does not skip the reset
 
-- **GIVEN** a job that leaves a file locked by a surviving process, so the wipe is
-  incomplete
-- **WHEN** the next job is dispatched to that runner and the retried wipe also fails
-- **THEN** that job fails before its first step runs, the leftover file is never readable
-  by it, and verification reports the runner as quarantined
+- **GIVEN** a host that loses power while a job is running
+- **WHEN** the host starts again
+- **THEN** the supervisor resets the runner account before any runner starts, so no job
+  sees what the interrupted job left
+
+### Requirement: An unverifiable reset quarantines the runner host
+
+A reset that cannot be verified SHALL make the host take no job: the supervisor MUST NOT
+start a runner, its quarantine state SHALL be stored where the runner account cannot
+write, and verification SHALL report the host as quarantined. Only a reset that verifies
+clean MAY clear the quarantine.
+
+#### Scenario: A surviving locked file quarantines the host
+
+- **GIVEN** a job that leaves a file locked by a process the reset cannot stop, so the
+  reset does not verify
+- **WHEN** the supervisor would start the next runner
+- **THEN** no runner starts, no job is dispatched to the host, the leftover file is never
+  readable by a later job, and verification reports the host as quarantined
+
+#### Scenario: The job account cannot clear the quarantine
+
+- **GIVEN** a quarantined host
+- **WHEN** a process running as the runner account attempts to remove or rewrite the
+  quarantine state
+- **THEN** the attempt fails for lack of rights, and the host stays quarantined
 
 ### Requirement: A workflow selects the operating system explicitly
 

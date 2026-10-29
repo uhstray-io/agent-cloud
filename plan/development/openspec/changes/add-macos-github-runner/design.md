@@ -216,7 +216,14 @@ App key in the platform's own code path.
 **Decision.** The supervisor mints a just-in-time configuration per VM: it signs the App
 assertion with the platform helper, exchanges it for an installation token, then calls
 `generate-jitconfig` with the VM's name, the runner group's id and the declared labels.
-The configuration is passed into the VM over SSH standard input and used once. The App
+The configuration is passed into the VM over SSH standard input and used once. Inside the
+guest the runner is started with the configuration in the `ACTIONS_RUNNER_INPUT_JITCONFIG`
+environment input, never with `--jitconfig`: the runner removes that variable from its
+own environment once read, whereas an argument stays in the process's command line, which
+every local user can read for the life of the process. This is the input the Linux
+ephemeral supervisor uses (`add-ephemeral-github-runners`). The image pins a runner
+version that clears the variable (2.336.0 or later); task 4.5 tests the guest's process
+arguments, not only the host's. The App
 private key is placed on the host by Ansible (secret store to Ansible memory to a `0400`
 file owned by the supervisor account), and **never enters a VM**.
 

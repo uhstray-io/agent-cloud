@@ -1,8 +1,10 @@
 ## 0. Branch and working ground
 
-- [ ] 0.1 Create one feature branch for the implementation from `dev`:
-      `git checkout dev && git pull && git checkout -b feat/windows-github-runner`. All
-      work below lands on it: one `feat` to `dev` PR, one `dev` to `main` promotion.
+- [ ] 0.1 Create or reuse one feature branch for the implementation from `dev`, safely
+      re-runnable: `git checkout dev && git pull && { git show-ref --verify --quiet
+      refs/heads/feat/windows-github-runner && git checkout feat/windows-github-runner ||
+      git checkout -b feat/windows-github-runner; }`. All work below lands on it: one
+      `feat` to `dev` PR, one `dev` to `main` promotion.
 - [ ] 0.2 Confirm `make git-setup` has been run in this clone (`core.hooksPath` is
       `.githooks`, `merge.ours.driver` is set), so the secret-scanning hooks are active.
 - [ ] 0.3 Read `add-github-actions-runners` (design D1 to D9 and its spec) and
@@ -39,7 +41,14 @@ under the decision it settles.
 - [ ] 1.5 From the orchestrator, connect to the spike VM over SSH with
       `ansible_shell_type: powershell` and the management key, and run
       `ansible.windows.win_ping`, `win_package` and `win_regedit` once each.
-- [ ] 1.6 Validation gate: every unknown in the design's Risks section that phase 1 owns
+- [ ] 1.6 The account reset (D7) on the spike VM: from a `LocalSystem` service, start a
+      process as a non-administrative test account with a value in its environment that
+      never appears in its command line; then kill every process of that account, unload
+      its registry hive, delete its profile, and recreate the profile from a seed copy.
+      Record the mechanism that worked for each step (per-job service entry or scheduled
+      task; how a hive held open is released), and whether the reset verifies clean while
+      the account still had a process holding a file open.
+- [ ] 1.7 Validation gate: every unknown in the design's Risks section that phase 1 owns
       is resolved in `design.md` with recorded output, and spec scenario **"The template
       is rebuilt from code"** is shown to be achievable on this cluster (the spike built
       one with no hand interaction with the installer).
@@ -51,14 +60,19 @@ under the decision it settles.
       `template_os: windows`, build from the Windows ISO, the VirtIO ISO and a seed ISO
       generated from `platform/hypervisor/proxmox/windows/autounattend.xml.j2` plus a
       first-logon script, wait for power-off, detach the ISOs, attach a cloud-init drive,
-      convert to a template. Delete the seed ISO from storage in an `always` block.
+      convert to a template. Delete the seed ISO from storage in an `always` block. Name the
+      template from its OS (`windows-server-2025-template`, not the hard-coded
+      `ubuntu-2404-template`), tag it with the OS, and fail before creating anything when
+      the selected name or `template_vmid` already belongs to a VM or template of another
+      OS.
 - [ ] 2.2 The seed carries only the management public key and a random one-time
       administrator password generated in memory for that build (D3). Add a test that
       fails if the rendered answer file contains any value read from the secret store
       other than a `:public_key`.
 - [ ] 2.3 BATS or pytest regression: with `template_os` absent, the requests
       `provision-template.yml` would send are identical to today's (the Ubuntu path is
-      byte-identical).
+      byte-identical), and a Windows build pointed at the Ubuntu template's name or vmid is
+      refused before any request.
 - [ ] 2.4 `proxmox-validate.yml`: when the target declares Windows, check the Windows and
       VirtIO ISOs exist on the ISO storage and report their volume ids.
 - [ ] 2.5 `provision-vm.yml`: add an OS-family branch read from the declaration
@@ -92,9 +106,9 @@ under the decision it settles.
       own resource list, and an address that is free in the inventory, silent to ICMP and
       outside the DHCP range (`validate-address-free.yml`). The declaration is the
       allocation record, as for the Linux runners (their D9).
-- [ ] 3.2 Declare `gh-runner-win-01` in the private inventory: a `github_runner_win_svc`
-      group (or a host in the existing runner group with Windows vars, whichever keeps
-      the shared group vars un-duplicated) carrying `vm_os_family: windows`, crabnebula,
+- [ ] 3.2 Declare `gh-runner-win-01` in the private inventory in its own
+      `github_runner_win_svc` group (not the Linux runner group, so a Windows play can never
+      select a Linux runner and the reverse), carrying `vm_os_family: windows`, crabnebula,
       16 cores, 32768 MB, a 150 G system disk and a 250 G data disk, the address, tags,
       `ansible_connection: ssh`, `ansible_shell_type: powershell`, and a comment
       recording why this node and this size (design D2).
@@ -124,10 +138,14 @@ under the decision it settles.
       (`generate-service-ssh-key.yml`).
 - [ ] 4.3 Run `provision-template.yml -e template_os=windows` targeting crabnebula from
       Semaphore. Confirm the template exists on crabnebula and the seed ISO is gone.
-- [ ] 4.4 Run `provision-vm.yml` for `gh-runner-win-01`. Confirm the clone is local to
-      crabnebula, has both disks, and comes up with its declared hostname and address.
+- [ ] 4.4 Run `provision-vm.yml` for `gh-runner-win-01` with `target_host:
+      gh-runner-win-01` set explicitly (required whenever the group has more than one
+      host). Confirm the clone is local to crabnebula, has both disks, and comes up with
+      its declared hostname and address.
 - [ ] 4.5 Run `verify-host-access.yml`, `distribute-ssh-keys.yml`, `verify-host-access.yml`
-      again, then `harden-ssh.yml`, then `apply-firewall.yml`.
+      again, then `harden-ssh.yml`, then `apply-firewall.yml`, each scoped to
+      `github_runner_win_svc` and limited to `gh-runner-win-01`. Each Windows branch refuses
+      to run against a host whose `vm_os_family` is not `windows`.
 - [ ] 4.6 From the host, attempt to reach the secret store, a hypervisor and the
       orchestrator; each must be blocked. Confirm the forge, the Rust distribution server
       and one toolchain vendor are reachable. From the network, enumerate the host's
@@ -165,34 +183,37 @@ under the decision it settles.
 
 - [ ] 6.1 Decide, by size, whether the Windows install lives in a branch of
       `deploy-github-runner.yml` or in a sibling playbook composed from the same
-      credential task (`tasks/mint-github-runner-token.yml`). The credential part must be
-      shared either way; record the decision in the playbook header.
-- [ ] 6.2 Create the `ghrunner` account (not in `Administrators`, "Log on as a service"
-      granted), its password generated if absent and stored in the secret store, never
-      written to disk.
+      credential and stock tasks as `add-ephemeral-github-runners`. The minting and the
+      stock must be shared either way; record the decision in the playbook header.
+- [ ] 6.2 Create the `ghrunner` account (not in `Administrators`), its password generated
+      if absent and stored in the secret store, never written to disk.
 - [ ] 6.3 Install the pinned `win-x64` runner archive, verified against the checksum
-      published for that release before extraction; abort on mismatch.
-- [ ] 6.4 Configure with `--runasservice`, `--windowslogonaccount`, the declared name,
-      labels and group, `--replace`, `--disableupdate`; the registration token and the
-      account password supplied as `ACTIONS_RUNNER_INPUT_TOKEN` and
-      `ACTIONS_RUNNER_INPUT_WINDOWSLOGONPASSWORD`, never as arguments. Install rustup for
-      the runner account.
-- [ ] 6.5 Render the job-completed hook (`.ps1`, D7): remove per-job work directories
-      (keeping `_tool`, `_temp`, `_actions`), empty each declared build root and the
-      account's `TEMP`, log every path it could not remove, write the quarantine marker
-      when anything is left, and always exit 0. Render the job-started hook (D7): if the
-      marker exists, retry the wipe; if anything is still left, fail the job before its
-      first step, naming the quarantine.
-- [ ] 6.6 Tests: the token never appears in an argument position; the hook empties the
-      build roots on success and failure paths; the completed hook exits 0 and writes the
-      marker when a path is locked; the started hook fails the job while the marker and the
-      leftover remain, and passes once the retry succeeds.
-- [ ] 6.7 Add or extend the Semaphore templates (deploy, de-register, verify), run the
-      deploy from Semaphore, then re-run it unchanged.
-- [ ] 6.8 Validation gate: spec scenarios **"A runner registers without an operator
-      handling a token"** and **"Registration is re-runnable"** (from
-      `add-github-actions-runners`) verified for the Windows runner, and the runner shows
-      in the group with labels `self-hosted, Windows, X64, uhstray-lan`.
+      published for that release before extraction; abort on mismatch. Never run
+      `config.cmd`. Install rustup and the declared toolchains for the account, and place
+      the pinned NSIS and WiX where the bundler looks for them.
+- [ ] 6.4 Build the seed from the deployed account home (D7): copy it to a root-only
+      location, drop per-job state, refuse if any registration file is present.
+- [ ] 6.5 Install the supervisor (D7): a `LocalSystem` service whose script is under
+      `Program Files`; the stock and state directories under `C:\ProgramData\github-runner`
+      with access for `SYSTEM` and `Administrators` only; the reset (kill the account's
+      processes, unload its hive, remove its profile, work directory and declared build
+      roots, verify, rebuild from the seed) before every runner start; the runner started
+      as `ghrunner` with `ACTIONS_RUNNER_INPUT_JITCONFIG`, using the mechanism task 1.6 kept;
+      quarantine on an unverifiable reset or on `github_runner_max_start_failures` empty
+      runs.
+- [ ] 6.6 Extend the scheduled stock template (`add-ephemeral-github-runners`, D3) to stock
+      the Windows host's configurations, with the same age limit and record pruning.
+- [ ] 6.7 Tests: the configuration never appears in an argument position or in a file the
+      account can read after start; the reset removes a planted profile file, a planted
+      build-root file and a planted process, and verifies; an unverifiable reset writes the
+      quarantine and starts no runner; the job account cannot write the state directory;
+      the supervisor resets on its first start (the reboot case) before starting a runner.
+- [ ] 6.8 Add or extend the Semaphore templates (deploy, drain, verify), run the deploy from
+      Semaphore, then re-run it unchanged.
+- [ ] 6.9 Validation gate: the runner shows in the group with labels
+      `self-hosted, Windows, X64, uhstray-lan`, one job per runner name, and spec
+      scenarios **"An abrupt reboot does not skip the reset"** and **"The job account
+      cannot clear the quarantine"** verified on the live host.
 
 ## 7. Prove it with real work
 
@@ -202,15 +223,17 @@ under the decision it settles.
       a hypervisor and the orchestrator are unreachable; attempts a machine-wide install,
       an `HKLM` write and `Add-MpPreference`, asserting each fails; writes a marker into
       the workspace and into `D:\z`.
-- [ ] 7.2 Run it twice; the second run asserts both markers are absent. Run a Linux job
+- [ ] 7.2 Run it twice; the second run asserts both markers are absent, and that a marker
+      executable the first run placed in `~\.cargo\bin` is not the one the second run finds. Run a Linux job
       naming the plane label without the OS label and record where it lands, then confirm
       the Windows job never lands on a Linux runner.
 - [ ] 7.3 On a `zerds` branch, set the job's `runs-on` to the self-hosted labels and gate
       the four machine-administration steps with
       `if: runner.environment == 'github-hosted'` (D11). Run `ci.yml` `windows-check`.
 - [ ] 7.4 On the same branch, run a full `release.yml` dry run (`workflow_dispatch`,
-      platforms `windows`, GPU on). Record: whether `dx bundle` fetched NSIS and WiX on its
-      own; that the installer contains every GPU DLL; that `llama.dll`, `ggml-base.dll`
+      platforms `windows`, GPU on). Assert that `dx bundle` downloaded nothing (it used the
+      pinned NSIS and WiX), and that the signing step was skipped on the self-hosted runner
+      (Open Question 5). Record that the installer contains every GPU DLL; that `llama.dll`, `ggml-base.dll`
       and `ggml.dll` import `VCRUNTIME140.dll`; and that the shipped `ggml` CPU variant set
       matches a hosted build of the same commit (the AVX2 risk).
 - [ ] 7.5 Record wall time per step against the hosted figures in the design, peak memory,
@@ -228,10 +251,10 @@ under the decision it settles.
 ## 8. Verification, operations and documentation
 
 - [ ] 8.1 Extend `verify-github-runners.yml` (or its equivalent) to cover the Windows
-      runner: registered, online, labels, and quarantine state from 6.5, with a
-      remediation mode that reboots the host to release locks, re-runs the wipe and clears
-      the marker only when it succeeds. Prove the quarantine with a test job that holds a
-      file open from a background process.
+      runner: online, labels, stock level, and the supervisor's quarantine state (6.5),
+      with a remediation mode that reboots the host and clears the quarantine only when the
+      supervisor's reset then verifies clean. Prove the quarantine with a test job that
+      leaves a process holding a file open, and prove a job cannot clear it.
 - [ ] 8.2 Add the patch playbook (D9): drains first (removes the plane label through the
       organisation API, waits until no job is in progress), then stops the service,
       `win_updates`, reboots if needed, starts the runner, restores the label and verifies
@@ -250,7 +273,9 @@ under the decision it settles.
 - [ ] 8.6 Ask the user before opening the `zerds` pull request (user-gated, like every
       PR); on approval, open the one that makes the self-hosted runner the default via
       `vars.WINDOWS_RUNNER` (D11), with the hosted fallback documented in the workflow.
-- [ ] 8.7 Validation gate: spec scenarios **"An incomplete wipe quarantines the runner"** (8.1),
+- [ ] 8.7 Validation gate (the acceptance Open Question 5 waits on): spec scenarios
+      **"A surviving locked file quarantines the host"** (8.1), **"A tool replaced by one
+      job is not run by the next"** (7.2),
       **"Verification detects a runner that is registered but not online"** for the
       Windows runner, and **"A licensed host is not placed off its licensed node"** (2.5,
       re-run against the real declaration) verified.
