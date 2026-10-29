@@ -28,9 +28,19 @@ pub struct NetboxData {
     pub prefixes: Vec<NbPrefix>,
 }
 
+/// A device at a site. Site-scoped, so it is safe in a tenant answer.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NbDevice {
+    pub name: Option<String>,
+    /// The device role's name.
+    pub role: Option<String>,
+    pub status: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NbSite {
     pub clusters: Vec<NbCluster>,
+    pub devices: Vec<NbDevice>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,7 +181,11 @@ async fn fetch_site(
             vms: vms.into_iter().map(vm_from).collect(),
         });
     }
-    Ok(NbSite { clusters })
+    let devices: Vec<DeviceRow> = list(http, config, "/api/dcim/devices/", &by_site).await?;
+    Ok(NbSite {
+        clusters,
+        devices: devices.into_iter().map(device_from).collect(),
+    })
 }
 
 async fn list<T: DeserializeOwned>(
@@ -279,6 +293,18 @@ struct WorkflowFields {
 }
 
 #[derive(Deserialize)]
+struct NameRef {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DeviceRow {
+    name: Option<String>,
+    role: Option<NameRef>,
+    status: Option<Choice>,
+}
+
+#[derive(Deserialize)]
 struct PrefixRow {
     id: u64,
     prefix: String,
@@ -304,6 +330,14 @@ fn vm_from(row: VmRow) -> NbVm {
             .map(|tag| tag.name)
             .collect(),
         workflow: Workflow::from_fields(row.custom_fields.unwrap_or_default()),
+    }
+}
+
+fn device_from(row: DeviceRow) -> NbDevice {
+    NbDevice {
+        name: row.name,
+        role: row.role.and_then(|role| role.name),
+        status: row.status.and_then(|choice| choice.value),
     }
 }
 
@@ -412,6 +446,12 @@ pub mod fixtures {
          "primary_ip":null,"tags":null,"custom_fields":null}
     ]}"#;
 
+    /// Devices at site 5: one named hypervisor, one unnamed device with no role or status.
+    pub const DEVICES_SITE5: &str = r#"{"count":2,"next":null,"previous":null,"results":[
+        {"id":21,"name":"pve-01","role":{"id":1,"name":"Hypervisor","slug":"hypervisor"},"status":{"value":"active","label":"Active"}},
+        {"id":22,"name":null,"role":null,"status":null}
+    ]}"#;
+
     /// Prefixes scoped to site 5 (id 31), as `?site_id=5` lists them.
     pub const PREFIXES_SITE5: &str = r#"{"count":1,"next":null,"previous":null,"results":[
         {"id":31,"prefix":"198.51.100.0/24","vlan":{"id":3,"vid":20,"name":"mgmt"},"description":"management"}
@@ -492,6 +532,16 @@ pub mod fixtures {
         })
     }
 
+    async fn devices(State(mock): State<Mock>, headers: HeaderMap, Query(q): Q) -> Response {
+        if let Some(refused) = refuse(&mock, &headers) {
+            return refused;
+        }
+        answer(match q.get("site_id").map(String::as_str) {
+            Some("5") => DEVICES_SITE5,
+            _ => EMPTY,
+        })
+    }
+
     async fn prefixes(State(mock): State<Mock>, headers: HeaderMap, Query(q): Q) -> Response {
         if let Some(refused) = refuse(&mock, &headers) {
             return refused;
@@ -508,6 +558,7 @@ pub mod fixtures {
             .route("/api/dcim/sites/", get(sites))
             .route("/api/virtualization/clusters/", get(clusters))
             .route("/api/virtualization/virtual-machines/", get(vms))
+            .route("/api/dcim/devices/", get(devices))
             .route("/api/ipam/prefixes/", get(prefixes))
             .with_state(mock)
     }
@@ -601,6 +652,24 @@ mod tests {
         assert!(
             site.clusters[0].vms[4].tags.is_empty(),
             "null tags read empty"
+        );
+
+        assert_eq!(site.devices.len(), 2);
+        assert_eq!(
+            site.devices[0],
+            NbDevice {
+                name: Some("pve-01".into()),
+                role: Some("Hypervisor".into()),
+                status: Some("active".into()),
+            }
+        );
+        assert_eq!(
+            site.devices[1],
+            NbDevice {
+                name: None,
+                role: None,
+                status: None,
+            }
         );
 
         // Prefixes: the site-scoped one is attributed; the global one is not.

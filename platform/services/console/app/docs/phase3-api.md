@@ -27,14 +27,15 @@ sit in a tenant-scoped answer (D16, D25). The tenant inventory carries topology 
 
 ## Common envelope
 
-Every inventory, services and network answer starts with these fields:
+Every inventory, services, network and flows answer starts with these fields:
 
 ```json
 {
   "source":     {"netbox": "ok", "proxmox": "unconfigured"},
   "error":      {"netbox": null, "proxmox": null},
   "stale":      false,
-  "updated_at": {"netbox": "2026-10-26T12:01:00Z", "proxmox": null}
+  "updated_at": {"netbox": "2026-10-26T12:01:00Z", "proxmox": null},
+  "links":      {"grafana": "https://grafana.example.test", "grafana_conformance": "https://grafana.example.test/d/service-conformance/service-deployment-conformance"}
 }
 ```
 
@@ -44,6 +45,9 @@ Every inventory, services and network answer starts with these fields:
   holds a URL, a response body or a token.
 - `updated_at.<authority>` is the time of the last successful read, or `null`. It is kept
   across a failed read.
+- `links.grafana` is the Grafana origin from `CONSOLE_GRAFANA_URL`, or `null` when unset.
+  `links.grafana_conformance` is the conformance dashboard under that origin, or `null`. The
+  flows answer carries `links` too. The fields are base-level, so they name no tenant.
 - `stale` is `true` when any configured authority's latest read failed. The data served is then
   the last good read.
 
@@ -73,13 +77,19 @@ The envelope is per authority, not single, so the UI can say which source is dow
               "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync"],
               "workflow": {"steps": {"step-a": "pass", "step-b": "fail"},
                            "failed": ["step-b"], "last_run": "2026-10-26T12:00:00Z"},
-              "rag": "red"
+              "rag": "red",
+              "grafana_url": "https://grafana.example.test/d/service-overview/service-overview?var-service=tududi&var-log_service=tududi"
             }
           ]
         }
+      ],
+      "devices": [
+        {"name": "pve-01", "role": "Hypervisor", "status": "active"},
+        {"name": null, "role": null, "status": null}
       ]
     },
-    {"id": "dc2", "name": "DC 2", "org": "ops", "netbox_site": null, "mapped": false, "clusters": []}
+    {"id": "dc2", "name": "DC 2", "org": "ops", "netbox_site": null, "mapped": false,
+     "clusters": [], "devices": []}
   ]
 }
 ```
@@ -87,7 +97,11 @@ The envelope is per authority, not single, so the UI can say which source is dow
 - `sites` are the tenant's sites in scope-file order, flattened across orgs. `org` is the owning
   org id.
 - `mapped` is `false` when the site declares no `netbox_site`, or NetBox holds no site with that
-  slug, or NetBox is unconfigured or has no data. An unmapped site has `clusters: []`.
+  slug, or NetBox is unconfigured or has no data. An unmapped site has `clusters: []` and
+  `devices: []`.
+- `devices` are the devices NetBox holds at the site. `role` is the device role's name. `name`,
+  `role` and `status` are `null` when NetBox holds none. Devices are site-scoped, so they are
+  safe in a tenant answer.
 - `nodes` are the Proxmox nodes that host this cluster's matched VMs, sorted by name. A node with
   no matched VM of the cluster is not listed. Node units are Proxmox's: `cpu` is a fraction of
   `maxcpu`, `mem`/`maxmem` are bytes, `uptime` is seconds.
@@ -143,11 +157,29 @@ When two VMs of one tenant share a name, the first in list order is returned.
 ## `GET /v1/flows` (admin-only)
 
 ```json
-{"source": "ok", "flows": [{"kind": "oidc", "from": "console", "to": "authentik", "label": "sign-in"}]}
+{"source": "ok", "flows": [{"kind": "oidc", "from": "console", "to": "authentik", "label": "sign-in"}], "links": {"grafana": null, "grafana_conformance": null}}
 ```
 
 `source` is `unconfigured` with `flows: []` when `CONSOLE_FLOWS_FILE` is unset. Each entry is names
 only. An entry with any other key, such as an address, fails startup.
+
+## Grafana links
+
+The console links out to Grafana and never calls it. `src/server/grafana.rs` builds the URLs from
+the dashboards in `platform/services/o11y/deployment/config/grafana/dashboards/*.json`, which
+declare these uids and variables:
+
+| Dashboard | uid | Variables | Used for |
+|---|---|---|---|
+| Service Overview | `service-overview` | `service`, `log_service` | `grafana_url` on every VM and service row |
+| Service deployment conformance | `service-conformance` | none | `links.grafana_conformance` |
+| Agentgateway client view | `agentgateway-client-view` | `identity` | not linked in Phase 3 (no per-VM identity exists) |
+
+- Per-VM: `<base>/d/service-overview/service-overview?var-service=<name>&var-log_service=<name>`,
+  with `<name>` the VM name, encoded as a query value. A name cannot add a parameter.
+- Conformance: `<base>/d/service-conformance/service-deployment-conformance`.
+- A VM gets a `grafana_url` whether or not it is a service. What the dashboard shows for a name
+  with no data is unverified: no live Grafana was read.
 
 ## RAG (one rule, `inventory::rag`)
 
@@ -181,6 +213,7 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | all-or-none; sent as `Authorization: PVEAPIToken=<id>=<secret>` |
 | `CONSOLE_PROXMOX_CA_FILE` | optional PEM bundle added as roots for the Proxmox client only; counts toward the group, so alone it names `CONSOLE_PROXMOX_URL` as missing |
 | `CONSOLE_FLOWS_FILE` | optional JSON array of flow entries |
+| `CONSOLE_GRAFANA_URL` | optional Grafana origin for deep links. Same guard as the other URLs: `https://`, or `http://` only to loopback or RFC1918. Trailing slash trimmed. Unset leaves every link `null` |
 
 - Cleartext `http://` is accepted only for `localhost`, an IPv4 loopback or RFC1918 address, or an
   IPv6 loopback address. Any other `http://` URL fails startup, naming the variable. `https://` is
@@ -196,6 +229,12 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 
 - The NetBox 4.5 prefix filter `?site_id=` is used as the brief gives it. It is unverified against
   a live NetBox: no NetBox server and no NetBox source are in this repository.
+- The Grafana dashboard uids and variable names are read from the repository JSON. The URL path
+  slug (`service-deployment-conformance`) follows the dashboard title. Whether a live Grafana
+  resolves a link whose slug differs from the title is unverified: no live Grafana was read.
+- The NetBox device `role` field name is confirmed by `platform/playbooks/create-netbox-device.yml`,
+  which writes `role` and resolves `device-roles`. The nested role `name` and device `status` value
+  are unverified live.
 - The NetBox VM fields `vcpus`, `memory`, `disk`, `primary_ip`, `tags` and the `custom_fields` shape
   are taken from the brief. `custom_fields` on a VM is confirmed by
   `platform/playbooks/collect-service-conformance.yml`; the other names are unverified live.

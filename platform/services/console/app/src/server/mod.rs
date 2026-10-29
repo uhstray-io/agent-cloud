@@ -3,6 +3,7 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod grafana;
 pub mod inventory;
 pub mod netbox;
 pub mod prefs;
@@ -275,6 +276,7 @@ mod tests {
                 netbox: None,
                 proxmox: None,
                 flows_file: None,
+                grafana_url: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),

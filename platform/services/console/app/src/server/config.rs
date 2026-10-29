@@ -83,6 +83,8 @@ pub struct Config {
     pub proxmox: Option<ProxmoxConfig>,
     /// Data-flow catalogue (JSON array) rendered from inventory declarations. `None` answers `unconfigured`.
     pub flows_file: Option<PathBuf>,
+    /// Grafana origin for deep links, no trailing slash. `None` leaves every link null.
+    pub grafana_url: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -141,6 +143,11 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        let grafana_url = get("CONSOLE_GRAFANA_URL")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| infrastructure_origin("CONSOLE_GRAFANA_URL", &value))
+            .transpose()?;
 
         Ok(Config {
             base_url,
@@ -155,6 +162,7 @@ impl Config {
             netbox,
             proxmox,
             flows_file,
+            grafana_url,
         })
     }
 }
@@ -570,6 +578,44 @@ mod tests {
         env.insert("CONSOLE_FLOWS_FILE", "   ");
         let config = Config::from_lookup(lookup(env)).expect("valid config");
         assert!(config.flows_file.is_none());
+    }
+
+    #[test]
+    fn grafana_url_is_optional_trimmed_and_guarded() {
+        let config = Config::from_lookup(lookup(full_env())).expect("valid config");
+        assert!(config.grafana_url.is_none());
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GRAFANA_URL", "  https://grafana.example.test/  ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert_eq!(
+            config.grafana_url.as_deref(),
+            Some("https://grafana.example.test")
+        );
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GRAFANA_URL", "   ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert!(config.grafana_url.is_none());
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GRAFANA_URL", "http://grafana.example.test");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "CONSOLE_GRAFANA_URL",
+                ..
+            }
+        ));
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GRAFANA_URL", "http://10.20.0.30:3000"); // example RFC1918 address
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert_eq!(
+            config.grafana_url.as_deref(),
+            Some("http://10.20.0.30:3000") // example RFC1918 address
+        );
     }
 
     #[test]

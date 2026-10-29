@@ -1,4 +1,4 @@
-//! Inventory: NetBox sites, clusters, VMs, devices and prefixes, joined to Proxmox live
+//! Inventory: NetBox sites, clusters, VMs and devices, joined to Proxmox live
 //! state by VM name, for the tenant the caller may see (plan 17 D22-D25, task 6.3).
 //!
 //! The refresh task reads both authorities every `REFRESH_INTERVAL` into `InventoryCache`.
@@ -23,7 +23,8 @@ use tower_sessions::Session;
 
 use super::api::{error, unauthenticated};
 use super::auth;
-use super::netbox::{self, NbCluster, NbPrefix, NbVm, NetboxData, Workflow};
+use super::grafana;
+use super::netbox::{self, NbCluster, NbDevice, NbPrefix, NbVm, NetboxData, Workflow};
 use super::proxmox::{self, ProxmoxData, PveGuest, PveNode};
 use super::scope::{Site, Tenant};
 use super::work::{self, rfc3339_now, Source};
@@ -116,6 +117,24 @@ pub struct Meta {
     pub error: Errors,
     pub stale: bool,
     pub updated_at: Stamps,
+    pub links: Links,
+}
+
+/// Deep links out to Grafana. Base-level, so it is safe in every envelope. Each link is
+/// `null` when `CONSOLE_GRAFANA_URL` is unset.
+#[derive(Serialize)]
+pub struct Links {
+    /// The Grafana origin the console was given.
+    pub grafana: Option<String>,
+    /// The service-deployment conformance dashboard under that origin.
+    pub grafana_conformance: Option<String>,
+}
+
+fn links(grafana_base: Option<&str>) -> Links {
+    Links {
+        grafana: grafana_base.map(str::to_string),
+        grafana_conformance: grafana_base.and_then(grafana::service_conformance),
+    }
 }
 
 #[derive(Serialize)]
@@ -136,8 +155,9 @@ pub struct Stamps {
     pub proxmox: Option<String>,
 }
 
-fn meta(cache: &InventoryCache) -> Meta {
+fn meta(cache: &InventoryCache, grafana_base: Option<&str>) -> Meta {
     Meta {
+        links: links(grafana_base),
         source: Sources {
             netbox: cache.netbox.status,
             proxmox: cache.proxmox.status,
@@ -163,8 +183,8 @@ pub struct InventoryBody {
 }
 
 /// One scope site, joined. `mapped` is false when the site has no `netbox_site` or NetBox
-/// holds no site with that slug; an unmapped site has no clusters. The tenant view carries
-/// topology only: prefixes are global and live in `GET /v1/network`, admin-only.
+/// holds no site with that slug; an unmapped site has no clusters or devices. Devices are
+/// site-scoped. Prefixes are global, so they live only in `GET /v1/network`, admin-only.
 #[derive(Serialize)]
 pub struct SiteView {
     pub id: String,
@@ -173,6 +193,7 @@ pub struct SiteView {
     pub netbox_site: Option<String>,
     pub mapped: bool,
     pub clusters: Vec<ClusterView>,
+    pub devices: Vec<NbDevice>,
 }
 
 #[derive(Serialize)]
@@ -201,12 +222,17 @@ pub struct VmView {
     /// `null` when the VM carries no workflow fields.
     pub workflow: Option<Workflow>,
     pub rag: &'static str,
+    /// The per-service Grafana dashboard for this VM's name, or `null` when
+    /// `CONSOLE_GRAFANA_URL` is unset.
+    pub grafana_url: Option<String>,
 }
 
 /// `GET /v1/tenants/{t}/services` row: a VM that carries workflow fields.
 #[derive(Clone, Serialize)]
 pub struct ServiceRow {
     pub name: String,
+    /// Same link as the VM's `grafana_url`.
+    pub grafana_url: Option<String>,
     /// The scope site id the VM sits under.
     pub site: String,
     pub cluster: String,
@@ -271,6 +297,7 @@ impl FlowSet {
 pub struct FlowsBody {
     pub source: Source,
     pub flows: Vec<Flow>,
+    pub links: Links,
 }
 
 /// Reads `CONSOLE_FLOWS_FILE`. A configured file that cannot be read or parsed fails startup.
@@ -342,14 +369,16 @@ struct Join<'a> {
     netbox: Option<&'a NetboxData>,
     proxmox: Option<&'a ProxmoxData>,
     stale: bool,
+    grafana: Option<&'a str>,
 }
 
 impl<'a> Join<'a> {
-    fn of(cache: &'a InventoryCache) -> Self {
+    fn of(cache: &'a InventoryCache, grafana: Option<&'a str>) -> Self {
         Join {
             netbox: cache.netbox.data.as_ref(),
             proxmox: cache.proxmox.data.as_ref(),
             stale: cache.stale(),
+            grafana,
         }
     }
 }
@@ -372,13 +401,15 @@ fn site_view(org: &str, site: &Site, join: &Join<'_>) -> SiteView {
         .netbox_site
         .as_deref()
         .and_then(|slug| join.netbox.and_then(|data| data.sites.get(slug)));
-    let clusters: Vec<ClusterView> = match mapped {
-        Some(nb) => nb
-            .clusters
-            .iter()
-            .map(|cluster| cluster_view(cluster, join))
-            .collect(),
-        None => Vec::new(),
+    let (clusters, devices): (Vec<ClusterView>, Vec<NbDevice>) = match mapped {
+        Some(nb) => (
+            nb.clusters
+                .iter()
+                .map(|cluster| cluster_view(cluster, join))
+                .collect(),
+            nb.devices.clone(),
+        ),
+        None => (Vec::new(), Vec::new()),
     };
     SiteView {
         id: site.id.clone(),
@@ -387,6 +418,7 @@ fn site_view(org: &str, site: &Site, join: &Join<'_>) -> SiteView {
         netbox_site: site.netbox_site.clone(),
         mapped: mapped.is_some(),
         clusters,
+        devices,
     }
 }
 
@@ -404,7 +436,7 @@ fn cluster_view(cluster: &NbCluster, join: &Join<'_>) -> ClusterView {
             if let Some(node) = live.and_then(|guest| guest.node.as_deref()) {
                 placed.insert(node);
             }
-            vm_view(vm, live, join.stale)
+            vm_view(vm, live, join)
         })
         .collect();
     let nodes: Vec<PveNode> = placed
@@ -422,7 +454,7 @@ fn cluster_view(cluster: &NbCluster, join: &Join<'_>) -> ClusterView {
     }
 }
 
-fn vm_view(vm: &NbVm, live: Option<&PveGuest>, stale: bool) -> VmView {
+fn vm_view(vm: &NbVm, live: Option<&PveGuest>, join: &Join<'_>) -> VmView {
     let live_status = live.and_then(|guest| guest.status.clone());
     let (failed, pending) = match &vm.workflow {
         Some(workflow) => (
@@ -447,8 +479,11 @@ fn vm_view(vm: &NbVm, live: Option<&PveGuest>, stale: bool) -> VmView {
             live_status: live_status.as_deref(),
             failed,
             pending,
-            stale,
+            stale: join.stale,
         }),
+        grafana_url: join
+            .grafana
+            .and_then(|base| grafana::service_overview(base, &vm.name)),
     }
 }
 
@@ -460,6 +495,7 @@ fn services_of(sites: &[SiteView]) -> Vec<(ServiceRow, VmView)> {
             for vm in cluster.vms.iter().filter(|vm| vm.workflow.is_some()) {
                 let row = ServiceRow {
                     name: vm.name.clone(),
+                    grafana_url: vm.grafana_url.clone(),
                     site: site.id.clone(),
                     cluster: cluster.name.clone(),
                     live_status: vm.live_status.clone(),
@@ -501,9 +537,9 @@ pub async fn get_inventory(
         Err(response) => return response,
     };
     let cache = app.inventory.read().await;
-    let sites = site_views(tenant, &Join::of(&cache));
+    let sites = site_views(tenant, &Join::of(&cache, app.config.grafana_url.as_deref()));
     Json(InventoryBody {
-        meta: meta(&cache),
+        meta: meta(&cache, app.config.grafana_url.as_deref()),
         sites,
     })
     .into_response()
@@ -520,13 +556,13 @@ pub async fn list_services(
         Err(response) => return response,
     };
     let cache = app.inventory.read().await;
-    let sites = site_views(tenant, &Join::of(&cache));
+    let sites = site_views(tenant, &Join::of(&cache, app.config.grafana_url.as_deref()));
     let services = services_of(&sites)
         .into_iter()
         .map(|(row, _)| row)
         .collect();
     Json(ServicesBody {
-        meta: meta(&cache),
+        meta: meta(&cache, app.config.grafana_url.as_deref()),
         services,
     })
     .into_response()
@@ -543,7 +579,7 @@ pub async fn get_service(
         Err(response) => return response,
     };
     let cache = app.inventory.read().await;
-    let sites = site_views(tenant, &Join::of(&cache));
+    let sites = site_views(tenant, &Join::of(&cache, app.config.grafana_url.as_deref()));
     let Some((service, vm)) = services_of(&sites)
         .into_iter()
         .find(|(row, _)| row.name == name)
@@ -551,7 +587,7 @@ pub async fn get_service(
         return error(StatusCode::NOT_FOUND, "unknown_service");
     };
     Json(ServiceBody {
-        meta: meta(&cache),
+        meta: meta(&cache, app.config.grafana_url.as_deref()),
         service,
         vm,
     })
@@ -579,7 +615,7 @@ pub async fn get_network(State(app): State<SharedState>, session: Session) -> Re
         .map(|data| data.prefixes.clone())
         .unwrap_or_default();
     Json(NetworkBody {
-        meta: meta(&cache),
+        meta: meta(&cache, app.config.grafana_url.as_deref()),
         prefixes,
     })
     .into_response()
@@ -594,6 +630,7 @@ pub async fn get_flows(State(app): State<SharedState>, session: Session) -> Resp
     Json(FlowsBody {
         source: app.flows.source,
         flows: app.flows.flows.clone(),
+        links: links(app.config.grafana_url.as_deref()),
     })
     .into_response()
 }
@@ -900,6 +937,7 @@ mod tests {
                 ca_file: None,
             }),
             flows_file: None,
+            grafana_url: None,
         }
     }
 
@@ -985,11 +1023,17 @@ mod tests {
 
     /// Both stand-ins running, and one refresh done.
     async fn live_state() -> (SharedState, nb::Mock, pve::Mock) {
+        live_state_with(None).await
+    }
+
+    /// Both stand-ins, one refresh, and `CONSOLE_GRAFANA_URL` as given.
+    async fn live_state_with(grafana: Option<&str>) -> (SharedState, nb::Mock, pve::Mock) {
         let nb_mock = nb::Mock::default();
         let pve_mock = pve::Mock::default();
         let nb_addr = nb::serve(nb::router(nb_mock.clone())).await;
         let pve_addr = pve::serve(pve::router(pve_mock.clone())).await;
-        let config = both_sources(&format!("http://{nb_addr}"), &format!("http://{pve_addr}"));
+        let mut config = both_sources(&format!("http://{nb_addr}"), &format!("http://{pve_addr}"));
+        config.grafana_url = grafana.map(str::to_string);
         let state = app_state_with(config, fresh_cache(), FlowSet::unconfigured());
         refresh(&state).await;
         (state, nb_mock, pve_mock)
@@ -1038,6 +1082,8 @@ mod tests {
         assert_eq!(body["source"]["netbox"], "ok");
         assert_eq!(body["source"]["proxmox"], "ok");
         assert_eq!(body["stale"], false);
+        assert!(body["links"]["grafana"].is_null(), "unset base is null");
+        assert!(vm_named(&body, "tududi")["grafana_url"].is_null());
         assert!(body["updated_at"]["netbox"].is_string());
         assert!(body["error"]["netbox"].is_null());
 
@@ -1081,11 +1127,62 @@ mod tests {
         assert!(vm_named(&body, "ghost")["live_status"].is_null());
         assert!(vm_named(&body, "gateway")["workflow"].is_null());
 
-        // Topology only: no devices or prefixes in a tenant answer.
-        assert!(sites[0].get("devices").is_none());
+        // Devices are site-scoped and present; prefixes are global and never in a tenant answer.
+        let devices = sites[0]["devices"].as_array().expect("devices");
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0]["name"], "pve-01");
+        assert_eq!(devices[0]["role"], "Hypervisor");
+        assert_eq!(devices[0]["status"], "active");
+        assert!(devices[1]["name"].is_null());
+        assert!(devices[1]["role"].is_null());
         assert!(sites[0].get("prefixes").is_none());
+        assert_eq!(
+            sites[1]["devices"],
+            serde_json::json!([]),
+            "unmapped site has none"
+        );
         assert!(!text.contains("198.51.100.0/24"), "{text}");
         assert!(!text.contains("192.0.2.0/24"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_grafana_base_becomes_the_links_and_the_per_vm_deep_links() {
+        let base = "https://grafana.example.test";
+        let (state, _, _) = live_state_with(Some(base)).await;
+        let (url, cookie) = signed_in(state.clone(), &["ops"]).await;
+        let expected = "https://grafana.example.test/d/service-overview/service-overview?var-service=tududi&var-log_service=tududi";
+        let conformance =
+            "https://grafana.example.test/d/service-conformance/service-deployment-conformance";
+
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["links"]["grafana"], base);
+        assert_eq!(body["links"]["grafana_conformance"], conformance);
+        assert_eq!(vm_named(&body, "tududi")["grafana_url"], expected);
+        assert!(
+            vm_named(&body, "wiki")["grafana_url"].is_string(),
+            "every VM gets one"
+        );
+
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/services").await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["links"]["grafana"], base);
+        assert_eq!(body["services"][0]["grafana_url"], expected);
+
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/services/tududi").await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["links"]["grafana"], base);
+        assert_eq!(body["vm"]["grafana_url"], expected);
+        assert_eq!(body["service"]["grafana_url"], expected);
+
+        let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
+        let (_, text) = get_json(&admin_url, Some(&admin_cookie), "/v1/network").await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["links"]["grafana"], base);
+        let (_, text) = get_json(&admin_url, Some(&admin_cookie), "/v1/flows").await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["links"]["grafana"], base);
+        assert_eq!(body["links"]["grafana_conformance"], conformance);
     }
 
     #[tokio::test]
@@ -1136,6 +1233,8 @@ mod tests {
             serde_json::json!(["step-b"])
         );
         assert_eq!(body["services"][0]["site"], "dc1");
+        assert!(body["links"]["grafana"].is_null(), "unset base is null");
+        assert!(body["services"][0]["grafana_url"].is_null());
         assert_eq!(body["services"][0]["cluster"], "pve-prod");
         assert_eq!(body["services"][0]["last_run"], "2026-10-26T12:00:00Z");
         assert!(!text.contains("hunter2"), "{text}");
@@ -1310,7 +1409,10 @@ mod tests {
         let (base, cookie) = signed_in(state, &["platform-admins"]).await;
         let (status, text) = get_json(&base, Some(&cookie), "/v1/flows").await;
         assert_eq!(status, 200);
-        assert_eq!(text, r#"{"source":"unconfigured","flows":[]}"#);
+        assert_eq!(
+            text,
+            r#"{"source":"unconfigured","flows":[],"links":{"grafana":null,"grafana_conformance":null}}"#
+        );
 
         let flows = FlowSet::configured(vec![Flow {
             kind: "oidc".into(),
@@ -1323,7 +1425,7 @@ mod tests {
         let (_, text) = get_json(&base, Some(&cookie), "/v1/flows").await;
         assert_eq!(
             text,
-            r#"{"source":"ok","flows":[{"kind":"oidc","from":"console","to":"authentik","label":"sign-in"}]}"#
+            r#"{"source":"ok","flows":[{"kind":"oidc","from":"console","to":"authentik","label":"sign-in"}],"links":{"grafana":null,"grafana_conformance":null}}"#
         );
     }
 }
