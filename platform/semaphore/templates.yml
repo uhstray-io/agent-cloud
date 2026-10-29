@@ -843,6 +843,13 @@ templates:
     playbook: platform/playbooks/provision-console-semaphore-access.yml
     dev_variant: true
 
+  # The Dispatch Console's Grafana token (plan 17, task 8.0a): a Viewer service-account token on
+  # o11y's Grafana, 90-day lifetime, kept at secret/services/o11y:console_grafana_token. Reuses it
+  # until under 30 days remain, then mints a new one. Nothing schedules it: re-run to renew.
+  - name: Provision Console Grafana Token
+    playbook: platform/playbooks/provision-console-grafana-token.yml
+    dev_variant: true
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
