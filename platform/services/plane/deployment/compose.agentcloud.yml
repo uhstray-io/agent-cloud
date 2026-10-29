@@ -60,6 +60,7 @@ services:
       - logs_migrator:/code/plane/logs
   plane-db:
     <<: *always
+    container_name: plane-db
     volumes: !override
       - pgdata:/var/lib/postgresql/data
   plane-redis:

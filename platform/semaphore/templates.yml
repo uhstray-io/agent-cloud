@@ -1862,6 +1862,26 @@ templates:
         type: string
         required: true
 
+  - name: Back Up Plane DB
+    playbook: platform/playbooks/backup-plane-db.yml
+    # Timestamped pg_dump of Plane's Postgres (plane-db) into an owner-only backup dir on the
+    # VM. Run before every Plane release bump and before a clean deploy whose data matters.
+    # Read-only against the database; each run writes a NEW file. Uploads are not in it.
+    dev_variant: true
+
+  - name: Restore Plane DB
+    playbook: platform/playbooks/restore-plane-db.yml
+    # DESTRUCTIVE: overwrites Plane's database with a named dump, through a staging database
+    # (the prior one is kept as plane_prev), and brings the stack back through deploy.sh in an
+    # always: block. The play hard-requires plane_dump_file. The path is not a secret.
+    dev_variant: true
+    survey_vars:
+      - name: plane_dump_file
+        title: "Dump file path"
+        description: "Explicit dump to restore (named in Back Up Plane DB's report). Never 'the latest'."
+        type: string
+        required: true
+
   - name: Provision Seed Environment
     playbook: platform/playbooks/provision-seed-environment.yml
     # Gives ONE declared seed template (isolated_environment in this file) its own

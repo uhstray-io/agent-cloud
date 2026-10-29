@@ -4,7 +4,7 @@
 #
 # Secrets come back from OpenBao unchanged, so the rebuilt stack keeps its keys, but every
 # workspace, project and work item is gone and first-run configuration runs again. Take a
-# backup first if anything in it matters (backup-plane-db.yml, change task 1.6).
+# backup first if anything in it matters (Back Up Plane DB, backup-plane-db.yml).
 #
 # Requires -e confirm_reset=<host> (tasks/clean-service.yml).
 
