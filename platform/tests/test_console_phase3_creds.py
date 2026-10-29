@@ -24,7 +24,7 @@ from pathlib import Path
 import playbook_yaml
 import pytest
 import yaml
-from test_check_mode_contract import CONSOLE_CA
+from test_check_mode_contract import CONSOLE_CA_DIR, CONSOLE_CA_FILE
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -149,14 +149,45 @@ def _proxmox_tasks() -> list[dict]:
     return _tasks(PROXMOX)
 
 
-def _state_gate(when) -> bool:
-    items = when if isinstance(when, list) else [when]
-    return any("_console_state in ['neither', 'stored_absent']" in str(w) for w in items)
+def _proxmox_task(name: str) -> dict:
+    return _named(PROXMOX, name)
+
+
+def _uri(task: dict) -> dict:
+    return task.get("ansible.builtin.uri") or {}
+
+
+def _method(task: dict) -> str | None:
+    return _uri(task).get("method")
+
+
+def _is_login(task: dict) -> bool:
+    return "auth/approle/login" in str(_uri(task).get("url", ""))
+
+
+def _is_store(task: dict) -> bool:
+    return "bao-merge-keys" in str(task.get("ansible.builtin.include_tasks", ""))
+
+
+def _writes() -> list[dict]:
+    return [t for t in _proxmox_tasks()
+            if (not _is_login(t)) and (_method(t) in ("POST", "PUT", "DELETE") or _is_store(t))]
+
+
+def _run_env(tmp_path: Path, playbook: dict, extra_env: dict) -> subprocess.CompletedProcess:
+    path = tmp_path / "harness.yml"
+    path.write_text(yaml.safe_dump([playbook]))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    env.update(extra_env)
+    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False)
 
 
 def test_proxmox_play_is_local_and_refuses_internal_extra_vars():
     play = _proxmox_play()
     assert play["hosts"] == "localhost" and play.get("connection") == "local"
+    assert "vars" not in play, "a play-level vars: block would reach the forced CA write"
     doc = yaml.safe_load(PROXMOX.read_text())
     assert doc[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
 
@@ -174,7 +205,7 @@ def test_proxmox_required_rights_are_the_three_the_source_checks():
 
 
 def test_every_uri_request_in_the_proxmox_play_is_no_log():
-    # Every request carries the admin token or the OpenBao token, so none may print its result.
+    # Every request carries the admin token, the console token or the OpenBao token, so none may print its result.
     uris = [t for t in _proxmox_tasks() if "ansible.builtin.uri" in t]
     assert uris, "no uri tasks found"
     loose = [t.get("name") for t in uris if t.get("no_log") is not True]
@@ -188,57 +219,110 @@ def test_proxmox_debug_tasks_are_visible():
     assert hidden == [], hidden
 
 
-def test_every_write_is_gated_on_the_mint_states_and_never_check_mode():
-    # A write runs only for neither or stored_absent, and never under --check. The OpenBao AppRole login is
-    # a POST that writes nothing: it mints a read token and is exempt by design, so it is not a write here.
-    writes = [t for t in _proxmox_tasks()
-              if "auth/approle/login" not in str((t.get("ansible.builtin.uri") or {}).get("url", ""))
-              and ((t.get("ansible.builtin.uri") or {}).get("method") in ("POST", "PUT")
-                   or ("ansible.builtin.include_tasks" in t
-                       and "bao-merge-keys" in str(t.get("ansible.builtin.include_tasks"))))]
-    assert len(writes) == 5, [t.get("name") for t in writes]
+def test_names_and_assertions_that_print_no_secret_are_visible():
+    # Names of rights and privileges, and the https and audit assertions, print no secret. Hiding them only
+    # hides the reason a run failed.
+    for name in ("Name the admin token's missing rights (names only)", "Report the admin token's rights",
+                 "Refuse a Proxmox URL that is not https", "Name the privileges the console token holds",
+                 "Assert the console token holds only audit privileges"):
+        assert _proxmox_task(name).get("no_log") is not True, name
+
+
+def test_absence_is_read_from_the_list_endpoints_never_from_read_user_or_read_token():
+    # read_user and read_token die for a missing object (HTTP 500), so a single-object GET cannot tell absent
+    # from broken. Presence comes from the lists: GET /access/users and GET /access/users/{userid}/token.
+    gets = {_uri(t).get("url") for t in _proxmox_tasks() if _method(t) == "GET"}
+    assert "{{ _pve_url }}/api2/json/access/users" in gets, gets
+    assert "{{ _pve_url }}/api2/json/access/users/{{ _console_userid }}/token" in gets, gets
+    for url in gets:
+        assert not str(url).endswith("/access/users/{{ _console_userid }}"), url
+        assert not str(url).endswith("/token/{{ _console_tokenid }}"), url
+
+
+def test_the_https_gate_precedes_every_admin_request():
+    names = [t.get("name") for t in _proxmox_tasks()]
+    gate = names.index("Refuse a Proxmox URL that is not https")
+    first_admin = next(i for i, t in enumerate(_proxmox_tasks()) if "_pve_headers" in str(_uri(t).get("headers", "")))
+    assert gate < first_admin, (gate, first_admin)
+    assert _proxmox_task("Refuse a Proxmox URL that is not https")["ansible.builtin.assert"]["that"] == \
+        "_pve_url is match('https://')"
+
+
+def test_every_admin_or_proof_request_verifies_against_the_declared_ca_file():
+    # Nine requests carry the admin token or the console token: list users, list tokens, admin rights,
+    # revoke one token, create user, grant user ACL, mint, grant token ACL, and the console-token proof.
+    uris = [t for t in _proxmox_tasks()
+            if "_pve_headers" in str(_uri(t).get("headers", ""))
+            or "_console_proof_secret" in str(_uri(t).get("headers", ""))]
+    assert len(uris) == 9, [t.get("name") for t in uris]
+    for t in uris:
+        u = _uri(t)
+        assert u.get("validate_certs") is True, t.get("name")
+        assert u.get("ca_path") == CONSOLE_CA_FILE, t.get("name")
+
+
+def test_every_write_is_gated_on_the_mint_decision_or_the_one_revoke_and_never_check_mode():
+    writes = _writes()
+    assert len(writes) == 6, [t.get("name") for t in writes]
     for t in writes:
-        assert _state_gate(t.get("when")), t.get("name")
-        assert "not ansible_check_mode" in str(t.get("when")), t.get("name")
+        when = str(t.get("when"))
+        assert "not ansible_check_mode" in when, t.get("name")
+        assert "_mint" in when or ("_console_state == 'unstored_present'" in when and "_replace" in when), t.get("name")
 
 
-def test_no_delete_request_exists():
-    # Nothing in this play removes a token or an ACL: an operator deletes a token by hand, by name.
-    methods = [(t.get("ansible.builtin.uri") or {}).get("method") for t in _proxmox_tasks()]
-    assert "DELETE" not in methods
+def test_the_only_delete_revokes_one_token_on_the_replace_path():
+    deletes = [t for t in _proxmox_tasks() if _method(t) == "DELETE"]
+    assert len(deletes) == 1, [t.get("name") for t in deletes]
+    url = _uri(deletes[0]).get("url", "")
+    assert url.endswith("/access/users/{{ _console_userid }}/token/{{ _console_tokenid }}"), url
+    assert _uri(deletes[0]).get("status_code") == [200]
+    when = [str(w) for w in deletes[0]["when"]]
+    assert ("_console_state == 'unstored_present'" in when and "_replace" in when
+            and "not ansible_check_mode" in when), when
 
 
 def test_a_live_stored_token_is_never_rotated():
-    # stored_present is the only state that writes nothing. The mint gate names the other two states only.
-    states = _proxmox_vars()
-    assert "_recreate" in states
-    decide = _named(PROXMOX, "Decide the state from what Proxmox and the store hold")["ansible.builtin.set_fact"]
+    # stored_present is the only state that writes nothing. The mint decision names the other states only.
+    decide = _proxmox_task("Decide the state from what Proxmox and the store hold")["ansible.builtin.set_fact"]
     assert "'stored_present' if (_console_stored and _console_token_present)" in decide["_console_state"]
+    mint = _proxmox_task("Decide whether this run mints the console token")["ansible.builtin.set_fact"]["_mint"]
+    assert "_console_state in ['neither', 'stored_absent']" in mint, mint
+    assert "_console_state == 'unstored_present' and _replace" in mint, mint
 
 
-def test_an_unrecoverable_token_is_refused_by_name():
-    that = _named(PROXMOX, "Refuse a Proxmox token the store cannot recover")["ansible.builtin.assert"]["that"]
-    assert "_console_state != 'unstored_present'" in that, that
+def test_an_unstored_live_token_is_refused_unless_the_replace_flag_is_set():
+    that = _proxmox_task("Refuse a Proxmox token the store cannot recover, unless replace is requested")[
+        "ansible.builtin.assert"]["that"]
+    assert "_console_state != 'unstored_present' or _replace" in that, that
+    fail = _proxmox_task("Refuse a Proxmox token the store cannot recover, unless replace is requested")[
+        "ansible.builtin.assert"]["fail_msg"]
+    assert "console_proxmox_token_replace=true" in fail and "exactly" in fail, fail
+
+
+@NEEDS_ANSIBLE
+def test_the_replace_refusal_is_real_and_names_the_flag(tmp_path):
+    task = _proxmox_task("Refuse a Proxmox token the store cannot recover, unless replace is requested")
+    refused = _run_tasks(tmp_path, [task], {"_console_state": "unstored_present", "_replace": False})
+    assert refused.returncode != 0 and "console_proxmox_token_replace=true" in refused.stdout, refused.stdout
+    allowed = _run_tasks(tmp_path, [task], {"_console_state": "unstored_present", "_replace": True})
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
 
 
 def test_a_stored_token_proxmox_no_longer_has_needs_the_recreate_flag():
-    that = _named(PROXMOX, "Refuse a stored token that Proxmox no longer has, unless recreate is requested")[
-        "ansible.builtin.assert"]["that"]
-    assert "_console_state != 'stored_absent'" in that and "_recreate" in that, that
+    assert_task = _proxmox_task("Refuse a stored token that Proxmox no longer has, unless recreate is requested")
+    assert "_console_state != 'stored_absent' or _recreate" in assert_task["ansible.builtin.assert"]["that"]
+    assert "console_proxmox_token_recreate=true" in assert_task["ansible.builtin.assert"]["fail_msg"]
 
 
 def test_token_is_privilege_separated_and_granted_read_only_on_root():
-    tokens = [t for t in _proxmox_tasks() if (t.get("ansible.builtin.uri") or {}).get("method") == "POST"
-              and "/token/" in str((t.get("ansible.builtin.uri") or {}).get("url", ""))]
+    tokens = [t for t in _proxmox_tasks() if _method(t) == "POST" and "/token/" in str(_uri(t).get("url", ""))]
     assert len(tokens) == 1, [t.get("name") for t in tokens]
-    body = tokens[0]["ansible.builtin.uri"]["body"]
-    assert body["privsep"] == 1, body
+    assert tokens[0]["ansible.builtin.uri"]["body"]["privsep"] == 1
 
 
 def test_both_acls_grant_pveauditor_on_root_user_and_token():
-    acls = [t["ansible.builtin.uri"] for t in _proxmox_tasks()
-            if (t.get("ansible.builtin.uri") or {}).get("method") == "PUT"
-            and str((t.get("ansible.builtin.uri") or {}).get("url", "")).endswith("/access/acl")]
+    acls = [_uri(t) for t in _proxmox_tasks()
+            if _method(t) == "PUT" and str(_uri(t).get("url", "")).endswith("/access/acl")]
     assert len(acls) == 2, len(acls)
     for acl in acls:
         assert acl["body"]["path"] == "/" and acl["body"]["roles"] == "PVEAuditor", acl["body"]
@@ -248,9 +332,8 @@ def test_both_acls_grant_pveauditor_on_root_user_and_token():
 
 
 def test_the_user_is_created_without_a_password():
-    create = next(t["ansible.builtin.uri"] for t in _proxmox_tasks()
-                  if (t.get("ansible.builtin.uri") or {}).get("method") == "POST"
-                  and str((t.get("ansible.builtin.uri") or {}).get("url", "")).endswith("/api2/json/access/users"))
+    create = next(_uri(t) for t in _proxmox_tasks() if _method(t) == "POST"
+                  and str(_uri(t).get("url", "")).endswith("/api2/json/access/users"))
     assert "password" not in create["body"], create["body"]
 
 
@@ -262,55 +345,235 @@ def test_the_store_is_written_after_both_acl_grants():
 
 
 def test_the_store_writes_the_id_and_the_secret_through_the_merge_task():
-    store = _named(PROXMOX, "Store the token id and secret at secret/services/proxmox (siblings preserved)")
+    store = _proxmox_task("Store the token id and secret at secret/services/proxmox (siblings preserved)")
     assert store["ansible.builtin.include_tasks"] == "tasks/bao-merge-keys.yml"
     data = store["vars"]["_bm_data"]
     assert set(data) == {"console_token_id", "console_token"}, data
     assert store["vars"]["_bm_path"] == "services/proxmox"
 
 
-def test_the_proxmox_play_never_disables_certificate_validation():
-    # The admin token is never sent over unverified TLS. Grep the raw text, comments included, so no
-    # spelling of the switch can hide in a comment or a task.
+def test_the_proof_uses_the_console_token_and_asserts_audit_privileges_only():
+    proof = _proxmox_task("Prove the stored console token authenticates (read only)")
+    assert _uri(proof)["url"] == "{{ _pve_url }}/api2/json/access/permissions?path=%2F"
+    assert _uri(proof)["headers"]["Authorization"] == \
+        "PVEAPIToken={{ _console_userid }}!{{ _console_tokenid }}={{ _console_proof_secret }}"
+    assert proof.get("no_log") is True and proof.get("check_mode") is False
+    assert "verify" in proof["tags"]
+    assert _proxmox_task("Assert the console token holds only audit privileges")["ansible.builtin.assert"]["that"][1] \
+        == "(_console_privs | select('search', '[.]Audit$') | list | length) == (_console_privs | length)"
+
+
+def test_verify_tags_mark_reads_asserts_and_facts_and_never_a_write():
+    for t in _proxmox_tasks():
+        tags = t.get("tags") or []
+        if _is_login(t):
+            continue
+        if _method(t) in ("POST", "PUT", "DELETE") or _is_store(t):
+            assert "verify" not in tags, t.get("name")
+        elif _method(t) == "GET" or "ansible.builtin.assert" in t or "ansible.builtin.set_fact" in t:
+            assert "verify" in tags, t.get("name")
+
+
+def test_the_header_names_no_local_twin_and_no_dev_only_claim():
     text = PROXMOX.read_text()
-    assert re.search(r"validate_certs\s*:\s*(false|no|0)\b", text, re.IGNORECASE) is None
-
-
-def test_every_admin_header_request_verifies_against_the_declared_ca_file():
-    uris = [t for t in _proxmox_tasks()
-            if "_pve_headers" in str((t.get("ansible.builtin.uri") or {}).get("headers", ""))]
-    assert len(uris) == 7, [t.get("name") for t in uris]
-    for t in uris:
-        u = t["ansible.builtin.uri"]
-        assert u.get("validate_certs") is True, t.get("name")
-        assert u.get("ca_path") == CONSOLE_CA, t.get("name")
+    assert "(Local)" not in text
+    assert "Provision Console Proxmox Token" in text and "(Dev) twin" in text
 
 
 def test_the_ca_gate_comes_before_any_credential_read_and_names_the_var():
     names = [t.get("name") for t in _proxmox_tasks()]
     gate_name = "Require the declared Proxmox CA before any credential is read"
     assert names.index(gate_name) < names.index("Authenticate to OpenBao")
-    assert "console_proxmox_ca_pem" in _named(PROXMOX, gate_name)["ansible.builtin.assert"]["fail_msg"]
+    fail_msg = _proxmox_task(gate_name)["ansible.builtin.assert"]["fail_msg"]
+    assert "console_proxmox_ca_pem" in fail_msg and "required" in fail_msg, fail_msg
 
 
-def test_the_ca_file_is_written_from_the_declared_var_privately_at_the_pinned_path_and_removed_in_always():
-    write_task = _named(PROXMOX, "Write the declared CA to the pinned scratch file")
-    copy = write_task["ansible.builtin.copy"]
+def test_the_ca_directory_is_created_pinned_and_the_ca_file_inside_it():
+    make = _proxmox_task("Create the per-run CA scratch directory")
+    assert make["ansible.builtin.tempfile"] == {
+        "state": "directory", "prefix": ".console-ca-",
+        "path": "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"}, make
+    write = _proxmox_task("Write the declared CA into the per-run scratch directory")
+    copy = write["ansible.builtin.copy"]
     assert copy["content"].startswith("{{ _console_ca_pem"), copy
-    assert copy["dest"] == CONSOLE_CA and copy["mode"] == "0600", copy
-    # Forced under --check, so the write must be delegated to the runner and must not be given vars:.
-    assert write_task["delegate_to"] == "localhost" and write_task["check_mode"] is False, write_task
-    assert "vars" not in write_task, write_task
+    assert copy["dest"] == CONSOLE_CA_FILE and copy["mode"] == "0600", copy
+    assert write["delegate_to"] == "localhost" and write["check_mode"] is False, write
+    assert "vars" not in write and "vars" not in make, (write, make)
     doc = yaml.safe_load(PROXMOX.read_text())
     play = next(p for p in doc if isinstance(p, dict) and "hosts" in p)
-    assert "vars" not in play, "a play-level vars: block would reach the forced CA write"
     tls = next(t for t in play["tasks"] if "block" in t)
     assert "vars" not in tls, tls
     removal_task = tls["always"][0]
-    removal = removal_task["ansible.builtin.file"]
-    assert removal == {"path": CONSOLE_CA, "state": "absent"}, removal
+    assert removal_task["ansible.builtin.file"] == {"path": CONSOLE_CA_DIR, "state": "absent"} or (
+        removal_task["ansible.builtin.file"]["state"] == "absent"
+        and removal_task["ansible.builtin.file"]["path"] == CONSOLE_CA_DIR), removal_task
     assert removal_task["delegate_to"] == "localhost" and removal_task["check_mode"] is False, removal_task
-    assert "when" not in removal_task, removal_task
+
+
+@NEEDS_ANSIBLE
+def test_the_per_run_directory_must_sit_directly_under_the_temp_root(tmp_path):
+    root = Path(os.path.realpath(tmp_path))
+    task = _proxmox_task("Assert the per-run scratch directory sits directly under the temp root")
+    good = root / ".console-ca-good"
+    good.mkdir()
+    ok = _run_env(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                             "vars": {"_ca_dir": {"path": str(good)}}, "tasks": [task]}, {"TMPDIR": str(root)})
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    nested = root / "sub"
+    nested.mkdir()
+    bad = nested / ".console-ca-bad"
+    bad.mkdir()
+    refused = _run_env(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                                  "vars": {"_ca_dir": {"path": str(bad)}}, "tasks": [task]}, {"TMPDIR": str(root)})
+    assert refused.returncode != 0 and "refusing to write into it" in refused.stdout, refused.stdout
+
+
+@NEEDS_ANSIBLE
+def test_the_always_cleanup_removes_the_per_run_directory_and_its_file(tmp_path):
+    scratch = Path(os.path.realpath(tmp_path)) / ".console-ca-cleanup"
+    scratch.mkdir()
+    (scratch / "ca.pem").write_text(CERT_PEM)
+    task = _proxmox_task("Remove the per-run CA scratch directory")
+    proc = _run_env(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                               "vars": {"_ca_dir": {"path": str(scratch)}}, "tasks": [task]}, {})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not scratch.exists()
+
+
+# The membership and state decision, run from the playbook's own tasks against realistic list responses. The
+# list shapes are the ones User.pm returns: index entries carry userid, token_index entries carry tokenid.
+ROOT_USER = {"userid": "root@pam", "enable": 1, "realm-type": "pam"}
+CONSOLE_USER = {"userid": "console@pve", "enable": 1, "realm-type": "pve"}
+CONSOLE_TOKEN = {"tokenid": "console", "privsep": 1, "comment": "Dispatch Console read-only inventory (Phase 3)"}
+OTHER_TOKEN = {"tokenid": "ci-deploy", "privsep": 0}
+FULL_RIGHTS = {"/": {"Realm.AllocateUser": 0, "User.Modify": 1, "Permissions.Modify": 0}}
+
+
+def _listing(*entries) -> dict:
+    return {"status": 200, "json": {"data": list(entries)}}
+
+
+def _decide(tmp_path: Path, variables: dict) -> tuple[str, str, str, str, str]:
+    names = ("Note whether the console user exists", "Note whether the console token exists",
+             "Decide the state from what Proxmox and the store hold",
+             "Name the admin token's missing rights (names only)",
+             "Decide whether this run mints the console token")
+    tasks = [_proxmox_task(n) for n in names]
+    tasks.append({"ansible.builtin.debug": {"msg": "OUT|{{ _console_state }}|{{ _mint }}|{{ _console_user_present }}"
+                                                   "|{{ _console_token_present }}|{{ _missing_rights | join(',') }}"}})
+    base = {"_console_userid": "console@pve", "_console_tokenid": "console", "_recreate": False, "_replace": False,
+            "_required_rights": ["Realm.AllocateUser", "User.Modify", "Permissions.Modify"],
+            "_admin_perms": {"status": 200, "json": {"data": FULL_RIGHTS}}}
+    proc = _run(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                           "vars": {**base, **variables}, "tasks": tasks})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = re.search(r'OUT\|([^"]*)"', proc.stdout)
+    assert out, proc.stdout
+    state, mint, user, token, missing = out.group(1).split("|")
+    return state, mint, user, token, missing
+
+
+@NEEDS_ANSIBLE
+def test_neither_state_from_the_user_list(tmp_path):
+    got = _decide(tmp_path, {"_console_stored": False, "_console_users_list": _listing(ROOT_USER)})
+    assert got == ("neither", "True", "False", "False", ""), got
+
+
+@NEEDS_ANSIBLE
+def test_stored_present_state_from_the_user_and_token_lists(tmp_path):
+    got = _decide(tmp_path, {"_console_stored": True,
+                             "_console_users_list": _listing(ROOT_USER, CONSOLE_USER),
+                             "_console_tokens_list": _listing(CONSOLE_TOKEN)})
+    assert got == ("stored_present", "False", "True", "True", ""), got
+
+
+@NEEDS_ANSIBLE
+def test_stored_absent_state_when_the_token_list_lacks_the_console_token(tmp_path):
+    got = _decide(tmp_path, {"_console_stored": True,
+                             "_console_users_list": _listing(CONSOLE_USER),
+                             "_console_tokens_list": _listing(OTHER_TOKEN)})
+    assert got == ("stored_absent", "True", "True", "False", ""), got
+
+
+@NEEDS_ANSIBLE
+def test_unstored_present_state_when_proxmox_has_the_token_and_the_store_does_not(tmp_path):
+    got = _decide(tmp_path, {"_console_stored": False,
+                             "_console_users_list": _listing(CONSOLE_USER),
+                             "_console_tokens_list": _listing(CONSOLE_TOKEN)})
+    assert got == ("unstored_present", "False", "True", "True", ""), got
+
+
+@NEEDS_ANSIBLE
+def test_unstored_present_mints_only_when_the_replace_flag_is_set(tmp_path):
+    got = _decide(tmp_path, {"_console_stored": False, "_replace": True,
+                             "_console_users_list": _listing(CONSOLE_USER),
+                             "_console_tokens_list": _listing(CONSOLE_TOKEN)})
+    assert got == ("unstored_present", "True", "True", "True", ""), got
+
+
+@NEEDS_ANSIBLE
+def test_a_stored_token_with_no_user_is_stored_absent_and_never_reads_a_token_list(tmp_path):
+    got = _decide(tmp_path, {"_console_stored": True, "_console_users_list": _listing(ROOT_USER)})
+    assert got == ("stored_absent", "True", "False", "False", ""), got
+
+
+@NEEDS_ANSIBLE
+def test_rights_are_read_from_key_presence_so_a_zero_propagate_bit_still_counts(tmp_path):
+    rights = {"/": {"Realm.AllocateUser": 0, "User.Modify": 0, "Permissions.Modify": 0}}
+    got = _decide(tmp_path, {"_console_stored": False, "_console_users_list": _listing(ROOT_USER),
+                             "_admin_perms": {"status": 200, "json": {"data": rights}}})
+    assert got[4] == "", got
+    short = {"/": {"User.Modify": 1}}
+    got = _decide(tmp_path, {"_console_stored": False, "_console_users_list": _listing(ROOT_USER),
+                             "_admin_perms": {"status": 200, "json": {"data": short}}})
+    assert got[4] == "Realm.AllocateUser,Permissions.Modify", got
+
+
+@NEEDS_ANSIBLE
+def test_the_proof_passes_for_audit_privileges_and_refuses_anything_else(tmp_path):
+    names = ("Name the privileges the console token holds", "Assert the console token holds only audit privileges")
+    tasks = [_proxmox_task(n) for n in names]
+    audit = {"status": 200, "json": {"data": {"/": {"Sys.Audit": 1, "VM.Audit": 0, "Datastore.Audit": 1}}}}
+    ok = _run(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                         "vars": {"_console_perms": audit}, "tasks": tasks})
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    wide = {"status": 200, "json": {"data": {"/": {"Sys.Audit": 1, "Permissions.Modify": 0}}}}
+    refused = _run(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                              "vars": {"_console_perms": wide}, "tasks": tasks})
+    assert refused.returncode != 0 and "audit privilege" in refused.stdout, refused.stdout
+    empty = {"status": 200, "json": {"data": {}}}
+    none_held = _run(tmp_path, {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                                "vars": {"_console_perms": empty}, "tasks": tasks})
+    assert none_held.returncode != 0, none_held.stdout
+
+
+@NEEDS_ANSIBLE
+def test_a_plain_http_url_is_refused_before_any_admin_request(tmp_path):
+    task = _proxmox_task("Refuse a Proxmox URL that is not https")
+    plain = _run_tasks(tmp_path, [task], {"_pve_url": "http://pve.example.test:8006"})
+    assert plain.returncode != 0 and "must start with https://" in plain.stdout, plain.stdout
+    tls = _run_tasks(tmp_path, [task], {"_pve_url": "https://pve.example.test:8006"})
+    assert tls.returncode == 0, tls.stdout + tls.stderr
+
+
+@NEEDS_ANSIBLE
+def test_the_recreate_refusal_is_real_in_check_mode(tmp_path):
+    # The assert runs in check mode too, and refuses stored_absent unless recreate is set.
+    task = _proxmox_task("Refuse a stored token that Proxmox no longer has, unless recreate is requested")
+    variables = {"_console_state": "stored_absent", "_recreate": False}
+    refused = _run_tasks(tmp_path, [task], variables)
+    assert refused.returncode != 0 and "console_proxmox_token_recreate=true" in refused.stdout
+    variables["_recreate"] = True
+    allowed = _run_tasks(tmp_path, [task], variables)
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
+
+
+@NEEDS_ANSIBLE
+def test_an_unstored_live_token_is_refused_by_name(tmp_path):
+    task = _proxmox_task("Refuse a Proxmox token the store cannot recover, unless replace is requested")
+    refused = _run_tasks(tmp_path, [task], {"_console_state": "unstored_present", "_replace": False})
+    assert refused.returncode != 0 and "console_proxmox_token_replace=true" in refused.stdout
+    assert _run_tasks(tmp_path, [task], {"_console_state": "stored_present", "_replace": False}).returncode == 0
 
 
 def _run_with_inventory(tmp_path: Path, inventory: dict, playbook: dict) -> subprocess.CompletedProcess:
@@ -326,7 +589,7 @@ def _run_with_inventory(tmp_path: Path, inventory: dict, playbook: dict) -> subp
 
 def _ca_gate_harness(hosts: dict | None) -> tuple[dict, dict]:
     # The real gate task and the real var expression, run against an inventory this test builds.
-    gate = _named(PROXMOX, "Require the declared Proxmox CA before any credential is read")
+    gate = _proxmox_task("Require the declared Proxmox CA before any credential is read")
     ca_expr = _proxmox_vars()["_console_ca_pem"]
     inventory = {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}
     if hosts is not None:
@@ -335,26 +598,6 @@ def _ca_gate_harness(hosts: dict | None) -> tuple[dict, dict]:
                 "vars": {"_console_ca_pem": ca_expr},
                 "tasks": [gate, {"ansible.builtin.debug": {"msg": "PASSED-GATE"}}]}
     return inventory, playbook
-
-
-@NEEDS_ANSIBLE
-def test_the_always_cleanup_removes_the_pinned_ca_file(tmp_path):
-    # The pinned path is computed from TMPDIR, so for this one run TMPDIR is the test's own directory: the
-    # real cleanup task then removes a file this test wrote, never one in the runner's temp root.
-    root = Path(os.path.realpath(tmp_path))
-    ca = root / "console-proxmox-ca.pem"
-    ca.write_text(CERT_PEM)
-    task = _named(PROXMOX, "Remove the pinned CA scratch file")
-    harness = tmp_path / "harness.yml"
-    harness.write_text(yaml.safe_dump([{"hosts": "localhost", "connection": "local", "gather_facts": False,
-                                        "tasks": [task]}]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    env["TMPDIR"] = str(root)
-    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert not ca.exists()
 
 
 @NEEDS_ANSIBLE
@@ -389,30 +632,14 @@ def test_the_ca_gate_refuses_a_private_key_and_passes_a_certificate(tmp_path):
                                                             "console_proxmox_ca_pem": PRIVATE_KEY_PEM}})
     key = _run_with_inventory(tmp_path, key_inv, key_play)
     assert key.returncode != 0 and "public certificate" in key.stdout, key.stdout
+    bundle_inv, bundle_play = _ca_gate_harness({"console-local": {
+        "ansible_connection": "local", "console_proxmox_ca_pem": CERT_PEM + PRIVATE_KEY_PEM}})
+    bundle = _run_with_inventory(tmp_path, bundle_inv, bundle_play)
+    assert bundle.returncode != 0 and "public certificate" in bundle.stdout, bundle.stdout
     ok_inv, ok_play = _ca_gate_harness({"console-local": {"ansible_connection": "local",
                                                           "console_proxmox_ca_pem": CERT_PEM}})
     ok = _run_with_inventory(tmp_path, ok_inv, ok_play)
     assert ok.returncode == 0 and "PASSED-GATE" in ok.stdout, ok.stdout + ok.stderr
-
-
-@NEEDS_ANSIBLE
-def test_the_recreate_refusal_is_real_in_check_mode(tmp_path):
-    # The assert runs in check mode too, and refuses stored_absent unless recreate is set.
-    task = _named(PROXMOX, "Refuse a stored token that Proxmox no longer has, unless recreate is requested")
-    variables = {"_console_state": "stored_absent", "_recreate": False}
-    refused = _run_tasks(tmp_path, [task], variables)
-    assert refused.returncode != 0 and "console_proxmox_token_recreate=true" in refused.stdout
-    variables["_recreate"] = True
-    allowed = _run_tasks(tmp_path, [task], variables)
-    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
-
-
-@NEEDS_ANSIBLE
-def test_an_unstored_live_token_is_refused_by_name(tmp_path):
-    task = _named(PROXMOX, "Refuse a Proxmox token the store cannot recover")
-    refused = _run_tasks(tmp_path, [task], {"_console_state": "unstored_present"})
-    assert refused.returncode != 0 and "Delete that token in Proxmox" in refused.stdout
-    assert _run_tasks(tmp_path, [task], {"_console_state": "stored_present"}).returncode == 0
 
 
 # --- deploy-console.yml: Phase 3 wiring ---------------------------------------------------------------
