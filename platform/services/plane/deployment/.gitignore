@@ -1,0 +1,7 @@
+# Rendered per-deploy by deploy-plane.yml. Never committed.
+.env
+
+# Plane's own Compose file for the pinned release, fetched and sha256-verified by
+# deploy-plane.yml on every run. Plane's EULA forbids redistributing it, so it is
+# never committed (design.md, spike 0.1).
+compose.yml

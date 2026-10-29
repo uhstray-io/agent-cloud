@@ -162,6 +162,9 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
+            # plane uses in-app auth, so plain reverse_proxy like postiz. The upstream is the
+            # stack's own proxy container (plane-proxy:80), which joins the local-dev network.
+            - { host: "plane.agent-cloud.test", upstream: "plane-proxy:80" }
             # inference — the OpenAI-compatible edge, the same shape as prod: this route
             # fronts the local agentgateway's default listener (/v1), which holds the
             # per-client keys and budgets. inference_api renders the /v1 + /health
@@ -501,6 +504,30 @@ all:
           # allows a single signup then closes; encoding the flip here keeps it
           # reproducible instead of a manual step on the host.
           postiz_disable_registration: false
+
+    # plane — work tracker, Commercial edition. Plane's own Compose file is fetched and
+    # sha256-verified per deploy (its EULA forbids committing it); native in-app auth.
+    # Behind Caddy at plane.agent-cloud.test. Deploy: local Semaphore "Deploy Plane (Local)".
+    plane_svc:
+      hosts:
+        plane-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: plane
+          monorepo_deploy_path: platform/services/plane/deployment
+          container_engine: podman
+          plane_bind: 127.0.0.1
+          # Host debug port only; Caddy reaches the proxy container (plane-proxy:80) by name.
+          plane_port: 8096
+          # MUST match the URL the browser uses: Plane derives WEB_URL, CORS_ALLOWED_ORIGINS
+          # and INTEGRATION_CALLBACK_BASE_URL from it (platform/services/plane/deployment/templates/env.j2).
+          # Includes :8443 unless `make local-https` is running.
+          plane_public_url: "https://plane.agent-cloud.test:8443"
+          plane_trusted_proxies: private_ranges
+          plane_automation_email: "plane-automation@agent-cloud.test"
+          plane_company_name: "agent-cloud"
+          plane_workspace_slug: agent-cloud
+          plane_workspace_name: agent-cloud
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy

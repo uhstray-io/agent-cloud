@@ -188,6 +188,26 @@
       ansible.builtin.debug:
         msg: "postiz: {{ 'HEALTHY' if _postiz_health is succeeded else 'UNHEALTHY' }}"
 
+- name: "Validate plane"
+  hosts: plane_svc
+  gather_facts: false
+  tasks:
+    - name: Check plane health
+      ansible.builtin.uri:
+        # /api/instances/ is unauthenticated and served by the API. The web frontend
+        # answers / even when the API is down, so / would report a dead stack as healthy.
+        url: "{{ plane_public_url }}/api/instances/"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: _plane_health
+      ignore_errors: true
+      check_mode: false
+
+    - name: Report plane status
+      ansible.builtin.debug:
+        msg: "plane: {{ 'HEALTHY' if _plane_health is succeeded else 'UNHEALTHY' }}"
+
 - name: "Summary"
   hosts: localhost
   connection: local
