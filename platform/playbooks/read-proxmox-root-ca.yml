@@ -1,0 +1,189 @@
+---
+# read-proxmox-root-ca.yml — read-only: print the Proxmox cluster root CA (its public certificate) so an
+# operator can pin it as site-config `console_proxmox_ca_pem`.
+#
+# Why. The console's verified Proxmox calls need that CA. deploy-console.yml renders it (its comment at line 82),
+# provision-console-proxmox-token.yml refuses to run without it, and probe-console-sources.yml makes no Proxmox
+# call without it. The repository does not hold the cluster CA, so this play reads it from the cluster's own
+# certificate endpoint, GET /api2/json/nodes/{node}/certificates/info.
+#
+# Channel and trust (trust on first use). The read uses the admin channel that provision-vm.yml:27 and
+# destroy-vm.yml:48 already use: the Proxmox admin token from OpenBao, sent with validate_certs: false. That is the
+# platform's accepted Proxmox posture today. destroy-vm.yml:80-82 records pinning the cluster CA as a platform-wide
+# follow-up, and this play is its first step. The printed CA is therefore trusted on first use only. Before pinning
+# it, cross-check it from an independent vantage (a workstation): the certificate the Proxmox API port serves must
+# verify against the printed CA. If it does not (a custom or ACME certificate on pveproxy, for example), do not pin
+# this CA.
+#
+# What is checked. The CA is the entry whose filename is pve-root-ca.pem. It must hold a public certificate and be
+# self-signed (subject == issuer). The node's pve-ssl.pem entry must be issued by that CA. The node is the first
+# online node by name, so every run reads the same node. Filenames are basenames: the endpoint strips the directory
+# (upstream pve-common src/PVE/Certificate.pm:326-327).
+#
+# Output. One debug task prints the node, the CA subject, its SHA-256 fingerprint, notafter (epoch seconds) and the
+# PEM. The PEM prints as one JSON-escaped string, so its line breaks show as \n. That is the YAML double-quoted
+# escape: pasting the printed PEM between double quotes after console_proxmox_ca_pem in site-config yields the exact
+# certificate. Nothing else from the responses is printed; they carry node addresses.
+#
+# Read-only. Every request is a GET. Nothing is written to OpenBao, Proxmox or the repository.
+#
+# Usage: the "Read Proxmox Root CA" Semaphore template (and its (Dev) twin). No survey vars.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Read the Proxmox cluster root CA (read-only)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      # Trust on first use, as the header explains: this read is the step that obtains the CA, so it cannot
+      # verify against it yet. Set in this play only.
+      validate_certs: false
+      headers:
+        Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  vars:
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
+    _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+      'secret/data/services/proxmox',
+      url=_bao_url, auth_method='approle',
+      role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+    _pve_host: "{{ _pve_data.url | default('') }}"
+    _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+    _pve_secret: "{{ _pve_data.api_token }}"
+
+  tasks:
+    # The AppRole secret_id and the Proxmox token cross this connection.
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # The Proxmox token is sent here; it must not cross public cleartext either.
+    - name: "Refuse a cleartext Proxmox endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _pve_host }}"
+        _assert_url_label: "Proxmox"
+
+    # The token id names a real Proxmox user, so it comes from the store, never a default.
+    - name: "Require the stored Proxmox token id"
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+    # ── The node: the first online node by name. Read and derived under no_log (protected responses) ──
+
+    - name: "Read the node list (GET; no_log: the response is not printed)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        timeout: 15
+      failed_when: false
+      register: _pve_nodes
+      check_mode: false
+      no_log: true
+
+    - name: "Pick the node and note whether the list was read (no_log: derived from the node list)"
+      ansible.builtin.set_fact:
+        _pve_nodes_ok: "{{ (_pve_nodes.status | default(0)) == 200 }}"
+        _pve_node: >-
+          {{ ((_pve_nodes.json | default({})).data | default([])
+              | selectattr('status', 'equalto', 'online') | map(attribute='node') | sort | first)
+             | default('', true) }}
+      no_log: true
+
+    - name: "Require the node list and an online node"
+      ansible.builtin.assert:
+        that:
+          - _pve_nodes_ok | bool
+          - _pve_node | length > 0
+        fail_msg: >-
+          The Proxmox node list was not read, or it names no online node. Check the Proxmox endpoint
+          and the admin token in secret/services/proxmox, then rerun.
+
+    # ── The certificate information of that node (no_log: the response carries node addresses) ──────
+
+    - name: "Read the node's certificate information (GET; no_log: the response carries node addresses)"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _pve_node }}/certificates/info"
+        method: GET
+        timeout: 15
+      failed_when: false
+      register: _pve_certs
+      check_mode: false
+      no_log: true
+
+    # Scalars only. The whole entries carry the address list, so no entry is kept, only the strings the
+    # checks and the one debug below need.
+    - name: "Take the root CA's fields and the node certificate's issuer from the response (no_log; scalars only)"
+      ansible.builtin.set_fact:
+        _pve_certs_ok: "{{ (_pve_certs.status | default(0)) == 200 }}"
+        _pve_ca:
+          pem: "{{ ((_pve_certs.json | default({})).data | default([])
+                    | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='pem') | first)
+                   | default('', true) }}"
+          subject: "{{ ((_pve_certs.json | default({})).data | default([])
+                        | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='subject') | first)
+                       | default('', true) }}"
+          issuer: "{{ ((_pve_certs.json | default({})).data | default([])
+                       | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='issuer') | first)
+                      | default('', true) }}"
+          fingerprint: "{{ ((_pve_certs.json | default({})).data | default([])
+                            | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='fingerprint') | first)
+                           | default('', true) }}"
+          notafter: "{{ ((_pve_certs.json | default({})).data | default([])
+                         | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='notafter') | first)
+                        | default('', true) }}"
+        _pve_node_issuer: "{{ ((_pve_certs.json | default({})).data | default([])
+                               | selectattr('filename', 'equalto', 'pve-ssl.pem') | map(attribute='issuer') | first)
+                              | default('', true) }}"
+      no_log: true
+
+    - name: "Require the root CA in the response, as a public certificate"
+      ansible.builtin.assert:
+        that:
+          - _pve_certs_ok | bool
+          - "'-----BEGIN CERTIFICATE-----' in _pve_ca.pem"
+          - "'PRIVATE KEY' not in _pve_ca.pem"
+          - _pve_ca.fingerprint | length > 0
+        fail_msg: >-
+          The certificate endpoint did not return pve-root-ca.pem as a public certificate. Nothing was printed.
+
+    - name: "Require the root CA to be self-signed (subject == issuer)"
+      ansible.builtin.assert:
+        that:
+          - _pve_ca.subject | length > 0
+          - _pve_ca.subject == _pve_ca.issuer
+        fail_msg: >-
+          The root CA is not self-signed: its subject differs from its issuer. This play prints only a
+          self-signed root, so nothing was printed.
+
+    - name: "Require the node certificate to be issued by that root CA"
+      ansible.builtin.assert:
+        that:
+          - _pve_node_issuer | length > 0
+          - _pve_node_issuer == _pve_ca.subject
+        fail_msg: >-
+          The node's pve-ssl.pem entry is absent, or it was not issued by the root CA. The root CA was not printed.
+
+    # The one visible output. Public certificate, derived strings only; nothing from the responses.
+    - name: "Print the root CA (public certificate and its identity)"
+      ansible.builtin.debug:
+        msg: |-
+          Proxmox cluster root CA, read from node {{ _pve_node }}.
+          subject: {{ _pve_ca.subject }}
+          sha256 fingerprint: {{ _pve_ca.fingerprint }}
+          notafter (epoch seconds): {{ _pve_ca.notafter }}
+          Cross-check it from an independent vantage before pinning (see the playbook header).
+          PEM, to pin as console_proxmox_ca_pem (paste between double quotes):
+          {{ _pve_ca.pem | trim }}

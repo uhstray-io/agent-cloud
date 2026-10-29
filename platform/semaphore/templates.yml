@@ -865,6 +865,12 @@ templates:
     playbook: platform/playbooks/probe-console-sources.yml
     dev_variant: true
 
+  # Read-only: prints the Proxmox cluster root CA (public certificate and fingerprint) to pin as site-config
+  # console_proxmox_ca_pem. Trust on first use; the playbook header gives the cross-check to run before pinning.
+  - name: Read Proxmox Root CA
+    playbook: platform/playbooks/read-proxmox-root-ca.yml
+    dev_variant: true
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
