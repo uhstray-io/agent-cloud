@@ -46,6 +46,11 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_SEMAPHORE_API_URL`, `CONSOLE_SEMAPHORE_UI_URL`, `CONSOLE_SEMAPHORE_PROJECT` | `console_semaphore_api_url` (default `https://semaphore.agent-cloud.test`), `console_semaphore_ui_url` (default `https://semaphore.agent-cloud.test:8443`), `console_semaphore_project` (default `1`) |
 | `CONSOLE_SEMAPHORE_TOKEN` | `secrets.semaphore_api_token`, read from `secret/services/console` (see "Semaphore access") |
 | `CONSOLE_WORKFLOW_FILE=/etc/console/workflow.json` | fixed path; the file is `config/workflow.json` |
+| `CONSOLE_FLOWS_FILE=/etc/console/flows.json` | fixed path; the file is `config/flows.json` (always rendered) |
+| `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | `console_netbox_url`; the token is `secrets.console_api_token`, a shared read of `secret/services/netbox`. The group renders only when the URL is set (Phase 3, see below) |
+| `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | `console_proxmox_url`; id and secret are shared reads of `secret/services/proxmox` (`console_token_id`, `console_token`). All-or-none, like the NetBox group |
+| `CONSOLE_PROXMOX_CA_FILE=/etc/console/proxmox-ca.pem` | set only when `console_proxmox_ca_pem` is set; the file is always mounted (empty when unset) |
+| `CONSOLE_GRAFANA_URL` | `console_grafana_url`, the base for Grafana deep links. Not a credential; rendered only when set |
 
 `config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
@@ -77,6 +82,20 @@ Two facts the play depends on, both at upstream v2.19.11:
 **Ordering with Manage Semaphore Access.** `filter_plugins/semaphore_access.py` refuses the whole run when a declared team member has no Semaphore account. So: provision the account first, then declare `svc-console: guest` in `semaphore_project_members`. Production declares that in site-config, which this repo does not hold. Until it does, the next real **Manage Semaphore Access** run removes `svc-console` from the team, and the console's read fails.
 
 **Unverified.** Whether production Semaphore accepts password login for `svc-console` is not yet proven by a live run. The code path is read (`api/login.go:286-382`).
+
+## Read-only inventory (Phase 3, plan 17 D22-D24)
+
+Each authority is read with the smallest credential, and only when its URL var is set. A deploy without the URL stays "unconfigured" and reads no token.
+
+- **NetBox.** Token profile `console` in `provision-netbox-automation-token.yml`: view only, on `dcim.site`, `dcim.device`, `virtualization.cluster`, `virtualization.virtualmachine`, `ipam.prefix`, `ipam.ipaddress`, `extras.tag`. No add, change or delete, and no interfaces (D24 reads prefixes and addresses). Stored at `secret/services/netbox:console_api_token`.
+- **Proxmox.** `provision-console-proxmox-token.yml` mints `console@pve!console`, a privilege-separated token, with PVEAuditor on `/` for both the user and the token. It stores `console_token_id` and `console_token` at `secret/services/proxmox`. It never rotates a live token. A stored token that Proxmox no longer has needs `console_proxmox_token_recreate=true`. A live token Proxmox has but the store lacks is refused by name, because the secret is returned only once. The ACLs are granted before the store, so a stored token always has its grants.
+- **Scope to NetBox (D23).** A site may declare `netbox_site`, a NetBox site slug. `deploy-console.yml` refuses a slug declared on two sites, naming it. A site without `netbox_site` is "not mapped".
+- **Flows (D24).** `templates/flows.json.j2` renders `config/flows.json` from the declarations, names only, never an address or a port. Edges: `authentik` apps typed by their catalog `type` (`oidc`, `forward_auth`), from the effective `authentik_apps` (undefined means the whole catalog, as in `deploy-authentik.yml`); `caddy` to each managed site's hostname (never the upstream); `service` (or `job`) to `o11y` from `o11y_expected_metrics_targets`. A missing source gives no edges of that kind.
+- **Proxmox CA.** `console_proxmox_ca_pem` is a public certificate only; a private key is refused by name. The CA file is always mounted read-only and set through `CONSOLE_PROXMOX_CA_FILE` only when the PEM is set.
+
+Inputs are bind-mounted read-only like `scope.json` and `workflow.json`, and `deploy.sh` recreates the container when any of them changes.
+
+Not yet done here: `config.rs` does not read the `CONSOLE_NETBOX_*`, `CONSOLE_PROXMOX_*`, `CONSOLE_FLOWS_FILE` or `CONSOLE_GRAFANA_URL` variables. The server work reads them, so this wiring is inert until that lands.
 
 ## Active Work (Semaphore, read-only)
 
@@ -139,7 +158,9 @@ deployment/
 ├── templates/
 │   ├── env.j2              .env (non-secret config + shared OIDC secret + Semaphore token)
 │   ├── scope.json.j2       config/scope.json from console_tenants
-│   └── workflow.json.j2    config/workflow.json from the service-onboarding registry
+│   ├── workflow.json.j2    config/workflow.json from the service-onboarding registry
+│   ├── flows.json.j2       config/flows.json from the authentik, caddy and o11y declarations (names only)
+│   └── proxmox-ca.pem.j2   config/proxmox-ca.pem from console_proxmox_ca_pem (empty when unset)
 ├── .gitignore              .env, config/, certs/ (rendered per deploy)
 ├── AGENTS.md -> CLAUDE.md
 └── README.md

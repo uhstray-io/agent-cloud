@@ -305,6 +305,14 @@ all:
           console_semaphore_api_url: https://semaphore.agent-cloud.test
           console_semaphore_ui_url: https://semaphore.agent-cloud.test:8443
           console_semaphore_project: 1
+          # Phase 3 read-only inventory (plan 17, D22): optional. Unset means that panel reports "unconfigured"
+          # and no token is read. Set a URL only after its provisioning template has stored the token:
+          # Provision NetBox Automation Token (profile console) and Provision Console Proxmox Token.
+          # console_netbox_url: https://netbox.agent-cloud.test
+          # console_proxmox_url: <Proxmox API base URL, from site-config>
+          # console_grafana_url: https://grafana.agent-cloud.test   # base for Grafana deep links; no credential
+          # console_proxmox_ca_pem: |      # the PUBLIC CA certificate only, when Proxmox uses a private CA
+          #   -----BEGIN CERTIFICATE-----
           # Example scope only: no real tenants, sites or addresses. Production declares its own in
           # site-config. Sites and environments here are names, not hosts.
           console_scope_is_example: true
@@ -316,6 +324,8 @@ all:
               orgs:
                 - id: uhstray-io
                   name: uhstray-io
+                  # Optional per site: netbox_site: <NetBox site slug> maps the site to its NetBox site
+                  # (D23). Each slug on one site only; a site without it shows "not mapped".
                   sites:
                     - { id: site-hq, name: HQ, envs: [prod, dev] }
                     - { id: do-nyc1, name: DigitalOcean NYC1, envs: [prod] }

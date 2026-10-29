@@ -1,0 +1,306 @@
+---
+# provision-console-proxmox-token.yml — the Dispatch Console's read-only Proxmox identity (plan 17, D22).
+#
+# Mints a PVEAuditor token the console reads node and VM state with (/api2/json/cluster/resources), and
+# stores its id and secret at secret/services/proxmox:console_token_id and console_token, siblings
+# preserved (bao-merge-keys.yml). The admin token already stored there (token_id, api_token) makes every
+# call. It is never handed to the console.
+#
+# Least privilege. The user console@pve has no password and PVEAuditor on / (read only). The token is
+# privilege-separated (privsep=1) and carries its own ACL, PVEAuditor on /. Proxmox grants a separated
+# token only what both the token and its user hold, so the token is read only.
+#
+# Existence logic. A live token is never rotated:
+#   stored AND present in Proxmox        -> no write
+#   present in Proxmox, not stored       -> refuse by name: the secret is returned once at creation and
+#                                           cannot be read back. Delete the token in Proxmox, then rerun.
+#   stored, absent in Proxmox            -> refuse unless -e console_proxmox_token_recreate=true; then mint
+#                                           and overwrite the stored secret
+#   neither                              -> ensure the user, mint, grant both ACLs, store
+# Known limit: a failure between the mint and the store leaves an unstored token. The next run then
+# refuses by name, the explicit state above. The ACLs are granted before the store, so a stored token
+# always has its grants and the stored_present no-op never skips one.
+#
+# Endpoints. Each is a route in proxmox/pve-access-control (src/PVE/API2/), read at master:
+#   GET  /access/users/{userid}                  read_user       User.Modify or Sys.Audit on the userid
+#   POST /access/users                           create_user     Realm.AllocateUser and User.Modify
+#   GET  /access/users/{userid}/token/{tokenid}  read_token      User.Modify
+#   POST /access/users/{userid}/token/{tokenid}  generate_token  User.Modify; privsep unset means 1;
+#                                                returns {info, value, full-tokenid}, value shown once
+#   PUT  /access/acl                             update_acl      Permissions.Modify on path; params path,
+#                                                roles (required), users, tokens (pve-tokenid-list)
+#   A token entry is user!tokenid: AccessControl.pm split_tokenid and join_tokenid use '!' (read at
+#   master). The schema's list parser (split_list, in pve-common) was not read: UNVERIFIED that a single
+#   entry is the whole accepted form of the tokens list.
+#   GET  /access/permissions?path=/              the caller's effective permissions (the call that
+#                                                reconcile-o11y-backup-job.yml already makes)
+#   Absent objects: read_user and read_token contain no die or raise, so a missing object returns what
+#   check_user_exist and check_token_exist return. Not read here. This play accepts a 404, or a 200 whose
+#   data is null, as absent, and fails on any other status. Both shapes are UNVERIFIED on a live Proxmox.
+#
+# Rights. The admin token needs Realm.AllocateUser, User.Modify and Permissions.Modify on /. The check
+# reads them with GET /access/permissions and names any missing one. A run that will mint refuses before
+# any write when one is missing. The key shape of the answer (path -> {privilege: 1}) is UNVERIFIED: an
+# unrecognised shape reports every right as missing, which fails closed.
+#
+# Check mode: the reads run and the decision is printed; every write is skipped.
+#
+# Usage: the "Provision Console Proxmox Token" Semaphore template (and its (Dev) and (Local) twins).
+# Survey: console_proxmox_token_recreate=true only to replace a stored token that Proxmox no longer has.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Provision the Dispatch Console's read-only Proxmox token (console@pve, PVEAuditor)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'BAO_ADDR')) | default('http://127.0.0.1:8200', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _console_userid: "console@pve"
+    _console_tokenid: "console"
+    _console_token_full: "{{ _console_userid }}!{{ _console_tokenid }}"
+    _console_comment: "Dispatch Console read-only inventory (Phase 3)"
+    _recreate: "{{ (console_proxmox_token_recreate | default('false') | string | trim | lower) == 'true' }}"
+    _required_rights: [Realm.AllocateUser, User.Modify, Permissions.Modify]
+
+  tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Read the Proxmox secret (admin credential and any stored console token)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/proxmox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _pve_store
+      no_log: true
+      check_mode: false
+
+    - name: "Require the admin credential (url, token_id, api_token)"
+      ansible.builtin.assert:
+        that:
+          - _pve_store.status == 200
+          - (_pve_store.json.data.data | default({})).url | default('') | length > 0
+          - (_pve_store.json.data.data | default({})).token_id | default('') | length > 0
+          - (_pve_store.json.data.data | default({})).api_token | default('') | length > 0
+        fail_msg: "secret/services/proxmox needs url, token_id and api_token (the admin token). Store them, then rerun."
+        quiet: true
+      no_log: true
+
+    - name: "Keep the admin request header and the stored-token flag private to this run"
+      ansible.builtin.set_fact:
+        _pve_url: "{{ _pve_store.json.data.data.url }}"
+        _pve_headers:
+          Authorization: "PVEAPIToken={{ _pve_store.json.data.data.token_id }}={{ _pve_store.json.data.data.api_token }}"
+        _console_stored: "{{ (_pve_store.json.data.data.console_token | default('') | length) > 0 }}"
+      no_log: true
+
+    # The Proxmox API serves a self-signed certificate; validate-address-free.yml makes the same call with
+    # validate_certs false. Repository convention for this host, not a choice made here.
+    - name: "Read the console user"
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/access/users/{{ _console_userid }}"
+        method: GET
+        headers: "{{ _pve_headers }}"
+        status_code: [200, 404]
+        validate_certs: false
+      register: _console_user_read
+      no_log: true
+      check_mode: false
+
+    - name: "Note whether the console user exists"
+      ansible.builtin.set_fact:
+        _console_user_present: "{{ (_console_user_read.status | default(0)) == 200 and ((_console_user_read.json | default({})).data | default(none)) is not none }}"
+      no_log: true
+
+    # A token belongs to its user, so with no user there is no token to read.
+    - name: "Read the console token"
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/access/users/{{ _console_userid }}/token/{{ _console_tokenid }}"
+        method: GET
+        headers: "{{ _pve_headers }}"
+        status_code: [200, 404]
+        validate_certs: false
+      register: _console_token_read
+      when: _console_user_present
+      no_log: true
+      check_mode: false
+
+    - name: "Read the admin token's effective rights on /"
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/access/permissions?path=%2F"
+        method: GET
+        headers: "{{ _pve_headers }}"
+        status_code: [200]
+        validate_certs: false
+      register: _admin_perms
+      no_log: true
+      check_mode: false
+
+    - name: "Decide the state from what Proxmox and the store hold"
+      ansible.builtin.set_fact:
+        _console_token_present: "{{ (_console_token_read.status | default(0)) == 200 and ((_console_token_read.json | default({})).data | default(none)) is not none }}"
+        _console_state: >-
+          {{ 'stored_present' if (_console_stored and _console_token_present)
+             else ('unstored_present' if (_console_token_present and not _console_stored)
+             else ('stored_absent' if _console_stored else 'neither')) }}
+        _present_rights: "{{ ((_admin_perms.json.data | default({}))['/'] | default({})) | dict2items | selectattr('value') | map(attribute='key') | list }}"
+      no_log: true
+
+    - name: "Name the admin token's missing rights (names only)"
+      ansible.builtin.set_fact:
+        _missing_rights: "{{ _required_rights | difference(_present_rights) }}"
+      no_log: true
+
+    - name: "Report the admin token's rights"
+      ansible.builtin.debug:
+        msg: "admin token rights on /: {{ 'all required present' if (_missing_rights | length) == 0 else 'missing ' ~ (_missing_rights | join(', ')) }}"
+
+    - name: "Refuse a Proxmox token the store cannot recover"
+      ansible.builtin.assert:
+        that: _console_state != 'unstored_present'
+        fail_msg: >-
+          Proxmox has the token console@pve!console but secret/services/proxmox has no console_token, and the
+          secret is returned only once at creation. Delete that token in Proxmox, then rerun this template.
+        quiet: true
+
+    - name: "Refuse a stored token that Proxmox no longer has, unless recreate is requested"
+      ansible.builtin.assert:
+        that: _console_state != 'stored_absent' or _recreate
+        fail_msg: >-
+          secret/services/proxmox holds a console_token that Proxmox does not have. Rerun with
+          console_proxmox_token_recreate=true to mint a replacement and overwrite it.
+        quiet: true
+
+    - name: "Refuse a mint the admin token cannot perform"
+      ansible.builtin.assert:
+        that: _missing_rights | length == 0
+        fail_msg: "The Proxmox admin token lacks a right needed to mint the console token (names in the report above)."
+        quiet: true
+      when: _console_state in ['neither', 'stored_absent']
+
+    - name: "Dry run: report the planned action"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: state {{ _console_state }}.
+          {{ 'Nothing to do: the stored token is present.' if _console_state == 'stored_present'
+             else ('Would mint ' ~ _console_token_full ~ ' and grant PVEAuditor on / to the user and the token, then store it at secret/services/proxmox.'
+                   ~ (' The user would be created first.' if not _console_user_present else '')) }}
+      when: ansible_check_mode
+
+    - name: "Create the console user (no password)"
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/access/users"
+        method: POST
+        headers: "{{ _pve_headers }}"
+        body_format: form-urlencoded
+        body:
+          userid: "{{ _console_userid }}"
+          enable: 1
+          comment: "{{ _console_comment }}"
+        status_code: [200]
+        validate_certs: false
+      no_log: true
+      when:
+        - _console_state in ['neither', 'stored_absent']
+        - not _console_user_present
+        - not ansible_check_mode
+
+    - name: "Grant PVEAuditor on / to the console user"
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/access/acl"
+        method: PUT
+        headers: "{{ _pve_headers }}"
+        body_format: form-urlencoded
+        body:
+          path: "/"
+          roles: "PVEAuditor"
+          users: "{{ _console_userid }}"
+        status_code: [200]
+        validate_certs: false
+      no_log: true
+      when:
+        - _console_state in ['neither', 'stored_absent']
+        - not ansible_check_mode
+
+    - name: "Mint the console token (privilege-separated)"
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/access/users/{{ _console_userid }}/token/{{ _console_tokenid }}"
+        method: POST
+        headers: "{{ _pve_headers }}"
+        body_format: form-urlencoded
+        body:
+          privsep: 1
+          comment: "{{ _console_comment }}"
+        status_code: [200]
+        validate_certs: false
+      register: _console_minted
+      no_log: true
+      when:
+        - _console_state in ['neither', 'stored_absent']
+        - not ansible_check_mode
+
+    - name: "Grant PVEAuditor on / to the console token"
+      ansible.builtin.uri:
+        url: "{{ _pve_url }}/api2/json/access/acl"
+        method: PUT
+        headers: "{{ _pve_headers }}"
+        body_format: form-urlencoded
+        body:
+          path: "/"
+          roles: "PVEAuditor"
+          tokens: "{{ _console_token_full }}"
+        status_code: [200]
+        validate_certs: false
+      no_log: true
+      when:
+        - _console_state in ['neither', 'stored_absent']
+        - not ansible_check_mode
+
+    # Stored last: a stored token always has its grants, so the stored_present no-op never skips one.
+    - name: "Store the token id and secret at secret/services/proxmox (siblings preserved)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/proxmox"
+        _bm_data:
+          console_token_id: "{{ _console_token_full }}"
+          console_token: "{{ _console_minted.json.data.value }}"
+      no_log: true
+      when:
+        - _console_state in ['neither', 'stored_absent']
+        - not ansible_check_mode
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'check mode: no write.' if ansible_check_mode
+             else ('Stored ' ~ _console_token_full ~ ' at secret/services/proxmox (console_token_id, console_token).'
+                   if _console_state in ['neither', 'stored_absent']
+                   else 'Console token present and stored: no change. Never rotated here.') }}

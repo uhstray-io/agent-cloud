@@ -62,6 +62,15 @@
         view_object_types: [virtualization.cluster]
         field: vm_recorder_api_token
         description: service deployment workflow VM record (validate-address)
+      # Dispatch Console (plan 17, D22-D24): view only, on the seven types the console reads. No add,
+      # change or delete anywhere, so the token cannot write. NetBox interfaces are not read (D24 scope).
+      console:
+        user: console
+        permission: console-readonly
+        actions: [view]
+        object_types: [dcim.site, dcim.device, virtualization.cluster, virtualization.virtualmachine, ipam.prefix, ipam.ipaddress, extras.tag]
+        field: console_api_token
+        description: Dispatch Console read-only inventory (Phase 3)
     # The survey is a closed list; an API launch or -e can still pass anything, so blank (or
     # whitespace) means the original profile and the assert below refuses the rest.
     _profile_name: "{{ (netbox_token_profile | default('') | trim) or 'device-writer' }}"
