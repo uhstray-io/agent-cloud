@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import playbook_yaml
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
-import playbook_yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/o11y/deployment"
