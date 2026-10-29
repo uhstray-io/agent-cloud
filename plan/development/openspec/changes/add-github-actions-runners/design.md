@@ -83,6 +83,9 @@ are closed in the shared mechanism rather than in a runner-only script.
 - **Serving the public repository.** Excluded by decision D2, and no partial measure is
   offered in its place — a half-gate would read as protection while not being any.
 - **Windows or macOS runners, and GPU runners.** Linux x64 only.
+  (Windows and macOS are now planned as their own changes, `add-windows-github-runner`
+  and `add-macos-github-runner`, which join this plane's runner group, credential chain
+  and egress declaration rather than forking them.)
 - **Caching infrastructure.** No shared build cache, artifact proxy, or registry mirror.
   Deferred until a measured need exists.
 
