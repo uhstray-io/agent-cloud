@@ -122,8 +122,13 @@
 
     - name: "Refuse keep-id on a podman older than 4.3"
       ansible.builtin.assert:
-        that: _opa_podman_version.stdout is version('4.3', '>=')
-        fail_msg: "opa_tls needs podman 4.3 or later for userns keep-id; this host has {{ _opa_podman_version.stdout }}."
+        that:
+          # keep-id is a podman option: another engine's version number would pass the comparison.
+          - (container_engine | default('podman')) == 'podman'
+          - _opa_podman_version.stdout is version('4.3', '>=')
+        fail_msg: >-
+          opa_tls needs podman 4.3 or later for userns keep-id; this host runs
+          {{ container_engine | default('podman') }} {{ _opa_podman_version.stdout }}.
         quiet: true
       when: _opa_tls
 

@@ -1297,7 +1297,9 @@ templates:
         required: false
         default_value: "main"
 
-  # OPA is stateless (read-only policy mount, no volume), so this only recreates the container.
+  # OPA keeps no data (read-only policy mount, no volume). In production the clean also removes the
+  # deploy directory, issued certificates included, so the redeploy issues a new server leaf; the old
+  # one stays valid until it expires.
   - name: Clean Deploy OPA
     playbook: platform/playbooks/clean-deploy-opa.yml
     dev_variant: true

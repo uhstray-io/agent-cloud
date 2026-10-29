@@ -917,10 +917,10 @@ Each step runs through Semaphore, check mode first.
 3. [ ] site-config PR A declares host `opa`, group `opa_svc` (VM, bind, TLS variables, firewall) and the `vm-specs.yml` entry. It does not declare the leaf.
 4. [ ] This agent-cloud PR merged to `dev`. Publish `Deploy OPA (Dev)` and `Clean Deploy OPA (Dev)`, then sync the inventory (`platform/semaphore/sync-inventory.yml`).
 5. [ ] Lookup Service Inventory, then Validate Address Free (`target_service=opa`).
-6. [ ] Provision VM (`target_service=opa`). Then Distribute SSH Keys, Back Up Service SSH Key, Verify Host Access, and Harden SSH. The disk is declared at the template's 20G, so the root needs no grow.
-7. [ ] site-config PR B declares the `opa-server` leaf, after step 4 and step 6. Sync the inventory. Run `Deploy step-ca (Dev)` so the CA's name policy admits the SAN. Run `Deploy OPA (Dev)` at once: the daily renewal refuses a declared leaf it cannot prove, and it cannot prove this one until OPA serves it.
-8. [ ] `Deploy OPA (Dev)` with `service_branch=dev`. This places the repository, issues the leaf, starts OPA and verifies it. Re-run it to confirm the deploy converges.
-9. [ ] Apply Firewall (`target_service=opa`). Ensure Service Persistence, then Verify Service Persistence. Run Snapshot Access.
+6. [ ] Provision VM (`target_service=opa`). Then Distribute SSH Keys (`target_service=opa_svc`), Back Up Service SSH Key, Verify Host Access, and Harden SSH. The disk is declared at the template's 20G, so the root needs no grow.
+7. [ ] site-config PR B declares the `opa-server` leaf, after step 4 and step 6. Sync the inventory. Run `Deploy step-ca (Dev)` so the CA's name policy admits the SAN. Then run steps 8 and 9 without a pause: the daily renewal refuses a declared leaf it cannot prove, and it cannot prove this one until OPA serves it.
+8. [ ] Apply Firewall (`target_service=opa_svc`) BEFORE the first deploy, so 8281 is never open to the whole LAN. Port detection is off, so the rules do not depend on a running container.
+9. [ ] `Deploy OPA (Dev)` with `service_branch=dev`. This places the repository, issues the leaf, starts OPA and verifies it. Re-run it to confirm the deploy converges. Then Ensure Service Persistence, Verify Service Persistence and Snapshot Access.
 10. [ ] `Probe Reachability (Dev)`: from `console_svc`, 8281 open; from another LAN host group, 8281 closed.
 11. [ ] `Renew Internal Certs (Dev)` with `--tags verify`, which proves the served serial.
 12. [ ] skynet: add `skynet_svc` to `firewall_allow_groups`, re-run Apply Firewall, and point skynet at `https://opa.<dns_site>.<dns_zone>:8281`. skynet maps the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe.
