@@ -36,7 +36,7 @@
 # Usage: the "Probe Console Sources" Semaphore template (and its (Dev) twin). No survey vars.
 #
 # Unverified in this repository. The NetBox fields this probe reports (netbox-version, cluster type and
-# scope, the first VM's cluster.id, custom_fields.ac_workflow_status and primary_ip) have no reader in the
+# scope, the first VM's cluster.id, the names of its ac_ custom fields and primary_ip) have no reader in the
 # console app yet (platform/services/console/app/src has no NetBox or Proxmox client; checked 2026-10-29), so
 # the probe reports what the live records hold instead of assuming the shape. The cluster/resources
 # type=node query value is the one plan and deploy-console.yml name; it is not checked against a live Proxmox here.
@@ -166,7 +166,7 @@
 
     - name: "Proxmox: hold the console token id and secret in Ansible memory (empty when not minted; no_log)"
       ansible.builtin.set_fact:
-        _probe_pve_token_id: "{{ (((_probe_bao_proxmox.json | default({})).data | default({})).data | default({})).console_token_id | default('') }}"
+        _probe_pve_token_id: "{{ _probe_bao_proxmox.json.data.data.console_token_id | default('') if ((_probe_bao_proxmox.status | default(0)) == 200) else '' }}"
         _probe_pve_token: "{{ (((_probe_bao_proxmox.json | default({})).data | default({})).data | default({})).console_token | default('') }}"
       no_log: true
 
@@ -264,10 +264,16 @@
              and (_probe_pve_token | length > 0) }}
       no_log: true
 
-    - name: "Proxmox: request header for the console token (no_log)"
-      ansible.builtin.set_fact:
-        _probe_pve_headers:
-          Authorization: "PVEAPIToken={{ _probe_pve_token_id }}={{ _probe_pve_token }}"
+    # Refuse a minted token that carries no token id before the first Proxmox request (the token id names the
+    # account; there is no built-in default). no_log: the assert reads a credential reference, so on failure
+    # Ansible censors the result, fail_msg included. The fail_msg names the missing key for whoever reads this file.
+    - name: "Proxmox: require the stored console token id before any Proxmox request (no_log: credential check)"
+      ansible.builtin.assert:
+        that: _probe_pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no console_token_id. Store the console token id
+          (<user>@<realm>!<token-name>) beside console_token; there is no built-in default.
+        quiet: true
       when: _probe_pve_called | bool
       no_log: true
 
@@ -275,7 +281,8 @@
       ansible.builtin.uri:
         url: "{{ _proxmox_url }}/api2/json/cluster/status"
         method: GET
-        headers: "{{ _probe_pve_headers }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _probe_pve_token_id }}={{ _probe_pve_token }}"
         status_code: [200]
         validate_certs: true
         ca_path: "{{ _proxmox_ca_file }}"
@@ -290,7 +297,8 @@
       ansible.builtin.uri:
         url: "{{ _proxmox_url }}/api2/json/cluster/resources?type=node"
         method: GET
-        headers: "{{ _probe_pve_headers }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _probe_pve_token_id }}={{ _probe_pve_token }}"
         status_code: [200]
         validate_certs: true
         ca_path: "{{ _proxmox_ca_file }}"
@@ -331,7 +339,10 @@
         _probe_chk_cluster_scope_type: "{{ ('scope_type' in _probe_nb_rec_cluster) if (_probe_nb_rec_cluster | length > 0) else 'no record' }}"
         _probe_chk_cluster_scope_id: "{{ ('scope_id' in _probe_nb_rec_cluster) if (_probe_nb_rec_cluster | length > 0) else 'no record' }}"
         _probe_chk_vm_cluster_id: "{{ (((_probe_nb_rec_vm.cluster | default({})) is mapping) and ('id' in (_probe_nb_rec_vm.cluster | default({})))) if (_probe_nb_rec_vm | length > 0) else 'no record' }}"
-        _probe_chk_vm_ac_status: "{{ (((_probe_nb_rec_vm.custom_fields | default({})) is mapping) and ('ac_workflow_status' in (_probe_nb_rec_vm.custom_fields | default({})))) if (_probe_nb_rec_vm | length > 0) else 'no record' }}"
+        _probe_chk_vm_ac_fields: >-
+          {{ 'no record' if (_probe_nb_rec_vm | length == 0)
+             else ((_probe_nb_rec_vm.custom_fields | default({}, true) | dict2items | map(attribute='key')
+                    | select('match', '^ac_') | sort | join(', ')) or 'none') }}
         _probe_chk_vm_primary_ip: "{{ ('primary_ip' in _probe_nb_rec_vm) if (_probe_nb_rec_vm | length > 0) else 'no record' }}"
       no_log: true
 
@@ -409,12 +420,16 @@
                     ~ '; cluster scope_type ' ~ _probe_chk_cluster_scope_type
                     ~ '; cluster scope_id ' ~ _probe_chk_cluster_scope_id
                     ~ '; VM cluster.id ' ~ _probe_chk_vm_cluster_id
-                    ~ '; VM custom_fields.ac_workflow_status ' ~ _probe_chk_vm_ac_status
                     ~ '; VM primary_ip ' ~ _probe_chk_vm_primary_ip)
              if (((_probe_nb_sites.status | default(0)) == 200)
                  and ((_probe_nb_clusters.status | default(0)) == 200)
                  and ((_probe_nb_vms.status | default(0)) == 200))
              else 'NetBox record keys: not read') }}
+        _probe_line_nb_vm_fields: >-
+          {{ '' if (not (_probe_nb_called | bool))
+             else (('NetBox VM workflow custom fields: ' ~ _probe_chk_vm_ac_fields)
+             if ((_probe_nb_vms.status | default(0)) == 200)
+             else 'NetBox VM workflow custom fields: not read') }}
         _probe_line_pve_tcp: >-
           {{ 'Proxmox: not configured (console_proxmox_url unset on console_svc)'
              if (_proxmox_url | length == 0)
@@ -463,7 +478,7 @@
         _probe_summary: >-
           {{ [_probe_line_bao_endpoint, _probe_line_bao_sealed, _probe_line_bao_login,
               _probe_line_nb_reach, _probe_line_nb_token, _probe_line_nb_sites,
-              _probe_line_nb_clusters, _probe_line_nb_records,
+              _probe_line_nb_clusters, _probe_line_nb_records, _probe_line_nb_vm_fields,
               _probe_line_pve_tcp, _probe_line_pve_ca, _probe_line_pve_token,
               _probe_line_pve_api, _probe_line_pve_cluster, _probe_line_pve_nodes]
              | reject('equalto', '') | list }}

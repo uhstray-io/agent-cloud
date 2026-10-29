@@ -113,7 +113,7 @@ def _is_probe_read(task):
 # --- the play, its imports and its placement ----------------------------------------------------------------
 
 
-def test_playbook_refuses_internal_extra_vars_then_guards_the_console_group():
+def test_playbook_imports_the_extra_var_guard_then_preflights_the_console_group():
     first = DOC[0]
     assert (first.get("ansible.builtin.import_playbook") or first.get("import_playbook")) == \
         "refuse-internal-extra-vars.yml"
@@ -340,7 +340,8 @@ def _netbox():
                                          "scope_type": "dcim.site", "scope_id": 1,
                                          "scope": {"slug": "alpha-dc"}}]}
     vms = {"count": 1, "results": [{"id": 9, "name": "vm-one", "cluster": {"id": 1},
-                                    "custom_fields": {"ac_workflow_status": None}, "primary_ip": None}]}
+                                    "custom_fields": {"ac_workflow_status": None, "rack_note": "not an ac field"},
+                                    "primary_ip": None}]}
 
     def answer(method, path, headers):
         if path.startswith("/api/status/"):
@@ -413,6 +414,7 @@ def test_a_reachable_console_reports_its_sources_and_prints_no_token(probe_run):
                  "NetBox token: minted",
                  "NetBox sites: 2 (alpha-dc (Alpha DC), beta-dc (Beta DC))",
                  "NetBox clusters: 1 (lab-cluster (type proxmox; scope dcim.site alpha-dc))",
+                 "NetBox VM workflow custom fields: ac_workflow_status",
                  "OpenBao sealed: False",
                  "Proxmox: TCP to the API port reachable",
                  "Proxmox CA: not declared on console_svc",
@@ -421,6 +423,7 @@ def test_a_reachable_console_reports_its_sources_and_prints_no_token(probe_run):
         assert line in out, (line, out)
     assert SENT_NB not in out and SENT_PVE not in out
     assert "127.0.0.1" not in out, "an address reached the default output"
+    assert "rack_note" not in out, "a non-ac custom field name reached the output"
 
 
 @NEEDS_ANSIBLE

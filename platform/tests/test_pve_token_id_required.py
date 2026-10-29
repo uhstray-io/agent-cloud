@@ -38,6 +38,7 @@ TOKEN_ID_VAR = {
     "register-o11y-pbs-restore-storage.yml": "_proxmox_secret.token_id",
     "prepare-pbs-guest-data-disk.yml": "_pve_token_id",
     "preflight-o11y-restore-target.yml": "_pve_token_id",
+    "probe-console-sources.yml": "_probe_pve_token_id",
     "proxmox-validate.yml": "_pve_token_id",
     "read-proxmox-root-ca.yml": "_pve_token_id",
     "reconcile-o11y-backup-job.yml": "_pve_token_id",
@@ -126,6 +127,7 @@ def _token_id_sources(play):
     Play vars and facts set in an earlier play's vars do not cross the play boundary."""
     names = (
         "_pve_token_id",
+        "_probe_pve_token_id",
         "_pve_tid",
         "_pve_headers",
         "_pve",
@@ -161,6 +163,7 @@ def _token_id_comes_from_store(play, prior_plays):
         r"|_pve_credentials\.token_id|_restore_pve_secret\.token_id|_cleanup_pve\.token_id"
         r"|_proxmox_secret\.token_id"
         r"|_pve_secret_record\.token_id"
+        r"|_probe_bao_proxmox\.json\.data\.data\.console_token_id"
     )
     if any(re.search(stored, source) for source in sources):
         return True
@@ -293,6 +296,11 @@ def _run_guards(tmp_path, name, token_id):
         "register-o11y-pbs-restore-storage.yml": {
             "_proxmox_secret": {**pve, "token_id": pve_token_id},
             "_pbs_secret": pbs_copy_secret,
+        },
+        # The probe's guard sits behind its token-minted gate and reads its own token id fact.
+        "probe-console-sources.yml": {
+            "_probe_pve_called": True,
+            "_probe_pve_token_id": pve_token_id,
         },
     }
     harness = [{
