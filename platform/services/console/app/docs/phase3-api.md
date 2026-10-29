@@ -27,7 +27,8 @@ sit in a tenant-scoped answer (D16, D25). The tenant inventory carries topology 
 
 ## Common envelope
 
-Every inventory, services, network and flows answer starts with these fields:
+Every inventory, services and network answer starts with these fields. The flows answer does not
+use this envelope; its shape is under `GET /v1/flows` below.
 
 ```json
 {
@@ -79,7 +80,7 @@ The envelope is per authority, not single, so the UI can say which source is dow
             {
               "name": "tududi", "vmid": 101,
               "status": "active", "live_status": "running",
-              "vcpus": 2.0, "memory_mb": 4096, "disk_gb": 40,
+              "vcpus": 2.0, "memory_mb": 4096, "disk_mb": 40960,
               "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync"],
               "workflow": {"steps": {"step-a": "pass", "step-b": "fail"},
                            "failed": ["step-b"], "last_run": "2026-10-26T12:00:00Z"},
@@ -126,6 +127,7 @@ The envelope is per authority, not single, so the UI can say which source is dow
   in any tenant, and unique among the Proxmox guests. A name held twice on either side gets `null`,
   because a guess could show another host's state.
 - `vmid` is the Proxmox id, or `null` when there is no live match.
+- `memory_mb` and `disk_mb` are megabytes, as NetBox stores them.
 - `primary_ip` is the one primary address NetBox holds, prefix length included, or `null`.
   Other addresses are never returned.
 - `workflow` is `null` for a VM with none of the three `ac_*` fields. Otherwise `steps` maps each
@@ -185,8 +187,14 @@ When two VMs of one tenant share a name, the first in list order is returned.
 {"source": "ok", "flows": [{"kind": "oidc", "from": "console", "to": "authentik", "label": "sign-in"}], "links": {"grafana": null, "grafana_conformance": null}}
 ```
 
-`source` is `unconfigured` with `flows: []` when `CONSOLE_FLOWS_FILE` is unset. Each entry is names
-only. An entry with any other key, such as an address, fails startup.
+This answer has its own shape, not the common envelope. It carries no per-authority `source`,
+`error`, `updated_at` or `stale`:
+
+- `source` is the catalogue's own state: `ok` when `CONSOLE_FLOWS_FILE` is set and parsed, or
+  `unconfigured` with `flows: []` when it is unset. There is no `error` and no `stale`.
+- `flows` is the catalogue, one entry per data flow. Each entry is names only: `kind`, `from`, `to`,
+  `label`. An entry with any other key, such as an address, fails startup.
+- `links` is the one field shared with the envelope. It is base-level, like the other answers.
 
 ## Grafana links
 
@@ -257,8 +265,8 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 
 ## Not verified
 
-- The NetBox 4.5 prefix filter `?site_id=` is used as the brief gives it. It is unverified against
-  a live NetBox: no NetBox server and no NetBox source are in this repository.
+- The prefix read is global: it reads every prefix and takes each site from the prefix's own scope.
+  Its paging is covered by the offset bullet below.
 - Whether NetBox 4.5 returns `site` on a cluster or device, and `scope_type`/`scope_id` on a
   cluster, or the nested `scope` on a prefix, is unverified against a live NetBox. A row missing the
   field it is checked by is dropped, so a wrong field name shows as a drop count, not as data.
@@ -270,8 +278,15 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 - The NetBox device `role` field name is confirmed by `platform/playbooks/create-netbox-device.yml`,
   which writes `role` and resolves `device-roles`. The nested role `name` and device `status` value
   are unverified live.
+- VM units are verified against the NetBox source, not the brief. `memory_mb` and `disk_mb` are
+  megabytes. netbox-community/netbox v4.5.0 `netbox/virtualization/models/virtualmachines.py`
+  labels both `(MB)` (lines 121-129). The disk unit changed from gigabytes to megabytes in 4.1
+  (`docs/release-notes/version-4.1.md:8`, v4.1.0). The 4.5 release notes at v4.5.0 and v4.5.10 say
+  nothing about the disk unit, though v4.5.10 drops the unit from the disk label. The stored value is
+  read unchanged.
 - The NetBox VM fields `vcpus`, `memory`, `disk`, `primary_ip`, `tags` and the `custom_fields` shape
-  are taken from the brief. `custom_fields` on a VM is confirmed by
-  `platform/playbooks/collect-service-conformance.yml`; the other names are unverified live.
+  are taken from the brief and the model. `custom_fields` on a VM is confirmed by
+  `platform/playbooks/collect-service-conformance.yml`; the other names are unverified against a live
+  NetBox.
 - The Proxmox `cluster/resources` field names are taken from the brief and the repository's test
   fixtures. Node `status` values are as Proxmox reports them; no live response was read.

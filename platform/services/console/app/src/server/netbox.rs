@@ -68,7 +68,11 @@ pub struct NbVm {
     pub status: String,
     pub vcpus: Option<f64>,
     pub memory_mb: Option<u64>,
-    pub disk_gb: Option<u64>,
+    /// The disk size in megabytes, as NetBox stores it. NetBox's model labels it `disk (MB)`
+    /// (netbox-community/netbox v4.5.0 `netbox/virtualization/models/virtualmachines.py:126-129`),
+    /// and the unit changed from gigabytes to megabytes in 4.1
+    /// (`docs/release-notes/version-4.1.md:8` at v4.1.0). Stored as read, never converted.
+    pub disk_mb: Option<u64>,
     /// The primary address as NetBox holds it, prefix length included. Never the other addresses.
     pub primary_ip: Option<String>,
     pub tags: Vec<String>,
@@ -462,7 +466,7 @@ fn vm_from(row: VmRow) -> NbVm {
             .unwrap_or_default(),
         vcpus: row.vcpus,
         memory_mb: row.memory,
-        disk_gb: row.disk,
+        disk_mb: row.disk,
         primary_ip: row.primary_ip.and_then(|ip| ip.address),
         tags: row
             .tags
@@ -593,19 +597,19 @@ pub mod fixtures {
     /// running, `ghost` has no live match. `vault_note` must never leave the console.
     pub const VMS_CLUSTER7: &str = r#"{"count":5,"next":null,"previous":null,"results":[
         {"id":101,"name":"tududi","status":{"value":"active","label":"Active","id":1},
-         "vcpus":2.0,"memory":4096,"disk":40,
+         "vcpus":2.0,"memory":4096,"disk":40960,
          "primary_ip":{"id":9,"address":"198.51.100.5/24","family":{"value":4,"label":"IPv4"}},
          "tags":[{"id":1,"name":"tududi-sync","slug":"tududi-sync"}],
          "cluster":{"id":7,"name":"pve-prod"},
          "custom_fields":{"ac_workflow_status":{"step-a":"pass","step-b":"fail"},
                           "ac_failed_steps":"step-b","ac_last_run":"2026-10-26T12:00:00Z",
                           "vault_note":"hunter2-custom-value"}},
-        {"id":102,"name":"gateway","status":{"value":"active"},"vcpus":1.0,"memory":2048,"disk":20,
+        {"id":102,"name":"gateway","status":{"value":"active"},"vcpus":1.0,"memory":2048,"disk":20480,
          "primary_ip":null,"tags":[],"cluster":{"id":7,"name":"pve-prod"},"custom_fields":{}},
-        {"id":103,"name":"planned-vm","status":{"value":"planned"},"vcpus":1.0,"memory":1024,"disk":10,
+        {"id":103,"name":"planned-vm","status":{"value":"planned"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[],"cluster":{"id":7,"name":"pve-prod"},
          "custom_fields":{"ac_workflow_status":{"step-a":"pass"},"ac_failed_steps":"","ac_last_run":null}},
-        {"id":104,"name":"wiki","status":{"value":"active"},"vcpus":2.0,"memory":4096,"disk":30,
+        {"id":104,"name":"wiki","status":{"value":"active"},"vcpus":2.0,"memory":4096,"disk":30720,
          "primary_ip":{"id":10,"address":"198.51.100.8/24"},"tags":[],
          "cluster":{"id":7,"name":"pve-prod"},"custom_fields":{}},
         {"id":105,"name":"ghost","status":{"value":"active"},"vcpus":null,"memory":null,"disk":null,
@@ -614,16 +618,16 @@ pub mod fixtures {
 
     /// The lab cluster's VM: a name no Proxmox guest carries, so it never joins.
     pub const VMS_CLUSTER8: &str = r#"{"count":1,"next":null,"previous":null,"results":[
-        {"id":201,"name":"lab-wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10,
+        {"id":201,"name":"lab-wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[],"cluster":{"id":8,"name":"pve-lab"},"custom_fields":{}}
     ]}"#;
 
     /// The lab cluster with a second VM named `wiki`, the same name as a prod VM, so the name
     /// is held twice across tenants.
     pub const VMS_CLUSTER8_DUP: &str = r#"{"count":2,"next":null,"previous":null,"results":[
-        {"id":201,"name":"lab-wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10,
+        {"id":201,"name":"lab-wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[],"cluster":{"id":8,"name":"pve-lab"},"custom_fields":{}},
-        {"id":202,"name":"wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10,
+        {"id":202,"name":"wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[],"cluster":{"id":8,"name":"pve-lab"},"custom_fields":{}}
     ]}"#;
 
@@ -891,7 +895,7 @@ mod tests {
         assert_eq!(tududi.status, "active");
         assert_eq!(tududi.vcpus, Some(2.0));
         assert_eq!(tududi.memory_mb, Some(4096));
-        assert_eq!(tududi.disk_gb, Some(40));
+        assert_eq!(tududi.disk_mb, Some(40960));
         assert_eq!(tududi.primary_ip.as_deref(), Some("198.51.100.5/24"));
         assert_eq!(tududi.tags, ["tududi-sync"]);
         let workflow = tududi.workflow.as_ref().expect("workflow");
