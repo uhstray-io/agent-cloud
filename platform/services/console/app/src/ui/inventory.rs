@@ -633,6 +633,13 @@ mod tests {
             vm_key("dc1", "pve-prod", &first, 0),
             vm_key("dc1", "pve-prod", &second, 1)
         );
+        // Two NetBox-only VMs have no VM ID, so only their position can tell them apart.
+        let unlinked = vm("tududi", "red");
+        assert_ne!(
+            vm_key("dc1", "pve-prod", &unlinked, 0),
+            vm_key("dc1", "pve-prod", &unlinked, 1),
+            "same name and no VM ID: the position keys them apart"
+        );
         // Distinct picks, so each selects on its own.
         let a = vm_pick("dc1", "pve-prod", "tududi", 0);
         let b = vm_pick("dc1", "pve-prod", "tududi", 1);
