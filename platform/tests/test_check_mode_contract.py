@@ -74,10 +74,16 @@ SCRATCH_ROOT = "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', tru
 SCRATCH_ROOT_INLINE = "(lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)"
 SET_FACT_KEYS = ("ansible.builtin.set_fact", "ansible.legacy.set_fact", "set_fact")
 # The only dest/path a forced write may carry, each valid only in its own file.
+PROVISION = "platform/playbooks/provision-console-proxmox-token.yml"
+# The TLS trust file for verified Proxmox reads under --check (plan 17 D22, 2026-10-29): one literal path
+# under the runner's temp root, written and removed by that playbook alone. Extension of the runner-scratch
+# class, recorded in plan/architecture/08-ansible-automation-standards.md.
+CONSOLE_CA = SCRATCH_ROOT + "/console-proxmox-ca.pem"
 SCRATCH_TARGETS = {
     MATERIALISE: {"{{ _msk_dir.path }}/id"},
     REMOVE: {"{{ _rsk_dir }}"},
     PIN: {"{{ _pshk_kh }}"},
+    PROVISION: {CONSOLE_CA},
 }
 # Every name a scratch target is built from, and its ONE definition: (file, kind, value), where
 # value is the exact set_fact expression, or the name of the task whose register defines it.
@@ -539,6 +545,40 @@ def test_a_pinned_target_passes_only_in_its_own_file_on_the_runner():
     assert not _scratch(task + FORCED, PIN)
     assert _scratch(task + FORCED, REMOVE), "another file's target"
     assert _scratch(task + "  check_mode: false\n", PIN), "a forced write on the TARGET is not runner scratch"
+
+
+def test_the_console_ca_write_and_its_removal_pass_at_the_pinned_path_only():
+    # The TLS trust file of the Dispatch Console token playbook: written for verified reads under --check,
+    # removed in the same run. Passes in its own file, with no vars:, aimed at its one literal path.
+    write = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{CONSOLE_CA}"\n'
+    removal = f'- name: ca gone\n  ansible.builtin.file:\n    path: "{CONSOLE_CA}"\n    state: absent\n'
+    assert not _scratch(write + FORCED, PROVISION)
+    assert not _scratch(removal + FORCED, PROVISION)
+    # The same path is not a target in any other file: another playbook may not write it.
+    assert _scratch(write + FORCED, PIN) == ["ca: copy" + OUTSIDE]
+    assert _scratch(removal + FORCED, REMOVE) == ["ca gone: file" + OUTSIDE]
+
+
+def test_the_console_ca_write_to_an_unpinned_path_is_caught():
+    # The mutation the guard exists for: the same write aimed anywhere else in the same file.
+    for dest in ("/tmp/console-proxmox-ca.pem", SCRATCH_ROOT + "/other.pem", "{{ _ca_path }}",
+                 CONSOLE_CA + "/../x", CONSOLE_CA.replace("console-proxmox-ca", "console-proxmox-ca2")):
+        task = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{dest}"\n'
+        assert _scratch(task + FORCED, PROVISION) == ["ca: copy" + OUTSIDE], dest
+
+
+def test_vars_on_the_console_ca_write_are_refused_at_every_level():
+    # A vars: entry anywhere above the write could redirect it, so each placement is a violation.
+    task = f'- name: ca\n  ansible.builtin.copy:\n    content: x\n    dest: "{CONSOLE_CA}"\n'
+    assert _scratch(task + FORCED + "  vars:\n    anything: 1\n", PROVISION) == ["ca: copy" + CARRIES_VARS]
+    nested = ("- name: outer\n  vars:\n    anything: 1\n  block:\n"
+              f'    - name: ca\n      ansible.builtin.copy:\n        content: x\n        dest: "{CONSOLE_CA}"\n'
+              "      delegate_to: localhost\n      check_mode: false\n")
+    assert _scratch(nested, PROVISION) == ["ca: copy" + CARRIES_VARS]
+    play = ("- hosts: localhost\n  vars:\n    anything: 1\n  tasks:\n"
+            f'    - name: ca\n      ansible.builtin.copy:\n        content: x\n        dest: "{CONSOLE_CA}"\n'
+            "      delegate_to: localhost\n      check_mode: false\n")
+    assert _scratch(play, PROVISION) == ["ca: copy" + CARRIES_VARS]
 
 
 def test_vars_on_a_forced_write_or_its_block_are_refused():

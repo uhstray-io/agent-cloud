@@ -145,6 +145,7 @@ Each row is a rule from the linked page, read 2026-09-22.
    > genuine `<temp root>/.sshkey_*` directory passes, so reaching another run's scratch needs
    > launch-level extra vars or control of `TMPDIR`; the worst case is disturbing a concurrent
    > run's scratch, not escaping it. (c) `TMPDIR` itself moves the root.
+   > **Extension, 2026-10-29 (Dispatch Console D22):** a TLS trust file for verified Proxmox reads under `--check` is also a pinned runner-scratch target, one literal path under the temp root for `platform/playbooks/provision-console-proxmox-token.yml`, written and removed in the same run.
 3. **Verify is a tag.** Each state-changing playbook tags its verification tasks `verify`,
    and also tags `verify` on anything verification needs: OpenBao authentication, the
    transport guard, and every `rescue` and `always` section of a block that contains verify

@@ -24,6 +24,7 @@ from pathlib import Path
 import playbook_yaml
 import pytest
 import yaml
+from test_check_mode_contract import CONSOLE_CA
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -135,6 +136,15 @@ def _proxmox_play() -> dict:
     return playbook_yaml.plays(PROXMOX)[0]
 
 
+def _proxmox_vars() -> dict:
+    # The play has no vars: block (the check-mode contract forbids one on a play with a forced write); its
+    # values are the facts its first two tasks set, merged here in order.
+    tasks = _proxmox_play()["tasks"]
+    assert tasks[0]["name"] == "Set the play's values", tasks[0].get("name")
+    assert tasks[1]["name"] == "Derive the console token id", tasks[1].get("name")
+    return {**tasks[0]["ansible.builtin.set_fact"], **tasks[1]["ansible.builtin.set_fact"]}
+
+
 def _proxmox_tasks() -> list[dict]:
     return _tasks(PROXMOX)
 
@@ -152,7 +162,7 @@ def test_proxmox_play_is_local_and_refuses_internal_extra_vars():
 
 
 def test_proxmox_user_and_token_ids_are_the_declared_ones():
-    v = _proxmox_play()["vars"]
+    v = _proxmox_vars()
     assert v["_console_userid"] == "console@pve"
     assert v["_console_tokenid"] == "console"
     assert v["_console_token_full"] == "{{ _console_userid }}!{{ _console_tokenid }}"
@@ -160,7 +170,7 @@ def test_proxmox_user_and_token_ids_are_the_declared_ones():
 
 def test_proxmox_required_rights_are_the_three_the_source_checks():
     # Realm.AllocateUser + User.Modify (create_user), User.Modify (generate_token), Permissions.Modify (update_acl).
-    assert _proxmox_play()["vars"]["_required_rights"] == ["Realm.AllocateUser", "User.Modify", "Permissions.Modify"]
+    assert _proxmox_vars()["_required_rights"] == ["Realm.AllocateUser", "User.Modify", "Permissions.Modify"]
 
 
 def test_every_uri_request_in_the_proxmox_play_is_no_log():
@@ -184,7 +194,8 @@ def test_every_write_is_gated_on_the_mint_states_and_never_check_mode():
     writes = [t for t in _proxmox_tasks()
               if "auth/approle/login" not in str((t.get("ansible.builtin.uri") or {}).get("url", ""))
               and ((t.get("ansible.builtin.uri") or {}).get("method") in ("POST", "PUT")
-                   or ("ansible.builtin.include_tasks" in t and "bao-merge-keys" in str(t.get("ansible.builtin.include_tasks"))))]
+                   or ("ansible.builtin.include_tasks" in t
+                       and "bao-merge-keys" in str(t.get("ansible.builtin.include_tasks"))))]
     assert len(writes) == 5, [t.get("name") for t in writes]
     for t in writes:
         assert _state_gate(t.get("when")), t.get("name")
@@ -199,7 +210,7 @@ def test_no_delete_request_exists():
 
 def test_a_live_stored_token_is_never_rotated():
     # stored_present is the only state that writes nothing. The mint gate names the other two states only.
-    states = _proxmox_play()["vars"]
+    states = _proxmox_vars()
     assert "_recreate" in states
     decide = _named(PROXMOX, "Decide the state from what Proxmox and the store hold")["ansible.builtin.set_fact"]
     assert "'stored_present' if (_console_stored and _console_token_present)" in decide["_console_state"]
@@ -256,6 +267,132 @@ def test_the_store_writes_the_id_and_the_secret_through_the_merge_task():
     data = store["vars"]["_bm_data"]
     assert set(data) == {"console_token_id", "console_token"}, data
     assert store["vars"]["_bm_path"] == "services/proxmox"
+
+
+def test_the_proxmox_play_never_disables_certificate_validation():
+    # The admin token is never sent over unverified TLS. Grep the raw text, comments included, so no
+    # spelling of the switch can hide in a comment or a task.
+    text = PROXMOX.read_text()
+    assert re.search(r"validate_certs\s*:\s*(false|no|0)\b", text, re.IGNORECASE) is None
+
+
+def test_every_admin_header_request_verifies_against_the_declared_ca_file():
+    uris = [t for t in _proxmox_tasks()
+            if "_pve_headers" in str((t.get("ansible.builtin.uri") or {}).get("headers", ""))]
+    assert len(uris) == 7, [t.get("name") for t in uris]
+    for t in uris:
+        u = t["ansible.builtin.uri"]
+        assert u.get("validate_certs") is True, t.get("name")
+        assert u.get("ca_path") == CONSOLE_CA, t.get("name")
+
+
+def test_the_ca_gate_comes_before_any_credential_read_and_names_the_var():
+    names = [t.get("name") for t in _proxmox_tasks()]
+    gate_name = "Require the declared Proxmox CA before any credential is read"
+    assert names.index(gate_name) < names.index("Authenticate to OpenBao")
+    assert "console_proxmox_ca_pem" in _named(PROXMOX, gate_name)["ansible.builtin.assert"]["fail_msg"]
+
+
+def test_the_ca_file_is_written_from_the_declared_var_privately_at_the_pinned_path_and_removed_in_always():
+    write_task = _named(PROXMOX, "Write the declared CA to the pinned scratch file")
+    copy = write_task["ansible.builtin.copy"]
+    assert copy["content"].startswith("{{ _console_ca_pem"), copy
+    assert copy["dest"] == CONSOLE_CA and copy["mode"] == "0600", copy
+    # Forced under --check, so the write must be delegated to the runner and must not be given vars:.
+    assert write_task["delegate_to"] == "localhost" and write_task["check_mode"] is False, write_task
+    assert "vars" not in write_task, write_task
+    doc = yaml.safe_load(PROXMOX.read_text())
+    play = next(p for p in doc if isinstance(p, dict) and "hosts" in p)
+    assert "vars" not in play, "a play-level vars: block would reach the forced CA write"
+    tls = next(t for t in play["tasks"] if "block" in t)
+    assert "vars" not in tls, tls
+    removal_task = tls["always"][0]
+    removal = removal_task["ansible.builtin.file"]
+    assert removal == {"path": CONSOLE_CA, "state": "absent"}, removal
+    assert removal_task["delegate_to"] == "localhost" and removal_task["check_mode"] is False, removal_task
+    assert "when" not in removal_task, removal_task
+
+
+def _run_with_inventory(tmp_path: Path, inventory: dict, playbook: dict) -> subprocess.CompletedProcess:
+    inv = tmp_path / "inventory.yml"
+    inv.write_text(yaml.safe_dump(inventory))
+    path = tmp_path / "harness.yml"
+    path.write_text(yaml.safe_dump([playbook]))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    return subprocess.run(["ansible-playbook", "-i", str(inv), str(path)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False)
+
+
+def _ca_gate_harness(hosts: dict | None) -> tuple[dict, dict]:
+    # The real gate task and the real var expression, run against an inventory this test builds.
+    gate = _named(PROXMOX, "Require the declared Proxmox CA before any credential is read")
+    ca_expr = _proxmox_vars()["_console_ca_pem"]
+    inventory = {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}
+    if hosts is not None:
+        inventory["all"]["children"] = {"console_svc": {"hosts": hosts}}
+    playbook = {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "vars": {"_console_ca_pem": ca_expr},
+                "tasks": [gate, {"ansible.builtin.debug": {"msg": "PASSED-GATE"}}]}
+    return inventory, playbook
+
+
+@NEEDS_ANSIBLE
+def test_the_always_cleanup_removes_the_pinned_ca_file(tmp_path):
+    # The pinned path is computed from TMPDIR, so for this one run TMPDIR is the test's own directory: the
+    # real cleanup task then removes a file this test wrote, never one in the runner's temp root.
+    root = Path(os.path.realpath(tmp_path))
+    ca = root / "console-proxmox-ca.pem"
+    ca.write_text(CERT_PEM)
+    task = _named(PROXMOX, "Remove the pinned CA scratch file")
+    harness = tmp_path / "harness.yml"
+    harness.write_text(yaml.safe_dump([{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                                        "tasks": [task]}]))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    env["TMPDIR"] = str(root)
+    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not ca.exists()
+
+
+@NEEDS_ANSIBLE
+def test_the_ca_gate_refuses_when_the_console_host_lacks_the_var(tmp_path):
+    inv, play = _ca_gate_harness({"console-local": {"ansible_connection": "local"}})
+    proc = _run_with_inventory(tmp_path, inv, play)
+    assert proc.returncode != 0 and "console_proxmox_ca_pem is not set" in proc.stdout, proc.stdout
+    assert "PASSED-GATE" not in proc.stdout
+
+
+@NEEDS_ANSIBLE
+def test_the_ca_gate_refuses_when_no_console_host_is_declared(tmp_path):
+    inv, play = _ca_gate_harness(None)
+    proc = _run_with_inventory(tmp_path, inv, play)
+    assert proc.returncode != 0 and "console_proxmox_ca_pem is not set" in proc.stdout, proc.stdout
+    assert "PASSED-GATE" not in proc.stdout
+
+
+@NEEDS_ANSIBLE
+def test_the_ca_gate_refuses_text_that_is_not_a_certificate(tmp_path):
+    # Not a key, so only the certificate-header clause can refuse it.
+    inv, play = _ca_gate_harness({"console-local": {"ansible_connection": "local",
+                                                    "console_proxmox_ca_pem": "not a certificate"}})
+    proc = _run_with_inventory(tmp_path, inv, play)
+    assert proc.returncode != 0 and "public certificate" in proc.stdout, proc.stdout
+    assert "PASSED-GATE" not in proc.stdout
+
+
+@NEEDS_ANSIBLE
+def test_the_ca_gate_refuses_a_private_key_and_passes_a_certificate(tmp_path):
+    key_inv, key_play = _ca_gate_harness({"console-local": {"ansible_connection": "local",
+                                                            "console_proxmox_ca_pem": PRIVATE_KEY_PEM}})
+    key = _run_with_inventory(tmp_path, key_inv, key_play)
+    assert key.returncode != 0 and "public certificate" in key.stdout, key.stdout
+    ok_inv, ok_play = _ca_gate_harness({"console-local": {"ansible_connection": "local",
+                                                          "console_proxmox_ca_pem": CERT_PEM}})
+    ok = _run_with_inventory(tmp_path, ok_inv, ok_play)
+    assert ok.returncode == 0 and "PASSED-GATE" in ok.stdout, ok.stdout + ok.stderr
 
 
 @NEEDS_ANSIBLE
@@ -473,7 +610,8 @@ def test_the_flows_template_reads_no_upstream_or_instance_field():
         assert forbidden not in text.split("-#}", 1)[1], forbidden
 
 
-PHASE3_KEYS = ("console_netbox_url", "console_proxmox_url", "console_proxmox_ca_pem", "console_grafana_url", "netbox_site")
+PHASE3_KEYS = ("console_netbox_url", "console_proxmox_url", "console_proxmox_ca_pem", "console_grafana_url",
+               "netbox_site")
 
 
 def test_inventory_placeholders_carry_no_real_address():
