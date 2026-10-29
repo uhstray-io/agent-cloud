@@ -13,12 +13,13 @@ import sys
 import threading
 
 import pytest
+from fake_http import DrainingHandler
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "platform/services/plane/deployment/configure_instance.py"
 SECRET = "client-secret-value-that-must-never-print"
 
 
-class StubPlane(http.server.BaseHTTPRequestHandler):
+class StubPlane(DrainingHandler):
     state = {}
 
     def log_message(self, *args):
