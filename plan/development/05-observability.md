@@ -2473,3 +2473,16 @@ or production activation. Alloy v1.9.2 for the journal remains uncached and
 unverified. The evidence is recorded in
 `/private/tmp/o11y-alloy-pinned-validation-20261028/result.md`; it does not mark
 an OpenSpec live-acceptance criterion complete.
+
+> **Expected-target survey Linux argv transport source fix (2026-10-29, plan before implementation):** The
+> reviewed helper is 218,419 bytes. An isolated cached Linux container reproduced `E2BIG` (`OSError`, errno 7,
+> `Argument list too long`) when the helper was passed as the `python3 -c` argument. This proves the transport
+> fails at the current source size on Linux; it makes that a strong explanation for the later sanitized
+> Semaphore survey's empty output/from-JSON failure, but does not prove task 10278's historical root cause.
+> Change only `survey-o11y-expected-metrics-targets.yml` and its focused regression: stage the helper bytes
+> retained by the existing exact-reviewed-checkout gate into a private receiver temp directory, invoke Python
+> with the short helper path and reviewed declaration on protected stdin, and remove the exact temp directory
+> from an unconditional `always` path with a creation-failure guard. Keep the source/revision gate, declaration
+> privacy, public receipt schema, survey behavior, and all distinct source-versus-live acceptance gates intact.
+> Verify with a test-first regression, focused pytest, syntax/lint and strict OpenSpec checks. This is source-only;
+> it does not rerun the historical task or close any live acceptance gate.
