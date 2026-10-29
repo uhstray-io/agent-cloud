@@ -43,7 +43,7 @@ Every step runs through the Semaphore template. Nothing is deployed by hand over
 
 - [ ] 5.1 Write `platform/services/console/deployment/deploy.sh` for container lifecycle only. It builds the image on the host with `$CONTAINER_ENGINE build -f deployment/Containerfile platform/services/console`, and it reads the secrets it needs from the rendered `.env` file.
 - [ ] 5.2 Write `platform/playbooks/deploy-console.yml` as the composable chain: `place-monorepo.yml`, then `manage-secrets.yml`, then `deploy.sh`, then verify. Verify runs `<engine> exec console` against `/healthz` (expecting 200) and `/v1/me` (expecting 401).
-- [ ] 5.3 Provision the console's own AppRole with `manage-approle.yml`, and store its credentials under `secret/services/approles/console`.
+- [ ] ~~5.3~~ **Superseded by Shared credentials task 8.0 (D27).** Was: Provision the console's own AppRole with `manage-approle.yml`, and store its credentials under `secret/services/approles/console`.
 - [ ] 5.4 Add the `console_svc` group and the `console-local` host to the inventory placeholders, with `service_name` `console`, `container_engine` `podman`, `console_bind` `127.0.0.1` and `console_port` `3410`. Real values stay in site-config.
 - [ ] 5.5 Add the route `console.agent-cloud.test` to `console:8080` through `Manage Caddy Sites` in local-dev.
 - [ ] 5.6 Add the templates `Deploy console` (with `dev_variant`, and the survey fields `service_branch` and `deploy_force_recreate`), `Clean Deploy console`, `Deploy console (Local)` and `Clean Deploy console (Local)` to `platform/semaphore/templates.yml`. Publish them with `setup-templates.yml`.
@@ -67,7 +67,7 @@ Decisions D22–D25. Every source is all-or-none in the environment. A source th
 - [ ] 6.4 Server:
   - Write `netbox.rs` and `proxmox.rs` read clients. Each refuses a cleartext URL unless the host is loopback or RFC1918, and Proxmox TLS verifies against the CA file.
   - Write `inventory.rs`, an aggregator with a 60 s cache.
-  - Routes: `GET /v1/tenants/{t}/inventory`, `/services` and `/services/{name}` (tenant-scoped, D25), and `GET /v1/flows` (admin-only).
+  - Routes: `GET /v1/tenants/{t}/inventory`, `/services` and `/services/{name}` (tenant-scoped, D25). `GET /v1/flows` and `GET /v1/network` (prefixes) are admin-only.
   - Unit tests against mock authorities, including the unconfigured, unreachable, stale and partial cases.
 - [ ] 6.5 UI:
   - The Topology page: sites → clusters → nodes → VMs, with click and shift-click selection and red/amber/green status from Proxmox state and the workflow fields.
