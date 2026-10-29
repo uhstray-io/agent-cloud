@@ -154,7 +154,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | Document | Status | Purpose |
 |---|---|---|
 | [IMPLEMENTATION_PLAN.md](../development/IMPLEMENTATION_PLAN.md) | COMPLETE | Master implementation plan. Agent roles, service topology, guardrails model, phase roadmap. |
-| [OPA-INTEGRATION-PLAN.md](../development/OPA-INTEGRATION-PLAN.md) | PROPOSED | OPA policy engine deployment, agent authorization, Rego policies, Semaphore governance. |
+| [03-guardrails-governance.md](../development/03-guardrails-governance.md) (OPA section; original in `plan/archive/development/OPA-INTEGRATION-PLAN.md`) | IN PROGRESS | OPA policy engine deployment, agent authorization, Rego policies, Semaphore governance. |
 | [NETCLAW-INTEGRATION-PLAN.md](../development/NETCLAW-INTEGRATION-PLAN.md) | PROPOSED | NetClaw network agent deployment, MCP server selection, device inventory, cross-agent coordination. |
 | [WISAI-DEPLOYMENT-PLAN.md](../archive/WISAI-DEPLOYMENT-PLAN.md) | SUPERSEDED | WisAI LLM plane (Ollama + Open WebUI) — superseded by skynet `/v1`; see `SKYNET-REPLACEMENT-PLAN.md`. Retained as provenance. |
 | [SKYNET-REPLACEMENT-PLAN.md](../development/SKYNET-REPLACEMENT-PLAN.md) | PROPOSED | Reframe agent-cloud docs for skynet replacing WisAI's LLM plane + NemoClaw/OpenClaw; preserve OPA; harvest use-cases into skynet's catalog. |

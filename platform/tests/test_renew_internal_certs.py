@@ -495,6 +495,7 @@ class World:
                                       "o11y_loki_port": str(loki.server_port)}},
             }
             for group, over in (host_over or {}).items():
+                hosts.setdefault(group, {})
                 for name, value in over.items():
                     if value is None:
                         hosts[group].pop(name, None)
@@ -1402,3 +1403,93 @@ def test_the_serial_python_reports_is_the_serial_openssl_prints(tmp_path):
         with (socket.create_connection(("127.0.0.1", server.server_port)) as raw,
               ctx.wrap_socket(raw, server_hostname=f"gateway.{ZONE}") as tls):
             assert int(tls.getpeercert()["serialNumber"], 16) == int(serial, 16)
+
+
+# ── The OPA listener's server leaf (opa_svc: deploy-opa.yml's TLS listener) ────
+
+def _opa_leaf(tmp: Path) -> dict:
+    """The OPA host's server leaf, at the path the TLS deploy gives it (<deploy>/certs/<leaf>)."""
+    return {"name": "opa-server", "host": "opa", "dir": str(tmp / "opa-root/opa-deploy/certs/opa-server"),
+            "profile": "server", "sans": [f"opa.{ZONE}"], "reload": "none"}
+
+
+def _opa_host(tmp: Path, port, **over) -> dict:
+    """The opa_svc host's vars: TLS on, the default name (dns_site/dns_zone), the deploy dir under
+    the test root."""
+    host = {"opa_tls": True, "opa_bind": "127.0.0.1", "opa_port": str(port),
+            "local_monorepo_dir": str(tmp / "opa-root"), "monorepo_deploy_path": "opa-deploy"}
+    return {**host, **over}
+
+
+def _opa_listener(world, leaf, frozen=False):
+    """An OPA-shaped listener: serves the leaf in `current` on every connection (or, `frozen`, the
+    one it started with) and asks for no client certificate."""
+    scratch = world.tmp / "opa-scratch"
+    scratch.mkdir(exist_ok=True)
+    return _thread(_gateway(world.ca, leaf, [], scratch, frozen, True))
+
+
+def test_an_opa_server_leaf_is_admitted_renewed_and_proven_by_its_name(world):
+    opa = _opa_leaf(world.tmp)
+    _place(world.ca, opa, DUE)
+    world.place()
+    before = _current_serial(opa)
+    with _opa_listener(world, opa) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), opa],
+                            host_over={"opa_svc": {"opa": _opa_host(world.tmp, listener.server_port)}})
+    assert rc == 0, out
+    assert "opa-server (opa-server)" in out and "host renews" in out
+    assert "OPA listener served the expected serial, verified by name against the bundle" in out
+    assert _current_serial(opa) != before
+    assert [c["sans"] for c in world.signed()] == [[f"opa.{ZONE}"]]
+    assert world.reloads() == [], "OPA re-reads its leaf itself: nothing is reloaded or restarted"
+    [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert run["stream"]["status"] == "success"
+    assert json.loads(run["values"][0][1])["renewed"] == ["opa-server"]
+
+
+def test_an_opa_listener_still_serving_the_old_leaf_fails_the_run(world):
+    opa = _opa_leaf(world.tmp)
+    _place(world.ca, opa, DUE)
+    world.place()
+    with _opa_listener(world, opa, frozen=True) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), opa], extra={"renew_proof_retries": 1},
+                            host_over={"opa_svc": {"opa": _opa_host(world.tmp, listener.server_port)}})
+    assert rc != 0
+    assert "Prove OPA serves the new server leaf" in out
+    runs = [s["stream"] for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert runs == [{"job": "renew-internal-certs", "kind": "run", "status": "failure"}]
+
+
+@pytest.mark.parametrize("change,host_over", [
+    (lambda leaf, tmp: None, {"opa_tls": False}),
+    (lambda leaf, tmp: leaf.update(reload="restart"), {}),
+    (lambda leaf, tmp: leaf.update(dir=str(tmp / "opa-root/elsewhere/opa-server")), {}),
+    (lambda leaf, tmp: leaf.update(sans=[f"other.{ZONE}"]), {}),
+], ids=["opa-tls-off", "reload-restart", "dir-off-deploy", "name-not-in-sans"])
+def test_an_opa_server_leaf_outside_its_declared_shape_is_refused_before_issuance(world, change, host_over):
+    opa = _opa_leaf(world.tmp)
+    change(opa, world.tmp)
+    _place(world.ca, opa, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), opa],
+                        host_over={"opa_svc": {"opa": _opa_host(world.tmp, 8281, **host_over)}})
+    _refused(world, out, rc, "the OPA server leaf is admitted only as the opa_svc host's own")
+
+
+def test_the_server_proof_presents_a_client_leaf_only_when_one_is_given(tmp_path):
+    # The OPA listener asks for no client certificate, so the proof must not load one from an
+    # empty path (the gateway's callers still pass theirs).
+    script = playbook_yaml.plays(PLAYBOOK)[1]["vars"]["_renew_server_prover"]
+    ca = _ca(tmp_path)
+    leaf = {"dir": str(tmp_path / "opa/certs/opa-server"), "sans": [f"opa.{ZONE}"], "profile": "server"}
+    serial = _place(ca, leaf, FRESH)
+    bundle = Path(leaf["dir"]).parent / "step-ca-bundle.crt"
+    with _thread(_gateway(ca, leaf, [], tmp_path, cert_optional=True)) as server:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(server.server_port), f"opa.{ZONE}",
+             str(bundle), "", ""],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert int(result.stdout.strip(), 16) == int(serial, 16)

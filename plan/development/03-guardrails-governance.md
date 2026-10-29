@@ -13,7 +13,8 @@
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
 **Date:** 2026-04-07
-**Status:** Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
+**Status:** Production rollout in progress (2026-10-29): see "Production deployment" below.
+Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
 local pattern (`platform/services/opa/deployment/`, `deploy-opa.yml`, `opa_svc`
 inventory group, "Deploy OPA (Local)" Semaphore template). Unauthenticated
 internal decision API on `opa:8181` (local-dev), host diagnostics `127.0.0.1:8281`.
@@ -880,6 +881,53 @@ graph TD
 | **IMPLEMENTATION_PLAN.md** | OPA enables policy enforcement for Phase 1 integrations (Semaphore template governance, NocoDB CRUD scoping); does not block existing phases |
 | **NETCLAW-INTEGRATION-PLAN.md** | OPA enforces CIDR scoping and ITSM gating for NetClaw network operations; NetClaw queries OPA before any scan or config push |
 | **UNIFICATION-PLAN.md** | OPA is listed as P0 priority alongside Kyverno in the "Recommended Additions" section; Governance Agent (P1) wraps OPA + NeMo Guardrails |
+
+---
+
+## Production deployment (2026-10-29)
+
+OPA runs on local-dev only until this lands. Its first production caller is skynet. skynet's deploy refuses an
+`skynet_opa_url` that is not `https://` (`deploy-skynet.yml`). The Dispatch Console's proposal path (plan 17,
+D29) waits on both OPA and skynet.
+
+### Decisions (Joseph, 2026-10-29)
+
+| # | Decision | Rejected | Why |
+|---|---|---|---|
+| P1 | OPA runs on its **own small VM** (`opa_svc`, host `opa`) | Co-hosting on the console VM | The workflow and firewall model assume one service per VM; the console set the precedent (plan 17 D21) |
+| P2 | **LAN bind plus host firewall.** OPA publishes 8281 on the VM's LAN address. `apply-firewall.yml` admits that port only from its callers' groups (`firewall_allow_groups`, port detection off). No Caddy route, no public DNS | A Caddy route; OPA bearer tokens | OPA returns decisions, not secrets. A Caddy route cannot be restricted to the LAN: production Caddy does not see the real peer address (2026-09-15). Tokens would add a credential to every caller for no gain over the firewall |
+| P3 | **Server TLS from a step-ca leaf in the first deploy.** Leaf `opa-server`, SAN `opa.<dns_site>.<dns_zone>`, served by OPA itself (`--tls-cert-file`, `--tls-cert-refresh-period=30s`). No client-certificate authentication | HTTP first, TLS later; mutual TLS | skynet requires `https://`. OPA re-reads the files every 30 s, which picks up the renewal's `current` swap without a restart (measured locally 2026-10-29 with the 1.0.0-static image) |
+| P4 | **Policies come from the placed monorepo** (read-only bind mount). The deployed branch decides which Rego is live; a change is applied by redeploy | OPA bundles | No bundle build or serving infrastructure to run |
+| P5 | Production runs **`Deploy OPA (Dev)` with `service_branch=dev`** until `dev` is promoted | Waiting for promotion | Same as the console rollout |
+
+### What the code does
+
+- `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback) and `opa_internal_url`.
+- With `opa_tls` set, it checks the leaf's declaration in `internal_leaves`: server profile, this host, `<deploy>/certs/<leaf>`, reload `none`, the server name in its SANs.
+- It issues the leaf if none is current (`tasks/mint-internal-cert.yml`, key made on the OPA host), places the CA bundle (`tasks/distribute-ca-root.yml`), and starts OPA with `compose.tls.yml`. That overlay adds userns keep-id for the image's uid 1000, the `./certs` directory mount, and the TLS flags.
+- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, and `opa test /policies`.
+- `renew-internal-certs.yml` admits the leaf as class `opa-server` and proves it by a TLS connection verified by name, comparing the served serial with `current`.
+
+### Production checklist
+
+Each step runs through Semaphore, check mode first.
+
+1. [x] Capacity: `Validate Proxmox Cluster (Dev)`, task 10225. crabnebula has the most free memory. VMIDs 200–222 are taken, so the VM gets 223.
+2. [x] Address: `Allocate NetBox IP (Dev)`, reserve the declared address (task 10229; the address is in site-config). The reservation passed the live pfSense DHCP boundary check.
+3. [ ] site-config PR A declares host `opa`, group `opa_svc` (VM, bind, TLS variables, firewall) and the `vm-specs.yml` entry. It does not declare the leaf.
+4. [ ] This agent-cloud PR merged to `dev`. Publish `Deploy OPA (Dev)` and `Clean Deploy OPA (Dev)`, then sync the inventory (`platform/semaphore/sync-inventory.yml`).
+5. [ ] Lookup Service Inventory, then Validate Address Free (`target_service=opa`).
+6. [ ] Provision VM (`target_service=opa`). Then Distribute SSH Keys, Back Up Service SSH Key, Verify Host Access, and Harden SSH. The disk is declared at the template's 20G, so the root needs no grow.
+7. [ ] site-config PR B declares the `opa-server` leaf, after step 4 and step 6. Sync the inventory. Run `Deploy step-ca (Dev)` so the CA's name policy admits the SAN. Run `Deploy OPA (Dev)` at once: the daily renewal refuses a declared leaf it cannot prove, and it cannot prove this one until OPA serves it.
+8. [ ] `Deploy OPA (Dev)` with `service_branch=dev`. This places the repository, issues the leaf, starts OPA and verifies it. Re-run it to confirm the deploy converges.
+9. [ ] Apply Firewall (`target_service=opa`). Ensure Service Persistence, then Verify Service Persistence. Run Snapshot Access.
+10. [ ] `Probe Reachability (Dev)`: from `console_svc`, 8281 open; from another LAN host group, 8281 closed.
+11. [ ] `Renew Internal Certs (Dev)` with `--tags verify`, which proves the served serial.
+12. [ ] skynet: add `skynet_svc` to `firewall_allow_groups`, re-run Apply Firewall, and point skynet at `https://opa.<dns_site>.<dns_zone>:8281`. skynet maps the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe.
+
+**Known gaps:**
+- `Verify Service Health` is not declared for OPA. Its `uri` probe has no server-name override, and the name does not resolve on the OPA host. The deploy's own verify covers `/health`.
+- A first check-mode deploy on a fresh VM fails at the health probe: `deploy.sh` is skipped in check mode, so no container is running yet. The first dry run proves only the guards and the placement.
 
 <!-- ======================= source: MAIN-BRANCH-PROTECTION-PLAN.md ======================= -->
 
