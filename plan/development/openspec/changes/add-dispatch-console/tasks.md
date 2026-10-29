@@ -116,5 +116,5 @@ Decision D26. Admin-only (D25).
 - [ ] 10.1 Accessibility: a keyboard-only path through Work, the composer, the stepper and topology selection.
 - [ ] 10.2 Error, permission-denied and unconfigured states on every page.
 - [ ] 10.3 A load test of the API.
-- [ ] 10.4 The plan 17 validation table passes on `dev`. Write the operator test plan `plan/product/dispatch-console/TEST-PLAN.md`.
-- [ ] 10.5 Open the dev → main promotion PR. The merge is the operator's call.
+- [ ] 10.4 The plan 17 validation table passes on `dev` **and in production** (every phase gate 6.6, 8.5 and 9.3, run through the (Dev) templates and the computer-use tests). Write the operator test plan `plan/product/dispatch-console/TEST-PLAN.md`.
+- [ ] 10.5 Only after 10.4 passes: open the dev → main promotion PR. The merge is the operator's call.
