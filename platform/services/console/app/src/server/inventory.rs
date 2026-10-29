@@ -298,7 +298,8 @@ pub struct VmView {
     pub live_status: Option<String>,
     pub vcpus: Option<f64>,
     pub memory_mb: Option<u64>,
-    pub disk_gb: Option<u64>,
+    /// Megabytes, as NetBox stores the VM disk (see `netbox::NbVm::disk_mb`).
+    pub disk_mb: Option<u64>,
     /// The primary address NetBox holds, prefix length included.
     pub primary_ip: Option<String>,
     pub tags: Vec<String>,
@@ -564,7 +565,7 @@ fn vm_view(vm: &NbVm, live: Option<&PveGuest>, join: &Join<'_>) -> VmView {
         live_status: live_status.clone(),
         vcpus: vm.vcpus,
         memory_mb: vm.memory_mb,
-        disk_gb: vm.disk_gb,
+        disk_mb: vm.disk_mb,
         primary_ip: vm.primary_ip.clone(),
         tags: vm.tags.clone(),
         workflow: vm.workflow.clone(),
