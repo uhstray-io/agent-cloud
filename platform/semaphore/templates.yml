@@ -881,6 +881,27 @@ templates:
         required: false
         default_value: "false"
 
+  # Read-only reachability of the Dispatch Console's Phase 3 sources (plan 17 task 6.3) from the console VM:
+  # NetBox, Proxmox and OpenBao, names and booleans only. Fails when a configured source does not answer.
+  - name: Probe Console Sources
+    playbook: platform/playbooks/probe-console-sources.yml
+    dev_variant: true
+
+  # Read-only: prints the Proxmox cluster root CA (public certificate and fingerprint) to pin as site-config
+  # console_proxmox_ca_pem. The admin token is sent only over a connection pinned to the API leaf certificate's
+  # SHA-256, which the operator confirms from an independent vantage: a first run with no value observes the
+  # fingerprint and stops before any token use. The playbook header gives the cross-check to run before pinning.
+  - name: Read Proxmox Root CA
+    playbook: platform/playbooks/read-proxmox-root-ca.yml
+    dev_variant: true
+    survey_vars:
+      - name: proxmox_leaf_sha256
+        title: "Proxmox API leaf certificate SHA-256"
+        description: "Leaf certificate SHA-256 confirmed out of band; empty = observe and stop"
+        type: string
+        required: false
+        default_value: ""
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so

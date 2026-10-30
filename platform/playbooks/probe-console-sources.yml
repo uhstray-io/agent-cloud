@@ -1,0 +1,534 @@
+---
+# probe-console-sources.yml — read-only reachability probe of the Dispatch Console's Phase 3 sources,
+# run from the console VM (plan/development/openspec/changes/add-dispatch-console/tasks.md, task 6.3).
+#
+# Why the console VM. The console reads NetBox, Proxmox and OpenBao from its own network position. A
+# probe run from anywhere else tests a different path, so the source probes run on console_svc.
+#
+# Sources and what each one reports. A source is probed only when its URL is set on console_svc.
+#   NetBox   GET /api/status/ with no token: reachable, HTTP status, netbox-version when reported.
+#            With the console token (secret/services/netbox:console_api_token): site slugs and names,
+#            cluster names with type and scope, and whether the first site, cluster and VM records
+#            hold the named keys. Key presence is printed as a boolean; no value is printed.
+#   Proxmox  TCP to the API port (wait_for; the port defaults to 8006, as proxmox_discovery does). With
+#            the console token (secret/services/proxmox:console_token_id and console_token) and the CA
+#            deploy-console.yml renders on this host (config/proxmox-ca.pem): cluster name (cluster/status)
+#            and node names with status (cluster/resources?type=node, entries selected by type == 'node').
+#            No authenticated Proxmox call is made without the CA, so the token is never sent unverified.
+#   OpenBao  GET /v1/sys/health with no token (any HTTP status answers) and GET /v1/sys/seal-status with no
+#            token (the sealed flag). The AppRole login and the token reads run on the controller, as
+#            deploy-console.yml reads its shared secrets.
+#
+# Outcomes. A token the store does not hold is "not minted" and is not a failure. A configured source
+# that does not answer, or refuses the console token, fails the play after the summary is printed. The
+# failure names the source; no URL, address or token is printed.
+#
+# Read-only. Every request is a GET, or the OpenBao AppRole login. Nothing is written to a file, a store or
+# a source. Identical under --check: every read carries check_mode: false.
+#
+# Output discipline. A task that holds a token, a header or a protected result is no_log. The repository
+# callback strips nested results only, and ansible-core shows a top-level invocation (its headers included)
+# at -vvv, so a visible task never carries one. The summary is built from derived line strings and debugs
+# only that summary. Visible probe tasks report HTTP status and TCP state; at -v ansible prints their own
+# results, which can contain an address (a wait_for timeout, for one), so the default output is the one
+# that carries no address.
+#
+# Usage: the "Probe Console Sources" Semaphore template (and its (Dev) twin). No survey vars.
+#
+# Unverified in this repository. The NetBox fields this probe reports (netbox-version, cluster type and
+# scope, the first VM's cluster.id, the names of its ac_ custom fields and primary_ip) have no reader in the
+# console app yet (platform/services/console/app/src has no NetBox or Proxmox client; checked 2026-10-29), so
+# the probe reports what the live records hold instead of assuming the shape. The cluster/resources
+# type=node query value is the one plan and deploy-console.yml name; it is not checked against a live Proxmox here.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and reads as a probe that checked nothing (docs/MISTAKES.md 2.21).
+- name: "Pre-flight: console_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: console_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: console_svc
+
+- name: "Probe the Dispatch Console's Phase 3 sources from the console VM"
+  hosts: console_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _netbox_url: "{{ console_netbox_url | default('', true) | string | trim }}"
+    _proxmox_url: "{{ console_proxmox_url | default('', true) | string | trim }}"
+    _proxmox_ca_pem: "{{ console_proxmox_ca_pem | default('', true) | string }}"
+    _proxmox_ca_declared: "{{ '-----BEGIN CERTIFICATE-----' in _proxmox_ca_pem }}"
+    # The file deploy-console.yml renders (manage-secrets writes config/, and compose mounts it at this path).
+    _proxmox_ca_file: "{{ _deploy_dir }}/config/proxmox-ca.pem"
+    # The OpenBao reads are needed only when a source that takes a token is configured.
+    _bao_needed: "{{ (_netbox_url | length > 0) or (_proxmox_url | length > 0) }}"
+    _any_status: "{{ range(100, 600) | list }}"
+
+  tasks:
+    # ── OpenBao: transport guard, then the endpoint as this host sees it ─────────────────────────────
+    - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # Each URL that receives a token passes the same guard before any OpenBao read or any request. A URL that is not
+    # set is skipped. A refused URL is named by its label and is never printed.
+    - name: "Transport guard: the NetBox endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _netbox_url }}"
+        _assert_url_label: "NetBox"
+      when: _netbox_url | length > 0
+
+    - name: "Transport guard: the Proxmox endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _proxmox_url }}"
+        _assert_url_label: "Proxmox"
+      when: _proxmox_url | length > 0
+
+    # The Proxmox CA gate below means nothing over plain http, so the Proxmox URL must use the https scheme. The check
+    # reads the scheme only, and the message names the variable, never the value.
+    - name: "Proxmox: the console API URL must use the https scheme (the CA check means nothing over http)"
+      ansible.builtin.assert:
+        that:
+          - (_proxmox_url | urlsplit('scheme')) == 'https'
+        fail_msg: >-
+          console_proxmox_url must use the https scheme. The console token is sent only over a verified TLS
+          connection, so the probe stops before any request. The URL is not printed.
+        quiet: true
+      when: _proxmox_url | length > 0
+
+    - name: "OpenBao: health answer from the console VM (no token; any HTTP status answers)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/sys/health"
+        method: GET
+        status_code: "{{ _any_status }}"
+        timeout: 10
+      failed_when: false
+      check_mode: false
+      register: _probe_bao_health
+
+    - name: "OpenBao: seal status from the console VM (no token)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/sys/seal-status"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      failed_when: false
+      check_mode: false
+      register: _probe_bao_seal
+
+    # ── OpenBao: the console's tokens, read on the controller (no_log: credential reads) ─────────────
+    - name: "OpenBao: AppRole login on the controller (only when a token-taking source is configured)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+        follow_redirects: none
+        timeout: 15
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      register: _probe_bao_login
+      when: _bao_needed | bool
+      delegate_to: localhost
+      no_log: true
+
+    - name: "OpenBao: read the console's NetBox token (controller, no_log)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _probe_bao_login.json.auth.client_token }}"
+        unredirected_headers: [X-Vault-Token]
+        follow_redirects: none
+        status_code: [200, 404]
+        timeout: 15
+      failed_when: false
+      check_mode: false
+      register: _probe_bao_netbox
+      when:
+        - _netbox_url | length > 0
+        - (_probe_bao_login.status | default(0)) == 200
+      delegate_to: localhost
+      no_log: true
+
+    - name: "OpenBao: read the console's Proxmox token (controller, no_log)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/proxmox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _probe_bao_login.json.auth.client_token }}"
+        unredirected_headers: [X-Vault-Token]
+        follow_redirects: none
+        status_code: [200, 404]
+        timeout: 15
+      failed_when: false
+      check_mode: false
+      register: _probe_bao_proxmox
+      when:
+        - _proxmox_url | length > 0
+        - (_probe_bao_login.status | default(0)) == 200
+      delegate_to: localhost
+      no_log: true
+
+    - name: "NetBox: hold the console token in Ansible memory (empty when not minted; no_log)"
+      ansible.builtin.set_fact:
+        _probe_nb_token: "{{ (((_probe_bao_netbox.json | default({})).data | default({})).data | default({})).console_api_token | default('') }}"
+      no_log: true
+
+    - name: "Proxmox: hold the console token id and secret in Ansible memory (empty when not minted; no_log)"
+      ansible.builtin.set_fact:
+        _probe_pve_token_id: "{{ _probe_bao_proxmox.json.data.data.console_token_id | default('') if ((_probe_bao_proxmox.status | default(0)) == 200) else '' }}"
+        _probe_pve_token: "{{ (((_probe_bao_proxmox.json | default({})).data | default({})).data | default({})).console_token | default('') }}"
+      no_log: true
+
+    # ── NetBox: reachability from the console VM, then the token-bearing reads ───────────────────────
+    - name: "NetBox: HTTP status from the console VM (no token)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/status/"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      failed_when: false
+      check_mode: false
+      register: _probe_nb_status
+      when: _netbox_url | length > 0
+
+    - name: "NetBox: decide whether the token-bearing reads run (no_log)"
+      ansible.builtin.set_fact:
+        _probe_nb_called: "{{ ((_probe_nb_status.status | default(0)) == 200) and (_probe_nb_token | length > 0) }}"
+      no_log: true
+
+    - name: "NetBox: request header for the console token (the helper picks the scheme; no_log)"
+      ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+      vars:
+        _nb_token: "{{ _probe_nb_token }}"
+      when: _probe_nb_called | bool
+      no_log: true
+
+    - name: "NetBox: sites with the console token (no_log: the response is protected)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/dcim/sites/?limit=1000"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 15
+      failed_when: false
+      check_mode: false
+      register: _probe_nb_sites
+      when: _probe_nb_called | bool
+      no_log: true
+
+    - name: "NetBox: clusters with the console token (no_log: the response is protected)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/clusters/?limit=1000"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 15
+      failed_when: false
+      check_mode: false
+      register: _probe_nb_clusters
+      when: _probe_nb_called | bool
+      no_log: true
+
+    - name: "NetBox: one VM record with the console token, for key presence (no_log: protected)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?limit=1"
+        method: GET
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 15
+      failed_when: false
+      check_mode: false
+      register: _probe_nb_vms
+      when: _probe_nb_called | bool
+      no_log: true
+
+    # ── Proxmox: TCP from the console VM, the CA on this host, then the token-bearing reads ──────────
+    - name: "Proxmox: TCP to the API port from the console VM"
+      ansible.builtin.wait_for:
+        host: "{{ _proxmox_url | urlsplit('hostname') }}"
+        port: "{{ _proxmox_url | urlsplit('port') | default(8006, true) }}"
+        timeout: 5
+        state: started
+      register: _probe_pve_tcp
+      when: _proxmox_url | length > 0
+      failed_when: false
+      check_mode: false
+
+    - name: "Proxmox: the console CA file on this host (stat, read-only)"
+      ansible.builtin.stat:
+        path: "{{ _proxmox_ca_file }}"
+      register: _probe_pve_ca
+      when:
+        - _proxmox_url | length > 0
+        - _proxmox_ca_declared | bool
+      check_mode: false
+
+    - name: "Proxmox: decide whether the token-bearing reads run (no_log)"
+      ansible.builtin.set_fact:
+        _probe_pve_called: >-
+          {{ (_proxmox_url | length > 0)
+             and ((_probe_pve_tcp.state | default('')) == 'started')
+             and (_proxmox_ca_declared | bool)
+             and ((_probe_pve_ca.stat | default({})).exists | default(false))
+             and (_probe_pve_token | length > 0) }}
+      no_log: true
+
+    # Refuse a minted token that carries no token id before the first Proxmox request (the token id names the
+    # account; there is no built-in default). Not no_log: the assert can fail only when the fact is empty, so no
+    # value exists to show, and the failure prints the expression text and the fail_msg, never a value.
+    - name: "Proxmox: require the stored console token id before any Proxmox request"
+      ansible.builtin.assert:
+        that: _probe_pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no console_token_id. Store the console token id
+          (<user>@<realm>!<token-name>) beside console_token; there is no built-in default.
+        quiet: true
+      when: _probe_pve_called | bool
+
+    - name: "Proxmox: cluster status with the console token (cluster name; no_log)"
+      ansible.builtin.uri:
+        url: "{{ _proxmox_url }}/api2/json/cluster/status"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _probe_pve_token_id }}={{ _probe_pve_token }}"
+        status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        ca_path: "{{ _proxmox_ca_file }}"
+        timeout: 15
+      failed_when: false
+      check_mode: false
+      register: _probe_pve_cluster
+      when: _probe_pve_called | bool
+      no_log: true
+
+    - name: "Proxmox: node resources with the console token (type=node; no_log)"
+      ansible.builtin.uri:
+        url: "{{ _proxmox_url }}/api2/json/cluster/resources?type=node"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _probe_pve_token_id }}={{ _probe_pve_token }}"
+        status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        validate_certs: true
+        ca_path: "{{ _proxmox_ca_file }}"
+        timeout: 15
+      failed_when: false
+      check_mode: false
+      register: _probe_pve_nodes
+      when: _probe_pve_called | bool
+      no_log: true
+
+    # ── Derive the answers (no_log: built from protected results; the summary reads only the lines) ──
+    - name: "Derive the first record of each NetBox read (no_log: never printed)"
+      ansible.builtin.set_fact:
+        _probe_nb_rec_site: "{{ ((_probe_nb_sites.json | default({})).results | default([]) | first) | default({}, true) }}"
+        _probe_nb_rec_cluster: "{{ ((_probe_nb_clusters.json | default({})).results | default([]) | first) | default({}, true) }}"
+        _probe_nb_rec_vm: "{{ ((_probe_nb_vms.json | default({})).results | default([]) | first) | default({}, true) }}"
+      no_log: true
+
+    - name: "Derive the state of each source's token (no_log)"
+      ansible.builtin.set_fact:
+        _probe_nb_state: >-
+          {{ 'not configured' if (_netbox_url | length == 0)
+             else ('login failed' if ((_probe_bao_login.status | default(0)) != 200)
+             else ('minted' if (_probe_nb_token | length > 0)
+             else ('not minted' if (((_probe_bao_netbox.status | default(0)) == 200) or ((_probe_bao_netbox.status | default(0)) == 404))
+             else ('HTTP ' ~ ((_probe_bao_netbox.status | default(0)) | string))))) }}
+        _probe_pve_state: >-
+          {{ 'not configured' if (_proxmox_url | length == 0)
+             else ('login failed' if ((_probe_bao_login.status | default(0)) != 200)
+             else ('minted' if (_probe_pve_token | length > 0)
+             else ('not minted' if (((_probe_bao_proxmox.status | default(0)) == 200) or ((_probe_bao_proxmox.status | default(0)) == 404))
+             else ('HTTP ' ~ ((_probe_bao_proxmox.status | default(0)) | string))))) }}
+      no_log: true
+
+    - name: "Derive the presence of the named keys on the first records (no_log: booleans only)"
+      ansible.builtin.set_fact:
+        _probe_chk_site_id: "{{ ('id' in _probe_nb_rec_site) if (_probe_nb_rec_site | length > 0) else 'no record' }}"
+        _probe_chk_cluster_scope_type: "{{ ('scope_type' in _probe_nb_rec_cluster) if (_probe_nb_rec_cluster | length > 0) else 'no record' }}"
+        _probe_chk_cluster_scope_id: "{{ ('scope_id' in _probe_nb_rec_cluster) if (_probe_nb_rec_cluster | length > 0) else 'no record' }}"
+        _probe_chk_vm_cluster_id: "{{ (((_probe_nb_rec_vm.cluster | default({})) is mapping) and ('id' in (_probe_nb_rec_vm.cluster | default({})))) if (_probe_nb_rec_vm | length > 0) else 'no record' }}"
+        _probe_chk_vm_ac_fields: >-
+          {{ 'no record' if (_probe_nb_rec_vm | length == 0)
+             else ((_probe_nb_rec_vm.custom_fields | default({}, true) | dict2items | map(attribute='key')
+                    | select('match', '^ac_') | sort | join(', ')) or 'none') }}
+        _probe_chk_vm_primary_ip: "{{ ('primary_ip' in _probe_nb_rec_vm) if (_probe_nb_rec_vm | length > 0) else 'no record' }}"
+      no_log: true
+
+    - name: "Derive the NetBox and Proxmox names, counts and failures (no_log)"
+      ansible.builtin.set_fact:
+        _probe_nb_site_text: >-
+          {% for s in ((_probe_nb_sites.json | default({})).results | default([])) %}{{ s.slug | default('?') }} ({{ s.name | default('?') }}){{ ', ' if not loop.last else '' }}{% else %}none{% endfor %}
+        _probe_nb_cluster_text: >-
+          {% for c in ((_probe_nb_clusters.json | default({})).results | default([])) %}{{ c.name | default('?') }} (type {{ (c.type.slug | default('?')) if (c.type is mapping) else (c.type | default('?')) }}; scope {{ c.scope_type | default('?') }} {{ (c.scope.slug | default('?')) if (c.scope is mapping) else '?' }}){{ ', ' if not loop.last else '' }}{% else %}none{% endfor %}
+        _probe_pve_cluster_name: >-
+          {{ ((_probe_pve_cluster.json | default({})).data | default([]) | selectattr('type', 'equalto', 'cluster') | map(attribute='name') | first) | default('?', true) }}
+        _probe_pve_node_text: >-
+          {% for n in ((_probe_pve_nodes.json | default({})).data | default([]) | selectattr('type', 'equalto', 'node') | list) %}{{ n.node | default('?') }} ({{ n.status | default('?') }}){{ ', ' if not loop.last else '' }}{% else %}none{% endfor %}
+        _probe_bao_read_failed: >-
+          {{ (_bao_needed | bool) and (
+               ((_probe_bao_login.status | default(0)) != 200)
+               or ((_netbox_url | length > 0) and not ((_probe_bao_netbox.status | default(0)) in [200, 404]))
+               or ((_proxmox_url | length > 0) and not ((_probe_bao_proxmox.status | default(0)) in [200, 404]))) }}
+        _probe_nb_failed: >-
+          {{ (_netbox_url | length > 0) and (
+               ((_probe_nb_status.status | default(0)) != 200)
+               or ((_probe_nb_called | bool) and not (
+                    ((_probe_nb_sites.status | default(0)) == 200)
+                    and ((_probe_nb_clusters.status | default(0)) == 200)
+                    and ((_probe_nb_vms.status | default(0)) == 200)))) }}
+        _probe_pve_failed: >-
+          {{ (_proxmox_url | length > 0) and (
+               ((_probe_pve_tcp.state | default('')) != 'started')
+               or ((_proxmox_ca_declared | bool) and not ((_probe_pve_ca.stat | default({})).exists | default(false)))
+               or ((_probe_pve_called | bool) and not (
+                    ((_probe_pve_cluster.status | default(0)) == 200)
+                    and ((_probe_pve_nodes.status | default(0)) == 200)))) }}
+      no_log: true
+
+    - name: "Derive the summary lines (no_log: built from protected results)"
+      ansible.builtin.set_fact:
+        _probe_line_bao_endpoint: >-
+          {{ 'OpenBao endpoint: not reachable from the console VM'
+             if ((_probe_bao_health.status | default(0)) == 0)
+             else ('OpenBao endpoint: HTTP ' ~ ((_probe_bao_health.status | default(0)) | string) ~ ' from the console VM') }}
+        _probe_line_bao_sealed: >-
+          {{ ('OpenBao sealed: ' ~ (((_probe_bao_seal.json | default({})).sealed | default('unknown')) | string))
+             if ((_probe_bao_seal.status | default(0)) == 200)
+             else 'OpenBao seal status: not answered' }}
+        _probe_line_bao_login: >-
+          {{ ('OpenBao AppRole login on the controller: ' ~ ('ok' if ((_probe_bao_login.status | default(0)) == 200) else ('failed (HTTP ' ~ ((_probe_bao_login.status | default(0)) | string) ~ ')')))
+             if (_bao_needed | bool)
+             else '' }}
+        _probe_line_nb_reach: >-
+          {{ 'NetBox: not configured (console_netbox_url unset on console_svc)'
+             if (_netbox_url | length == 0)
+             else ('NetBox: not reachable from the console VM'
+             if ((_probe_nb_status.status | default(0)) == 0)
+             else ('NetBox: HTTP ' ~ ((_probe_nb_status.status | default(0)) | string) ~ ' from the console VM'
+             if ((_probe_nb_status.status | default(0)) != 200)
+             else ('NetBox: reachable (HTTP 200), netbox-version: ' ~ (((_probe_nb_status.json | default({})).get('netbox-version', 'not reported')) | string)))) }}
+        _probe_line_nb_token: >-
+          {{ '' if (_probe_nb_state == 'not configured')
+             else ({'minted': 'NetBox token: minted',
+                    'not minted': 'NetBox token: not minted (console_api_token absent from secret/services/netbox)',
+                    'login failed': 'NetBox token: not read (OpenBao login failed)'}.get(_probe_nb_state, 'NetBox token: not read (OpenBao answered ' ~ _probe_nb_state ~ ')')) }}
+        _probe_line_nb_sites: >-
+          {{ '' if (not (_probe_nb_called | bool))
+             else (('NetBox sites: ' ~ ((_probe_nb_sites.json | default({})).results | default([]) | length | string) ~ ' (' ~ _probe_nb_site_text ~ ')')
+             if ((_probe_nb_sites.status | default(0)) == 200)
+             else ('NetBox sites: not read (HTTP ' ~ ((_probe_nb_sites.status | default(0)) | string) ~ ')')) }}
+        _probe_line_nb_clusters: >-
+          {{ '' if (not (_probe_nb_called | bool))
+             else (('NetBox clusters: ' ~ ((_probe_nb_clusters.json | default({})).results | default([]) | length | string) ~ ' (' ~ _probe_nb_cluster_text ~ ')')
+             if ((_probe_nb_clusters.status | default(0)) == 200)
+             else ('NetBox clusters: not read (HTTP ' ~ ((_probe_nb_clusters.status | default(0)) | string) ~ ')')) }}
+        _probe_line_nb_records: >-
+          {{ '' if (not (_probe_nb_called | bool))
+             else (('NetBox record keys (True = present): site id ' ~ _probe_chk_site_id
+                    ~ '; cluster scope_type ' ~ _probe_chk_cluster_scope_type
+                    ~ '; cluster scope_id ' ~ _probe_chk_cluster_scope_id
+                    ~ '; VM cluster.id ' ~ _probe_chk_vm_cluster_id
+                    ~ '; VM primary_ip ' ~ _probe_chk_vm_primary_ip)
+             if (((_probe_nb_sites.status | default(0)) == 200)
+                 and ((_probe_nb_clusters.status | default(0)) == 200)
+                 and ((_probe_nb_vms.status | default(0)) == 200))
+             else 'NetBox record keys: not read') }}
+        _probe_line_nb_vm_fields: >-
+          {{ '' if (not (_probe_nb_called | bool))
+             else (('NetBox VM workflow custom fields: ' ~ _probe_chk_vm_ac_fields)
+             if ((_probe_nb_vms.status | default(0)) == 200)
+             else 'NetBox VM workflow custom fields: not read') }}
+        _probe_line_pve_tcp: >-
+          {{ 'Proxmox: not configured (console_proxmox_url unset on console_svc)'
+             if (_proxmox_url | length == 0)
+             else (('Proxmox: TCP to the API port reachable (port ' ~ (_proxmox_url | urlsplit('port') | default(8006, true) | string) ~ ')')
+             if ((_probe_pve_tcp.state | default('')) == 'started')
+             else ('Proxmox: TCP to the API port not reachable from the console VM (port ' ~ (_proxmox_url | urlsplit('port') | default(8006, true) | string) ~ ')')) }}
+        _probe_line_pve_ca: >-
+          {{ '' if (_proxmox_url | length == 0)
+             else ('Proxmox CA: not declared on console_svc (console_proxmox_ca_pem unset); no authenticated Proxmox call is made'
+             if (not (_proxmox_ca_declared | bool))
+             else ('Proxmox CA: declared and rendered on this host'
+             if ((_probe_pve_ca.stat | default({})).exists | default(false))
+             else 'Proxmox CA: declared but not rendered on this host (run Deploy Console)')) }}
+        _probe_line_pve_token: >-
+          {{ '' if (_proxmox_url | length == 0)
+             else ({'minted': 'Proxmox token: minted',
+                    'not minted': 'Proxmox token: not minted (console_token absent from secret/services/proxmox)',
+                    'login failed': 'Proxmox token: not read (OpenBao login failed)'}.get(_probe_pve_state, 'Proxmox token: not read (OpenBao answered ' ~ _probe_pve_state ~ ')')) }}
+        _probe_line_pve_api: >-
+          {{ '' if ((_proxmox_url | length == 0) or (_probe_pve_called | bool))
+             else ('Proxmox API: not called (no verified CA declared; the console token is never sent without one)'
+             if ((not (_proxmox_ca_declared | bool)) and (_probe_pve_token | length > 0))
+             else ('Proxmox API: not called (no console token minted)'
+             if (_probe_pve_token | length == 0)
+             else '')) }}
+        _probe_line_pve_cluster: >-
+          {{ '' if (not (_probe_pve_called | bool))
+             else (('Proxmox cluster: ' ~ _probe_pve_cluster_name)
+             if ((_probe_pve_cluster.status | default(0)) == 200)
+             else ('Proxmox cluster: not read (HTTP ' ~ ((_probe_pve_cluster.status | default(0)) | string) ~ ')')) }}
+        _probe_line_pve_nodes: >-
+          {{ '' if (not (_probe_pve_called | bool))
+             else (('Proxmox nodes: ' ~ _probe_pve_node_text)
+             if ((_probe_pve_nodes.status | default(0)) == 200)
+             else ('Proxmox nodes: not read (HTTP ' ~ ((_probe_pve_nodes.status | default(0)) | string) ~ ')')) }}
+        _probe_failures: >-
+          {{ ((['OpenBao endpoint'] if ((_probe_bao_health.status | default(0)) == 0) else [])
+              + (['OpenBao credential read'] if (_probe_bao_read_failed | bool) else [])
+              + (['NetBox'] if (_probe_nb_failed | bool) else [])
+              + (['Proxmox'] if (_probe_pve_failed | bool) else [])) }}
+      no_log: true
+
+    # ── Summary and verdict: visible, and built from the line strings alone ──────────────────────────
+    - name: "Summary: the lines the operator reads (names, counts, HTTP statuses and booleans only)"
+      ansible.builtin.set_fact:
+        _probe_summary: >-
+          {{ [_probe_line_bao_endpoint, _probe_line_bao_sealed, _probe_line_bao_login,
+              _probe_line_nb_reach, _probe_line_nb_token, _probe_line_nb_sites,
+              _probe_line_nb_clusters, _probe_line_nb_records, _probe_line_nb_vm_fields,
+              _probe_line_pve_tcp, _probe_line_pve_ca, _probe_line_pve_token,
+              _probe_line_pve_api, _probe_line_pve_cluster, _probe_line_pve_nodes]
+             | reject('equalto', '') | list }}
+
+    - name: "Print the summary"
+      ansible.builtin.debug:
+        var: _probe_summary
+
+    - name: "Require every configured source to answer the probe"
+      ansible.builtin.assert:
+        that:
+          - _probe_failures | length == 0
+        fail_msg: >-
+          Configured source(s) did not answer the probe: {{ _probe_failures | join(', ') }}.
+          The summary above names the state of each line. The failing sources are named, not addressed.
+        quiet: true
