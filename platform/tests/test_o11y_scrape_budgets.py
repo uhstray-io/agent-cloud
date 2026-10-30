@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -398,11 +399,21 @@ def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_r
     }
     assert BUDGET.o11y_availability_source_gate_diagnostic(
         {**result, "stdout": json.dumps(known_failure)}
-    ) == "native_source_stale"
+    ) == "source_readback_unavailable"
+
+    refusal_result = {**result, "rc": 2, "stdout": json.dumps(known_failure)}
+    assert BUDGET.o11y_availability_source_gate_diagnostic(refusal_result) == "native_source_stale"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**refusal_result, "stdout": json.dumps(observed)}
+    ) == "source_readback_unavailable"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**result, "stdout": json.dumps(known_failure)}
+    ) == "source_readback_unavailable"
 
     sentinel = "SECRET-SENTINEL-MUST-NOT-ESCAPE"
     invalid_results = [
-        {**result, "rc": 1}, {**result, "rc": True}, {**result, "rc": "0"},
+        {**result, "rc": 1}, {**result, "rc": 3}, {**result, "rc": True}, {**result, "rc": "0"},
+        {**refusal_result, "stdout": json.dumps({**known_failure, "reason": "unknown_refusal"})},
         {**result, "stderr": sentinel}, {**result, "stdout": sentinel},
         {**result, "stdout": "{" + (" " * 65536)},
         {**result, "stdout": '{"status":"unavailable","status":"observed"}'},
@@ -414,6 +425,57 @@ def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_r
         category = BUDGET.o11y_availability_source_gate_diagnostic(invalid)
         assert category == "source_readback_unavailable"
         assert sentinel not in category
+
+
+def test_availability_source_gate_diagnostic_accepts_native_self_only_readback():
+    limits = {
+        "body_size_limit": 1024, "sample_limit": 64, "label_limit": 16,
+        "label_name_length_limit": 64, "label_value_length_limit": 256,
+    }
+    self_only = {
+        "status": "observed", "source": "alloy", "intended_source": "alloy",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "alloy",
+            "detail": {
+                "status": "observed", "reason": "fixed_native_components_loaded",
+                "target_count": 0, "targets": [],
+                "alloy_self": {"status": "observed", "limits": limits},
+            },
+            "samples": {
+                "status": "observed", "reason": "fresh_native_samples", "freshness_seconds": 300,
+                "alloy_self": {
+                    "status": "observed", "scrape_up": 1,
+                    "scrape_samples_scraped": 415, "scrape_body_size_bytes": 1234,
+                },
+                "targets": [],
+            },
+        },
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": json.dumps(self_only), "stderr": "",
+    }) == "producer_observed"
+
+
+def test_availability_source_gate_diagnostic_consumes_real_helper_refusal_contract():
+    helper = ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py"
+    environment = os.environ.copy()
+    # Invalid input is rejected before the helper can contact a receiver or container engine.
+    environment["O11Y_AVAILABILITY_SOURCE_JSON"] = "{}"
+    done = subprocess.run(
+        [sys.executable, str(helper), "--verify-availability-source"],
+        cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert done.returncode == 2
+    assert done.stderr == ""
+    refusal = json.loads(done.stdout)
+    assert refusal == {
+        "status": "unavailable", "reason": "native_declaration_invalid", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": done.returncode, "stdout": done.stdout, "stderr": done.stderr,
+    }) == "native_declaration_invalid"
 
 
 def test_availability_source_diagnostic_precedes_unchanged_protected_gate():

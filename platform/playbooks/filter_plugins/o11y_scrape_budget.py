@@ -717,7 +717,7 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
         if not isinstance(result, Mapping):
             return fallback
         rc, stdout, stderr = result.get("rc"), result.get("stdout"), result.get("stderr")
-        if isinstance(rc, bool) or not isinstance(rc, int) or rc != 0:
+        if isinstance(rc, bool) or not isinstance(rc, int) or rc not in {0, 2}:
             return fallback
         if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 65536 or stderr != "":
             return fallback
@@ -731,15 +731,13 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
             return value
 
         readback = json.loads(stdout, object_pairs_hook=unique_object)
-        coverage = o11y_availability_source_coverage(readback)
-        if coverage.get("status") == "observed":
+        coverage = o11y_availability_source_coverage(readback, allow_self_only=True)
+        if rc == 0 and coverage.get("status") == "observed":
             return "producer_observed" if coverage.get("matches_intended") is True else "producer_mismatch"
-        reason = coverage.get("reason")
-        if reason == fallback:
+        if rc != 2 or coverage.get("status") != "unavailable":
             return fallback
-        if coverage.get("status") == "unavailable" and isinstance(reason, str) and re.fullmatch(
-            r"(?:native|source)_[a-z_]+", reason
-        ):
+        reason = coverage.get("reason")
+        if isinstance(reason, str) and reason != fallback:
             return reason
         return fallback
     except Exception:

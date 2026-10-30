@@ -15,8 +15,6 @@
 
 ## 3. Trace ingestion after alert proof
 
-- [ ] Source-gate diagnostic follow-up: expose a fixed, validated category when the current Alloy self-metrics producer helper refuses, while keeping its raw result protected and the existing strict producer assertion unchanged. This addresses missing failure visibility only; the production refusal's root cause remains unverified.
-
 - [ ] 3.1 Record the passed metrics, alert, retention, and cardinality gates; make trace enablement refuse an incomplete gate.
 - [x] 3.2 Add a real Alloy OTLP-to-Tempo path with a pinned image, inventory-controlled retention, self-hosted storage, and no receiver without a consumer. The production receiver health and trace receipts passed.
 - [ ] 3.3 Instrument one service with the stable service identity and verify trace-to-log and trace-to-metric pivots through the provisioned datasource.

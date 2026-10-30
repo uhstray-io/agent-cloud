@@ -1371,6 +1371,18 @@ Same-source reruns must prove that source is already current. The existing
 Grafana expected-target helper remains rule-ownership preparation only, with
 UID, five-label identity, query, tombstone and recovery formats unchanged.
 
+The early prepare-phase source helper is invoked with `require_health_targets`
+false and may therefore report a valid native self-only readback. Its main
+returns rc 0 for observed output and rc 2 for a fixed unavailable refusal
+envelope. The visible preflight diagnostic accepts only those exact return
+codes and the corresponding validated schema: rc 0 requires observed source
+evidence, while rc 2 may expose only a reason accepted by the shared source
+coverage reducer. Every other code, malformed or oversized output, nonempty
+stderr, or rc/payload mismatch reduces to a fixed fallback. The raw registered
+result remains protected and the strict producer assertion stays authoritative.
+This source-only diagnostic does not identify the cause of any live refusal or
+complete the baseline, loaded-limit, or runtime acceptance gates.
+
 The existing eight-field Prometheus coverage receipt remains byte-compatible
 when all expected targets are legacy/Prometheus. It counts only Prometheus
 rows. With native rows present, provide a separate source-labelled native
