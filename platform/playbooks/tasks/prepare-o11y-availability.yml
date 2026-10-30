@@ -130,6 +130,24 @@
      (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
       selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
 
+- name: Validate the fixed current source diagnostic category
+  ansible.builtin.set_fact:
+    _o11y_current_source_diagnostic: >-
+      {{ _o11y_current_source_raw | o11y_availability_source_gate_diagnostic }}
+  no_log: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Report only the fixed current source diagnostic category
+  ansible.builtin.debug:
+    msg: "Current self-metrics producer diagnostic: {{ _o11y_current_source_diagnostic }}"
+  when:
+    - _o11y_current_source_diagnostic is defined
+    - _o11y_current_source_diagnostic != 'producer_observed'
+
 - name: Require one fresh and unambiguous current self-metrics producer
   ansible.builtin.assert:
     that:

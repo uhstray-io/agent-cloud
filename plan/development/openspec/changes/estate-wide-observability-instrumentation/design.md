@@ -1371,6 +1371,18 @@ Same-source reruns must prove that source is already current. The existing
 Grafana expected-target helper remains rule-ownership preparation only, with
 UID, five-label identity, query, tombstone and recovery formats unchanged.
 
+The early prepare-phase source helper is invoked with `require_health_targets`
+false and may therefore report a valid native self-only readback. Its main
+returns rc 0 for observed output and rc 2 for a fixed unavailable refusal
+envelope. The visible preflight diagnostic accepts only those exact return
+codes and the corresponding validated schema: rc 0 requires observed source
+evidence, while rc 2 may expose only a reason accepted by the shared source
+coverage reducer. Every other code, malformed or oversized output, nonempty
+stderr, or rc/payload mismatch reduces to a fixed fallback. The raw registered
+result remains protected and the strict producer assertion stays authoritative.
+This source-only diagnostic does not identify the cause of any live refusal or
+complete the baseline, loaded-limit, or runtime acceptance gates.
+
 The existing eight-field Prometheus coverage receipt remains byte-compatible
 when all expected targets are legacy/Prometheus. It counts only Prometheus
 rows. With native rows present, provide a separate source-labelled native
@@ -1579,3 +1591,26 @@ failed endpoint, scrape failure, both missing signals, missing probe with
 healthy scrape, unrelated identity, and freshness inside/outside `F`. This
 supports expression semantics only; rendered Grafana state, target-specific
 private policy, firing/recovery, and notification delivery remain live gates.
+
+## 2026-10-30 receiver checkout revision receipt discovery
+
+The Dev-bound seven-day capacity survey reads `git rev-parse HEAD` on the
+receiver and compares it with required `expected_receiver_sha`; the production
+budget survey has the same explicit receiver pin. The value is the receiver's
+monorepo checkout `HEAD`, not an installed image or running-configuration
+identity. The existing Dev-bound receiver-capabilities survey requires only
+`expected_repository_sha` and proves the receiver checkout matches that
+controller SHA, but its public receipt omits the revision. Alloy health
+reports bounded container metadata and also omits the checkout revision. The
+capacity survey therefore has no existing source for a justified receiver pin
+when controller and receiver revisions have not separately been proven equal.
+
+Source-only follow-up: extend Alloy health with a separate closed metadata
+receipt for the `HEAD` of the receiver's declared monorepo checkout. Run a
+fixed read-only Git command under `no_log`; reduce its output privately to an
+exact lowercase 40-character commit or a fixed unavailable result before
+printing. Do not alter the existing container-health schema, require a
+receiver-SHA survey input, or claim checkout cleanliness, tracked-byte
+integrity, remote-ref equality, or installed/running configuration from this
+read. This source work does not establish a seven-day live baseline or close
+any capacity, backup, restore, retention, or rollout gate.

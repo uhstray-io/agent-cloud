@@ -2104,11 +2104,11 @@ templates:
         type: enum
         required: true
         values:
-          - Verify o11y Restore Coordination Capabilities (Dev)
-          - Preflight o11y Restore Target (Dev)
-          - Provision PBS Debian Cloud Template (Dev)
-          - Attach PBS Data Disk (Dev)
-          - Provision PBS VM (Dev)
+          - { name: "Verify o11y Restore Coordination Capabilities (Dev)", value: "Verify o11y Restore Coordination Capabilities (Dev)" }
+          - { name: "Preflight o11y Restore Target (Dev)", value: "Preflight o11y Restore Target (Dev)" }
+          - { name: "Provision PBS Debian Cloud Template (Dev)", value: "Provision PBS Debian Cloud Template (Dev)" }
+          - { name: "Attach PBS Data Disk (Dev)", value: "Attach PBS Data Disk (Dev)" }
+          - { name: "Provision PBS VM (Dev)", value: "Provision PBS VM (Dev)" }
       - name: semaphore_project_id
         title: "Verified project ID"
         type: string

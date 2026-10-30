@@ -768,9 +768,13 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
 
 
 def test_native_self_only_helper_receipt_is_accepted_only_by_expected_source_consumer(monkeypatch):
+    native_limits = {
+        "body_size_limit": 16_777_216, "sample_limit": 10_000, "label_limit": 64,
+        "label_name_length_limit": 128, "label_value_length_limit": 2048,
+    }
     detail = {
         "status": "observed", "reason": "fixed_native_components_loaded", "target_count": 0,
-        "targets": [], "alloy_self": {"status": "observed", "limits": _loaded_inventory()},
+        "targets": [], "alloy_self": {"status": "observed", "limits": native_limits},
     }
     samples = {
         "status": "observed", "reason": "fresh_native_samples", "freshness_seconds": 300,
