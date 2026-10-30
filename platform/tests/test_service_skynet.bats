@@ -824,6 +824,8 @@ assert argv[1:3] == ["exec", "skynet"], argv
 assert "from skynet.policy.opa import DecisionInput, OPAClient" in code, code
 assert "OPAClient(os.environ['SKYNET_OPA_URL']" in code, code
 assert "agent='skynet'" in code and "service='__agent_cloud_verify__'" in code, code
+# The printed verdict is OPA's, not a constant: allow/deny is mapped from decision.allowed.
+assert "print('decision=' + ('allow' if decision.allowed else 'deny'))" in code, code
 assert probe.get("check_mode") is False, probe
 check = next(t for t in tasks if t.get("name") == "Assert skynet reached OPA and was denied by default")
 that = check["ansible.builtin.assert"]["that"]

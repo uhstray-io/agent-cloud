@@ -88,6 +88,11 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
   `skynet_opa_ip` that is not one non-wildcard IPv4 address.
 - The combined bundle is built from the play host's public roots. A host without them is refused
   by `tasks/distribute-ca-root.yml`, not left with a bundle that lacks them.
+- The deploy's verify proves this whole path: inside the container, skynet's own
+  `skynet.policy.opa.OPAClient` asks `SKYNET_OPA_URL` about an input no policy knows and must get
+  OPA's default deny. So OPA must be running and must admit skynet (production: OPA's
+  `firewall_allow_groups` names `skynet_svc`; local-dev: the OPA stack is up) before a skynet deploy
+  can pass. A failure's message names TLS, resolution, the firewall or the decision contract.
 
 ## Networks and reachability
 
