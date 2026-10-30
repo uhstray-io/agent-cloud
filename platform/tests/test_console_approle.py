@@ -622,3 +622,10 @@ def test_the_console_approle_provision_is_a_dev_variant_without_a_schedule():
     assert entry["playbook"] == "platform/playbooks/provision-console-approle.yml"
     assert entry["dev_variant"] is True
     assert "schedule" not in entry
+
+
+def test_the_rescue_read_back_accepts_a_vanished_path_so_the_minted_secret_id_is_still_destroyed():
+    # CodeRabbit on PR #784: a 404 here used to fail the rescue before the destroy, leaving the minted id live.
+    text = ROTATE.read_text()
+    block = text[text.index("register: _rot_after_refusal") - 600:text.index("register: _rot_after_refusal")]
+    assert "status_code: [200, 404]" in block
