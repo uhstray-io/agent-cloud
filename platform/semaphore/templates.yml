@@ -896,6 +896,27 @@ templates:
     playbook: platform/playbooks/provision-console-approle.yml
     dev_variant: true
 
+  # Read-only reachability of the Dispatch Console's Phase 3 sources (plan 17 task 6.3) from the console VM:
+  # NetBox, Proxmox and OpenBao, names and booleans only. Fails when a configured source does not answer.
+  - name: Probe Console Sources
+    playbook: platform/playbooks/probe-console-sources.yml
+    dev_variant: true
+
+  # Read-only: prints the Proxmox cluster root CA (public certificate and fingerprint) to pin as site-config
+  # console_proxmox_ca_pem. The admin token is sent only over a connection pinned to the API leaf certificate's
+  # SHA-256, which the operator confirms from an independent vantage: a first run with no value observes the
+  # fingerprint and stops before any token use. The playbook header gives the cross-check to run before pinning.
+  - name: Read Proxmox Root CA
+    playbook: platform/playbooks/read-proxmox-root-ca.yml
+    dev_variant: true
+    survey_vars:
+      - name: proxmox_leaf_sha256
+        title: "Proxmox API leaf certificate SHA-256"
+        description: "Leaf certificate SHA-256 confirmed out of band; empty = observe and stop"
+        type: string
+        required: false
+        default_value: ""
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
@@ -1954,6 +1975,14 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Sync Plane Projects
+    playbook: platform/playbooks/sync-plane-projects.yml
+    # Open OpenSpec tasks of every repository enabled in platform/services/plane/projects.yml
+    # become Plane work items, one module per change. CREATE-ONLY: nothing already in Plane is
+    # changed, and no item is ever given a status. Launch it as a dry run to see the counts it
+    # would create. The schedule is added once production holds Plane (change task 4.4).
+    dev_variant: true
+
   - name: Back Up Plane DB
     playbook: platform/playbooks/backup-plane-db.yml
     # Timestamped pg_dump of Plane's Postgres (plane-db) into an owner-only backup dir on the
@@ -2009,6 +2038,40 @@ templates:
         type: string
         default_value: "false"
         required: false
+
+  - name: Provision o11y Workflow Environment (Dev)
+    playbook: platform/playbooks/provision-o11y-workflow-environment.yml
+    repository: agent-cloud dev
+    dev_variant: false
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Full commit approved for this controller change."
+        type: string
+        required: true
+      - name: o11y_workflow_target
+        title: "Owned Dev workflow"
+        description: "Select one of the five declared PBS restore coordination templates."
+        type: enum
+        required: true
+        values:
+          - Verify o11y Restore Coordination Capabilities (Dev)
+          - Preflight o11y Restore Target (Dev)
+          - Provision PBS Debian Cloud Template (Dev)
+          - Attach PBS Data Disk (Dev)
+          - Provision PBS VM (Dev)
+      - name: semaphore_project_id
+        title: "Verified project ID"
+        type: string
+        required: true
+      - name: semaphore_inventory_id
+        title: "Verified inventory ID"
+        type: string
+        required: true
+      - name: semaphore_source_environment_id
+        title: "Verified current source-environment ID"
+        type: string
+        required: true
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
@@ -2393,6 +2456,8 @@ templates:
   - name: Provision PBS Debian Cloud Template (Dev)
     playbook: platform/playbooks/provision-pbs-debian-template.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS Debian template inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2481,6 +2546,8 @@ templates:
   - name: Attach PBS Data Disk (Dev)
     playbook: platform/playbooks/attach-pbs-data-disk.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS data-disk inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2563,6 +2630,8 @@ templates:
   - name: Preflight o11y Restore Target (Dev)
     playbook: platform/playbooks/preflight-o11y-restore-target.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: o11y restore-target inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2729,6 +2798,8 @@ templates:
   - name: Verify o11y Restore Coordination Capabilities (Dev)
     playbook: platform/playbooks/verify-o11y-restore-coordination-capabilities.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: o11y restore-capability inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -3224,6 +3295,8 @@ templates:
   - name: Provision PBS VM (Dev)
     playbook: platform/playbooks/provision-pbs-vm.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS VM inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"

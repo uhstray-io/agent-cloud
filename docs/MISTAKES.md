@@ -78,13 +78,14 @@ and why.
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | 1 | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
-| 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | 2 | Convention |
+| 2.24 | A local run proved a playbook the production controller or host could not run — **x3** (widened by 2.31) | Wrong-reason pass | 3 | Image references: `test_compose_image_qualified.py`; class: proposal in 2.31 |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
 | 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
+| 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 1 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -1814,7 +1815,7 @@ removing the vmid, name or running filter each turns the suite red (mutation-che
 
 ### 2.24 A local run proved a playbook the production Ansible could not run
 
-**Occurrences: 2** — 2026-09-26, 2026-09-26
+**Occurrences: 3** — 2026-09-26, 2026-09-26, 2026-10-29
 
 **What happened.** PR #282 added `inspect-host-containers.yml`, which passed the container
 inspect format (`{{.Name}}|{{.Config.Image}}|...`, a Go template) to its shell probes through
@@ -1846,6 +1847,22 @@ was worded about templating, while this was a host capability; the PR even said 
 production podman version was unknown, then built on the workstation's anyway. Widened here:
 a capability of a production tool is established on the version production runs (its man
 page at that tag, or a read-only report from the host), never on the workstation's.
+
+**Occurrence 3 — 2026-10-29.** The OPA compose file defaulted to the short image name
+`openpolicyagent/opa:1.0.0-static`. Every deploy until then had run on local-dev, whose podman
+resolves short names through its unqualified-search registries. The first production
+`Deploy OPA (Dev)` (Semaphore task 10339) issued the leaf, placed the bundle and ran
+`compose up`, but no container was created: the production VM's podman refused the short name
+("Error: short-name", exit code 125), and podman-compose still returned 0. deploy.sh's wait for
+a running container caught it and failed the run. The Caddy compose default and its `env.j2` had
+the same short name. Why the rule did not fire: it is about a tool's capability on the production
+version, and nobody treats an image reference as a capability; the resolution policy is host
+configuration. Enforced now by `platform/tests/test_compose_image_qualified.py`: every default
+image in a tracked compose file must name its registry, except a never-pulled local build.
+
+**Widened 2026-10-29 by 2.31.** All three occurrences are host configuration the local proof
+could not see. 2.31 states the rule for that class and carries the guard proposal the third
+occurrence requires.
 
 ### 2.25 The zero-hosts pre-flight rule covered deploy playbooks only (widens 2.21)
 
@@ -1983,6 +2000,33 @@ Pin the defaulted copy with `set_fact` first and map the raw name to the pinned 
 
 **Enforced by.** `platform/tests/test_no_recursive_task_vars.py`, which follows each task
 var through the play's vars across every playbook.
+
+### 2.31 Production host configuration was assumed from the local proof (widens 2.24)
+
+**Occurrences: 1** — 2026-10-29 (the class also covers 2.24's three)
+
+**What happened.** See 2.24, occurrence 3. The first production `Deploy OPA (Dev)` (Semaphore
+task 10339) created no container. The OPA compose default named the image by its short name, the
+production VM's podman refuses short names, and podman-compose still exited 0. Every earlier run
+had been on local-dev, whose podman resolves short names.
+
+**Root cause.** 2.24's rule covered a tool's capability on the production version. Image-name
+resolution is neither a version nor a capability: it is host configuration (podman's
+`registries.conf`). Nothing listed which host settings production differs on, so a local pass was
+read as proof of everything the deploy touches.
+
+**The rule.** Anything a deploy relies on from the target host is established against the
+production host: tool versions and flags, registry and short-name policy, rootless id mapping,
+firewall state. Accept a read-only report from a production host or a check that runs with
+production's settings; a local run proves the logic only. The first production launch is the test
+of everything else, and the deploy must fail loudly when it fails (here, deploy.sh's wait for a
+running container did).
+
+**Enforced by.** `platform/tests/test_compose_image_qualified.py` for image references.
+Proposal, for the class: a CI job on the production base image (Ubuntu 24.04, podman 4.9.3 from
+Ubuntu's packages, `unqualified-search-registries = []`) that runs `podman-compose config` and
+`podman pull` for every compose file's default images, so a host-configuration difference fails
+in CI instead of on the first production deploy.
 
 ## 3. Acting on live state
 

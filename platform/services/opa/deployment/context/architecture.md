@@ -25,7 +25,7 @@ supplied per-query in `input` — never stored in OPA.
 
 ## Production specifics
 
-Production OPA is rolling out as of 2026-10-29; its checklist is in
+Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist and evidence are in
 `plan/development/03-guardrails-governance.md`, under "Production deployment".
 
 - **Own VM**, host `opa` in `opa_svc`. OPA publishes 8281 on the VM's LAN address only.

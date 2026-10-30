@@ -11,6 +11,8 @@
 # Phase 3: First-run configuration (configure_instance.py, inside plane-api): instance setup,
 #          invitation-only sign-up and the workspace. In the SAME run as the first start,
 #          because until the first admin signs up anyone who reaches /god-mode/ claims it.
+# Phase 3b: Get or create the workspace service token (service_token.py) and store it in
+#          OpenBao, so sync-plane-projects.yml only ever reads it.
 # Phase 4: Verify through the proxy, then record the service-deploy step result.
 #
 # Plan: plan/development/16-plane-work-management.md
@@ -259,6 +261,103 @@
       when:
         - not ansible_check_mode
         - "'PLANE_PROXY_HELD=true' in (_deploy.stdout_lines | default([]))"
+
+# ── Phase 3b: Workspace service token ───────────────────────────────────────
+# The token sync-plane-projects.yml uses for Plane's /api/v1. Plane's route is get-or-create
+# (POST only), so minting belongs in this write playbook: the sync only reads it from OpenBao,
+# and its dry run therefore never creates a credential. It is workspace-wide and does not
+# expire; Plane hands back the same token every deploy, so the store write happens once.
+# Plane has NO route to revoke a service token: its token delete and list skip service tokens
+# (app/views/api/base.py, app/views/api/workspace.py in the v3.3.3 image). Revocation is an open
+# follow-up (change task 4.4); until then the token lives as long as the workspace.
+- name: "Phase 3b: Workspace service token"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Mint and store the service token (skipped in check mode: it writes)"
+      when: not ansible_check_mode
+      block:
+        - name: "Refuse a cleartext OpenBao endpoint"
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+          vars:
+            _assert_bao_url: "{{ _bao_url }}"
+
+        - name: "Get or create the workspace service token (inside plane-api)"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - -i
+              - plane-api
+              - python
+              - -c
+              - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/plane_session.py') ~ '\n' ~ lookup('file', playbook_dir ~ '/../services/plane/deployment/service_token.py') }}"
+            stdin: >-
+              {{ {'base': 'http://localhost:8000',
+                  'host': plane_public_url | urlsplit('hostname'),
+                  'origin': plane_public_url,
+                  'email': plane_automation_email,
+                  'password': _resolved.plane_automation_password,
+                  'workspace_slug': plane_workspace_slug} | to_json }}
+          register: _plane_token_run
+          changed_when: false  # Plane's own create is reported below; the store write is the change here
+          failed_when: false
+          no_log: true
+
+        - name: "Keep the token and a summary without it"
+          ansible.builtin.set_fact:
+            _plane_token: >-
+              {%- set last = _plane_token_run.stdout_lines | default([''], true) | last -%}
+              {{ (last | from_json).token | default('') if last.startswith('{') else '' }}
+            _plane_token_summary: >-
+              {%- set last = _plane_token_run.stdout_lines | default([''], true) | last -%}
+              {%- set d = (last | from_json) if last.startswith('{') else {'error': 'the token script printed no summary (exit ' ~ _plane_token_run.rc ~ ')'} -%}
+              {{ {'error': d.error} if d.error is defined else {'created': d.created | default(false)} }}
+          no_log: true
+
+        - name: "Service token obtained"
+          ansible.builtin.assert:
+            that:
+              - _plane_token_run.rc == 0
+              - _plane_token_summary.error is not defined
+              - _plane_token | length > 0
+            fail_msg: "plane service token: {{ _plane_token_summary.error | default('no token returned (exit ' ~ _plane_token_run.rc ~ ')') }}"
+            quiet: true
+
+        - name: "Authenticate to OpenBao (AppRole)"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body:
+              role_id: "{{ _bao_role_id }}"
+              secret_id: "{{ _bao_secret_id }}"
+            status_code: [200]
+          register: _bao_auth
+          delegate_to: localhost
+          changed_when: false
+          no_log: true
+
+        - name: "Store it at secret/services/plane:plane_service_token (shared merge path)"
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+            _bm_path: services/plane
+            _bm_data: "{{ {'plane_service_token': _plane_token} }}"
+            _bm_on_missing: fail
+            _bm_missing_msg: "secret/services/plane does not exist; Phase 1 creates it."
+
+        - name: "Report"
+          ansible.builtin.debug:
+            msg: "workspace service token {{ 'minted' if _plane_token_summary.created else 'already present in Plane' }}; stored in OpenBao (value never shown)"
 
 # ── Phase 4: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 4: Verify plane"

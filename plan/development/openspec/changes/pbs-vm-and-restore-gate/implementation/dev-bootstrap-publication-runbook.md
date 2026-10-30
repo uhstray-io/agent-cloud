@@ -19,11 +19,12 @@ identity, or storage exists.
   `391a4f7` stopped after creating the template. Catalog readback proves the
   definitions, not success of every publication invocation or acceptance of
   the created Proxmox template.
-- Private site-config PR #110 is approval-blocked. This blocks target allocation
-  and guest configuration until the PBS inventory declaration is approved,
-  merged, synchronized, and read back. It does not block publishing the Dev
-  catalog entries. Do not substitute launch-time identity values or
-  public-repository inventory.
+- Private site-config PR #110 merged to `main` at
+  `eb6b65912cc6345ccbbee269f67b81a7b4923ad7` on 2026-10-28. This records PR
+  merge state only; it does not establish current live inventory synchronization,
+  exact-byte provenance, IP/VMID acceptance, or allocation authorization. Keep
+  those acceptance gates separate. Do not substitute launch-time identity
+  values or public-repository inventory.
 - OpenSpec tasks 1.3 and 2.3 remain open: VMID/address authority and the exact
   Debian 13 cloud-init template/provisioning result have not been accepted.
   If the supported Debian template is unavailable, task 2.1 requires a separate
@@ -38,6 +39,13 @@ identity, or storage exists.
   `source_series_ambiguous`. That does not prove capacity, authorize VM growth,
   or authorize retention changes. Task 4.4's second-PBS destination remains a
   planning candidate only.
+- Dev task 10282, `Verify o11y Restore Coordination Capabilities`, refused the
+  shared environment's protected credential extra vars before authentication.
+  This source change adds one scoped Dev controller wrapper and distinct
+  environments for five explicit PBS/restore templates. Source declarations do
+  not prove those bindings were converged or the effective role passed its
+  capability check; preserve the shared environment and complete the sequence
+  under “Restore coordination source prerequisite” below.
 
 ## Preconditions before allocation or guest configuration
 
@@ -51,8 +59,9 @@ identity, or storage exists.
    VMID, Debian 13 template, static guest network declaration, selected OS
    storage, the 512-GiB PBS data disk declaration, and the VMID-derived disk
    serial contract `ac-pbs-data-<vm_vmid>`. Resolve IP and VMID through the
-   existing NetBox/IPAM and pfSense checks; preserve the required physical-origin
-   attestation for the selected Proxmox storage.
+   existing NetBox/IPAM and pfSense checks. Physical-origin/BMC/chassis
+   attestation is not a prerequisite (operator decision, 2026-10-29); retain
+   the declared API serial/WWN identity pin and exact storage/VG/PV lineage.
 3. Confirm the declared repository channel and its prerequisite before task
    launch. Do not add a subscription key through argv, Semaphore survey, or a
    new credential path. Enterprise cannot be treated as ready until the
@@ -128,9 +137,9 @@ run does not establish the corresponding live acceptance evidence.
 Stop before allocation, package, identity, ACL, storage, backup, or restore
 writes when the private declaration or exact repository SHA is missing; the
 Dev catalog does not match the five reviewed entries; the PBS guest, VMID,
-address, template, disk serial, selected storage, or physical origin is
-ambiguous; repository/subscription acceptance is absent; the mount UUID or
-datastore containment check differs; an existing identity, ACL, storage or
+address, template, disk serial, selected storage, or required API/storage
+identity is ambiguous; repository/subscription acceptance is absent; the mount UUID
+or datastore containment check differs; an existing identity, ACL, storage or
 backup job conflicts; or the service/readback is unhealthy. Preserve existing
 data and destinations for investigation. Do not bypass a refusal with direct
 Proxmox/PBS API calls, manual guest commands, or alternate credentials.
@@ -167,3 +176,31 @@ workflow must journal each PVE write before execution, authenticate the complete
 prior restore task output, prove stopped/no-pending-action state, and prove
 cleanup task success plus authoritative exact-VMID absence. No restore target
 has been reserved or used, and no restore or cleanup has been performed.
+
+### Protected workflow environment sequence
+
+The five guarded workflows have separate `isolated_environment` declarations:
+`Verify o11y Restore Coordination Capabilities (Dev)`, `Preflight o11y Restore
+Target (Dev)`, `Provision PBS Debian Cloud Template (Dev)`, `Attach PBS Data
+Disk (Dev)`, and `Provision PBS VM (Dev)`. The new **Provision o11y Workflow
+Environment (Dev)** controller entry accepts one of those explicit rows, an
+exact reviewed repository SHA, and verified project, inventory, and current
+source-environment IDs. Before running the command-bearing checkout verifier,
+the controller refuses any `ansible_` launch extra-var name; inventory-sourced
+execution context remains valid. The verifier checks the exact checkout before
+API access. The wrapper pins Semaphore to controller loopback and requires the sole private
+`openbao_svc.service_url` to match `openbao_addr` and pass transport validation.
+The wrapper uses the existing provisioner's `main` base-instance mode for these
+already-suffixed names; it preserves their `agent-cloud dev` binding without
+adding another `(Dev)` suffix. Do not pass the provisioner's `seed_template`,
+`seed_variant`, or credential-replacement aliases through the wrapper.
+
+Converge only the capability-verification environment first. Read back its
+repository, playbook, inventory, source and isolated environment binding, empty
+JSON/plaintext configuration, encrypted AppRole metadata, and sole-template
+ownership. Then rerun the capability verifier and review its effective-policy
+receipt. Only a passing receipt permits one-at-a-time environment convergence
+for the remaining four templates. Keep the shared environment and generic VM
+templates unchanged. These configuration steps close no private declaration,
+writer-drain, target, backup, restore/cleanup, capacity, retention, or deployment
+gate.
