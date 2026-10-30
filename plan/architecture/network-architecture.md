@@ -80,7 +80,7 @@ constitution in `PRINCIPLES.md` [2].
 ### 1. The network at a glance
 
 The diagram below shows the trust zones a request can cross, from the public internet to the GPU
-nodes, and the out-of-band paths that sit beside them. Read it left to right: everything public
+nodes, and the out-of-band paths that sit beside them. Read it top to bottom: everything public
 enters through Cloudflare and then Caddy; the control plane reaches every host over SSH; the GPU
 nodes are reached only through the inference gateway.
 
