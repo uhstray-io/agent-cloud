@@ -14,8 +14,9 @@ owning documents for depth and does not restate them.
 > **Site identity is a parameter.** This repository is public. Real addresses, the public zone,
 > the internal site label, node names, VM ids and per-host port bindings live only in the private
 > site-config repository. In this document `<zone>` is the public DNS zone, `<site>` the internal
-> site label, `<gpu-head>` and `<gpu-worker>` the two GPU nodes. No diagram or table below carries
-> a real value.
+> site label, `<gpu-head>` and `<gpu-worker>` the two GPU nodes; diagrams write the same placeholders in
+> braces (`{zone}`), because GitHub's diagram renderer strips angle brackets. No diagram or table
+> below carries a real value.
 
 ---
 
@@ -84,7 +85,7 @@ enters through Cloudflare and then Caddy; the control plane reaches every host o
 nodes are reached only through the inference gateway.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph PUB["Public internet"]
         CLIENT["Browsers, SDK and CLI clients,<br/>MCP harnesses"]
     end
@@ -110,7 +111,7 @@ flowchart LR
             DNS["hickory-dns<br/>internal zone (VM up, service PLANNED)"]
         end
         subgraph GPU["GPU nodes (owned by dgx-spark)"]
-            VLLM["vLLM API on &lt;gpu-head&gt;<br/>Ray worker on &lt;gpu-worker&gt;"]
+            VLLM["vLLM API on {gpu-head}<br/>Ray worker on {gpu-worker}"]
         end
         subgraph SEMI["Semi-trusted hosts"]
             RUN["GitHub Actions runners<br/>egress-denied to the interior"]
@@ -161,7 +162,7 @@ while machine clients on a few exact API paths skip the challenge and are then r
 
 ```mermaid
 flowchart TD
-    REQ["Request for &lt;label&gt;.&lt;zone&gt;"] --> GEO{"Source country<br/>on the block list?"}
+    REQ["Request for {label}.{zone}"] --> GEO{"Source country<br/>on the block list?"}
     GEO -->|"yes"| BLOCK["Blocked"]
     GEO -->|"no"| BOT{"Verified AI crawler<br/>or listed AI user agent?"}
     BOT -->|"yes"| BLOCK
@@ -381,10 +382,10 @@ service name resolves to its load balancer wherever one exists.
 
 ```mermaid
 flowchart TD
-    SERVICE["Service name<br/>&lt;service&gt;.&lt;site&gt;.&lt;zone&gt;<br/>e.g. vllm-primary, gateway, openbao"]
-    INSTANCE["Instance name<br/>&lt;class&gt;&lt;NN&gt;.&lt;service&gt;.&lt;site&gt;.&lt;zone&gt;<br/>e.g. dgx01.vllm-primary, vm01.gateway"]
-    HOST["Host name<br/>&lt;hostname&gt;.host.&lt;site&gt;.&lt;zone&gt;<br/>A + PTR"]
-    MGMT["Management name<br/>&lt;hostname&gt;.mgmt.&lt;site&gt;.&lt;zone&gt;<br/>only for a distinct management address"]
+    SERVICE["Service name<br/>{service}.{site}.{zone}<br/>e.g. vllm-primary, gateway, openbao"]
+    INSTANCE["Instance name<br/>{class}{NN}.{service}.{site}.{zone}<br/>e.g. dgx01.vllm-primary, vm01.gateway"]
+    HOST["Host name<br/>{hostname}.host.{site}.{zone}<br/>A + PTR"]
+    MGMT["Management name<br/>{hostname}.mgmt.{site}.{zone}<br/>only for a distinct management address"]
     LB["Load balancer service name<br/>(Caddy for HTTP, agentgateway for inference)"]
     SERVICE -->|"CNAME where a load balancer fronts it"| LB
     SERVICE -->|"one A record per member otherwise"| HOST
@@ -470,7 +471,7 @@ The control plane's connections are few and each has a guard. The diagram shows 
 
 ```mermaid
 flowchart LR
-    OP["Operator<br/>(HTTPS, token on stdin)"] -->|"semaphore.&lt;zone&gt;/api"| SEM["Semaphore"]
+    OP["Operator<br/>(HTTPS, token on stdin)"] -->|"semaphore.{zone}/api"| SEM["Semaphore"]
     SEM -->|"AppRole, transport guard:<br/>http only to loopback or RFC 1918"| BAO["OpenBao"]
     SEM -->|"SSH, per-service key from OpenBao"| VMS["Service VMs"]
     SEM -->|"Proxmox API"| PVE["Proxmox"]
