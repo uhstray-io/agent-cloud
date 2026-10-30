@@ -78,7 +78,7 @@ and why.
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | 1 | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
-| 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | 2 | Convention |
+| 2.24 | A local run proved a playbook the production controller or host could not run — **x3** | Wrong-reason pass | 3 | Convention; image references: `test_compose_image_qualified.py` |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
@@ -1814,7 +1814,7 @@ removing the vmid, name or running filter each turns the suite red (mutation-che
 
 ### 2.24 A local run proved a playbook the production Ansible could not run
 
-**Occurrences: 2** — 2026-09-26, 2026-09-26
+**Occurrences: 3** — 2026-09-26, 2026-09-26, 2026-10-29
 
 **What happened.** PR #282 added `inspect-host-containers.yml`, which passed the container
 inspect format (`{{.Name}}|{{.Config.Image}}|...`, a Go template) to its shell probes through
@@ -1846,6 +1846,18 @@ was worded about templating, while this was a host capability; the PR even said 
 production podman version was unknown, then built on the workstation's anyway. Widened here:
 a capability of a production tool is established on the version production runs (its man
 page at that tag, or a read-only report from the host), never on the workstation's.
+
+**Occurrence 3 — 2026-10-29.** The OPA compose file defaulted to the short image name
+`openpolicyagent/opa:1.0.0-static`. Every deploy until then had run on local-dev, whose podman
+resolves short names through its unqualified-search registries. The first production
+`Deploy OPA (Dev)` (Semaphore task 10339) issued the leaf, placed the bundle and ran
+`compose up`, but no container was created: the production VM's podman refused the short name
+("Error: short-name", exit code 125), and podman-compose still returned 0. deploy.sh's wait for
+a running container caught it and failed the run. The Caddy compose default and its `env.j2` had
+the same short name. Why the rule did not fire: it is about a tool's capability on the production
+version, and nobody treats an image reference as a capability; the resolution policy is host
+configuration. Enforced now by `platform/tests/test_compose_image_qualified.py`: every default
+image in a tracked compose file must name its registry, except a never-pulled local build.
 
 ### 2.25 The zero-hosts pre-flight rule covered deploy playbooks only (widens 2.21)
 
