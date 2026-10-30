@@ -40,7 +40,6 @@ TOKEN_ID_VAR = {
     "preflight-o11y-restore-target.yml": "_pve_token_id",
     "probe-console-sources.yml": "_probe_pve_token_id",
     "proxmox-validate.yml": "_pve_token_id",
-    "read-proxmox-root-ca.yml": "_pve_token_id",
     "reconcile-o11y-backup-job.yml": "_pve_token_id",
     "restore-o11y-isolated.yml": "_restore_pve_token_id",
     "resize-vm.yml": "_pve_token_id",

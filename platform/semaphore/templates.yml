@@ -872,10 +872,19 @@ templates:
     dev_variant: true
 
   # Read-only: prints the Proxmox cluster root CA (public certificate and fingerprint) to pin as site-config
-  # console_proxmox_ca_pem. Trust on first use; the playbook header gives the cross-check to run before pinning.
+  # console_proxmox_ca_pem. The admin token is sent only over a connection pinned to the API leaf certificate's
+  # SHA-256, which the operator confirms from an independent vantage: a first run with no value observes the
+  # fingerprint and stops before any token use. The playbook header gives the cross-check to run before pinning.
   - name: Read Proxmox Root CA
     playbook: platform/playbooks/read-proxmox-root-ca.yml
     dev_variant: true
+    survey_vars:
+      - name: proxmox_leaf_sha256
+        title: "Proxmox API leaf certificate SHA-256"
+        description: "Leaf certificate SHA-256 confirmed out of band; empty = observe and stop"
+        type: string
+        required: false
+        default_value: ""
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml

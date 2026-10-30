@@ -2,20 +2,29 @@
 
 Structure, read from the parsed playbook:
 - order: refuse-internal-extra-vars.yml is the first play; the stored token id is asserted before the first
-  request; the node-list check precedes the certificate read; the self-signed and issued-by checks precede the
-  one debug;
-- read-only: every uri is a GET with check_mode false and no_log true; no write module; the only lookups read
+  request; the leaf certificate is observed, and the operator's pin is checked against it, before the first
+  token-bearing request; the node-list check precedes the certificate read; the self-signed and issued-by
+  checks precede the one debug;
+- read-only: every command is the pinned helper (platform/lib/pve_pinned_get.py) with check_mode false and
+  changed_when false; the helper sends GET only; no write module; the only lookups read
   secret/data/services/proxmox and the environment; the play writes to neither OpenBao nor Proxmox;
-- TLS: validate_certs is false in the play's module_defaults only, the admin channel of provision-vm.yml:27;
-- no protected output: the one debug references only _pve_node and _pve_ca; the node list and the certificate
-  response are referenced only by no_log tasks; no SAN is named in code;
+- TLS and token: no uri module, no module_defaults, no validate_certs and no inline Authorization header
+  anywhere in the playbook text; the admin token reaches the helper on stdin only, under no_log;
+- no protected output: the one debug references only _pve_node, _pve_ca and the observed leaf digest; the
+  node list and the certificate response are referenced only by no_log tasks; no SAN is named in code;
 - selection: the root CA and the node certificate are chosen by basename, never by a full path.
+
+Behaviour: the real tasks run under ansible-playbook against a loopback HTTPS fake Proxmox (a leaf certificate
+generated at test time, the same generator as test_pve_pinned_get.py). Refusals are proved on the wire: the fake
+records every request, and a refused run records none.
 """
 
 import copy
+import hashlib
 import json
 import os
 import re
+import ssl
 import subprocess
 import threading
 from http.server import ThreadingHTTPServer
@@ -25,28 +34,33 @@ import pytest
 import yaml
 from ansible_python import needs_ansible
 from fake_http import DrainingHandler
+from test_pve_pinned_get import _generate_leaf
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/read-proxmox-root-ca.yml"
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
+HELPER = REPO / "platform/lib/pve_pinned_get.py"
 
 TEXT = PLAYBOOK.read_text()
 DOC = yaml.safe_load(TEXT)
+HELPER_TEXT = HELPER.read_text()
 TASK_KEYWORDS = {
     "name", "register", "when", "no_log", "vars", "delegate_to", "loop", "tags", "check_mode",
     "changed_when", "failed_when", "become", "ignore_errors", "notify", "module_defaults",
 }
 PREFIX = "ansible.builtin."
-READ_MODULES = {"uri", "set_fact", "assert", "debug", "include_tasks"}
+# command is the one module that reaches Proxmox, and only as the pinned helper (checked per task below).
+READ_MODULES = {"set_fact", "assert", "debug", "include_tasks"}
 WRITE_MODULES = {
     "copy", "file", "template", "lineinfile", "blockinfile", "replace", "command", "shell", "raw",
-    "script", "unarchive", "get_url", "archive", "fetch",
+    "script", "unarchive", "get_url", "archive", "fetch", "uri",
 }
+HELPER_SUBCOMMANDS = {"fingerprint", "get"}
 # Responses that carry node addresses (the SAN of each entry) or the admin token's answers: visible tasks never
 # touch them.
 PROTECTED = {"_pve_nodes", "_pve_certs"}
 SECRETS = {"_pve_secret", "_pve_data"}
-DEBUG_NAMES = {"_pve_node", "_pve_ca"}
+DEBUG_NAMES = {"_pve_node", "_pve_ca", "_observed_leaf"}
 DEBUG_FIELDS = {"subject", "fingerprint", "notafter", "pem"}
 IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 URL_LITERAL = re.compile(r"https?://")
@@ -101,6 +115,30 @@ def _index(predicate):
     return [i for i, t in enumerate(_tasks()) if predicate(t)]
 
 
+def _helper_argv(task):
+    """The argv of a command task that calls the pinned helper, or None for any other task."""
+    if _module(task) != "command":
+        return None
+    argv = _args(task).get("argv")
+    if not isinstance(argv, list) or len(argv) < 3:
+        return None
+    if argv[0] != "{{ ansible_playbook_python }}" or argv[1] != "{{ _pve_helper }}":
+        return None
+    return argv
+
+
+def _helper_tasks():
+    return [t for t in _tasks() if _helper_argv(t) is not None]
+
+
+def _is_get(task):
+    return _helper_argv(task)[2] == "get"
+
+
+def _flag(argv, name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
 # --- the play, its imports and its placement ----------------------------------------------------------------
 
 
@@ -118,15 +156,24 @@ def test_the_play_is_local_and_gathers_no_facts():
 
 
 def test_the_play_has_no_survey_or_extra_var_surface():
-    # Read-only and launched without survey values: the play takes no input beyond the store.
+    # The one survey value (proxmox_leaf_sha256) is declared on the template, not as a prompt in the play.
     assert "vars_prompt" not in _play()
+
+
+def test_the_helper_and_the_pin_are_the_play_vars_this_play_relies_on():
+    variables = _play()["vars"]
+    assert variables["_pve_helper"] == "{{ playbook_dir }}/../lib/pve_pinned_get.py"
+    assert variables["_pve_pin"] == "{{ proxmox_leaf_sha256 | default('', true) | trim }}"
+    assert HELPER.is_file()
 
 
 # --- read-only ----------------------------------------------------------------------------------------------
 
 
-def test_every_task_is_a_read_or_a_local_check():
+def test_every_task_is_a_read_or_a_pinned_helper_call():
     for t in _tasks():
+        if _helper_argv(t) is not None:
+            continue
         assert _module(t) in READ_MODULES, (t.get("name"), _module(t))
 
 
@@ -135,21 +182,56 @@ def test_the_only_includes_are_the_two_transport_guards():
     assert includes == ["tasks/assert-bao-transport.yml", "tasks/assert-bao-transport.yml"], includes
 
 
-def test_every_uri_is_a_get_with_check_mode_false_and_no_log():
-    uris = [t for t in _tasks() if _module(t) == "uri"]
-    assert len(uris) == 2, [t.get("name") for t in uris]
-    for t in uris:
-        assert _args(t).get("method") == "GET", t.get("name")
+def test_every_helper_call_is_a_read_through_the_pinned_helper_with_check_mode_false():
+    calls = _helper_tasks()
+    assert calls, "the play reads Proxmox only through the helper"
+    for t in calls:
+        argv = _helper_argv(t)
+        assert argv[2] in HELPER_SUBCOMMANDS, (t.get("name"), argv[2])
+        assert t.get("changed_when") is False, t.get("name")
         assert t.get("check_mode") is False, t.get("name")
+        assert t.get("delegate_to") == "localhost", t.get("name")
+
+
+def test_the_observe_call_sends_no_secret_and_is_the_handshake_only_fingerprint():
+    (observe,) = [t for t in _helper_tasks() if _helper_argv(t)[2] == "fingerprint"]
+    assert _helper_argv(observe) == ["{{ ansible_playbook_python }}", "{{ _pve_helper }}", "fingerprint",
+                                     "--url", "{{ _pve_host }}"]
+    assert "stdin" not in _args(observe)
+    assert "_pve_secret" not in _refs(observe) and "_pve_token_id" not in _refs(observe)
+
+
+def test_every_get_is_no_log_and_hands_the_token_only_on_stdin():
+    gets = [t for t in _helper_tasks() if _is_get(t)]
+    assert len(gets) == 2, [t.get("name") for t in gets]
+    for t in gets:
+        argv = _helper_argv(t)
         assert t.get("no_log") is True, t.get("name")
+        assert _args(t).get("stdin") == "{{ _pve_token_id }}\n{{ _pve_secret }}", t.get("name")
+        assert "_pve_secret" not in " ".join(argv) and "_pve_token_id" not in " ".join(argv), t.get("name")
+
+
+def test_the_secret_is_referenced_only_by_the_secret_var_and_the_get_stdin():
+    for t in _tasks():
+        if _helper_argv(t) is not None and _is_get(t):
+            continue
+        refs = _refs(t)
+        for name in SECRETS:
+            assert not re.search(rf"\b{name}\b", refs), (t.get("name"), name)
 
 
 def test_the_play_writes_nothing_to_a_host_a_store_or_the_source_tree():
     for t in _tasks():
+        if _helper_argv(t) is not None:
+            continue
         assert _module(t) not in WRITE_MODULES, (t.get("name"), _module(t))
-    methods = {str(_args(t).get("method", "GET")).upper() for t in _tasks() if _module(t) == "uri"}
-    assert methods == {"GET"}, methods
     assert "vault_write" not in TEXT
+
+
+def test_the_helper_sends_only_get_requests():
+    assert HELPER_TEXT.count('"GET",') == 1, "exactly one request, a GET"
+    for method in ("POST", "PUT", "PATCH", "DELETE"):
+        assert f'"{method}"' not in HELPER_TEXT, method
 
 
 def test_the_only_lookups_read_the_proxmox_secret_and_the_environment():
@@ -159,24 +241,18 @@ def test_the_only_lookups_read_the_proxmox_secret_and_the_environment():
     assert paths == ["secret/data/services/proxmox"], paths
 
 
-# --- TLS: the admin channel's posture, in this play only ----------------------------------------------------
+# --- TLS and the token: no bypass, no inline header --------------------------------------------------------
 
 
-def test_validate_certs_is_false_only_in_the_play_module_defaults():
-    defaults = _play()["module_defaults"]["ansible.builtin.uri"]
-    assert defaults["validate_certs"] is False
-    code_lines = [ln for ln in TEXT.splitlines() if "validate_certs" in ln and not ln.lstrip().startswith("#")]
-    assert len(code_lines) == 1, code_lines
-    for t in _tasks():
-        if _module(t) == "uri":
-            assert "validate_certs" not in _args(t), t.get("name")
+def test_the_play_has_no_uri_task_no_module_defaults_and_no_tls_bypass():
+    assert not [t for t in _tasks() if _module(t) == "uri"], "every request goes through the pinned helper"
+    assert "module_defaults" not in _play()
+    assert "validate_certs" not in TEXT, "TLS is pinned by the helper, not switched off here"
 
 
-def test_the_admin_header_is_the_proxmox_token_from_the_store():
-    headers = _play()["module_defaults"]["ansible.builtin.uri"]["headers"]
-    assert headers == {"Authorization": "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"}, headers
-    assert _play()["vars"]["_pve_token_id"] == "{{ _pve_data.token_id | default('') }}"
-    assert _play()["vars"]["_pve_secret"] == "{{ _pve_data.api_token }}"
+def test_the_playbook_carries_no_inline_proxmox_auth_header():
+    assert "PVEAPIToken" not in TEXT, "the header is built in the helper, never in the playbook"
+    assert "Authorization" not in TEXT
 
 
 # --- order of the guards ------------------------------------------------------------------------------------
@@ -184,13 +260,33 @@ def test_the_admin_header_is_the_proxmox_token_from_the_store():
 
 def test_the_token_id_is_asserted_before_the_first_request():
     guards = _index(lambda t: _module(t) == "assert" and "_pve_token_id | length > 0" in _that(t))
-    first_request = _index(lambda t: _module(t) == "uri")[0]
+    first_request = _index(lambda t: _helper_argv(t) is not None)[0]
     assert guards and guards[0] < first_request, (guards, first_request)
+
+
+def test_the_leaf_is_observed_and_the_pin_checked_before_the_first_token_use():
+    observe = _index(lambda t: _helper_argv(t) is not None and _helper_argv(t)[2] == "fingerprint")
+    pin_given = _index(lambda t: _module(t) == "assert" and "_pve_pin | length > 0" in _that(t))
+    pin_matches = _index(lambda t: _module(t) == "assert" and "_observed_leaf" in " ".join(_that(t))
+                         and "_pve_pin" in " ".join(_that(t)))
+    first_get = _index(lambda t: _helper_argv(t) is not None and _is_get(t))[0]
+    assert observe and pin_given and pin_matches, (observe, pin_given, pin_matches)
+    assert observe[0] < pin_given[0] < pin_matches[0] < first_get, (observe, pin_given, pin_matches, first_get)
+
+
+def test_every_get_sends_the_operators_pin_and_never_the_observed_digest():
+    for t in _helper_tasks():
+        if not _is_get(t):
+            continue
+        argv = _helper_argv(t)
+        assert _flag(argv, "--sha256") == "{{ _pve_pin }}", t.get("name")
+        assert "_observed_leaf" not in " ".join(argv), t.get("name")
 
 
 def test_the_node_list_is_checked_before_the_certificate_read():
     node_check = _index(lambda t: _module(t) == "assert" and "_pve_nodes_ok | bool" in _that(t))
-    cert_read = _index(lambda t: _module(t) == "uri" and "certificates/info" in str(_args(t).get("url")))
+    cert_read = _index(lambda t: _helper_argv(t) is not None and _is_get(t)
+                       and "certificates/info" in str(_flag(_helper_argv(t), "--path")))
     assert node_check and cert_read and node_check[0] < cert_read[0], (node_check, cert_read)
 
 
@@ -222,7 +318,7 @@ def test_the_one_debug_references_only_the_derived_facts():
     (debug,) = [t for t in _tasks() if _module(t) == "debug"]
     msg = _args(debug).get("msg")
     assert isinstance(msg, str), msg
-    names = set(re.findall(r"\b_pve_\w+", msg))
+    names = set(re.findall(r"\b_[a-z]\w*", msg))
     assert names <= DEBUG_NAMES, names
     fields = set(re.findall(r"_pve_ca\.(\w+)", msg))
     assert fields <= DEBUG_FIELDS, fields
@@ -264,7 +360,7 @@ def test_the_node_is_the_first_online_node_by_name():
 # --- the template -------------------------------------------------------------------------------------------
 
 
-def test_the_template_entry_is_a_dev_variant_with_no_survey_vars():
+def test_the_template_entry_is_a_dev_variant_with_one_optional_pin_survey_value():
     doc = yaml.safe_load(TEMPLATES.read_text())
     items = doc.get("templates", doc) if isinstance(doc, dict) else doc
     entries = [e for e in items if isinstance(e, dict) and e.get("name") == "Read Proxmox Root CA"]
@@ -272,15 +368,23 @@ def test_the_template_entry_is_a_dev_variant_with_no_survey_vars():
     entry = entries[0]
     assert entry["playbook"] == "platform/playbooks/read-proxmox-root-ca.yml"
     assert entry["dev_variant"] is True
-    assert "survey_vars" not in entry
+    survey = entry["survey_vars"]
+    assert [v["name"] for v in survey] == ["proxmox_leaf_sha256"], survey
+    var = survey[0]
+    assert var["type"] == "string"
+    assert var["required"] is False
+    assert var["default_value"] == ""
+    assert "observe" in var["description"].lower()
+    assert not var["name"].startswith("_")
 
 
-# --- behaviour: the real tasks, run against a loopback Proxmox API -----------------------------------------
+# --- behaviour: the real tasks, run against a loopback HTTPS Proxmox API ------------------------------------
 #
 # The playbook's selection and checks are Jinja over JSON, so they run here, not only as text. The harness keeps
-# the real play's tasks and module_defaults (the admin header, validate_certs false) and replaces the OpenBao
-# lookup with literal vars and the two transport includes, which need the tasks/ directory beside the playbook.
-# The lookup and transport are covered by the structure tests above and by the token-id guard.
+# the real play's tasks, including the pinned helper calls, and replaces the OpenBao lookup with literal vars and
+# the two transport includes, which need the tasks/ directory beside the playbook. The helper path is overridden
+# to the absolute repo path, because the harness file lives in tmp_path. The lookup and transport are covered by
+# the structure tests above and by the token-id guard.
 
 ROOT_SUBJECT = "CN=PVE Root CA"
 ROOT_PEM = "-----BEGIN CERTIFICATE-----\nMIIFakeRootCA\n-----END CERTIFICATE-----\n"
@@ -290,6 +394,11 @@ SAN_ADDRESS = "192.0.2.7"
 LEAF_PEM = "-----BEGIN CERTIFICATE-----\nMIILeafNotPrinted\n-----END CERTIFICATE-----\n"
 # Built from parts so the literal private-key block header never appears in source (detect-private-key gate).
 PRIVATE_KEY_PEM = "-----BEGIN " + "PRIVATE KEY-----\nMIIFake\n-----END " + "PRIVATE KEY-----\n"
+
+
+@pytest.fixture(scope="module")
+def leaf(tmp_path_factory):
+    return _generate_leaf(tmp_path_factory.mktemp("root-ca-leaf"))
 
 
 def _entry(filename, subject, issuer, pem=ROOT_PEM):
@@ -306,8 +415,8 @@ def _good_certs(node):
     ]}
 
 
-def _fake_proxmox(nodes, certs):
-    """A loopback Proxmox API: the node list and the certificate info of each node. Records every request."""
+def _fake_proxmox(nodes, certs, leaf):
+    """A loopback HTTPS Proxmox API: the node list and the certificate info of each node. Records every request."""
     seen = []
     prefix = "/api2/json/nodes/"
     suffix = "/certificates/info"
@@ -335,20 +444,37 @@ def _fake_proxmox(nodes, certs):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.minimum_version = ssl.TLSVersion.TLSv1_2
+    tls.load_cert_chain(str(leaf.cert_path), str(leaf.key_path))
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, seen
 
 
-def _harness(tmp_path, pve_url, token_id):
+def _stop(server):
+    server.shutdown()
+    server.server_close()
+
+
+def _harness(tmp_path, pve_url, token_id, pin=None):
     real = copy.deepcopy(_play())
     tasks = [t for t in real["tasks"] if _module(t) != "include_tasks"]
-    play = {
-        "hosts": "localhost", "connection": "local", "gather_facts": False,
-        "module_defaults": real["module_defaults"],
+    variables = {
+        "_pve_host": pve_url,
+        "_pve_token_id": token_id,
         # The secret is read from the environment, as the real play reads it from the store: the harness file
         # never holds the literal, so no error excerpt can echo it.
-        "vars": {"_pve_host": pve_url, "_pve_token_id": token_id,
-                 "_pve_secret": "{{ lookup('env', 'HARNESS_PVE_SECRET') }}"},
+        "_pve_secret": "{{ lookup('env', 'HARNESS_PVE_SECRET') }}",
+        "_pve_helper": str(HELPER),
+        # The real pin expression, so the harness exercises the same value the operator's survey value feeds.
+        "_pve_pin": real["vars"]["_pve_pin"],
+    }
+    if pin is not None:
+        variables["proxmox_leaf_sha256"] = pin
+    play = {
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": variables,
         "tasks": tasks,
     }
     path = tmp_path / "read-root-ca-harness.yml"
@@ -375,14 +501,16 @@ def _printed_pem(out):
 
 
 @needs_ansible
-def test_the_run_reads_the_first_online_node_and_prints_the_root_ca_only(tmp_path):
+def test_the_run_reads_the_first_online_node_and_prints_the_root_ca_only(tmp_path, leaf):
     nodes = [{"node": "pve-b", "status": "online"}, {"node": "pve-a", "status": "offline"},
              {"node": "pve-c", "status": "online"}]
-    server, seen = _fake_proxmox(nodes, _good_certs("pve-b") | _good_certs("pve-c"))
+    server, seen = _fake_proxmox(nodes, _good_certs("pve-b") | _good_certs("pve-c"), leaf)
     try:
-        done = _run(_harness(tmp_path, f"http://127.0.0.1:{server.server_address[1]}", TOKEN_ID))
+        # The lowercase, colon-free form of the pin: the playbook and the helper both normalise it.
+        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID,
+                             pin=leaf.flat.lower()))
     finally:
-        server.shutdown()
+        _stop(server)
     out = done.stdout + done.stderr
     assert done.returncode == 0, out[-2000:]
     # Only the node list and the first online node's certificate info are read, both as GET with the admin header.
@@ -392,9 +520,43 @@ def test_the_run_reads_the_first_online_node_and_prints_the_root_ca_only(tmp_pat
     assert "read from node pve-b" in out
     assert f"subject: {ROOT_SUBJECT}" in out
     assert _printed_pem(out) == ROOT_PEM.strip()
-    # Nothing the responses or the request carried is printed, at -vvv.
+    # The observed digest is printed by the observe step (public); the token and the response carry nothing else.
+    assert leaf.colon in out
     for leaked in (SENT_PVE, "PVEAPIToken", SAN_ADDRESS, "MIILeafNotPrinted"):
         assert leaked not in out, leaked
+
+
+@needs_ansible
+def test_a_missing_pin_stops_before_the_token_is_used(tmp_path, leaf):
+    nodes = [{"node": "pve-b", "status": "online"}]
+    server, seen = _fake_proxmox(nodes, _good_certs("pve-b"), leaf)
+    try:
+        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID, pin=None))
+    finally:
+        _stop(server)
+    out = done.stdout + done.stderr
+    assert done.returncode != 0, out[-1500:]
+    assert "No proxmox_leaf_sha256 was given" in out, out[-1500:]
+    # The first run's job: the operator gets the digest to confirm, and nothing else is sent.
+    assert leaf.colon in out
+    assert seen == [], "a request reached Proxmox without a pin"
+    assert SENT_PVE not in out and "PVEAPIToken" not in out
+
+
+@needs_ansible
+def test_a_wrong_pin_stops_before_the_token_is_used(tmp_path, leaf):
+    wrong = hashlib.sha256(b"not the leaf certificate").hexdigest()
+    nodes = [{"node": "pve-b", "status": "online"}]
+    server, seen = _fake_proxmox(nodes, _good_certs("pve-b"), leaf)
+    try:
+        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID, pin=wrong))
+    finally:
+        _stop(server)
+    out = done.stdout + done.stderr
+    assert done.returncode != 0, out[-1500:]
+    assert "does not match the API leaf certificate observed from this run" in out, out[-1500:]
+    assert seen == [], "a request reached Proxmox under a pin that does not match"
+    assert SENT_PVE not in out and "PVEAPIToken" not in out
 
 
 @needs_ansible
@@ -415,12 +577,13 @@ def test_the_run_reads_the_first_online_node_and_prints_the_root_ca_only(tmp_pat
                 _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM)]}, TOKEN_ID,
      "as a public certificate"),
 ])
-def test_each_refusal_stops_before_anything_is_printed(tmp_path, case, nodes, certs, token_id, expected):
-    server, seen = _fake_proxmox(nodes, certs)
+def test_each_refusal_stops_before_anything_is_printed(tmp_path, leaf, case, nodes, certs, token_id, expected):
+    server, seen = _fake_proxmox(nodes, certs, leaf)
     try:
-        done = _run(_harness(tmp_path, f"http://127.0.0.1:{server.server_address[1]}", token_id))
+        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", token_id,
+                             pin=leaf.colon))
     finally:
-        server.shutdown()
+        _stop(server)
     out = done.stdout + done.stderr
     assert done.returncode != 0, (case, out[-1500:])
     assert expected in out, (case, out[-1500:])
