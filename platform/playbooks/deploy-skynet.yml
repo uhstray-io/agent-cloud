@@ -509,11 +509,51 @@
           skynet POST /skynet/runs with the READ token answered {{ _skynet_read_post.stdout | trim }}, not 401.
           Anything but 401 means the read-only bearer can start runs. Stop and fix the server before use.
 
+    # skynet gates every action on OPA, so the deploy proves skynet's OWN client gets a decision back:
+    # skynet.policy.opa.OPAClient against SKYNET_OPA_URL, inside the container, through whatever the
+    # container trusts and resolves (production: the combined bundle and the OPA name mapping in
+    # compose.prod.yml). The input names a service and action no policy knows, so OPA's default deny
+    # (agent_actions.rego: default allow := false) must answer deny. An allow means the policy failed
+    # open; an exception means TLS, name resolution, the firewall or the decision contract is broken.
+    # OPA decisions are pure: this changes nothing.
+    - name: "OPA decision through skynet's own client (default deny, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import os
+            from skynet.policy.opa import DecisionInput, OPAClient
+            with OPAClient(os.environ['SKYNET_OPA_URL'], timeout=10.0) as client:
+                decision = client.decide(DecisionInput(agent='skynet', service='__agent_cloud_verify__', action='verify'))
+            print('decision=' + ('allow' if decision.allowed else 'deny'))
+      register: _skynet_opa
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Assert skynet reached OPA and was denied by default"
+      ansible.builtin.assert:
+        that:
+          - _skynet_opa.rc == 0
+          - (_skynet_opa.stdout_lines | last | default('')) == 'decision=deny'
+        fail_msg: >-
+          skynet's OPA client did not get the expected default deny (rc {{ _skynet_opa.rc }}, last line
+          '{{ _skynet_opa.stdout_lines | last | default('') }}'; error tail:
+          {{ (_skynet_opa.stderr_lines | default([]))[-3:] | join(' | ') }}). decision=allow means the OPA
+          policy failed open. A failure names the cause: certificate verify failed (the trust bundle),
+          name resolution (the OPA host mapping), a refused or timed-out connection (OPA's firewall
+          admits skynet_svc), or OPAContractError (the decision path or rule).
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           skynet healthy — /skynet/healthz 200; run endpoint 400 with the api token and 401 without
-          (inside the container, :8080); read token lists runs (200) and cannot start one (401).
+          (inside the container, :8080); read token lists runs (200) and cannot start one (401);
+          skynet's own OPA client got OPA's default deny over {{ skynet_opa_url | default('its OPA URL') }}.
           Published on skynet_publish_bind:skynet_publish_port; the gateway's /skynet/ route is separate.
 
     # Last: every verify task above passed (a failure stops the play before this records).
