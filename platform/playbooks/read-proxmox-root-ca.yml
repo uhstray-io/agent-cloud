@@ -314,11 +314,15 @@
       no_log: true
 
     # The serving nodes whose pve-ssl.pem is not issued by the root CA. A node with no pve-ssl.pem is named too.
+    # The issuer is tested only where it is defined: selectattr raises on an entry with no issuer key ("object of type
+    # 'dict' has no attribute 'issuer'"), and that error would be hidden inside this no_log task. An entry without an
+    # issuer is not root-issued, so it is not counted; a served node whose only pve-ssl.pem lacks one is named below.
     - name: "Name the serving nodes whose pve-ssl.pem is absent or not root-issued (no_log; names only)"
       ansible.builtin.set_fact:
         _pve_served_nodes_unissued: >-
           {{ _pve_served_nodes
              | difference(_pve_all_entries | selectattr('filename', 'equalto', 'pve-ssl.pem')
+                          | selectattr('issuer', 'defined')
                           | selectattr('issuer', 'equalto', _pve_ca.subject) | map(attribute='node') | list)
              | sort | list }}
       no_log: true

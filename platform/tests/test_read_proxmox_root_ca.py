@@ -486,10 +486,14 @@ def leaf(tmp_path_factory):
     return _generate_leaf(tmp_path_factory.mktemp("root-ca-leaf"))
 
 
-def _entry(filename, subject, issuer, pem=ROOT_PEM, fingerprint="AA:BB:CC:DD"):
+def _entry(filename, subject, issuer, pem=ROOT_PEM, fingerprint="AA:BB:CC:DD", omit_issuer=False):
     # The same fields pve-common get_certificate_info returns; san carries an address that must never print.
-    return {"filename": filename, "fingerprint": fingerprint, "subject": subject, "issuer": issuer,
-            "notafter": 1900000000, "notbefore": 1800000000, "san": [SAN_ADDRESS], "pem": pem}
+    # omit_issuer drops the issuer key, for an entry the endpoint returned without one.
+    entry = {"filename": filename, "fingerprint": fingerprint, "subject": subject, "issuer": issuer,
+             "notafter": 1900000000, "notbefore": 1800000000, "san": [SAN_ADDRESS], "pem": pem}
+    if omit_issuer:
+        del entry["issuer"]
+    return entry
 
 
 def _good_certs(node, leaf=None):
@@ -702,6 +706,24 @@ def test_the_pin_listed_by_two_entries_on_one_node_passes_and_both_entries_are_n
 
 
 @needs_ansible
+def test_a_non_serving_node_whose_pve_ssl_has_no_issuer_does_not_block_the_pinned_leaf(tmp_path, leaf):
+    # pve-c does not serve the pinned leaf, and its pve-ssl.pem came back without an issuer. The served-node check must
+    # not read it, so the run passes on pve-b, the node that serves the leaf.
+    nodes = [{"node": "pve-b", "status": "online"}, {"node": "pve-c", "status": "online"}]
+    certs = {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                       _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)],
+             "pve-c": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                       _entry("pve-ssl.pem", "CN=pve-c", None, pem=LEAF_PEM, omit_issuer=True)]}
+    done, _ = _run_pinned(tmp_path, leaf, nodes, certs)
+    out = done.stdout + done.stderr
+    assert done.returncode == 0, out[-2000:]
+    assert "listed as: pve-b/pve-ssl.pem, issued by this root CA." in out, out[-1500:]
+    assert _printed_pem(out) == ROOT_PEM.strip()
+    for leaked in (SENT_PVE, "PVEAPIToken", SAN_ADDRESS, "MIILeafNotPrinted"):
+        assert leaked not in out, leaked
+
+
+@needs_ansible
 def test_a_missing_pin_stops_before_the_token_is_used(tmp_path, leaf):
     nodes = [{"node": "pve-b", "status": "online"}]
     server, seen = _fake_proxmox(nodes, _good_certs("pve-b", leaf), leaf)
@@ -763,6 +785,20 @@ def test_a_wrong_pin_stops_before_the_token_is_used(tmp_path, leaf):
       "pve-c": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
                 _entry("pve-ssl.pem", "CN=pve-c", ROOT_SUBJECT, pem=LEAF_PEM)]}, TOKEN_ID,
      "No online node lists the pinned leaf certificate"),
+    # The serving node's pve-ssl.pem came back without an issuer: it is not root-issued, so the served-node check names
+    # the node as the refusal (not a crash in the no_log read).
+    ("serving node's pve-ssl.pem has no issuer", [{"node": "pve-b", "status": "online"}],
+     {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                _entry("pve-ssl.pem", "CN=pve-b", None, pem=LEAF_PEM, fingerprint=LEAF_TOKEN, omit_issuer=True)]},
+     TOKEN_ID, "The pve-ssl.pem entry of pve-b is absent, or it was not issued by the root CA"),
+    # A listing of the pin came back without an issuer, beside a root-issued one: the match's issuer check names it.
+    ("a matching listing has no issuer, beside a root-issued one", [{"node": "pve-b", "status": "online"}],
+     {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN),
+                _entry("pveproxy-ssl.pem", "CN=pve-b", None, pem=LEAF_PEM, fingerprint=LEAF_TOKEN,
+                       omit_issuer=True)]}, TOKEN_ID,
+     "The pinned leaf is listed by pve-b/pve-ssl.pem, pve-b/pveproxy-ssl.pem, and at least one of those entries is "
+     "not issued by the cluster root CA"),
     # The serving node's pve-ssl.pem is absent. Its pveproxy-ssl.pem matches the pin and is root-issued, so the issuer
     # check of the matches passes and only the serving-node check refuses (its absent-path arm).
     ("serving node has no pve-ssl.pem", [{"node": "pve-b", "status": "online"}],
