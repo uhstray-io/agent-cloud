@@ -208,6 +208,39 @@ cover privileged users or unmanaged code. Target absence, restore success,
 cleanup proof, and task-output authenticity remain future workflow
 responsibilities and cannot be inferred from these guards.
 
+### Protected execution-environment follow-up (2026-10-29)
+
+Dev-bound capability task 10282 refused protected credential extra vars from
+its shared Semaphore environment before authentication. Retain that refusal.
+The repair uses the existing isolated seed-environment provisioner to give each
+owned protected PBS workflow an empty environment with encrypted AppRole inputs.
+The source environment and unrelated template bindings remain unchanged.
+
+Add one Dev-bound controller wrapper with an exact reviewed-checkout gate,
+fixed controller-loopback API destination, and an OpenBao destination anchored
+to the sole private inventory service declaration before credentials are used.
+Its selectable targets are only the five explicit Dev catalog rows named in
+task 5.2f. Each declares a distinct isolated environment. Reuse the provisioner's
+base-instance selection for these already-suffixed names and require their
+declared repository to remain `agent-cloud dev`; do not generate another Dev
+suffix or change the shared provisioner's variant policy.
+
+Supply and verify explicit project, inventory, and current source-environment
+bindings. Preserve the provisioner's source preservation, encrypted credential
+handling, single-template ownership, pre-mutation rechecks, and ambiguous-write
+readback. A scoped publisher may create the new controller entry and publish
+surveys; existing target rebinding goes only through this reviewed provisioner.
+Do not mutate the shared environment, use a full-catalog publication, or weaken
+the restore preflight to admit legacy credential extra vars. Generic VM
+templates are outside this bounded convergence scope.
+
+Converge the capability-verification template first and rerun its read-only
+verifier. Only a successful effective-policy/capability receipt permits the
+remaining four owned environment convergences. Their later VM/disk operations
+still require their independent declaration, identity, capacity, writer-drain,
+and lifecycle gates. Source tests and environment creation are not live restore
+or backup acceptance.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.

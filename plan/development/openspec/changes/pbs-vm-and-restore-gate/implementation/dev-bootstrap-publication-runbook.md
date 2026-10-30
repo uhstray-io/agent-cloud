@@ -39,6 +39,13 @@ identity, or storage exists.
   `source_series_ambiguous`. That does not prove capacity, authorize VM growth,
   or authorize retention changes. Task 4.4's second-PBS destination remains a
   planning candidate only.
+- Dev task 10282, `Verify o11y Restore Coordination Capabilities`, refused the
+  shared environment's protected credential extra vars before authentication.
+  This source change adds one scoped Dev controller wrapper and distinct
+  environments for five explicit PBS/restore templates. Source declarations do
+  not prove those bindings were converged or the effective role passed its
+  capability check; preserve the shared environment and complete the sequence
+  under “Restore coordination source prerequisite” below.
 
 ## Preconditions before allocation or guest configuration
 
@@ -169,3 +176,31 @@ workflow must journal each PVE write before execution, authenticate the complete
 prior restore task output, prove stopped/no-pending-action state, and prove
 cleanup task success plus authoritative exact-VMID absence. No restore target
 has been reserved or used, and no restore or cleanup has been performed.
+
+### Protected workflow environment sequence
+
+The five guarded workflows have separate `isolated_environment` declarations:
+`Verify o11y Restore Coordination Capabilities (Dev)`, `Preflight o11y Restore
+Target (Dev)`, `Provision PBS Debian Cloud Template (Dev)`, `Attach PBS Data
+Disk (Dev)`, and `Provision PBS VM (Dev)`. The new **Provision o11y Workflow
+Environment (Dev)** controller entry accepts one of those explicit rows, an
+exact reviewed repository SHA, and verified project, inventory, and current
+source-environment IDs. Before running the command-bearing checkout verifier,
+the controller refuses any `ansible_` launch extra-var name; inventory-sourced
+execution context remains valid. The verifier checks the exact checkout before
+API access. The wrapper pins Semaphore to controller loopback and requires the sole private
+`openbao_svc.service_url` to match `openbao_addr` and pass transport validation.
+The wrapper uses the existing provisioner's `main` base-instance mode for these
+already-suffixed names; it preserves their `agent-cloud dev` binding without
+adding another `(Dev)` suffix. Do not pass the provisioner's `seed_template`,
+`seed_variant`, or credential-replacement aliases through the wrapper.
+
+Converge only the capability-verification environment first. Read back its
+repository, playbook, inventory, source and isolated environment binding, empty
+JSON/plaintext configuration, encrypted AppRole metadata, and sole-template
+ownership. Then rerun the capability verifier and review its effective-policy
+receipt. Only a passing receipt permits one-at-a-time environment convergence
+for the remaining four templates. Keep the shared environment and generic VM
+templates unchanged. These configuration steps close no private declaration,
+writer-drain, target, backup, restore/cleanup, capacity, retention, or deployment
+gate.
