@@ -491,6 +491,16 @@ def test_availability_source_gate_diagnostic_accepts_native_self_only_readback()
         "rc": 0, "stdout": json.dumps(self_only), "stderr": "",
     }) == "producer_observed"
 
+    float_scrape_up = json.loads(json.dumps(self_only))
+    float_scrape_up["evidence"]["samples"]["alloy_self"]["scrape_up"] = 1.0
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": json.dumps(float_scrape_up), "stderr": "",
+    }) == "source_readback_unavailable"
+    exponent_scrape_up = json.dumps(self_only).replace('"scrape_up": 1', '"scrape_up": 1e0', 1)
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": exponent_scrape_up, "stderr": "",
+    }) == "source_readback_unavailable"
+
     malformed = []
     for freshness in (float("nan"), float("inf"), {"untrusted": "SENTINEL"}):
         candidate = json.loads(json.dumps(self_only))

@@ -694,7 +694,9 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
         or not isinstance(sampled_self, Mapping)
         or set(sampled_self) != {"status", "scrape_up", "scrape_samples_scraped", "scrape_body_size_bytes"}
         or sampled_self.get("status") != "observed"
-        or isinstance(sampled_self.get("scrape_up"), bool) or sampled_self.get("scrape_up") != 1
+        or isinstance(sampled_self.get("scrape_up"), bool)
+        or not isinstance(sampled_self.get("scrape_up"), int)
+        or sampled_self["scrape_up"] != 1
         or any(
             isinstance(sampled_self.get(field), bool) or not isinstance(sampled_self.get(field), int)
             or not 1 <= sampled_self[field] <= loaded_self["limits"][limit_field]
