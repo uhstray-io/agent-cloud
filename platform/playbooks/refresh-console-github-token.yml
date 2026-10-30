@@ -121,9 +121,26 @@
           - "{{ _console_repository }}"
         stdin: "{{ _cg_app_fields.console_app_key }}"
       register: _cg_mint
+      # Not failing here: the failure reason is the exit code, and the visible assert below turns
+      # it into a named message. stdout is the token, so this task stays no_log.
+      failed_when: false
       changed_when: false
       no_log: true
       check_mode: false
+
+    - name: "Take the signer's exit code (no output leaves this task)"
+      ansible.builtin.set_fact:
+        _cg_mint_rc: "{{ _cg_mint.rc | int }}"
+      no_log: true
+
+    - name: "Require a clean mint (exit 0); name the over-grant refusal (exit 6) without its output"
+      ansible.builtin.assert:
+        that:
+          - _cg_mint_rc == 0
+        fail_msg: >-
+          {{ "GitHub granted a wider scope than requested (extra permission, different level, or other repository) — fix the console App's permissions"
+             if _cg_mint_rc == 6 else "mint failed (exit " ~ _cg_mint_rc ~ ")" }}
+        quiet: true
 
     - name: "Take the token"
       ansible.builtin.set_fact:

@@ -79,8 +79,16 @@ def run_cli(argv, installation):
 
 def scoped_argv(*more):
     return [
-        "installation-token", "--issuer", "i", "--org", ORG,
-        "--permissions", json.dumps(READ), "--repository", REPO, *more,
+        "installation-token",
+        "--issuer",
+        "i",
+        "--org",
+        ORG,
+        "--permissions",
+        json.dumps(READ),
+        "--repository",
+        REPO,
+        *more,
     ]
 
 
@@ -115,20 +123,33 @@ def test_a_narrower_grant_than_requested_is_accepted():
     assert out == TOKEN
 
 
+# Each refusal and its exit code. A grant wider than requested exits GRANT_WIDER_EXIT (6), which is what
+# refresh-console-github-token.yml matches on. A response that cannot be checked, or that covers fewer
+# repositories than asked, is not a wider grant and exits 1.
 REFUSALS = [
-    pytest.param({"permissions": {**READ, "administration": "write"}}, "administration", id="an-extra-permission"),
-    pytest.param({"permissions": {**READ, "contents": "write"}}, "contents", id="a-raised-level"),
-    pytest.param({"repositories": (REPO, "other-repo")}, "other-repo", id="an-extra-repository"),
-    pytest.param({"repositories": ()}, REPO, id="a-repository-missing"),
-    pytest.param({"omit": {"permissions"}}, "permissions", id="no-permissions-object"),
-    pytest.param({"omit": {"repositories"}}, "repositories", id="no-repositories-list"),
+    pytest.param(
+        {"permissions": {**READ, "administration": "write"}},
+        "administration",
+        gat.GRANT_WIDER_EXIT,
+        id="an-extra-permission",
+    ),
+    pytest.param({"permissions": {**READ, "contents": "write"}}, "contents", gat.GRANT_WIDER_EXIT, id="a-raised-level"),
+    pytest.param({"repositories": (REPO, "other-repo")}, "other-repo", gat.GRANT_WIDER_EXIT, id="an-extra-repository"),
+    pytest.param({"repositories": ()}, REPO, 1, id="a-repository-missing"),
+    pytest.param({"omit": {"permissions"}}, "permissions", 1, id="no-permissions-object"),
+    pytest.param({"omit": {"repositories"}}, "repositories", 1, id="no-repositories-list"),
 ]
 
 
-@pytest.mark.parametrize("grant, named", REFUSALS)
-def test_a_grant_wider_than_requested_is_refused_and_names_only_keys_and_repositories(grant, named):
+def test_the_wider_grant_exit_code_is_six():
+    # refresh-console-github-token.yml names this code; a change here must change the playbook with it.
+    assert gat.GRANT_WIDER_EXIT == 6
+
+
+@pytest.mark.parametrize("grant, named, exit_code", REFUSALS)
+def test_a_refused_grant_exits_with_its_code_and_names_only_keys_and_repositories(grant, named, exit_code):
     code, out, err = run_cli(scoped_argv(), Installation(**grant))
-    assert code != 0
+    assert code == exit_code
     assert out == ""
     assert TOKEN not in err
     assert named in err

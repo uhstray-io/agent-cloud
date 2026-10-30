@@ -860,7 +860,8 @@ def test_a_private_key_is_refused_as_the_proxmox_ca(tmp_path):
 
 ENV_SECRETS = {"console_oidc_client_secret": "OIDC-REF", "semaphore_api_token": "SEM-REF",
                "console_api_token": "NB-REF", "console_token_id": "console@pve!console", "console_token": "PX-REF",
-               # Shared-read with console_grafana_url (D26): env.j2 renders it only behind that URL.
+               # Shared-read with console_grafana_api_enabled and console_grafana_url (D26): env.j2 renders it
+               # only behind both.
                "console_grafana_token": "GRAFANA-REF"}
 
 
@@ -893,10 +894,23 @@ def test_proxmox_group_is_all_or_none_with_the_ca_only_when_pem_is_set(tmp_path)
 def test_grafana_base_url_is_absent_when_unset_and_rendered_when_set(tmp_path):
     unset = _render(tmp_path, CONSOLE / "templates/env.j2", {"secrets": ENV_SECRETS})
     assert "CONSOLE_GRAFANA_URL" not in unset and "CONSOLE_GRAFANA_TOKEN" not in unset
+    # The URL alone is the deep-link base, as on dev: it renders no token.
     set_ = _render(tmp_path, CONSOLE / "templates/env.j2",
                    {"secrets": ENV_SECRETS, "console_grafana_url": "https://grafana.example.test"})
     assert "CONSOLE_GRAFANA_URL=https://grafana.example.test" in set_.splitlines()
-    assert "CONSOLE_GRAFANA_TOKEN=GRAFANA-REF" in set_.splitlines()
+    assert "CONSOLE_GRAFANA_TOKEN" not in set_
+
+
+@NEEDS_ANSIBLE
+def test_grafana_token_renders_only_with_the_api_switch_and_its_url(tmp_path):
+    switch_only = _render(tmp_path, CONSOLE / "templates/env.j2",
+                          {"secrets": ENV_SECRETS, "console_grafana_api_enabled": True})
+    assert "CONSOLE_GRAFANA_TOKEN" not in switch_only and "CONSOLE_GRAFANA_URL" not in switch_only
+    both = _render(tmp_path, CONSOLE / "templates/env.j2",
+                   {"secrets": ENV_SECRETS, "console_grafana_url": "https://grafana.example.test",
+                    "console_grafana_api_enabled": True})
+    assert "CONSOLE_GRAFANA_URL=https://grafana.example.test" in both.splitlines()
+    assert "CONSOLE_GRAFANA_TOKEN=GRAFANA-REF" in both.splitlines()
 
 
 @NEEDS_ANSIBLE

@@ -44,8 +44,9 @@ installation-token with --permissions and/or --repository asks GitHub for a DOWN
 the request body carries the permissions object and the repository names. The token is refused
 (nonzero exit, nothing on stdout) when the grant the response reports is wider than requested:
 a permission that was not requested, a level above or below the one requested, or a repository
-outside the requested set. A requested permission the response leaves out is a narrower grant
-and is accepted. Without either flag the request carries no body, exactly as before.
+outside the requested set. That refusal exits 6 (GRANT_WIDER_EXIT); every other refusal exits 1.
+A requested permission the response leaves out is a narrower grant and is accepted. Without
+either flag the request carries no body, exactly as before.
 """
 
 from __future__ import annotations
@@ -63,6 +64,10 @@ import urllib.error
 import urllib.request
 
 API = os.environ.get("GITHUB_API", "https://api.github.com")
+
+# Exit code for a token refused because GitHub's reported grant is wider than requested (see
+# check_grant). Every other failure exits 1 or 2, so a caller can match on 6 alone.
+GRANT_WIDER_EXIT = 6
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -115,9 +120,7 @@ def sign_assertion(issuer: str, key_pem: bytes) -> str:
     # assertion issued in its own future. exp is 9 minutes: the documented ceiling is
     # 10, and sitting on the boundary turns skew into an intermittent auth failure.
     header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
-    payload = _b64url(
-        json.dumps({"iat": now - 60, "exp": now + 540, "iss": issuer}, separators=(",", ":")).encode()
-    )
+    payload = _b64url(json.dumps({"iat": now - 60, "exp": now + 540, "iss": issuer}, separators=(",", ":")).encode())
     signing_input = f"{header}.{payload}".encode()
     sig = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
     return f"{header}.{payload}.{_b64url(sig)}"
@@ -177,8 +180,10 @@ def parse_permissions(raw: str) -> dict:
         obj = json.loads(raw)
     except ValueError:
         obj = None
-    if not isinstance(obj, dict) or not obj or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in obj.items()
+    if (
+        not isinstance(obj, dict)
+        or not obj
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in obj.items())
     ):
         die("--permissions must be a non-empty JSON object mapping permission names to levels", 2)
     return obj
@@ -201,6 +206,13 @@ def check_grant(data: dict, permissions: dict | None, repositories: list[str] | 
 
     Runs before the token is returned, so a refused token never reaches stdout. Messages name
     permission keys and repository names only, never a token or a level.
+
+    Exit codes, so a caller can tell the refusals apart without reading a message:
+      GRANT_WIDER_EXIT (6): the grant is wider than requested. That is an extra permission, a
+        level other than the one requested, or a repository outside the requested set.
+      1 (any other refusal): the response cannot be checked (no permissions object, no
+        repositories list), or it covers fewer repositories than requested. Neither is a wider
+        grant, so neither gets the wider-grant code.
     """
     if permissions is not None:
         granted = data.get("permissions")
@@ -213,13 +225,15 @@ def check_grant(data: dict, permissions: dict | None, repositories: list[str] | 
         if extra:
             die(
                 f"the token was granted permission(s) that were not requested: {', '.join(extra)}; "
-                "the token is refused"
+                "the token is refused",
+                GRANT_WIDER_EXIT,
             )
         differing = sorted(k for k in granted if granted[k] != permissions[k])
         if differing:
             die(
                 "the token was granted a different level than requested for: "
-                f"{', '.join(differing)}; the token is refused"
+                f"{', '.join(differing)}; the token is refused",
+                GRANT_WIDER_EXIT,
             )
     if repositories is not None:
         repos = data.get("repositories")
@@ -229,6 +243,13 @@ def check_grant(data: dict, permissions: dict | None, repositories: list[str] | 
                 "checked; the token is refused"
             )
         covered = {r.get("name") for r in repos if isinstance(r, dict)}
+        outside = covered - set(repositories)
+        if outside:
+            die(
+                "the token covers repositories outside the requested set: "
+                f"{', '.join(sorted(str(c) for c in outside))}; the token is refused",
+                GRANT_WIDER_EXIT,
+            )
         if covered != set(repositories):
             die(
                 f"the token covers repositories {sorted(str(c) for c in covered)}, not the requested "
@@ -268,10 +289,7 @@ def runner_token(issuer: str, key_pem: bytes, org: str, kind: str) -> str:
     data = api(f"/orgs/{org}/actions/runners/{kind}", itok, method="POST") or {}
     token = data.get("token")
     if not token:
-        die(
-            f"no token in the {kind} response — does the App grant Organization "
-            "'Self-hosted runners: read & write'?"
-        )
+        die(f"no token in the {kind} response — does the App grant Organization 'Self-hosted runners: read & write'?")
     return token
 
 
@@ -369,9 +387,7 @@ def summarise(runners: list[dict]) -> dict:
     }
 
 
-def prune(
-    token: str, org: str, prefix: str, keep: list[str], retire: str | None, grace_minutes: int = 30
-) -> dict:
+def prune(token: str, org: str, prefix: str, keep: list[str], retire: str | None, grace_minutes: int = 30) -> dict:
     """Delete this host's ephemeral runners that can never take a job.
 
     An ephemeral runner that is offline, not busy, and not in the host's stock (`keep`) is a

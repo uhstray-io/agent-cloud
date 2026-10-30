@@ -137,6 +137,25 @@ def test_the_token_is_stored_under_the_console_path_by_a_merge_with_one_timestam
     assert vars_["_bm_data"]["refreshed_at"] == "{{ _cg_refreshed_at }}"
 
 
+def test_the_mint_does_not_fail_itself_and_a_visible_assert_names_the_exit_code():
+    # The mint's stdout is the token, so the task stays no_log and cannot name its own failure. The signer's
+    # exit code (6 = over-grant) reaches a visible assert through a no_log fact, and the message holds the code only.
+    tasks = _tasks()
+    mint = _mint()
+    assert mint.get("failed_when") is False
+    at = tasks.index(mint)
+    rc_fact, check = tasks[at + 1], tasks[at + 2]
+    assert _sets(rc_fact, "_cg_mint_rc") and rc_fact.get("no_log") is True, rc_fact.get("name")
+    assert "ansible.builtin.assert" in check and "no_log" not in check, check.get("name")
+    assert check["ansible.builtin.assert"]["that"] == ["_cg_mint_rc == 0"]
+    msg = check["ansible.builtin.assert"]["fail_msg"]
+    assert "GitHub granted a wider scope than requested" in msg
+    assert "fix the console App's permissions" in msg
+    assert 'if _cg_mint_rc == 6 else "mint failed (exit " ~ _cg_mint_rc ~ ")"' in msg
+    assert "_cg_mint.stdout" not in msg and "_cg_mint.stderr" not in msg
+    assert tasks.index(check) < next(i for i, t in enumerate(tasks) if _sets(t, "_cg_token"))
+
+
 def _templates():
     return yaml.safe_load(TEMPLATES.read_text())["templates"]
 

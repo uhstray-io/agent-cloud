@@ -11,8 +11,9 @@
 #          config/flows.json (the D24 edges, names only) and config/proxmox-ca.pem (always, empty when unset).
 #          Phase 3 (D22-D24) reads NetBox and Proxmox only when their URL vars are set, and refuses a
 #          netbox_site slug declared on two sites or a private key given as the Proxmox CA.
-#          The console's own AppRole (D27) and its Grafana Viewer token (D26) are shared-read the same
-#          way, each only when its URL var is set (console_openbao_url, console_grafana_url).
+#          The console's own AppRole (D27) is shared-read only when console_openbao_url is set. The Grafana Viewer
+#          token (D26) is shared-read only when console_grafana_api_enabled is true AND console_grafana_url is set;
+#          console_grafana_url alone is only the deep-link base and reads nothing.
 # Phase 2: deploy.sh — builds the image on THIS host from platform/services/console (there is no
 #          registry), then container lifecycle (compose_up_if_changed, wait healthy).
 # Phase 3: Verify inside the container: `probe /healthz 200`, and an unauthenticated `/v1/me`
@@ -78,11 +79,13 @@
     _console_openbao_reads: >-
       {{ [{'from_service': 'approles/console', 'read_keys': ['role_id', 'secret_id']}]
          if (console_openbao_url | default('', true) | string | trim | length) > 0 else [] }}
-    # The Grafana Viewer token (D26): read only when console_grafana_url is set. provision-console-grafana-token.yml
-    # must have stored it, or the shared read fails by name.
+    # The Grafana Viewer token (D26): read only when console_grafana_api_enabled is true AND console_grafana_url is
+    # set (env.j2 renders it on the same two). provision-console-grafana-token.yml must have stored it, or the
+    # shared read fails by name.
     _console_grafana_reads: >-
       {{ [{'from_service': 'o11y', 'read_keys': ['console_grafana_token']}]
-         if (console_grafana_url | default('', true) | string | trim | length) > 0 else [] }}
+         if (console_grafana_api_enabled | default(false) | bool)
+            and (console_grafana_url | default('', true) | string | trim | length) > 0 else [] }}
     _shared_reads: "{{ _console_oidc_reads + _console_netbox_reads + _console_proxmox_reads + _console_openbao_reads + _console_grafana_reads }}"
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
@@ -191,6 +194,15 @@
           - (console_proxmox_ca_pem | default('', true) | string | length) == 0 or '-----BEGIN CERTIFICATE-----' in (console_proxmox_ca_pem | string)
           - "'PRIVATE KEY' not in (console_proxmox_ca_pem | default('', true) | string)"
         fail_msg: "console_proxmox_ca_pem must be the public CA certificate (BEGIN CERTIFICATE), never a private key."
+        quiet: true
+
+    # The Grafana API switch and its URL are one feature: the token is rendered and read only when both are set.
+    # Enabled without the URL would read nothing and say nothing, so refuse it by name before anything is placed.
+    - name: "Refuse console_grafana_api_enabled without console_grafana_url"
+      ansible.builtin.assert:
+        that:
+          - not (console_grafana_api_enabled | default(false) | bool) or (console_grafana_url | default('', true) | string | trim | length) > 0
+        fail_msg: "console_grafana_api_enabled is true but console_grafana_url is unset. Set the URL or unset the switch."
         quiet: true
 
     # Read-only check of the credential path before anything is written: a refused run must not

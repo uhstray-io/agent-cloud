@@ -26,11 +26,12 @@
 # lifetime is always sent explicitly.
 #
 # The `console` account is used only when it is enabled and has the Viewer role. Anything
-# else is refused by name rather than edited. Nothing here schedules a run: the token must be
-# renewed (by running this playbook) before it expires.
+# else is refused by name rather than edited. Rotate Console Credentials (Dev) imports this
+# playbook monthly, only when console_grafana_api_enabled is true. A manual run also renews the
+# token, at any time, under the same threshold.
 #
-# This playbook does not redeploy the console. The rotation that consumes the new token is a
-# later playbook that imports this one, then redeploys.
+# This playbook does not redeploy the console. Rotate Console Credentials (Dev) imports it, then
+# redeploys (deploy-console.yml), so the console reads the renewed token.
 #
 # Check mode reports the decision and changes nothing.
 
