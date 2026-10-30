@@ -130,13 +130,13 @@ skip_unless_service_file() {
   refute_grep -qF '_skynet_semaphore_token' "$PLAYBOOK"
   refute_grep -qF 'LOCAL-DEV STOPGAP' "$PLAYBOOK"
   refute_grep -qF 'community.hashi_vault.hashi_vault' "$PLAYBOOK"
-  # Before the monorepo is placed, local_mode gates only the two production refusals (the old
+  # Before the monorepo is placed, local_mode gates only the three production refusals (the old
   # stopgap refusal gated on it too). Every other refusal runs in every environment.
   local refusals_block
   refusals_block=$(sed -n '/^    - name: "Refuse skynet_image/,/^    - name: "Place the monorepo/p' "$PLAYBOOK")
   assert_contains "$refusals_block" 'Refuse skynet_publish_port'
-  [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 2 ]
-  [ "$(grep -c 'when: not (local_mode | default(false) | bool)' <<<"$refusals_block")" -eq 2 ]
+  [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 3 ]
+  [ "$(grep -c 'when: not (local_mode | default(false) | bool)' <<<"$refusals_block")" -eq 3 ]
   if [ -f "$DEPLOY_DIR/templates/env.j2" ]; then
     refute_grep -qF '_skynet_semaphore_token' "$DEPLOY_DIR/templates/env.j2"
   fi
@@ -233,7 +233,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the eleven refusals are present as named assert tasks, all before the repo is placed" {
+@test "skynet: the twelve refusals are present as named assert tasks, all before the repo is placed" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -245,8 +245,9 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 11 ]
-  # The two production refusals name the CA host and the OPA address.
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 12 ]
+  # The three production refusals name the CA host, the OPA address and the publish bind.
+  assert_grep -qx 'Refuse a production run whose skynet_publish_bind is unset or loopback' <<<"$refusals"
   assert_grep -qx 'Refuse a production run without a step_ca_svc host to read the CA root from' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_opa_ip unless it is one non-wildcard IPv4 address in production' <<<"$refusals"
   # The two publish refusals name the declared bind and port, so a reader finds each one.
@@ -299,8 +300,8 @@ tasks = [
     t for t in play1["tasks"]
     if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
-if len(tasks) != 11:
-    sys.exit(f"expected 11 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 12:
+    sys.exit(f"expected 12 refusal asserts in Phase 1, found {len(tasks)}")
 play = [{"name": "extracted refusals", "hosts": "localhost", "connection": "local",
          "gather_facts": False, "tasks": tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
@@ -419,6 +420,10 @@ PY
   [ "$status" -ne 0 ]
   run accepted skynet_publish_bind '"999.1.1.1"'
   [ "$status" -ne 0 ]
+  run accepted skynet_publish_bind '"00.0.0.0"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_bind '"203.0.113.010"'
+  [ "$status" -ne 0 ]
   run accepted skynet_publish_bind '""'
   [ "$status" -ne 0 ]
   run accepted skynet_publish_bind '"203.0.113.10"'
@@ -461,7 +466,7 @@ prod_inventory() {
 prod_accepted() {
   prod_inventory
   ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10 \
     -e "{\"$1\": $2}" >/dev/null 2>&1
 }
 
@@ -470,7 +475,7 @@ prod_accepted() {
   extract_refusals
   # No inventory group: the refusal names the missing CA host.
   run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10
   [ "$status" -ne 0 ]
   assert_contains "$output" 'step_ca_svc'
   run prod_accepted skynet_opa_ip '"203.0.113.20"'
@@ -488,9 +493,27 @@ prod_accepted() {
   [ "$status" -ne 0 ]
   run prod_accepted skynet_opa_ip '"203.0.113.256"'
   [ "$status" -ne 0 ]
+  run prod_accepted skynet_opa_ip '"00.0.0.0"'
+  [ "$status" -ne 0 ]
   run prod_accepted skynet_opa_ip '""'
   [ "$status" -ne 0 ]
   run prod_accepted skynet_opa_ip '"203.0.113.20"'
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: production refuses an unset or loopback skynet_publish_bind; local mode keeps the loopback default" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  prod_inventory
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'skynet_publish_bind'
+  run prod_accepted skynet_publish_bind '"127.0.0.1"'
+  [ "$status" -ne 0 ]
+  run prod_accepted skynet_publish_bind '"203.0.113.10"'
+  [ "$status" -eq 0 ]
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
   [ "$status" -eq 0 ]
 }
 
@@ -499,7 +522,7 @@ prod_accepted() {
   extract_refusals
   prod_inventory
   run ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_publish_bind=203.0.113.10
   [ "$status" -ne 0 ]
   assert_contains "$output" 'skynet_opa_ip'
   # Local mode: the baseline carries no skynet_opa_ip and no step_ca_svc group, and must pass.

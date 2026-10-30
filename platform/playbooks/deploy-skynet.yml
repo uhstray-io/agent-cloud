@@ -150,17 +150,30 @@
         fail_msg: "Declare skynet_model (the model skynet's graph requests through the gateway) in inventory."
 
     # Optional: unset, the compose defaults apply (127.0.0.1:8380). A declared value is checked
-    # here, before anything changes. 0.0.0.0 is refused: the API must not listen on every interface.
+    # here, before anything changes. 0.0.0.0 is refused: the API must not listen on every interface. Octets with a
+    # leading zero are refused too: podman rejects them, so 00.0.0.0 would fail at compose up.
     - name: "Refuse skynet_publish_bind unless it is one non-wildcard IPv4 address"
       ansible.builtin.assert:
         that:
-          - (skynet_publish_bind | string) is match('^(?!0[.]0[.]0[.]0$)[0-9]{1,3}([.][0-9]{1,3}){3}$')
+          - (skynet_publish_bind | string) is match('^(?!0[.]0[.]0[.]0$)((0|[1-9][0-9]{0,2})[.]){3}(0|[1-9][0-9]{0,2})$')
           - ((skynet_publish_bind | string).split('.') | map('int') | max) <= 255
         fail_msg: >-
           skynet_publish_bind must be one IPv4 address to publish the skynet API on: the VM's own
           LAN address in production, 127.0.0.1 for loopback. 0.0.0.0 is refused. Set it in the
           inventory and re-run.
       when: skynet_publish_bind is defined
+
+    # Production publishes for the Dispatch Console on another VM, so the loopback default would
+    # leave the API unreachable while every probe here (inside the container) still passes.
+    - name: "Refuse a production run whose skynet_publish_bind is unset or loopback"
+      ansible.builtin.assert:
+        that:
+          - skynet_publish_bind is defined
+          - not ((skynet_publish_bind | string) is match('^127[.]'))
+        fail_msg: >-
+          Production skynet must publish on the VM's own LAN address so the Dispatch Console can reach
+          it: declare skynet_publish_bind (not a 127.x address) in the inventory and re-run.
+      when: not (local_mode | default(false) | bool)
 
     - name: "Refuse skynet_publish_port unless it is a whole port number from 1024 to 65535"
       ansible.builtin.assert:
@@ -188,7 +201,7 @@
     - name: "Refuse skynet_opa_ip unless it is one non-wildcard IPv4 address in production"
       ansible.builtin.assert:
         that:
-          - (skynet_opa_ip | default('', true) | string) is match('^(?!0[.]0[.]0[.]0$)[0-9]{1,3}([.][0-9]{1,3}){3}$')
+          - (skynet_opa_ip | default('', true) | string) is match('^(?!0[.]0[.]0[.]0$)((0|[1-9][0-9]{0,2})[.]){3}(0|[1-9][0-9]{0,2})$')
           - ((skynet_opa_ip | default('', true) | string).split('.') | map('int') | max) <= 255
         fail_msg: >-
           skynet_opa_ip must be the IPv4 address of the OPA host. The production OPA name has no DNS
