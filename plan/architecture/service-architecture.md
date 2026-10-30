@@ -380,8 +380,9 @@ connected yet: skynet has no production route and the WisAI-to-skynet migration 
 
 New and existing services move through one 23-step workflow, declared in a registry and executed
 step by step through Semaphore; light-blue reasoning steps are where the agent roles above propose
-[40][42]. The flowchart shows the 23 steps in registry order, with consecutive steps grouped under
-the purpose they share; each box lists its registry step ids.
+[40][42]. The flowchart shows the 23 steps in registry order, in two rows (steps 1-12, then 13-23),
+with consecutive steps grouped under the purpose they share; each box lists its registry step
+ids.
 
 ```mermaid
 flowchart TB

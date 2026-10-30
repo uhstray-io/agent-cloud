@@ -15,8 +15,8 @@ owning documents for depth and does not restate them.
 > the internal site label, node names, VM ids and per-host port bindings live only in the private
 > site-config repository. In this document `<zone>` is the public DNS zone, `<site>` the internal
 > site label, `<gpu-head>` and `<gpu-worker>` the two GPU nodes; diagrams write the same placeholders in
-> braces (`{zone}`), because GitHub's diagram renderer strips angle brackets. No diagram or table
-> below carries a real value.
+> braces (`{zone}`), because GitHub's diagram renderer treats `&lt;zone&gt;` as an HTML tag and
+> drops it. No diagram or table below carries a real value.
 
 ---
 
