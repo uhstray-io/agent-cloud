@@ -47,8 +47,6 @@ CONSOLE_INPUTS = [
     "platform/playbooks/tasks/manage-secrets.yml",
     "platform/workflows/service-onboarding/registry.yml",
     "platform/services/authentik/deployment/app-catalog.yml",
-    "platform/playbooks/tasks/place-monorepo.yml",
-    "platform/playbooks/tasks/distribute-ca-root.yml",
 ]
 
 # A credential-bearing task: its text names a secret_id, role_id, token header or a registered credential result.
@@ -431,11 +429,13 @@ def test_a_refused_store_write_destroys_the_minted_secret_id_only_when_the_store
     assert {_when(t) for t in fails} == {"not _console_store_holds_new | bool", "_console_store_holds_new | bool"}
 
 
-def test_the_pin_is_skipped_for_an_explicit_branch_and_for_local_mode():
+def test_the_pin_is_skipped_only_for_local_mode():
+    # The template's service_branch field (required by test_placement_branch_guard.py) must not skip the pin:
+    # a web-form run would then redeploy the branch head instead of the deployed commit.
     pins = [t for t in _tasks_of(_play(PIN)) if "when" in t]
     assert pins, "the pin play has no guarded tasks"
     for task in pins:
-        assert "service_branch is defined" in _when(task) and "local_mode" in _when(task), task["name"]
+        assert "local_mode" in _when(task) and "service_branch" not in _when(task), task["name"]
 
 
 def test_the_pin_reaches_the_deploy_through_an_internal_name_only():
@@ -607,12 +607,14 @@ def test_the_store_is_guarded_by_the_replaced_secret_id():
 # --- templates.yml: the AppRole variant and the Dev-bound monthly rotation -------------------------------------
 
 
-def test_the_rotation_is_dev_bound_monthly_with_no_survey():
+def test_the_rotation_is_dev_bound_monthly_with_only_the_inert_branch_field():
     entry = _template("Rotate Console Credentials (Dev)")
     assert entry["playbook"] == "platform/playbooks/rotate-console-credentials.yml"
     assert entry["repository"] == "agent-cloud dev"
     assert entry["schedule"] == {"cron": "0 7 1 * *"}
-    assert "survey_vars" not in entry and "dev_variant" not in entry
+    assert "dev_variant" not in entry
+    # The only survey field is service_branch defaulting to dev (test_placement_branch_guard.py); the pin wins.
+    assert [(v["name"], v["default_value"]) for v in entry["survey_vars"]] == [("service_branch", "dev")]
 
 
 def test_the_console_approle_provision_is_a_dev_variant_without_a_schedule():

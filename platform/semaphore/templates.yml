@@ -3363,6 +3363,15 @@ templates:
     repository: agent-cloud dev
     schedule:
       cron: "0 7 1 * *"
+    # Declared because the imported deploy reads service_branch (test_placement_branch_guard.py). The rotation
+    # pins the console's deployed commit, which deploy-console.yml reads first, so this field changes nothing.
+    survey_vars:
+      - name: service_branch
+        title: "Branch (unused by the rotation)"
+        description: "No effect: the rotation redeploys the commit the console already runs. To deploy a branch, run Deploy console."
+        type: string
+        required: false
+        default_value: "dev"
 
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml
