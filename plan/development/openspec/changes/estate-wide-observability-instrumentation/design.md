@@ -1591,3 +1591,26 @@ failed endpoint, scrape failure, both missing signals, missing probe with
 healthy scrape, unrelated identity, and freshness inside/outside `F`. This
 supports expression semantics only; rendered Grafana state, target-specific
 private policy, firing/recovery, and notification delivery remain live gates.
+
+## 2026-10-30 receiver checkout revision receipt discovery
+
+The Dev-bound seven-day capacity survey reads `git rev-parse HEAD` on the
+receiver and compares it with required `expected_receiver_sha`; the production
+budget survey has the same explicit receiver pin. The value is the receiver's
+monorepo checkout `HEAD`, not an installed image or running-configuration
+identity. The existing Dev-bound receiver-capabilities survey requires only
+`expected_repository_sha` and proves the receiver checkout matches that
+controller SHA, but its public receipt omits the revision. Alloy health
+reports bounded container metadata and also omits the checkout revision. The
+capacity survey therefore has no existing source for a justified receiver pin
+when controller and receiver revisions have not separately been proven equal.
+
+Source-only follow-up: extend Alloy health with a separate closed metadata
+receipt for the `HEAD` of the receiver's declared monorepo checkout. Run a
+fixed read-only Git command under `no_log`; reduce its output privately to an
+exact lowercase 40-character commit or a fixed unavailable result before
+printing. Do not alter the existing container-health schema, require a
+receiver-SHA survey input, or claim checkout cleanliness, tracked-byte
+integrity, remote-ref equality, or installed/running configuration from this
+read. This source work does not establish a seven-day live baseline or close
+any capacity, backup, restore, retention, or rollout gate.
