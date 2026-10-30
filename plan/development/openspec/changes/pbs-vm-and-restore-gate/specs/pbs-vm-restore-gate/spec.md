@@ -16,7 +16,7 @@ The system SHALL discover visible PBS-related VM, store, and supported Debian te
 - **THEN** the workflow refuses and no provisioning request is sent
 
 ### Requirement: Guarded PBS VM and data disk
-The system SHALL create or adopt only the PBS VM declared in private inventory, using a supported Debian guest and static address. Before a new 512-GiB data disk is allocated, it SHALL revalidate the pinned backing identity, direct LVM lineage, SMART health, store and VG linkage, 30% residual reported headroom, target ownership, and the exact VM and disk state. It SHALL never initialize a host physical disk or replace an existing service VM.
+The system SHALL create or adopt only the PBS VM declared in private inventory, using a supported Debian guest and static address. Before a new 512-GiB data disk is allocated, it SHALL revalidate the pinned backing identity, direct LVM lineage, SMART health, store and VG linkage, 30% residual reported headroom, target ownership, and the exact VM and disk state. Physical-origin/chassis attestation is not a prerequisite (operator decision, 2026-10-29); these API and storage checks do not prove physical origin. The system SHALL never initialize a host physical disk or replace an existing service VM.
 
 #### Scenario: Matching new allocation
 - **WHEN** the declaration is unique, the live preflight passes, and the target VM and disk are absent

@@ -19,11 +19,12 @@ identity, or storage exists.
   `391a4f7` stopped after creating the template. Catalog readback proves the
   definitions, not success of every publication invocation or acceptance of
   the created Proxmox template.
-- Private site-config PR #110 is approval-blocked. This blocks target allocation
-  and guest configuration until the PBS inventory declaration is approved,
-  merged, synchronized, and read back. It does not block publishing the Dev
-  catalog entries. Do not substitute launch-time identity values or
-  public-repository inventory.
+- Private site-config PR #110 merged to `main` at
+  `eb6b65912cc6345ccbbee269f67b81a7b4923ad7` on 2026-10-28. This records PR
+  merge state only; it does not establish current live inventory synchronization,
+  exact-byte provenance, IP/VMID acceptance, or allocation authorization. Keep
+  those acceptance gates separate. Do not substitute launch-time identity
+  values or public-repository inventory.
 - OpenSpec tasks 1.3 and 2.3 remain open: VMID/address authority and the exact
   Debian 13 cloud-init template/provisioning result have not been accepted.
   If the supported Debian template is unavailable, task 2.1 requires a separate
@@ -51,8 +52,9 @@ identity, or storage exists.
    VMID, Debian 13 template, static guest network declaration, selected OS
    storage, the 512-GiB PBS data disk declaration, and the VMID-derived disk
    serial contract `ac-pbs-data-<vm_vmid>`. Resolve IP and VMID through the
-   existing NetBox/IPAM and pfSense checks; preserve the required physical-origin
-   attestation for the selected Proxmox storage.
+   existing NetBox/IPAM and pfSense checks. Physical-origin/BMC/chassis
+   attestation is not a prerequisite (operator decision, 2026-10-29); retain
+   the declared API serial/WWN identity pin and exact storage/VG/PV lineage.
 3. Confirm the declared repository channel and its prerequisite before task
    launch. Do not add a subscription key through argv, Semaphore survey, or a
    new credential path. Enterprise cannot be treated as ready until the
@@ -128,9 +130,9 @@ run does not establish the corresponding live acceptance evidence.
 Stop before allocation, package, identity, ACL, storage, backup, or restore
 writes when the private declaration or exact repository SHA is missing; the
 Dev catalog does not match the five reviewed entries; the PBS guest, VMID,
-address, template, disk serial, selected storage, or physical origin is
-ambiguous; repository/subscription acceptance is absent; the mount UUID or
-datastore containment check differs; an existing identity, ACL, storage or
+address, template, disk serial, selected storage, or required API/storage
+identity is ambiguous; repository/subscription acceptance is absent; the mount UUID
+or datastore containment check differs; an existing identity, ACL, storage or
 backup job conflicts; or the service/readback is unhealthy. Preserve existing
 data and destinations for investigation. Do not bypass a refusal with direct
 Proxmox/PBS API calls, manual guest commands, or alternate credentials.
