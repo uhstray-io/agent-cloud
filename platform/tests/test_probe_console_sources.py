@@ -618,7 +618,10 @@ def test_a_netbox_that_requires_login_with_no_minted_token_is_answered_and_not_a
     proc = probe_run(netbox_stored=False, proxmox_open=True, netbox_status=403)
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out
-    assert "NetBox: HTTP 403 from the console VM (login required; token reads decide)" in out, out
+    # With no token there are no token reads, so the line says access is unproven (PR #790 review).
+    unproven = "(login required; no console token is stored, so access is unproven)"
+    assert f"NetBox: HTTP 403 from the console VM {unproven}" in out, out
+    assert "token reads decide" not in out, out
     assert "NetBox token: not minted" in out, out
     assert "did not answer the probe" not in out, out
 

@@ -214,10 +214,10 @@
 
     # A 401 or 403 is an answer: the login prompt of a NetBox that requires a token. Any other status, and no HTTP
     # answer at all (status 0), is not an answer. Two tasks: a set_fact cannot read a key it sets in the same task.
-    - name: "NetBox: decide whether the status answered (no_log)"
+    # Not no_log: it reads only the unauthenticated status request, which sends no header and is printed anyway.
+    - name: "NetBox: decide whether the status answered"
       ansible.builtin.set_fact:
         _probe_nb_answered: "{{ (_probe_nb_status.status | default(0)) in [200, 401, 403] }}"
-      no_log: true
 
     - name: "NetBox: decide whether the token-bearing reads run (no_log)"
       ansible.builtin.set_fact:
@@ -446,7 +446,9 @@
              else ('NetBox: no HTTP answer from the console VM'
              if (((_probe_nb_status.status | default(0)) | int) <= 0)
              else ('NetBox: HTTP ' ~ ((_probe_nb_status.status | default(0)) | string) ~ ' from the console VM'
-                   ~ (' (login required; token reads decide)' if ((_probe_nb_status.status | default(0)) in [401, 403]) else '')
+                   ~ ((' (login required; token reads decide)' if (_probe_nb_token | length > 0)
+                       else ' (login required; no console token is stored, so access is unproven)')
+                      if ((_probe_nb_status.status | default(0)) in [401, 403]) else '')
              if ((_probe_nb_status.status | default(0)) != 200)
              else ('NetBox: reachable (HTTP 200), netbox-version: ' ~ (((_probe_nb_status.json | default({})).get('netbox-version', 'not reported')) | string)))) }}
         _probe_line_nb_token: >-
