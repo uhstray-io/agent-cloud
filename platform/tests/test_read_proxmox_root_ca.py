@@ -3,19 +3,20 @@
 Structure, read from the parsed playbook:
 - order: refuse-internal-extra-vars.yml is the first play; the stored token id is asserted before the first
   request; the leaf certificate is observed, and the operator's pin is checked against it, before the first
-  token-bearing request; the node-list check precedes the per-node reads; the root CA agreement, the single served
-  match and the pve-ssl check of the serving node precede the one debug;
+  token-bearing request; the node-list check precedes the per-node reads; the root CA agreement, the pve-ssl check of
+  the serving nodes and the issuer check of every served match precede the one debug;
 - read-only: every command is the pinned helper (platform/lib/pve_pinned_get.py) with check_mode false and
   changed_when false; the helper sends GET only; no write module; the only lookups read
   secret/data/services/proxmox and the environment; the play writes to neither OpenBao nor Proxmox;
 - TLS and token: no uri module, no module_defaults, no validate_certs and no inline Authorization header
   anywhere in the playbook text; the admin token reaches the helper on stdin only, under no_log;
-- no protected output: the one debug references only _pve_online_nodes, _pve_ca, _pve_served_entry and the observed
+- no protected output: the one debug references only _pve_online_nodes, _pve_ca, _pve_served_names and the observed
   leaf digest; the node list, the per-node reads and the flattened entries are referenced only by no_log tasks; no
   SAN is named in code;
 - selection: the root CA and the node certificate are chosen by basename, never by a full path; every online node is
-  read, in name order, by index; the certificate the pinned connection served is chosen by fingerprint across all
-  nodes, exactly one match is required, and it must be issued by the root CA;
+  read, in name order, by index; the certificates the pinned connection presented are chosen by fingerprint across all
+  nodes, one or more matches are named, and every match must be issued by the root CA, as must every serving node's
+  pve-ssl.pem;
 - failures: the observe task never fails itself (a failed command prints its argv, which carries the URL); each
   refusal is named by the helper's exit code, from a no_log fact, and no visible task reads stderr.
 
@@ -66,7 +67,7 @@ HELPER_SUBCOMMANDS = {"fingerprint", "get"}
 # touch them. The per-node registers and the flattened entries hold the same responses, one level derived.
 PROTECTED = {"_pve_nodes", "_pve_certs_all", "_pve_read_list", "_pve_all_entries", "_pve_served_list"}
 SECRETS = {"_pve_secret", "_pve_data"}
-DEBUG_NAMES = {"_pve_online_nodes", "_pve_ca", "_observed_leaf", "_pve_served_entry"}
+DEBUG_NAMES = {"_pve_online_nodes", "_pve_ca", "_observed_leaf", "_pve_served_names"}
 DEBUG_FIELDS = {"subject", "fingerprint", "notafter", "pem"}
 IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 URL_LITERAL = re.compile(r"https?://")
@@ -300,21 +301,24 @@ def test_the_checks_come_before_the_one_print():
     (debug,) = _index(lambda t: _module(t) == "debug")
     self_signed = _index(lambda t: _module(t) == "assert"
                          and "_pve_ca.subject == _pve_ca.issuer" in _that(t))
-    issued_by = _index(lambda t: _module(t) == "assert"
-                       and "_pve_served_node_issuer == _pve_ca.subject" in _that(t))
+    unissued = _index(lambda t: _module(t) == "assert"
+                      and "_pve_served_nodes_unissued | length == 0" in _that(t))
+    issuers = _index(lambda t: _module(t) == "assert"
+                     and "_pve_served_issuers | length == 1 and _pve_served_issuers[0] == _pve_ca.subject" in _that(t))
     public = _index(lambda t: _module(t) == "assert"
                     and "'-----BEGIN CERTIFICATE-----' in _pve_ca.pem" in _that(t))
-    assert self_signed and issued_by and public, (self_signed, issued_by, public)
-    assert max(self_signed + issued_by + public) < debug, (self_signed, issued_by, public, debug)
+    assert self_signed and unissued and issuers and public, (self_signed, unissued, issuers, public)
+    assert max(self_signed + unissued + issuers + public) < debug, (self_signed, unissued, issuers, public, debug)
     assert debug == len(_tasks()) - 1, "the print is the last task"
 
 
-def test_the_self_signed_check_and_the_issued_by_check_are_both_assertions_on_derived_facts():
+def test_the_self_signed_check_is_guarded_and_the_issued_by_checks_read_only_derived_facts():
     for t in _tasks():
         if _module(t) == "assert" and "_pve_ca.subject == _pve_ca.issuer" in _that(t):
             assert "_pve_ca.subject | length > 0" in _that(t), t.get("name")
-        if _module(t) == "assert" and "_pve_served_node_issuer == _pve_ca.subject" in _that(t):
-            assert "_pve_served_node_issuer | length > 0" in _that(t), t.get("name")
+    # The serving nodes' pve-ssl check is computed under no_log; the assert reads only that derived list.
+    derived = [t for t in _tasks() if "_pve_served_nodes_unissued" in (_args(t) or {})]
+    assert len(derived) == 1 and derived[0].get("no_log") is True, derived
 
 
 def test_the_observe_never_fails_itself_and_an_assert_names_its_exit_code():
@@ -360,15 +364,20 @@ def test_every_online_node_is_read_through_the_pinned_helper_by_index_and_no_vis
         assert "loop" not in t, t.get("name")
 
 
-def test_the_pinned_leaf_is_matched_across_every_online_node_and_exactly_one_match_is_required():
+def test_the_pinned_leaf_is_matched_across_every_online_node_and_every_match_must_be_issued_by_the_root_ca():
     (debug,) = _index(lambda t: _module(t) == "debug")
     derive = _index(lambda t: "_pve_served_list" in (_args(t) or {}))
-    count = _index(lambda t: _module(t) == "assert" and "_pve_served_count | int == 1" in _that(t))
-    node_issuer = _index(lambda t: _module(t) == "assert" and "_pve_served_node_issuer == _pve_ca.subject" in _that(t))
+    keep = _index(lambda t: "_pve_served_names" in (_args(t) or {}))
+    count = _index(lambda t: _module(t) == "assert" and "_pve_served_count | int >= 1" in _that(t))
+    unissued = _index(lambda t: _module(t) == "assert" and "_pve_served_nodes_unissued | length == 0" in _that(t))
     issuer_check = _index(lambda t: _module(t) == "assert"
-                          and "_pve_served_entry.issuer == _pve_ca.subject" in _that(t))
-    assert derive and count and node_issuer and issuer_check, (derive, count, node_issuer, issuer_check)
-    assert derive[0] < count[0] < node_issuer[0] < issuer_check[0] < debug, (derive, count, node_issuer, issuer_check)
+                          and "_pve_served_issuers | length == 1 and _pve_served_issuers[0] == _pve_ca.subject"
+                          in _that(t))
+    assert derive and keep and count and unissued and issuer_check, (derive, keep, count, unissued, issuer_check)
+    assert derive[0] < keep[0] < count[0] < unissued[0] < issuer_check[0] < debug, \
+        (derive, keep, count, unissued, issuer_check, debug)
+    # The names, nodes and issuers are scalars derived under no_log from the matches; no visible task reads the list.
+    assert _tasks()[keep[0]].get("no_log") is True, _tasks()[keep[0]].get("name")
     # Matched over the entries of ALL nodes (not the first), by fingerprint through the normalising pattern.
     value = str(_args(_tasks()[derive[0]])["_pve_served_list"])
     assert "_pve_all_entries" in value and "fingerprint" in value and "_pve_pin_pattern" in value, value
@@ -477,10 +486,14 @@ def leaf(tmp_path_factory):
     return _generate_leaf(tmp_path_factory.mktemp("root-ca-leaf"))
 
 
-def _entry(filename, subject, issuer, pem=ROOT_PEM, fingerprint="AA:BB:CC:DD"):
+def _entry(filename, subject, issuer, pem=ROOT_PEM, fingerprint="AA:BB:CC:DD", omit_issuer=False):
     # The same fields pve-common get_certificate_info returns; san carries an address that must never print.
-    return {"filename": filename, "fingerprint": fingerprint, "subject": subject, "issuer": issuer,
-            "notafter": 1900000000, "notbefore": 1800000000, "san": [SAN_ADDRESS], "pem": pem}
+    # omit_issuer drops the issuer key, for an entry the endpoint returned without one.
+    entry = {"filename": filename, "fingerprint": fingerprint, "subject": subject, "issuer": issuer,
+             "notafter": 1900000000, "notbefore": 1800000000, "san": [SAN_ADDRESS], "pem": pem}
+    if omit_issuer:
+        del entry["issuer"]
+    return entry
 
 
 def _good_certs(node, leaf=None):
@@ -621,8 +634,8 @@ def test_the_leaf_is_found_on_whichever_online_node_holds_it_and_only_the_root_c
     assert "read from 2 online nodes, which agree on it." in out
     assert f"subject: {ROOT_SUBJECT}" in out
     assert _printed_pem(out) == ROOT_PEM.strip()
-    # The served entry is found on the node that holds the leaf, by fingerprint (pve-ssl.pem, not the pveproxy entry).
-    assert f"The pinned connection served pve-ssl.pem on node {serving}, issued by this root CA." in out
+    # The matching entry is found on the node that holds the leaf, by fingerprint (pve-ssl.pem, not the pveproxy entry).
+    assert f"listed as: {serving}/pve-ssl.pem, issued by this root CA." in out
     # The observed digest is printed by the observe step (public); the token and the response carry nothing else.
     assert leaf.colon in out
     for leaked in (SENT_PVE, "PVEAPIToken", SAN_ADDRESS, "MIILeafNotPrinted"):
@@ -643,9 +656,71 @@ def test_a_successful_multi_node_run_prints_no_address_at_default_verbosity(tmp_
         _stop(server)
     out = done.stdout + done.stderr
     assert done.returncode == 0, out[-2000:]
-    assert "The pinned connection served pve-ssl.pem on node pve-c, issued by this root CA." in out, out[-1500:]
+    assert "listed as: pve-c/pve-ssl.pem, issued by this root CA." in out, out[-1500:]
     assert url not in out and "127.0.0.1" not in out, out[-1500:]
     assert SAN_ADDRESS not in out and SENT_PVE not in out and "PVEAPIToken" not in out
+
+
+def _run_pinned(tmp_path, leaf, nodes, certs):
+    """Run the harness on a fake Proxmox serving `certs`; returns (done, seen)."""
+    server, seen = _fake_proxmox(nodes, _with_leaf(certs, leaf), leaf)
+    try:
+        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID, pin=leaf.colon))
+    finally:
+        _stop(server)
+    return done, seen
+
+
+@needs_ansible
+def test_the_pin_listed_by_two_nodes_passes_and_both_entries_are_named(tmp_path, leaf):
+    # The same certificate is pve-ssl.pem on pve-b and on pve-c: identical fingerprint, one root. Both are named.
+    nodes = [{"node": "pve-b", "status": "online"}, {"node": "pve-c", "status": "online"}]
+    certs = {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                       _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)],
+             "pve-c": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                       _entry("pve-ssl.pem", "CN=pve-c", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)]}
+    done, _ = _run_pinned(tmp_path, leaf, nodes, certs)
+    out = done.stdout + done.stderr
+    assert done.returncode == 0, out[-2000:]
+    assert "listed as: pve-b/pve-ssl.pem, pve-c/pve-ssl.pem, issued by this root CA." in out, out[-1500:]
+    assert _printed_pem(out) == ROOT_PEM.strip()
+    for leaked in (SENT_PVE, "PVEAPIToken", SAN_ADDRESS, "MIILeafNotPrinted"):
+        assert leaked not in out, leaked
+
+
+@needs_ansible
+def test_the_pin_listed_by_two_entries_on_one_node_passes_and_both_entries_are_named(tmp_path, leaf):
+    # pve-ssl.pem and pveproxy-ssl.pem on pve-b are the same certificate, both root-issued: both are named, and the
+    # serving node's pve-ssl.pem is the root-issued one it must be.
+    nodes = [{"node": "pve-b", "status": "online"}]
+    certs = {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                       _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN),
+                       _entry("pveproxy-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)]}
+    done, _ = _run_pinned(tmp_path, leaf, nodes, certs)
+    out = done.stdout + done.stderr
+    assert done.returncode == 0, out[-2000:]
+    assert "listed as: pve-b/pve-ssl.pem, pve-b/pveproxy-ssl.pem, issued by this root CA." in out, out[-1500:]
+    assert _printed_pem(out) == ROOT_PEM.strip()
+    for leaked in (SENT_PVE, "PVEAPIToken", SAN_ADDRESS, "MIILeafNotPrinted"):
+        assert leaked not in out, leaked
+
+
+@needs_ansible
+def test_a_non_serving_node_whose_pve_ssl_has_no_issuer_does_not_block_the_pinned_leaf(tmp_path, leaf):
+    # pve-c does not serve the pinned leaf, and its pve-ssl.pem came back without an issuer. The served-node check must
+    # not read it, so the run passes on pve-b, the node that serves the leaf.
+    nodes = [{"node": "pve-b", "status": "online"}, {"node": "pve-c", "status": "online"}]
+    certs = {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                       _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)],
+             "pve-c": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                       _entry("pve-ssl.pem", "CN=pve-c", None, pem=LEAF_PEM, omit_issuer=True)]}
+    done, _ = _run_pinned(tmp_path, leaf, nodes, certs)
+    out = done.stdout + done.stderr
+    assert done.returncode == 0, out[-2000:]
+    assert "listed as: pve-b/pve-ssl.pem, issued by this root CA." in out, out[-1500:]
+    assert _printed_pem(out) == ROOT_PEM.strip()
+    for leaked in (SENT_PVE, "PVEAPIToken", SAN_ADDRESS, "MIILeafNotPrinted"):
+        assert leaked not in out, leaked
 
 
 @needs_ansible
@@ -693,12 +768,12 @@ def test_a_wrong_pin_stops_before_the_token_is_used(tmp_path, leaf):
     ("node cert not issued by the root", [{"node": "pve-b", "status": "online"}],
      {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
                 _entry("pve-ssl.pem", "CN=pve-b", "CN=Other CA", pem=LEAF_PEM, fingerprint=LEAF_TOKEN)]}, TOKEN_ID,
-     "not issued by the root CA"),
+     "The pve-ssl.pem entry of pve-b is absent, or it was not issued by the root CA"),
     ("root entry is not a public certificate", [{"node": "pve-b", "status": "online"}],
      {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT,
                        pem=PRIVATE_KEY_PEM),
                 _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM)]}, TOKEN_ID,
-     "as a public certificate"),
+     "The certificate endpoint did not return pve-root-ca.pem as a public certificate"),
     ("no certificate entry matches the pin", [{"node": "pve-b", "status": "online"}],
      {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
                 _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM)]}, TOKEN_ID,
@@ -710,13 +785,45 @@ def test_a_wrong_pin_stops_before_the_token_is_used(tmp_path, leaf):
       "pve-c": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
                 _entry("pve-ssl.pem", "CN=pve-c", ROOT_SUBJECT, pem=LEAF_PEM)]}, TOKEN_ID,
      "No online node lists the pinned leaf certificate"),
-    ("the pin is listed twice across the nodes", [{"node": "pve-b", "status": "online"},
-                                                  {"node": "pve-c", "status": "online"}],
+    # The serving node's pve-ssl.pem came back without an issuer: it is not root-issued, so the served-node check names
+    # the node as the refusal (not a crash in the no_log read).
+    ("serving node's pve-ssl.pem has no issuer", [{"node": "pve-b", "status": "online"}],
      {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
-                _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)],
+                _entry("pve-ssl.pem", "CN=pve-b", None, pem=LEAF_PEM, fingerprint=LEAF_TOKEN, omit_issuer=True)]},
+     TOKEN_ID, "The pve-ssl.pem entry of pve-b is absent, or it was not issued by the root CA"),
+    # A listing of the pin came back without an issuer, beside a root-issued one: the match's issuer check names it.
+    ("a matching listing has no issuer, beside a root-issued one", [{"node": "pve-b", "status": "online"}],
+     {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN),
+                _entry("pveproxy-ssl.pem", "CN=pve-b", None, pem=LEAF_PEM, fingerprint=LEAF_TOKEN,
+                       omit_issuer=True)]}, TOKEN_ID,
+     "The pinned leaf is listed by pve-b/pve-ssl.pem, pve-b/pveproxy-ssl.pem, and at least one of those entries is "
+     "not issued by the cluster root CA"),
+    # The serving node's pve-ssl.pem is absent. Its pveproxy-ssl.pem matches the pin and is root-issued, so the issuer
+    # check of the matches passes and only the serving-node check refuses (its absent-path arm).
+    ("serving node has no pve-ssl.pem", [{"node": "pve-b", "status": "online"}],
+     {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                _entry("pveproxy-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)]}, TOKEN_ID,
+     "The pve-ssl.pem entry of pve-b is absent, or it was not issued by the root CA"),
+    # The serving node's pve-ssl.pem is foreign (not matching the pin). Its root-issued pveproxy-ssl.pem matches, so
+    # only the serving-node check refuses (its foreign-issuer arm).
+    ("serving node's pve-ssl.pem is foreign, its pveproxy-ssl.pem is root-issued",
+     [{"node": "pve-b", "status": "online"}],
+     {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                _entry("pve-ssl.pem", "CN=pve-b", "CN=Other CA", pem=LEAF_PEM),
+                _entry("pveproxy-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)]}, TOKEN_ID,
+     "The pve-ssl.pem entry of pve-b is absent, or it was not issued by the root CA"),
+    # Two listings across two nodes, one not issued by the root: every listing is named, the foreign one refuses. The
+    # serving nodes' own pve-ssl.pem entries are root-issued, so only the matches' issuer check refuses.
+    ("a listing the root did not issue, beside root-issued listings",
+     [{"node": "pve-b", "status": "online"}, {"node": "pve-c", "status": "online"}],
+     {"pve-b": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
+                _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN),
+                _entry("pveproxy-ssl.pem", "CN=pve-b", "CN=Example ACME CA", pem=LEAF_PEM, fingerprint=LEAF_TOKEN)],
       "pve-c": [_entry("pve-root-ca.pem", ROOT_SUBJECT, ROOT_SUBJECT),
                 _entry("pve-ssl.pem", "CN=pve-c", ROOT_SUBJECT, pem=LEAF_PEM, fingerprint=LEAF_TOKEN)]}, TOKEN_ID,
-     "More than one certificate entry across the online nodes matches the pin"),
+     "The pinned leaf is listed by pve-b/pve-ssl.pem, pve-b/pveproxy-ssl.pem, pve-c/pve-ssl.pem, and at least one of "
+     "those entries is not issued by the cluster root CA"),
     # Two online nodes return different copies of the cluster root CA: the cluster has no single CA to print.
     ("nodes disagree on the cluster root CA", [{"node": "pve-b", "status": "online"},
                                                {"node": "pve-c", "status": "online"}],
@@ -763,8 +870,8 @@ def test_a_custom_served_certificate_is_named_by_its_basename_and_nothing_is_pri
         _stop(server)
     out = done.stdout + done.stderr
     assert done.returncode != 0, out[-1500:]
-    assert ("The served API certificate (pveproxy-ssl.pem) on node pve-b is not issued by the cluster root CA"
-            in out), out[-1500:]
+    assert ("The pinned leaf is listed by pve-b/pveproxy-ssl.pem, and at least one of those entries is not issued by "
+            "the cluster root CA: a custom or ACME certificate?") in out, out[-1500:]
     assert "MIIFakeRootCA" not in out and "MIILeafNotPrinted" not in out, out[-1500:]
     assert SENT_PVE not in out and "PVEAPIToken" not in out
 
