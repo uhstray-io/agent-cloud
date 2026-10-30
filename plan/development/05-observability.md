@@ -2011,6 +2011,20 @@ the operator decision dated 2026-10-29, that physical-origin comparison is
 not a prerequisite; the API and storage-lineage gates remain unchanged. No
 VM, disk, filesystem, or PBS instance was created and no retention changed.
 
+#### Later GET-only allocation preflight (2026-10-29)
+
+Existing Dev catalog template 341 was independently read back with its expected
+bindings. GET-only Semaphore task 10372 ran at exact reviewed Dev commit
+`ac2b5b6f7076e73bd4a41a12644fb2fb9f10e872`; it completed successfully, and its
+fixed public message parsed and validated. The sanitized result reported
+`backing_identity_matches=true`, `direct_lvm_disk_lineage=true`,
+`smart_health=passed`, and `reported_vg_headroom_passes_512_gib=true`.
+`allocation_authorized`, `device_safety_verified`,
+`filesystem_readiness_verified`, `pbs_readiness_verified`, and
+`write_authorized` were all `false`. This task created no VM, disk, filesystem,
+or PBS object and changed no retention or deployment. It does not authorize an
+allocation or establish guest, PBS, backup, restore, or retention acceptance.
+
 ### 2026-10-18 PBS VM census and static IP reservation
 
 PR #710 merged to Dev at `ae35a0ec626725a2c56ae4352c3606a850c219de`
