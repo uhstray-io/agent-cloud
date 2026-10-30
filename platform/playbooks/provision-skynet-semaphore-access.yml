@@ -25,11 +25,9 @@
 # Order.
 #   1. Run this play once per instance, before declaring svc-skynet in semaphore_project_members:
 #      manage-semaphore-access.yml refuses a declared team member that has no Semaphore account yet.
-#   2. Deploy skynet does not read the new semaphore_api_token yet: its Semaphore credential is still the
-#      local-dev operator-token stopgap (deploy-skynet.yml, "Read the Semaphore API token for skynet").
-#      Moving deploy-skynet.yml to this token is a follow-up outside this change. The two plays can run in
-#      either order: manage-secrets.yml reuses the keys already stored and generates only the missing ones
-#      (lines 90-110), and writes through the merge (line 193).
+#   2. Run it before Deploy skynet: the deploy reads semaphore_api_token as an existing secret and stops,
+#      before any OpenBao write, when it is absent. Once the token exists the two plays can run in either
+#      order: manage-secrets.yml reuses the keys already stored and writes through the merge.
 #
 # Store. The play merges semaphore_password and semaphore_api_token into secret/services/skynet. It never
 # overwrites the path: skynet's api_token and db_password stay (tasks/bao-merge-keys.yml, a KV-v2

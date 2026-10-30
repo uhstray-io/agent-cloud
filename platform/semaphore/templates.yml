@@ -852,6 +852,36 @@ templates:
         required: false
         default_value: "main"
 
+  # The skynet orchestration API (OpenSpec service-deployment-workflow, task 3.7). Its Semaphore token is
+  # the svc-skynet account's, written to secret/services/skynet by "Provision skynet Semaphore Access":
+  # run that FIRST, because this deploy stops before any write when the token is absent. The gateway's
+  # /skynet/ route stays off until this deploy has run once. main has no skynet deploy until dev is
+  # promoted, so the main-bound template cannot run; the "(Dev)" variant can.
+  - name: Deploy skynet
+    playbook: platform/playbooks/deploy-skynet.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
+  # skynet's own Semaphore identity: svc-skynet, a non-admin account at project role task_runner (the least
+  # role that can launch; skynet launches OPA-gated templates), its token stored at secret/services/skynet.
+  # Run it BEFORE Deploy skynet (which reads that token and stops when it is absent), and before declaring
+  # svc-skynet in semaphore_project_members (Manage Semaphore Access refuses a member with no account yet).
+  - name: Provision skynet Semaphore Access
+    playbook: platform/playbooks/provision-skynet-semaphore-access.yml
+    dev_variant: true
+
   # The Dispatch Console's own read-only Semaphore identity (plan 17, D20): svc-console, a non-admin
   # account at project role guest, its token stored at secret/services/console. Run it BEFORE Deploy
   # console (which reads that token and stops when it is absent), and before Manage Semaphore Access
@@ -1377,6 +1407,25 @@ templates:
   # Dev-only until promotion, for the same reason as Deploy console above.
   - name: Clean Deploy console
     playbook: platform/playbooks/clean-deploy-console.yml
+    dev_variant: true
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # Destroys skynet's run and workflow state (its Postgres volume). The api_token, read_token and
+  # db_password come back from OpenBao, and the svc-skynet token too, so a fresh deploy needs only
+  # Provision skynet Semaphore Access to have run before. main has no skynet deploy until promotion.
+  - name: Clean Deploy skynet
+    playbook: platform/playbooks/clean-deploy-skynet.yml
     dev_variant: true
     survey_vars:
       - name: confirm_reset
@@ -2356,6 +2405,17 @@ templates:
   # Grow o11y Root). Dev-bound; dry run shows the chain and steps.
   - name: Grow Console Root (Dev)
     playbook: platform/playbooks/grow-console-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
+  # skynet's root, grown into its 40G disk the same way (grow-skynet-root.yml); run after Provision VM.
+  - name: Grow skynet Root (Dev)
+    playbook: platform/playbooks/grow-skynet-root.yml
     repository: agent-cloud dev
     survey_vars:
       - name: expected_repository_sha
