@@ -1886,8 +1886,8 @@ templates:
     playbook: platform/playbooks/sync-plane-projects.yml
     # Open OpenSpec tasks of every repository enabled in platform/services/plane/projects.yml
     # become Plane work items, one module per change. CREATE-ONLY: nothing already in Plane is
-    # changed, and no item is ever given a status. Launch with dry run (--check) to see the counts
-    # it would create. The schedule is added once production holds Plane (change task 4.4).
+    # changed, and no item is ever given a status. Launch it as a dry run to see the counts it
+    # would create. The schedule is added once production holds Plane (change task 4.4).
     dev_variant: true
 
   - name: Back Up Plane DB
