@@ -1063,6 +1063,7 @@ def _flow_struct_fields() -> list[str]:
     return re.findall(r"pub (\w+):", body.group(1))
 
 
+@NEEDS_ANSIBLE
 def test_rendered_flows_match_the_servers_flow_type(tmp_path):
     # Production deploy 2026-10-30 (Semaphore task 10457) crash-looped the console: this template rendered
     # {"edges": [...]} without labels, the server parses a bare Vec<Flow> with deny_unknown_fields. Each side's
