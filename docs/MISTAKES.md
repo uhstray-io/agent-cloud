@@ -2556,23 +2556,26 @@ evidence, the service paths changed since the revision of the last successful re
 the launcher refuses a real run with unproven changes unless an explicit acknowledgement
 variable is set. Related: 3.14, 10.26.
 
-**Occurrence 2 — 2026-10-30.** The Dispatch Console's first Phase 3 production deploy,
-`Deploy console (Dev)` (Semaphore task 10457), ran `dev` straight to production after a passing
-dry run (task 10456). `dev` carried #772 (the server, which parses `CONSOLE_FLOWS_FILE` as a bare
+**Occurrence 2 — 2026-10-30.** The Dispatch Console's first Phase 3 production deploy, `Deploy
+console (Dev)` (Semaphore task 10457), ran `dev` straight to production after a passing dry run
+(task 10456). `dev` carried #772 (the server, which parses `CONSOLE_FLOWS_FILE` as a bare
 `Vec<Flow>` of `{kind, from, to, label}` with `deny_unknown_fields`) and #773 (the deploy, whose
 `flows.json.j2` rendered `{"edges": [{kind, from, to}]}`). Each PR's tests checked only its own
-side. The container crash-looped on `CONSOLE_FLOWS_FILE: invalid JSON: invalid type: map,
-expected a sequence` (439 restarts at the deploy's diagnostics). The live console was down from
-that deploy's container recreate (07:33 UTC, Semaphore task output) until #789 rendered the array and
-`Deploy console (Dev)` task 10472 redeployed it (finished 08:35:57 UTC), about 63 minutes; the public
-sign-in page then loaded through Cloudflare in a real browser. Why the rule did not fire: plan 17 D30 already
-required a local-dev run through the Semaphore template before production, and I skipped it
-because both PRs were my own and reviewed, treating "reviewed and dry-run" as "proven". A dry run
-never starts the container, so it cannot load a file the server reads at startup, exactly as in
-occurrence 1. New guard for this class: `test_rendered_flows_match_the_servers_flow_type` reads the
-`Flow` struct from `inventory.rs` and checks the rendered template against it, so a contract split
-across two PRs fails in CI. The proposed launcher refusal on unproven changes would also have
-stopped it.
+side. The container crash-looped on `CONSOLE_FLOWS_FILE: invalid JSON: invalid type: map, expected
+a sequence` (439 restarts at the deploy's diagnostics). The live console was down from that
+deploy's container recreate (07:33 UTC, Semaphore task output) until #789 rendered the array and
+`Deploy console (Dev)` task 10472 redeployed it (finished 08:35:57 UTC), about 63 minutes; the
+public sign-in page then loaded through Cloudflare in a real browser. Why the rule did not fire: it
+was not recalled. I did not list the `dev` commits that touched the console since its last real
+deploy, and so never made the separate decision the rule requires for a change not yet proven live
+(owner aware, rollback ready). PR review does not satisfy that clause, and plan 17 D30, which also
+required a local-dev run first, was skipped for the same reason: both PRs were my own and reviewed,
+and I treated "reviewed and dry-run" as "proven". A dry run never starts the container, so it
+cannot load a file the server reads at startup, exactly as in occurrence 1. New guard for this
+contract only (the next contract split across PRs is not covered):
+`test_rendered_flows_match_the_servers_flow_type` reads the `Flow` struct from `inventory.rs` and
+checks the rendered template against it, so these two sides drifting apart fails in CI. The
+proposed launcher refusal on unproven changes would also have stopped it.
 
 ### 3.16 A local Semaphore container recreate orphaned every encrypted environment input
 
