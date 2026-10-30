@@ -6,7 +6,8 @@
 # probe run from anywhere else tests a different path, so the source probes run on console_svc.
 #
 # Sources and what each one reports. A source is probed only when its URL is set on console_svc.
-#   NetBox   GET /api/status/ with no token: reachable, HTTP status, netbox-version when reported.
+#   NetBox   GET /api/status/ with no token: HTTP status, netbox-version when reported. A 401 or 403 is an answer
+#            (the instance requires login); the token reads below then decide the verdict.
 #            With the console token (secret/services/netbox:console_api_token): site slugs and names,
 #            cluster names with type and scope, and whether the first site, cluster and VM records
 #            hold the named keys. Key presence is printed as a boolean; no value is printed.
@@ -20,8 +21,9 @@
 #            deploy-console.yml reads its shared secrets.
 #
 # Outcomes. A token the store does not hold is "not minted" and is not a failure. A configured source
-# that does not answer, or refuses the console token, fails the play after the summary is printed. The
-# failure names the source; no URL, address or token is printed.
+# that does not answer, or refuses the console token, fails the play after the summary is printed. A NetBox
+# that answers 401 or 403 to the unauthenticated status has answered; it fails only when a token read does not
+# return 200. The failure names the source; no URL, address or token is printed.
 #
 # Read-only. Every request is a GET, or the OpenBao AppRole login. Nothing is written to a file, a store or
 # a source. Identical under --check: every read carries check_mode: false.
@@ -203,16 +205,23 @@
       ansible.builtin.uri:
         url: "{{ _netbox_url }}/api/status/"
         method: GET
-        status_code: [200]
+        status_code: [200, 401, 403]
         timeout: 10
       failed_when: false
       check_mode: false
       register: _probe_nb_status
       when: _netbox_url | length > 0
 
+    # A 401 or 403 is an answer: the login prompt of a NetBox that requires a token. Any other status, and no HTTP
+    # answer at all (status 0), is not an answer. Two tasks: a set_fact cannot read a key it sets in the same task.
+    - name: "NetBox: decide whether the status answered (no_log)"
+      ansible.builtin.set_fact:
+        _probe_nb_answered: "{{ (_probe_nb_status.status | default(0)) in [200, 401, 403] }}"
+      no_log: true
+
     - name: "NetBox: decide whether the token-bearing reads run (no_log)"
       ansible.builtin.set_fact:
-        _probe_nb_called: "{{ ((_probe_nb_status.status | default(0)) == 200) and (_probe_nb_token | length > 0) }}"
+        _probe_nb_called: "{{ (_probe_nb_answered | bool) and (_probe_nb_token | length > 0) }}"
       no_log: true
 
     - name: "NetBox: request header for the console token (the helper picks the scheme; no_log)"
@@ -400,7 +409,7 @@
                or ((_proxmox_url | length > 0) and not ((_probe_bao_proxmox.status | default(0)) in [200, 404]))) }}
         _probe_nb_failed: >-
           {{ (_netbox_url | length > 0) and (
-               ((_probe_nb_status.status | default(0)) != 200)
+               (not (_probe_nb_answered | bool))
                or ((_probe_nb_called | bool) and not (
                     ((_probe_nb_sites.status | default(0)) == 200)
                     and ((_probe_nb_clusters.status | default(0)) == 200)
@@ -434,6 +443,7 @@
              else ('NetBox: not reachable from the console VM'
              if ((_probe_nb_status.status | default(0)) == 0)
              else ('NetBox: HTTP ' ~ ((_probe_nb_status.status | default(0)) | string) ~ ' from the console VM'
+                   ~ (' (login required; token reads decide)' if ((_probe_nb_status.status | default(0)) in [401, 403]) else '')
              if ((_probe_nb_status.status | default(0)) != 200)
              else ('NetBox: reachable (HTTP 200), netbox-version: ' ~ (((_probe_nb_status.json | default({})).get('netbox-version', 'not reported')) | string)))) }}
         _probe_line_nb_token: >-

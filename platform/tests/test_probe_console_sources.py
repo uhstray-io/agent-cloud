@@ -416,7 +416,8 @@ def _openbao(netbox_stored):
     return answer
 
 
-def _netbox():
+def _netbox(status=200, refuse_token=False):
+    """A NetBox whose unauthenticated status answers `status`; `refuse_token` makes every token read a 403."""
     sites = {"count": 2, "results": [{"id": 1, "slug": "alpha-dc", "name": "Alpha DC"},
                                      {"id": 2, "slug": "beta-dc", "name": "Beta DC"}]}
     clusters = {"count": 1, "results": [{"id": 1, "name": "lab-cluster", "type": {"slug": "proxmox"},
@@ -428,8 +429,10 @@ def _netbox():
 
     def answer(method, path, headers):
         if path.startswith("/api/status/"):
-            return 200, {"netbox-version": "4.5.0"}
-        if headers.get("Authorization") != "Token " + SENT_NB:
+            if status == 200:
+                return 200, {"netbox-version": "4.5.0"}
+            return status, {"detail": "Authentication credentials were not provided."}
+        if refuse_token or headers.get("Authorization") != "Token " + SENT_NB:
             return 403, {"detail": "Authentication credentials were not provided."}
         if path.startswith("/api/dcim/sites/"):
             return 200, sites
@@ -446,9 +449,10 @@ def _netbox():
 def probe_run(tmp_path):
     servers = []
 
-    def run(netbox_stored, proxmox_open, verbosity=None, netbox_url=None, proxmox_url=None, bao_seen=None):
+    def run(netbox_stored, proxmox_open, verbosity=None, netbox_url=None, proxmox_url=None, bao_seen=None,
+            netbox_status=200, netbox_refuses_token=False):
         bao = _serve(_recording(_openbao(netbox_stored), bao_seen))
-        nb = _serve(_netbox())
+        nb = _serve(_netbox(netbox_status, netbox_refuses_token))
         servers.extend([bao, nb])
         listener = socket.socket()
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -528,6 +532,76 @@ def test_a_closed_source_fails_the_play_by_name_after_the_summary_and_prints_no_
     assert "did not answer the probe: Proxmox" in out
     assert "127.0.0.1" not in out, "an address reached the default output"
     assert SENT_NB not in out and SENT_PVE not in out
+
+
+@NEEDS_ANSIBLE
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_netbox_that_requires_login_is_answered_and_the_console_token_reads_pass(probe_run, status):
+    # The unauthenticated status is a login prompt: an answer, not a failure. The token reads decide the verdict.
+    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_status=status)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    for line in (f"NetBox: HTTP {status} from the console VM (login required; token reads decide)",
+                 "NetBox token: minted",
+                 "NetBox sites: 2 (alpha-dc (Alpha DC), beta-dc (Beta DC))",
+                 "NetBox clusters: 1 (lab-cluster (type proxmox; scope dcim.site alpha-dc))",
+                 "NetBox VM workflow custom fields: ac_workflow_status"):
+        assert line in out, (line, out)
+    assert "did not answer the probe" not in out, out
+    assert SENT_NB not in out and SENT_PVE not in out
+    assert "127.0.0.1" not in out, "an address reached the default output"
+
+
+@NEEDS_ANSIBLE
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_netbox_that_requires_login_fails_by_name_when_the_console_token_is_refused(probe_run, status):
+    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_status=status, netbox_refuses_token=True)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, out
+    assert f"NetBox: HTTP {status} from the console VM (login required; token reads decide)" in out, out
+    assert "NetBox token: minted" in out, out
+    assert "NetBox sites: not read (HTTP 403)" in out, out
+    assert "did not answer the probe: NetBox." in out, out
+    assert SENT_NB not in out and SENT_PVE not in out
+    assert "127.0.0.1" not in out, "an address reached the default output"
+
+
+@NEEDS_ANSIBLE
+def test_a_netbox_status_that_is_not_a_login_prompt_fails_by_name_and_runs_no_token_read(probe_run):
+    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_status=500)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, out
+    assert "NetBox: HTTP 500 from the console VM" in out, out
+    assert "login required" not in out, out
+    assert "NetBox sites" not in out, "a token read ran for a status that is not an answer"
+    assert "did not answer the probe: NetBox." in out, out
+    assert SENT_NB not in out and SENT_PVE not in out
+
+
+@NEEDS_ANSIBLE
+def test_a_netbox_with_no_http_answer_fails_by_name_and_runs_no_token_read(probe_run):
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()
+    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_url=f"http://127.0.0.1:{port}")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, out
+    assert "did not answer the probe: NetBox." in out, out
+    assert "NetBox sites" not in out, "a token read ran without an HTTP answer"
+    assert "127.0.0.1" not in out, "an address reached the default output"
+    assert SENT_NB not in out and SENT_PVE not in out
+
+
+@NEEDS_ANSIBLE
+def test_a_netbox_that_requires_login_with_no_minted_token_is_answered_and_not_a_failure(probe_run):
+    # A token the store does not hold is "not minted" and is not a failure (the playbook's header says so).
+    proc = probe_run(netbox_stored=False, proxmox_open=True, netbox_status=403)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "NetBox: HTTP 403 from the console VM (login required; token reads decide)" in out, out
+    assert "NetBox token: not minted" in out, out
+    assert "did not answer the probe" not in out, out
 
 
 @NEEDS_ANSIBLE
