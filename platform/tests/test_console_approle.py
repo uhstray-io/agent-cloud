@@ -40,12 +40,15 @@ RETIRE = "Retire the replaced secret_id (destroy it on the role)"
 PROOF = "Prove the stored secret_id logs in (200)"
 PROOF_CHECK = "Require the stored secret_id to be the one minted this run, and to log in"
 STORE_INCLUDE = "tasks/bao-merge-keys.yml"
-# The four paths whose committed content the pinned commit must still match on the controller (rotate playbook).
+# The paths whose committed content the pinned commit must still match on the controller (rotate playbook).
 CONSOLE_INPUTS = [
     "platform/services/console/deployment",
     "platform/playbooks/deploy-console.yml",
     "platform/playbooks/tasks/manage-secrets.yml",
     "platform/workflows/service-onboarding/registry.yml",
+    "platform/services/authentik/deployment/app-catalog.yml",
+    "platform/playbooks/tasks/place-monorepo.yml",
+    "platform/playbooks/tasks/distribute-ca-root.yml",
 ]
 
 # A credential-bearing task: its text names a secret_id, role_id, token header or a registered credential result.
