@@ -1552,8 +1552,10 @@ Proxmox's [disk inventory API](https://github.com/proxmox/pve-storage/blob/maste
 returns paths and optional model/health data; its [device scan](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
 includes several block-device classes while excluding iSCSI. An exact PV path
 join alone cannot distinguish directly attached media from every virtual or
-remote-backed block device. Require separate physical-origin evidence and a
-reviewed private store declaration before allocating a PBS VM disk.
+remote-backed block device. The operator decision dated 2026-10-29 removes
+physical-origin/BMC/chassis attestation as a prerequisite. The reviewed private
+store declaration, API identity pin, exact lineage, health, and capacity gates
+remain required; no host physical disk operation is authorized.
 
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
@@ -1977,8 +1979,9 @@ top-level disk-path join with `used=LVM`, SMART category `passed`, and at least
 30% reported VG capacity remaining after the proposed 512-GiB disk. It reports
 only fixed status and booleans and leaves allocation, device safety, PBS and
 filesystem readiness, and write authorization false. A match against the
-private pin is API drift detection only: the operator's local hardware
-attestation is not independently compared with a chassis or BMC identity.
+private pin is API drift detection only; it does not
+independently prove physical origin. Physical-origin/BMC/chassis attestation
+is not a prerequisite per the operator decision dated 2026-10-29.
 This preflight does not create a VM, disk, filesystem, or PBS instance and does
 not change retention. It cannot pass until the private site-config inventory
 contains a reviewed pin; this repository contains no such private value.
@@ -2003,7 +2006,9 @@ selected API disk, the direct LVM disk-path lineage matched, SMART reported
 `passed`, and a proposed 512-GiB data disk left at least 30% reported VG
 headroom. Allocation, device safety, filesystem and PBS readiness, and write
 authorization remain **false**. The identity pin detects API-observed drift;
-it does not independently establish the disk's physical chassis origin. No
+it does not independently establish the disk's physical chassis origin. Per
+the operator decision dated 2026-10-29, that physical-origin comparison is
+not a prerequisite; the API and storage-lineage gates remain unchanged. No
 VM, disk, filesystem, or PBS instance was created and no retention changed.
 
 ### 2026-10-18 PBS VM census and static IP reservation
@@ -2076,9 +2081,11 @@ which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
 workflow checks the exact node and active file-store status, preserves the
 existing content list, applies the `import` union with Proxmox's observed digest,
 and reads the config back. Its check mode is read-only. Task 7081 made no
-Proxmox config change. The physical-disk origin remains operator-attested; the
-serial-to-chassis match is not independently verified. No template VM, PBS VM,
-or data disk has been created.
+Proxmox config change. At the time of this receipt, physical-disk origin
+remained operator-attested and the serial-to-chassis match was not
+independently verified. The operator decision dated 2026-10-29 later removed
+that comparison as a prerequisite; this historical receipt remains unchanged.
+No template VM, PBS VM, or data disk has been created.
 
 Production Semaphore task 7106 refused before issuing any Proxmox request: the
 workflow's initial inventory URL assertion required HTTPS, while the shared
