@@ -7,9 +7,12 @@ Deploy OPA (Dev), Semaphore task 10339, created no container ("Error: short-name
 
 A reference is fully qualified when its first path component names a registry: it contains a
 ``.`` or a ``:``, or it is ``localhost``. The default inside ``${VAR:-default}`` is what a deploy
-uses when the inventory sets nothing, so that is what is checked. A required variable
-(``${VAR:?message}``) has no default and is skipped: the inventory supplies the reference. An image
-with ``pull_policy: never`` is a local build's tag, never pulled, and is skipped too.
+uses when the inventory sets nothing, so every ``${VAR:-default}`` / ``${VAR-default}`` is replaced by
+its default and the result is checked, wherever in the reference it sits. A required variable
+(``${VAR:?message}``) has no default: in the registry position the inventory supplies the whole
+reference and it is skipped; elsewhere (a tag) it cannot change the registry and reads as a
+placeholder. A bare ``${VAR}`` has no default at all and is refused. An image with
+``pull_policy: never`` is a local build's tag, never pulled, and is skipped.
 """
 
 import re
@@ -19,7 +22,26 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-SUBST = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(:?-)(?P<default>[^}]*)\}$")
+VAR = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?P<op>:?[-?])?(?P<arg>[^}]*)\}")
+# A ${VAR} with no default: nothing says which registry a deploy would use. Compared by identity.
+BARE = "(a ${VAR} with no default)"
+
+
+def resolve(image):
+    """The reference a deploy pulls when the inventory sets nothing; None to skip, BARE to refuse."""
+    head = VAR.match(image)
+    if head and head.group("op") in (":?", "?"):
+        return None  # ${VAR:?} in the registry position: the inventory supplies the registry
+    out = []
+    pos = 0
+    for m in VAR.finditer(image):
+        out.append(image[pos:m.start()])
+        if m.group("op") is None:
+            return BARE
+        out.append(m.group("arg") if m.group("op") in (":-", "-") else "required")
+        pos = m.end()
+    out.append(image[pos:])
+    return "".join(out)
 
 
 def compose_files():
@@ -55,14 +77,14 @@ def default_images(path):
         # A locally built image that is never pulled (NetBox's) names the build, not a registry.
         if not isinstance(image, str) or (service or {}).get("pull_policy") == "never":
             continue
-        match = SUBST.match(image.strip())
-        if match:
-            yield name, match.group("default")
-        elif "${" not in image:
-            yield name, image.strip()
+        ref = resolve(image.strip())
+        if ref is not None:
+            yield name, ref
 
 
 def qualified(ref):
+    if ref is BARE:
+        return False
     first = ref.split("/", 1)[0]
     return "/" in ref and ("." in first or ":" in first or first == "localhost")
 
@@ -88,3 +110,15 @@ def test_the_check_tells_a_short_name_from_a_qualified_one():
     assert qualified("cr.agentgateway.dev/agentgateway:v1.5.0")
     assert qualified("localhost/agent-cloud-console:local")
     assert qualified("registry.local:5000/x:1")
+
+
+def test_variables_are_resolved_to_the_reference_a_deploy_pulls():
+    assert resolve("${X:-openpolicyagent/opa:1}") == "openpolicyagent/opa:1"
+    assert resolve("${X-docker.io/a/b:1}") == "docker.io/a/b:1"
+    assert resolve("redis:${TAG:-7}") == "redis:7"
+    assert resolve("ghcr.io/o/i:${TAG:-latest}") == "ghcr.io/o/i:latest"
+    assert resolve("${IMG:-docker.io/frappe/erpnext}:${V:?set it}") == "docker.io/frappe/erpnext:required"
+    assert resolve("${SKYNET_IMAGE:?set it}") is None
+    assert resolve("${C_IMAGE}") is BARE
+    assert not qualified(resolve("redis:${TAG:-7}"))
+    assert not qualified(resolve("${C_IMAGE}"))

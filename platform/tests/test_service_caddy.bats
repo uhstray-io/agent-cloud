@@ -21,7 +21,7 @@ setup() {
   grep -qE '\$\{CADDYFILE' "$f"
 }
 
-@test "caddy: prod defaults are byte-identical (cloudflare image, 80/443, committed Caddyfile)" {
+@test "caddy: prod defaults (registry-qualified cloudflare image, 80/443, committed Caddyfile)" {
   local f="$DEPLOY_DIR/compose.yml"
   grep -qE '\$\{CADDY_IMAGE:-docker\.io/iarekylew00t/caddy-cloudflare:2\.11\.4-alpine\}' "$f"
   grep -qE '\$\{CADDY_HTTP_PORT:-80\}:80' "$f"
