@@ -34,6 +34,11 @@ Exit codes:
     5  connection, TLS or certificate failure before the request was sent (or during it)
 
 Diagnostics go to stderr and never contain the token, the secret or a response body. The fingerprints are public.
+
+Coverage. The callers do not build a PVEAPIToken string, so test_pve_token_id_required.py's table (which keys on
+that header) does not reach them. read-proxmox-root-ca.yml is the one caller today. It asserts the stored token id
+before its first get (test_read_proxmox_root_ca.py, test_the_token_id_is_asserted_before_the_first_request), and
+read_credentials() refuses an empty id line on its own (exit 2, nothing sent). A new caller must do the same.
 """
 
 from __future__ import annotations

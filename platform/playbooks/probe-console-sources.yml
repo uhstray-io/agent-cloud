@@ -81,6 +81,34 @@
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
+    # Each URL that receives a token passes the same guard before any OpenBao read or any request. A URL that is not
+    # set is skipped. A refused URL is named by its label and is never printed.
+    - name: "Transport guard: the NetBox endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _netbox_url }}"
+        _assert_url_label: "NetBox"
+      when: _netbox_url | length > 0
+
+    - name: "Transport guard: the Proxmox endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _proxmox_url }}"
+        _assert_url_label: "Proxmox"
+      when: _proxmox_url | length > 0
+
+    # The Proxmox CA gate below means nothing over plain http, so the Proxmox URL must use the https scheme. The check
+    # reads the scheme only, and the message names the variable, never the value.
+    - name: "Proxmox: the console API URL must use the https scheme (the CA check means nothing over http)"
+      ansible.builtin.assert:
+        that:
+          - (_proxmox_url | urlsplit('scheme')) == 'https'
+        fail_msg: >-
+          console_proxmox_url must use the https scheme. The console token is sent only over a verified TLS
+          connection, so the probe stops before any request. The URL is not printed.
+        quiet: true
+      when: _proxmox_url | length > 0
+
     - name: "OpenBao: health answer from the console VM (no token; any HTTP status answers)"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/sys/health"
@@ -200,6 +228,8 @@
         method: GET
         headers: "{{ _nb_headers }}"
         status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         timeout: 15
       failed_when: false
       check_mode: false
@@ -213,6 +243,8 @@
         method: GET
         headers: "{{ _nb_headers }}"
         status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         timeout: 15
       failed_when: false
       check_mode: false
@@ -226,6 +258,8 @@
         method: GET
         headers: "{{ _nb_headers }}"
         status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         timeout: 15
       failed_when: false
       check_mode: false
@@ -265,9 +299,9 @@
       no_log: true
 
     # Refuse a minted token that carries no token id before the first Proxmox request (the token id names the
-    # account; there is no built-in default). no_log: the assert reads a credential reference, so Ansible censors
-    # its FAILED result; the fail_msg still prints on the [ERROR] Task failed line (checked with ansible-core 2.21.0).
-    - name: "Proxmox: require the stored console token id before any Proxmox request (no_log: credential check)"
+    # account; there is no built-in default). Not no_log: the assert can fail only when the fact is empty, so no
+    # value exists to show, and the failure prints the expression text and the fail_msg, never a value.
+    - name: "Proxmox: require the stored console token id before any Proxmox request"
       ansible.builtin.assert:
         that: _probe_pve_token_id | length > 0
         fail_msg: >-
@@ -275,7 +309,6 @@
           (<user>@<realm>!<token-name>) beside console_token; there is no built-in default.
         quiet: true
       when: _probe_pve_called | bool
-      no_log: true
 
     - name: "Proxmox: cluster status with the console token (cluster name; no_log)"
       ansible.builtin.uri:
@@ -284,6 +317,8 @@
         headers:
           Authorization: "PVEAPIToken={{ _probe_pve_token_id }}={{ _probe_pve_token }}"
         status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         validate_certs: true
         ca_path: "{{ _proxmox_ca_file }}"
         timeout: 15
@@ -300,6 +335,8 @@
         headers:
           Authorization: "PVEAPIToken={{ _probe_pve_token_id }}={{ _probe_pve_token }}"
         status_code: [200]
+        follow_redirects: none
+        unredirected_headers: [Authorization]
         validate_certs: true
         ca_path: "{{ _proxmox_ca_file }}"
         timeout: 15

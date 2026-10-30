@@ -7,7 +7,10 @@ Structure, read from the parsed playbook:
   on the controller (delegate_to localhost), as deploy-console.yml reads its shared secrets;
 - no secret in output: a task that touches a token, a header or a protected result is no_log; the summary and
   verdict builders reference only the derived line facts; debug prints only the summary;
-- no address in output: no literal address, no URL in a fail_msg, the CA read from its rendered path.
+- no address in output: no literal address, no URL in a fail_msg, the CA read from its rendered path;
+- transport: each configured token URL (NetBox, Proxmox) passes the transport guard, gated on the URL being set, and
+  the Proxmox URL must be https, all before the first credential read; every token-bearing uri refuses redirects and
+  keeps Authorization off them.
 
 Behaviour, through the real ansible-playbook against loopback fakes (fake_http.DrainingHandler): a sentinel token
 must not appear in the output at default verbosity or at -vvv; the summary lines must appear; a configured source
@@ -110,6 +113,22 @@ def _is_probe_read(task):
     return _module(task) in {"uri", "wait_for", "stat"} and not _is_openbao_credential(task)
 
 
+def _is_transport_include(task):
+    return str(task.get("ansible.builtin.include_tasks", task.get("include_tasks", ""))).endswith(
+        "assert-bao-transport.yml")
+
+
+def _is_token_id_presence_check(task):
+    """The one assert that names a credential and renders no value: `that` is only
+    `_probe_pve_token_id | length > 0` and its fail_msg renders nothing. It is exempt from the SECRET_REF rule
+    and is not no_log, because it can fail only when the fact is empty (see its comment in the playbook)."""
+    if _module(task) != "assert":
+        return False
+    that = _args(task).get("that")
+    that = [that] if isinstance(that, str) else list(that or [])
+    return that == ["_probe_pve_token_id | length > 0"] and "{{" not in str(_args(task).get("fail_msg", ""))
+
+
 # --- the play, its imports and its placement ----------------------------------------------------------------
 
 
@@ -206,7 +225,8 @@ def test_every_task_touching_a_secret_or_a_protected_result_is_no_log():
         if t.get("no_log") is True:
             continue
         refs = _refs(t)
-        assert SECRET_REF.search(refs) is None, (t.get("name"), SECRET_REF.search(refs).group(0))
+        if not _is_token_id_presence_check(t):
+            assert SECRET_REF.search(refs) is None, (t.get("name"), SECRET_REF.search(refs).group(0))
         for reg in bearing:
             assert not re.search(rf"\b{re.escape(reg)}\b", refs), (t.get("name"), reg)
 
@@ -235,6 +255,51 @@ def test_openbao_transport_guard_comes_before_the_first_openbao_request():
     assert guard < first
 
 
+def test_each_configured_token_url_passes_the_transport_guard_before_any_credential_read():
+    tasks = _tasks()
+    first_credential = min(i for i, t in enumerate(tasks) if _is_openbao_credential(t))
+    for label, var in (("NetBox", "_netbox_url"), ("Proxmox", "_proxmox_url")):
+        guards = [i for i, t in enumerate(tasks)
+                  if _is_transport_include(t) and (t.get("vars") or {}).get("_assert_url_label") == label]
+        assert len(guards) == 1, (label, guards)
+        guard = tasks[guards[0]]
+        assert guard["vars"]["_assert_bao_url"] == "{{ " + var + " }}", label
+        assert guard.get("when") == var + " | length > 0", label
+        assert guards[0] < first_credential, label
+
+
+def test_the_proxmox_url_must_use_the_https_scheme_before_any_credential_read():
+    tasks = _tasks()
+    first_credential = min(i for i, t in enumerate(tasks) if _is_openbao_credential(t))
+    checks = [i for i, t in enumerate(tasks)
+              if _module(t) == "assert" and "urlsplit('scheme')" in str(_args(t).get("that"))]
+    assert len(checks) == 1, [tasks[i].get("name") for i in checks]
+    check = tasks[checks[0]]
+    assert _args(check)["that"] == ["(_proxmox_url | urlsplit('scheme')) == 'https'"], _args(check)
+    assert check.get("when") == "_proxmox_url | length > 0"
+    assert checks[0] < first_credential
+
+
+def test_the_token_id_presence_check_is_not_no_log_and_its_fact_is_held_by_a_no_log_task():
+    checks = [t for t in _tasks() if _is_token_id_presence_check(t)]
+    assert len(checks) == 1, [t.get("name") for t in checks]
+    (check,) = checks
+    assert check.get("no_log") is not True, "the presence check must not be no_log"
+    assert check.get("when") == "_probe_pve_called | bool"
+    holders = [t for t in _tasks() if "_probe_pve_token_id" in (t.get("ansible.builtin.set_fact") or {})]
+    assert holders and all(h.get("no_log") is True for h in holders), [h.get("name") for h in holders]
+
+
+def test_every_token_bearing_uri_refuses_redirects_and_keeps_authorization_off_them():
+    # The OpenBao reads carry X-Vault-Token and are covered by their own rule; this one is the NetBox and Proxmox
+    # requests, which carry the console tokens (three NetBox reads, two Proxmox reads).
+    bearing = [t for t in _tasks() if _has_headers(t) and not _is_openbao_credential(t)]
+    assert len(bearing) == 5, [t.get("name") for t in bearing]
+    for t in bearing:
+        assert _args(t).get("follow_redirects") == "none", t.get("name")
+        assert "Authorization" in (_args(t).get("unredirected_headers") or []), t.get("name")
+
+
 # --- output: debug prints only the summary; the summary and verdict build from lines alone ------------------
 
 
@@ -261,8 +326,10 @@ def test_the_failure_message_names_the_sources_and_no_url():
     assert asserts, "no assert"
     for t in asserts:
         msg = str(_args(t).get("fail_msg", ""))
-        for forbidden in ("url", "_bao_url", "_netbox_url", "_proxmox_url", "_proxmox_ca_file"):
-            assert forbidden not in msg, (t.get("name"), forbidden)
+        # A fail_msg may NAME a variable (console_proxmox_url, in words) but may not RENDER one: every {{ }}
+        # expression is checked, so no URL value and no CA file path can reach the output.
+        for expr in re.findall(r"\{\{[^}]*\}\}", msg):
+            assert "url" not in expr and "_proxmox_ca_file" not in expr, (t.get("name"), expr)
 
 
 # --- the template -------------------------------------------------------------------------------------------
@@ -309,6 +376,22 @@ def _serve(answer):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+def _recording(answer, seen):
+    """Wrap a fake's answer so each request it receives is appended to `seen`, when a list is given."""
+    if seen is None:
+        return answer
+
+    def recorded(method, path, headers):
+        seen.append((method, path))
+        return answer(method, path, headers)
+
+    return recorded
+
+
+def _proxmox_json(method, path, headers):
+    return 200, {"data": []}
 
 
 def _openbao(netbox_stored):
@@ -363,8 +446,8 @@ def _netbox():
 def probe_run(tmp_path):
     servers = []
 
-    def run(netbox_stored, proxmox_open, verbosity=None):
-        bao = _serve(_openbao(netbox_stored))
+    def run(netbox_stored, proxmox_open, verbosity=None, netbox_url=None, proxmox_url=None, bao_seen=None):
+        bao = _serve(_recording(_openbao(netbox_stored), bao_seen))
         nb = _serve(_netbox())
         servers.extend([bao, nb])
         listener = socket.socket()
@@ -384,8 +467,8 @@ def probe_run(tmp_path):
             "openbao_addr": f"http://127.0.0.1:{bao.server_address[1]}",
             "bao_role_id": "fake-role-id",
             "bao_secret_id": "fake-secret-id",
-            "console_netbox_url": f"http://127.0.0.1:{nb.server_address[1]}",
-            "console_proxmox_url": f"https://127.0.0.1:{pve_port}",
+            "console_netbox_url": netbox_url or f"http://127.0.0.1:{nb.server_address[1]}",
+            "console_proxmox_url": proxmox_url or f"https://127.0.0.1:{pve_port}",
             "monorepo_deploy_path": "platform/services/console/deployment",
             "local_monorepo_dir": str(tmp_path),
         }}}}}}
@@ -445,3 +528,49 @@ def test_a_closed_source_fails_the_play_by_name_after_the_summary_and_prints_no_
     assert "did not answer the probe: Proxmox" in out
     assert "127.0.0.1" not in out, "an address reached the default output"
     assert SENT_NB not in out and SENT_PVE not in out
+
+
+@NEEDS_ANSIBLE
+def test_a_cleartext_public_netbox_url_is_refused_before_any_openbao_request(probe_run):
+    url = "http://netbox.invalid:8000"
+    bao_seen = []
+    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_url=url, bao_seen=bao_seen)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, out
+    assert "Refusing to send secret material to NetBox" in out, out
+    assert bao_seen == [], "an OpenBao request was sent before the NetBox transport guard ran"
+    assert url not in out and "netbox.invalid" not in out, "the refused URL was printed"
+    assert SENT_NB not in out and SENT_PVE not in out
+
+
+@NEEDS_ANSIBLE
+def test_a_cleartext_public_proxmox_url_is_refused_before_any_openbao_request(probe_run):
+    url = "http://pve.invalid:8006"
+    bao_seen = []
+    proc = probe_run(netbox_stored=True, proxmox_open=True, proxmox_url=url, bao_seen=bao_seen)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, out
+    assert "Refusing to send secret material to Proxmox" in out, out
+    assert bao_seen == [], "an OpenBao request was sent before the Proxmox transport guard ran"
+    assert url not in out and "pve.invalid" not in out, "the refused URL was printed"
+    assert SENT_PVE not in out
+
+
+@NEEDS_ANSIBLE
+def test_a_loopback_http_proxmox_url_is_refused_by_name_before_any_request(probe_run):
+    # Loopback http passes the transport guard (it is a local address), so the https check is what refuses it.
+    bao_seen, pve_seen = [], []
+    pve = _serve(_recording(_proxmox_json, pve_seen))
+    try:
+        proc = probe_run(netbox_stored=True, proxmox_open=True,
+                         proxmox_url=f"http://127.0.0.1:{pve.server_address[1]}", bao_seen=bao_seen)
+    finally:
+        pve.shutdown()
+        pve.server_close()
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, out
+    assert "console_proxmox_url must use the https scheme" in out, out
+    assert bao_seen == [], "an OpenBao request was sent before the https check ran"
+    assert pve_seen == [], "a request reached the Proxmox endpoint over cleartext"
+    assert "127.0.0.1" not in out, "an address reached the default output"
+    assert SENT_PVE not in out and "PVEAPIToken" not in out
