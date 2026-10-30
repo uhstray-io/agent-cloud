@@ -43,9 +43,78 @@ Every step runs through the Semaphore template. Nothing is deployed by hand over
 
 - [ ] 5.1 Write `platform/services/console/deployment/deploy.sh` for container lifecycle only. It builds the image on the host with `$CONTAINER_ENGINE build -f deployment/Containerfile platform/services/console`, and it reads the secrets it needs from the rendered `.env` file.
 - [ ] 5.2 Write `platform/playbooks/deploy-console.yml` as the composable chain: `place-monorepo.yml`, then `manage-secrets.yml`, then `deploy.sh`, then verify. Verify runs `<engine> exec console` against `/healthz` (expecting 200) and `/v1/me` (expecting 401).
-- [ ] 5.3 Provision the console's own AppRole with `manage-approle.yml`, and store its credentials under `secret/services/approles/console`.
+- [ ] ~~5.3~~ **Superseded by Shared credentials task 8.0 (D27).** Was: Provision the console's own AppRole with `manage-approle.yml`, and store its credentials under `secret/services/approles/console`.
 - [ ] 5.4 Add the `console_svc` group and the `console-local` host to the inventory placeholders, with `service_name` `console`, `container_engine` `podman`, `console_bind` `127.0.0.1` and `console_port` `3410`. Real values stay in site-config.
 - [ ] 5.5 Add the route `console.agent-cloud.test` to `console:8080` through `Manage Caddy Sites` in local-dev.
 - [ ] 5.6 Add the templates `Deploy console` (with `dev_variant`, and the survey fields `service_branch` and `deploy_force_recreate`), `Clean Deploy console`, `Deploy console (Local)` and `Clean Deploy console (Local)` to `platform/semaphore/templates.yml`. Publish them with `setup-templates.yml`.
 - [ ] 5.7 Add the console's sub-directory line to `AGENTS.md`, linking `plan/development/17-dispatch-console.md` and the console `README.md`.
 - [ ] 5.8 Validation gate on local-dev through the Semaphore template: scenarios "Deploy builds the image on the host", "Verify checks health and the API gate" and "Deploy converges on re-run" hold.
+
+## Phase 3 checklist: scope and inventory (read-only)
+
+Decisions D22–D25. Every source is all-or-none in the environment. A source that isn't configured answers `"source":"unconfigured"`, the same contract as Phase 2.
+
+- [ ] 6.1 Credentials:
+  - Add a view-only `console` profile to `_profiles` in `provision-netbox-automation-token.yml` and to the closed survey list in `templates.yml`. It views dcim sites and devices, virtualization clusters and virtual machines, ipam prefixes and IP addresses, and extras tags, and stores `secret/services/netbox:console_api_token`.
+  - Write `provision-console-proxmox-token.yml`. With the existing Proxmox admin credential, it grants `PVEAuditor` on `/` to `console@pve` and to its privilege-separated token `console`, and stores `secret/services/proxmox:console_token_id` and `console_token`.
+  - That playbook never rotates. It refuses a token that exists in Proxmox but is not stored, unless a replace flag is set. Its template uses `dev_variant`.
+- [ ] 6.2 Deploy wiring:
+  - `deploy-console.yml` shared-reads both tokens and asserts that each `netbox_site` slug is unique across tenants.
+  - `env.j2` gains the URL-gated groups `CONSOLE_NETBOX_*` and `CONSOLE_PROXMOX_*`. `CONSOLE_PROXMOX_CA_FILE` comes from `console_proxmox_ca_pem`.
+  - `flows.json.j2` renders the D24 flows, names only. `compose.yml` mounts `config/flows.json`, and `deploy.sh` hashes it as an input.
+  - Tests pin the shared reads, the slug assertion and the no-address flows rendering.
+- [ ] 6.3 Reachability: a read-only probe from `console_svc` to the NetBox, Proxmox and OpenBao endpoints. Missing allow rules are added in site-config before the sources are enabled.
+- [ ] 6.4 Server:
+  - Write `netbox.rs` and `proxmox.rs` read clients. Each refuses a cleartext URL unless the host is loopback or RFC1918, and Proxmox TLS verifies against the CA file.
+  - Write `inventory.rs`, an aggregator with a 60 s cache.
+  - Routes: `GET /v1/tenants/{t}/inventory`, `/services` and `/services/{name}` (tenant-scoped, D25). `GET /v1/flows` and `GET /v1/network` (prefixes) are admin-only.
+  - Unit tests against mock authorities, including the unconfigured, unreachable, stale and partial cases.
+- [ ] 6.5 UI:
+  - The Topology page: sites → clusters → nodes → VMs, with click and shift-click selection and red/amber/green status from Proxmox state and the workflow fields.
+  - The network view (prefixes and addresses) and the admin-only data-flows view.
+  - Compute levels, the Services table, service detail, the resource panel and business-domain tiles.
+  - Every status shows an icon and a label. Every per-asset view links to Grafana and draws no chart.
+- [ ] 6.6 Validation gate: on local-dev and in production, every host, VM and service shown exists in NetBox or Proxmox, and computer-use browser tests pass (D30).
+
+## Phase 4 checklist: proposals
+
+Waits for OPA and skynet in production (D29).
+
+- [ ] 7.1 To be detailed when OPA and skynet are deployed in production. See the operator handoffs `opa-production.md` and `skynet-production.md` (2026-10-29).
+
+## Shared credentials (before Phase 5)
+
+Decisions D26–D28. This replaces Phase 1 task 5.3, which never ran.
+
+- [ ] 8.0 Console AppRole via `manage-approle.yml`, with the D27 policy file under `platform/services/openbao/deployment/config/policies/`.
+  - The console logs in at run time and again on demand. Its credentials go in `secret/services/approles/console`.
+  - A scheduled playbook rotates the secret ID before its 90-day expiry and redeploys the console.
+- [ ] 8.0a Grafana Viewer service-account token `secret/services/o11y:console_grafana_token`, provisioned like `provision-o11y-mcp-grafana-token.yml`. `deploy-console.yml` shared-reads it.
+- [ ] 8.0b `platform/lib/github_app_token.py` accepts a downscoping `permissions` body, with tests.
+  - `refresh-console-github-token.yml`, scheduled every 45 minutes, writes a read-only installation token to `secret/services/console/github:token`.
+
+## Phase 5 checklist: governance pages
+
+Decision D28. These are platform-wide views, so they answer `platform-admins` only (D25).
+
+- [ ] 8.1 The Secrets page: OpenBao metadata only (path, versions, timestamps). A canary test proves no value ever leaves the API.
+- [ ] 8.2 The Access page: Authentik users and groups through a view-only token declared by blueprint, and the role map.
+- [ ] 8.3 The AI Gateway and LLM access pages: `agw_clients` rendered at deploy into `config/gateway.json`, and usage through Grafana (D26). Role pages list only that role's work.
+- [ ] 8.4 The Policy page lists the policy files through the GitHub API. The Tenant and Organization settings pages read business-domain tags as NetBox tags. Request a service shows the catalog.
+- [ ] 8.5 Change controls are disabled, with the reason shown, until Phase 4. Validation gate: the canary test and computer-use tests pass.
+
+## Phase 6 checklist: delivery and telemetry
+
+Decision D26. Admin-only (D25).
+
+- [ ] 9.1 The CI/CD page: reviews, required checks and the promotion path. The required-check names come from `.github/rulesets/protect-main.json` through the GitHub API (D27 token).
+- [ ] 9.2 The Telemetry page: rollups through the Grafana data-source proxy, with Grafana deep links. No per-asset chart.
+- [ ] 9.3 Validation gate: the check names match the ruleset (test), and computer-use tests pass.
+
+## Phase 7 checklist: harden and promote
+
+- [ ] 10.1 Accessibility: a keyboard-only path through Work, the composer, the stepper and topology selection.
+- [ ] 10.2 Error, permission-denied and unconfigured states on every page.
+- [ ] 10.3 A load test of the API.
+- [ ] 10.4 The plan 17 validation table passes on `dev` **and in production** (every phase gate 6.6, 8.5 and 9.3, run through the (Dev) templates and the computer-use tests). Write the operator test plan `plan/product/dispatch-console/TEST-PLAN.md`.
+- [ ] 10.5 Only after 10.4 passes: open the dev → main promotion PR. The merge is the operator's call.

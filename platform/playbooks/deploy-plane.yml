@@ -199,7 +199,7 @@
           - plane-api
           - python
           - -c
-          - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/configure_instance.py') }}"
+          - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/plane_session.py') ~ '\n' ~ lookup('file', playbook_dir ~ '/../services/plane/deployment/configure_instance.py') }}"
         stdin: >-
           {{ {'base': 'http://localhost:8000',
               'host': plane_public_url | urlsplit('hostname'),

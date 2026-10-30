@@ -176,21 +176,6 @@ pub fn Dashboard() -> Element {
 }
 
 #[component]
-pub fn Topology() -> Element {
-    rsx! { EmptyPage { page: TOPOLOGY } }
-}
-
-#[component]
-pub fn Services() -> Element {
-    rsx! { EmptyPage { page: SERVICES } }
-}
-
-#[component]
-pub fn Compute() -> Element {
-    rsx! { EmptyPage { page: COMPUTE } }
-}
-
-#[component]
 pub fn Telemetry() -> Element {
     rsx! { EmptyPage { page: TELEMETRY } }
 }

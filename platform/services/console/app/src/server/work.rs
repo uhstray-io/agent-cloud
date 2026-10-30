@@ -401,7 +401,7 @@ pub fn rfc3339_from_unix(secs: i64) -> String {
 
 /// The platform-admin gate (plan 17 D19), checked after the session. A session
 /// without the group gets the same 403 whether the key exists or not.
-async fn admin_only(session: &Session) -> Result<(), Response> {
+pub(super) async fn admin_only(session: &Session) -> Result<(), Response> {
     let Some(user) = auth::current_user(session).await else {
         return Err(unauthenticated());
     };
