@@ -55,6 +55,7 @@ and why.
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there | Unverified claim | 1 | Convention |
+| 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -100,7 +101,7 @@ and why.
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
-| 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
+| 3.15 | **x2** — A real `(Dev)` deploy carried `dev` changes no real run had loaded: o11y telemetry down ~1h45m (2026-10-13); the Dispatch Console crash-looped on a `flows.json` contract split across two PRs (2026-10-30) | Live state | 2 | Convention + contract test for the console case (launcher refusal on unproven changes proposed) |
 | 3.16 | A local Semaphore container recreate minted a new encryption key while its database lived on; every encrypted environment input became undecryptable and the next seed failed | Live state | 1 | Bootstrap (config on the data volume + carry-forward before any recreate) + test (`test_local_semaphore_config_persistence.py`, mutation-checked) |
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
 | 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
@@ -1055,6 +1056,28 @@ report is known to come from a different ref, treat all its line numbers as unve
 until re-read; file paths and line numbers do not survive 1,700 commits.
 
 **Enforced by.** Convention.
+
+### 1.26 Briefed an executor with an API field shape read from one line of the source
+
+**Occurrences: 1** — 2026-10-29
+
+**What happened.** For the `Read Proxmox Root CA` playbook I told a dev-worker that Proxmox's
+`certificates/info` returns `filename` as a full path (`/etc/pve/pve-root-ca.pem`), and to
+select entries by that value. I had read `src/PVE/Certificate.pm:327`
+(`$info->{filename} = $cert_path;`) and not the line above it, `:326`
+(`$cert_path =~ s!^.*/!!g;`), which strips the directory. The worker read the whole
+function, found the contradiction, and stopped before writing code. One dispatch was spent.
+
+**Root cause.** The fact went into the brief from a partial read: the one line that named the
+field, not the function that produced it. A brief is executed literally, so an unverified
+field shape becomes a selector that never matches.
+
+**The rule.** Read the whole function that produces a value before stating its shape in a
+brief, a plan or a reply. The line that assigns a field is not evidence of the field's
+contents; the transformations above it are.
+
+**Enforced by.** Convention. The brief's DEVIATION RULE caught this one: the worker stopped on
+a brief that contradicted the code.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -2503,7 +2526,7 @@ the previous config was not the problem, and the restore failed the same way.
 
 ### 3.15 A proof run deployed unproven `dev` merges to production
 
-**Occurrences: 1** — 2026-10-13
+**Occurrences: 2** — 2026-10-13, 2026-10-30
 
 **What happened.** The service-deployment-workflow 7.1 second-run proof launched a real
 `Deploy o11y (Dev)` (Semaphore task 5000) at `dev` commit `4872faad`. The last real o11y deploy
@@ -2532,6 +2555,24 @@ separate, wider rule for that reason.
 evidence, the service paths changed since the revision of the last successful real deploy, and
 the launcher refuses a real run with unproven changes unless an explicit acknowledgement
 variable is set. Related: 3.14, 10.26.
+
+**Occurrence 2 — 2026-10-30.** The Dispatch Console's first Phase 3 production deploy,
+`Deploy console (Dev)` (Semaphore task 10457), ran `dev` straight to production after a passing
+dry run (task 10456). `dev` carried #772 (the server, which parses `CONSOLE_FLOWS_FILE` as a bare
+`Vec<Flow>` of `{kind, from, to, label}` with `deny_unknown_fields`) and #773 (the deploy, whose
+`flows.json.j2` rendered `{"edges": [{kind, from, to}]}`). Each PR's tests checked only its own
+side. The container crash-looped on `CONSOLE_FLOWS_FILE: invalid JSON: invalid type: map,
+expected a sequence` (439 restarts at the deploy's diagnostics). The live console was down from
+that deploy's container recreate (07:33 UTC, Semaphore task output) until #789 rendered the array and
+`Deploy console (Dev)` task 10472 redeployed it (finished 08:35:57 UTC), about 63 minutes; the public
+sign-in page then loaded through Cloudflare in a real browser. Why the rule did not fire: plan 17 D30 already
+required a local-dev run through the Semaphore template before production, and I skipped it
+because both PRs were my own and reviewed, treating "reviewed and dry-run" as "proven". A dry run
+never starts the container, so it cannot load a file the server reads at startup, exactly as in
+occurrence 1. New guard for this class: `test_rendered_flows_match_the_servers_flow_type` reads the
+`Flow` struct from `inventory.rs` and checks the rendered template against it, so a contract split
+across two PRs fails in CI. The proposed launcher refusal on unproven changes would also have
+stopped it.
 
 ### 3.16 A local Semaphore container recreate orphaned every encrypted environment input
 
