@@ -50,7 +50,8 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | `console_netbox_url`; the token is `secrets.console_api_token`, a shared read of `secret/services/netbox`. The group renders only when the URL is set (Phase 3, see below) |
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | `console_proxmox_url`; id and secret are shared reads of `secret/services/proxmox` (`console_token_id`, `console_token`). All-or-none, like the NetBox group |
 | `CONSOLE_PROXMOX_CA_FILE=/etc/console/proxmox-ca.pem` | set only when `console_proxmox_ca_pem` is set; the file is always mounted (empty when unset) |
-| `CONSOLE_GRAFANA_URL` | `console_grafana_url`, the base for Grafana deep links. Not a credential; rendered only when set |
+| `CONSOLE_GRAFANA_URL` | `console_grafana_url`, the base for Grafana deep links. Not a credential; rendered only when set. The URL alone reads no token |
+| `CONSOLE_GRAFANA_TOKEN` | `secrets.console_grafana_token`, a shared read of `secret/services/o11y`. Rendered only when `console_grafana_api_enabled` is true AND `console_grafana_url` is set |
 
 `config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
@@ -174,6 +175,10 @@ A VM takes live state only when its name is unique across every declared NetBox 
 RAG (`inventory::rag`), first match wins: `red` when a workflow step failed, or Proxmox says `stopped` while NetBox says `active`; `amber` when the data is stale, NetBox says `planned` or `staged`, a step is pending or unknown, or the live state is neither running nor stopped-while-active; `grey` when there is no live state; `green` when the VM is running and nothing above applies.
 
 Deep links: each VM and service row carries `grafana_url`, the Service Overview dashboard with `var-service` and `var-log_service` set to the VM name. `links.grafana_conformance` is the conformance dashboard. Both use the dashboard uids in `platform/services/o11y/deployment/config/grafana/dashboards/`.
+
+## Shared credentials (plan 17, D26-D27)
+
+Three credentials serve the console. Each has its own provisioning playbook, and the deploy reads the first two into `.env`. The GitHub token is read by the console at run time (Phase 5), not by the deploy. (1) The console AppRole: `secret/services/approles/console` holds `role_id` and `secret_id`. `provision-console-approle.yml` writes it, and `rotate-console-credentials.yml` rotates `secret_id` monthly. (2) The Grafana Viewer token: `secret/services/o11y:console_grafana_token`, from `provision-console-grafana-token.yml`, renewed by the rotation. (3) The read-only GitHub token: `secret/services/console/github`, refreshed every 45 minutes by `refresh-console-github-token.yml` on a Dev schedule. Setting `console_openbao_url` in the inventory reads (1) into `CONSOLE_OPENBAO_*`. Setting `console_grafana_api_enabled: true` together with `console_grafana_url` reads (2) into `CONSOLE_GRAFANA_TOKEN`; `console_grafana_url` alone is only the deep-link base. Each read fails by name when its source is missing. Production order: Provision Console AppRole, Provision Console Grafana Token, set the URLs and `console_grafana_api_enabled` in site-config, then Deploy console. The rotation renders `.env` from the controller checkout (`manage-secrets.yml:205`) while the image stays at the commit it pins; its drift check refuses a rotation whose controller inputs differ from that commit. While `dev`'s console inputs are ahead of the deployed commit, every monthly rotation refuses by name; redeploy the console from `dev` within the 90-day secret ID lifetime, or the stored secret ID expires and the console loses OpenBao.
 
 ## Runtime notes
 

@@ -1,0 +1,177 @@
+---
+# refresh-console-github-token.yml — keep the Dispatch Console's read-only GitHub credential
+# current (plan 17, task 8.0b).
+#
+# GitHub App installation tokens expire after ONE HOUR, so the console cannot hold a static
+# token. This playbook mints a fresh installation token on the controller and writes it to
+# secret/services/console/github, field `token`, beside `refreshed_at`. The write is a merge
+# (tasks/bao-merge-keys.yml): sibling fields at that path survive.
+#
+# The grant is scoped DOWN at the request: agent-cloud alone, the five read permissions in
+# _console_permissions. platform/lib/github_app_token.py sends that as the request body and
+# refuses to return a token whose reported grant is wider, so a wider grant stops this run
+# before the store is written. The grant is an underscore-prefixed play var, so an extra var
+# cannot widen it: the first import below refuses any extra var that sets an internal name.
+#
+# The App's key and client id live at secret/services/github (console_app_key,
+# console_app_client_id), seeded once through Seed OpenBao Key after the App is created. A
+# missing key or client id fails with a named message, never with a blank token.
+#
+# Scheduled every 45 minutes, Dev-bound, from templates.yml. The worst gap between two runs is
+# 45 minutes against a one-hour token. Failure is loud: the scheduled task goes red, and the
+# console's copy ages out within the hour.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refresh the Dispatch Console GitHub token"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    # Same default + override as refresh-tududi-sync-github-token.yml: the controller's own
+    # OpenBao address, from the inventory or the environment.
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # The GitHub org the App is installed on. Overridable; the grant below is not.
+    _console_org: "{{ console_github_org | default('uhstray-io') }}"
+    # One repository, agent-cloud. Internal name, so an extra var cannot widen the token.
+    _console_repository: agent-cloud
+    # The read-only grant, declared ONCE. Every level must stay "read": the structure test pins
+    # it. Internal name, so an extra var cannot widen it.
+    _console_permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull_requests: read
+      metadata: read
+    # Fixed paths. The console reads the first; a free path would let a refresh retarget any
+    # entry in the store.
+    _console_github_path: services/github
+    _console_secret_path: services/console/github
+
+  tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        follow_redirects: none
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _cg_auth
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Read the App credentials (a 404 is named by the assert below, not failed here)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ _console_github_path }}"
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        headers:
+          X-Vault-Token: "{{ _cg_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _cg_github_secret
+      no_log: true
+      check_mode: false
+
+    - name: "Take the App fields (empty when the path is absent)"
+      ansible.builtin.set_fact:
+        _cg_app_fields: "{{ _cg_github_secret.json.data.data if _cg_github_secret.status == 200 else {} }}"
+      no_log: true
+
+    - name: "Require the App key and client id (seeded once, after App creation)"
+      ansible.builtin.assert:
+        that:
+          - (_cg_app_fields.console_app_key | default('')) | length > 0
+          - (_cg_app_fields.console_app_client_id | default('')) | length > 0
+        fail_msg: >-
+          secret/services/github is missing console_app_key and/or console_app_client_id.
+          Create the console's GitHub App (Contents, Checks, Actions, Pull requests and
+          Metadata: read only; installed on agent-cloud only) and seed both via Seed OpenBao
+          Key, then re-run.
+
+    - name: "Mint the installation token (key via stdin; the grant is the declared read-only map)"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../lib/github_app_token.py"
+          - installation-token
+          - "--issuer"
+          - "{{ _cg_app_fields.console_app_client_id }}"
+          - "--org"
+          - "{{ _console_org }}"
+          - "--key"
+          - "-"
+          - "--permissions"
+          - "{{ _console_permissions | to_json }}"
+          - "--repository"
+          - "{{ _console_repository }}"
+        stdin: "{{ _cg_app_fields.console_app_key }}"
+      register: _cg_mint
+      # Not failing here: the failure reason is the exit code, and the visible assert below turns
+      # it into a named message. stdout is the token, so this task stays no_log.
+      failed_when: false
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Take the signer's exit code (no output leaves this task)"
+      ansible.builtin.set_fact:
+        _cg_mint_rc: "{{ _cg_mint.rc | int }}"
+      no_log: true
+
+    - name: "Require a clean mint (exit 0); name the over-grant refusal (exit 6) without its output"
+      ansible.builtin.assert:
+        that:
+          - _cg_mint_rc == 0
+        fail_msg: >-
+          {{ "GitHub granted a wider scope than requested (extra permission, different level, or other repository) — fix the console App's permissions"
+             if _cg_mint_rc == 6 else "mint failed (exit " ~ _cg_mint_rc ~ ")" }}
+        quiet: true
+
+    - name: "Take the token"
+      ansible.builtin.set_fact:
+        _cg_token: "{{ _cg_mint.stdout | trim }}"
+      no_log: true
+
+    - name: "Require a token to store (the signer refuses a wider grant before printing one)"
+      ansible.builtin.assert:
+        that:
+          - _cg_token | length > 0
+        fail_msg: "The installation-token step returned no token; nothing was written."
+
+    - name: "Stamp the refresh (one value, fixed before the write renders it)"
+      ansible.builtin.set_fact:
+        _cg_refreshed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: "Write the token to the console's store path (merge: siblings preserved)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _cg_auth.json.auth.client_token }}"
+        _bm_path: "{{ _console_secret_path }}"
+        _bm_data:
+          token: "{{ _cg_token }}"
+          refreshed_at: "{{ _cg_refreshed_at }}"
+      no_log: true
+
+    - name: "Report (names only; the token expires within the hour anyway)"
+      ansible.builtin.debug:
+        msg: >-
+          Console GitHub token {{ 'would be written' if ansible_check_mode else 'written' }} to
+          secret/{{ _console_secret_path }} (fields: token, refreshed_at) at {{ _cg_refreshed_at }}.
+          Scope: {{ _console_repository }} only, read permissions only. Next refresh: the
+          45-minute schedule.
