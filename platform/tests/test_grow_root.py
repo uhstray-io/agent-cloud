@@ -22,6 +22,7 @@ PLAYBOOKS = {
     "grow-github-runner-root.yml": ("github_runner_svc", "Grow GitHub Runner Root (Dev)"),
     "grow-semaphore-root.yml": ("semaphore_svc", "Grow Semaphore Root (Dev)"),
     "grow-console-root.yml": ("console_svc", "Grow Console Root (Dev)"),
+    "grow-skynet-root.yml": ("skynet_svc", "Grow skynet Root (Dev)"),
 }
 GiB = 1024 ** 3
 

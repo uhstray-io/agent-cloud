@@ -408,7 +408,7 @@ PY
   assert_contains "$output" 'Declare skynet_model'
 }
 
-@test "skynet: skynet_publish_bind refuses 0.0.0.0, a name, a short address and empty; a non-wildcard address and loopback are accepted" {
+@test "skynet: skynet_publish_bind refuses 0.0.0.0, a name, a short address, an octet over 255 and empty; a non-wildcard address and loopback are accepted" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
   run accepted skynet_publish_bind '"0.0.0.0"'
@@ -416,6 +416,8 @@ PY
   run accepted skynet_publish_bind '"localhost"'
   [ "$status" -ne 0 ]
   run accepted skynet_publish_bind '"10.0.0"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_publish_bind '"999.1.1.1"'
   [ "$status" -ne 0 ]
   run accepted skynet_publish_bind '""'
   [ "$status" -ne 0 ]
@@ -483,6 +485,8 @@ prod_accepted() {
   run prod_accepted skynet_opa_ip '"opa.example.test"'
   [ "$status" -ne 0 ]
   run prod_accepted skynet_opa_ip '"203.0.113"'
+  [ "$status" -ne 0 ]
+  run prod_accepted skynet_opa_ip '"203.0.113.256"'
   [ "$status" -ne 0 ]
   run prod_accepted skynet_opa_ip '""'
   [ "$status" -ne 0 ]

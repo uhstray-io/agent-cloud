@@ -52,8 +52,8 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
   skynet's own path. The deploy never generates it, and manage-secrets refuses the run by name,
   before any OpenBao write, when it is absent. It is never the operator's token.
 - The svc-skynet account and its project role come from `Provision skynet Semaphore Access`
-  (its own change). **Unverified here:** the role and the token's scope are the design's, not
-  checked against that playbook in this repository.
+  (`platform/playbooks/provision-skynet-semaphore-access.yml`): project role `task_runner`, the least
+  Semaphore role that can launch a task. Run it before this deploy.
 - `read_token` is generated once, like `api_token`, and never shared-read here.
 - `skynet_image` has no default. Nothing in this directory names a registry.
 - The inventory publish values are optional. A declared `skynet_publish_bind` must be one
