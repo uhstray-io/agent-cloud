@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -709,6 +710,42 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
     }
 
 
+def o11y_availability_source_gate_diagnostic(result: Any) -> str:
+    """Reduce a protected Ansible command result to one fixed diagnostic category."""
+    fallback = "source_readback_unavailable"
+    try:
+        if not isinstance(result, Mapping):
+            return fallback
+        rc, stdout, stderr = result.get("rc"), result.get("stdout"), result.get("stderr")
+        if isinstance(rc, bool) or not isinstance(rc, int) or rc != 0:
+            return fallback
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 65536 or stderr != "":
+            return fallback
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate JSON key")
+                value[key] = item
+            return value
+
+        readback = json.loads(stdout, object_pairs_hook=unique_object)
+        coverage = o11y_availability_source_coverage(readback)
+        if coverage.get("status") == "observed":
+            return "producer_observed" if coverage.get("matches_intended") is True else "producer_mismatch"
+        reason = coverage.get("reason")
+        if reason == fallback:
+            return fallback
+        if coverage.get("status") == "unavailable" and isinstance(reason, str) and re.fullmatch(
+            r"(?:native|source)_[a-z_]+", reason
+        ):
+            return reason
+        return fallback
+    except Exception:
+        return fallback
+
+
 class FilterModule:
     """Expose the pure preview as an Ansible filter."""
 
@@ -718,4 +755,5 @@ class FilterModule:
             "o11y_loaded_scrape_limit_coverage": o11y_loaded_scrape_limit_coverage,
             "o11y_source_scrape_limit_coverage": o11y_source_scrape_limit_coverage,
             "o11y_availability_source_coverage": o11y_availability_source_coverage,
+            "o11y_availability_source_gate_diagnostic": o11y_availability_source_gate_diagnostic,
         }

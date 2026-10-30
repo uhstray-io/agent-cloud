@@ -1,11 +1,15 @@
 import importlib.util
 import ipaddress
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+from ansible_python import needs_ansible
 from jinja2 import Environment, StrictUndefined, Undefined
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -371,6 +375,125 @@ def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_a
         "sample_count": 1, "probe_failed_count": 1, "scrape_failed_count": 0,
         "body_counter": "observed_positive",
     }
+
+
+def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_results():
+    observed = {
+        "status": "observed", "source": "prometheus", "intended_source": "prometheus",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "prometheus",
+            "alloy_self": {"up": 1, "scrape_samples_scraped": 415},
+            "scrape_body_size_bytes": {
+                "status": "unavailable", "reason": "legacy_extra_scrape_metrics_not_enabled",
+            },
+        },
+    }
+    result = {"rc": 0, "stdout": json.dumps(observed), "stderr": ""}
+    assert BUDGET.o11y_availability_source_gate_diagnostic(result) == "producer_observed"
+
+    known_failure = {
+        "status": "unavailable", "reason": "native_source_stale", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**result, "stdout": json.dumps(known_failure)}
+    ) == "native_source_stale"
+
+    sentinel = "SECRET-SENTINEL-MUST-NOT-ESCAPE"
+    invalid_results = [
+        {**result, "rc": 1}, {**result, "rc": True}, {**result, "rc": "0"},
+        {**result, "stderr": sentinel}, {**result, "stdout": sentinel},
+        {**result, "stdout": "{" + (" " * 65536)},
+        {**result, "stdout": '{"status":"unavailable","status":"observed"}'},
+        {**result, "stdout": json.dumps({**known_failure, "reason": sentinel})},
+        {**result, "stdout": json.dumps({**observed, "untrusted": sentinel})},
+        {"stdout": json.dumps(observed), "stderr": ""},
+    ]
+    for invalid in invalid_results:
+        category = BUDGET.o11y_availability_source_gate_diagnostic(invalid)
+        assert category == "source_readback_unavailable"
+        assert sentinel not in category
+
+
+def test_availability_source_diagnostic_precedes_unchanged_protected_gate():
+    tasks = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/prepare-o11y-availability.yml").read_text(encoding="utf-8")
+    )
+    diagnostic_set = next(
+        task for task in tasks if task.get("name") == "Validate the fixed current source diagnostic category"
+    )
+    visible = next(
+        task for task in tasks if task.get("name") == "Report only the fixed current source diagnostic category"
+    )
+    gate = next(
+        task for task in tasks if task.get("name") == "Require one fresh and unambiguous current self-metrics producer"
+    )
+    assert tasks.index(diagnostic_set) < tasks.index(visible) < tasks.index(gate)
+    assert diagnostic_set["no_log"] is True
+    assert "_o11y_current_source_raw | o11y_availability_source_gate_diagnostic" in diagnostic_set[
+        "ansible.builtin.set_fact"
+    ]["_o11y_current_source_diagnostic"]
+    assert visible["ansible.builtin.debug"]["msg"] == (
+        "Current self-metrics producer diagnostic: {{ _o11y_current_source_diagnostic }}"
+    )
+    assert visible["when"][-1] == "_o11y_current_source_diagnostic != 'producer_observed'"
+    assert gate["no_log"] is True
+    assert gate["ansible.builtin.assert"]["that"] == [
+        "_o11y_current_source_raw.rc == 0",
+        "(_o11y_current_source_raw.stdout | from_json).status == 'observed'",
+        "(_o11y_current_source_raw.stdout | from_json).source in ['prometheus', 'alloy']",
+        "(_o11y_current_source_raw.stdout | from_json).matches_intended is boolean",
+    ]
+
+
+@needs_ansible
+def test_availability_source_diagnostic_ansible_verbose_fixture_is_closed(tmp_path):
+    sentinel = "SOURCE-DIAGNOSTIC-SECRET-SENTINEL"
+    playbook = tmp_path / "diagnostic.yml"
+    playbook.write_text(
+        """---
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Produce an untrusted failing helper result
+      ansible.builtin.shell: >-
+        printf '%s' SOURCE-DIAGNOSTIC-SECRET-SENTINEL;
+        printf '%s' SOURCE-DIAGNOSTIC-SECRET-SENTINEL >&2;
+        exit 1
+      register: _o11y_current_source_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+    - name: Reduce the protected result
+      ansible.builtin.set_fact:
+        _o11y_current_source_diagnostic: "{{ _o11y_current_source_raw | o11y_availability_source_gate_diagnostic }}"
+      no_log: true
+    - name: Emit fixed category
+      ansible.builtin.debug:
+        msg: "Current self-metrics producer diagnostic: {{ _o11y_current_source_diagnostic }}"
+    - name: Preserve strict refusal
+      ansible.builtin.assert:
+        that: _o11y_current_source_raw.rc == 0
+        fail_msg: strict source gate refused
+      no_log: true
+""",
+        encoding="utf-8",
+    )
+    collections = tmp_path / "collections"
+    collections.mkdir()
+    environment = os.environ.copy()
+    environment["ANSIBLE_FILTER_PLUGINS"] = str(ROOT / "platform/playbooks/filter_plugins")
+    environment["ANSIBLE_COLLECTIONS_PATH"] = str(collections)
+    done = subprocess.run(
+        [shutil.which("ansible-playbook"), "-vv", "-i", "localhost,", "-c", "local", str(playbook)],
+        cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60, check=False,
+    )
+    output = done.stdout + done.stderr
+    assert done.returncode != 0
+    assert "Current self-metrics producer diagnostic: source_readback_unavailable" in output, output
+    assert "strict source gate refused" not in output
+    assert sentinel not in output
 
 
 def test_prometheus_alloy_job_is_omitted_only_for_availability_mode():
