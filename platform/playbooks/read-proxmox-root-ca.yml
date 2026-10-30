@@ -15,19 +15,22 @@
 # The pin is still trust on first use: the operator's confirmation is the root of trust. But no channel that
 # the operator did not confirm ever carries the token.
 #
-# What is checked. The CA is the entry whose filename is pve-root-ca.pem. It must hold a public certificate and be
-# self-signed (subject == issuer). The node's pve-ssl.pem entry must be issued by that CA. The entry the pinned
-# connection presented (the one whose fingerprint is the observed leaf digest, whatever its filename) must be issued
-# by that CA too. A custom or ACME certificate on the API therefore stops the run, named by its basename, because the
-# printed CA would not validate the console's calls. The node is the first online node by name, so every run reads
-# the same node. Filenames are basenames: the endpoint strips the directory (upstream pve-common
+# What is checked. Every online node is read, one pinned GET each, because the stored URL may reach any node of
+# the cluster and the leaf the pin names belongs to whichever node serves it. The CA is the entry whose filename
+# is pve-root-ca.pem. Every node that returns it must return the same certificate (the cluster CA is one file
+# cluster-wide): a disagreement stops the run. The CA must hold a public certificate and be self-signed
+# (subject == issuer). The entry the pinned connection presented (the one whose fingerprint is the observed leaf
+# digest, on whichever node holds it, whatever its filename) must be the only such entry, and must be issued by
+# that CA. The node that holds it must also have its pve-ssl.pem issued by that CA. A custom or ACME certificate
+# on the API therefore stops the run, named by its node and basename, because the printed CA would not validate
+# the console's calls. Filenames are basenames: the endpoint strips the directory (upstream pve-common
 # src/PVE/Certificate.pm:326-327).
 #
-# Output. One debug task prints the node, the CA subject, its SHA-256 fingerprint, notafter (epoch seconds), the
-# basename of the certificate the pinned connection served, and the PEM. The PEM prints as one JSON-escaped string,
-# so its line breaks show as \n. That is the YAML double-quoted escape: pasting the printed PEM between double quotes
-# after console_proxmox_ca_pem in site-config yields the exact certificate. Nothing else from the responses is
-# printed; they carry node addresses.
+# Output. One debug task prints the online-node count, the CA subject, its SHA-256 fingerprint, notafter (epoch
+# seconds), the node and basename of the certificate the pinned connection served, and the PEM. Node names are
+# printed; node addresses never are. The PEM prints as one JSON-escaped string, so its line breaks show as \n.
+# That is the YAML double-quoted escape: pasting the printed PEM between double quotes after
+# console_proxmox_ca_pem in site-config yields the exact certificate. Nothing else from the responses is printed.
 #
 # Two runs. The first run needs no pin: it observes the leaf fingerprint, prints it, and stops before any token
 # use. Confirm that digest from an independent vantage, not from this controller:
@@ -108,8 +111,9 @@
           - "{{ _pve_host }}"
       register: _observed_leaf
       changed_when: false
-      # Never fails by itself: a failed command task prints its argv, and the argv carries the API URL. The assert
-      # below names the exit code instead.
+      # Never fails by itself: a failed command task prints its argv, and the argv carries the API URL. An ok result
+      # prints its argv at -v and above (checked), so only the default verbosity is clean. The assert below names the
+      # exit code instead.
       failed_when: false
       delegate_to: localhost
       check_mode: false
@@ -145,7 +149,8 @@
           (SHA-256 {{ _observed_leaf.stdout | trim }}). No token was sent. Confirm the value from an independent
           vantage; if the certificate changed, re-confirm it rather than copying the old value.
 
-    # ── The node: the first online node by name. Read and derived under no_log (protected responses) ──
+    # ── The nodes: every online node is read, so the check does not depend on which node the URL reaches ──
+    # Read and derived under no_log (the responses carry node addresses). Visible tasks see only derived scalars.
 
     - name: "Read the node list (GET through the pinned helper; no_log: the response is not printed)"
       ansible.builtin.command:
@@ -167,13 +172,13 @@
       check_mode: false
       no_log: true
 
-    - name: "Pick the node and note whether the list was read (no_log: derived from the node list)"
+    - name: "Pick the online nodes and note whether the list was read (no_log: derived from the node list)"
       ansible.builtin.set_fact:
         _pve_nodes_ok: "{{ _pve_nodes.rc | default(1) == 0 }}"
-        _pve_node: >-
+        # Every online node, by name, in name order. Node names are not addresses.
+        _pve_online_nodes: >-
           {{ (((_pve_nodes.stdout | default('{}', true)) | from_json).data | default([])
-              | selectattr('status', 'equalto', 'online') | map(attribute='node') | sort | first)
-             | default('', true) }}
+              | selectattr('status', 'equalto', 'online') | map(attribute='node') | sort | list) }}
         _pve_nodes_reason: "{{ _pve_helper_reasons.get(_pve_nodes.rc | default(-1), 'an unexpected helper failure') }}"
       no_log: true
 
@@ -189,13 +194,15 @@
     - name: "Require an online node in the node list"
       ansible.builtin.assert:
         that:
-          - _pve_node | length > 0
+          - _pve_online_nodes | length > 0
         fail_msg: >-
           The Proxmox node list names no online node. Check the Proxmox endpoint, then rerun.
 
-    # ── The certificate information of that node (no_log: the response carries node addresses) ──────
+    # ── The certificate information of every online node: one pinned GET per node, in name order ──────
+    # A loop over the clean node names. Each result is read back by index (index_var), never looped over.
+    # failed_when false: each read's exit code is named by the assert after the collection below.
 
-    - name: "Read the node's certificate information (GET through the pinned helper; no_log: the response carries node addresses)"
+    - name: "Read every online node's certificate information (GET through the pinned helper, one per node; no_log: the responses carry node addresses)"
       ansible.builtin.command:
         argv:
           - "{{ ansible_playbook_python }}"
@@ -204,50 +211,125 @@
           - --url
           - "{{ _pve_host }}"
           - --path
-          - "/api2/json/nodes/{{ _pve_node }}/certificates/info"
+          - "/api2/json/nodes/{{ item }}/certificates/info"
           - --sha256
           - "{{ _pve_pin }}"
         stdin: "{{ _pve_token_id }}\n{{ _pve_secret }}"
-      register: _pve_certs
+      loop: "{{ _pve_online_nodes }}"
+      loop_control:
+        index_var: _pve_node_idx
+        label: "node {{ _pve_node_idx }}"
+      register: _pve_certs_all
       failed_when: false
       changed_when: false
       delegate_to: localhost
       check_mode: false
       no_log: true
 
-    # Scalars only. The whole entries carry the address list, so no entry is kept, only the strings the
-    # checks and the one debug below need.
-    - name: "Take the root CA's fields and the node certificate's issuer from the response (no_log; scalars only)"
+    # One record per online node, built by index into that node's result. A failed read keeps its exit code and no
+    # entries. Each entry carries the node it came from, so a match can be named by node.
+    - name: "Collect each online node's read into one record (no_log: derived from the responses)"
       ansible.builtin.set_fact:
-        _pve_certs_ok: "{{ _pve_certs.rc | default(1) == 0 }}"
-        _pve_certs_reason: "{{ _pve_helper_reasons.get(_pve_certs.rc | default(-1), 'an unexpected helper failure') }}"
-        _pve_ca:
-          pem: "{{ (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])
-                    | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='pem') | first)
-                   | default('', true) }}"
-          subject: "{{ (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])
-                        | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='subject') | first)
-                       | default('', true) }}"
-          issuer: "{{ (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])
-                       | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='issuer') | first)
-                      | default('', true) }}"
-          fingerprint: "{{ (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])
-                            | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='fingerprint') | first)
-                           | default('', true) }}"
-          notafter: "{{ (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])
-                         | selectattr('filename', 'equalto', 'pve-root-ca.pem') | map(attribute='notafter') | first)
-                        | default('', true) }}"
-        _pve_node_issuer: "{{ (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])
-                               | selectattr('filename', 'equalto', 'pve-ssl.pem') | map(attribute='issuer') | first)
-                              | default('', true) }}"
+        _pve_read_list: >-
+          {{ (_pve_read_list | default([], true)) + [{
+               'node': item,
+               'rc': _pve_certs_all.results[_pve_node_idx].rc | default(-1),
+               'entries': (((_pve_certs_all.results[_pve_node_idx].stdout | default('{}', true)) | from_json).data
+                           | default([], true)) | map('combine', {'node': item}) | list
+             }] }}
+      loop: "{{ _pve_online_nodes }}"
+      loop_control:
+        index_var: _pve_node_idx
+        label: "node {{ _pve_node_idx }}"
       no_log: true
 
-    - name: "Require the node's certificate information to be read"
+    - name: "Flatten every read's entries, count the failed reads, and build the pin pattern (no_log: derived from the responses)"
+      ansible.builtin.set_fact:
+        _pve_all_entries: "{{ _pve_read_list | map(attribute='entries') | flatten }}"
+        _pve_read_failed_count: "{{ _pve_read_list | rejectattr('rc', 'equalto', 0) | list | length }}"
+        # The pin as a regular expression over a fingerprint: its hex pairs, colons optional, either case. The pin is
+        # the observed digest (asserted above), so it holds only hex pairs.
+        _pve_pin_pattern: "{{ '(?i)^' ~ ((_pve_pin | upper | replace(':', '')) | regex_findall('..') | join(':?')) ~ ':?$' }}"
+      no_log: true
+
+    - name: "Name the first failed read by node and exit code (no_log: no URL, no output)"
+      ansible.builtin.set_fact:
+        _pve_read_reason: >-
+          {{ ((_pve_read_list | rejectattr('rc', 'equalto', 0) | first).node ~ ': '
+              ~ _pve_helper_reasons.get((_pve_read_list | rejectattr('rc', 'equalto', 0) | first).rc,
+                                        'an unexpected helper failure'))
+             if (_pve_read_failed_count | int > 0) else '' }}
+      no_log: true
+
+    - name: "Require every online node's certificate information to be read"
       ansible.builtin.assert:
         that:
-          - _pve_certs_ok | bool
+          - _pve_read_failed_count | int == 0
         fail_msg: >-
-          The node's certificate information was not read: {{ _pve_certs_reason }}. Nothing was printed.
+          The certificate information was not read from every online node. First failure, by node name:
+          {{ _pve_read_reason }}. Check the Proxmox endpoint and the admin token in secret/services/proxmox, then
+          rerun. Nothing was printed.
+
+    # ── Derive the answers (no_log). Scalars only: the entries carry the address list, so no entry is kept. ──────
+
+    # The cluster root CA is one file cluster-wide, so every node that returns it must return the same certificate.
+    - name: "Take the cluster root CA's fields and count its distinct copies (no_log; scalars only)"
+      ansible.builtin.set_fact:
+        _pve_root_count: "{{ _pve_all_entries | selectattr('filename', 'equalto', 'pve-root-ca.pem') | list | length }}"
+        _pve_root_fp_count: >-
+          {{ _pve_all_entries | selectattr('filename', 'equalto', 'pve-root-ca.pem')
+             | selectattr('fingerprint', 'defined') | map(attribute='fingerprint')
+             | map('upper') | map('replace', ':', '') | unique | list | length }}
+        _pve_ca: >-
+          {{ {'pem': '', 'subject': '', 'issuer': '', 'fingerprint': '', 'notafter': ''}
+             | combine((_pve_all_entries | selectattr('filename', 'equalto', 'pve-root-ca.pem') | first
+                        | default({}, true)) | dict2items
+                       | selectattr('key', 'in', ['pem', 'subject', 'issuer', 'fingerprint', 'notafter'])
+                       | items2dict) }}
+      no_log: true
+
+    # The entry the pinned connection presented: any entry on any online node whose fingerprint is the pin. The
+    # pattern normalises colons and case. Exactly one entry may match; its node and file name are kept as scalars.
+    - name: "Find the entries that match the pinned leaf across every online node (no_log: derived from the responses)"
+      ansible.builtin.set_fact:
+        _pve_served_list: >-
+          {{ _pve_all_entries | selectattr('fingerprint', 'defined')
+             | selectattr('fingerprint', 'match', _pve_pin_pattern) | list }}
+      no_log: true
+
+    - name: "Keep the one matching entry's node, file name and issuer (no_log; scalars only)"
+      ansible.builtin.set_fact:
+        _pve_served_count: "{{ _pve_served_list | length }}"
+        _pve_served_entry: >-
+          {{ {'node': '', 'filename': '', 'issuer': ''}
+             | combine((_pve_served_list | first | default({}, true)) | dict2items
+                       | selectattr('key', 'in', ['node', 'filename', 'issuer']) | items2dict) }}
+      no_log: true
+
+    - name: "Take the serving node's pve-ssl.pem issuer (no_log; a scalar)"
+      ansible.builtin.set_fact:
+        _pve_served_node_issuer: >-
+          {{ _pve_all_entries | selectattr('node', 'equalto', _pve_served_entry.node)
+             | selectattr('filename', 'equalto', 'pve-ssl.pem') | map(attribute='issuer')
+             | first | default('', true) }}
+      no_log: true
+
+    # ── Checks, then the one visible output ──────────────────────────────────────────────────────────────
+
+    - name: "Require an online node to return the cluster root CA"
+      ansible.builtin.assert:
+        that:
+          - _pve_root_count | int > 0
+        fail_msg: >-
+          No online node returned pve-root-ca.pem. Nothing was printed.
+
+    - name: "Require the nodes to agree on the cluster root CA"
+      ansible.builtin.assert:
+        that:
+          - _pve_root_fp_count | int <= 1
+        fail_msg: >-
+          The nodes disagree on the cluster root CA: {{ _pve_root_fp_count }} different copies of pve-root-ca.pem
+          were returned. Nothing was printed.
 
     - name: "Require the root CA in the response, as a public certificate"
       ansible.builtin.assert:
@@ -267,65 +349,44 @@
           The root CA is not self-signed: its subject differs from its issuer. This play prints only a
           self-signed root, so nothing was printed.
 
-    - name: "Require the node certificate to be issued by that root CA"
+    - name: "Require the pinned leaf to be listed by exactly one certificate entry across the online nodes"
       ansible.builtin.assert:
         that:
-          - _pve_node_issuer | length > 0
-          - _pve_node_issuer == _pve_ca.subject
+          - _pve_served_count | int == 1
         fail_msg: >-
-          The node's pve-ssl.pem entry is absent, or it was not issued by the root CA. The root CA was not printed.
+          {{ 'No online node lists the pinned leaf certificate, so the certificate the pinned connection presented cannot be tied to the root CA.'
+             if (_pve_served_count | int == 0)
+             else 'More than one certificate entry across the online nodes matches the pin; exactly one is required.' }}
+          Nothing was printed.
 
-    # The certificate the pinned connection presented, found by its fingerprint and not by its file name: the first
-    # entry whose fingerprint is the observed leaf digest, both sides normalised (colons out, upper case). One
-    # certificate has one issuer, so the first match carries the issuer of every match. No_log: derived from the response.
-    - name: "Find the entry the pinned connection served, by fingerprint (no_log: derived from the response)"
-      ansible.builtin.set_fact:
-        _pve_served_name: >-
-          {%- set ns = namespace(found=false, name='') -%}
-          {%- for e in (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])) -%}
-          {%- if not ns.found and ((e.fingerprint | default('', true) | upper | replace(':', '')) == (_observed_leaf.stdout | trim | upper | replace(':', ''))) -%}
-          {%- set ns.found = true -%}
-          {%- set ns.name = e.filename | default('', true) -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.name }}
-        _pve_served_issuer: >-
-          {%- set ns = namespace(found=false, issuer='') -%}
-          {%- for e in (((_pve_certs.stdout | default('{}', true)) | from_json).data | default([])) -%}
-          {%- if not ns.found and ((e.fingerprint | default('', true) | upper | replace(':', '')) == (_observed_leaf.stdout | trim | upper | replace(':', ''))) -%}
-          {%- set ns.found = true -%}
-          {%- set ns.issuer = e.issuer | default('', true) -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.issuer }}
-      no_log: true
-
-    - name: "Require the pinned connection's certificate to be one the response names"
+    - name: "Require the serving node's pve-ssl.pem to be issued by the root CA"
       ansible.builtin.assert:
         that:
-          - _pve_served_name | length > 0
+          - _pve_served_node_issuer | length > 0
+          - _pve_served_node_issuer == _pve_ca.subject
         fail_msg: >-
-          No certificate entry on the node is the one the pinned connection presented, so it cannot be tied to the
-          root CA. Nothing was printed.
+          The pve-ssl.pem entry of node {{ _pve_served_entry.node }} is absent, or it was not issued by the root CA.
+          The root CA was not printed.
 
     - name: "Require the certificate the pinned connection served to be issued by the root CA"
       ansible.builtin.assert:
         that:
-          - _pve_served_issuer == _pve_ca.subject
+          - _pve_served_entry.issuer == _pve_ca.subject
         fail_msg: >-
-          The served API certificate ({{ _pve_served_name }}) is not issued by the cluster root CA: a custom or ACME
-          certificate? The printed CA would not validate the console's calls. Nothing was printed.
+          The served API certificate ({{ _pve_served_entry.filename }}) on node {{ _pve_served_entry.node }} is not
+          issued by the cluster root CA: a custom or ACME certificate? The printed CA would not validate the console's
+          calls. Nothing was printed.
 
     # The one visible output. Public certificate, derived strings only; nothing from the responses.
     - name: "Print the root CA (public certificate and its identity)"
       ansible.builtin.debug:
         msg: |-
-          Proxmox cluster root CA, read from node {{ _pve_node }}.
+          Proxmox cluster root CA, read from {{ _pve_online_nodes | length }} online nodes, which agree on it.
           subject: {{ _pve_ca.subject }}
           sha256 fingerprint: {{ _pve_ca.fingerprint }}
           notafter (epoch seconds): {{ _pve_ca.notafter }}
           The API leaf matched the pin, SHA-256 {{ _observed_leaf.stdout | trim }}.
-          The pinned connection served {{ _pve_served_name }}, issued by this root CA.
+          The pinned connection served {{ _pve_served_entry.filename }} on node {{ _pve_served_entry.node }}, issued by this root CA.
           Cross-check the root CA from an independent vantage before pinning (see the playbook header).
           PEM, to pin as console_proxmox_ca_pem (paste between double quotes):
           {{ _pve_ca.pem | trim }}
