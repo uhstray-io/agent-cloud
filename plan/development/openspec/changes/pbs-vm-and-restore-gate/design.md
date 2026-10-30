@@ -251,6 +251,8 @@ from `BAO_ROLE_ID`/`BAO_SECRET_ID`. Operator decision 2026-10-30: give the five 
 isolated environments through the same reviewed provisioner. Neither the guard nor the shared
 environment changes. `test_restore_guard_environment.py` now requires every template that
 reaches the preflight to declare one.
+The `main`-bound copies need the same environments (`seed_variant=main`) before `dev` is
+promoted, because promotion brings them the guard.
 
 ## Risks / Trade-offs
 

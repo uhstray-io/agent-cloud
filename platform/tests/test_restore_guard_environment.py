@@ -19,20 +19,29 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform" / "playbooks"
 TEMPLATES = REPO / "platform" / "semaphore" / "templates.yml"
 GUARDED = re.compile(r"(guard|preflight)-o11y-restore-target(-inputs)?\.yml")
-IMPORT = re.compile(r"import_playbook:\s*([\w./-]+\.yml)")
+# import_playbook, include_tasks and import_tasks, in the short form or under `file:`.
+IMPORT = re.compile(r"(?:import_playbook|include_tasks|import_tasks):\s*(?:\n\s*file:\s*)?['\"]?([\w./-]+\.yml)")
+
+
+def _resolve(name, including):
+    """Ansible looks beside the including file, then in the playbook directory."""
+    for base in (including.parent, PLAYBOOKS, PLAYBOOKS / "tasks"):
+        if (base / name).is_file():
+            return base / name
+    return None
 
 
 def runs_restore_preflight(path, seen=None):
-    """True when the playbook, or a playbook it imports, includes the preflight or the guard."""
+    """True when the playbook, or anything it imports or includes, reaches the preflight or guard."""
     seen = seen if seen is not None else set()
-    if path in seen or not path.is_file():
+    if path is None or path in seen or not path.is_file():
         return False
     seen.add(path)
     text = path.read_text()
     # A playbook named for the preflight is the protected workflow itself.
     if GUARDED.search(text) or GUARDED.fullmatch(path.name):
         return True
-    return any(runs_restore_preflight(path.parent / name, seen) for name in IMPORT.findall(text))
+    return any(runs_restore_preflight(_resolve(name, path), seen) for name in IMPORT.findall(text))
 
 
 def guarded_templates():
@@ -53,9 +62,14 @@ def test_every_template_running_the_restore_preflight_declares_an_isolated_envir
         "Seed Environment (Dev) for each:\n" + "\n".join(missing))
 
 
-def test_the_detector_follows_imports_and_ignores_unguarded_playbooks(tmp_path):
+def test_the_detector_follows_imports_and_includes_and_ignores_unguarded_playbooks(tmp_path):
     (tmp_path / "inner.yml").write_text("- ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml\n")
     (tmp_path / "outer.yml").write_text("- ansible.builtin.import_playbook: inner.yml\n")
     (tmp_path / "plain.yml").write_text("- ansible.builtin.import_playbook: refuse-internal-extra-vars.yml\n")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "wrapped.yml").write_text("- ansible.builtin.include_tasks: guard-o11y-restore-target.yml\n")
+    (tmp_path / "via_tasks.yml").write_text(
+        "- hosts: localhost\n  tasks:\n    - ansible.builtin.include_tasks:\n        file: tasks/wrapped.yml\n")
     assert runs_restore_preflight(tmp_path / "outer.yml")
+    assert runs_restore_preflight(tmp_path / "via_tasks.yml")
     assert not runs_restore_preflight(tmp_path / "plain.yml")
