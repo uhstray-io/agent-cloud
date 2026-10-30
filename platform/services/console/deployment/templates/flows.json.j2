@@ -7,7 +7,7 @@
     "reverse_proxy host:8000 {" has a space in it and is never a site. Do NOT edit by hand. -#}
 {%- set edges = [] -%}
 {%- for app in _console_authentik_apps -%}
-{%- set _ = edges.append({'kind': _console_authentik_catalog.get(app, {}).get('type', 'unknown'), 'from': app, 'to': 'authentik'}) -%}
+{%- set _ = edges.append({'kind': _console_authentik_catalog.get(app, {}).get('type', 'unknown'), 'from': app, 'to': 'authentik', 'label': 'signs in through authentik'}) -%}
 {%- endfor -%}
 {%- set hosts = [] -%}
 {%- for site_line in _console_caddy_sites | regex_findall('^[ \t]*([^ \t\n{#][^\n{]*?)[ \t]*[{]', multiline=True) -%}
@@ -20,12 +20,14 @@
 {%- endfor -%}
 {%- endfor -%}
 {%- for host in hosts | unique -%}
-{%- set _ = edges.append({'kind': 'edge', 'from': 'caddy', 'to': host}) -%}
+{%- set _ = edges.append({'kind': 'edge', 'from': 'caddy', 'to': host, 'label': 'routed by caddy'}) -%}
 {%- endfor -%}
 {%- for target in _console_o11y_targets -%}
 {%- set _name = target.get('service') or target.get('job') or '' -%}
 {%- if _name | string | length > 0 -%}
-{%- set _ = edges.append({'kind': 'metrics', 'from': _name | string, 'to': 'o11y'}) -%}
+{%- set _ = edges.append({'kind': 'metrics', 'from': _name | string, 'to': 'o11y', 'label': 'scraped by o11y'}) -%}
 {%- endif -%}
 {%- endfor -%}
-{{ {'edges': edges} | to_nice_json }}
+{#- A bare array of {kind, from, to, label}: the server's Flow type (app/src/server/inventory.rs) refuses any
+    other shape or key at startup. test_console_phase3_creds.py checks the two against each other. -#}
+{{ edges | to_nice_json }}

@@ -956,7 +956,7 @@ def test_flows_render_names_only_with_no_address_and_no_port(tmp_path):
     out = _render(tmp_path, CONSOLE / "templates/flows.json.j2", _flow_variables())
     assert IPV4.search(out) is None, out
     assert PORT.search(out) is None, out
-    edges = json.loads(out)["edges"]
+    edges = json.loads(out)
     assert {(e["from"], e["to"]) for e in edges if e["kind"] == "edge"} == {
         ("caddy", "inference.example.test"), ("caddy", "console.example.test")}
     assert {(e["from"], e["to"]) for e in edges if e["kind"] == "metrics"} == {
@@ -965,7 +965,7 @@ def test_flows_render_names_only_with_no_address_and_no_port(tmp_path):
 
 @NEEDS_ANSIBLE
 def test_flow_kinds_follow_the_catalog_type(tmp_path):
-    edges = json.loads(_render(tmp_path, CONSOLE / "templates/flows.json.j2", _flow_variables()))["edges"]
+    edges = json.loads(_render(tmp_path, CONSOLE / "templates/flows.json.j2", _flow_variables()))
     kinds = {e["from"]: e["kind"] for e in edges if e["to"] == "authentik"}
     catalog = yaml.safe_load(CATALOG.read_text())["authentik_app_catalog"]
     assert kinds["console"] == "oidc" and catalog["console"]["type"] == "oidc"
@@ -977,7 +977,7 @@ def test_flow_kinds_follow_the_catalog_type(tmp_path):
 def test_missing_sources_give_no_edges_of_that_kind_not_an_error(tmp_path):
     variables = {"_console_authentik_catalog": {}, "_console_authentik_apps": [],
                  "_console_caddy_sites": "", "_console_o11y_targets": []}
-    edges = json.loads(_render(tmp_path, CONSOLE / "templates/flows.json.j2", variables))["edges"]
+    edges = json.loads(_render(tmp_path, CONSOLE / "templates/flows.json.j2", variables))
     assert edges == []
 
 
@@ -987,7 +987,7 @@ def _caddy_hosts(tmp_path: Path, caddy: str) -> list[str]:
                  "_console_caddy_sites": caddy, "_console_o11y_targets": []}
     out = _render(tmp_path, CONSOLE / "templates/flows.json.j2", variables)
     assert IPV4.search(out) is None and PORT.search(out) is None, out
-    edges = json.loads(out)["edges"]
+    edges = json.loads(out)
     assert all(e["from"] == "caddy" for e in edges), edges
     return [e["to"] for e in edges]
 
@@ -1053,3 +1053,27 @@ def test_inventory_placeholders_carry_no_real_address():
         assert lines, path
         for ln in lines:
             assert IPV4.search(ln) is None, (path.name, ln)
+
+
+def _flow_struct_fields() -> list[str]:
+    """The field names of the server's Flow type, read from its source (app/src/server/inventory.rs)."""
+    src = (CONSOLE.parent / "app/src/server/inventory.rs").read_text()
+    body = re.search(r"pub struct Flow \{(.*?)\n\}", src, re.S)
+    assert body, "Flow struct not found in inventory.rs"
+    return re.findall(r"pub (\w+):", body.group(1))
+
+
+def test_rendered_flows_match_the_servers_flow_type(tmp_path):
+    # Production deploy 2026-10-30 (Semaphore task 10457) crash-looped the console: this template rendered
+    # {"edges": [...]} without labels, the server parses a bare Vec<Flow> with deny_unknown_fields. Each side's
+    # own tests passed; this test checks one against the other.
+    src = (CONSOLE.parent / "app/src/server/inventory.rs").read_text()
+    assert "#[serde(deny_unknown_fields)]\npub struct Flow {" in src
+    assert "serde_json::from_str(&text)" in src and "Result<Vec<Flow>, String>" in src
+    fields = _flow_struct_fields()
+    assert fields == ["kind", "from", "to", "label"], fields
+    flows = json.loads(_render(tmp_path, CONSOLE / "templates/flows.json.j2", _flow_variables()))
+    assert isinstance(flows, list) and flows, flows
+    for flow in flows:
+        assert sorted(flow) == sorted(fields), flow
+        assert all(isinstance(flow[k], str) and flow[k] for k in fields), flow
