@@ -326,12 +326,26 @@ def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_a
     malformed_prometheus = json.loads(json.dumps(prometheus))
     malformed_prometheus["evidence"]["scrape_body_size_bytes"] = {"status": "observed", "value": 0}
     assert BUDGET.o11y_availability_source_coverage(malformed_prometheus)["status"] == "unavailable"
+    bool_self_up = json.loads(json.dumps(prometheus))
+    bool_self_up["evidence"]["alloy_self"]["up"] = True
+    float_self_up = json.loads(json.dumps(prometheus))
+    float_self_up["evidence"]["alloy_self"]["up"] = 1.0
+    for malformed in (bool_self_up, float_self_up):
+        assert BUDGET.o11y_availability_source_gate_diagnostic({
+            "rc": 0, "stdout": json.dumps(malformed), "stderr": "",
+        }) == "source_readback_unavailable"
 
     native_intended_but_prom_current = json.loads(json.dumps(prometheus))
     native_intended_but_prom_current.update(intended_source="alloy", matches_intended=False)
     projected = BUDGET.o11y_availability_source_coverage(native_intended_but_prom_current)
     assert projected["status"] == "observed" and projected["source"] == "prometheus"
     assert projected["matches_intended"] is False
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": json.dumps(native_intended_but_prom_current), "stderr": "",
+    }) == "producer_mismatch"
+    inconsistent_source_match = json.loads(json.dumps(native_intended_but_prom_current))
+    inconsistent_source_match["matches_intended"] = True
+    assert BUDGET.o11y_availability_source_coverage(inconsistent_source_match)["status"] == "unavailable"
     missing_native = {
         "status": "unavailable", "reason": "native_source_unavailable", "source": "unknown",
         "intended_source": "unknown", "matches_intended": False,
@@ -341,7 +355,7 @@ def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_a
     }
 
     limits = {
-        "body_size_limit": 16_777_216, "sample_limit": 64, "label_limit": 64,
+        "body_size_limit": 16_777_216, "sample_limit": 1000, "label_limit": 64,
         "label_name_length_limit": 128, "label_value_length_limit": 2048,
     }
     native = {
@@ -376,6 +390,27 @@ def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_a
         "sample_count": 1, "probe_failed_count": 1, "scrape_failed_count": 0,
         "body_counter": "observed_positive",
     }
+
+    malformed_native = []
+    unknown_loaded_limit = json.loads(json.dumps(native))
+    unknown_loaded_limit["evidence"]["detail"]["alloy_self"]["limits"]["unknown"] = "SENTINEL"
+    malformed_native.append(unknown_loaded_limit)
+    oversized_loaded_limit = json.loads(json.dumps(native))
+    oversized_loaded_limit["evidence"]["detail"]["targets"][0]["limits"]["sample_limit"] = 100_001
+    malformed_native.append(oversized_loaded_limit)
+    bool_probe_success = json.loads(json.dumps(native))
+    bool_probe_success["evidence"]["samples"]["targets"][0]["probe_success"] = True
+    malformed_native.append(bool_probe_success)
+    bool_http_status = json.loads(json.dumps(native))
+    bool_http_status["evidence"]["samples"]["targets"][0]["probe_http_status_code"] = True
+    malformed_native.append(bool_http_status)
+    nonfinite_duration = json.loads(json.dumps(native))
+    nonfinite_duration["evidence"]["samples"]["targets"][0]["probe_duration_seconds"] = "Infinity"
+    malformed_native.append(nonfinite_duration)
+    for malformed in malformed_native:
+        assert BUDGET.o11y_availability_source_gate_diagnostic({
+            "rc": 0, "stdout": json.dumps(malformed), "stderr": "",
+        }) == "source_readback_unavailable"
 
 
 def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_results():
@@ -429,7 +464,7 @@ def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_r
 
 def test_availability_source_gate_diagnostic_accepts_native_self_only_readback():
     limits = {
-        "body_size_limit": 1024, "sample_limit": 64, "label_limit": 16,
+        "body_size_limit": 2048, "sample_limit": 1000, "label_limit": 16,
         "label_name_length_limit": 64, "label_value_length_limit": 256,
     }
     self_only = {
@@ -455,6 +490,27 @@ def test_availability_source_gate_diagnostic_accepts_native_self_only_readback()
     assert BUDGET.o11y_availability_source_gate_diagnostic({
         "rc": 0, "stdout": json.dumps(self_only), "stderr": "",
     }) == "producer_observed"
+
+    malformed = []
+    for freshness in (float("nan"), float("inf"), {"untrusted": "SENTINEL"}):
+        candidate = json.loads(json.dumps(self_only))
+        candidate["evidence"]["samples"]["freshness_seconds"] = freshness
+        malformed.append(candidate)
+    unknown_limit = json.loads(json.dumps(self_only))
+    unknown_limit["evidence"]["detail"]["alloy_self"]["limits"]["unknown"] = "SENTINEL"
+    malformed.append(unknown_limit)
+    bool_limit = json.loads(json.dumps(self_only))
+    bool_limit["evidence"]["detail"]["alloy_self"]["limits"]["sample_limit"] = True
+    malformed.append(bool_limit)
+    for candidate in malformed:
+        assert BUDGET.o11y_availability_source_gate_diagnostic({
+            "rc": 0, "stdout": json.dumps(candidate), "stderr": "",
+        }) == "source_readback_unavailable"
+
+    overflow = json.dumps(self_only).replace('"freshness_seconds": 300', '"freshness_seconds": 1e10000')
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": overflow, "stderr": "",
+    }) == "source_readback_unavailable"
 
 
 def test_availability_source_gate_diagnostic_consumes_real_helper_refusal_contract():

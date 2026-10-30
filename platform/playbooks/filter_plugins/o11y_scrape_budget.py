@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import yaml
@@ -51,6 +52,10 @@ LOADED_LIMIT_FIELDS = {
     "label_limit": ("label_limit", 640),
     "label_name_length_limit": ("label_name_length_limit", 1_280),
     "label_value_length_limit": ("label_value_length_limit", 20_480),
+}
+NATIVE_HEALTH_SAMPLE_LIMITS = {
+    "scrape_samples_scraped": "sample_limit",
+    "scrape_body_size_bytes": "body_size_limit",
 }
 PUBLIC_JOB_ALIASES = {
     "prometheus": "prometheus",
@@ -552,6 +557,27 @@ def o11y_source_scrape_limit_coverage(
         return _loaded_unavailable("source_readback_unavailable")
 
 
+def _valid_availability_limits(value: Any) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) == set(LOADED_LIMIT_FIELDS)
+        and all(_integer(value[field], maximum) for field, (_config_field, maximum) in LOADED_LIMIT_FIELDS.items())
+    )
+
+
+def _valid_native_duration(value: Any) -> bool:
+    if (
+        not isinstance(value, str) or len(value) > 32
+        or not re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?", value)
+    ):
+        return False
+    try:
+        duration = Decimal(value)
+    except InvalidOperation:
+        return False
+    return duration.is_finite() and Decimal(0) <= duration <= Decimal(10)
+
+
 def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = False) -> dict[str, Any]:
     """Consume the source-specific availability evidence without returning private labels."""
     reasons = {
@@ -581,6 +607,7 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
         or readback.get("source") not in {"prometheus", "alloy"}
         or readback.get("intended_source") not in {"prometheus", "alloy"}
         or not isinstance(readback.get("matches_intended"), bool)
+        or readback["matches_intended"] is not (readback["source"] == readback["intended_source"])
         or (
             "container_identity_sha256" in readback
             and (not isinstance(readback.get("container_identity_sha256"), str)
@@ -603,7 +630,9 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
             or evidence.get("status") != "observed" or evidence.get("source") != "prometheus"
             or not isinstance(evidence.get("alloy_self"), Mapping)
             or set(evidence["alloy_self"]) != {"up", "scrape_samples_scraped"}
-            or evidence["alloy_self"].get("up") != 1
+            or isinstance(evidence["alloy_self"].get("up"), bool)
+            or not isinstance(evidence["alloy_self"].get("up"), int)
+            or evidence["alloy_self"]["up"] != 1
             or isinstance(evidence["alloy_self"].get("scrape_samples_scraped"), bool)
             or not isinstance(evidence["alloy_self"].get("scrape_samples_scraped"), int)
             or evidence["alloy_self"]["scrape_samples_scraped"] < 1
@@ -649,6 +678,9 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
         or set(samples) != {"status", "reason", "freshness_seconds", "alloy_self", "targets"}
         or detail.get("reason") != "fixed_native_components_loaded"
         or samples.get("reason") != "fresh_native_samples"
+        or isinstance(samples.get("freshness_seconds"), bool)
+        or not isinstance(samples.get("freshness_seconds"), int)
+        or not 60 <= samples["freshness_seconds"] <= 86400
         or not isinstance(detail.get("target_count"), int) or isinstance(detail.get("target_count"), bool)
         or not (detail["target_count"] == 0 if self_only else 1 <= detail["target_count"] <= 64)
         or not isinstance(detail.get("targets"), list) or len(detail["targets"]) != detail["target_count"]
@@ -658,14 +690,15 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
     loaded_self, sampled_self = detail.get("alloy_self"), samples.get("alloy_self")
     if (
         not isinstance(loaded_self, Mapping) or set(loaded_self) != {"status", "limits"}
-        or loaded_self.get("status") != "observed" or not isinstance(loaded_self.get("limits"), Mapping)
+        or loaded_self.get("status") != "observed" or not _valid_availability_limits(loaded_self.get("limits"))
         or not isinstance(sampled_self, Mapping)
         or set(sampled_self) != {"status", "scrape_up", "scrape_samples_scraped", "scrape_body_size_bytes"}
-        or sampled_self.get("status") != "observed" or sampled_self.get("scrape_up") != 1
+        or sampled_self.get("status") != "observed"
+        or isinstance(sampled_self.get("scrape_up"), bool) or sampled_self.get("scrape_up") != 1
         or any(
             isinstance(sampled_self.get(field), bool) or not isinstance(sampled_self.get(field), int)
-            or sampled_self[field] < 1
-            for field in ("scrape_samples_scraped", "scrape_body_size_bytes")
+            or not 1 <= sampled_self[field] <= loaded_self["limits"][limit_field]
+            for field, limit_field in NATIVE_HEALTH_SAMPLE_LIMITS.items()
         )
     ):
         return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
@@ -676,7 +709,8 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
             not isinstance(detail_row, Mapping) or set(detail_row) != {"target_id", "status", "probe_health", "limits"}
             or detail_row.get("status") != "observed" or detail_row.get("probe_health") not in {"up", "down", "unknown"}
             or not isinstance(detail_row.get("target_id"), str)
-            or not isinstance(detail_row.get("limits"), Mapping)
+            or not re.fullmatch(r"service:[A-Za-z0-9_.:/@-]{1,120}", detail_row["target_id"])
+            or not _valid_availability_limits(detail_row.get("limits"))
             or not isinstance(sample_row, Mapping) or sample_row.get("target_id") != detail_row["target_id"]
         ):
             return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
@@ -689,12 +723,22 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
                 "target_id", "status", "scrape_up", "probe_success", "probe_http_status_code",
                 "probe_duration_seconds", "scrape_samples_scraped", "scrape_body_size_bytes",
             }
-            and sample_row.get("scrape_up") == 1
-            and sample_row.get("probe_success") in {0, 1}
+            and isinstance(sample_row.get("scrape_up"), int)
+            and not isinstance(sample_row.get("scrape_up"), bool)
+            and sample_row["scrape_up"] == 1
+            and isinstance(sample_row.get("probe_success"), int)
+            and not isinstance(sample_row.get("probe_success"), bool)
+            and sample_row["probe_success"] in {0, 1}
+            and isinstance(sample_row.get("probe_http_status_code"), int)
+            and not isinstance(sample_row.get("probe_http_status_code"), bool)
+            and 0 <= sample_row["probe_http_status_code"] <= 599
+            and _valid_native_duration(sample_row.get("probe_duration_seconds"))
             and isinstance(sample_row.get("scrape_samples_scraped"), int)
-            and sample_row["scrape_samples_scraped"] > 0
+            and not isinstance(sample_row.get("scrape_samples_scraped"), bool)
+            and 1 <= sample_row["scrape_samples_scraped"] <= detail_row["limits"]["sample_limit"]
             and isinstance(sample_row.get("scrape_body_size_bytes"), int)
-            and sample_row["scrape_body_size_bytes"] > 0
+            and not isinstance(sample_row.get("scrape_body_size_bytes"), bool)
+            and 1 <= sample_row["scrape_body_size_bytes"] <= detail_row["limits"]["body_size_limit"]
         ):
             probe_failed += sample_row["probe_success"] == 0
         else:
@@ -730,7 +774,12 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
                 value[key] = item
             return value
 
-        readback = json.loads(stdout, object_pairs_hook=unique_object)
+        def reject_nonfinite(value: str) -> Any:
+            raise ValueError("non-finite JSON number")
+
+        readback = json.loads(
+            stdout, object_pairs_hook=unique_object, parse_float=Decimal, parse_constant=reject_nonfinite,
+        )
         coverage = o11y_availability_source_coverage(readback, allow_self_only=True)
         if rc == 0 and coverage.get("status") == "observed":
             return "producer_observed" if coverage.get("matches_intended") is True else "producer_mismatch"
