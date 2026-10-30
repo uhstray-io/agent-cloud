@@ -3,7 +3,7 @@
 # everything else — "are you allowed to do this?"). Policies are Rego under
 # ./policies, mounted read-only (policy-as-code). Phase 1: unauthenticated
 # internal decision API (it returns decisions, not secrets). deploy.sh is
-# container-lifecycle only. Plan: plan/development/OPA-INTEGRATION-PLAN.md.
+# container-lifecycle only. Plan: plan/development/03-guardrails-governance.md (OPA section).
 name: opa
 
 services:
