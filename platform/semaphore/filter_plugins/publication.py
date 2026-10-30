@@ -32,6 +32,48 @@ def publication_settings(record):
             if key not in {"survey_vars", "last_task", "tasks", "permissions"}}
 
 
+def survey_enum_option_problems(templates):
+    """Return schema errors for enum choices in the templates being published.
+
+    Semaphore's SurveyVar.Values field is []SurveyVarEnumValue, whose JSON object
+    has string `name` and `value` fields. Refuse malformed declarations before
+    resolving credentials or sending any request; silently coercing strings here
+    would hide a broken catalog/API contract.
+    """
+    problems = []
+    if not isinstance(templates, list):
+        return ["selected template declarations are not a list"]
+
+    for template in templates:
+        if not isinstance(template, dict):
+            problems.append("selected template declaration is not an object")
+            continue
+        surveys = template.get("survey_vars", [])
+        template_name = template.get("_publish_name", template.get("name", "<unnamed>"))
+        if not isinstance(surveys, list):
+            problems.append(f"{template_name}: survey_vars is not a list")
+            continue
+        for survey in surveys:
+            if not isinstance(survey, dict):
+                problems.append(f"{template_name}: survey variable is not an object")
+                continue
+            if survey.get("type") != "enum":
+                continue
+            survey_name = survey.get("name", "<unnamed>")
+            values = survey.get("values")
+            if not isinstance(values, list) or not values:
+                problems.append(f"{template_name}.{survey_name}: enum values must be a nonempty list")
+                continue
+            for index, option in enumerate(values):
+                if (not isinstance(option, dict) or set(option) != {"name", "value"}
+                        or not isinstance(option.get("name"), str)
+                        or not isinstance(option.get("value"), str)):
+                    problems.append(
+                        f"{template_name}.{survey_name}: enum option {index} must have string name and value fields"
+                    )
+    return problems
+
+
 SEED_AUTH_INPUTS = ("BAO_ROLE_ID", "BAO_SECRET_ID")
 
 
@@ -94,4 +136,5 @@ def seed_environment_problems(environment, legacy_pin_ok=False):
 class FilterModule:
     def filters(self):
         return {"publication_matches": publication_matches, "publication_settings": publication_settings,
-                "seed_environment_problems": seed_environment_problems}
+                "seed_environment_problems": seed_environment_problems,
+                "survey_enum_option_problems": survey_enum_option_problems}
