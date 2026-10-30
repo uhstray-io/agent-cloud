@@ -10,7 +10,7 @@ services:
   opa:
     # -static = multi-arch (incl. arm64 for the podman-machine VM) distroless
     # build; the plain tag is amd64-only and crashes under emulation.
-    image: ${OPA_IMAGE:-openpolicyagent/opa:1.0.0-static}
+    image: ${OPA_IMAGE:-docker.io/openpolicyagent/opa:1.0.0-static}
     container_name: opa
     restart: always
     command:
