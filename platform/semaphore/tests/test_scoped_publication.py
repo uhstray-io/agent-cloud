@@ -502,6 +502,31 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.records[0]["environment_id"], 501)
         self.assertEqual(self.environments[1]["name"], "Postiz seed inputs")
 
+    def test_provisioner_main_variant_targets_explicit_dev_name_without_adding_suffix(self):
+        target_name = "Verify o11y Restore Coordination Capabilities (Dev)"
+        declaration = next(
+            row for row in yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+            if row["name"] == target_name
+        )
+        self.prepare_seed_template()
+        self.records[0].update(
+            name=target_name,
+            repository_id=5,
+            playbook=declaration["playbook"],
+            environment_id=42,
+            arguments="[]",
+        )
+        code, output = self.run_play(
+            provision=True,
+            seed_template=target_name,
+            seed_variant="main",
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records[0]["name"], target_name)
+        self.assertEqual(self.records[0]["repository_id"], 5)
+        self.assertEqual(self.environments[1]["name"], declaration["isolated_environment"])
+        self.assertEqual(self.records[0]["environment_id"], self.environments[1]["id"])
+
     def test_provisioner_leaves_a_clean_provisioned_environment_untouched(self):
         self.prepare_seed_template()
         secrets = [{"id": 700 + i, "name": name, "type": "env"}

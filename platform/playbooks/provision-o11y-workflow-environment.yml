@@ -1,0 +1,101 @@
+---
+# Dev-bound owner for the five protected PBS/restore templates. These catalog
+# rows already have explicit (Dev) names, so the shared provisioner's `main`
+# selection means “use this declared instance as-is”; it does not select the
+# production repository or append another suffix.
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Require the reviewed controller checkout"
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: "Validate the owned Dev workflow selection and destinations"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _o11y_workflow_targets:
+      - Verify o11y Restore Coordination Capabilities (Dev)
+      - Preflight o11y Restore Target (Dev)
+      - Provision PBS Debian Cloud Template (Dev)
+      - Attach PBS Data Disk (Dev)
+      - Provision PBS VM (Dev)
+    _o11y_workflow_declared:
+      >-
+      {{ (lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates.yml')
+          | from_yaml).templates }}
+    _o11y_workflow_selected:
+      >-
+      {{ _o11y_workflow_declared
+         | selectattr('name', 'equalto', o11y_workflow_target | default('')) | list }}
+    _o11y_workflow_bao_hosts: "{{ groups.get('openbao_svc', []) }}"
+    _o11y_workflow_bao_url:
+      >-
+      {{ hostvars[_o11y_workflow_bao_hosts[0]].service_url
+         if _o11y_workflow_bao_hosts | length == 1 else '' }}
+    _o11y_workflow_forbidden_overrides:
+      - seed_template
+      - seed_variant
+      - seed_replace_auth
+      - semaphore_dev_repo_name
+      - semaphore_url
+      - SEMAPHORE_URL
+      - service_url
+      - target_template
+      - workflow_target
+  tasks:
+    - name: "Require a parsed private service inventory"
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+
+    - name: "Refuse caller aliases that can change the fixed provisioner inputs"
+      ansible.builtin.assert:
+        that: >-
+          _o11y_workflow_forbidden_overrides
+          | intersect('' | extra_var_names) | length == 0
+        fail_msg: "The Dev workflow wrapper accepts only its declared survey fields; provisioner aliases are fixed internally."
+        quiet: true
+
+    - name: "Require one allowlisted explicit Dev catalog row"
+      ansible.builtin.assert:
+        that:
+          - o11y_workflow_target | default('') in _o11y_workflow_targets
+          - _o11y_workflow_selected | length == 1
+          - (_o11y_workflow_selected | first).repository == 'agent-cloud dev'
+          - not ((_o11y_workflow_selected | first).dev_variant | default(false) | bool)
+          - (_o11y_workflow_selected | first).name is match('^.+ \(Dev\)$')
+          - (_o11y_workflow_selected | first).isolated_environment | default('') | length > 0
+        fail_msg: "Select one allowlisted explicit Dev template with its declared isolated environment."
+        quiet: true
+
+    - name: "Require explicit current Semaphore bindings"
+      ansible.builtin.assert:
+        that:
+          - semaphore_project_id | default(0) | int > 0
+          - semaphore_inventory_id | default(0) | int > 0
+          - semaphore_source_environment_id | default(0) | int > 0
+        fail_msg: "Supply the reviewed project, inventory, and current source-environment IDs."
+        quiet: true
+
+    - name: "Require the sole private OpenBao inventory endpoint"
+      ansible.builtin.assert:
+        that:
+          - _o11y_workflow_bao_hosts | length == 1
+          - _o11y_workflow_bao_url is string
+          - _o11y_workflow_bao_url is match('^https?://[^/?#]+(?::[0-9]{1,5})?$')
+          - openbao_addr | default('') == _o11y_workflow_bao_url
+        fail_msg: "The private inventory must declare one OpenBao endpoint and openbao_addr must match it."
+        quiet: true
+
+    - name: "Validate OpenBao transport before credential use"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _o11y_workflow_bao_url }}"
+
+- name: "Provision one declared protected Dev workflow environment"
+  ansible.builtin.import_playbook: ../semaphore/provision-seed-environment.yml
+  vars:
+    _semaphore_url: "http://127.0.0.1:3000"
+    seed_template: "{{ o11y_workflow_target }}"
+    seed_variant: main
+    seed_replace_auth: false

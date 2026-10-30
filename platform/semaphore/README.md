@@ -386,6 +386,39 @@ reconciled rather than silently retried. Postiz provider credentials use
 `scripts/postiz-seed-input.py`, which shares the same lookup, preflight and lifecycle code
 (`scripts/semaphore_seed.py`, also the Semaphore client `scripts/semaphore-launch.py` uses).
 
+## Isolate protected o11y PBS workflow environments
+
+The five explicit Dev PBS/restore coordination templates also use dedicated
+`isolated_environment` declarations because their protected preflight refuses the
+controller credentials when they arrive as launch extra vars. Use **Provision o11y
+Workflow Environment (Dev)**, which pins an exact reviewed checkout, the controller's
+loopback API, the sole inventory `openbao_svc.service_url`, and the supplied project,
+inventory, and current source-environment IDs. It accepts only one of these templates:
+
+- `Verify o11y Restore Coordination Capabilities (Dev)`
+- `Preflight o11y Restore Target (Dev)`
+- `Provision PBS Debian Cloud Template (Dev)`
+- `Attach PBS Data Disk (Dev)`
+- `Provision PBS VM (Dev)`
+
+These rows already carry explicit `(Dev)` names and bind to `agent-cloud dev`. The
+wrapper passes the selected row to the shared provisioner using its `main` base-instance
+mode, which preserves that name and repository without generating another suffix. Run
+the wrapper once per target with the exact reviewed repository SHA and the verified
+project, inventory, and current shared source-environment IDs. It validates the existing
+source `openbao_addr` against the sole private inventory endpoint and uses the source
+environment's existing AppRole inputs in memory for this controller operation. It creates
+or reuses the target's own empty environment, stores only encrypted AppRole inputs, and
+binds only the selected template. The source environment and generic VM/shared templates
+remain intact.
+
+Converge the capability-verification template first, then rerun its read-only verifier.
+Only after that live capability receipt passes should the other four target environments
+be converged one at a time. Environment setup does not accept private declarations,
+effective role capabilities, target readiness, backup/restore evidence, or authorize VM,
+disk, retention, or deployment writes. Keep the protected extra-var refusal in each
+target playbook; do not repair the shared environment or pass credentials as survey data.
+
 ## Publish the local observability alert destination
 
 [`sync-local-o11y-alert-inventory.py`](../../scripts/sync-local-o11y-alert-inventory.py)

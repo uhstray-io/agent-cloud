@@ -1995,6 +1995,40 @@ templates:
         default_value: "false"
         required: false
 
+  - name: Provision o11y Workflow Environment (Dev)
+    playbook: platform/playbooks/provision-o11y-workflow-environment.yml
+    repository: agent-cloud dev
+    dev_variant: false
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Full commit approved for this controller change."
+        type: string
+        required: true
+      - name: o11y_workflow_target
+        title: "Owned Dev workflow"
+        description: "Select one of the five declared PBS restore coordination templates."
+        type: enum
+        required: true
+        values:
+          - Verify o11y Restore Coordination Capabilities (Dev)
+          - Preflight o11y Restore Target (Dev)
+          - Provision PBS Debian Cloud Template (Dev)
+          - Attach PBS Data Disk (Dev)
+          - Provision PBS VM (Dev)
+      - name: semaphore_project_id
+        title: "Verified project ID"
+        type: string
+        required: true
+      - name: semaphore_inventory_id
+        title: "Verified inventory ID"
+        type: string
+        required: true
+      - name: semaphore_source_environment_id
+        title: "Verified current source-environment ID"
+        type: string
+        required: true
+
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
     dev_variant: true
@@ -2378,6 +2412,8 @@ templates:
   - name: Provision PBS Debian Cloud Template (Dev)
     playbook: platform/playbooks/provision-pbs-debian-template.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS Debian template inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2466,6 +2502,8 @@ templates:
   - name: Attach PBS Data Disk (Dev)
     playbook: platform/playbooks/attach-pbs-data-disk.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS data-disk inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2548,6 +2586,8 @@ templates:
   - name: Preflight o11y Restore Target (Dev)
     playbook: platform/playbooks/preflight-o11y-restore-target.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: o11y restore-target inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2714,6 +2754,8 @@ templates:
   - name: Verify o11y Restore Coordination Capabilities (Dev)
     playbook: platform/playbooks/verify-o11y-restore-coordination-capabilities.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: o11y restore-capability inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -3209,6 +3251,8 @@ templates:
   - name: Provision PBS VM (Dev)
     playbook: platform/playbooks/provision-pbs-vm.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS VM inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
