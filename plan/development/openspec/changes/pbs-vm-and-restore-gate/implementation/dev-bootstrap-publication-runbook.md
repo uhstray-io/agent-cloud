@@ -185,8 +185,10 @@ Target (Dev)`, `Provision PBS Debian Cloud Template (Dev)`, `Attach PBS Data
 Disk (Dev)`, and `Provision PBS VM (Dev)`. The new **Provision o11y Workflow
 Environment (Dev)** controller entry accepts one of those explicit rows, an
 exact reviewed repository SHA, and verified project, inventory, and current
-source-environment IDs. It checks the exact checkout before API access, pins
-Semaphore to controller loopback, and requires the sole private
+source-environment IDs. Before running the command-bearing checkout verifier,
+the controller refuses any `ansible_` launch extra-var name; inventory-sourced
+execution context remains valid. The verifier checks the exact checkout before
+API access. The wrapper pins Semaphore to controller loopback and requires the sole private
 `openbao_svc.service_url` to match `openbao_addr` and pass transport validation.
 The wrapper uses the existing provisioner's `main` base-instance mode for these
 already-suffixed names; it preserves their `agent-cloud dev` binding without

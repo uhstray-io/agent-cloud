@@ -6,6 +6,24 @@
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
+- name: "Refuse controller execution-context extra vars"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _o11y_execution_context_overrides:
+      "{{ '' | extra_var_names | select('match', '^ansible_') | sort | list }}"
+  tasks:
+    - name: "Refuse Ansible execution-context overrides before running the checkout verifier"
+      ansible.builtin.assert:
+        that: _o11y_execution_context_overrides | length == 0
+        fail_msg: >-
+          Refusing controller execution-context extra vars by name only:
+          {{ _o11y_execution_context_overrides | join(', ') }}.
+          Put controller and connection settings in the inventory.
+        quiet: true
+
 - name: "Require the reviewed controller checkout"
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
 

@@ -395,6 +395,11 @@ Workflow Environment (Dev)**, which pins an exact reviewed checkout, the control
 loopback API, the sole inventory `openbao_svc.service_url`, and the supplied project,
 inventory, and current source-environment IDs. It accepts only one of these templates:
 
+Before its command-bearing checkout verifier runs, the wrapper refuses every
+`ansible_` extra-var name. Put controller and connection settings in inventory;
+inventory-sourced context remains valid. The existing bootstrap AppRole inputs
+and `openbao_addr` are checked through their separate inventory/transport gates.
+
 - `Verify o11y Restore Coordination Capabilities (Dev)`
 - `Preflight o11y Restore Target (Dev)`
 - `Provision PBS Debian Cloud Template (Dev)`

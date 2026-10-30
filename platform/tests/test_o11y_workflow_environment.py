@@ -210,14 +210,23 @@ def _reset_api():
     _SemaphoreAndBao.auth_values = {}
 
 
-def _run_wrapper(tmp_path: Path, checkout: Path, revision: str, *, extra=None, bao_url=None, check=False):
+def _catalog_with_repository_drift(rows):
+    next(row for row in rows if row["name"] == TARGET).update(repository="agent-cloud")
+
+
+def _catalog_with_generated_variant(rows):
+    next(row for row in rows if row["name"] == TARGET).update(dev_variant=True)
+
+
+def _run_wrapper(tmp_path: Path, checkout: Path, revision: str, *, extra=None, bao_url=None,
+                 openbao_addr=None, check=False):
     if bao_url is None:
         bao_url = "http://127.0.0.1:3000"
     inventory = tmp_path / "inventory.yml"
     inventory.write_text(yaml.safe_dump({
         "all": {
             "hosts": {"localhost": {"ansible_connection": "local"}},
-            "vars": {"openbao_addr": bao_url},
+            "vars": {"openbao_addr": openbao_addr or bao_url},
             "children": {"openbao_svc": {"hosts": {"openbao-test": {"service_url": bao_url}}}},
         }
     }))
@@ -272,6 +281,10 @@ def test_catalog_declares_only_the_five_explicit_dev_rows_and_wrapper_survey():
     assert not any("role" in field["name"].lower() or "secret" in field["name"].lower()
                    for field in wrapper["survey_vars"])
     entrypoint = yaml.safe_load(WRAPPER.read_text())
+    assert entrypoint[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    assert entrypoint[1]["name"] == "Refuse controller execution-context extra vars"
+    assert "^ansible_" in entrypoint[1]["vars"]["_o11y_execution_context_overrides"]
+    assert entrypoint[2]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
     provision = next(
         row for row in entrypoint
         if row.get("name") == "Provision one declared protected Dev workflow environment"
@@ -325,25 +338,84 @@ def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tm
         thread.join()
 
 
-@pytest.mark.parametrize("extra,bao_url,catalog_change", [
-    ({"o11y_workflow_target": "Provision VM (Dev)"}, None, None),
-    ({"seed_template": TARGET}, None, None),
-    ({"seed_variant": "dev"}, None, None),
-    ({"seed_replace_auth": True}, None, None),
-    ({PROJECT: 0}, None, None),
-    ({INVENTORY: 0}, None, None),
-    ({SOURCE: 0}, None, None),
-    ({PROJECT: 2}, None, None),
-    ({INVENTORY: 99}, None, None),
-    ({SOURCE: 99}, None, None),
-    ({SHA: "0" * 40}, None, None),
-    ({"semaphore_url": "http://127.0.0.1:3000"}, None, None),
-    ({"openbao_addr": "http://127.0.0.1:9"}, None, None),
-    ({}, "https://elsewhere.example.invalid", None),
-    ({}, None, lambda rows: next(row for row in rows if row["name"] == TARGET).update(repository="agent-cloud")),
-    ({}, None, lambda rows: next(row for row in rows if row["name"] == TARGET).update(dev_variant=True)),
+def test_execution_context_override_refuses_before_any_command_or_api(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SemaphoreAndBao)
+    server.daemon_threads = True
+    _reset_api()
+    api_origin = f"http://127.0.0.1:{server.server_port}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        checkout, revision = _fixture_checkout(tmp_path, api_origin=api_origin)
+        marker = tmp_path / "shell-used.marker"
+        shell_stub = tmp_path / "marker-shell"
+        shell_stub.write_text(
+            "#!/bin/sh\n"
+            f"printf 'called\\n' >> {str(marker)!r}\n"
+            "exec /bin/sh \"$@\"\n"
+        )
+        shell_stub.chmod(0o700)
+
+        probe = tmp_path / "probe.yml"
+        probe.write_text(yaml.safe_dump([{
+            "hosts": "localhost", "connection": "local", "gather_facts": False,
+            "tasks": [{"name": "Run harmless shell marker", "ansible.builtin.command": {"cmd": "true"},
+                       "changed_when": False}],
+        }], sort_keys=False))
+        probe_env = harness_sandbox.env_for(tmp_path)
+        probe_env.update(PYTHONDONTWRITEBYTECODE="1", ANSIBLE_STDOUT_CALLBACK="default")
+        probe_result = harness_sandbox.run([
+            shutil.which("ansible-playbook") or "ansible-playbook", "-i", "localhost,", str(probe),
+            "-e", json.dumps({"ansible_shell_executable": str(shell_stub)}),
+        ], tmp_path, cwd=REPO, env=probe_env)
+        assert probe_result.returncode == 0, probe_result.stdout + probe_result.stderr
+        assert marker.is_file()
+        marker.unlink()
+
+        result = _run_wrapper(
+            tmp_path, checkout, revision,
+            extra={"ansible_shell_executable": str(shell_stub)},
+            bao_url=api_origin,
+        )
+        assert result.returncode != 0
+        assert "Refusing controller execution-context extra vars by name only: ansible_shell_executable" in (
+            result.stdout + result.stderr
+        )
+        assert not marker.exists()
+        assert _SemaphoreAndBao.requests == []
+        assert _SemaphoreAndBao.writes == []
+        assert ROLE not in result.stdout + result.stderr
+        assert SECRET not in result.stdout + result.stderr
+        assert TOKEN not in result.stdout + result.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("extra,bao_url,openbao_addr,catalog_change,expected_message", [
+    ({"o11y_workflow_target": "Provision VM (Dev)"}, None, None, None, None),
+    ({"seed_template": TARGET}, None, None, None, None),
+    ({"seed_variant": "dev"}, None, None, None, None),
+    ({"seed_replace_auth": True}, None, None, None, None),
+    ({PROJECT: 0}, None, None, None, None),
+    ({INVENTORY: 0}, None, None, None, None),
+    ({SOURCE: 0}, None, None, None, None),
+    ({PROJECT: 2}, None, None, None, None),
+    ({INVENTORY: 99}, None, None, None, None),
+    ({SOURCE: 99}, None, None, None, None),
+    ({SHA: "0" * 40}, None, None, None, None),
+    ({"semaphore_url": "http://127.0.0.1:3000"}, None, None, None, None),
+    ({"openbao_addr": "http://127.0.0.1:9"}, None, None, None, None),
+    ({}, None, "https://elsewhere.example.invalid", None, "openbao_addr must match it"),
+    ({}, "http://example.invalid:8200", None, None,
+     "Refusing to send secret material to OpenBao at an invalid endpoint"),
+    ({}, None, None, _catalog_with_repository_drift, None),
+    ({}, None, None, _catalog_with_generated_variant, None),
 ])
-def test_invalid_scope_revision_endpoint_or_context_refuses_before_writes(tmp_path, extra, bao_url, catalog_change):
+def test_invalid_scope_revision_endpoint_or_context_refuses_before_writes(
+    tmp_path, extra, bao_url, openbao_addr, catalog_change, expected_message,
+):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SemaphoreAndBao)
     server.daemon_threads = True
     _reset_api()
@@ -355,8 +427,11 @@ def test_invalid_scope_revision_endpoint_or_context_refuses_before_writes(tmp_pa
     )
     try:
         result = _run_wrapper(tmp_path, checkout, revision, extra=extra,
-                              bao_url=bao_url or api_origin)
+                              bao_url=bao_url or api_origin, openbao_addr=openbao_addr)
         assert result.returncode != 0
+        if expected_message:
+            assert expected_message in result.stdout + result.stderr
+            assert _SemaphoreAndBao.requests == []
         assert _SemaphoreAndBao.writes == []
         assert ROLE not in result.stdout + result.stderr
         assert SECRET not in result.stdout + result.stderr
