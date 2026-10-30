@@ -25,7 +25,7 @@ setup() {
 
 @test "opa: prod default image is the multi-arch -static tag (arm64-safe), pinned" {
   # plain tag is amd64-only and crashes under emulation on the arm64 VM.
-  grep -qE '\$\{OPA_IMAGE:-openpolicyagent/opa:[0-9]+\.[0-9]+\.[0-9]+-static\}' "$DEPLOY_DIR/compose.yml"
+  grep -qE '\$\{OPA_IMAGE:-docker\.io/openpolicyagent/opa:[0-9]+\.[0-9]+\.[0-9]+-static\}' "$DEPLOY_DIR/compose.yml"
 }
 
 @test "opa: deploy.sh is executable, bash, sources common.sh, uses compose, no secrets" {

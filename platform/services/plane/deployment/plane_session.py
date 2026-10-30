@@ -6,7 +6,7 @@ document into `cfg` (base, host, origin), and provides:
 
   fail(message)            print one JSON {"error"} line, never a credential, and exit 1
   call(method, path, ...)  one request with Plane's CSRF and cookies handled; returns
-                           (status, Location, parsed JSON or None)
+                           (status, Location, parsed JSON or None). headers={...} adds to the defaults
   form_post(path, fields)  a form POST that Plane answers with a redirect (sign-up, sign-in)
 
 Cookies are kept by hand: with an https public URL Plane marks them Secure, and a cookie jar
@@ -39,8 +39,11 @@ opener = urllib.request.build_opener(NoRedirect)
 cookies = {}
 
 
-def call(method, path, data=None, form=False):
-    headers = {"Host": HOST, "Origin": ORIGIN, "Referer": ORIGIN + "/god-mode/"}
+def call(method, path, data=None, form=False, headers=None):
+    # Caller headers go in FIRST, so Host, Origin and Referer are always the defaults below: a caller
+    # adds headers (the /api/v1 X-Api-Key) but cannot replace those three. Cookie and X-CSRFToken come
+    # from the cookie jar and override any caller value once the jar holds them.
+    headers = {**(headers or {}), "Host": HOST, "Origin": ORIGIN, "Referer": ORIGIN + "/god-mode/"}
     if cookies:
         headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
     if "csrftoken" in cookies:

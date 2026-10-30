@@ -116,6 +116,16 @@ flowchart TD
         PVE["Proxmox VMs (EXTERNAL)"]
         VLLM["vLLM on DGX Spark (EXTERNAL)"]
     end
+    SKYNET ~~~ WISBOT
+    AGW ~~~ WEBSMITH
+    AGENTS ~~~ SIDE
+    CONSOLE ~~~ PLANE
+    HONCHO ~~~ POSTIZ
+    TUDUDI ~~~ ERP
+    UHH ~~~ OH
+    CADDY ~~~ NB
+    CA ~~~ O11Y
+    DNS ~~~ PVE
     AI --> GR --> AUTO --> PLAT
     APPS --> PLAT
     style PLANE stroke-dasharray: 5 5
@@ -370,22 +380,31 @@ connected yet: skynet has no production route and the WisAI-to-skynet migration 
 
 New and existing services move through one 23-step workflow, declared in a registry and executed
 step by step through Semaphore; light-blue reasoning steps are where the agent roles above propose
-[40][42]. The flowchart shows the 23 steps in registry order, with consecutive steps grouped under
-the purpose they share; each box lists its registry step ids.
+[40][42]. The flowchart shows the 23 steps in registry order, in two rows (steps 1-12, then 13-23),
+with consecutive steps grouped under the purpose they share; each box lists its registry step
+ids.
 
 ```mermaid
-flowchart LR
-    S1["1-5 Machine<br/>vm-template, lookup-inventory,<br/>validate-address, provision-vm,<br/>cloud-init"]
-    S2["6-8 Access<br/>ssh-keys, ssh-key-backup,<br/>access-harden"]
-    S3["9-10 Assess and size<br/>service-assess, vm-rightsize"]
-    S4["11 Secrets<br/>secrets-approle"]
-    S5["12 Host telemetry<br/>instrument-host"]
-    S6["13-14 Service<br/>service-deploy, service-validate"]
-    S7["15-16 Edge<br/>edge-route, edge-dns"]
-    S8["17-18 Firewall<br/>fw-assess, fw-harden"]
-    S9["19-20 Service telemetry and boot<br/>instrument-service,<br/>systemd-enablement"]
-    S10["21-23 Close-out<br/>access-assess, oidc-config,<br/>credential-backup"]
-    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10
+flowchart TB
+    subgraph R1["Steps 1-12"]
+        direction LR
+        S1["1-5 Machine<br/>vm-template, lookup-inventory,<br/>validate-address, provision-vm,<br/>cloud-init"]
+        S2["6-8 Access<br/>ssh-keys, ssh-key-backup,<br/>access-harden"]
+        S3["9-10 Assess and size<br/>service-assess, vm-rightsize"]
+        S4["11 Secrets<br/>secrets-approle"]
+        S5["12 Host telemetry<br/>instrument-host"]
+        S1 --> S2 --> S3 --> S4 --> S5
+    end
+    subgraph R2["Steps 13-23"]
+        direction LR
+        S6["13-14 Service<br/>service-deploy, service-validate"]
+        S7["15-16 Edge<br/>edge-route, edge-dns"]
+        S8["17-18 Firewall<br/>fw-assess, fw-harden"]
+        S9["19-20 Service telemetry and boot<br/>instrument-service,<br/>systemd-enablement"]
+        S10["21-23 Close-out<br/>access-assess, oidc-config,<br/>credential-backup"]
+        S6 --> S7 --> S8 --> S9 --> S10
+    end
+    R1 --> R2
 ```
 
 The collector, `Collect Service Conformance`, is the workflow's only status writer: it reads each

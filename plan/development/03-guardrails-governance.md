@@ -13,7 +13,7 @@
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
 **Date:** 2026-04-07
-**Status:** Production rollout in progress (2026-10-29): see "Production deployment" below.
+**Status:** Production DEPLOYED 2026-10-29 (own VM, step-ca server TLS, firewall-admitted callers); skynet's call path pending. See "Production deployment" below.
 Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
 local pattern (`platform/services/opa/deployment/`, `deploy-opa.yml`, `opa_svc`
 inventory group, "Deploy OPA (Local)" Semaphore template). Unauthenticated
@@ -886,7 +886,7 @@ graph TD
 
 ## Production deployment (2026-10-29)
 
-OPA runs on local-dev only until this lands. Its first production caller is skynet. skynet's deploy refuses an
+OPA ran on local-dev only until this landed on 2026-10-29. Its first production caller is skynet. skynet's deploy refuses an
 `skynet_opa_url` that is not `https://` (`deploy-skynet.yml`). The Dispatch Console's proposal path (plan 17,
 D29) waits on both OPA and skynet.
 
@@ -914,16 +914,16 @@ Each step runs through Semaphore, check mode first.
 
 1. [x] Capacity: `Validate Proxmox Cluster (Dev)`, task 10225. crabnebula has the most free memory. VMIDs 200–222 are taken, so the VM gets 223.
 2. [x] Address: `Allocate NetBox IP (Dev)`, reserve the declared address (task 10229; the address is in site-config). The reservation passed the live pfSense DHCP boundary check.
-3. [ ] site-config PR A declares host `opa`, group `opa_svc` (VM, bind, TLS variables, firewall) and the `vm-specs.yml` entry. It does not declare the leaf.
-4. [ ] This agent-cloud PR merged to `dev`. Publish `Deploy OPA (Dev)` and `Clean Deploy OPA (Dev)`, then sync the inventory (`platform/semaphore/sync-inventory.yml`).
-5. [ ] Lookup Service Inventory, then Validate Address Free (`target_service=opa`).
-6. [ ] Provision VM (`target_service=opa`). Then Distribute SSH Keys (`target_service=opa_svc`), Back Up Service SSH Key, Verify Host Access, and Harden SSH. The disk is declared at the template's 20G, so the root needs no grow.
-7. [ ] site-config PR B declares the `opa-server` leaf, after step 4 and step 6. Sync the inventory. Run `Deploy step-ca (Dev)` so the CA's name policy admits the SAN. Then run steps 8 and 9 without a pause: the daily renewal refuses a declared leaf it cannot prove, and it cannot prove this one until OPA serves it.
-8. [ ] Apply Firewall (`target_service=opa_svc`) BEFORE the first deploy, so 8281 is never open to the whole LAN. Port detection is off, so the rules do not depend on a running container.
-9. [ ] `Deploy OPA (Dev)` with `service_branch=dev`. This places the repository, issues the leaf, starts OPA and verifies it. Re-run it to confirm the deploy converges. Then Ensure Service Persistence, Verify Service Persistence and Snapshot Access.
-10. [ ] `Probe Reachability (Dev)`: from `console_svc`, 8281 open; from another LAN host group, 8281 closed.
-11. [ ] `Renew Internal Certs (Dev)` with `--tags verify`, which proves the served serial.
-12. [ ] skynet: add `skynet_svc` to `firewall_allow_groups`, re-run Apply Firewall, and point skynet at `https://opa.<dns_site>.<dns_zone>:8281`. skynet maps the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe.
+3. [x] site-config #126 declares host `opa`, group `opa_svc` (VM, bind, TLS variables, firewall) and the `vm-specs.yml` entry, without the leaf.
+4. [x] agent-cloud #778 merged to `dev`. `Deploy OPA (Dev)` and `Clean Deploy OPA (Dev)` published with the survey publisher's scoped create (tasks 10327, 10329). Inventory synced with `platform/semaphore/sync-inventory.yml`.
+5. [x] (Steps 5 and 6 ran before step 4's merge: they need only the synced inventory.) Lookup Service Inventory and Validate Address Free passed (tasks 10257, 10258). The address was not in ARP; NetBox VM record 52 was created as planned.
+6. [x] Provision VM (task 10261) ran from the `main`-bound template: the `(Dev)` Provision VM failed its o11y restore-target preflight (task 10259), because the production environment supplies `bao_role_id`, `bao_secret_id` and `openbao_addr` as extra vars and the preflight refuses them. Then Generate Service SSH Key (10270), Distribute SSH Keys (10273), Back Up Service SSH Key (10276, site-config #128), Verify Host Access (10279) plus an operator-side key-only login, and Harden SSH (10285). The disk is declared at the template's 20G, so the root needed no grow.
+7. [x] site-config #129 declares the `opa-server` leaf, merged after #778. Inventory synced, then `Deploy step-ca (Dev)` put the SAN in the CA's name policy (task 10331; root fingerprint unchanged).
+8. [x] Apply Firewall before the first deploy (task 10337): default-deny inbound; 8281 only from `console_svc` and `skynet_svc`. The first attempt (10336) hit the shared-inventory parse race and was rerun in a quiet window.
+9. [x] `Deploy OPA (Dev)` with `service_branch=dev` (task 10380): leaf issued on the host, HTTPS health verified against the step-ca bundle, sample allow and deny decisions correct, plain HTTP refused, `opa test` 101/101. The first attempt (10339) created no container: production podman refuses short image names. The fix is #780, and MISTAKES 2.31 records it. Re-run converges (10381): leaf kept, healthy. Ensure Service Persistence (10383), Verify Service Persistence (10385) and Snapshot Access (10386) passed.
+10. [x] `Probe Reachability (Dev)`: from `console_svc`, 8281 open (10387); from `dns_svc`, 8281 closed (10388).
+11. [ ] `Renew Internal Certs (Dev)`: a check-mode run (10389) admits the leaf as class `opa-server`, with 29 of 30 days left. The served-serial proof runs at its first renewal. The template offers no `--tags verify`, and a rotation drill would reissue every leaf on every host.
+12. [ ] skynet: its group is already admitted (site-config #127; applied by task 10337). Remaining: point skynet at `https://opa.<dns_site>.<dns_zone>:8281`, mapping the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe.
 
 **Known gaps:**
 - `Verify Service Health` is not declared for OPA. Its `uri` probe has no server-name override, and the name does not resolve on the OPA host. The deploy's own verify covers `/health`.
