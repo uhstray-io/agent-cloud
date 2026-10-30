@@ -56,8 +56,10 @@
     _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
     _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
     _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
-    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
-    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
+    # The orchestrator supplies the AppRole as the bao_role_id/bao_secret_id variables; the environment is the
+    # fallback for a workstation run (as provision-console-proxmox-token.yml does).
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
       'secret/data/services/proxmox',
       url=_bao_url, auth_method='approle',

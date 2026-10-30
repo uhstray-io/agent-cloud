@@ -804,3 +804,11 @@ def test_a_refused_certificate_read_is_named_by_exit_code_and_its_url_is_not_pri
             "pve-b: the API answered with a status other than 200") in out, out[-1500:]
     assert url not in out and "127.0.0.1" not in out, out[-1500:]
     assert SENT_PVE not in out and "PVEAPIToken" not in out
+
+
+def test_the_approle_comes_from_the_orchestrator_variables_before_the_environment():
+    # Production Semaphore supplies bao_role_id/bao_secret_id as variables; an environment-only read
+    # failed there with "missing role_id" (Semaphore task 10407, 2026-10-30).
+    play_vars = next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if isinstance(p, dict) and "vars" in p)["vars"]
+    assert play_vars["_bao_role_id"].startswith("{{ bao_role_id | default(")
+    assert play_vars["_bao_secret_id"].startswith("{{ bao_secret_id | default(")
