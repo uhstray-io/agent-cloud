@@ -277,7 +277,9 @@ def test_catalog_declares_only_the_five_explicit_dev_rows_and_wrapper_survey():
     assert [field["name"] for field in wrapper["survey_vars"]] == [
         SHA, "o11y_workflow_target", PROJECT, INVENTORY, SOURCE,
     ]
-    assert wrapper["survey_vars"][1]["values"] == names
+    assert wrapper["survey_vars"][1]["values"] == [
+        {"name": name, "value": name} for name in names
+    ]
     assert not any("role" in field["name"].lower() or "secret" in field["name"].lower()
                    for field in wrapper["survey_vars"])
     entrypoint = yaml.safe_load(WRAPPER.read_text())
