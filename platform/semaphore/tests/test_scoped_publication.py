@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "platform/tests"))
 from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
 
+sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
+from publication import survey_enum_option_problems  # noqa: E402
+
 NAME = "Store tududi API Token (Dev)"
 CONFORMANCE_NAME = "Collect Service Conformance (Dev)"
 TEMPLATE = {
@@ -240,6 +243,39 @@ class ScopedPublicationTests(unittest.TestCase):
         for secret in (self.access_value, self.login_value, env["BAO_SECRET_ID"]):
             self.assertNotIn(secret, output)
         return result.returncode, output
+
+    def test_catalog_enum_options_match_semaphore_api_objects_and_o11y_values(self):
+        catalog = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())
+        self.assertEqual(survey_enum_option_problems(catalog["templates"]), [])
+
+        wrapper = next(
+            template for template in catalog["templates"]
+            if template["name"] == "Provision o11y Workflow Environment (Dev)"
+        )
+        survey = next(row for row in wrapper["survey_vars"] if row["name"] == "o11y_workflow_target")
+        expected = [
+            "Verify o11y Restore Coordination Capabilities (Dev)",
+            "Preflight o11y Restore Target (Dev)",
+            "Provision PBS Debian Cloud Template (Dev)",
+            "Attach PBS Data Disk (Dev)",
+            "Provision PBS VM (Dev)",
+        ]
+        self.assertEqual([option["name"] for option in survey["values"]], expected)
+        self.assertEqual([option["value"] for option in survey["values"]], expected)
+
+    def test_malformed_selected_enum_refuses_before_any_api_request(self):
+        declaration = {
+            "name": NAME,
+            "repository": "agent-cloud dev",
+            "playbook": TEMPLATE["playbook"],
+            "survey_vars": [{"name": "target", "type": "enum", "values": ["wrong shape"]}],
+        }
+        code, output = self.run_play(selection=[NAME], _all_templates=[declaration])
+
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("enum option 0 must have string name and value fields", output)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.writes, [])
 
     def test_full_catalog_always_publishes_templates_and_upserts_schedules(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
@@ -501,6 +537,31 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.records[0]["environment_id"], 501)
         self.assertEqual(self.environments[1]["name"], "Postiz seed inputs")
+
+    def test_provisioner_main_variant_targets_explicit_dev_name_without_adding_suffix(self):
+        target_name = "Verify o11y Restore Coordination Capabilities (Dev)"
+        declaration = next(
+            row for row in yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+            if row["name"] == target_name
+        )
+        self.prepare_seed_template()
+        self.records[0].update(
+            name=target_name,
+            repository_id=5,
+            playbook=declaration["playbook"],
+            environment_id=42,
+            arguments="[]",
+        )
+        code, output = self.run_play(
+            provision=True,
+            seed_template=target_name,
+            seed_variant="main",
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records[0]["name"], target_name)
+        self.assertEqual(self.records[0]["repository_id"], 5)
+        self.assertEqual(self.environments[1]["name"], declaration["isolated_environment"])
+        self.assertEqual(self.records[0]["environment_id"], self.environments[1]["id"])
 
     def test_provisioner_leaves_a_clean_provisioned_environment_untouched(self):
         self.prepare_seed_template()
