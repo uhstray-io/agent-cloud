@@ -37,8 +37,9 @@ The project is named `plane` by `COMPOSE_PROJECT_NAME` in `.env`: Plane's file n
 project, and podman-compose ignores a `name:` set in an overlay.
 
 `compose.local.yml` joins the proxy and the API to the `local-dev` network (the API reaches
-Authentik through the local Caddy) and switches off `monitor`, the licence agent, which exits on
-a domain it cannot register with Plane's licence server. `compose.local-ca.yml`, which
+Authentik through the local Caddy). `monitor`, the licence agent, runs locally too: the API
+resolves feature flags and the seat check behind every invitation through it, so without it no
+one can be invited. `compose.local-ca.yml`, which
 `deploy.sh` applies LAST in local mode, gives the API the combined step-ca and public trust
 bundle (`REQUESTS_CA_BUNDLE`) and restates its full volume list: in `compose.local.yml` the
 mount would be replaced by `compose.agentcloud.yml`'s volume `!override`, because `common.sh`
@@ -102,7 +103,9 @@ every POST would fail Plane's CSRF check (a page it serves with status 200).
 address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automation_email`,
 `plane_company_name`, `plane_workspace_slug`, `plane_workspace_name`. Optional:
 `plane_version` (default `v3.3.3`); `plane_authentik_base` (the IdP's base URL) turns sign-in
-through Authentik on, and leaving it unset switches it OFF on the next deploy.
+through Authentik on, and leaving it unset switches it OFF on the next deploy. `plane_admin_role`
+(default `admin`) is the role `platform-admins` get from the member reconcile; local-dev sets
+`member`, because the Admin role is a plan feature (`WORKSPACE_ADMIN_ROLE`) the Free plan lacks.
 
 ## Operate
 
@@ -110,6 +113,7 @@ through Authentik on, and leaving it unset switches it OFF on the next deploy.
 |---|---|
 | Deploy or update | `Deploy Plane` (`Deploy Plane (Local)` locally) |
 | Destroy everything and redeploy | `Clean Deploy Plane` (`-e confirm_reset=<host>`) |
+| Invite and reconcile members from Authentik groups | `Reconcile Plane Members` (plan only; `-e apply=true` applies) |
 | Back up the database | `Back Up Plane DB` (pg_dump of `plane-db` to an owner-only dir on the VM) |
 | Restore a named dump | `Restore Plane DB` (`-e plane_dump_file=<path>`; staging first, prior database kept as `plane_prev`) |
 

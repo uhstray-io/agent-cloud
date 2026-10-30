@@ -7,7 +7,10 @@
 #          reads and never generates: Provision Console Semaphore Access (provision-console-semaphore-access.yml)
 #          creates it, and this play stops before any write when it is absent. The OIDC client secret
 #          is shared-read from authentik, which owns it. Template .env, config/scope.json and
-#          config/workflow.json (the service-onboarding registry's steps: id, order, owner, label).
+#          config/workflow.json (the service-onboarding registry's steps: id, order, owner, label),
+#          config/flows.json (the D24 edges, names only) and config/proxmox-ca.pem (always, empty when unset).
+#          Phase 3 (D22-D24) reads NetBox and Proxmox only when their URL vars are set, and refuses a
+#          netbox_site slug declared on two sites or a private key given as the Proxmox CA.
 # Phase 2: deploy.sh — builds the image on THIS host from platform/services/console (there is no
 #          registry), then container lifecycle (compose_up_if_changed, wait healthy).
 # Phase 3: Verify inside the container: `probe /healthz 200`, and an unauthenticated `/v1/me`
@@ -56,8 +59,17 @@
     # The OIDC client secret is owned by authentik (the IdP). Read it read-only so the console's
     # CONSOLE_OIDC_CLIENT_SECRET matches the value the console provider was created with. It is
     # never stored back under secret/services/console.
-    _shared_reads:
+    # Phase 3 reads (D22). Each is read only when its URL var is set: a deploy without them stays
+    # "unconfigured" and needs no token. A set URL with its token missing fails the shared read by name.
+    _console_oidc_reads:
       - { from_service: authentik, read_keys: [console_oidc_client_secret] }
+    _console_netbox_reads: >-
+      {{ [{'from_service': 'netbox', 'read_keys': ['console_api_token']}]
+         if (console_netbox_url | default('', true) | string | trim | length) > 0 else [] }}
+    _console_proxmox_reads: >-
+      {{ [{'from_service': 'proxmox', 'read_keys': ['console_token_id', 'console_token']}]
+         if (console_proxmox_url | default('', true) | string | trim | length) > 0 else [] }}
+    _shared_reads: "{{ _console_oidc_reads + _console_netbox_reads + _console_proxmox_reads }}"
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
       # Not secrets, so 0644. config/ is created below before manage-secrets templates into it.
@@ -65,6 +77,20 @@
       # The steps the console labels a skynet run with, rendered from the registry so the console never
       # keeps a second copy of the step list.
       - { src: workflow.json.j2, dest: config/workflow.json, mode: "0644" }
+      # The data-flow edges (D24), names only: from the authentik, caddy and o11y declarations below.
+      - { src: flows.json.j2, dest: config/flows.json, mode: "0644" }
+      # The Proxmox CA (public PEM from console_proxmox_ca_pem). Always rendered, empty when unset, so the
+      # compose bind mount always has a file; CONSOLE_PROXMOX_CA_FILE is set only when the PEM is set.
+      - { src: proxmox-ca.pem.j2, dest: config/proxmox-ca.pem, mode: "0644" }
+    # Flow inputs (D24). The authentik apps mirror deploy-authentik.yml: an undefined authentik_apps on the
+    # authentik host means the whole catalog, and an explicit [] is an empty selection. No authentik host
+    # means no oidc edges. Only names are read: never an address, never a port.
+    _console_authentik_catalog: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../services/authentik/deployment/app-catalog.yml') | from_yaml).authentik_app_catalog }}"
+    _console_authentik_apps: >-
+      {{ (hostvars[groups['authentik_svc'][0]].authentik_apps | default(_console_authentik_catalog.keys() | list))
+         if (groups['authentik_svc'] | default([]) | length > 0) else [] }}
+    _console_caddy_sites: "{{ (hostvars[groups['caddy_svc'][0]].caddy_managed_sites | default('', true) | string) if (groups['caddy_svc'] | default([]) | length > 0) else '' }}"
+    _console_o11y_targets: "{{ (hostvars[groups['o11y_svc'][0]].o11y_expected_metrics_targets | default([])) if (groups['o11y_svc'] | default([]) | length > 0) else [] }}"
     # The service-onboarding workflow registry: the one definition of the steps (read on the controller).
     _workflow_registry: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}"
     # The console_svc host vars a production console cannot run without. The guard task below checks them.
@@ -93,6 +119,65 @@
         quiet: true
       loop: "{{ _console_prod_required }}"
       when: not (local_mode | default(false) | bool)
+
+    # A netbox_site slug names one NetBox site. Two sites claiming it would join one site's NetBox
+    # clusters and VMs under another (D23: a wrong join shows another site's hosts), so refuse before
+    # anything is rendered or placed. A site without the key is "not mapped" and is not checked here. A
+    # site that declares the key must declare a non-empty string slug with no whitespace; anything else is a
+    # named error, never silently ignored.
+    - name: "Collect the sites that declare netbox_site across console_tenants"
+      ansible.builtin.set_fact:
+        _console_netbox_sites: >-
+          {{ console_tenants | default([]) | selectattr('orgs', 'defined') | map(attribute='orgs') | flatten
+             | selectattr('sites', 'defined') | map(attribute='sites') | flatten
+             | selectattr('netbox_site', 'defined') | list }}
+
+    - name: "Collect the netbox_site slugs declared across console_tenants"
+      ansible.builtin.set_fact:
+        _console_netbox_site_slugs: "{{ _console_netbox_sites | map(attribute='netbox_site') | list }}"
+
+    - name: "Refuse an empty or null netbox_site"
+      ansible.builtin.assert:
+        that: item.netbox_site is not none and (item.netbox_site | string | trim | length) > 0
+        fail_msg: "netbox_site is empty on site '{{ item.id | default('?') }}' (null or blank). Give it a NetBox site slug, or remove the key."
+        quiet: true
+      loop: "{{ _console_netbox_sites }}"
+
+    - name: "Refuse a netbox_site that is not a string"
+      ansible.builtin.assert:
+        that: item.netbox_site is string
+        fail_msg: "netbox_site on site '{{ item.id | default('?') }}' must be a string slug."
+        quiet: true
+      loop: "{{ _console_netbox_sites }}"
+
+    # Compared exactly as written: a slug is refused, never trimmed, if it carries whitespace of any kind.
+    - name: "Refuse a netbox_site with surrounding or internal whitespace"
+      ansible.builtin.assert:
+        that: (item.netbox_site | trim == item.netbox_site) and (item.netbox_site.split() | length == 1)
+        fail_msg: "netbox_site on site '{{ item.id | default('?') }}' has surrounding or internal whitespace. A NetBox slug carries none."
+        quiet: true
+      loop: "{{ _console_netbox_sites }}"
+
+    # One assert per unique slug: a slug declared twice fails its own iteration and is named. (A set_fact
+    # accumulator inside a loop does not carry across items, so it cannot collect the duplicates.)
+    - name: "Refuse a netbox_site slug declared on more than one site"
+      ansible.builtin.assert:
+        that: (_console_netbox_site_slugs | select('equalto', item) | list | length) == 1
+        fail_msg: >-
+          console_tenants declares netbox_site '{{ item }}' on more than one site (each slug names one NetBox
+          site). Give each site its own slug.
+        quiet: true
+      loop: "{{ _console_netbox_site_slugs | unique | list }}"
+
+    # The Proxmox CA is public: a certificate only. A private key pasted here would be rendered into a
+    # file the container mounts, so refuse one by name before anything is rendered.
+    - name: "Refuse a Proxmox CA that is not a public certificate"
+      ansible.builtin.assert:
+        that:
+          - (console_proxmox_ca_pem | default('', true) | string | length) == 0 or '-----BEGIN CERTIFICATE-----' in (console_proxmox_ca_pem | string)
+          - "'PRIVATE KEY' not in (console_proxmox_ca_pem | default('', true) | string)"
+        fail_msg: "console_proxmox_ca_pem must be the public CA certificate (BEGIN CERTIFICATE), never a private key."
+        quiet: true
 
     # Read-only check of the credential path before anything is written: a refused run must not
     # have already placed the repo or written a secret (deploy-skynet.yml pattern).

@@ -23,6 +23,24 @@ POST http://opa:8181/v1/data/agentcloud/decision
 list); dynamic context (`human_approved`, `template_name`, counts, time) is
 supplied per-query in `input` — never stored in OPA.
 
+## Production specifics
+
+Production OPA is rolling out as of 2026-10-29; its checklist is in
+`plan/development/03-guardrails-governance.md`, under "Production deployment".
+
+- **Own VM**, host `opa` in `opa_svc`. OPA publishes 8281 on the VM's LAN address only.
+- **Server TLS** comes from the step-ca leaf `opa-server`. Callers verify it as
+  `opa.<dns_site>.<dns_zone>` against the internal CA, at
+  `https://opa.<dns_site>.<dns_zone>:8281`. `compose.tls.yml` mounts `./certs`, runs the
+  image's uid 1000 under userns keep-id, and passes the TLS flags.
+- **Renewal needs no restart.** OPA re-reads the certificate every 30 s
+  (`--tls-cert-refresh-period`), so renewal declares reload `none`, then proves the served
+  serial.
+- **Access control is the host firewall.** OPA is still unauthenticated; port 8281 is
+  admitted only from its callers' inventory groups (`firewall_allow_groups`).
+- **No Caddy route and no public DNS.** Until internal DNS is authoritative, each caller
+  maps the name to the VM's address itself.
+
 ## Local-dev specifics
 
 - Reached by agents + the control plane as `opa:8181` on the `local-dev`
@@ -33,8 +51,11 @@ supplied per-query in `input` — never stored in OPA.
   (OpenBao). Phase 3 ships decision logs to Loki via stdout.
 - Policies are mounted read-only from `./policies`; a change is applied by
   redeploy (git pull + restart). Rego is tested with `opa test /policies`.
-- Not behind Caddy: OPA is a programmatic decision API (no UI), queried by
-  container name, so it has no `*.agent-cloud.test` route.
+- Local-dev also routes `opa.agent-cloud.test` through Caddy
+  (`platform/inventory/local-dev.yml.example`, the `caddy_routes` OPA entry) so a
+  caller such as skynet can verify a step-ca certificate. That route is a plain proxy
+  that adds server authentication only, with no edge gate. Agents on the `local-dev`
+  network still reach `opa:8181` directly.
 - **Intentionally excluded from Authentik SSO.** OPA is a machine API, not a
   human-login surface — there is no forward_auth/OIDC gate (unlike NetBox/
   OpenBao/n8n which are browser-facing). Authorization for OPA is per-agent

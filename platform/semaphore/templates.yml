@@ -488,7 +488,7 @@ templates:
       # list of the playbook's profiles.
       - name: netbox_token_profile
         title: Token profile
-        description: "device-writer (skynet device create), workflow-collector (the conformance collector), or vm-recorder (validate-address)."
+        description: "device-writer (skynet device create), workflow-collector (the conformance collector), vm-recorder (validate-address), or console (Dispatch Console read-only inventory)."
         type: enum
         required: false
         default_value: device-writer
@@ -496,6 +496,7 @@ templates:
           - { name: "device-writer", value: "device-writer" }
           - { name: "workflow-collector", value: "workflow-collector" }
           - { name: "vm-recorder", value: "vm-recorder" }
+          - { name: "console", value: "console" }
 
   - name: Ensure NetBox Prefix
     playbook: platform/playbooks/ensure-netbox-prefix.yml
@@ -835,6 +836,22 @@ templates:
         required: false
         default_value: "false"
 
+  # OPA, the Guardrail-layer decision API (platform/services/opa). No secrets: the policies travel with
+  # the placed monorepo, so the deployed branch decides which Rego is live. Production binds the VM's
+  # LAN address, serves HTTPS from the step-ca leaf the deploy issues, and the host firewall admits
+  # only its callers (plan 03, OPA production deployment).
+  # Until dev is promoted, production runs the "(Dev)" variant with service_branch=dev.
+  - name: Deploy OPA
+    playbook: platform/playbooks/deploy-opa.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   # The skynet orchestration API (OpenSpec service-deployment-workflow, task 3.7). Its Semaphore token is
   # the svc-skynet account's, written to secret/services/skynet by "Provision skynet Semaphore Access":
   # run that FIRST, because this deploy stops before any write when the token is absent. The gateway's
@@ -857,6 +874,14 @@ templates:
         required: false
         default_value: "false"
 
+  # skynet's own Semaphore identity: svc-skynet, a non-admin account at project role task_runner (the least
+  # role that can launch; skynet launches OPA-gated templates), its token stored at secret/services/skynet.
+  # Run it BEFORE Deploy skynet (which reads that token and stops when it is absent), and before declaring
+  # svc-skynet in semaphore_project_members (Manage Semaphore Access refuses a member with no account yet).
+  - name: Provision skynet Semaphore Access
+    playbook: platform/playbooks/provision-skynet-semaphore-access.yml
+    dev_variant: true
+
   # The Dispatch Console's own read-only Semaphore identity (plan 17, D20): svc-console, a non-admin
   # account at project role guest, its token stored at secret/services/console. Run it BEFORE Deploy
   # console (which reads that token and stops when it is absent), and before Manage Semaphore Access
@@ -864,6 +889,27 @@ templates:
   - name: Provision Console Semaphore Access
     playbook: platform/playbooks/provision-console-semaphore-access.yml
     dev_variant: true
+
+  # The Dispatch Console's read-only Proxmox identity (plan 17, D22): console@pve with PVEAuditor on /,
+  # and a privilege-separated token with the same grant, stored at secret/services/proxmox. Run it
+  # before Deploy console when the console_svc host declares console_proxmox_url. Refuses to replace a
+  # live token: the survey flag is only for a stored token that Proxmox no longer has.
+  - name: Provision Console Proxmox Token
+    playbook: platform/playbooks/provision-console-proxmox-token.yml
+    dev_variant: true
+    survey_vars:
+      - name: console_proxmox_token_recreate
+        title: "Recreate stored token"
+        description: "Default false. Only when secret/services/proxmox holds a console_token that Proxmox no longer has: mint a replacement and overwrite it."
+        type: string
+        required: false
+        default_value: "false"
+      - name: console_proxmox_token_replace
+        title: "Replace unrecoverable token"
+        description: "Default false. Only when Proxmox has the console token but secret/services/proxmox lost its value: revoke exactly that one token and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
@@ -1290,6 +1336,25 @@ templates:
 
   - name: Clean Deploy tududi
     playbook: platform/playbooks/clean-deploy-tududi.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # OPA keeps no data (read-only policy mount, no volume). In production the clean also removes the
+  # deploy directory, issued certificates included, so the redeploy issues a new server leaf; the old
+  # one stays valid until it expires.
+  - name: Clean Deploy OPA
+    playbook: platform/playbooks/clean-deploy-opa.yml
+    dev_variant: true
     survey_vars:
       - name: confirm_reset
         title: "Confirm: host whose data is destroyed"
@@ -1902,6 +1967,26 @@ templates:
         description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
         type: string
         required: true
+
+  - name: Reconcile Plane Members
+    playbook: platform/playbooks/reconcile-plane-members.yml
+    # Plane workspace membership follows the Authentik groups: platform-admins -> Admin,
+    # developers and business users -> Member, everyone else removed. READ-ONLY unless apply is
+    # true (the survey default is false, so a UI launch only reports the plan).
+    dev_variant: true
+    survey_vars:
+      - name: apply
+        title: "Apply the plan"
+        description: "true to invite, set roles and remove; anything else only reports the plan"
+        type: string
+        required: false
+        default_value: "false"
+      - name: allow_mass_removal
+        title: "Allow mass removal"
+        description: "true only when the groups really shrank: an apply removing more than half the workspace, or with no desired members, is refused otherwise"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Back Up Plane DB
     playbook: platform/playbooks/backup-plane-db.yml

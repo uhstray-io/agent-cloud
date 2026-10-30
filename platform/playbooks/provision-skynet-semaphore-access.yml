@@ -1,0 +1,113 @@
+---
+# provision-skynet-semaphore-access.yml — skynet's own Semaphore identity: user svc-skynet at project role
+# task_runner. The skynet orchestration API launches Semaphore templates for OPA-approved proposals, so
+# it needs CanRunProjectTasks and no more.
+#
+# Why task_runner. Launching a task needs CanRunProjectTasks. task_runner is the least role that grants
+# it (upstream db/ProjectUser.go:25: task_runner = CanRunProjectTasks only). Guest holds no run permission
+# (db/ProjectUser.go:26), so it cannot launch, and owner or manager would grant rights skynet does not need.
+#
+# Why not the controller token. secret/services/semaphore is the operator's and the controller's
+# identity. skynet gets a user of its own, so a launch names skynet's account, and the account's rights
+# are the task_runner role and nothing else.
+#
+# What a launch means. A launch from this identity is a runner launch: a templated extra var runs code on
+# the runner, so launch rights are runner rights (AGENTS.md, "Launch rights are runner rights"). Two
+# controls hold the line, and this play adds neither: the OPA gate that approves each proposal upstream of
+# skynet, and the declared project team (manage-semaphore-access.yml), which must list svc-skynet at
+# task_runner before skynet may use the identity.
+#
+# Launch probe. The probe POSTs template -1 and expects 404. task_runner passes the permission gate
+# (api/projects/project.go:97-98 refuses only roles without the permission), then finds no template -1, so
+# the request answers 404 and launches nothing (api/projects/tasks.go:45-48, api/helpers/write_response.go:41-44).
+# A 403 would mean the role lost run rights, and the play fails.
+#
+# Order.
+#   1. Run this play once per instance, before declaring svc-skynet in semaphore_project_members:
+#      manage-semaphore-access.yml refuses a declared team member that has no Semaphore account yet.
+#   2. Deploy skynet does not read the new semaphore_api_token yet: its Semaphore credential is still the
+#      local-dev operator-token stopgap (deploy-skynet.yml, "Read the Semaphore API token for skynet").
+#      Moving deploy-skynet.yml to this token is a follow-up outside this change. The two plays can run in
+#      either order: manage-secrets.yml reuses the keys already stored and generates only the missing ones
+#      (lines 90-110), and writes through the merge (line 193).
+#
+# Store. The play merges semaphore_password and semaphore_api_token into secret/services/skynet. It never
+# overwrites the path: skynet's api_token and db_password stay (tasks/bao-merge-keys.yml, a KV-v2
+# merge-patch; a create with cas: 0 only when the path is absent).
+#
+# Project. This play runs on localhost, so it reads the project from the skynet_svc host by hostvars: that
+# host's skynet_semaphore_project (site-config inventory; the local inventory example sets 1). Production
+# refuses a run with no declared project; only local_mode falls back to project 1. An extra var
+# (-e skynet_semaphore_project=N) outranks the inventory value and wins when passed, as for the console.
+#
+# Check mode: reads run; every write is skipped, and the launch probe is never sent.
+#
+# Unverified here: no live run has been made from this change. The upstream reads are at tag v2.19.11,
+# fetched from GitHub. The compose default pins that version (platform/services/semaphore/deployment/
+# compose.yml:23); the image the production controller runs is not checked here.
+#
+# Usage: run from a Semaphore template once one declares this playbook. None does yet: templates.yml is
+# outside this change.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Provision skynet's Semaphore identity (svc-skynet, task_runner)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # The controller's own API, loopback only. This play holds an admin token, so the URL is fixed.
+    _semaphore_url: "http://127.0.0.1:3000"
+    # The skynet_svc host that declares the project. Empty when the group is absent (never an error).
+    _skynet_svc_hosts: "{{ groups['skynet_svc'] | default([]) }}"
+    _skynet_svc_project: >-
+      {{ hostvars[_skynet_svc_hosts[0]].skynet_semaphore_project | default('')
+         if (_skynet_svc_hosts | length > 0) else '' }}
+    # _pid is set by the resolve task below, before any Semaphore call. It is not a play var.
+    _svc_user: "svc-skynet"
+    _svc_display_name: "Skynet"
+    # task_runner: CanRunProjectTasks only. It passes the launch gate, so the probe answers 404, not 403.
+    _svc_role: "task_runner"
+    _svc_launch_status: 404
+    _svc_email: "svc-skynet@{{ dev_zone | default('agent-cloud.test') }}"
+    _store_path: "services/skynet"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Every HTTP status, so a probe or write answers to a visible assert with its code, not to a
+    # censored uri failure (no_log hides the message of a failed task).
+    _any_status: "{{ range(100, 600) | list }}"
+
+  tasks:
+    - name: "Refuse a controller API destination override before authentication"
+      ansible.builtin.assert:
+        # Both the public override and the URL the requests actually use (as manage-semaphore-access.yml).
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        fail_msg: "Skynet access provisioning may only use the controller's fixed loopback API."
+
+    # Before any login or write: the project is the skynet_svc host's declaration, else the extra var.
+    # Production never falls back to project 1; only local_mode does.
+    - name: "Refuse a production run with no declared Semaphore project for skynet"
+      ansible.builtin.assert:
+        that:
+          - (_skynet_svc_project | string | length > 0) or (skynet_semaphore_project is defined)
+        fail_msg: >-
+          No Semaphore project is declared for skynet. Set skynet_semaphore_project on the
+          skynet_svc host in site-config, or pass it as an extra var. Production never binds
+          svc-skynet to project 1 by default.
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Resolve the Semaphore project skynet is bound to"
+      ansible.builtin.set_fact:
+        _pid: >-
+          {{ _skynet_svc_project if (_skynet_svc_project | string | length > 0)
+             else (skynet_semaphore_project | default(1)) }}
+
+    # Every OpenBao and Semaphore request follows: the transport guard is the shared file's first task.
+    - name: "Provision the service identity (shared tasks: account, membership, token, proof)"
+      ansible.builtin.include_tasks: tasks/provision-semaphore-service-identity.yml

@@ -60,6 +60,10 @@ pub struct Site {
     pub name: String,
     #[serde(default)]
     pub envs: Vec<String>,
+    /// The NetBox site slug this site maps to (plan 17 D23). Absent means the site is not
+    /// mapped: the console never guesses a NetBox site from the name.
+    #[serde(default)]
+    pub netbox_site: Option<String>,
 }
 
 impl Scope {
@@ -88,8 +92,28 @@ impl Scope {
         self.tenant(id).filter(|tenant| tenant.visible_to(groups))
     }
 
+    /// Every `netbox_site` slug the scope declares, sorted. `validate` already refuses a slug
+    /// declared twice, so each appears once. The inventory refresh reads exactly these sites.
+    pub fn netbox_sites(&self) -> Vec<String> {
+        let mut slugs = std::collections::BTreeSet::new();
+        for site in self
+            .tenants
+            .iter()
+            .flat_map(|tenant| &tenant.orgs)
+            .flat_map(|org| &org.sites)
+        {
+            if let Some(slug) = &site.netbox_site {
+                slugs.insert(slug.clone());
+            }
+        }
+        slugs.into_iter().collect()
+    }
+
     fn validate(&self) -> Result<(), String> {
         let mut tenant_ids = std::collections::HashSet::new();
+        // The first site that declared each NetBox slug, across every tenant.
+        let mut slug_owner: std::collections::HashMap<&str, String> =
+            std::collections::HashMap::new();
         for tenant in &self.tenants {
             require_id(&tenant.id, &tenant.name)?;
             if !tenant_ids.insert(tenant.id.as_str()) {
@@ -99,11 +123,36 @@ impl Scope {
                 require_id(&org.id, &org.name)?;
                 for site in &org.sites {
                     require_id(&site.id, &site.name)?;
+                    let Some(slug) = site.netbox_site.as_deref() else {
+                        continue;
+                    };
+                    require_slug(&site.id, slug)?;
+                    let here = format!("{}/{}/{}", tenant.id, org.id, site.id);
+                    if let Some(first) = slug_owner.get(slug) {
+                        return Err(format!(
+                            "netbox_site \"{slug}\" is declared by both {first} and {here}; \
+                             a NetBox site maps to exactly one console site"
+                        ));
+                    }
+                    slug_owner.insert(slug, here);
                 }
             }
         }
         Ok(())
     }
+}
+
+/// A NetBox slug is one token: no blank value, and no whitespace at either end or inside.
+fn require_slug(site_id: &str, slug: &str) -> Result<(), String> {
+    if slug.trim().is_empty() {
+        return Err(format!("site {site_id} has a blank netbox_site"));
+    }
+    if slug != slug.trim() || slug.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "site {site_id} netbox_site \"{slug}\" must not contain whitespace"
+        ));
+    }
+    Ok(())
 }
 
 fn require_id(id: &str, name: &str) -> Result<(), String> {
@@ -244,5 +293,77 @@ mod tests {
         let json = serde_json::to_string(&scope.tenants[0]).expect("serialize tenant");
         assert!(!json.contains("groups"), "{json}");
         assert_eq!(scope.tenants[0].groups, names(&["ops"]));
+    }
+
+    const MAPPED: &str = r#"{"tenants": [
+        {"id": "acme", "name": "Acme", "orgs": [{"id": "ops", "name": "Ops", "sites": [
+            {"id": "dc1", "name": "DC 1", "netbox_site": "dc-1"},
+            {"id": "dc2", "name": "DC 2"}
+        ]}]},
+        {"id": "initech", "name": "Initech", "orgs": [{"id": "lab", "name": "Lab", "sites": [
+            {"id": "hq", "name": "HQ", "netbox_site": "dc-2"},
+            {"id": "annex", "name": "Annex", "netbox_site": "annex"}
+        ]}]}
+    ]}"#;
+
+    #[test]
+    fn netbox_site_is_parsed_and_absent_means_unmapped() {
+        let scope = Scope::parse(MAPPED).expect("valid scope");
+        let sites = &scope.tenants[0].orgs[0].sites;
+        assert_eq!(sites[0].netbox_site.as_deref(), Some("dc-1"));
+        assert_eq!(sites[1].netbox_site, None);
+    }
+
+    #[test]
+    fn netbox_sites_lists_the_declared_slugs_sorted() {
+        let scope = Scope::parse(MAPPED).expect("valid scope");
+        assert_eq!(scope.netbox_sites(), ["annex", "dc-1", "dc-2"]);
+    }
+
+    #[test]
+    fn a_slug_declared_by_two_tenants_is_refused_and_both_sites_are_named() {
+        let dup = r#"{"tenants": [
+            {"id": "acme", "name": "Acme", "orgs": [{"id": "ops", "name": "Ops", "sites": [
+                {"id": "dc1", "name": "DC 1", "netbox_site": "dc-1"}]}]},
+            {"id": "initech", "name": "Initech", "orgs": [{"id": "lab", "name": "Lab", "sites": [
+                {"id": "hq", "name": "HQ", "netbox_site": "dc-1"}]}]}
+        ]}"#;
+        let err = Scope::parse(dup).expect_err("must fail");
+        assert!(err.contains("\"dc-1\""), "{err}");
+        assert!(err.contains("acme/ops/dc1"), "{err}");
+        assert!(err.contains("initech/lab/hq"), "{err}");
+    }
+
+    #[test]
+    fn a_slug_declared_twice_in_one_tenant_is_refused() {
+        let dup = r#"{"tenants": [{"id": "acme", "name": "Acme", "orgs": [{"id": "ops", "name": "Ops",
+            "sites": [
+                {"id": "dc1", "name": "DC 1", "netbox_site": "dc-1"},
+                {"id": "dc3", "name": "DC 3", "netbox_site": "dc-1"}]}]}]}"#;
+        let err = Scope::parse(dup).expect_err("must fail");
+        assert!(err.contains("both acme/ops/dc1 and acme/ops/dc3"), "{err}");
+    }
+
+    #[test]
+    fn a_slug_with_whitespace_is_refused() {
+        for slug in [" dc-1", "dc-1 ", "dc 1"] {
+            let text = format!(
+                r#"{{"tenants": [{{"id": "a", "name": "A", "orgs": [{{"id": "o", "name": "O",
+                "sites": [{{"id": "s", "name": "S", "netbox_site": "{slug}"}}]}}]}}]}}"#
+            );
+            let err = Scope::parse(&text).expect_err("must fail");
+            assert!(
+                err.contains("must not contain whitespace"),
+                "{slug:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_netbox_site_is_rejected() {
+        let blank = r#"{"tenants": [{"id": "a", "name": "A", "orgs": [{"id": "o", "name": "O",
+            "sites": [{"id": "s", "name": "S", "netbox_site": "  "}]}]}]}"#;
+        let err = Scope::parse(blank).expect_err("must fail");
+        assert!(err.contains("blank netbox_site"), "{err}");
     }
 }

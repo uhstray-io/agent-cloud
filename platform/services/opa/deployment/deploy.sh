@@ -6,7 +6,7 @@
 # Rego policies under ./policies are the config, mounted read-only. This script
 # does NOT generate secrets; it pulls, starts the server, and confirms the
 # container is running. The deploy playbook verifies the HTTP API + runs the
-# Rego unit tests. Plan: plan/development/OPA-INTEGRATION-PLAN.md.
+# Rego unit tests. Plan: plan/development/03-guardrails-governance.md (OPA section).
 #
 # Usage: ./deploy.sh [--no-pull]
 
