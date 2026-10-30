@@ -124,6 +124,7 @@
       when: not ansible_check_mode
 
     - name: Parse and verify the receiver checkout HEAD receipt
+      when: not ansible_check_mode
       block:
         - name: Parse the receiver checkout HEAD receipt privately
           ansible.builtin.set_fact:

@@ -571,6 +571,58 @@ def _revision_receipt_playbook(harness_path: Path, stdout: str, rc: int) -> None
     harness_path.write_text(yaml.safe_dump(harness))
 
 
+@pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
+def test_ansible_checkout_head_receipt_is_skipped_in_check_mode(tmp_path):
+    receiver_play = next(
+        play for play in yaml.safe_load(PLAYBOOK.read_text()) if play.get("hosts") == "o11y_svc"
+    )
+    tasks = receiver_play["tasks"]
+    selected_tasks = [
+        next(task for task in tasks if task.get("name") == name)
+        for name in (
+            "Read the receiver checkout HEAD privately",
+            "Parse and verify the receiver checkout HEAD receipt",
+            "Report the bounded receiver checkout HEAD receipt",
+        )
+    ]
+    harness_path = tmp_path / "checkout-head-check-mode.yml"
+    inventory_path = tmp_path / "inventory.ini"
+    harness_path.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Exercise checkout HEAD receipt check-mode behavior",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "vars": {
+                        "_receiver_monorepo_dir": str(tmp_path),
+                        "_alloy_health_helper": "print('must not run')",
+                    },
+                    "tasks": selected_tasks,
+                }
+            ]
+        )
+    )
+    inventory_path.write_text("localhost ansible_connection=local\n")
+
+    proc = subprocess.run(
+        [ANSIBLE_PLAYBOOK, "--check", "-i", str(inventory_path), str(harness_path)],
+        cwd=ROOT,
+        env=_ansible_env(tmp_path / "local-tmp"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "skipping" in output.lower()
+    assert "Reduce a failed receiver checkout HEAD read to unavailable" not in output
+    assert "rescued=0" in output
+
+
 def _ansible_env(local_temp: Path) -> dict[str, str]:
     local_temp.mkdir(parents=True, exist_ok=True)
     return {**os.environ, "ANSIBLE_LOCAL_TEMP": str(local_temp)}
