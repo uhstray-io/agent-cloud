@@ -241,6 +241,17 @@ still require their independent declaration, identity, capacity, writer-drain,
 and lifecycle gates. Source tests and environment creation are not live restore
 or backup acceptance.
 
+### General VM writers' environments (2026-10-30)
+
+Task 5.2a put the preflight and guard in front of the five general VM writers, while this
+section kept the generic templates on the shared environment. Together those made the writers
+fail on every production launch (tasks 9493, 10259, 10295). The shared environment holds the
+AppRole only as the plaintext extra vars the preflight refuses, and the writers log in only
+from `BAO_ROLE_ID`/`BAO_SECRET_ID`. Operator decision 2026-10-30: give the five writers
+isolated environments through the same reviewed provisioner. Neither the guard nor the shared
+environment changes. `test_restore_guard_environment.py` now requires every template that
+reaches the preflight to declare one.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.

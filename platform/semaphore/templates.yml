@@ -3248,12 +3248,22 @@ templates:
 
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: VM template inputs
     # main's copy predates the workflow step result (vm-template) and the cloud-init
     # drive match; the (Dev) variant runs the current code before promotion.
     dev_variant: true
 
   - name: Destroy VM
     playbook: platform/playbooks/destroy-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Destroy VM inputs
     # DESTRUCTIVE. Inventory-first like Provision VM; refuses unless the live VM matches
     # the declaration on vmid+name+node AND the launch names the vmid in confirm_destroy.
     dev_variant: true
@@ -3276,6 +3286,11 @@ templates:
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Provision VM inputs
     # main's copy of this playbook predates the inventory-first fix ("make it runnable
     # from Semaphore at all"), so the dev-bound variant is the only way to exercise the
     # current code before promotion. Permanent, not a branch workaround.
@@ -3448,6 +3463,11 @@ templates:
 
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Resize VM inputs
     dev_variant: true
     # Converges a live VM's cores/memory/disk to the spec declared in
     # site-config/proxmox/vm-specs.yml. Edit the spec, then run this — the
@@ -3474,6 +3494,11 @@ templates:
 
   - name: Snapshot VM
     playbook: platform/playbooks/snapshot-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Snapshot VM inputs
     # main's copy predates the dry-run (check mode) support and the no-redirect bearer
     # header; the (Dev) variant runs the current code before promotion.
     dev_variant: true

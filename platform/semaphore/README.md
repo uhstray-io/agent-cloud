@@ -424,6 +424,15 @@ effective role capabilities, target readiness, backup/restore evidence, or autho
 disk, retention, or deployment writes. Keep the protected extra-var refusal in each
 target playbook; do not repair the shared environment or pass credentials as survey data.
 
+The five general VM writers (Provision VM, Resize VM, Destroy VM, Snapshot VM and Create VM
+Template) run the same restore-target guard, so each declares its own `isolated_environment`
+as well. Give each `(Dev)` copy its environment with `Provision Seed Environment (Dev)`
+(`seed_template` = the base name, `seed_variant` = `dev`), the same reviewed provisioner the
+seed templates use. Bound to the shared environment they fail at the preflight on every
+launch; `platform/tests/test_restore_guard_environment.py` refuses a guarded template without
+an isolated environment. A later full-catalog publication creates the base templates' own
+environments empty, so run the provisioner for those too before using a `main`-bound copy.
+
 ## Publish the local observability alert destination
 
 [`sync-local-o11y-alert-inventory.py`](../../scripts/sync-local-o11y-alert-inventory.py)
