@@ -1,0 +1,36 @@
+# OPA listener TLS overlay — appended through COMPOSE_OVERLAYS by deploy-opa.yml when opa_tls is
+# on (production only; local-dev reaches OPA through Caddy). OPA serves HTTPS from a step-ca
+# server leaf issued into ./certs by tasks/mint-internal-cert.yml (production-internal-ca).
+#
+# ./certs holds certs/<opa_server_leaf>/current/ and certs/step-ca-bundle.crt. The leaf is swapped
+# by renewal, so the directory is mounted, not the file: a single-file mount pins the inode a
+# renewal replaces. OPA re-reads the certificate every --tls-cert-refresh-period, so a renewal
+# needs no restart.
+#
+# command: podman-compose 1.0.6 REPLACES a list `command` from an overlay instead of merging it
+# (verified in the source, rec_merge_one). The list below therefore repeats every argument of
+# compose.yml's command and adds the three TLS flags before /policies. Keep the two lists in step:
+# platform/tests/test_service_opa.bats checks that the overlay carries each base argument.
+#
+# userns keep-id: the image runs as uid 1000, and under rootless podman that uid cannot read the
+# deploy account's 0600 key. keep-id maps the deploy account to uid 1000 inside the container, so
+# the process stays non-root and owns the key it reads. It needs podman 4.3 or later (deploy-opa.yml
+# checks). The same pattern as agentgateway's compose.tls.yml.
+
+services:
+  opa:
+    userns_mode: "keep-id:uid=1000,gid=1000"
+    volumes:
+      - ./certs:/certs:ro
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --diagnostic-addr=0.0.0.0:8282
+      - --log-level=${OPA_LOG_LEVEL:-info}
+      - --set=decision_logs.console=true
+      - --set=status.console=true
+      - --tls-cert-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/cert.pem
+      - --tls-private-key-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/key.pem
+      - --tls-cert-refresh-period=30s
+      - /policies

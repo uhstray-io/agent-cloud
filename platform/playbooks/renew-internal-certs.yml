@@ -19,6 +19,14 @@
 #                        internal bundle; the served serial must equal the issued one.
 #                        Reload `restart` restarts the agentgateway container; `none` relies
 #                        on the gateway's file watch (task 6.3 decides which).
+#   opa server leaf      the OPA listener of the opa_svc host (`opa_port` on `opa_bind`; 127.0.0.1
+#                        when opa_bind is 0.0.0.0, :: or empty) is connected to from that host with
+#                        NO client certificate, the server verified by name (`opa_tls_server_name`,
+#                        default opa.<dns_site>.<dns_zone>) against the bundle; the served serial
+#                        must equal the issued one. Reload `none`: OPA re-reads `current` itself
+#                        (--tls-cert-refresh-period), so the proof's retries cover that lag. Admitted
+#                        only with opa_tls on, on opa_svc, as the leaf named `opa_server_leaf`
+#                        (default opa-server).
 #   per-call client leaf `agw-verifier`, `bench`: reload `none`. One keyless /v1/models through
 #                        the gateway probe path (tasks/agw-probe.yml, gateway task 6.1a) from
 #                        the leaf's host with the new files must answer 401: the handshake
@@ -49,8 +57,8 @@
 # The declaration is read on the one step_ca_svc host (where deploy-step-ca.yml reads it), and
 # an empty one is REFUSED: a run that renews nothing must not pass.
 # A leaf the declaration gives no proof path is REFUSED before anything is issued: a server
-# leaf other than the gateway's own, a client leaf whose reload is not one of the above, a
-# caddy leaf off caddy_svc or without a proof route, a per-call leaf off the
+# leaf other than the gateway's own or the OPA listener's, a client leaf whose reload is not
+# one of the above, a caddy leaf off caddy_svc or without a proof route, a per-call leaf off the
 # gateway host without agw_verify_base_url, more than one per-call leaf on one host.
 # A leaf whose use cannot be proven is not renewed: with the gateway's agw_listener_tls off
 # nothing presents or verifies the gateway leaves, so they take no part (not in the host's
@@ -159,6 +167,19 @@
             {%- set cls.v = 'o11y-server' -%}
           {%- else -%}
             {%- set _ = errs.append(n ~ ': the o11y OTLP server leaf is admitted only as the fixed enabled receiver leaf with its declared journal client proof') -%}
+          {%- endif -%}
+        {%- elif l.profile | default('') == 'server' and h in groups.get('opa_svc', []) -%}
+          {%- set opa_dir = hostvars[h].local_monorepo_dir | default('/home/' ~ (hostvars[h].ansible_user | default('deploy')) ~ '/agent-cloud')
+                            ~ '/' ~ (hostvars[h].monorepo_deploy_path | default('', true)) ~ '/certs/' ~ n -%}
+          {%- if (hostvars[h].opa_tls | default(false) | bool)
+                 and n == (hostvars[h].opa_server_leaf | default('opa-server'))
+                 and r == 'none'
+                 and (hostvars[h].opa_tls_server_name | default('opa.' ~ (hostvars[h].dns_site | default('')) ~ '.' ~ (hostvars[h].dns_zone | default(''))) in (l.sans | default([])))
+                 and l.dir == opa_dir -%}
+            {%- set cls.v = 'opa-server' -%}
+          {%- else -%}
+            {%- set _ = errs.append(n ~ ': the OPA server leaf is admitted only as the opa_svc host\'s own '
+                                    ~ '(opa_tls on, opa_server_leaf, reload none, dir <deploy>/certs/<leaf>, SAN opa_tls_server_name)') -%}
           {%- endif -%}
         {%- elif l.profile | default('') == 'server' -%}
           {%- if h == _gw and n == (hostvars[h].agw_server_leaf | default('agw-server')) and r in ['restart', 'none'] -%}
@@ -299,9 +320,11 @@
       {{ (_mine | selectattr('class', 'equalto', 'caddy-client') | list)
          + (_mine | selectattr('class', 'equalto', 'o11y-server') | list)
          + (_mine | selectattr('class', 'equalto', 'o11y-journal-client') | list)
+         + (_mine | selectattr('class', 'equalto', 'opa-server') | list)
          + ((_mine | rejectattr('class', 'equalto', 'caddy-client')
              | rejectattr('class', 'equalto', 'o11y-server')
-             | rejectattr('class', 'equalto', 'o11y-journal-client') | list) if (_gw_tls | bool) else []) }}
+             | rejectattr('class', 'equalto', 'o11y-journal-client')
+             | rejectattr('class', 'equalto', 'opa-server') | list) if (_gw_tls | bool) else []) }}
     _reloads: "{{ _provable | map(attribute='reload') | reject('equalto', 'none') | unique | list }}"
     # `--tags verify`: prove the leaves in place, issue nothing.
     _verify_only: "{{ 'verify' in ansible_run_tags and 'all' not in ansible_run_tags }}"
@@ -340,15 +363,16 @@
               except OSError as e:
                   out[d] = {"current": False, "due": True, "missing": e.strerror}
       print(json.dumps(out))
-    # Connects to a serving listener with a client leaf, verifies the server against the
-    # bundle under the given name, prints the served certificate's serial. The key is loaded
-    # by the TLS library, never printed.
+    # Connects to a serving listener, verifies the server against the bundle under the given
+    # name, prints the served certificate's serial. A client leaf is presented only when one is
+    # given (the OPA listener asks for none). The key is loaded by the TLS library, never printed.
     _renew_server_prover: |
       import socket, ssl, sys
       host, port, name, ca, cert, key = sys.argv[1:7]
       try:
           ctx = ssl.create_default_context(cafile=ca)
-          ctx.load_cert_chain(cert, key)
+          if cert:
+              ctx.load_cert_chain(cert, key)
           with socket.create_connection((host, int(port)), timeout=10) as raw:
               with ctx.wrap_socket(raw, server_hostname=name) as tls:
                   print(tls.getpeercert()["serialNumber"])
@@ -732,6 +756,36 @@
             - _renew_prove | bool and not ansible_check_mode
             - _provable | selectattr('class', 'equalto', 'gateway-server') | list | length > 0
 
+        # OPA takes no client certificate, so none is presented. OPA re-reads `current` itself
+        # (--tls-cert-refresh-period): reload is none, and the retries cover that lag.
+        - name: "Prove OPA serves the new server leaf"
+          tags: [verify]
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "{{ _renew_server_prover }}"
+              - "{{ _opa_ip }}"
+              - "{{ opa_port | default('8281') }}"
+              - "{{ _opa_name }}"
+              - "{{ _opa_srv.dir | dirname }}/step-ca-bundle.crt"
+              - ""
+              - ""
+          vars:
+            _opa_srv: "{{ _provable | selectattr('class', 'equalto', 'opa-server') | first }}"
+            _opa_ip: "{{ '127.0.0.1' if (opa_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else opa_bind | default('127.0.0.1') }}"
+            _opa_name: "{{ opa_tls_server_name | default('opa.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+          register: _renew_opa_served
+          changed_when: false
+          retries: "{{ _retries }}"
+          delay: "{{ _delay }}"
+          until: >-
+            _renew_opa_served.rc == 0
+            and (_renew_opa_served.stdout | trim | int(-1, 16)) == (_renew_expect[_opa_srv.dir].serial | default('') | int(-2, 16))
+          when:
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'opa-server') | list | length > 0
+
         - name: "Probe path: the base URL and the presented leaf"
           tags: [verify]
           ansible.builtin.set_fact:
@@ -865,6 +919,7 @@
                 {%- elif not (_renew_prove | bool) -%}{%- set proof = 'check mode' if (_renew_due | bool) else 'left alone' -%}
                 {%- elif l.class == 'caddy-client' -%}{%- set proof = how ~ 'caddy serial in current, ' ~ (renew_caddy_proof_host | default(inference_route_address, true)) ~ ' answered ' ~ (renew_caddy_proof_status | default(401)) -%}
                 {%- elif l.class == 'gateway-server' -%}{%- set proof = how ~ 'served on every listener' -%}
+                {%- elif l.class == 'opa-server' -%}{%- set proof = how ~ 'OPA listener served the expected serial, verified by name against the bundle' -%}
                 {%- elif l.class == 'o11y-server' -%}{%- set proof = how ~ 'receiver TLS 1.3/h2 complete SETTINGS; server serial matched; journal client accepted; missing and foreign-CA clients refused' -%}
                 {%- elif l.class == 'o11y-journal-client' -%}{%- set proof = how ~ 'journal client accepted by receiver TLS 1.3/h2 complete SETTINGS; server serial matched; missing and foreign-CA clients refused' -%}
                 {%- elif l.class == 'probe-client' -%}{%- set proof = how ~ 'probe path answered 401, refused without a client certificate' -%}
