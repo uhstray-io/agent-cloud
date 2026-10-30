@@ -859,7 +859,9 @@ def test_a_private_key_is_refused_as_the_proxmox_ca(tmp_path):
 # --- Rendered inputs: env, the CA file, and flows.json ------------------------------------------------
 
 ENV_SECRETS = {"console_oidc_client_secret": "OIDC-REF", "semaphore_api_token": "SEM-REF",
-               "console_api_token": "NB-REF", "console_token_id": "console@pve!console", "console_token": "PX-REF"}
+               "console_api_token": "NB-REF", "console_token_id": "console@pve!console", "console_token": "PX-REF",
+               # Shared-read with console_grafana_url (D26): env.j2 renders it only behind that URL.
+               "console_grafana_token": "GRAFANA-REF"}
 
 
 @NEEDS_ANSIBLE
@@ -890,10 +892,11 @@ def test_proxmox_group_is_all_or_none_with_the_ca_only_when_pem_is_set(tmp_path)
 @NEEDS_ANSIBLE
 def test_grafana_base_url_is_absent_when_unset_and_rendered_when_set(tmp_path):
     unset = _render(tmp_path, CONSOLE / "templates/env.j2", {"secrets": ENV_SECRETS})
-    assert "CONSOLE_GRAFANA_URL" not in unset
+    assert "CONSOLE_GRAFANA_URL" not in unset and "CONSOLE_GRAFANA_TOKEN" not in unset
     set_ = _render(tmp_path, CONSOLE / "templates/env.j2",
                    {"secrets": ENV_SECRETS, "console_grafana_url": "https://grafana.example.test"})
     assert "CONSOLE_GRAFANA_URL=https://grafana.example.test" in set_.splitlines()
+    assert "CONSOLE_GRAFANA_TOKEN=GRAFANA-REF" in set_.splitlines()
 
 
 @NEEDS_ANSIBLE

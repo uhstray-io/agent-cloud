@@ -867,9 +867,17 @@ templates:
 
   # The Dispatch Console's Grafana token (plan 17, task 8.0a): a Viewer service-account token on
   # o11y's Grafana, 90-day lifetime, kept at secret/services/o11y:console_grafana_token. Reuses it
-  # until under 30 days remain, then mints a new one. Nothing schedules it: re-run to renew.
+  # until under 30 days remain, then mints a new one. Renewed monthly by Rotate Console Credentials (Dev), which
+  # imports this playbook; run it directly for an out-of-band renewal.
   - name: Provision Console Grafana Token
     playbook: platform/playbooks/provision-console-grafana-token.yml
+    dev_variant: true
+
+  # The Dispatch Console's own OpenBao AppRole (plan 17, D27): the console policy (read on its own paths only) and
+  # role_id/secret_id at secret/services/approles/console. Run before Deploy console when console_openbao_url is set,
+  # and before Rotate Console Credentials (Dev), which rotates the secret_id this creates.
+  - name: Provision Console AppRole
+    playbook: platform/playbooks/provision-console-approle.yml
     dev_variant: true
 
   - name: Deploy agentgateway
@@ -3308,6 +3316,18 @@ templates:
     repository: agent-cloud dev
     schedule:
       cron: "*/45 * * * *"
+
+  # The Dispatch Console's monthly credential rotation (plan 17, D27): a new secret_id for the console AppRole (its
+  # role_id is unchanged), the Grafana Viewer token renewed under its 30-day threshold, a redeploy that carries the new
+  # secret_id, and only then the replaced secret_id destroyed. The playbook pins the run to the commit the console is
+  # deployed from. Dev-bound for the reason the GitHub refresh above gives: a schedule on the main-bound base would run
+  # `main`, which has no copy of this playbook until promotion. Monthly: about three attempts inside the 90-day
+  # secret_id TTL, and a Grafana renewal well before its 30-day threshold. No survey: a schedule cannot answer one.
+  - name: Rotate Console Credentials (Dev)
+    playbook: platform/playbooks/rotate-console-credentials.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "0 7 1 * *"
 
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml

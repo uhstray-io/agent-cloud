@@ -310,7 +310,10 @@ all:
           # Provision NetBox Automation Token (profile console) and Provision Console Proxmox Token.
           # console_netbox_url: https://netbox.agent-cloud.test
           # console_proxmox_url: <Proxmox API base URL, from site-config>
-          # console_grafana_url: https://grafana.agent-cloud.test   # base for Grafana deep links; no credential
+          # console_grafana_url: https://grafana.agent-cloud.test   # base for Grafana deep links (not a credential). Setting
+          #                                # it also reads the console's Viewer token: run Provision Console Grafana Token first.
+          # console_openbao_url: https://openbao.agent-cloud.test   # the console's own AppRole login (D27). Setting it also reads
+          #                                # approles/console: run Provision Console AppRole first.
           # console_proxmox_ca_pem: |      # the PUBLIC CA certificate. REQUIRED by Provision Console Proxmox Token
           #                                # (it refuses to mint without it). Optional for the console runtime: unset
           #                                # means the runtime's default trust (not yet read by the server code)
