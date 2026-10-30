@@ -353,6 +353,15 @@ SENT_PVE = "SENTINEL-PROXMOX-TOKEN-5e21b8"
 CLIENT = "fake-approle-client-token"
 
 
+def _closed_port():
+    """A loopback port nothing listens on: a connection to it gets no HTTP answer."""
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()
+    return port
+
+
 def _serve(answer):
     class Handler(DrainingHandler):
         def do_GET(self):
@@ -450,7 +459,7 @@ def probe_run(tmp_path):
     servers = []
 
     def run(netbox_stored, proxmox_open, verbosity=None, netbox_url=None, proxmox_url=None, bao_seen=None,
-            netbox_status=200, netbox_refuses_token=False):
+            netbox_status=200, netbox_refuses_token=False, openbao_url=None):
         bao = _serve(_recording(_openbao(netbox_stored), bao_seen))
         nb = _serve(_netbox(netbox_status, netbox_refuses_token))
         servers.extend([bao, nb])
@@ -468,7 +477,7 @@ def probe_run(tmp_path):
             closed.close()
         inventory = {"all": {"children": {"console_svc": {"hosts": {"console-probe": {
             "ansible_connection": "local",
-            "openbao_addr": f"http://127.0.0.1:{bao.server_address[1]}",
+            "openbao_addr": openbao_url or f"http://127.0.0.1:{bao.server_address[1]}",
             "bao_role_id": "fake-role-id",
             "bao_secret_id": "fake-secret-id",
             "console_netbox_url": netbox_url or f"http://127.0.0.1:{nb.server_address[1]}",
@@ -580,15 +589,25 @@ def test_a_netbox_status_that_is_not_a_login_prompt_fails_by_name_and_runs_no_to
 
 @NEEDS_ANSIBLE
 def test_a_netbox_with_no_http_answer_fails_by_name_and_runs_no_token_read(probe_run):
-    closed = socket.socket()
-    closed.bind(("127.0.0.1", 0))
-    port = closed.getsockname()[1]
-    closed.close()
-    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_url=f"http://127.0.0.1:{port}")
+    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_url=f"http://127.0.0.1:{_closed_port()}")
     out = proc.stdout + proc.stderr
     assert proc.returncode != 0, out
+    assert "NetBox: no HTTP answer from the console VM" in out, out
+    assert "HTTP -1" not in out, "a missing HTTP answer printed the uri module's -1 status"
     assert "did not answer the probe: NetBox." in out, out
     assert "NetBox sites" not in out, "a token read ran without an HTTP answer"
+    assert "127.0.0.1" not in out, "an address reached the default output"
+    assert SENT_NB not in out and SENT_PVE not in out
+
+
+@NEEDS_ANSIBLE
+def test_a_closed_openbao_endpoint_is_no_http_answer_and_fails_the_play_by_name(probe_run):
+    proc = probe_run(netbox_stored=True, proxmox_open=True, openbao_url=f"http://127.0.0.1:{_closed_port()}")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, out
+    assert "OpenBao endpoint: no HTTP answer from the console VM" in out, out
+    assert "HTTP -1" not in out, "a missing HTTP answer printed the uri module's -1 status"
+    assert "did not answer the probe: OpenBao endpoint" in out, out
     assert "127.0.0.1" not in out, "an address reached the default output"
     assert SENT_NB not in out and SENT_PVE not in out
 

@@ -426,22 +426,25 @@
     - name: "Derive the summary lines (no_log: built from protected results)"
       ansible.builtin.set_fact:
         _probe_line_bao_endpoint: >-
-          {{ 'OpenBao endpoint: not reachable from the console VM'
-             if ((_probe_bao_health.status | default(0)) == 0)
+          {{ 'OpenBao endpoint: no HTTP answer from the console VM'
+             if (((_probe_bao_health.status | default(0)) | int) <= 0)
              else ('OpenBao endpoint: HTTP ' ~ ((_probe_bao_health.status | default(0)) | string) ~ ' from the console VM') }}
         _probe_line_bao_sealed: >-
           {{ ('OpenBao sealed: ' ~ (((_probe_bao_seal.json | default({})).sealed | default('unknown')) | string))
              if ((_probe_bao_seal.status | default(0)) == 200)
              else 'OpenBao seal status: not answered' }}
         _probe_line_bao_login: >-
-          {{ ('OpenBao AppRole login on the controller: ' ~ ('ok' if ((_probe_bao_login.status | default(0)) == 200) else ('failed (HTTP ' ~ ((_probe_bao_login.status | default(0)) | string) ~ ')')))
+          {{ ('OpenBao AppRole login on the controller: '
+              ~ ('ok' if ((_probe_bao_login.status | default(0)) == 200)
+                 else ('failed (no HTTP answer)' if (((_probe_bao_login.status | default(0)) | int) <= 0)
+                       else ('failed (HTTP ' ~ ((_probe_bao_login.status | default(0)) | string) ~ ')'))))
              if (_bao_needed | bool)
              else '' }}
         _probe_line_nb_reach: >-
           {{ 'NetBox: not configured (console_netbox_url unset on console_svc)'
              if (_netbox_url | length == 0)
-             else ('NetBox: not reachable from the console VM'
-             if ((_probe_nb_status.status | default(0)) == 0)
+             else ('NetBox: no HTTP answer from the console VM'
+             if (((_probe_nb_status.status | default(0)) | int) <= 0)
              else ('NetBox: HTTP ' ~ ((_probe_nb_status.status | default(0)) | string) ~ ' from the console VM'
                    ~ (' (login required; token reads decide)' if ((_probe_nb_status.status | default(0)) in [401, 403]) else '')
              if ((_probe_nb_status.status | default(0)) != 200)
@@ -513,7 +516,7 @@
              if ((_probe_pve_nodes.status | default(0)) == 200)
              else ('Proxmox nodes: not read (HTTP ' ~ ((_probe_pve_nodes.status | default(0)) | string) ~ ')')) }}
         _probe_failures: >-
-          {{ ((['OpenBao endpoint'] if ((_probe_bao_health.status | default(0)) == 0) else [])
+          {{ ((['OpenBao endpoint'] if (((_probe_bao_health.status | default(0)) | int) <= 0) else [])
               + (['OpenBao credential read'] if (_probe_bao_read_failed | bool) else [])
               + (['NetBox'] if (_probe_nb_failed | bool) else [])
               + (['Proxmox'] if (_probe_pve_failed | bool) else [])) }}
