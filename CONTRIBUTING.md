@@ -123,6 +123,9 @@ pip3.12 install -r platform/requirements-test.txt
 # with a reason rather than failing, but they are then not verifying anything.
 pip3.12 install -r platform/requirements-controller.txt
 
+# The complete BATS suite also requires a usable existing Podman or Docker engine
+# for its native PromQL test; do not start a daemon or VM just for the test.
+
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
 
@@ -193,6 +196,23 @@ Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN
 ---
 
 ## Writing BATS Tests
+
+The complete `bats platform/tests/` run requires BATS, Python 3.12+ with the test and
+controller requirements above, and a usable existing container engine. The native
+PromQL regression uses the literal fallback Prometheus image from the committed o11y
+Compose file and its `/bin/promtool`; it needs no standalone `promtool` installation
+or new engine package. Locally it prefers a usable existing Podman engine; CI uses
+Docker. An unavailable engine, image, or evaluator fails the test. The runner is
+bounded to 300 seconds total, at most one image acquisition, three evaluator
+containers and invocation-owned cleanup. Timeout cleanup verifies each exact
+container name and invocation labels before force-removing it with its anonymous
+volumes; normal `--rm` evaluation also removes its anonymous storage.
+
+Run the focused native regression with:
+
+```bash
+bats platform/tests/test_o11y_native_promql.bats
+```
 
 Four conventions, each earned by a defect that reached a pull request. `docs/MISTAKES.md`
 records the incident behind each; this is the short form you need while writing one.

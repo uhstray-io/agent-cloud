@@ -153,6 +153,55 @@ projection and fixed profile target address as deployment. It SHALL validate
 the rendered candidate before writing temporary configuration, and SHALL
 preserve the existing profile-operation gates and restoration behavior.
 
+Native forwarded-sample timestamp queries SHALL use one exact-name selector
+per requested fixed family, apply `timestamp()` directly to each selector,
+restore that family's fixed `__name__` with `label_replace`, and combine
+branches with `or on(__name__)`. Every identity matcher and returned label
+SHALL be preserved. Value queries SHALL remain unchanged. Raw sample time
+SHALL NOT be replaced with evaluation time. The existing exact parser,
+identity/uniqueness, freshness, required-metric and positive body-evidence
+checks SHALL remain authoritative, including loaded `extra_metrics=true`.
+Missing native body evidence SHALL NOT receive a legacy unavailable-body
+exception. The six-API-call ceiling, 4096-character path ceiling, aggregate
+byte and deadline limits SHALL remain unchanged; oversized paths SHALL refuse.
+
+The required native semantic regression SHALL enter through one BATS test and
+a Python runner outside pytest discovery in the existing Bash Tests job. It
+SHALL evaluate expressions from the actual production query builder using
+`/bin/promtool` from the literal fallback Prometheus image in committed
+Compose, without deployment environment overrides. Workflow, merge guard and
+fixtures, Compose and dependency declarations SHALL remain unchanged for this
+bounded repair. Engine/image/evaluator unavailability SHALL fail, never skip.
+Use supported Docker in CI and prefer usable existing Podman locally; no new
+engine package or standalone promtool installation is required. The full BATS
+prerequisite SHALL be documented with the repository's BATS/Python prerequisites.
+Discovery, at most one image acquisition, three evaluator runs and cleanup
+SHALL fit within 300 seconds total with reserved cleanup time and capped output.
+Evaluation SHALL use `--rm -i --network none --pull=never --entrypoint
+/bin/promtool <image> test rules /dev/stdin`, unique invocation-owned names and
+ownership labels. No bind mounts, named/shared volumes, host network, published
+ports, privilege, VM/daemon start, connection change or image deletion/prune is
+permitted. Failure/timeout cleanup SHALL remove only exact containers proven
+owned by this invocation, accounting for their anonymous storage.
+
+#### Scenario: Native timestamp queries preserve families, identities, and raw sample times
+- **WHEN** the production builder's timestamp expressions are evaluated for the three self families and six health families across multiple identities
+- **THEN** the native evaluator returns every present fixed family with its complete original labels and restored exact metric name
+- **AND** timestamp values equal raw source sample times distinct from the later evaluation time; missing families remain absent
+- **AND** an unexpected extra label survives query evaluation and the unchanged exact-label consumer rejects that row
+
+#### Scenario: Native timestamp repair preserves strict refusal and work limits
+- **WHEN** required native body evidence is absent, identities or samples are invalid/stale/ambiguous, or an encoded path exceeds 4096 characters
+- **THEN** the unchanged strict consumer or work-budget gate refuses; query repair does not establish producer acceptance
+- **AND** supported maximum-context self and six-family health paths are covered without increasing API-call, aggregate-byte or deadline limits
+- **AND** no optional body metric, native legacy exception or changed value query bypasses refusal
+
+#### Scenario: Native semantic regression detects the actual query defects
+- **WHEN** synthetic expression tests run through the actual production builder and native PromQL evaluator
+- **THEN** the repaired positive expression passes complete-label/raw-time expectations, and original grouped-timestamp and plain-`or` mutants fail those same expectations from duplicate output or expected-label/result mismatch
+- **AND** engine, image, evaluator, syntax or fixture-setup failures cannot count as successful mutation detection
+- **AND** the bounded exact container invocation must be executed successfully during implementation; source support alone is not execution evidence
+
 #### Scenario: Probe activation remains gated without a reviewed target and isolation
 - **WHEN** a target declaration, endpoint contract, finite budget, actual pre-placement namespace proof, or effective handler isolation is missing or unverified
 - **THEN** activation refuses before configuration placement and no target is treated as covered
@@ -513,6 +562,12 @@ For each backend, forecast inputs SHALL include seven timestamped complete UTC 2
 The receipt SHALL distinguish controller/deployed-receiver Git SHAs from the 64-character effective-inventory digest; these values SHALL NOT be substituted for one another. Only a trusted verifier SHALL bind task attribution, target, observations, and revisions to authoritative controller, deployment, inventory, and Semaphore state. Sanitized receipts SHALL omit private topology, raw backend responses, task/target identifiers, credentials, and exception text. Source fixtures/tests SHALL establish evaluator behavior only and SHALL NOT close baseline, calibration, or live acceptance gates. Live acceptance SHALL require a fresh read-only Dev-bound Semaphore receipt tied to reviewed source and effective-inventory evidence. Forecast evaluation SHALL NOT mutate retention, VM capacity, or senders. Any separately authorized resize SHALL still require VM/guest readback, verified backup and isolated restore, and telemetry-preservation gates.
 
 When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destructive capacity change and post-change readback.
+
+#### Scenario: Retained history observations do not close baseline or forecast acceptance
+- **WHEN** a private structured history receipt reports `ready_for_separate_forecast_review` with canonical source-event span, freshness/gap observations, receiver-host and five fixed backend summaries
+- **THEN** receipt accounting accepts only those history observations and keeps evaluation-point counts distinct from independent source events
+- **AND** historical sample ages do not establish current freshness, and backend stored-byte changes do not establish calibrated persisted-byte conversion
+- **AND** representative baseline, isolated calibration, forecast, backup/restore, retention and disk-growth acceptance remain separate open gates; source tests and point-query proof cannot close them
 
 #### Scenario: Wave exceeds capacity
 - **WHEN** the forecasted wave exceeds a declared capacity or retention budget

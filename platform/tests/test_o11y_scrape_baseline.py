@@ -27,6 +27,12 @@ BUDGET_SPEC = importlib.util.spec_from_file_location(
 assert BUDGET_SPEC and BUDGET_SPEC.loader
 BUDGET = importlib.util.module_from_spec(BUDGET_SPEC)
 BUDGET_SPEC.loader.exec_module(BUDGET)
+NATIVE_PROMQL_SPEC = importlib.util.spec_from_file_location(
+    "o11y_native_promql_runner", ROOT / "platform/tests/o11y_native_promql_runner.py"
+)
+assert NATIVE_PROMQL_SPEC and NATIVE_PROMQL_SPEC.loader
+NATIVE_PROMQL = importlib.util.module_from_spec(NATIVE_PROMQL_SPEC)
+NATIVE_PROMQL_SPEC.loader.exec_module(NATIVE_PROMQL)
 
 
 def _budget_receipt(*jobs):
@@ -533,7 +539,7 @@ def test_native_sample_projection_uses_raw_timestamp_and_separates_endpoint_and_
     def api(path, _reason="query_unavailable", **_kwargs):
         query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
         is_self = 'job="alloy"' in query
-        if query.startswith("timestamp("):
+        if "timestamp(" in query:
             return self_timestamps if is_self else health_timestamps
         return self_raw if is_self else health_raw
 
@@ -645,7 +651,7 @@ def test_native_sample_projection_refuses_stale_raw_timestamps_and_reports_scrap
     def api(path, _reason="query_unavailable", **_kwargs):
         query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
         is_self = 'job="alloy"' in query
-        if query.startswith("timestamp("):
+        if "timestamp(" in query:
             return self_timestamps if is_self else health_timestamps
         return self_raw if is_self else health_raw
 
@@ -684,6 +690,276 @@ def test_native_api_batch_enforces_aggregate_call_byte_and_time_bounds(monkeypat
     monkeypatch.setattr(SURVEY, "_run_api", lambda *_args, **_kwargs: b"x" * SURVEY.MAX_API_BYTES)
     with pytest.raises(SURVEY.Refusal, match="native_samples_unavailable"):
         SURVEY._run_native_api_batch(paths[:2])
+
+
+def test_native_api_batch_refuses_more_than_six_calls_and_oversized_encoded_path(monkeypatch):
+    calls = []
+    monkeypatch.setattr(SURVEY, "_run_api", lambda *args, **kwargs: calls.append((args, kwargs)) or b"{}")
+    with pytest.raises(SURVEY.Refusal, match="native_samples_unavailable"):
+        SURVEY._run_native_api_batch(["/api/v1/query?query=up"] * 7)
+    with pytest.raises(SURVEY.Refusal, match="native_samples_unavailable"):
+        SURVEY._run_native_api_batch(["/api/v1/query?query=" + "x" * 4080])
+    assert calls == []
+
+
+def test_timestamp_query_builder_uses_exact_family_branches_and_restores_names():
+    families = ("up", "scrape_samples_scraped", "scrape_body_size_bytes")
+    path = SURVEY._availability_query_path(
+        families, job="alloy", environment="prod", cluster="prod-west",
+        instance="alloy:12345", target_id="service:o11y", timestamp=True,
+    ).removeprefix(SURVEY.PROMETHEUS)
+    expression = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
+    assert expression.count("label_replace(timestamp(") == len(families)
+    assert expression.count("or on(__name__)") == len(families) - 1
+    for family in families:
+        assert f'__name__="{family}"' in expression
+        assert f'"__name__", "{family}", "job", ".*"' in expression
+    matchers = (
+        'job="alloy"', 'environment="prod"', 'cluster="prod-west"',
+        'instance="alloy:12345"', 'target_id="service:o11y"',
+    )
+    branches = expression.split(" or on(__name__) ")
+    assert len(branches) == len(families)
+    for family, branch in zip(families, branches, strict=True):
+        assert branch.startswith(f'label_replace(timestamp({{__name__="{family}",')
+        assert branch.endswith(f'"__name__", "{family}", "job", ".*")')
+        for matcher in matchers:
+            assert branch.count(matcher) == 1
+    value_path = SURVEY._availability_query_path(
+        families, job="alloy", environment="prod", cluster="prod-west",
+        instance="alloy:12345", target_id="service:o11y",
+    ).removeprefix(SURVEY.PROMETHEUS)
+    value_expression = parse_qs(urlsplit(SURVEY.PROMETHEUS + value_path).query)["query"][0]
+    assert value_expression == (
+        '{__name__=~"^(?:up|scrape_samples_scraped|scrape_body_size_bytes)$",job="alloy",'
+        'environment="prod",cluster="prod-west",instance="alloy:12345",target_id="service:o11y"}'
+    )
+
+
+def test_native_promql_runner_builds_actual_expressions_and_semantic_mutants():
+    expressions = NATIVE_PROMQL._builder_expressions(SURVEY)
+    assert len(expressions["self_families"]) == 3
+    assert len(expressions["health_families"]) == 6
+    assert expressions["self_timestamps"].count("timestamp(") == 3
+    assert expressions["health_timestamps"].count("timestamp(") == 6
+    assert expressions["max_self_api_path_length"] <= 4096
+    assert expressions["max_health_api_path_length"] <= 4096
+    grouped = f'timestamp({expressions["self_values"]})'
+    assert expressions["grouped_self"] == grouped
+    plain_self, plain_health = NATIVE_PROMQL._query_mutants(expressions)
+    assert "or on(__name__)" not in plain_self
+    assert "or on(__name__)" not in plain_health
+    rules = yaml.safe_load(NATIVE_PROMQL._rules(expressions))
+    assert rules["rule_files"] == []
+    assert len(rules["tests"][0]["promql_expr_test"]) == 2
+    assert any(
+        'unexpected="preserved"' in sample["labels"]
+        for sample in rules["tests"][0]["promql_expr_test"][1]["exp_samples"]
+    )
+    input_series = rules["tests"][0]["input_series"]
+    assert len(input_series) == 3 + 6 + 6 + 5
+    self_decoys = [
+        sample for sample in input_series
+        if 'instance="alloy:wrong-instance"' in sample["series"]
+        or 'target_id="service:wrong-target"' in sample["series"]
+    ]
+    assert len(self_decoys) == 6
+    assert len(rules["tests"][0]["promql_expr_test"][0]["exp_samples"]) == 3
+    NATIVE_PROMQL._consumer_fixture_check(SURVEY, expressions)
+
+
+def test_native_promql_runner_reads_compose_fallback_and_rejects_malformed_image(tmp_path, monkeypatch):
+    image = NATIVE_PROMQL._fallback_image()
+    assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", image)
+    compose = tmp_path / "compose.yml"
+    compose.write_text('services:\n  prometheus:\n    image: "${PROMETHEUS_IMAGE:-}"\n', encoding="utf-8")
+    monkeypatch.setattr(NATIVE_PROMQL, "COMPOSE", compose)
+    with pytest.raises(NATIVE_PROMQL.RunnerError, match="malformed literal fallback Prometheus image"):
+        NATIVE_PROMQL._fallback_image()
+
+
+def test_native_promql_runner_fails_closed_on_nonsemantic_mutant_errors():
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b"duplicate output labelset",
+    ) == "duplicate_output_labelset"
+    assert NATIVE_PROMQL._classify_evaluator_failure(b"query result does not match") == "expected_result_mismatch"
+    assert NATIVE_PROMQL._classify_evaluator_failure(b"error parsing expression") is None
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b"same labelset\nerror parsing expression",
+    ) is None
+    assert NATIVE_PROMQL._classify_evaluator_failure(b"cannot connect to daemon") is None
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b'FAILED:\n  expr: "up or probe_success", time: 2m,\n'
+        b'    exp: {__name__="probe_success"} 0, {__name__="up"} 0\n'
+        b'    got: {__name__="up"} 0',
+    ) == "expected_result_mismatch"
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b'FAILED:\n  expr: "up or probe_success", time: 2m,\n'
+        b'error parsing fixture YAML\n'
+        b'    exp: {__name__="probe_success"} 0\n'
+        b'    got: {__name__="up"} 0',
+    ) is None
+    command = NATIVE_PROMQL._evaluator_command("docker", "prometheus:test", "unique-name", "owner")
+    required_args = (
+        "--rm", "-i", "--network", "none", "--pull=never", "--entrypoint",
+        "/bin/promtool", "test", "rules", "/dev/stdin",
+    )
+    for argument in required_args:
+        assert argument in command
+    forbidden_args = {"-v", "--volume", "--privileged", "--network=host", "-p"}
+    assert not any(argument in forbidden_args for argument in command)
+
+
+def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monkeypatch):
+    real_popen = NATIVE_PROMQL.subprocess.Popen
+    processes = []
+
+    class TrackingPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.was_killed = False
+            self.reaped_after_kill = False
+            self.post_kill_wait_timeouts = []
+            processes.append(self)
+
+        def kill(self):
+            self.was_killed = True
+            return super().kill()
+
+        def wait(self, timeout=None):
+            if self.was_killed:
+                self.post_kill_wait_timeouts.append(timeout)
+            result = super().wait(timeout=timeout)
+            if self.was_killed:
+                self.reaped_after_kill = True
+            return result
+
+    monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", TrackingPopen)
+    cases = (
+        ("import time; time.sleep(5)", b"x" * (2 * 1024 * 1024)),
+        ("import os, time; os.close(1); os.close(2); time.sleep(5)", None),
+    )
+    for program, input_bytes in cases:
+        started = NATIVE_PROMQL.time.monotonic()
+        result = NATIVE_PROMQL._bounded_process(
+            [NATIVE_PROMQL.sys.executable, "-c", program],
+            deadline=started + 0.2,
+            input_bytes=input_bytes,
+        )
+        elapsed = NATIVE_PROMQL.time.monotonic() - started
+        assert result[2] is True
+        assert elapsed < 1.0
+        process = processes[-1]
+        assert process.was_killed
+        assert process.post_kill_wait_timeouts
+        assert process.post_kill_wait_timeouts[-1] > 0
+        assert process.reaped_after_kill
+        assert process.returncode is not None
+
+
+def test_native_promql_runner_caps_subprocess_output_while_draining():
+    result = NATIVE_PROMQL._bounded_process(
+        [NATIVE_PROMQL.sys.executable, "-c", "import os; os.write(1, b'x' * 40000)"],
+        deadline=NATIVE_PROMQL.time.monotonic() + 2,
+    )
+    assert result[0] == 0
+    assert result[1] == b"x" * NATIVE_PROMQL.OUTPUT_LIMIT
+    assert result[2] is False
+    assert result[3] is True
+
+
+def test_native_promql_runner_distinguishes_missing_image_from_inspection_errors():
+    classify = NATIVE_PROMQL._classify_image_status
+    assert classify("podman", 1, b"", False, False) is False
+    assert classify("docker", 1, b"Error: No such image: prom/test:v1", False, False) is False
+    assert classify("podman", 0, b"", False, False) is True
+    for engine, code, output, timed_out, truncated in (
+        ("podman", 125, b"connection refused", False, False),
+        ("podman", 1, b"socket error", False, False),
+        ("docker", 1, b"cannot connect to API", False, False),
+        ("podman", 124, b"", True, False),
+        ("podman", 1, b"", False, True),
+    ):
+        with pytest.raises(NATIVE_PROMQL.RunnerError):
+            classify(engine, code, output, timed_out, truncated)
+
+
+def _write_fake_container_engine(tmp_path, name, owner, *, wrong_owner=False):
+    executable = tmp_path / "fake-container-engine"
+    removed = tmp_path / "removed"
+    inspected = tmp_path / "inspected"
+    removals = tmp_path / "removals"
+    source = f"#!{NATIVE_PROMQL.sys.executable}\n" + '''
+import json
+import pathlib
+import sys
+
+name = __NAME__
+owner = __OWNER__
+owner_label = __OWNER_LABEL__
+run_label = __RUN_LABEL__
+removed = pathlib.Path(__REMOVED__)
+inspected = pathlib.Path(__INSPECTED__)
+removals = pathlib.Path(__REMOVALS__)
+wrong_owner = __WRONG_OWNER__
+args = sys.argv[1:]
+if args[0] == "ps":
+    names = [name + "-suffix"]
+    if not removed.exists():
+        names.append(name)
+    print("\\n".join(names))
+elif args[0] == "inspect":
+    requested = args[-1]
+    inspected.write_text(requested, encoding="utf-8")
+    labels = {owner_label: "other" if wrong_owner else owner, run_label: requested}
+    print(json.dumps([{"Name": "/" + requested, "Config": {"Labels": labels}}]))
+elif args[0] == "rm":
+    removals.write_text(json.dumps(args[1:]), encoding="utf-8")
+    removed.touch()
+else:
+    raise SystemExit(2)
+'''
+    replacements = {
+        "__NAME__": json.dumps(name),
+        "__OWNER__": json.dumps(owner),
+        "__OWNER_LABEL__": json.dumps(NATIVE_PROMQL.OWNER_LABEL),
+        "__RUN_LABEL__": json.dumps(NATIVE_PROMQL.RUN_LABEL),
+        "__REMOVED__": json.dumps(str(removed)),
+        "__INSPECTED__": json.dumps(str(inspected)),
+        "__REMOVALS__": json.dumps(str(removals)),
+        "__WRONG_OWNER__": repr(wrong_owner),
+    }
+    for token, value in replacements.items():
+        source = source.replace(token, value)
+    executable.write_text(source, encoding="utf-8")
+    executable.chmod(0o700)
+    return executable, inspected, removals
+
+
+def test_native_promql_runner_cleans_only_exact_name_and_label_owned_containers(tmp_path):
+    name = "o11y-promql-unique-1"
+    owner = "invocation-unique"
+    engine, inspected, removals = _write_fake_container_engine(tmp_path, name, owner)
+    NATIVE_PROMQL._cleanup(
+        str(engine), owner, [name, name + "-absent"], NATIVE_PROMQL.time.monotonic() + 2,
+    )
+    assert inspected.read_text(encoding="utf-8") == name
+    assert json.loads(removals.read_text(encoding="utf-8")) == [
+        "--force", "--volumes", name,
+    ]
+
+
+def test_native_promql_runner_refuses_cleanup_when_labels_do_not_prove_ownership(tmp_path):
+    name = "o11y-promql-unique-2"
+    owner = "invocation-unique"
+    engine, _inspected, removals = _write_fake_container_engine(
+        tmp_path, name, owner, wrong_owner=True,
+    )
+    with pytest.raises(NATIVE_PROMQL.RunnerError, match="ownership mismatch"):
+        NATIVE_PROMQL._cleanup(
+            str(engine), owner, [name], NATIVE_PROMQL.time.monotonic() + 2,
+        )
+    assert not removals.exists()
 
 
 def test_native_process_timestamp_preserves_subsecond_boundary():
@@ -795,8 +1071,8 @@ def test_prometheus_self_source_requires_fresh_raw_samples_and_all_loaded_limits
 
     def api(path, _reason="query_unavailable", **_kwargs):
         query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
-        assert query.startswith("timestamp(") or "scrape_samples_scraped" in query
-        return timestamp if query.startswith("timestamp(") else values
+        assert "timestamp(" in query or "scrape_samples_scraped" in query
+        return timestamp if "timestamp(" in query else values
 
     monkeypatch.setattr(SURVEY, "_run_api", api)
     receipt = SURVEY.collect_prometheus_self_source(
