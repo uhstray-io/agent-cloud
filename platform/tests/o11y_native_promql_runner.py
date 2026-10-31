@@ -22,6 +22,8 @@ HELPER = ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py"
 COMPOSE = ROOT / "platform/services/o11y/deployment/compose.yml"
 TOTAL_SECONDS = 300
 CLEANUP_RESERVE_SECONDS = 45
+PROCESS_CLEANUP_RESERVE_SECONDS = 5.0
+PROCESS_REAP_FRACTION = 0.6
 OUTPUT_LIMIT = 16_384
 OWNER_LABEL = "io.agent-cloud.native-promql-owner"
 RUN_LABEL = "io.agent-cloud.native-promql-run"
@@ -239,7 +241,8 @@ def _classify_evaluator_failure(output):
 
 
 def _bounded_process(argv, *, deadline, input_bytes=None):
-    if time.monotonic() >= deadline:
+    started = time.monotonic()
+    if started >= deadline:
         return 124, b"", True, False
     try:
         process = subprocess.Popen(
@@ -281,22 +284,30 @@ def _bounded_process(argv, *, deadline, input_bytes=None):
     if input_bytes is not None:
         writer = threading.Thread(target=send_input, name="native-promql-input", daemon=True)
         writer.start()
+    remaining = max(0.0, deadline - started)
+    cleanup_reserve = min(PROCESS_CLEANUP_RESERVE_SECONDS, remaining * 0.25)
+    process_deadline = deadline - cleanup_reserve
+    reap_reserve = cleanup_reserve * PROCESS_REAP_FRACTION
+    thread_reserve = cleanup_reserve - reap_reserve
     timed_out = False
     try:
-        process.wait(timeout=max(0, deadline - time.monotonic()))
+        process.wait(timeout=max(0, process_deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         timed_out = True
         process.kill()
+        reap_deadline = min(deadline - thread_reserve, time.monotonic() + reap_reserve)
         try:
-            process.wait(timeout=max(0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            pass
+            process.wait(timeout=max(0, reap_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as exc:
+            raise RunnerError("timed-out child process was not reaped within its reserved cleanup window") from exc
+    if process.returncode is None:
+        raise RunnerError("child process exited without a completed reap")
     for thread in (writer, reader):
         if thread is None:
             continue
         thread.join(timeout=max(0, deadline - time.monotonic()))
         if thread.is_alive():
-            timed_out = True
+            raise RunnerError("subprocess I/O did not finish within its bounded deadline")
     process.stdout.close()
     return (
         process.returncode if process.returncode is not None else 124,

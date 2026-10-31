@@ -797,7 +797,31 @@ def test_native_promql_runner_fails_closed_on_nonsemantic_mutant_errors():
     assert not any(argument in forbidden_args for argument in command)
 
 
-def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline():
+def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monkeypatch):
+    real_popen = NATIVE_PROMQL.subprocess.Popen
+    processes = []
+
+    class TrackingPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.was_killed = False
+            self.reaped_after_kill = False
+            self.post_kill_wait_timeouts = []
+            processes.append(self)
+
+        def kill(self):
+            self.was_killed = True
+            return super().kill()
+
+        def wait(self, timeout=None):
+            if self.was_killed:
+                self.post_kill_wait_timeouts.append(timeout)
+            result = super().wait(timeout=timeout)
+            if self.was_killed:
+                self.reaped_after_kill = True
+            return result
+
+    monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", TrackingPopen)
     cases = (
         ("import time; time.sleep(5)", b"x" * (2 * 1024 * 1024)),
         ("import os, time; os.close(1); os.close(2); time.sleep(5)", None),
@@ -812,6 +836,12 @@ def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline():
         elapsed = NATIVE_PROMQL.time.monotonic() - started
         assert result[2] is True
         assert elapsed < 1.0
+        process = processes[-1]
+        assert process.was_killed
+        assert process.post_kill_wait_timeouts
+        assert process.post_kill_wait_timeouts[-1] > 0
+        assert process.reaped_after_kill
+        assert process.returncode is not None
 
 
 def test_native_promql_runner_caps_subprocess_output_while_draining():
