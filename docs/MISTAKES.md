@@ -33,7 +33,7 @@ and why.
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x5** | Unverified claim | 5 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
-| 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | 1 | Convention |
+| 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 1 | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | 2 | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
@@ -115,7 +115,7 @@ and why.
 | 4.6 | **x3** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 3 | Test (static guard, `test_no_request_in_loop_items.py`; `test_no_log_error_redaction.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | **x2** — A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs (the second time the scan was already scoped, and the PR was replaced) | Data handling | 2 | CI (scan scoped to the PR's commits); pre-commit hook flags a staged literal; the fixture rule itself Convention |
-| 4.9 | **x3** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids; a plan note naming the operator's gateway key field | Data handling | 3 | Test (`test_no_site_identity.py`, the three account shapes; caught by CI both times it fired); other private values Convention |
+| 4.9 | **x4** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids; a plan note naming the operator's gateway key field; the production internal zone in a status entry and two PR bodies | Data handling | 4 | Test (`test_no_site_identity.py`, the three account shapes; caught by CI both times it fired); other private values Convention; site-config-derived name scan for commits and PR text proposed (count ≥ 3) |
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
@@ -366,6 +366,8 @@ command list; until then, `ruff check .; echo rc=$?` is the form.
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
 
+**Occurrences: 2** — (first occurrence undated), 2026-10-30
+
 **What happened.** Immediately after creating a runner group, its access list was checked
 at `.../runner-groups/5/repositories`. The group's real id was 6. The check silently
 verified a different group, and the shape of the output gave no hint — the id had been
@@ -379,6 +381,14 @@ into "verified something else".
 **Enforced by.** Convention. The playbook itself does this correctly, threading the
 created id through rather than recomputing it; the slip was in an ad-hoc check beside it,
 which is an argument for verifying through the automation rather than around it.
+
+**Occurrence 2 — 2026-10-30.** During the skynet production rollout, two Semaphore task ids
+reached the operator's status table without being read from the launcher's output: the root
+grow was reported as "10680-ish" before its log was read (it was 10680 — the guess happened to
+match), and SSH hardening was reported as task 11311 when the launcher had printed 10311. The
+rule did not fire because these were status summaries, not verification steps, and the rule's
+wording emphasises verification; an id in a report to the operator is a claim just the same.
+The ids were corrected from the launcher logs (`Task <id> launched`) before the final report.
 
 
 ### 1.5 A security control asserted from documentation, disproved by the first measurement
@@ -2990,7 +3000,7 @@ time, or carry `trufflehog:ignore` with the reason.
 
 ### 4.9 Private Discord destination IDs in a public test fixture
 
-**Occurrences: 3** — 2026-09-25, 2026-10-05, 2026-10-14
+**Occurrences: 4** — 2026-09-25, 2026-10-05, 2026-10-14, 2026-10-30
 
 **What happened.** The first PR revision copied the real guild and channel IDs
 from private site-config into a public Python test. The values are destination
@@ -3037,6 +3047,20 @@ the suite unless `SKIP_TESTS=1`) was skipped, was not established. Records writt
 identity by its role (the operator's gateway key), never by the field or account that spells the identity.
 The enforcement is the existing test; what this occurrence adds is that the test is cheap enough to run before
 every push of a docs change, and that the 22-minute round trip is the cost of finding it in CI.
+
+**Occurrence 4 — 2026-10-30.** During the skynet production rollout the production OPA hostname, which
+spells the private internal DNS zone and site label (site-config's `dns_zone`/`dns_site`), was written
+into public text three times: the descriptions of merged PRs 777 and 794, and the first revision of the
+AGENTS.md status entry in PR 796, which the fallback review caught before merge. The committed code stayed
+clean (`git grep` of `dev` found no match): the playbooks read the URL from the inventory's
+`skynet_opa_url`. The PR descriptions were edited to the `opa.<dns_site>.<dns_zone>` placeholder (GitHub
+keeps the edit history), and the entry now names the inventory variable. Why the rule did not fire: it
+reads as a rule about fixtures and copied values, the value was a hostname rather than an IP or account,
+so neither the private-IP pre-commit gate nor `test_no_site_identity.py` looks for it, and PR text is read
+by no hook at all (as 5.15 found for attribution). Guard proposal, required at this count: a pre-commit and
+pre-push check that, when a site-config checkout is configured, fails on any staged line containing a
+private name it derives from that checkout (the internal zone, site label and inventory host names), plus
+the `gh` wrapper proposed in 5.15 running the same check on PR and comment bodies before they are sent.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
