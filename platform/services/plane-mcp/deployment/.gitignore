@@ -1,0 +1,2 @@
+# Rendered per-deploy by deploy-plane-mcp.yml. Never committed: it holds the OAuth client secret.
+.env

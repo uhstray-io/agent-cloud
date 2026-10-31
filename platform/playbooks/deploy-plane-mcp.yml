@@ -1,0 +1,330 @@
+---
+# deploy-plane-mcp.yml — Plane's MCP server, beside Plane on the plane_svc host (composable).
+#
+# Its own compose project (platform/services/plane-mcp/deployment/), not part of Plane's stack:
+# the server refuses to start without an OAuth client id (plane_oauth_provider.py in the image),
+# and that id exists only once Plane is up and its OAuth application is registered. A separate
+# deploy runs in that order with no startup loop (Critical Deployment Rule 3; design.md task 5.1).
+#
+# Phase 1: Place the repo; refuse unless Plane is running; read the automation password and any
+#          stored MCP client credentials from OpenBao; register or repair Plane's OAuth app inside
+#          plane-api (register_mcp_app.py: created once, redirect URIs and scopes patched when they
+#          differ, the secret regenerated only when OpenBao has none); store new credentials
+#          (tasks/bao-merge-keys.yml); render .env.
+# Phase 2: deploy.sh — container lifecycle only.
+# Phase 3: Verify inside the container: the token endpoint refuses an anonymous call, and lists
+#          Plane's tools for the workspace service token Deploy Plane stored (never printed).
+#
+# No service-deploy step result is emitted: the result is keyed by the host's service_name, which
+# on plane_svc is `plane`, so it would overwrite Deploy Plane's own record.
+# For the same reason the template is not in OPA's service_deploy_templates: the conformance
+# collector maps each listed template to a service by its inventory group, and would score
+# these runs as Plane's service-deploy step.
+#
+# Change: plan/development/openspec/changes/deploy-plane-work-management/ (tasks 5.1, 5.2)
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: the Plane group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: plane_svc
+    preflight_group_expected: plane_svc
+
+# ── Phase 1: Place repo, register the OAuth app, render .env ─────────────────
+- name: "Phase 1: Place repo + register the MCP OAuth app"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/platform/services/plane-mcp/deployment"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Plane's app gets the MCP server's own OAuth callbacks: the HTTP transport mounts under
+    # /http, the SSE transport at the root (plane_mcp/__main__.py).
+    _mcp_redirect_uris: "{{ plane_mcp_public_url }}/http/auth/callback {{ plane_mcp_public_url }}/auth/callback"
+
+  tasks:
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Is Plane running?"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, "--format", "{{ '{{.State.Running}}' }}", "plane-api"]
+      register: _plane_api_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Dry run, Plane not running: stop here"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _plane_api_state.rc != 0 or _plane_api_state.stdout | trim != 'true'
+
+    - name: "Refuse unless Plane is running"
+      ansible.builtin.assert:
+        that:
+          - _plane_api_state.rc == 0
+          - _plane_api_state.stdout | trim == 'true'
+        fail_msg: "plane-api is not running on this host: run Deploy Plane first."
+        quiet: true
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Read Plane's secrets (automation password, MCP client credentials)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/plane"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _plane_secret
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Register the app and render .env (skipped in check mode: both write)"
+      when: not ansible_check_mode
+      block:
+        - name: "Register or repair Plane's OAuth app for the MCP server (inside plane-api)"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - -i
+              - plane-api
+              - python
+              - -c
+              - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/plane_session.py') ~ '\n' ~ lookup('file', playbook_dir ~ '/../services/plane/deployment/register_mcp_app.py') }}"
+            stdin: >-
+              {{ {'base': 'http://localhost:8000',
+                  'host': plane_public_url | urlsplit('hostname'),
+                  'origin': plane_public_url,
+                  'email': plane_automation_email,
+                  'password': _plane_secret.json.data.data.plane_automation_password,
+                  'workspace_slug': plane_workspace_slug,
+                  'app_slug': 'agent-cloud-mcp',
+                  'app_name': 'agent-cloud MCP',
+                  'company_name': plane_company_name,
+                  'short_description': 'Plane MCP server for agent-cloud harnesses',
+                  'redirect_uri': _mcp_redirect_uris,
+                  'have_secret': (_plane_secret.json.data.data.plane_mcp_client_secret | default('') | length > 0)} | to_json }}
+          register: _mcp_register
+          changed_when: false  # the store write below is the change
+          failed_when: false
+          no_log: true
+
+        - name: "Keep the credentials, and a summary without them"
+          ansible.builtin.set_fact:
+            _mcp_reg: >-
+              {%- set last = _mcp_register.stdout_lines | default([''], true) | last -%}
+              {{ (last | from_json) if last.startswith('{') else {'error': 'the registration script printed no summary (exit ' ~ _mcp_register.rc ~ ')'} }}
+          no_log: true
+
+        - name: "Registration summary (names only)"
+          ansible.builtin.set_fact:
+            # The exit code only: the command result carries its stdin (the password).
+            _mcp_reg_summary:
+              rc: "{{ _mcp_register.rc }}"
+              error: "{{ _mcp_reg.error | default('') }}"
+              created: "{{ _mcp_reg.created | default(false) }}"
+              regenerated: "{{ _mcp_reg.regenerated | default(false) }}"
+              patched: "{{ _mcp_reg.patched | default([]) }}"
+          no_log: true
+
+        - name: "OAuth app registered"
+          ansible.builtin.assert:
+            that:
+              - _mcp_reg_summary.rc | int == 0
+              - _mcp_reg_summary.error == ''
+            fail_msg: "Plane MCP app registration failed: {{ _mcp_reg_summary.error or ('exit ' ~ _mcp_reg_summary.rc) }}"
+            quiet: true
+
+        - name: "Resolve the client credentials"
+          ansible.builtin.set_fact:
+            _plane_mcp_client_id: "{{ _mcp_reg.client_id }}"
+            _plane_mcp_client_secret: "{{ _mcp_reg.client_secret | default(_plane_secret.json.data.data.plane_mcp_client_secret | default('')) }}"
+          no_log: true
+
+        - name: "Store new credentials at secret/services/plane (shared merge path)"
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+            _bm_path: services/plane
+            _bm_data:
+              plane_mcp_client_id: "{{ _plane_mcp_client_id }}"
+              plane_mcp_client_secret: "{{ _plane_mcp_client_secret }}"
+            _bm_on_missing: fail
+            _bm_missing_msg: "secret/services/plane does not exist: run Deploy Plane first."
+
+        - name: "Render .env (holds the client secret)"
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/plane-mcp/deployment/templates/env.j2"
+            dest: "{{ _deploy_dir }}/.env"
+            mode: "0600"
+          no_log: true
+
+        - name: "Report the registration"
+          ansible.builtin.debug:
+            msg: >-
+              OAuth app agent-cloud-mcp:
+              {{ 'created' if _mcp_reg_summary.created | bool else ('secret regenerated' if _mcp_reg_summary.regenerated | bool else 'already registered') }}{{
+              ('; patched ' ~ (_mcp_reg_summary.patched | join(', '))) if _mcp_reg_summary.patched else '' }}.
+              Credentials in OpenBao (never shown).
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start the Plane MCP server"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/platform/services/plane-mcp/deployment"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+      register: _deploy
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+      when: not ansible_check_mode
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+      when: not ansible_check_mode
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify the Plane MCP server"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    # One MCP JSON-RPC call to the token endpoint, from inside the container. The token, when
+    # given, arrives on stdin, never in argv. Prints only the HTTP status and the tool count.
+    _probe: |
+      import json, sys, urllib.request, urllib.error
+      token = sys.stdin.readline().strip()
+      body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
+      headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+      if token:
+          headers.update({"Authorization": "Bearer " + token, "x-workspace-slug": sys.argv[1]})
+      req = urllib.request.Request("http://127.0.0.1:8211/http/api-key/mcp", data=body, headers=headers)
+      try:
+          resp = urllib.request.urlopen(req, timeout=20)
+          status, raw = resp.status, resp.read().decode()
+      except urllib.error.HTTPError as e:
+          status, raw = e.code, ""
+      tools = 0
+      for line in raw.splitlines():
+          line = line[5:].strip() if line.startswith("data:") else line.strip()
+          if line.startswith("{"):
+              tools = len((json.loads(line).get("result") or {}).get("tools") or [])
+      print(json.dumps({"status": status, "tools": tools}))
+
+  tasks:
+    - name: "Dry run: is the MCP server running?"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, "--format", "{{ '{{.State.Running}}' }}", "plane-mcp"]
+      register: _dry_mcp
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run, MCP server not running: stop"
+      ansible.builtin.meta: end_host
+      when:
+        - ansible_check_mode
+        - _dry_mcp.rc != 0 or _dry_mcp.stdout | trim != 'true'
+
+    - name: "An anonymous call is refused"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, plane-mcp, python, -c, "{{ _probe }}", "{{ plane_workspace_slug }}"]
+        stdin: ""
+      register: _mcp_anon
+      changed_when: false
+      retries: 10
+      delay: 6
+      until: _mcp_anon.rc == 0 and (_mcp_anon.stdout | from_json).status == 401
+      check_mode: false
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Read the workspace service token"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/plane"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ hostvars[inventory_hostname]._bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _plane_secret_verify
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "The token endpoint lists Plane's tools (service token on stdin)"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, plane-mcp, python, -c, "{{ _probe }}", "{{ plane_workspace_slug }}"]
+        stdin: "{{ _plane_secret_verify.json.data.data.plane_service_token }}"
+      register: _mcp_tools_run
+      changed_when: false
+      failed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: "Keep only the probe result"
+      ansible.builtin.set_fact:
+        _mcp_tools: "{{ (_mcp_tools_run.stdout | from_json) if (_mcp_tools_run.stdout | default('')).startswith('{') else {'status': 0, 'tools': 0} }}"
+      no_log: true
+
+    - name: "Plane's tools are listed"
+      ansible.builtin.assert:
+        that:
+          - _mcp_tools.status | int == 200
+          - _mcp_tools.tools | int > 0
+        fail_msg: "MCP tools/list with the service token answered {{ _mcp_tools.status }} with {{ _mcp_tools.tools }} tools."
+        quiet: true
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          Plane MCP healthy: anonymous calls refused (401), {{ _mcp_tools.tools }} tools listed for workspace
+          {{ plane_workspace_slug }} at {{ plane_mcp_public_url }}/http/api-key/mcp (OAuth at /http/mcp).
