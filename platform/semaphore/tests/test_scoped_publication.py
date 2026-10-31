@@ -149,6 +149,15 @@ class ScopedPublicationTests(unittest.TestCase):
                     ]
                     if cls.drop_setting:
                         value.pop("description", None)
+                    if "environment_ids" in cls.records[0]:
+                        # Semaphore v2.19.11 binds from `environment_ids` when the body carries it, and
+                        # copies `environment_id` into it only when the body omits the list
+                        # (db/Template.go ApplyLegacyEnvironmentField). A body echoing a stale list
+                        # therefore keeps the old binding (production task 10722).
+                        ids = value["environment_ids"] if value.get("environment_ids") is not None \
+                            else [value["environment_id"]]
+                        value["environment_ids"] = ids
+                        value["environment_id"] = ids[0]
                     cls.records[0] = value
                 return self.reply({})
 
@@ -506,6 +515,20 @@ class ScopedPublicationTests(unittest.TestCase):
             "environment_id": target["id"],
             "environment_ids": [target["id"]],
         })
+        writes = copy.deepcopy(self.writes)
+        code, output = self.run_play(provision=True)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, writes)
+
+    def test_provisioner_binds_through_environment_ids_on_semaphore_v2_19(self):
+        self.prepare_seed_template()
+        self.records[0]["environment_ids"] = [self.records[0]["environment_id"]]
+        original = copy.deepcopy(self.records[0])
+        code, output = self.run_play(provision=True)
+        self.assertEqual(code, 0, output)
+        target = self.environments[1]
+        self.assertEqual(self.records[0],
+                         original | {"environment_id": target["id"], "environment_ids": [target["id"]]})
         writes = copy.deepcopy(self.writes)
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
