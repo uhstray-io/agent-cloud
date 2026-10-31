@@ -497,6 +497,9 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_provisioner_encrypts_runtime_auth_preserves_source_and_converges(self):
         self.prepare_seed_template()
+        # A template read back without environment_ids (an older record shape); the v2.19 test
+        # below starts from the list.
+        self.records[0].pop("environment_ids")
         original = copy.deepcopy(self.records[0])
         source = copy.deepcopy(self.environments[0])
         code, output = self.run_play(provision=True)
@@ -516,8 +519,7 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_provisioner_binds_through_environment_ids_on_semaphore_v2_19(self):
         self.prepare_seed_template()
-        self.records[0]["environment_ids"] = [self.records[0]["environment_id"]]
-        original = copy.deepcopy(self.records[0])
+        original = copy.deepcopy(self.records[0])  # TEMPLATE carries environment_ids, as v2.19 does
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
         target = self.environments[1]
