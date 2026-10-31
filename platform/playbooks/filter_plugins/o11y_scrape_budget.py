@@ -109,6 +109,17 @@ SOURCE_READBACK_REASONS = frozenset(
         "source_readback_unavailable",
     }
 )
+NATIVE_SOURCE_REFUSAL_REASONS = frozenset({
+    "native_declaration_invalid", "native_source_unavailable", "native_source_absent",
+    "native_source_ambiguous", "native_source_stale", "native_source_limits_unavailable",
+    "native_source_limits_mismatch", "native_samples_unavailable", "native_samples_invalid",
+    "native_samples_missing", "native_samples_stale", "native_samples_ambiguous",
+    "native_detail_unavailable", "native_detail_invalid", "native_component_absent",
+    "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
+    "native_debug_stale", "native_debug_mismatch", "native_readback_timeout", "native_target_mismatch",
+    "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
+})
+SOURCE_GATE_REFUSAL_REASONS = READBACK_REASONS | SOURCE_READBACK_REASONS | NATIVE_SOURCE_REFUSAL_REASONS
 SOURCE_JOB_CATEGORIES = {
     "agentgateway": "agentgateway",
     "dgx-spark-node": "dgx-spark",
@@ -580,20 +591,10 @@ def _valid_native_duration(value: Any) -> bool:
 
 def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = False) -> dict[str, Any]:
     """Consume the source-specific availability evidence without returning private labels."""
-    reasons = {
-        "native_declaration_invalid", "native_source_unavailable", "native_source_absent",
-        "native_source_ambiguous", "native_source_stale", "native_source_limits_unavailable",
-        "native_source_limits_mismatch", "native_samples_unavailable", "native_samples_invalid",
-        "native_samples_missing", "native_samples_stale", "native_samples_ambiguous",
-        "native_detail_unavailable", "native_detail_invalid", "native_component_absent",
-        "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
-        "native_debug_stale", "native_debug_mismatch", "native_target_mismatch",
-        "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
-    }
     if (
         isinstance(readback, Mapping) and readback.get("status") == "unavailable"
         and set(readback) == {"status", "reason", "source", "intended_source", "matches_intended"}
-        and readback.get("reason") in reasons and readback.get("source") == "unknown"
+        and readback.get("reason") in NATIVE_SOURCE_REFUSAL_REASONS and readback.get("source") == "unknown"
         and readback.get("intended_source") == "unknown" and readback.get("matches_intended") is False
     ):
         return {"status": "unavailable", "reason": readback["reason"], "source": "unknown"}
@@ -758,15 +759,17 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
 
 def o11y_availability_source_gate_diagnostic(result: Any) -> str:
     """Reduce a protected Ansible command result to one fixed diagnostic category."""
-    fallback = "source_readback_unavailable"
+    fallback = "producer_evidence_invalid"
     try:
         if not isinstance(result, Mapping):
-            return fallback
+            return "producer_process_unexpected"
         rc, stdout, stderr = result.get("rc"), result.get("stdout"), result.get("stderr")
         if isinstance(rc, bool) or not isinstance(rc, int) or rc not in {0, 2}:
-            return fallback
-        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 65536 or stderr != "":
-            return fallback
+            return "producer_process_unexpected"
+        if not isinstance(stdout, str):
+            return "producer_process_unexpected"
+        if len(stdout.encode("utf-8")) > 65536:
+            return "producer_stdout_oversized"
 
         def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             value: dict[str, Any] = {}
@@ -779,20 +782,32 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
         def reject_nonfinite(value: str) -> Any:
             raise ValueError("non-finite JSON number")
 
-        readback = json.loads(
-            stdout, object_pairs_hook=unique_object, parse_float=Decimal, parse_constant=reject_nonfinite,
-        )
+        try:
+            readback = json.loads(
+                stdout, object_pairs_hook=unique_object, parse_float=Decimal, parse_constant=reject_nonfinite,
+            )
+        except (ValueError, TypeError, InvalidOperation, RecursionError):
+            return "producer_json_invalid"
+        if (
+            rc == 2 and isinstance(readback, Mapping)
+            and set(readback) == {"status", "reason", "source", "intended_source", "matches_intended"}
+            and readback.get("status") == "unavailable"
+            and readback.get("reason") in SOURCE_GATE_REFUSAL_REASONS
+            and readback.get("source") == "unknown"
+            and readback.get("intended_source") == "unknown"
+            and readback.get("matches_intended") is False
+        ):
+            return readback["reason"]
         coverage = o11y_availability_source_coverage(readback, allow_self_only=True)
+        if stderr != "":
+            return "producer_stderr_present"
         if rc == 0 and coverage.get("status") == "observed":
             return "producer_observed" if coverage.get("matches_intended") is True else "producer_mismatch"
-        if rc != 2 or coverage.get("status") != "unavailable":
-            return fallback
-        reason = coverage.get("reason")
-        if isinstance(reason, str) and reason != fallback:
-            return reason
+        if rc == 2:
+            return "producer_exit_code_mismatch" if coverage.get("status") == "observed" else fallback
         return fallback
     except Exception:
-        return fallback
+        return "producer_evidence_invalid"
 
 
 class FilterModule:

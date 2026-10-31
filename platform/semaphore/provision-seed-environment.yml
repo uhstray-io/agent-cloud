@@ -320,20 +320,13 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
         body_format: json
-        # Semaphore v2.19.11 returns `environment_ids` with the template and binds from it whenever
-        # the body carries it (db/Template.go ApplyLegacyEnvironmentField). This body echoes the
-        # read template, so the stale list would win over a new `environment_id` (production task
-        # 10722): set both.
-        body: "{{ _template.json | publication_settings | combine(_binding, {'survey_vars': _template.json.survey_vars | default([])}) | to_json }}"
+        body: "{{ _template.json | publication_settings | combine({'environment_id': _target.json.id, 'environment_ids': [_target.json.id], 'survey_vars': _template.json.survey_vars | default([])}) | to_json }}"
         status_code: [200, 204]
-      vars:
-        _binding: >-
-          {{ {'environment_id': _target.json.id}
-             | combine({'environment_ids': [_target.json.id]} if 'environment_ids' in _template.json else {}) }}
       when:
         - not ansible_check_mode
-        - (_template.json.environment_id != _target.json.id
-           or (_template.json.environment_ids | default([_target.json.id])) != [_target.json.id])
+        - >-
+          _template.json.environment_id != _target.json.id or
+          (_template.json | effective_environment_ids) != [_target.json.id]
       changed_when: true
       no_log: true
 
@@ -352,9 +345,10 @@
       ansible.builtin.assert:
         that:
           - >-
-            (_bound.json | publication_settings) ==
-            (_template.json | publication_settings | combine({'environment_id': _target.json.id})
-             | combine({'environment_ids': [_target.json.id]} if 'environment_ids' in _template.json else {}))
+            (_template.json | publication_settings |
+             combine({'environment_id': _target.json.id, 'environment_ids': [_target.json.id]})) |
+            publication_binding_matches(_bound.json, _target.json.id)
+          - _bound.json | effective_environment_ids == [_target.json.id]
           - _template.json.survey_vars | default([]) | publication_matches(_bound.json.survey_vars | default([]))
         quiet: true
         fail_msg: "Seed binding readback differs; reconcile before any credential import."

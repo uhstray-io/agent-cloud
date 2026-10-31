@@ -2116,6 +2116,9 @@ re-checked against the new version, and a readback after the write stays in the 
 `test_isolated_environment_accepts_matching_list_and_refuses_multiple_bindings` in
 `platform/semaphore/tests/test_scoped_publication.py`: the fake now applies v2.19.11's rule (a
 carried list wins; an omitted one is filled from `environment_id`), and the provisioner sets both.
+The provisioner fix that landed is PR #797's (merged 2026-10-31), which reached the same cause
+independently and also added an `effective_environment_ids` readback; PR #798 added this fake and
+its test.
 
 ## 3. Acting on live state
 

@@ -511,7 +511,10 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.environments[0], source)
         self.assertEqual(json.loads(target["json"] or "{}"), {})  # no pin: the address is the inventory's
         self.assertEqual(self.auth_values, {"BAO_ROLE_ID": "fixture-role", "BAO_SECRET_ID": "fixture-secret"})
-        self.assertEqual(self.records[0], original | {"environment_id": target["id"]})
+        self.assertEqual(self.records[0], original | {
+            "environment_id": target["id"],
+            "environment_ids": [target["id"]],
+        })
         writes = copy.deepcopy(self.writes)
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)

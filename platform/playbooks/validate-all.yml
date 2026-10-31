@@ -208,6 +208,28 @@
       ansible.builtin.debug:
         msg: "plane: {{ 'HEALTHY' if _plane_health is succeeded else 'UNHEALTHY' }}"
 
+    - name: Check the Plane MCP server
+      ansible.builtin.uri:
+        # The OAuth protected-resource document is unauthenticated and served by the MCP server
+        # itself; its `resource` names the server's public URL, so it also proves the server was
+        # configured with the URL it is reached on. (The MCP endpoints answer a GET with 405.)
+        url: "{{ plane_mcp_public_url }}/.well-known/oauth-protected-resource/http/mcp"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: _plane_mcp_health
+      failed_when: >-
+        _plane_mcp_health.status | default(0) != 200
+        or (_plane_mcp_health.json | default({})).resource | default('') != plane_mcp_public_url ~ '/http/mcp'
+      ignore_errors: true
+      check_mode: false
+      when: plane_mcp_public_url is defined
+
+    - name: Report Plane MCP status
+      ansible.builtin.debug:
+        msg: "plane-mcp: {{ 'HEALTHY' if _plane_mcp_health is succeeded else 'UNHEALTHY' }}"
+      when: plane_mcp_public_url is defined
+
 - name: "Summary"
   hosts: localhost
   connection: local

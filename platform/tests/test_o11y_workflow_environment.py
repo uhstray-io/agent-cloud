@@ -126,6 +126,8 @@ class _SemaphoreAndBao(DrainingHandler):
         if self.path == "/api/project/1/templates":
             rows = [{k: v for k, v in row.items() if k not in {"description", "survey_vars"}}
                     for row in type(self).records]
+            if type(self).legacy_environment_ids:
+                rows = [{k: v for k, v in row.items() if k != "environment_ids"} for row in rows]
             return self.reply(rows if self._authorized() else {}, 200 if self._authorized() else 403)
         if self.path == "/api/project/1/environment":
             return self.reply(type(self).environments if self._authorized() else {}, 200 if self._authorized() else 403)
@@ -135,7 +137,9 @@ class _SemaphoreAndBao(DrainingHandler):
                 return self.reply(value if self._authorized() else {}, 200 if self._authorized() else 403)
         for row in type(self).records:
             if self.path == f"/api/project/1/templates/{row['id']}":
-                return self.reply(row if self._authorized() else {}, 200 if self._authorized() else 403)
+                value = {k: v for k, v in row.items() if k != "environment_ids"} \
+                    if type(self).legacy_environment_ids else row
+                return self.reply(value if self._authorized() else {}, 200 if self._authorized() else 403)
         if self.path.endswith("/tasks/last"):
             return self.reply([] if self._authorized() else {}, 200 if self._authorized() else 403)
         return self.reply({}, 404)
@@ -177,12 +181,24 @@ class _SemaphoreAndBao(DrainingHandler):
                 return self.reply({})
         for index, row in enumerate(type(self).records):
             if self.path == f"/api/project/1/templates/{row['id']}":
-                type(self).records[index] = value
-                return self.reply({})
+                stored = value.copy()
+                if type(self).legacy_environment_ids:
+                    # Older API fixtures ignore the newer array field entirely.
+                    stored.pop("environment_ids", None)
+                elif "environment_ids" in stored:
+                    # Match the pinned SQL update: the supplied array wins and
+                    # projects its first ID into the legacy scalar field.
+                    stored["environment_id"] = stored["environment_ids"][0]
+                else:
+                    # The legacy scalar is used only when the array is absent.
+                    stored["environment_ids"] = [stored["environment_id"]]
+                type(self).records[index] = stored
+                return self.reply(stored)
         return self.reply({}, 404)
 
 
 def _reset_api():
+    _SemaphoreAndBao.legacy_environment_ids = False
     _SemaphoreAndBao.requests = []
     _SemaphoreAndBao.writes = []
     _SemaphoreAndBao.repositories = [
@@ -196,7 +212,7 @@ def _reset_api():
     )
     _SemaphoreAndBao.records = [{
         "id": 206, "name": TARGET, "project_id": 1, "repository_id": 5,
-        "inventory_id": 37, "environment_id": 42,
+        "inventory_id": 37, "environment_id": 42, "environment_ids": [42],
         "playbook": declaration["playbook"], "app": "ansible", "arguments": "[]",
         "autorun": False, "view_id": 9, "survey_vars": [],
     }, {
@@ -294,13 +310,15 @@ def test_catalog_declares_only_the_five_explicit_dev_rows_and_wrapper_survey():
     assert provision["vars"]["_semaphore_url"] == "http://127.0.0.1:3000"
 
 
-def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tmp_path):
+@pytest.mark.parametrize("legacy_environment_ids", [False, True], ids=["array-api", "scalar-only-api"])
+def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tmp_path, legacy_environment_ids):
     try:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _SemaphoreAndBao)
     except OSError:
         pytest.skip("could not bind the synthetic loopback API")
     server.daemon_threads = True
     _reset_api()
+    _SemaphoreAndBao.legacy_environment_ids = legacy_environment_ids
     api_origin = f"http://127.0.0.1:{server.server_port}"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -317,6 +335,10 @@ def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tm
         assert _SemaphoreAndBao.records[0]["name"] == TARGET
         assert _SemaphoreAndBao.records[0]["repository_id"] == 5
         assert _SemaphoreAndBao.records[0]["environment_id"] == 501
+        if legacy_environment_ids:
+            assert "environment_ids" not in _SemaphoreAndBao.records[0]
+        else:
+            assert _SemaphoreAndBao.records[0]["environment_ids"] == [501]
         assert _SemaphoreAndBao.environments[1]["name"] == "o11y restore-capability inputs (Dev)"
         assert json.loads(_SemaphoreAndBao.environments[1]["json"] or "{}") == {}
         assert _SemaphoreAndBao.environments[1]["env"] == "{}"
@@ -325,6 +347,7 @@ def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tm
         }
         assert _SemaphoreAndBao.auth_values == {"BAO_ROLE_ID": ROLE, "BAO_SECRET_ID": SECRET}
         assert len(_SemaphoreAndBao.writes) == 3
+        encrypted_ids = [item["id"] for item in _SemaphoreAndBao.environments[1]["secrets"]]
         assert SECRET not in done.stdout + done.stderr
         assert TOKEN not in done.stdout + done.stderr
         writes = copy.deepcopy(_SemaphoreAndBao.writes)
@@ -332,6 +355,7 @@ def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tm
         rerun = _run_wrapper(tmp_path, checkout, revision, bao_url=api_origin)
         assert rerun.returncode == 0, rerun.stdout + rerun.stderr
         assert _SemaphoreAndBao.writes == writes
+        assert [item["id"] for item in _SemaphoreAndBao.environments[1]["secrets"]] == encrypted_ids
         assert SECRET not in rerun.stdout + rerun.stderr
         assert TOKEN not in rerun.stdout + rerun.stderr
     finally:
