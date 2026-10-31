@@ -284,6 +284,10 @@ templates:
         description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
+  # Plane's MCP server; run after "Deploy Plane (Local)".
+  - name: "Deploy Plane MCP (Local)"
+    playbook: platform/playbooks/deploy-plane-mcp.yml
+
   - name: "Clean Deploy Plane (Local)"
     playbook: platform/playbooks/clean-deploy-plane.yml
     survey_vars:

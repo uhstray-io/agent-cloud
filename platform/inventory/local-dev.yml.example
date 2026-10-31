@@ -165,6 +165,7 @@ all:
             # plane uses in-app auth, so plain reverse_proxy like postiz. The upstream is the
             # stack's own proxy container (plane-proxy:80), which joins the local-dev network.
             - { host: "plane.agent-cloud.test", upstream: "plane-proxy:80" }
+            - { host: "plane-mcp.agent-cloud.test", upstream: "plane-mcp:8211" }
             # inference — the OpenAI-compatible edge, the same shape as prod: this route
             # fronts the local agentgateway's default listener (/v1), which holds the
             # per-client keys and budgets. inference_api renders the /v1 + /health
@@ -547,6 +548,11 @@ all:
           # Sign-in through Authentik: the IdP base Plane's API calls server-side for the token and
           # userinfo (same host:port the browser uses). Unset = OIDC switched off on the next deploy.
           plane_authentik_base: "https://auth.agent-cloud.test:8443"
+          # Plane MCP server (Deploy Plane MCP): its public URL, which is also its OAuth base. Not
+          # published locally; Caddy reaches plane-mcp:8211 on local-dev.
+          plane_mcp_public_url: "https://plane-mcp.agent-cloud.test:8443"
+          plane_mcp_bind: 127.0.0.1
+          plane_mcp_port: 8211
           # Plane's Admin role is a plan feature (WORKSPACE_ADMIN_ROLE) the Free plan lacks, so
           # platform-admins join as members here.
           plane_admin_role: member

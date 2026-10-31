@@ -89,6 +89,7 @@
       - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
       - {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}
       - {'host': 'plane.{{ _dev_zone }}', 'upstream': 'plane-proxy:80'}
+      - {'host': 'plane-mcp.{{ _dev_zone }}', 'upstream': 'plane-mcp:8211'}
       # agentgateway operator UI — the gateway runs its own OIDC login (plain proxy).
       - {'host': 'admin.inference.{{ _dev_zone }}', 'upstream': 'agentgateway:4001'}
       # inference — the edge shape (/v1 + /health allowlist, edge 401/404) in front of the
@@ -1510,6 +1511,9 @@
           plane_workspace_name=agent-cloud
           plane_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}
           plane_admin_role=member
+          plane_mcp_public_url=https://plane-mcp.{{ _dev_zone }}:{{ _edge_https_port }}
+          plane_mcp_bind=127.0.0.1
+          plane_mcp_port=8211
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

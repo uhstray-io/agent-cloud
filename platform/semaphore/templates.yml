@@ -1519,6 +1519,20 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy Plane MCP
+    playbook: platform/playbooks/deploy-plane-mcp.yml
+    dev_variant: true
+    # Plane's MCP server beside Plane, its own compose project. Registers (or repairs) Plane's OAuth
+    # application for it inside plane-api and keeps the client credentials in OpenBao. Run after
+    # Deploy Plane. Not a separately tracked service (no service-deploy step result).
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy Plane
     playbook: platform/playbooks/clean-deploy-plane.yml
     # DESTRUCTIVE: wipes Plane's containers and every named volume (database,
