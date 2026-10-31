@@ -128,8 +128,9 @@ def _safe_preflight_harness(tmp_path, *, receiver_vars=None, receiver_count=1,
     )
 
 
-def _assert_refused_before_canary(done):
+def _assert_refused_before_canary(done, expected_message="Trace rollout is blocked"):
     assert done.returncode != 0, done.stdout + done.stderr
+    assert expected_message in done.stdout
     assert "SAFE_PREFLIGHT_COMPLETE" not in done.stdout
     assert "CANARY_OPERATION_REACHED" not in done.stdout
 
@@ -175,9 +176,11 @@ def test_legacy_emitting_canary_refuses_disabled_or_invalid_receiver_prerequisit
 
 @needs_ansible
 @pytest.mark.parametrize("receiver_count", [0, 2])
-def test_legacy_emitting_canary_refuses_unambiguous_receiver_count(tmp_path, receiver_count):
+def test_legacy_emitting_canary_refuses_non_exact_receiver_count(tmp_path, receiver_count):
     done = _safe_preflight_harness(tmp_path, receiver_count=receiver_count, emit="true")
-    _assert_refused_before_canary(done)
+    _assert_refused_before_canary(
+        done, expected_message="Trace rollout requires exactly one declared o11y receiver",
+    )
 
 
 @needs_ansible
