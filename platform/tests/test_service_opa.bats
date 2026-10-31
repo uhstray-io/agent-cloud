@@ -195,6 +195,8 @@ task_with() {
   for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
     [ "$(command_args "$f" | tail -n 2 | tr '\n' ' ')" = "--bundle /policies " ]
   done
+  # The Rego tests load the tree the way the server does.
+  assert_grep -qF '/opa test --bundle /policies"' "$REPO_ROOT/platform/playbooks/deploy-opa.yml"
 }
 
 @test "opa: the verify proves a policy write is refused with exactly 400, on the plain and the TLS path" {

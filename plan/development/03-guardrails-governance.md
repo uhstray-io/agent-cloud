@@ -906,7 +906,7 @@ D29) waits on both OPA and skynet.
 - `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback), `opa_tls`, and an `https://` `opa_internal_url`.
 - With `opa_tls` set, it checks the leaf's declaration in `internal_leaves`: server profile, this host, `<deploy>/certs/<leaf>`, reload `none`, the server name in its SANs.
 - It issues the leaf if none is current (`tasks/mint-internal-cert.yml`, key made on the OPA host), places the CA bundle (`tasks/distribute-ca-root.yml`), and starts OPA with `compose.tls.yml`. That overlay adds userns keep-id for the image's uid 1000, the `./certs` directory mount, and the TLS flags.
-- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, that a policy write (`PUT /v1/data/agentcloud_write_probe`, a path no rule reads) is refused with exactly 400, and `opa test /policies`.
+- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, that a policy write (`PUT /v1/data/agentcloud_write_probe`, a path no rule reads) is refused with exactly 400, and `opa test --bundle /policies`.
 - `renew-internal-certs.yml` admits the leaf as class `opa-server` and proves it by a TLS connection verified by name, comparing the served serial with `current`.
 
 ### Production checklist

@@ -362,8 +362,10 @@
       failed_when: _opa_write_tls.rc != 0 or (_opa_write_tls.stdout | trim) != '400'
       when: _opa_tls and not ansible_check_mode
 
-    - name: "Run Rego unit tests (opa test /policies)"
-      ansible.builtin.command: "{{ _engine }} exec opa /opa test /policies"
+    # --bundle, as the server loads it: bundle mode reads only data.json/data.yaml as data, so a
+    # test that passes on a plain load could rely on a file the running server never sees.
+    - name: "Run Rego unit tests (opa test --bundle /policies)"
+      ansible.builtin.command: "{{ _engine }} exec opa /opa test --bundle /policies"
       register: _opa_test
       changed_when: false
       check_mode: false
