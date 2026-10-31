@@ -114,7 +114,7 @@ and why.
 | 4.6 | **x3** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 3 | Test (static guard, `test_no_request_in_loop_items.py`; `test_no_log_error_redaction.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | **x2** — A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs (the second time the scan was already scoped, and the PR was replaced) | Data handling | 2 | CI (scan scoped to the PR's commits); pre-commit hook flags a staged literal; the fixture rule itself Convention |
-| 4.9 | **x3** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids; a plan note naming the operator's gateway key field | Data handling | 3 | Test (`test_no_site_identity.py`, the three account shapes; caught by CI both times it fired); other private values Convention |
+| 4.9 | **x4** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids; a plan note naming the operator's gateway key field; the production internal zone in a status entry and two PR bodies | Data handling | 4 | Test (`test_no_site_identity.py`, the three account shapes; caught by CI both times it fired); other private values Convention; site-config-derived name scan for commits and PR text proposed (count ≥ 3) |
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
@@ -2977,7 +2977,7 @@ time, or carry `trufflehog:ignore` with the reason.
 
 ### 4.9 Private Discord destination IDs in a public test fixture
 
-**Occurrences: 3** — 2026-09-25, 2026-10-05, 2026-10-14
+**Occurrences: 4** — 2026-09-25, 2026-10-05, 2026-10-14, 2026-10-30
 
 **What happened.** The first PR revision copied the real guild and channel IDs
 from private site-config into a public Python test. The values are destination
@@ -3024,6 +3024,20 @@ the suite unless `SKIP_TESTS=1`) was skipped, was not established. Records writt
 identity by its role (the operator's gateway key), never by the field or account that spells the identity.
 The enforcement is the existing test; what this occurrence adds is that the test is cheap enough to run before
 every push of a docs change, and that the 22-minute round trip is the cost of finding it in CI.
+
+**Occurrence 4 — 2026-10-30.** During the skynet production rollout the production OPA hostname, which
+spells the private internal DNS zone and site label (site-config's `dns_zone`/`dns_site`), was written
+into public text three times: the descriptions of merged PRs 777 and 794, and the first revision of the
+AGENTS.md status entry in PR 796, which the fallback review caught before merge. The committed code stayed
+clean (`git grep` of `dev` found no match): the playbooks read the URL from the inventory's
+`skynet_opa_url`. The PR descriptions were edited to the `opa.<dns_site>.<dns_zone>` placeholder (GitHub
+keeps the edit history), and the entry now names the inventory variable. Why the rule did not fire: it
+reads as a rule about fixtures and copied values, the value was a hostname rather than an IP or account,
+so neither the private-IP pre-commit gate nor `test_no_site_identity.py` looks for it, and PR text is read
+by no hook at all (as 5.15 found for attribution). Guard proposal, required at this count: a pre-commit and
+pre-push check that, when a site-config checkout is configured, fails on any staged line containing a
+private name it derives from that checkout (the internal zone, site label and inventory host names), plus
+the `gh` wrapper proposed in 5.15 running the same check on PR and comment bodies before they are sent.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
