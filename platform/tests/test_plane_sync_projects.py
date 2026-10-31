@@ -587,7 +587,8 @@ def test_a_dry_run_of_a_project_not_yet_made_counts_its_schema_without_listing_i
     assert writes(state) == []
     assert [p for _, p in state["requests"] if "/states/" in p or "/labels/" in p] == []
     assert out == {"changed": False, "applied": False,
-                   **counts(would={"projects": 1, "modules": 2, "items": 3, "links": 3, "states": 3, "labels": 2})}
+                   # Todo and In Progress come with the project (Plane seeds them); only Review is a create.
+                   **counts(would={"projects": 1, "modules": 2, "items": 3, "links": 3, "states": 1, "labels": 2})}
 
 
 def test_a_dry_run_counts_the_schema_it_would_converge_and_writes_nothing(plane, lock):
@@ -674,3 +675,27 @@ def test_a_declared_triage_state_is_refused_before_any_request(plane, lock, decl
     assert err == {"error": f"state {declared['name']} cannot be declared: the Triage name and the triage group are "
                             "reserved", "actions": [], "actions_total": 0}
     assert state["requests"] == []
+
+
+@pytest.mark.parametrize("bad, words", [
+    ({"states": [{"name": "Todo", "group": "unstarted"}]}, "missing color"),
+    ({"labels": [{"name": "x", "color": "#000000"}]}, "missing description"),
+    ({"states": [{"name": " Todo", "group": "unstarted", "color": "#000000"}]}, "leading or trailing spaces"),
+    ({"labels": [{"name": "a", "color": "#000000", "description": ""},
+                 {"name": "A", "color": "#000000", "description": ""}]}, "declared twice"),
+    ({"states": ["Todo"]}, "needs a name"),
+])
+def test_a_malformed_schema_is_refused_by_row_before_any_request(plane, lock, bad, words):
+    state, base = plane
+    out = refusal(run(base, lock, [PROJECT], apply=True, schema=bad))
+    assert words in out["error"]
+    assert state["requests"] == []
+
+
+def test_a_null_description_matches_an_empty_declared_one(plane, lock):
+    state, base = plane
+    seed_everything(state)
+    state["labels"]["p1"] = [{"id": "l1", "name": "blocked", "color": "#ef4444", "description": None}]
+    schema = {"labels": [{"name": "blocked", "color": "#EF4444", "description": ""}]}
+    summary(run(base, lock, [PROJECT], apply=True, schema=schema))
+    assert [c for c in state["calls"] if c["method"] == "PATCH"] == []

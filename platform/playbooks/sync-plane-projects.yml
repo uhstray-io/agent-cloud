@@ -8,10 +8,12 @@
 #   module        one per OpenSpec change (changes/<change>/)
 #   work item     one per open task in that change's tasks.md, linked back to the file on GitHub
 #
-# CREATE-ONLY. Every object is identified by external_source "openspec" and an external_id built
-# from the repository, change and task, so a re-run creates only what is missing. Nothing that
-# already exists is ever updated or removed, and no work item is ever given a state: status,
-# assignees and labels belong to Plane from the moment an item exists (change task 4.2, risk 4).
+# Projects, modules and work items are CREATE-ONLY. Each is identified by external_source
+# "openspec" and an external_id built from the repository, change and task, so a re-run creates only
+# what is missing. None of them is ever updated or removed, and no work item is ever given a state:
+# status, assignees and labels belong to Plane from the moment an item exists (task 4.2, risk 4).
+# The two exceptions are the schema (declared states and labels are created or have their declared
+# fields patched, never deleted) and a project's Modules switch (sync_projects.py docstring).
 # A task already ticked in tasks.md when first seen is not imported.
 #
 # Play 1 reads tasks.md through GitHub on the controller (lib/openspec_to_plane.py): it resolves
@@ -33,7 +35,7 @@
 # Task ids and change names are permanent keys (lib/openspec_to_plane.py): renumbering a task or
 # renaming a change creates duplicates. One item Plane refuses stops the run; later projects wait.
 #
-# Dry run is --check: Play 2 reports what it would create and creates nothing.
+# Dry run is --check: Play 2 reports what it would create or update and writes nothing.
 #
 # Change: plan/development/openspec/changes/deploy-plane-work-management/ (task 4.4)
 
@@ -56,6 +58,23 @@
     _enabled: "{{ _declared | selectattr('enabled') | list }}"
     _parser: "{{ playbook_dir }}/../services/plane/lib/openspec_to_plane.py"
   tasks:
+    # Loaded here, visibly: the input assembly in Play 2 is no_log (it carries the token), and a
+    # missing file or a YAML error there would show only as censored output. sync_projects.py checks
+    # every row's shape before its lock and names the bad one.
+    - name: "Load the declared schema"
+      ansible.builtin.set_fact:
+        _schema: "{{ lookup('file', playbook_dir ~ '/../services/plane/schema.yml') | from_yaml }}"
+
+    - name: "The schema has its lists"
+      ansible.builtin.assert:
+        that:
+          - _schema is mapping
+          - _schema.states | default([]) is sequence and _schema.states | default([]) is not string
+          - _schema.labels | default([]) is sequence and _schema.labels | default([]) is not string
+          - _schema.item_labels | default([]) is sequence and _schema.item_labels | default([]) is not string
+        fail_msg: "platform/services/plane/schema.yml must be a mapping with states, labels and item_labels lists."
+        quiet: true
+
     - name: "Refuse an enabled private repository until the plane-compose App exists"
       ansible.builtin.assert:
         that:
@@ -159,7 +178,7 @@
           service_token: "{{ _plane_secret.json.data.data.plane_service_token }}"
           workspace_slug: "{{ plane_workspace_slug }}"
           projects: "{{ hostvars['localhost']._desired_projects }}"
-          schema: "{{ lookup('file', playbook_dir ~ '/../services/plane/schema.yml') | from_yaml }}"
+          schema: "{{ hostvars['localhost']._schema }}"
       no_log: true
 
     # Both runs carry the service token on stdin; the script prints counts only (never a credential),
@@ -181,7 +200,7 @@
       no_log: true
       check_mode: false
 
-    - name: "Create what is missing"
+    - name: "Create what is missing and converge the schema"
       ansible.builtin.command:
         argv: *sync_argv
         stdin: "{{ _sync_input | combine({'apply': true}) | to_json }}"

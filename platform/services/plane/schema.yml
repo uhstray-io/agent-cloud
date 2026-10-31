@@ -7,11 +7,16 @@
 # is ever deleted from Plane, and states or labels a project has that are not declared are left
 # alone. `default` is never set: which state new work starts in stays Plane's choice (Backlog).
 #
+# Names are the keys. Renaming a declared state or label in Plane does not stick: the next run
+# creates it again under the declared name. Renaming one here adds a new row beside the old one,
+# because nothing is ever deleted: treat declared names as permanent.
+#
 # Plane Compose was the first choice for this (design.md risk 4). It authenticates only from a
 # token file on disk, so Joseph A. Wisneski IV chose on 2026-10-30 to keep the schema in this
 # sync instead: no new controller dependency, no credential file, and a dry run that only reads.
 #
-# Work item types are not managed: they are a paid-plan feature (Plane Pro and above).
+# Work item types are not managed: Plane gates them behind its ISSUE_TYPES feature flag
+# (api/views/issue_type.py in the v3.3.3 image).
 #
 # States are Plane's five defaults with the colours a new project gets, plus In Review.
 states:
