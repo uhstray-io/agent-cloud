@@ -3817,7 +3817,18 @@ def _availability_query_path(
     if target_id is not None:
         matchers.append(f"target_id={json.dumps(target_id)}")
     selector = "{" + ",".join(matchers) + "}"
-    expression = f"timestamp({selector})" if timestamp else selector
+    if timestamp:
+        timestamp_branches = []
+        for name in metric_names:
+            family_matchers = [f"__name__={json.dumps(name)}", *matchers[1:]]
+            family_selector = "{" + ",".join(family_matchers) + "}"
+            timestamp_branches.append(
+                f"label_replace(timestamp({family_selector}), "
+                f"\"__name__\", {json.dumps(name)}, \"job\", \".*\")"
+            )
+        expression = " or on(__name__) ".join(timestamp_branches)
+    else:
+        expression = selector
     return PROMETHEUS + "/api/v1/query?" + urlencode({"query": expression})
 
 

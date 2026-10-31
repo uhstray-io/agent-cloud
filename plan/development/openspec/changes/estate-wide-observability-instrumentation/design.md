@@ -1700,3 +1700,125 @@ receipt. The source formatter and successful receipt fixes in this change do
 not establish a fresh live producer receipt or representative baseline. Keep
 parent 1.3 and baseline, forecast, calibration, backup/restore, retention, and
 growth acceptance open.
+
+### Bounded native timestamp-query repair (2026-10-31; planned producer follow-up)
+
+**Decision and scope.** Repair only the timestamp branch of
+`_availability_query_path` in
+`platform/playbooks/files/summarize-o11y-scrape-baseline.py`. Build one
+exact-name selector for each requested fixed family, retaining every existing
+identity matcher. Apply `timestamp()` directly to that selector, restore its
+fixed `__name__` with `label_replace`, and join the branches with explicit
+`or on(__name__)`. Do not insert an intermediate expression before
+`timestamp()`: its value must be the raw source sample time, distinct from the
+later query evaluation time. Leave value-query construction unchanged.
+
+The sanitized read-only query proof for task 10809 records
+`duplicate_output_labelset` for the original grouped timestamp query. The
+corrected expression returned `up` and `scrape_samples_scraped`; plain `or`
+retained only `up`. This supports the bounded query repair, not a native
+producer transition. The required `scrape_body_size_bytes` family was absent
+at that selector. Keep the exact parser, complete-label identity, uniqueness,
+freshness/process/pre-apply bounds, required-family and positive body-evidence
+checks unchanged. There is no optional native body metric or native equivalent
+of the legacy unavailable-body exception. Loaded native `extra_metrics=true`
+remains required; the current-producer assertion stays authoritative.
+
+Retain the existing maximum of six API calls, 4,096-character API path limit,
+aggregate response-byte budget and deadlines. Exercise supported maximum
+caller contexts for the three-family self and six-family health queries;
+oversized encoded paths must refuse rather than expand any budget or split
+the collection into extra calls.
+
+**Mandatory native semantic coverage.** Add one BATS entry point,
+`platform/tests/test_o11y_native_promql.bats`, invoking
+`platform/tests/o11y_native_promql_runner.py`. The runner stays outside pytest
+discovery, imports the production helper, and URL-decodes expressions returned
+by the actual `_availability_query_path`; no second query generator is allowed.
+The existing `Bash Tests` job already runs `bats platform/tests/` and installs
+the Python test/controller requirements. Route the check through that job;
+leave `.github/workflows/lint-and-test.yml`, the merge guard and its fixtures
+byte-identical. Do not change Compose or dependency declarations.
+
+Read the literal fallback Prometheus image from the committed
+`platform/services/o11y/deployment/compose.yml` declaration; malformed or
+missing declarations fail. Do not resolve deployment environment overrides or
+run Compose. Use that image's `/bin/promtool` evaluator with synthetic
+expression-test input on stdin and an empty `rule_files` list:
+
+```text
+<engine> run --rm -i --network none --pull=never
+  --entrypoint /bin/promtool <image-from-compose> test rules /dev/stdin
+```
+
+Include unique invocation-owned container names and ownership labels. The
+completed read-only CI-routing review verified source support for this stdin
+shape; the exact container invocation has not been executed. Its successful
+execution remains an unchecked implementation gate, not a planning claim.
+Use supported Docker in CI and prefer usable existing Podman locally. Verify
+engine readiness and fail rather than skip when the engine, image or evaluator
+is unusable; do not fall back after an evaluator failure. Document in
+`CONTRIBUTING.md` that the full BATS suite requires a usable existing container
+engine and the repository's BATS/Python prerequisites. No standalone promtool
+installation or new engine package is required by this design.
+
+Bound discovery, at most one image acquisition if missing, all three evaluator
+runs, and cleanup to 300 seconds total, reserving time for cleanup and capping
+captured output. Evaluation always uses `--pull=never`. Use no bind mounts,
+named/shared volumes, host networking, ports or privileged mode. Do not start
+a VM/daemon, change an engine connection, elevate privileges, or delete/prune
+images. Account for image-declared anonymous storage with owned-container
+cleanup. Failure/timeout cleanup may remove only exact containers whose unique
+name and ownership labels prove they belong to this invocation; no broad
+container or volume cleanup is allowed.
+
+Generate synthetic cases for all three self families and all six health
+families across multiple identities. Assert every output label, including
+preservation of an unexpected extra label, and separately prove the unchanged
+consumer rejects that label. Missing families must remain absent. Source
+sample timestamps must differ from and precede evaluation time. Include
+supported maximum-context paths and oversize refusal. Require one positive
+evaluation to pass, then run the original grouped-timestamp and plain-`or`
+mutants against the same complete expectations. A mutant counts only when it
+reaches actual PromQL evaluation and fails from duplicate output or an
+expected-label/result mismatch; engine/image, syntax and fixture-setup errors
+do not count as defect detection. Preserve the existing StartedAt Go-template
+regression and all parser, identity, required-metric, freshness and API-budget
+regressions in `platform/tests/test_o11y_scrape_baseline.py`.
+
+**Later source ownership and validation.** The implementation owns exactly
+eight files: this design, `tasks.md`,
+`specs/platform/estate-instrumentation/spec.md`, the existing helper and
+baseline Python test file, the new BATS entry point and Python runner, and
+`CONTRIBUTING.md`. No generated fixture is committed. This planning invocation
+edits only the three existing artifacts. The later implementation must pass
+focused Python regressions, the native BATS entry point, repository-required
+checks, independent review, final-head CI and the exact-head Dev merge guard.
+Source/test/point-query evidence cannot close parent runtime acceptance.
+
+**Source-distinct private receipt accounting.** The supplied runtime record
+reports PR #800 merged as `8f39db502e91bc22eeed4189402e6d9d78949924`
+at 2026-10-31 05:01:04 UTC after actual independent Sol Medium review, final-head
+CI `41168820482` (13 executed jobs passed; three path skips), and the exact-head
+read-only guard followed by a merge commit. Task 10808 reports healthy Alloy,
+zero restarts and no OOM, plus receiver checkout
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; checkout identity does not prove
+loaded configuration or image identity. Task 10809 reports baseline ERROR,
+now `native_samples_unavailable` after the prior StartedAt defect was fixed.
+The sanitized query probe above does not establish complete producer evidence.
+
+The supplied private structured receipt for task 10810 at that controller SHA
+reports history SUCCESS with `ready_for_separate_forecast_review`: nine
+canonical source events spanning 691287 seconds, latest sample age 9881
+seconds at the receipt, maximum source gap 86634 seconds, and 2593 evaluation
+points. Accept this as retained history observations only, with receiver-host
+and five fixed backend summaries. Evaluation points are not independent source
+events; these ages are historical observations, not present freshness. This
+receipt does not establish the complete representative baseline, isolated
+persisted-byte calibration, forecast or parent acceptance. Keep EW 1.3, 4.1
+and 4.4, backup, isolated restore, retention and disk-growth gates open.
+Preserve the historical receipt facts above. PBS physical attestation remains
+waived and package-source choice remains pending; this repair adds no physical
+gate and changes no PBS artifact scope. Publish only sanitized task IDs, SHAs
+and outcomes, never private environment/template/input IDs, addresses,
+selectors, topology or protected producer output.
