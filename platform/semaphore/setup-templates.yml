@@ -350,18 +350,24 @@
         # A variant is the base plus " (Dev)" — derived, never hand-written, so a
         # renamed base cannot leave an orphaned variant behind.
         _tpl_name: "{{ item.name ~ (' (Dev)' if (item._generated | default(false)) else '') }}"
+        # Semaphore v2.19 returns `environment_ids` beside `environment_id` and binds an existing
+        # template from the list: an update that changes only `environment_id` is accepted and keeps
+        # the old binding (production task 10722). An update therefore sets both.
+        _tpl_environment_id: >-
+          {{ _isolated_environment_ids[item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else '')]
+             if item.isolated_environment is defined else semaphore_environment_id | default(2, true) }}
         _default_body: >-
           {{ {'name': _tpl_name,
               'project_id': (_project_id | int),
               'inventory_id': (semaphore_inventory_id | default(2, true) | int),
               'repository_id': (_repo_ids[item.repository | default('agent-cloud')] | int),
-              'environment_id': ((_isolated_environment_ids[item.isolated_environment ~ (' (Dev)' if (item._generated | default(false)) else '')]
-                                 if item.isolated_environment is defined else semaphore_environment_id | default(2, true)) | int),
+              'environment_id': (_tpl_environment_id | int),
               'playbook': item.playbook,
               'app': 'ansible',
               'autorun': false,
               'suppress_success_alerts': true}
              | combine({'id': (_existing_ids | first | int)} if (_existing_ids | length > 0) else {})
+             | combine({'environment_ids': [_tpl_environment_id | int]} if ('environment_ids' in _existing_template) else {})
              | combine({'survey_vars': item.survey_vars} if (item.survey_vars is defined) else {}) }}
         # Scoped publication updates declared survey fields only. The binding
         # gate above proves the execution path; all other live settings survive.

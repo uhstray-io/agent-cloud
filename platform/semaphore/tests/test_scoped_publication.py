@@ -149,6 +149,12 @@ class ScopedPublicationTests(unittest.TestCase):
                     ]
                     if cls.drop_setting:
                         value.pop("description", None)
+                    if "environment_ids" in cls.records[0]:
+                        # Semaphore v2.19 binds from `environment_ids`: a PUT that changes only
+                        # `environment_id` is accepted and keeps the old binding (production task 10722).
+                        ids = value.get("environment_ids", cls.records[0]["environment_ids"])
+                        value["environment_ids"] = ids
+                        value["environment_id"] = ids[0]
                     cls.records[0] = value
                 return self.reply({})
 
@@ -503,6 +509,19 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(json.loads(target["json"] or "{}"), {})  # no pin: the address is the inventory's
         self.assertEqual(self.auth_values, {"BAO_ROLE_ID": "fixture-role", "BAO_SECRET_ID": "fixture-secret"})
         self.assertEqual(self.records[0], original | {"environment_id": target["id"]})
+        writes = copy.deepcopy(self.writes)
+        code, output = self.run_play(provision=True)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, writes)
+
+    def test_provisioner_binds_through_environment_ids_on_semaphore_v2_19(self):
+        self.prepare_seed_template()
+        self.records[0]["environment_ids"] = [self.records[0]["environment_id"]]
+        original = copy.deepcopy(self.records[0])
+        code, output = self.run_play(provision=True)
+        self.assertEqual(code, 0, output)
+        target = self.environments[1]
+        self.assertEqual(self.records[0], original | {"environment_id": target["id"], "environment_ids": [target["id"]]})
         writes = copy.deepcopy(self.writes)
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
