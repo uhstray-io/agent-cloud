@@ -221,7 +221,8 @@ task_with() {
   task_with "$pb" 'Policy writes over TLS are refused' > "$BATS_TEST_TMPDIR/write-tls.yml"
   assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/write-tls.yml"
   assert_grep -qF "'--request', 'PUT'" "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qF "(_opa_write_tls.stdout | trim) != '400'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "(_opa_write_tls.stdout_lines | last) != '400'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF ".code | default('')) != 'invalid_parameter'" "$BATS_TEST_TMPDIR/write-tls.yml"
   assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/write-tls.yml"
   # The probe never writes under a package a decision reads.
   refute_grep -qE '/v1/(data/agentcloud/|policies)' "$BATS_TEST_TMPDIR/write.yml" "$BATS_TEST_TMPDIR/write-tls.yml"

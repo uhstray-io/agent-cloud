@@ -349,17 +349,20 @@
       when: _opa_tls and not ansible_check_mode
 
     # The same write refusal over TLS. --fail is dropped so the expected 400 exits 0: a non-zero
-    # rc is then a transport failure (connection, TLS), and only an exact 400 passes.
+    # rc is then a transport failure (connection, TLS). The body comes first and the status on
+    # the last line; both must match the plain path: exactly 400 with code invalid_parameter.
     - name: "Policy writes over TLS are refused (PUT /v1/data -> 400, bundle-owned)"
       ansible.builtin.command:
         argv: >-
           {{ (_opa_tls_args | reject('equalto', '--fail') | list)
-             + ['--output', '/dev/null', '--write-out', '%{http_code}', '--request', 'PUT',
+             + ['--write-out', '\n%{http_code}', '--request', 'PUT',
                 '--header', 'Content-Type: application/json', '--data', '{}',
                 _opa_url ~ '/v1/data/agentcloud_write_probe'] }}
       register: _opa_write_tls
       changed_when: false
-      failed_when: _opa_write_tls.rc != 0 or (_opa_write_tls.stdout | trim) != '400'
+      failed_when: >-
+        _opa_write_tls.rc != 0 or (_opa_write_tls.stdout_lines | last) != '400'
+        or ((_opa_write_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'invalid_parameter'
       when: _opa_tls and not ansible_check_mode
 
     # --bundle, as the server loads it: bundle mode reads only data.json/data.yaml as data, so a
