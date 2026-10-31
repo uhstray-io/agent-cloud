@@ -24,6 +24,10 @@ services:
       # comes from each query's `input`.
       - --set=decision_logs.console=true
       - --set=status.console=true
+      # Load ./policies as a bundle: OPA then owns every data and policy path and refuses
+      # PUT/PATCH/DELETE on /v1/data and /v1/policies (HTTP 400). Without it any caller that
+      # reaches the port can rewrite the guardrail; the :ro mount protects only the files.
+      - --bundle
       - /policies
     ports:
       # Loopback by default (prod can widen); agents on the same network reach it

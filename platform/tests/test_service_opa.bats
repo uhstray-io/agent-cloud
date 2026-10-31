@@ -185,3 +185,30 @@ task_with() {
   refute_grep -qF "https?://" "$BATS_TEST_TMPDIR/prod.yml"
   assert_grep -qF "when: not (local_mode | default(false) | bool)" "$BATS_TEST_TMPDIR/prod.yml"
 }
+
+# ── Read-only policy (bundle mode) ──────────────────────────────────────────────
+
+@test "opa: both command lists load ./policies as a bundle, so the REST write API is refused" {
+  # Without --bundle, PUT /v1/data and /v1/policies (and DELETE /v1/data/agentcloud) succeed for
+  # any caller the firewall admits; the :ro mount protects the files, not the running policy.
+  local f
+  for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
+    [ "$(command_args "$f" | tail -n 2 | tr '\n' ' ')" = "--bundle /policies " ]
+  done
+}
+
+@test "opa: the verify proves a policy write is refused with exactly 400, on the plain and the TLS path" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Policy writes are refused' > "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF 'method: PUT' "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF '/v1/data/agentcloud_write_probe' "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF "_opa_write.status != 400" "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/write.yml"
+  task_with "$pb" 'Policy writes over TLS are refused' > "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "'--request', 'PUT'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "(_opa_write_tls.stdout | trim) != '400'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/write-tls.yml"
+  # The probe never writes under a package a decision reads.
+  refute_grep -qE '/v1/(data/agentcloud/|policies)' "$BATS_TEST_TMPDIR/write.yml" "$BATS_TEST_TMPDIR/write-tls.yml"
+}

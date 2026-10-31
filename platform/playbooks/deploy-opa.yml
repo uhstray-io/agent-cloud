@@ -273,6 +273,20 @@
       failed_when: _opa_deny.json.result.allowed | default(true) | bool
       when: not ansible_check_mode and not _opa_tls
 
+    # OPA loads ./policies as a bundle (--bundle in compose.yml), so it must refuse a write with
+    # 400 "owned by bundle". The probe path is outside every package: if the refusal is missing,
+    # what lands there changes no decision, and the run fails. A timeout or any other status fails.
+    - name: "Policy writes are refused (PUT /v1/data -> 400, bundle-owned)"
+      ansible.builtin.uri:
+        url: "{{ _opa_url }}/v1/data/agentcloud_write_probe"
+        method: PUT
+        body_format: json
+        body: {}
+        status_code: [400]
+      register: _opa_write
+      failed_when: _opa_write.status != 400 or (_opa_write.json.code | default('')) != 'invalid_parameter'
+      when: not ansible_check_mode and not _opa_tls
+
     # ── Listener TLS (opa_tls): the same checks over HTTPS ───────────────────
     - name: "OPA health over TLS (/health -> 200, against the step-ca bundle)"
       ansible.builtin.command:
@@ -334,6 +348,20 @@
       failed_when: _opa_deny_tls.rc != 0 or ((_opa_deny_tls.stdout | from_json).result | default({})).allowed | default(true) | bool
       when: _opa_tls and not ansible_check_mode
 
+    # The same write refusal over TLS. --fail is dropped so the 400 reaches --write-out instead of
+    # becoming curl's exit 22; only an exact 400 passes.
+    - name: "Policy writes over TLS are refused (PUT /v1/data -> 400, bundle-owned)"
+      ansible.builtin.command:
+        argv: >-
+          {{ (_opa_tls_args | reject('equalto', '--fail') | list)
+             + ['--output', '/dev/null', '--write-out', '%{http_code}', '--request', 'PUT',
+                '--header', 'Content-Type: application/json', '--data', '{}',
+                _opa_url ~ '/v1/data/agentcloud_write_probe'] }}
+      register: _opa_write_tls
+      changed_when: false
+      failed_when: _opa_write_tls.rc != 0 or (_opa_write_tls.stdout | trim) != '400'
+      when: _opa_tls and not ansible_check_mode
+
     - name: "Run Rego unit tests (opa test /policies)"
       ansible.builtin.command: "{{ _engine }} exec opa /opa test /policies"
       register: _opa_test
@@ -343,5 +371,5 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          OPA healthy — allow+deny decisions verified; rego tests:
+          OPA healthy — allow+deny decisions verified, policy writes refused; rego tests:
           {{ _opa_test.stdout_lines | default(['(no output)']) | last }}
