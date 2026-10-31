@@ -86,7 +86,11 @@ cd -
 # Bash tests
 bats platform/tests/
 
-# Go (required if touching platform/services/uhhcraft/deployment/**)
+# Go (required for the full Python test/pre-push suite; Go 1.26+)
+# The native Podman-template regression in the Python suite executes Go's text/template.
+# `brew bundle` from the repository root installs the Go toolchain from Brewfile.
+
+# UhhCraft-only generators and static analysis
 cd platform/services/uhhcraft/deployment
 templ generate              # regenerate *_templ.go from .templ source
 sqlc generate               # regenerate internal/db/sqlcdb/ from db/queries/*.sql
@@ -106,6 +110,7 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 # macOS
 pip install ruff ansible-lint yamllint bandit
 brew install shellcheck bats-core hadolint
+brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
 
 # Python 3.12 (required for tests)
 brew install python@3.12
