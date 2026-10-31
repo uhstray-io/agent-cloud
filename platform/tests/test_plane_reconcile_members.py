@@ -213,6 +213,14 @@ def test_an_empty_desired_set_is_refused_even_for_one_removal(plane):
     assert state["calls"] == []
 
 
+def test_an_empty_desired_set_that_removes_nobody_is_not_refused(plane):
+    # A fresh workspace whose platform groups are still empty has nothing to lose.
+    state, base = plane
+    state["members"] = [member("m1", ME, "admin")]
+    out = summary(run(base, {}, apply=True))
+    assert out["changed"] is False and state["calls"] == []
+
+
 def test_mass_removal_goes_through_only_with_the_opt_in(plane):
     state, base = plane
     state["members"] = roster_of(4)

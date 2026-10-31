@@ -89,7 +89,9 @@ for email, i in sorted(pending.items()):
         plan["remove"].append({"email": email, "invitation": i["id"]})
 
 removable = sum(1 for e in have if e != me and e not in owners) + sum(1 for e in pending if e not in have)
-mass = not desired or (len(plan["remove"]) > 1 and 2 * len(plan["remove"]) > removable)
+# An empty desired set is suspect only when it would remove someone: a fresh workspace whose
+# groups are still empty has nothing to lose and must not fail every run.
+mass = bool(plan["remove"]) and (not desired or (len(plan["remove"]) > 1 and 2 * len(plan["remove"]) > removable))
 if cfg.get("apply") and mass and str(cfg.get("allow_mass_removal")).lower() != "true":
     fail(f"refusing to remove {len(plan['remove'])} of {removable} people "
          f"({len(desired)} desired); re-run with allow_mass_removal=true if the groups really changed")

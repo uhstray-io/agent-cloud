@@ -124,6 +124,8 @@ and list skip them), so revocation is an open follow-up. Which projects, modules
 and work items exist, and which module an item is in, follow `tasks.md`: an item deleted in Plane comes
 back, so tick or strike the task instead. Task ids and change names are permanent keys; renumbering or
 renaming creates duplicates. Everything else about an item (status, assignees, labels, edits) is Plane's.
+Each project's states and labels follow `platform/services/plane/schema.yml` (created, or declared
+fields patched; never deleted); new work items get its creation labels once.
 
 The dump covers the database only. Uploads live in the MinIO volumes and are covered by a VM
 snapshot before an upgrade (change task 1.7).

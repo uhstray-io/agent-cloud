@@ -27,6 +27,26 @@ SOURCE = SESSION + "\n" + (DEPLOY / "sync_projects.py").read_text()
 TOKEN = "service-token-that-must-never-print"
 WS = "/api/v1/workspaces/ws"
 NO_TOKEN = "no service token given; run Deploy Plane, which mints it into OpenBao"
+# The states a new Plane project starts with (live DB, 2026-10-30), minus Triage: the list hides it.
+PLANE_DEFAULT_STATES = [
+    {"name": "Backlog", "group": "backlog", "color": "#60646C", "default": True},
+    {"name": "Todo", "group": "unstarted", "color": "#60646C", "default": False},
+    {"name": "In Progress", "group": "started", "color": "#F59E0B", "default": False},
+    {"name": "Done", "group": "completed", "color": "#46A758", "default": False},
+    {"name": "Cancelled", "group": "cancelled", "color": "#9AA4BC", "default": False},
+]
+SCHEMA = {
+    "states": [{"name": "Todo", "group": "unstarted", "color": "#60646C"},
+               {"name": "In Progress", "group": "started", "color": "#F59E0B"},
+               {"name": "Review", "group": "started", "color": "#3B82F6"}],
+    "labels": [{"name": "openspec", "color": "#0EA5E9", "description": "Declared from openspec"},
+               {"name": "blocked", "color": "#EF4444", "description": ""}],
+    "item_labels": ["openspec"],
+}
+
+
+def plane_default_states(pid):
+    return [{**d, "id": f"{pid}-{d['name'].lower().replace(' ', '-')}"} for d in PLANE_DEFAULT_STATES]
 
 PROJECT = {
     "repo": "agent-cloud", "identifier": "ACL", "name": "Agent Cloud",
@@ -91,7 +111,7 @@ class StubPlane(DrainingHandler):
         m = re.fullmatch(rf"{WS}/projects/([^/]+)/modules/([^/]+)/module-issues/", path)
         if m:
             return s["links"].setdefault((m.group(1), m.group(2)), [])
-        m = re.fullmatch(rf"{WS}/projects/([^/]+)/(modules|issues)/", path)
+        m = re.fullmatch(rf"{WS}/projects/([^/]+)/(modules|issues|states|labels)/", path)
         if m:
             return s[m.group(2)].setdefault(m.group(1), [])
         return None
@@ -128,7 +148,24 @@ class StubPlane(DrainingHandler):
         s["seq"] += 1
         made = row(f"{kind[:3]}-{s['seq']}", **body)
         store.append(made)
+        if kind == "projects":
+            s["states"][made["id"]] = plane_default_states(made["id"])
         return self._send(201, made)
+
+    def _create_named(self, kind, pid, body):
+        """Plane's state and label create, by name: a clash answers 409 with the existing id (exact for a
+        state, case-insensitive for a label). The views answer a state 200 and a label 201."""
+        store = self.state[kind].setdefault(pid, [])
+        if kind == "states":
+            clash = [r for r in store if r["name"] == body["name"]]
+        else:
+            clash = [r for r in store if r["name"].lower() == body["name"].lower()]
+        if clash:
+            return self._send(409, {"error": "already exists", "id": clash[0]["id"]})
+        self.state["seq"] += 1
+        made = {"id": f"{kind[:3]}-{self.state['seq']}", **body}
+        store.append(made)
+        return self._send(200 if kind == "states" else 201, made)
 
     def _link(self, url, body):
         """Plane's add: a 2xx links each id once (re-adding a pair is a no-op); a refusal links nothing."""
@@ -151,6 +188,9 @@ class StubPlane(DrainingHandler):
         url = urllib.parse.urlsplit(self.path).path
         if url == f"{WS}/projects/":
             return self._create("projects", "", body)
+        m = re.fullmatch(rf"{WS}/projects/([^/]+)/(states|labels)/", url)
+        if m:
+            return self._create_named(m.group(2), m.group(1), body)
         m = re.fullmatch(rf"{WS}/projects/([^/]+)/(modules|issues)/", url)
         if m:
             return self._create(m.group(2), m.group(1), body)
@@ -159,7 +199,15 @@ class StubPlane(DrainingHandler):
         return self._send(404, {})
 
     def do_PATCH(self):
-        self._record(self._json())
+        body = self._json()
+        self._record(body)
+        url = urllib.parse.urlsplit(self.path).path
+        m = re.fullmatch(rf"{WS}/projects/([^/]+)/(states|labels)/([^/]+)/", url)
+        if m:  # a state or label PATCH changes the stored row, so a later read shows it
+            for stored in self.state[m.group(2)].get(m.group(1), []):
+                if stored["id"] == m.group(3):
+                    stored.update(body)
+            return self._send(200, {})
         self._send(200, {})
 
     def do_DELETE(self):
@@ -170,6 +218,7 @@ class StubPlane(DrainingHandler):
 @pytest.fixture
 def plane():
     StubPlane.state = {"projects": [], "modules": {}, "issues": {}, "links": {}, "ghosts": {}, "taken": set(),
+                       "states": {}, "labels": {},
                        "calls": [], "requests": [], "seq": 0, "link_status": 201, "links_ok": None,
                        "garbage": None}
     server = http.server.HTTPServer(("127.0.0.1", 0), StubPlane)
@@ -188,10 +237,12 @@ def run_with(source, cfg):
                           capture_output=True, text=True, timeout=60)
 
 
-def run(base, lock_path, projects, apply, token=TOKEN):
+def run(base, lock_path, projects, apply, token=TOKEN, schema=None):
     cfg = {"base": base, "host": "plane.test", "origin": "https://plane.test", "service_token": token,
            "workspace_slug": "ws", "apply": apply, "projects": projects,
            "pace_seconds": 0, "lock_path": lock_path}
+    if schema is not None:  # absent from cfg, not empty: the no-schema run must make no state or label request
+        cfg["schema"] = schema
     return run_with(SOURCE, cfg)
 
 
@@ -211,12 +262,15 @@ def writes(state):
     return [c for c in state["calls"] if c["method"] != "GET" and c["path"].startswith(WS)]
 
 
-ZERO = {"projects": 0, "modules": 0, "items": 0, "links": 0}
+ZERO = {"projects": 0, "modules": 0, "items": 0, "links": 0, "states": 0, "labels": 0}
+SCHEMA_ZERO = {"states": 0, "labels": 0}
 
 
-def counts(created=None, would=None, existing=None, repairs=()):
+def counts(created=None, would=None, existing=None, repairs=(), updated=None, would_update=None):
     return {"created": {**ZERO, **(created or {})}, "would_create": {**ZERO, **(would or {})},
-            "existing": {**ZERO, **(existing or {})}, "repairs": list(repairs)}
+            "existing": {**ZERO, **(existing or {})},
+            "updated": {**SCHEMA_ZERO, **(updated or {})}, "would_update": {**SCHEMA_ZERO, **(would_update or {})},
+            "repairs": list(repairs)}
 
 
 def seed_everything(state, pid="p1", linked=True):
@@ -504,3 +558,119 @@ def test_the_joined_source_defines_every_name_it_uses():
             yield from used(child)
 
     assert sorted(set(used(top)) - defined) == []
+
+
+def set_row(rows, name, **fields):
+    """Edit one stored row the way Plane already holds it, so a test sets up exactly one difference."""
+    (found,) = [r for r in rows if r["name"] == name]
+    found.update(fields)
+
+
+def schema_writes(state):
+    """Every write that touches a state or a label, in order."""
+    return [(c["method"], c["path"], c["body"]) for c in writes(state)
+            if "/states/" in c["path"] or "/labels/" in c["path"]]
+
+
+def test_no_schema_in_cfg_makes_no_state_or_label_request_and_item_bodies_carry_no_labels(plane, lock):
+    state, base = plane
+    summary(run(base, lock, [PROJECT], apply=True))
+    assert [p for _, p in state["requests"] if "/states/" in p or "/labels/" in p] == []
+    bodies = [c["body"] for c in writes(state) if c["path"].endswith("/issues/")]
+    assert len(bodies) == 3
+    assert all("labels" not in b for b in bodies)
+
+
+def test_a_dry_run_of_a_project_not_yet_made_counts_its_schema_without_listing_it(plane, lock):
+    state, base = plane
+    out = summary(run(base, lock, [PROJECT], apply=False, schema=SCHEMA))
+    assert writes(state) == []
+    assert [p for _, p in state["requests"] if "/states/" in p or "/labels/" in p] == []
+    assert out == {"changed": False, "applied": False,
+                   **counts(would={"projects": 1, "modules": 2, "items": 3, "links": 3, "states": 3, "labels": 2})}
+
+
+def test_a_dry_run_counts_the_schema_it_would_converge_and_writes_nothing(plane, lock):
+    state, base = plane
+    seed_everything(state)
+    state["states"]["p1"] = plane_default_states("p1")
+    set_row(state["states"]["p1"], "In Progress", color="#000000")
+    out = summary(run(base, lock, [PROJECT], apply=False, schema=SCHEMA))
+    assert writes(state) == []
+    assert out == {"changed": False, "applied": False,
+                   **counts(would={"states": 1, "labels": 2}, would_update={"states": 1},
+                            existing={"projects": 1, "modules": 2, "items": 3, "states": 2})}
+
+
+def test_apply_creates_the_missing_rows_and_patches_only_the_fields_that_differ_and_never_touches_the_rest(plane, lock):
+    state, base = plane
+    seed_everything(state)
+    states = state["states"]["p1"] = plane_default_states("p1")
+    set_row(states, "Todo", color="#60646c")  # the declared color in another case: not a difference
+    set_row(states, "In Progress", color="#000000")  # the one difference: group is already right
+    state["labels"]["p1"] = [{"id": "lab-os", "name": "OpenSpec", "color": "#0ea5e9", "description": "old text"},
+                             {"id": "lab-legacy", "name": "legacy", "color": "#999999", "description": ""}]
+    undeclared_before = [dict(r) for r in states if r["name"] in ("Backlog", "Done", "Cancelled")]
+    out = summary(run(base, lock, [PROJECT], apply=True, schema=SCHEMA))
+    assert out == {"changed": True, "applied": True,
+                   **counts(created={"states": 1, "labels": 1}, updated={"states": 1, "labels": 1},
+                            existing={"projects": 1, "modules": 2, "items": 3, "states": 2, "labels": 1})}
+    assert schema_writes(state) == [
+        ("PATCH", f"{WS}/projects/p1/states/p1-in-progress/", {"color": "#F59E0B"}),
+        ("POST", f"{WS}/projects/p1/states/", {"name": "Review", "group": "started", "color": "#3B82F6"}),
+        ("PATCH", f"{WS}/projects/p1/labels/lab-os/", {"description": "Declared from openspec"}),
+        ("POST", f"{WS}/projects/p1/labels/", {"name": "blocked", "color": "#EF4444", "description": ""}),
+    ]
+    assert [c for c in writes(state) if c["method"] == "DELETE"] == []
+    assert [dict(r) for r in states if r["name"] in ("Backlog", "Done", "Cancelled")] == undeclared_before
+    assert [r["name"] for r in state["labels"]["p1"]] == ["OpenSpec", "legacy", "blocked"]
+
+
+def test_a_second_apply_writes_no_state_or_label(plane, lock):
+    state, base = plane
+    summary(run(base, lock, [PROJECT], apply=True, schema=SCHEMA))
+    state["calls"].clear()
+    out = summary(run(base, lock, [PROJECT], apply=True, schema=SCHEMA))
+    assert writes(state) == []
+    assert out == {"changed": False, "applied": True,
+                   **counts(existing={"projects": 1, "modules": 2, "items": 3, "states": 3, "labels": 2})}
+
+
+def test_a_new_work_item_carries_the_item_labels_and_an_existing_item_is_never_patched(plane, lock):
+    state, base = plane
+    seed_everything(state)
+    state["issues"]["p1"] = [i for i in state["issues"]["p1"] if i["external_id"] != "item-3"]
+    state["links"][("p1", "m2")] = []  # the link the removed item had: the new item needs its own
+    state["states"]["p1"] = plane_default_states("p1")
+    out = summary(run(base, lock, [PROJECT], apply=True, schema=SCHEMA))
+    openspec_id = [r["id"] for r in state["labels"]["p1"] if r["name"] == "openspec"][0]
+    issue_posts = [c["body"] for c in writes(state) if c["method"] == "POST" and c["path"].endswith("/issues/")]
+    assert issue_posts == [{"name": "Item 3", "description_html": "<p>three</p>", "external_id": "item-3",
+                            "external_source": "openspec", "labels": [openspec_id]}]
+    assert [c for c in writes(state) if c["method"] == "PATCH" and "/issues/" in c["path"]] == []
+    assert out == {"changed": True, "applied": True,
+                   **counts(created={"items": 1, "links": 1, "states": 1, "labels": 2},
+                            existing={"projects": 1, "modules": 2, "items": 2, "states": 2})}
+
+
+@pytest.mark.parametrize("schema", [
+    {"item_labels": ["openspec"]},
+    {"labels": [{"name": "blocked", "color": "#EF4444", "description": ""}], "item_labels": ["openspec"]},
+])
+def test_an_item_label_that_is_not_declared_is_refused_before_any_request(plane, lock, schema):
+    state, base = plane
+    err = refusal(run(base, lock, [PROJECT], apply=True, schema=schema))
+    assert err == {"error": "item label openspec is not declared in schema labels", "actions": [], "actions_total": 0}
+    assert state["requests"] == []
+
+
+@pytest.mark.parametrize("declared", [
+    {"name": "Triage", "group": "backlog", "color": "#000000"},
+    {"name": "Intake", "group": "triage", "color": "#000000"},
+])
+def test_a_declared_triage_state_is_refused_before_any_request(plane, lock, declared):
+    state, base = plane
+    err = refusal(run(base, lock, [PROJECT], apply=True, schema={"states": [declared]}))
+    assert err == {"error": f"state {declared['name']} cannot be declared: the Triage name and the triage group are "
+                            "reserved", "actions": [], "actions_total": 0}
+    assert state["requests"] == []

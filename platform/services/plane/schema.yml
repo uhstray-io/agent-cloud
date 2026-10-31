@@ -1,0 +1,33 @@
+---
+# schema.yml — the states and labels every Plane project made by sync-plane-projects.yml carries.
+#
+# Applied by the sync inside plane-api through Plane's /api/v1 (deployment/sync_projects.py):
+# a state or label declared here and missing from a project is created; one that exists under the
+# same name (case-insensitive) gets only its declared fields patched when they differ. Nothing here
+# is ever deleted from Plane, and states or labels a project has that are not declared are left
+# alone. `default` is never set: which state new work starts in stays Plane's choice (Backlog).
+#
+# Plane Compose was the first choice for this (design.md risk 4). It authenticates only from a
+# token file on disk, so Joseph A. Wisneski IV chose on 2026-10-30 to keep the schema in this
+# sync instead: no new controller dependency, no credential file, and a dry run that only reads.
+#
+# Work item types are not managed: they are a paid-plan feature (Plane Pro and above).
+#
+# States are Plane's five defaults with the colours a new project gets, plus In Review.
+states:
+  - {name: Backlog, group: backlog, color: "#60646C"}
+  - {name: Todo, group: unstarted, color: "#60646C"}
+  - {name: In Progress, group: started, color: "#F59E0B"}
+  - {name: In Review, group: started, color: "#8B5CF6"}
+  - {name: Done, group: completed, color: "#46A758"}
+  - {name: Cancelled, group: cancelled, color: "#9AA4BC"}
+
+labels:
+  - name: openspec
+    color: "#3B82F6"
+    description: "Created from an OpenSpec tasks.md by sync-plane-projects; the task is the source of truth for what the item is."
+
+# Labels every NEW work item the sync creates gets at creation. Never re-applied: removing one in
+# Plane sticks. Each name must be declared under labels above.
+item_labels:
+  - openspec

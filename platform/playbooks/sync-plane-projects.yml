@@ -3,6 +3,8 @@
 #
 # For each repository enabled in platform/services/plane/projects.yml:
 #   project       one Plane project per repository (identifier and name declared there)
+#   schema        the states and labels in platform/services/plane/schema.yml (created, or their
+#                 declared fields patched; never deleted)
 #   module        one per OpenSpec change (changes/<change>/)
 #   work item     one per open task in that change's tasks.md, linked back to the file on GitHub
 #
@@ -157,6 +159,7 @@
           service_token: "{{ _plane_secret.json.data.data.plane_service_token }}"
           workspace_slug: "{{ plane_workspace_slug }}"
           projects: "{{ hostvars['localhost']._desired_projects }}"
+          schema: "{{ lookup('file', playbook_dir ~ '/../services/plane/schema.yml') | from_yaml }}"
       no_log: true
 
     # Both runs carry the service token on stdin; the script prints counts only (never a credential),
@@ -220,5 +223,6 @@
           {{ 'DRY RUN (--check), would create' if ansible_check_mode else 'Created' }}:
           {{ (_sync_summary.would_create if ansible_check_mode else _sync_summary.created) }};
           already present {{ _sync_summary.existing }};
+          {{ 'would update' if ansible_check_mode else 'updated' }} {{ (_sync_summary.would_update if ansible_check_mode else _sync_summary.updated) | default({}) }};
           repairs {{ _sync_summary.repairs | default([]) }};
           {{ hostvars['localhost']._skipped_count }} task lines not imported (done, superseded or unnumbered).
