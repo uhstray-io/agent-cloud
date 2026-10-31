@@ -1,6 +1,5 @@
 """Unit cases for the shared template-write rule in fake_semaphore.py."""
 
-import pytest
 from fake_semaphore import template_write
 
 
@@ -24,9 +23,20 @@ def test_legacy_drops_the_list_and_keeps_the_scalar():
     assert template_write({"environment_id": 1, "environment_ids": [2]}, legacy=True) == {"environment_id": 1}
 
 
-def test_an_empty_list_is_refused_not_guessed():
-    with pytest.raises(AssertionError, match="not modelled"):
-        template_write({"environment_id": 1, "environment_ids": []})
+def test_a_zero_scalar_binds_nothing():
+    # db/Template.go:315 copies the scalar only when it is a positive ID.
+    assert template_write({"environment_id": 0}) == {"environment_id": 0, "environment_ids": []}
+    assert template_write({"environment_id": 0, "environment_ids": None}) == {
+        "environment_id": 0,
+        "environment_ids": [],
+    }
+
+
+def test_an_explicit_empty_list_clears_the_bindings_and_keeps_the_scalar():
+    assert template_write({"environment_id": 1, "environment_ids": []}) == {
+        "environment_id": 1,
+        "environment_ids": [],
+    }
 
 
 def test_the_body_is_not_mutated():

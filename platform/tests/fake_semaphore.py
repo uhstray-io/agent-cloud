@@ -2,8 +2,10 @@
 
 A fake that stores a template PUT must bind the same environment the pinned Semaphore binds,
 and two fakes that each carry their own copy can disagree. The rule is Semaphore v2.19.11's
-ApplyLegacyEnvironmentField in db/Template.go: a body's environment_ids wins when it is a
-non-null list; otherwise environment_id is copied into the list.
+db/Template.go: ApplyLegacyEnvironmentField (lines 311-318) copies environment_id into
+environment_ids only when the list is nil and the scalar is a positive ID, and leaves an
+explicit [] alone, which clears every binding; FillTemplate (lines 355-357) reads the scalar
+back as the list's first element when the list is not empty.
 """
 
 
@@ -11,10 +13,9 @@ def template_write(body, *, legacy=False):
     """Return the stored copy of a template PUT body.
 
     legacy=True models a pre-v2.19 API, which has no environment_ids field and ignores it.
-    Otherwise an absent or null environment_ids is filled from environment_id, a non-empty
-    list wins over environment_id, and the stored environment_id is the list's first element.
-    An empty list is refused: its behaviour is not modelled, so a test that sends one fails
-    loudly instead of getting a guessed binding.
+    Otherwise a non-null list wins and the stored environment_id is its first element; an
+    absent or null list is filled from a positive environment_id and stays empty for 0; an
+    explicit [] is kept, and the scalar is then left as sent.
     """
     stored = dict(body)
     if legacy:
@@ -22,9 +23,9 @@ def template_write(body, *, legacy=False):
         return stored
     ids = stored.get("environment_ids")
     if ids is None:
-        ids = [stored["environment_id"]]
-    if not ids:
-        raise AssertionError("environment_ids [] is not modelled")
+        scalar = stored.get("environment_id")
+        ids = [scalar] if isinstance(scalar, int) and scalar > 0 else []
     stored["environment_ids"] = list(ids)
-    stored["environment_id"] = ids[0]
+    if ids:
+        stored["environment_id"] = ids[0]
     return stored
