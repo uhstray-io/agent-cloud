@@ -115,6 +115,7 @@ through Authentik on, and leaving it unset switches it OFF on the next deploy. `
 | Destroy everything and redeploy | `Clean Deploy Plane` (`-e confirm_reset=<host>`) |
 | Invite and reconcile members from Authentik groups | `Reconcile Plane Members` (plan only; `-e apply=true` applies) |
 | Turn open OpenSpec tasks into work items (create-only) | `Sync Plane Projects` (dry run with `--check`) |
+| Run the MCP server for harnesses (after Deploy Plane; re-run after a clean Plane deploy, which removes it) | `Deploy Plane MCP` |
 | Back up the database | `Back Up Plane DB` (pg_dump of `plane-db` to an owner-only dir on the VM) |
 | Restore a named dump | `Restore Plane DB` (`-e plane_dump_file=<path>`; staging first, prior database kept as `plane_prev`) |
 

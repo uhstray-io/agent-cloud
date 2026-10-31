@@ -112,7 +112,7 @@ def run(base, **overrides):
     cfg = {"base": base, "host": "plane.test", "origin": "https://plane.test", "email": ME,
            "password": PASSWORD, "workspace_slug": WS, "app_slug": APP, "app_name": "Plane MCP",
            "company_name": "Uhstray.io", "short_description": "MCP server for Plane",
-           "redirect_uri": REDIRECT, "have_secret": False, **overrides}
+           "redirect_uri": REDIRECT, "have_secret": False, "stored_client_id": "cid-123", **overrides}
     return subprocess.run([sys.executable, "-I", "-c", SOURCE], input=json.dumps(cfg) + "\n",
                           capture_output=True, text=True, timeout=60)
 
@@ -215,6 +215,17 @@ def test_two_redirect_uris_in_any_order_are_not_patched(plane):
     out = run(base, have_secret=True, redirect_uri=pair)
     assert out.returncode == 0, out.stdout + out.stderr
     assert writes(state) == [] and the_line(out)["patched"] == []
+
+
+def test_a_held_secret_for_another_client_id_is_regenerated(plane):
+    # Plane lists a different id than the one the held secret belongs to (the app was re-created):
+    # pairing the new id with the old secret would start fine and fail every OAuth sign-in.
+    state, base = plane
+    state["apps"] = [app_row()]
+    out = run(base, have_secret=True, stored_client_id="cid-old")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert ("PATCH", f"{BASE_PATH}{APP_ID}/regenerate-secret/") in [c[:2] for c in state["calls"]]
+    assert the_line(out)["regenerated"] is True and the_line(out)["client_secret"] == SECRET
 
 
 def test_a_slug_owned_by_another_owner_is_refused_before_any_write(plane):

@@ -16,4 +16,4 @@ Plane's MCP server, run as its own compose project beside Plane. The design, the
 
 ## Deploy
 
-Semaphore template `Deploy Plane MCP`, playbook `platform/playbooks/deploy-plane-mcp.yml`. Plane must already be deployed, and the MCP app registered in it, before the first run.
+Semaphore template `Deploy Plane MCP`, playbook `platform/playbooks/deploy-plane-mcp.yml`. Run it after `Deploy Plane`: it registers (or repairs) Plane's OAuth application for the server itself, so there is no manual step.

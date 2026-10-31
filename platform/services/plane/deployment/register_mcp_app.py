@@ -10,8 +10,9 @@ Run by the playbook INSIDE the plane-api container, after plane_session.py, as a
    company_name, short_description,
    redirect_uri,                      the MCP server's OAuth callback URIs, space-separated (Plane stores
                                       redirect_uris that way; order is not significant)
-   have_secret: bool}                 true when the caller already holds the client secret: then
-                                      nothing is regenerated and no secret is printed
+   have_secret: bool,                 true when the caller already holds the client secret, and
+   stored_client_id}                  the client id that secret belongs to: when it is the id Plane
+                                      lists, nothing is regenerated and no secret is printed
 
 It signs in as the automation admin and lists the workspace's applications. The application is
 found by its slug among the rows Plane lists for this workspace:
@@ -21,7 +22,8 @@ found by its slug among the rows Plane lists for this workspace:
                             Plane answers 201 with the one plaintext client_secret it ever returns.
   owned, differing fields   PATCH only the fields that differ: redirect_uris, resource_permissions
                             (compared as sets). An owned application is never deleted.
-  owned, secret needed      unless have_secret, regenerate the secret (PATCH .../{id}/regenerate-secret/,
+  owned, secret needed      unless the caller holds the secret for the listed client id, regenerate
+                            it (PATCH .../{id}/regenerate-secret/,
                             Plane answers 200 with the new plaintext client_secret).
   not owned                 refused before any write: the slug belongs to another owner.
 
@@ -44,6 +46,11 @@ app_slug = cfg["app_slug"]
 redirect = cfg["redirect_uri"]
 wanted_permissions = ["read", "write"]
 have_secret = str(cfg.get("have_secret", False)).lower() == "true"
+# The secret the caller holds belongs to the client id it holds. If Plane lists a different id (the
+# app was re-created after a clean deploy, or its first store write failed), that secret is for
+# another app: regenerate rather than pair a new id with an old secret, which would start fine and
+# fail every OAuth sign-in with invalid_client.
+stored_client_id = cfg.get("stored_client_id") or ""
 base_path = f"/api/workspaces/{ws}/applications/"
 
 form_post("/auth/sign-in/", {"email": cfg["email"], "password": cfg["password"]})
@@ -83,7 +90,7 @@ else:
             fail(f"updating application {app_slug} refused ({status})")
     result = {"client_id": match["client_id"], "created": False, "regenerated": False,
               "patched": sorted(patch)}
-    if not have_secret:
+    if not (have_secret and stored_client_id == match.get("client_id")):
         status, _, rotated = call("PATCH", f"{base_path}{match['id']}/regenerate-secret/")
         if status != 200 or not isinstance(rotated, dict) or not rotated.get("client_secret"):
             fail(f"regenerating the secret of {app_slug} refused ({status})")

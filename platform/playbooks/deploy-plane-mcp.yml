@@ -133,9 +133,14 @@
                   'company_name': plane_company_name,
                   'short_description': 'Plane MCP server for agent-cloud harnesses',
                   'redirect_uri': _mcp_redirect_uris,
-                  'have_secret': (_plane_secret.json.data.data.plane_mcp_client_secret | default('') | length > 0)} | to_json }}
+                  'have_secret': (_plane_secret.json.data.data.plane_mcp_client_secret | default('') | length > 0),
+                  'stored_client_id': _plane_secret.json.data.data.plane_mcp_client_id | default('')} | to_json }}
           register: _mcp_register
-          changed_when: false  # the store write below is the change
+          # Changed when Plane's app was created, its secret regenerated or a field patched; read from
+          # the script's non-secret flags only (the credentials are in the same line).
+          changed_when: >-
+            '"created": true' in _mcp_register.stdout or '"regenerated": true' in _mcp_register.stdout
+            or ('"patched": [' in _mcp_register.stdout and '"patched": []' not in _mcp_register.stdout)
           failed_when: false
           no_log: true
 
@@ -152,6 +157,9 @@
             _mcp_reg_summary:
               rc: "{{ _mcp_register.rc }}"
               error: "{{ _mcp_reg.error | default('') }}"
+              # A crash prints a traceback, not the JSON line; its last line names the error. The
+              # script reads its input from stdin into memory, so a traceback carries no credential.
+              stderr_tail: "{{ (_mcp_register.stderr_lines | default([''], true) | last)[:300] }}"
               created: "{{ _mcp_reg.created | default(false) }}"
               regenerated: "{{ _mcp_reg.regenerated | default(false) }}"
               patched: "{{ _mcp_reg.patched | default([]) }}"
@@ -162,7 +170,9 @@
             that:
               - _mcp_reg_summary.rc | int == 0
               - _mcp_reg_summary.error == ''
-            fail_msg: "Plane MCP app registration failed: {{ _mcp_reg_summary.error or ('exit ' ~ _mcp_reg_summary.rc) }}"
+            fail_msg: >-
+              Plane MCP app registration failed: {{ _mcp_reg_summary.error or ('exit ' ~ _mcp_reg_summary.rc) }}{{
+              ('; ' ~ _mcp_reg_summary.stderr_tail) if _mcp_reg_summary.stderr_tail else '' }}
             quiet: true
 
         - name: "Resolve the client credentials"
@@ -312,7 +322,9 @@
 
     - name: "Keep only the probe result"
       ansible.builtin.set_fact:
-        _mcp_tools: "{{ (_mcp_tools_run.stdout | from_json) if (_mcp_tools_run.stdout | default('')).startswith('{') else {'status': 0, 'tools': 0} }}"
+        _mcp_tools: >-
+          {{ (_mcp_tools_run.stdout | from_json) if (_mcp_tools_run.stdout | default('')).startswith('{')
+             else {'status': 0, 'tools': 0, 'stderr_tail': (_mcp_tools_run.stderr_lines | default([''], true) | last)[:300]} }}
       no_log: true
 
     - name: "Plane's tools are listed"
@@ -320,7 +332,9 @@
         that:
           - _mcp_tools.status | int == 200
           - _mcp_tools.tools | int > 0
-        fail_msg: "MCP tools/list with the service token answered {{ _mcp_tools.status }} with {{ _mcp_tools.tools }} tools."
+        fail_msg: >-
+          MCP tools/list with the service token answered {{ _mcp_tools.status }} with {{ _mcp_tools.tools }} tools{{
+          ('; probe error: ' ~ _mcp_tools.stderr_tail) if _mcp_tools.stderr_tail | default('') else '' }}.
         quiet: true
 
     - name: "Report"

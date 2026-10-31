@@ -9,6 +9,9 @@ plane-mcp — Plane's MCP server (`makeplane/plane-mcp-server`, pinned tag) run 
 1. **It cannot start with Plane.** In HTTP mode `plane_mcp/__main__.py` builds the OAuth provider, and `plane_mcp/auth/plane_oauth_provider.py` raises `ValueError` when `PLANE_OAUTH_PROVIDER_CLIENT_ID` or `PLANE_OAUTH_PROVIDER_CLIENT_SECRET` is empty. Those values exist only after Plane is up and the MCP app is registered in it.
 2. **Plane's compose file is not ours to edit.** `platform/services/plane/deployment/CLAUDE.md`: Plane's Compose file is fetched per deploy and never committed. The MCP server cannot be a service in it.
 3. **Each workflow is independent** (`AGENTS.md`, Critical Deployment Rule 3). The MCP server is redeployed, rotated and retired without touching Plane.
+   The reverse does not hold: `Clean Deploy Plane` removes `plane-mcp` too, because `tasks/clean-service.yml` removes every
+   container whose name starts with the service name `plane`. Re-run `Deploy Plane MCP` after a clean Plane deploy; it
+   re-creates the OAuth application and stores the new credentials.
 
 ## Networks
 
@@ -62,7 +65,9 @@ Container port 8211 (hardcoded in `plane_mcp/__main__.py`, bound to `0.0.0.0`). 
 | `/http/api-key/mcp` | Streamable HTTP | API key in a header |
 | `/sse` | SSE, mounted at `/` | Plane OAuth |
 
-The `/mcp` suffix inside the header mount is FastMCP's default path. It is not checked against the installed package.
+The token endpoint `/http/api-key/mcp` was exercised by the deploy's verify step (local Semaphore task 10275). A GET on
+either MCP endpoint answers 405; health is the OAuth protected-resource document at
+`/.well-known/oauth-protected-resource/http/mcp`, whose `resource` names the public URL (what `validate-all.yml` checks).
 
 ## Logging
 
@@ -70,7 +75,14 @@ The upstream default is `LOG_PAYLOADS=true` (`plane_mcp/server.py`). That logs e
 
 ## Deploy
 
-- Semaphore template `Deploy Plane MCP`, playbook `platform/playbooks/deploy-plane-mcp.yml`. The playbook renders `.env` from `templates/env.j2`, reads the OAuth credentials from OpenBao, runs `deploy.sh`, and records the result.
+- Semaphore template `Deploy Plane MCP`, playbook `platform/playbooks/deploy-plane-mcp.yml`. The playbook registers or repairs Plane's OAuth application (`platform/services/plane/deployment/register_mcp_app.py`), keeps
+  the credentials in OpenBao (`plane_mcp_client_id`, `plane_mcp_client_secret`), renders `.env` from `templates/env.j2`, runs
+  `deploy.sh`, and verifies the token endpoint. It records no service-deploy step result (that is keyed by the host's service,
+  `plane`).
+- Plane shows the client secret only at create or regenerate. The playbook reuses the stored one only when OpenBao's
+  `plane_mcp_client_id` is the id Plane lists; otherwise it regenerates, so a new id is never paired with an old secret.
+- Locally, `validate-all.yml` runs inside the Semaphore container, where `*.agent-cloud.test` resolves to the container's own
+  loopback, so its public-URL checks (this one and Plane's) report unhealthy there. Check from the workstation instead.
 - `deploy.sh` prints `DEPLOY_CHANGED=true|false` (from `compose_up_if_changed`). The playbook reads it.
 - Changing `.env` alone recreates the container, because `.env` is hashed into the inputs label.
 
@@ -88,3 +100,10 @@ The upstream default is `LOG_PAYLOADS=true` (`plane_mcp/server.py`). That logs e
 - Plane's plan: `plan/development/16-plane-work-management.md`
 - Upstream: `makeplane/plane-mcp-server`, tag `v0.3.5`
 - Root conventions: `CLAUDE.md` (repository root, symlinked as `AGENTS.md`)
+
+## Production edge (not yet in place)
+
+Locally Caddy reaches `plane-mcp:8211` on `local-dev`. Production needs, in site-config and the edge, before the first run:
+`plane_mcp_public_url` and a `plane_mcp_bind` the central Caddy can reach (the default `127.0.0.1` is local only), a firewall
+allow on the published port from Caddy, a `caddy_managed_sites` route, the Cloudflare DNS record, and a decision on the
+Cloudflare challenge for non-browser MCP clients (the `/v1/*` precedent is `inference-api-bypass-challenge` in `waf.tf`).
