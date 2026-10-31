@@ -2036,6 +2036,111 @@ def test_availability_source_action_consumes_ansible_environment_json_and_stdin_
         SURVEY._availability_source_action()
 
 
+def _effective_compose_fixture(ports=None):
+    alloy = {
+        "image": "docker.io/grafana/alloy:v1.5.1",
+        "command": ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"],
+        "volumes": [{
+            "type": "bind", "source": str((ROOT / "platform/services/o11y/deployment/config/config.alloy").resolve()),
+            "target": "/etc/alloy/config.alloy", "read_only": True,
+        }],
+    }
+    if ports is not None:
+        alloy["ports"] = ports
+    return {"name": "o11y", "services": {"alloy": alloy}}
+
+
+def _check_effective_compose_ports(monkeypatch, config, *, enabled):
+    monkeypatch.setenv("LOCAL_MODE", "true")
+    monkeypatch.setenv("O11Y_AVAILABILITY_ENABLED", "true" if enabled else "false")
+    config["services"]["alloy"]["command"][1] = (
+        "--server.http.listen-addr=127.0.0.1:12345" if enabled
+        else "--server.http.listen-addr=0.0.0.0:12345"
+    )
+    if enabled:
+        config["x-podman"] = {"in_pod": False}
+    monkeypatch.setattr(
+        SURVEY, "_availability_command", lambda _argv, **_kwargs: yaml.safe_dump(config).encode("utf-8")
+    )
+    return SURVEY._verify_availability_effective_compose(
+        str(ROOT / "platform/services/o11y/deployment"), ["synthetic-compose"], []
+    )
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_effective_compose_accepts_normalized_otlp_ports_in_both_modes(monkeypatch, enabled):
+    ports = [
+        {"target": 4317, "published": "7421", "protocol": "tcp", "host_ip": "127.0.0.1"},
+        {"target": 4318, "published": "4318", "protocol": "tcp", "host_ip": "192.168.1.10"},
+    ]
+    assert _check_effective_compose_ports(monkeypatch, _effective_compose_fixture(ports), enabled=enabled) == "o11y"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_effective_compose_accepts_only_narrow_otlp_short_port_forms(monkeypatch, enabled):
+    for port in ("127.0.0.1:4317:4317/tcp", "192.168.1.10:4318:4318"):
+        assert _check_effective_compose_ports(
+            monkeypatch, _effective_compose_fixture([port]), enabled=enabled
+        ) == "o11y"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "port",
+    [
+        {"target": 12345, "published": "9999", "protocol": "tcp"},
+        {"target": 4317, "published": "12345", "protocol": "tcp"},
+        {"target": True, "published": "4317", "protocol": "tcp"},
+        {"target": "4317-4318", "published": "4317", "protocol": "tcp"},
+        {"target": 4317, "published": "90000", "protocol": "tcp"},
+        {"target": 4317, "published": "4317", "protocol": "udp"},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "extra": "ambiguous"},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": None},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": "0.0.0.0"},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": "203.0.113.10"},
+        "4317",
+        "4317:4317/tcp",
+        "127.0.0.1:4317-4318:4317/tcp",
+        ":::4317:4317/tcp",
+    ],
+)
+def test_effective_compose_refuses_admin_remaps_and_malformed_port_shapes(monkeypatch, port, enabled):
+    if isinstance(port, dict):
+        port = {"host_ip": "127.0.0.1", **port}
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        _check_effective_compose_ports(monkeypatch, _effective_compose_fixture([port]), enabled=enabled)
+
+
+@pytest.mark.parametrize("ports", [None, {}, "4317:4317"])
+def test_effective_compose_refuses_malformed_ports_collection(monkeypatch, ports):
+    config = _effective_compose_fixture()
+    config["services"]["alloy"]["ports"] = ports
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        _check_effective_compose_ports(monkeypatch, config, enabled=False)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "admin_mapping",
+    [
+        {"target": 12345, "published": "9999"},
+        {"target": 9999, "published": "12345"},
+    ],
+)
+def test_effective_compose_refuses_admin_publication_on_other_services(monkeypatch, admin_mapping, enabled):
+    valid_alloy_otlp = {
+        "target": 4317, "published": "7431", "protocol": "tcp", "host_ip": "127.0.0.1",
+    }
+    other_service_admin_port = {
+        **admin_mapping, "protocol": "tcp", "host_ip": "127.0.0.1",
+    }
+    config = _effective_compose_fixture([valid_alloy_otlp])
+    config["services"]["synthetic"] = {"ports": [other_service_admin_port]}
+
+    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        _check_effective_compose_ports(monkeypatch, config, enabled=enabled)
+
+
 def test_availability_namespace_proof_uses_kernel_identity_and_finds_project_siblings():
     containers, processes = _availability_namespace_fixture()
     assert SURVEY.validate_availability_namespace_snapshot(
