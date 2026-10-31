@@ -157,13 +157,53 @@ Native forwarded-sample timestamp queries SHALL use one exact-name selector
 per requested fixed family, apply `timestamp()` directly to each selector,
 restore that family's fixed `__name__` with `label_replace`, and combine
 branches with `or on(__name__)`. Every identity matcher and returned label
-SHALL be preserved. Value queries SHALL remain unchanged. Raw sample time
+SHALL be preserved. Value-query PromQL expressions SHALL remain unchanged;
+HTTP evaluation-time binding SHALL follow the snapshot contract below. Raw sample time
 SHALL NOT be replaced with evaluation time. The existing exact parser,
 identity/uniqueness, freshness, required-metric and positive body-evidence
 checks SHALL remain authoritative, including loaded `extra_metrics=true`.
 Missing native body evidence SHALL NOT receive a legacy unavailable-body
 exception. The six-API-call ceiling, 4096-character path ceiling, aggregate
 byte and deadline limits SHALL remain unchanged; oversized paths SHALL refuse.
+
+Every related native and legacy value/raw-timestamp HTTP query within one
+current-source invocation SHALL reuse one validated positive non-boolean integer
+receiver UTC evaluation snapshot T, encoded as exactly one canonical `time`
+parameter. No per-request clock capture, extra clock API request or public
+launch clock override SHALL be introduced. Native raw sample time SHALL remain
+strictly later than the maximum of process start, preapply bound and T minus
+freshness, and no later than T; legacy SHALL retain its existing applicable
+lower bounds and strict future bound. Response evaluation timestamps SHALL NOT
+replace raw timestamp values. Exact identities, uniqueness, required families,
+loaded `extra_metrics=true` and positive native body evidence SHALL remain
+mandatory. Missing body evidence SHALL NOT acquire an optional-metric or
+legacy acceptance exception.
+
+The existing live DETAIL batch SHALL use separate finite positive fractional
+receiver UTC observation bounds D0 at entry and D at completion. Neither SHALL
+be truncated or rounded to integer seconds. Booleans, invalid types,
+nonfinite/nonpositive observations, D < D0 and existing monotonic deadline
+exhaustion SHALL refuse. DETAIL scrape timestamps SHALL be later than the
+applicable process/preapply bounds and D minus the unchanged applicable
+freshness width, and no later than D. T SHALL remain independent: D SHALL NOT
+refresh sample evaluation time, and comparing D with T SHALL NOT replace the
+D0/D within-batch regression check. Internal clock seams MAY be injected or
+patched for deterministic tests; no public schema, clock override, tolerance or
+window-width change is permitted. The two observation domains SHALL NOT be
+claimed as an atomic configuration/sample transaction.
+
+The snapshot repair SHALL retain native two/four sample requests and at most
+six composed current-source sample requests, the existing legacy pair, 4096
+encoded-path cap, aggregate response bytes and shared deadlines. Actual maximum
+encoded paths including `time` SHALL be measured during implementation; an
+estimated length SHALL NOT be reported as observed. It SHALL add no collector
+retry, extra API, receiver restart/deploy/upgrade or native network, port, mount,
+image or engine dependency. Source changes SHALL be limited to the three
+existing planning artifacts, existing helper, baseline Python tests and native
+runner; the BATS entry point, CONTRIBUTING, playbooks, workflow, merge
+guard/fixtures, Compose, dependencies and unrelated files SHALL remain
+unchanged unless a demonstrated necessary interface adjustment is returned to
+root before scope expansion.
 
 The required native semantic regression SHALL enter through one BATS test and
 a Python runner outside pytest discovery in the existing Bash Tests job. It
@@ -194,7 +234,25 @@ owned by this invocation, accounting for their anonymous storage.
 - **WHEN** required native body evidence is absent, identities or samples are invalid/stale/ambiguous, or an encoded path exceeds 4096 characters
 - **THEN** the unchanged strict consumer or work-budget gate refuses; query repair does not establish producer acceptance
 - **AND** supported maximum-context self and six-family health paths are covered without increasing API-call, aggregate-byte or deadline limits
-- **AND** no optional body metric, native legacy exception or changed value query bypasses refusal
+- **AND** no optional body metric, native legacy exception or changed value-query PromQL expression bypasses refusal
+
+#### Scenario: Delayed sample queries share one receiver evaluation snapshot
+- **WHEN** native self-only, health/self, legacy or composed current-source reads are delayed while fixed sample histories gain newer observations
+- **THEN** EVERY actual production-built value/raw-timestamp URL carries exactly one canonical HTTP `time` with the same validated receiver T, and selects matching values/raw times at T despite request delay
+- **AND** the fake API selects from fixed histories according to actual production URLs, rather than returning fixtures based only on the expression; current missing-time behavior must produce RED and the corrected binding GREEN
+- **AND** no per-request time recapture or extra clock API call is used
+
+#### Scenario: Snapshot binding preserves raw-time refusal and work limits
+- **WHEN** raw time is future-to-T, genuinely stale despite later arrivals, equal to process/preapply bounds, or evidence has missing families, missing/zero native body, malformed/duplicate/wrong identities or invalid snapshot inputs
+- **THEN** strict validation refuses even when a response evaluation timestamp is fresh
+- **AND** oversized paths, aggregate-byte exhaustion and deadlines remain refusers; supported maximum contexts including time are measured without increasing the six-call/4096-path/byte/deadline budgets
+- **AND** the existing native Promtool positive and grouped-timestamp/plain-`or` semantic mutant kills, 20-series fixture and six identity decoys remain covered; native runner changes require only URL-context coverage for time
+
+#### Scenario: Live DETAIL uses fractional entry and completion observations
+- **WHEN** the existing live DETAIL reader/parser/validator observes a valid fractional scrape time between its fractional entry D0 and completion D
+- **THEN** unchanged freshness/process/preapply/future checks use D without integer truncation, and meaningful current-code RED becomes corrected GREEN
+- **AND** future-to-D, stale, process/preapply equality, D < D0, malformed/type-invalid/nonfinite/nonpositive clock observations and deadline exhaustion refuse
+- **AND** T remains independent, with no public clock override, tolerance, new schema or atomic configuration/sample claim
 
 #### Scenario: Native semantic regression detects the actual query defects
 - **WHEN** synthetic expression tests run through the actual production builder and native PromQL evaluator

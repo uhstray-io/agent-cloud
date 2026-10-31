@@ -22,7 +22,7 @@ from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import yaml
 
@@ -2885,11 +2885,28 @@ def _run_native_api_batch(
     max_total_bytes: int = MAX_API_BYTES,
 ) -> list[bytes]:
     """Read the fixed native vectors under one aggregate request/byte/time budget."""
-    if not isinstance(paths, list) or not 1 <= len(paths) <= 6 or any(
-        not isinstance(path, str) or not path.startswith("/api/v1/query?") or len(path) > 4096
-        for path in paths
-    ):
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 6:
         raise Refusal("native_samples_unavailable")
+    snapshot = None
+    for path in paths:
+        if not isinstance(path, str) or not path.startswith("/api/v1/query?") or len(path) > 4096:
+            raise Refusal("native_samples_unavailable")
+        try:
+            parameters = parse_qsl(urlsplit(path).query, keep_blank_values=True, strict_parsing=True)
+        except ValueError:
+            raise Refusal("native_samples_unavailable") from None
+        times = [value for key, value in parameters if key == "time"]
+        queries = [value for key, value in parameters if key == "query"]
+        if (
+            len(times) != 1 or len(queries) != 1
+            or any(key not in {"query", "time"} for key, _value in parameters)
+            or [key for key, _value in parameters] != ["query", "time"]
+            or urlencode(parameters) != urlsplit(path).query
+            or not re.fullmatch(r"[1-9][0-9]*", times[0])
+            or (snapshot is not None and snapshot != times[0])
+        ):
+            raise Refusal("native_samples_unavailable")
+        snapshot = times[0]
     deadline = time.monotonic() + MAX_AVAILABILITY_READBACK_SECONDS if deadline is None else deadline
     if (
         isinstance(max_total_bytes, bool) or not isinstance(max_total_bytes, int)
@@ -3418,9 +3435,13 @@ def _alloy_scrape_arguments(
 def validate_availability_native_details(
     details: dict[str, dict[str, Any]], availability: dict[str, Any],
     shared_limits: dict[str, Any], *, environment: str, cluster: str,
-    oldest_allowed: Decimal | None = None, now: int | None = None, self_only: bool = False,
+    oldest_allowed: Decimal | None = None, now: Decimal | int | None = None, self_only: bool = False,
 ) -> dict[str, Any]:
     """Validate every fixed native component and return endpoint-free budget evidence."""
+    if now is not None:
+        now = _fractional_receiver_time(now)
+    elif oldest_allowed is not None:
+        raise Refusal("native_declaration_invalid")
     targets = availability.get("targets") if isinstance(availability, dict) else None
     limits = availability.get("limits") if isinstance(availability, dict) else None
     if (
@@ -3506,8 +3527,8 @@ def validate_availability_native_details(
             raise Refusal("native_debug_mismatch")
         last_scrape = _parse_native_time(observed.get("last_scrape"))
         if oldest_allowed is not None and (
-            last_scrape <= oldest_allowed or now is None or last_scrape > now
-            or now - last_scrape > target.get("freshness_seconds", 0)
+            last_scrape <= oldest_allowed or now is None or last_scrape > Decimal(now)
+            or Decimal(now) - last_scrape > target.get("freshness_seconds", 0)
         ):
             raise Refusal("native_debug_stale")
         budgets.append({
@@ -3544,8 +3565,8 @@ def validate_availability_native_details(
         raise Refusal("native_debug_mismatch")
     self_last_scrape = _parse_native_time(self_observed.get("last_scrape"))
     if oldest_allowed is not None and (
-        self_last_scrape <= oldest_allowed or now is None or self_last_scrape > now
-        or now - self_last_scrape > 300
+        self_last_scrape <= oldest_allowed or now is None or self_last_scrape > Decimal(now)
+        or Decimal(now) - self_last_scrape > 300
     ):
         raise Refusal("native_debug_stale")
     return {
@@ -3724,7 +3745,7 @@ def _require_native_components_absent(availability: dict[str, Any]) -> dict[str,
 def read_availability_native_details(
     availability: dict[str, Any], shared_limits: dict[str, Any], *, environment: str, cluster: str,
     process_started_at: Decimal | int | None = None, preapply_bound: int | None = None,
-    now: int | None = None, self_only: bool = False,
+    self_only: bool = False,
     deadline: float | None = None, max_total_bytes: int = MAX_AVAILABILITY_READBACK_BYTES,
 ) -> dict[str, Any]:
     targets = availability.get("targets") if isinstance(availability, dict) else None
@@ -3749,6 +3770,7 @@ def read_availability_native_details(
         or deadline <= time.monotonic()
     ):
         raise Refusal("native_declaration_invalid")
+    detail_start = _fractional_receiver_time(time.time())
     details: dict[str, dict[str, Any]] = {}
     consumed = 0
     for component_id in component_ids:
@@ -3762,13 +3784,14 @@ def read_availability_native_details(
         details[component_id] = _alloy_component_detail(raw, component_id, name)
     if time.monotonic() > deadline:
         raise Refusal("native_readback_timeout")
-    if (process_started_at is None) != (now is None):
+    detail_now = _fractional_receiver_time(time.time())
+    if detail_now < detail_start:
         raise Refusal("native_declaration_invalid")
     oldest_allowed = None
     if process_started_at is not None:
         if (
             isinstance(process_started_at, bool) or not isinstance(process_started_at, (int, Decimal))
-            or process_started_at <= 0 or isinstance(now, bool) or not isinstance(now, int) or now <= 0
+            or process_started_at <= 0
             or (preapply_bound is not None and (
                 isinstance(preapply_bound, bool) or not isinstance(preapply_bound, int) or preapply_bound <= 0
             ))
@@ -3781,18 +3804,19 @@ def read_availability_native_details(
         ):
             raise Refusal("native_declaration_invalid")
         oldest_allowed = max(
-            Decimal(process_started_at), Decimal(preapply_bound or 0), Decimal(now - min(freshness_values)),
+            Decimal(process_started_at), Decimal(preapply_bound or 0), detail_now - Decimal(min(freshness_values)),
         )
     projection = validate_availability_native_details(
         details, availability, shared_limits, environment=environment, cluster=cluster,
-        oldest_allowed=oldest_allowed, now=now, self_only=self_only,
+        oldest_allowed=oldest_allowed, now=detail_now, self_only=self_only,
     )
     return {**projection, "_detail_bytes": consumed}
 
 
 def _availability_query_path(
     metric_names: tuple[str, ...], *, job: str, environment: str, cluster: str,
-    instance: str | None = None, target_id: str | None = None, timestamp: bool = False,
+    evaluation_time: int, instance: str | None = None, target_id: str | None = None,
+    timestamp: bool = False,
 ) -> str:
     if (
         not metric_names or len(metric_names) > 6
@@ -3805,6 +3829,7 @@ def _availability_query_path(
         or not isinstance(cluster, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", cluster)
         or (instance is not None and (not isinstance(instance, str) or not SAFE_IDENTITY_VALUE.fullmatch(instance)))
         or (target_id is not None and (not isinstance(target_id, str) or not SAFE_IDENTITY_VALUE.fullmatch(target_id)))
+        or isinstance(evaluation_time, bool) or not isinstance(evaluation_time, int) or evaluation_time <= 0
     ):
         raise Refusal("native_declaration_invalid")
     matchers = [f"__name__=~{json.dumps('^(?:' + '|'.join(metric_names) + ')$')}"]
@@ -3829,7 +3854,39 @@ def _availability_query_path(
         expression = " or on(__name__) ".join(timestamp_branches)
     else:
         expression = selector
-    return PROMETHEUS + "/api/v1/query?" + urlencode({"query": expression})
+    return PROMETHEUS + "/api/v1/query?" + urlencode((("query", expression), ("time", str(evaluation_time))))
+
+
+def _validated_snapshot_time(value: Any = None) -> int:
+    """Return one validated receiver UTC epoch second; explicit values are test seams."""
+    if value is None:
+        observed = time.time()
+        if isinstance(observed, bool) or not isinstance(observed, (int, float, Decimal)):
+            raise Refusal("native_declaration_invalid")
+        try:
+            numeric = Decimal(str(observed))
+        except (InvalidOperation, ValueError):
+            raise Refusal("native_declaration_invalid") from None
+        if not numeric.is_finite() or numeric <= 0:
+            raise Refusal("native_declaration_invalid")
+        snapshot = int(numeric)
+    else:
+        snapshot = value
+    if isinstance(snapshot, bool) or not isinstance(snapshot, int) or snapshot <= 0:
+        raise Refusal("native_declaration_invalid")
+    return snapshot
+
+
+def _fractional_receiver_time(value: Any) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise Refusal("native_declaration_invalid")
+    try:
+        observed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise Refusal("native_declaration_invalid") from None
+    if not observed.is_finite() or observed <= 0:
+        raise Refusal("native_declaration_invalid")
+    return observed
 
 
 def _native_metric_rows(
@@ -3890,9 +3947,7 @@ def collect_availability_native_samples(
         or not isinstance(freshness_seconds, int) or not 60 <= freshness_seconds <= 86400
     ):
         raise Refusal("native_declaration_invalid")
-    now = int(time.time()) if now is None else now
-    if isinstance(now, bool) or not isinstance(now, int) or now <= 0:
-        raise Refusal("native_declaration_invalid")
+    now = _validated_snapshot_time(now)
     oldest_allowed = max(Decimal(process_started_at), Decimal(preapply_bound or 0), Decimal(now - freshness_seconds))
     self_identity = {
         "job": "alloy", "instance": "alloy:12345", "service": "o11y/alloy",
@@ -3920,20 +3975,22 @@ def collect_availability_native_samples(
     self_families = set(ALLOY_SELF_METRICS)
     self_timestamp_path = _availability_query_path(
         ALLOY_SELF_METRICS, job="alloy", environment=environment, cluster=cluster,
+        evaluation_time=now,
         instance="alloy:12345", target_id="service:o11y", timestamp=True,
     ).removeprefix(PROMETHEUS)
     self_value_path = _availability_query_path(
         ALLOY_SELF_METRICS, job="alloy", environment=environment, cluster=cluster,
+        evaluation_time=now,
         instance="alloy:12345", target_id="service:o11y",
     ).removeprefix(PROMETHEUS)
     if targets:
         timestamp_path = _availability_query_path(
             ALLOY_HEALTH_METRICS, job="o11y-availability", environment=environment,
-            cluster=cluster, timestamp=True,
+            cluster=cluster, evaluation_time=now, timestamp=True,
         ).removeprefix(PROMETHEUS)
         values_path = _availability_query_path(
             ALLOY_HEALTH_METRICS, job="o11y-availability", environment=environment,
-            cluster=cluster,
+            cluster=cluster, evaluation_time=now,
         ).removeprefix(PROMETHEUS)
         query_paths = [timestamp_path, values_path, self_timestamp_path, self_value_path]
     else:
@@ -4052,7 +4109,7 @@ def read_availability_native_source(
     now: int | None = None,
 ) -> dict[str, Any]:
     """Join loaded native DETAIL and fresh samples under one aggregate read budget."""
-    now = int(time.time()) if now is None else now
+    now = _validated_snapshot_time(now)
     if not isinstance(availability, dict) or not isinstance(availability.get("targets"), list):
         raise Refusal("native_declaration_invalid")
     targets = availability["targets"]
@@ -4065,7 +4122,7 @@ def read_availability_native_source(
     detail = read_availability_native_details(
         availability, shared_limits, environment=environment, cluster=cluster,
         process_started_at=process_started_at, preapply_bound=preapply_bound,
-        now=now, self_only=self_only, deadline=deadline,
+        self_only=self_only, deadline=deadline,
     )
     detail_bytes = detail.pop("_detail_bytes", None)
     if (
@@ -4190,7 +4247,7 @@ def collect_prometheus_self_source(
     freshness_seconds: int = 300,
 ) -> dict[str, Any]:
     """Prove the legacy Prometheus producer without claiming an absent body counter."""
-    now = int(time.time()) if now is None else now
+    now = _validated_snapshot_time(now)
     if (
         isinstance(now, bool) or not isinstance(now, int) or now <= 0
         or (
@@ -4217,10 +4274,12 @@ def collect_prometheus_self_source(
     families = ("up", "scrape_samples_scraped")
     values_path = _availability_query_path(
         families, job="alloy", environment=environment, cluster=cluster,
+        evaluation_time=now,
         instance="alloy:12345", target_id="service:o11y",
     ).removeprefix(PROMETHEUS)
     timestamp_path = _availability_query_path(
         families, job="alloy", environment=environment, cluster=cluster,
+        evaluation_time=now,
         instance="alloy:12345", target_id="service:o11y", timestamp=True,
     ).removeprefix(PROMETHEUS)
     timestamp_raw, values_raw = _run_native_api_batch([timestamp_path, values_path])
@@ -4280,7 +4339,7 @@ def collect_current_availability_source(
     """Prove exactly one actual producer and label the reviewed source transition."""
     if intended_source not in EXPECTED_SOURCE_VALUES:
         raise Refusal("native_declaration_invalid")
-    now = int(time.time()) if now is None else now
+    now = _validated_snapshot_time(now)
     try:
         _active_prometheus_self_target(targets_raw, environment=environment, cluster=cluster)
         prometheus_present = True

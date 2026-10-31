@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py"
@@ -83,6 +83,7 @@ def _fallback_image():
 
 
 def _expression(helper, families, **kwargs):
+    evaluation_time = kwargs.setdefault("evaluation_time", 1_800_000_000)
     url = helper._availability_query_path(families, **kwargs)
     parsed = urlsplit(url)
     prometheus = urlsplit(helper.PROMETHEUS)
@@ -90,10 +91,15 @@ def _expression(helper, families, **kwargs):
         prometheus.scheme, prometheus.netloc, "/api/v1/query",
     ):
         raise RunnerError("production query builder returned an unexpected URL")
-    query = parse_qs(parsed.query, strict_parsing=True).get("query")
-    if not isinstance(query, list) or len(query) != 1:
-        raise RunnerError("production query builder returned an invalid path")
-    return query[0]
+    parameters = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+    if (
+        len(parameters) != 2
+        or parameters[0][0] != "query" or not parameters[0][1]
+        or parameters[1] != ("time", str(evaluation_time))
+        or urlencode(parameters) != parsed.query
+    ):
+        raise RunnerError("production query builder did not return one canonical evaluation time")
+    return parameters[0][1]
 
 
 def _builder_expressions(helper):
@@ -113,11 +119,11 @@ def _builder_expressions(helper):
     max_self_url = helper._availability_query_path(
         self_families, job="alloy", environment="p" + "r" * 31,
         cluster="c" * 64, instance="a" + ":" * 127,
-        target_id="a" + ":" * 127, timestamp=True,
+        target_id="a" + ":" * 127, timestamp=True, evaluation_time=1_800_000_000,
     )
     max_health_url = helper._availability_query_path(
         health_families, job="a" + "b" * 63, environment="p" + "r" * 31,
-        cluster="c" * 64, timestamp=True,
+        cluster="c" * 64, timestamp=True, evaluation_time=1_800_000_000,
     )
     if not max_self_url.startswith(helper.PROMETHEUS) or not max_health_url.startswith(helper.PROMETHEUS):
         raise RunnerError("production query builder returned an unexpected maximum-context URL")
