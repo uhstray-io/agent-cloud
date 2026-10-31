@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -143,6 +144,26 @@ def test_shared_trace_gate_is_guarded_before_the_existing_canary_tasks():
     assert includes[0]["when"] == "_canary_on"
     assert play["gather_facts"] is False
     assert play["tasks"][0]["name"] == "Mark the canary start on the Tempo receiver clock"
+
+
+@needs_ansible
+def test_removed_shared_trace_gate_reaches_canary_and_breaks_refusal_contract(tmp_path, monkeypatch):
+    play = deepcopy(_play())
+    includes = [task for task in play.get("pre_tasks", [])
+                if task.get("ansible.builtin.include_tasks") == "tasks/assert-o11y-trace-rollout.yml"]
+    assert len(includes) == 1
+    play["pre_tasks"].remove(includes[0])
+
+    mutant_playbook = tmp_path / "verify-o11y-service-without-trace-gate.yml"
+    mutant_playbook.write_text(yaml.safe_dump([play]))
+    monkeypatch.setattr(sys.modules[__name__], "PLAYBOOK", mutant_playbook)
+
+    done = _safe_preflight_harness(tmp_path, receiver_vars={}, emit="true")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "SAFE_PREFLIGHT_COMPLETE" in done.stdout
+    assert "CANARY_OPERATION_REACHED" in done.stdout
+    with pytest.raises(AssertionError):
+        _assert_refused_before_canary(done)
 
 
 @needs_ansible
