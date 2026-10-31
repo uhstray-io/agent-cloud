@@ -37,11 +37,16 @@ def runs_restore_preflight(path, seen=None):
     if path is None or path in seen or not path.is_file():
         return False
     seen.add(path)
-    text = path.read_text()
     # A playbook named for the preflight is the protected workflow itself.
-    if GUARDED.search(text) or GUARDED.fullmatch(path.name):
+    if GUARDED.fullmatch(path.name):
         return True
-    return any(runs_restore_preflight(_resolve(name, path), seen) for name in IMPORT.findall(text))
+    # Only executed imports and includes count: a filename in a comment or a data value (a
+    # reviewed-payload list, say) runs nothing. Comment lines are dropped before matching.
+    text = "\n".join(line for line in path.read_text().splitlines() if not line.lstrip().startswith("#"))
+    targets = IMPORT.findall(text)
+    if any(GUARDED.fullmatch(Path(name).name) for name in targets):
+        return True
+    return any(runs_restore_preflight(_resolve(name, path), seen) for name in targets)
 
 
 def guarded_templates():
@@ -73,3 +78,14 @@ def test_the_detector_follows_imports_and_includes_and_ignores_unguarded_playboo
     assert runs_restore_preflight(tmp_path / "outer.yml")
     assert runs_restore_preflight(tmp_path / "via_tasks.yml")
     assert not runs_restore_preflight(tmp_path / "plain.yml")
+
+
+def test_a_guard_filename_that_is_only_mentioned_is_not_an_include(tmp_path):
+    (tmp_path / "mentions.yml").write_text(
+        "# include_tasks: tasks/guard-o11y-restore-target.yml\n"
+        "- hosts: localhost\n"
+        "  vars:\n"
+        "    reviewed_payload:\n"
+        "      - platform/playbooks/tasks/guard-o11y-restore-target.yml\n"
+        "      - platform/playbooks/preflight-o11y-restore-target-inputs.yml\n")
+    assert not runs_restore_preflight(tmp_path / "mentions.yml")
