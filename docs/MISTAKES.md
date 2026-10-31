@@ -87,7 +87,7 @@ and why.
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 1 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
-| 2.32 | The Semaphore fixture applied a binding v2.19 ignores (`environment_id` without `environment_ids`); production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
+| 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -2060,15 +2060,20 @@ in CI instead of on the first production deploy.
 
 **What happened.** `Provision Seed Environment (Dev)` (task 10722) created the Provision VM
 writer's isolated environment, stored its encrypted AppRole and sent the template update that
-binds it. Production Semaphore v2.19.11 answered success and kept the old binding: its templates
-carry `environment_ids` beside `environment_id` and bind from the list, and the update changed
-only `environment_id`. The provisioner's own readback refused, so nothing was left half-bound
-silently. The fixture applied whatever `environment_id` it was sent, so every test passed. Full
-publication (`setup-templates.yml`) had the same gap.
+binds it. Production Semaphore v2.19.11 answered success and kept the old binding. Its templates
+carry `environment_ids` beside `environment_id`, it binds from the list whenever a body carries one,
+and it copies `environment_id` into the list only when the body omits it
+(`db/Template.go`, `ApplyLegacyEnvironmentField`). The provisioner's update body echoed the template
+it had read, stale list included, with a new `environment_id`. Its own readback refused, so nothing
+was left half-bound silently. The fixture applied whatever `environment_id` it was sent, so every
+test passed. I first described the cause as "changed only `environment_id`" and patched full
+publication too; the review read the v2.19.11 source, and full publication, which builds its body
+without the list, was already correct.
 
-**Root cause.** 2.22's rule asks the fixture to mirror the provider's response shape. After the
-upgrade to v2.19 the fixture still applied a write the way v2.17 did. Nothing compared its write
-semantics with the pinned version.
+**Root cause.** A write built by echoing a read record carries every field the provider added
+since, and v2.19's `environment_ids` overrides the field the code meant to change. 2.22's rule asks
+the fixture to mirror the provider's response shape; after the upgrade the fixture still applied a
+write the way v2.17 did, so nothing compared write semantics with the pinned version.
 
 **The rule.** A fixture mirrors how the pinned provider applies each write the code makes, not
 only what it returns. When the provider is upgraded, the fixtures for every write path are
@@ -2076,8 +2081,8 @@ re-checked against the new version, and a readback after the write stays in the 
 
 **Enforced by.** `test_provisioner_binds_through_environment_ids_on_semaphore_v2_19` and
 `test_isolated_environment_accepts_matching_list_and_refuses_multiple_bindings` in
-`platform/semaphore/tests/test_scoped_publication.py`: the fake now binds from `environment_ids`,
-and both writers set it.
+`platform/semaphore/tests/test_scoped_publication.py`: the fake now applies v2.19.11's rule (a
+carried list wins; an omitted one is filled from `environment_id`), and the provisioner sets both.
 
 ## 3. Acting on live state
 

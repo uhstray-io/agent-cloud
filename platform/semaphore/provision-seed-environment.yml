@@ -320,8 +320,10 @@
         unredirected_headers: [Authorization]
         follow_redirects: none
         body_format: json
-        # Semaphore v2.19 also returns `environment_ids` and binds from it: a PUT that changes only
-        # `environment_id` is accepted and leaves the old binding (production task 10722). Set both.
+        # Semaphore v2.19.11 returns `environment_ids` with the template and binds from it whenever
+        # the body carries it (db/Template.go ApplyLegacyEnvironmentField). This body echoes the
+        # read template, so the stale list would win over a new `environment_id` (production task
+        # 10722): set both.
         body: "{{ _template.json | publication_settings | combine(_binding, {'survey_vars': _template.json.survey_vars | default([])}) | to_json }}"
         status_code: [200, 204]
       vars:

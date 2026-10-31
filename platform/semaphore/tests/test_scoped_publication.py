@@ -150,9 +150,12 @@ class ScopedPublicationTests(unittest.TestCase):
                     if cls.drop_setting:
                         value.pop("description", None)
                     if "environment_ids" in cls.records[0]:
-                        # Semaphore v2.19 binds from `environment_ids`: a PUT that changes only
-                        # `environment_id` is accepted and keeps the old binding (production task 10722).
-                        ids = value.get("environment_ids", cls.records[0]["environment_ids"])
+                        # Semaphore v2.19.11 binds from `environment_ids` when the body carries it, and
+                        # copies `environment_id` into it only when the body omits the list
+                        # (db/Template.go ApplyLegacyEnvironmentField). A body echoing a stale list
+                        # therefore keeps the old binding (production task 10722).
+                        ids = value["environment_ids"] if value.get("environment_ids") is not None \
+                            else [value["environment_id"]]
                         value["environment_ids"] = ids
                         value["environment_id"] = ids[0]
                     cls.records[0] = value
