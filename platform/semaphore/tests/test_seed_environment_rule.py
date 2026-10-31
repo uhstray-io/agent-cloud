@@ -64,3 +64,19 @@ def test_only_the_provisioner_may_accept_a_legacy_pin_and_nothing_else():
 def test_names_only_never_values():
     leftover = {"id": 3, "name": "BAO_VALUE", "type": "env", "secret": "synthetic-never-printed"}
     assert "synthetic-never-printed" not in " ".join(rule(env(AUTH + [leftover])))
+
+
+def test_binding_comparison_normalizes_only_absent_legacy_array():
+    expected = {
+        "id": 301, "name": "Seed", "environment_id": 501, "environment_ids": [501],
+        "repository_id": 5, "inventory_id": 2,
+    }
+    scalar_only = {key: value for key, value in expected.items() if key != "environment_ids"}
+    assert publication.publication_binding_matches(expected, scalar_only, 501)
+    for changed in (
+        {**expected, "environment_ids": [42]},
+        {**expected, "environment_ids": [501, 502]},
+        {**scalar_only, "repository_id": 6},
+        {**scalar_only, "environment_id": 502},
+    ):
+        assert not publication.publication_binding_matches(expected, changed, 501)

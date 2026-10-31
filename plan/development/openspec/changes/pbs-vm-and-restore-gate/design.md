@@ -241,6 +241,40 @@ still require their independent declaration, identity, capacity, writer-drain,
 and lifecycle gates. Source tests and environment creation are not live restore
 or backup acceptance.
 
+### Semaphore environment-array compatibility repair (2026-10-30)
+
+At reviewed Dev `338799e5e66a3a2260856258319200b3bbba25d3`, scoped
+publication task 10684 succeeded and readback proved one new controller with
+unchanged prior template configurations, source environment, repository and
+inventory. Environment task 10688 later failed its final binding assertion.
+Reconciliation found the dedicated environment created with empty JSON and
+plaintext configuration and exactly two encrypted AppRole inputs, but the
+selected template remained bound to the shared source environment. No retry,
+capability acceptance, or subsequent protected workflow is authorized by that
+partial result.
+
+The provisioner changes only legacy `environment_id` while copying the live
+`environment_ids` array unchanged. The pinned upstream model treats the array
+as authoritative and falls back to the scalar only when the array is absent
+([Template model](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/Template.go#L284-L290));
+the SQL update applies that rule before writing environment associations
+([store](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/sql/template.go#L150-L154)).
+Repair the shared provisioner to write and verify one consistent scalar/array
+binding. Preserve every other setting and survey, existing encrypted inputs,
+source/unrelated environments and templates, active-work refusal, and safe rerun
+behavior. Never discard the array from preservation checks or ignore a genuine
+configuration difference merely to pass the assertion.
+
+The shared seed client must also enforce the complete effective binding before
+staging credentials, when proving exclusive ownership/active use, and immediately
+before task submission. Retain legacy scalar-only compatibility; refuse empty,
+malformed, contradictory or multi-environment seed bindings and drift. Add
+realistic API fixtures where a supplied array wins over the scalar, plus
+secondary-group ownership and pre-submit drift regressions. Keep the existing
+isolated-environment metadata guards rather than replacing them with a second
+policy. Review, final-head CI and a guarded Dev merge precede a reconciled retry;
+the capability receipt still gates convergence of the other four workflows.
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.

@@ -11,7 +11,7 @@ import time
 ENGINE = "podman"
 CONTAINER = "o11y-grafana"
 API = "http://prometheus:9090/api/v1/query_range"
-RANGE_SECONDS = 8 * 24 * 60 * 60
+RANGE_SECONDS = 9 * 24 * 60 * 60
 STEP_SECONDS = 5 * 60
 MIN_HISTORY_SECONDS = 7 * 24 * 60 * 60
 MAX_SAMPLE_AGE_SECONDS = 26 * 60 * 60

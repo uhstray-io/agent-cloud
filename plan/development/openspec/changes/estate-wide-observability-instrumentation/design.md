@@ -1374,14 +1374,20 @@ UID, five-label identity, query, tombstone and recovery formats unchanged.
 The early prepare-phase source helper is invoked with `require_health_targets`
 false and may therefore report a valid native self-only readback. Its main
 returns rc 0 for observed output and rc 2 for a fixed unavailable refusal
-envelope. The visible preflight diagnostic accepts only those exact return
-codes and the corresponding validated schema: rc 0 requires observed source
-evidence, while rc 2 may expose only a reason accepted by the shared source
-coverage reducer. Every other code, malformed or oversized output, nonempty
-stderr, or rc/payload mismatch reduces to a fixed fallback. The raw registered
-result remains protected and the strict producer assertion stays authoritative.
-This source-only diagnostic does not identify the cause of any live refusal or
-complete the baseline, loaded-limit, or runtime acceptance gates.
+envelope. Runtime task 10682 at Dev `338799e5e66a3a2260856258319200b3bbba25d3`
+still reduced to `source_readback_unavailable`; its underlying cause remains
+unverified. Refine only this diagnostic boundary: distinguish unexpected process
+results, private stderr presence, invalid output, and invalid evidence with closed
+categories. A complete rc-2 refusal envelope may expose only a committed,
+allowlisted source/readback refusal reason, including when private transport
+stderr is present; negative diagnostic reporting is not producer acceptance.
+Observed producer diagnostics still require empty stderr and the authoritative
+source-coverage validator. Preserve the 64-KiB bound, duplicate/nonfinite JSON
+refusal, strict numeric and nested evidence checks, and rc/payload consistency.
+Never print raw stdout, stderr, an unknown reason, or an exception. The raw
+registered result remains protected and the original strict producer assertion
+stays authoritative. Source tests and diagnostic categories complete none of the
+baseline, loaded-limit, or runtime acceptance gates.
 
 The existing eight-field Prometheus coverage receipt remains byte-compatible
 when all expected targets are legacy/Prometheus. It counts only Prometheus
@@ -1614,3 +1620,26 @@ receiver-SHA survey input, or claim checkout cleanliness, tracked-byte
 integrity, remote-ref equality, or installed/running configuration from this
 read. This source work does not establish a seven-day live baseline or close
 any capacity, backup, restore, retention, or rollout gate.
+
+### History query window repair (2026-10-30)
+
+Health task 10677 at Dev `338799e5e66a3a2260856258319200b3bbba25d3`
+observed the receiver checkout HEAD separately from healthy Alloy metadata.
+History task 10683 then refused with `source_history_too_short`: one source
+series, eight canonical events, and 604653 seconds of source-event span against
+the unchanged 604800-second minimum. A separate read-only, whole-second
+nine-day Prometheus query returned nine canonical events spanning 691129
+seconds. This diagnoses the fixed eight-day lookback's cadence boundary; it is
+not a successful Semaphore capacity receipt or full baseline acceptance.
+
+Increase only the bounded history query lookback to nine days. Preserve the
+seven-day minimum, source-event canonicalization and initial carried-event
+rule, raw-source versus evaluation timestamp distinction, freshness and gap
+checks, metric coverage, response-size and timeout bounds, backend/host
+requirements, and refusal behavior. Add a daily-cadence regression in which
+the eight-day slice is genuinely short while the nine-day slice contains
+enough real source history; no tolerance, timestamp rounding, synthetic event,
+retention change, or VM mutation may make the short slice pass. Require focused
+tests, independent review, final-head CI, guarded Dev merge, and a fresh pinned
+Semaphore history receipt. Parent 1.3 and all forecast/calibration gates remain
+open until their separate evidence is accepted.

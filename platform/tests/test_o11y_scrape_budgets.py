@@ -333,7 +333,7 @@ def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_a
     for malformed in (bool_self_up, float_self_up):
         assert BUDGET.o11y_availability_source_gate_diagnostic({
             "rc": 0, "stdout": json.dumps(malformed), "stderr": "",
-        }) == "source_readback_unavailable"
+        }) == "producer_evidence_invalid"
 
     native_intended_but_prom_current = json.loads(json.dumps(prometheus))
     native_intended_but_prom_current.update(intended_source="alloy", matches_intended=False)
@@ -410,7 +410,7 @@ def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_a
     for malformed in malformed_native:
         assert BUDGET.o11y_availability_source_gate_diagnostic({
             "rc": 0, "stdout": json.dumps(malformed), "stderr": "",
-        }) == "source_readback_unavailable"
+        }) == "producer_evidence_invalid"
 
 
 def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_results():
@@ -434,32 +434,86 @@ def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_r
     }
     assert BUDGET.o11y_availability_source_gate_diagnostic(
         {**result, "stdout": json.dumps(known_failure)}
-    ) == "source_readback_unavailable"
+    ) == "producer_evidence_invalid"
 
     refusal_result = {**result, "rc": 2, "stdout": json.dumps(known_failure)}
     assert BUDGET.o11y_availability_source_gate_diagnostic(refusal_result) == "native_source_stale"
     assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**refusal_result, "stderr": "PRIVATE-STDERR-SENTINEL"}
+    ) == "native_source_stale"
+    loaded_refusal = {
+        "status": "unavailable", "reason": "buildinfo_unavailable", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 2, "stdout": json.dumps(loaded_refusal), "stderr": "PRIVATE-STDERR-SENTINEL",
+    }) == "buildinfo_unavailable"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
         {**refusal_result, "stdout": json.dumps(observed)}
-    ) == "source_readback_unavailable"
+    ) == "producer_exit_code_mismatch"
     assert BUDGET.o11y_availability_source_gate_diagnostic(
         {**result, "stdout": json.dumps(known_failure)}
-    ) == "source_readback_unavailable"
+    ) == "producer_evidence_invalid"
 
     sentinel = "SECRET-SENTINEL-MUST-NOT-ESCAPE"
     invalid_results = [
-        {**result, "rc": 1}, {**result, "rc": 3}, {**result, "rc": True}, {**result, "rc": "0"},
-        {**refusal_result, "stdout": json.dumps({**known_failure, "reason": "unknown_refusal"})},
-        {**result, "stderr": sentinel}, {**result, "stdout": sentinel},
-        {**result, "stdout": "{" + (" " * 65536)},
-        {**result, "stdout": '{"status":"unavailable","status":"observed"}'},
-        {**result, "stdout": json.dumps({**known_failure, "reason": sentinel})},
-        {**result, "stdout": json.dumps({**observed, "untrusted": sentinel})},
-        {"stdout": json.dumps(observed), "stderr": ""},
+        ({**result, "rc": 1}, "producer_process_unexpected"),
+        ({**result, "rc": 3}, "producer_process_unexpected"),
+        ({**result, "rc": True}, "producer_process_unexpected"),
+        ({**result, "rc": "0"}, "producer_process_unexpected"),
+        (
+            {**refusal_result, "stdout": json.dumps({**known_failure, "reason": "unknown_refusal"})},
+            "producer_evidence_invalid",
+        ),
+        ({**result, "stderr": sentinel}, "producer_stderr_present"),
+        ({**result, "stdout": sentinel}, "producer_json_invalid"),
+        ({**result, "stdout": "{" + (" " * 65536)}, "producer_stdout_oversized"),
+        ({**result, "stdout": '{"status":"unavailable","status":"observed"}'}, "producer_json_invalid"),
+        (
+            {**result, "stdout": json.dumps({**known_failure, "reason": sentinel})},
+            "producer_evidence_invalid",
+        ),
+        (
+            {**refusal_result, "stdout": json.dumps({**known_failure, "extra": sentinel})},
+            "producer_evidence_invalid",
+        ),
+        (
+            {**refusal_result, "stdout": json.dumps({**known_failure, "source": True})},
+            "producer_evidence_invalid",
+        ),
+        ({**refusal_result, "stdout": '{"status":"unavailable","status":"unavailable"}'}, "producer_json_invalid"),
+        ({**refusal_result, "stdout": '{"status":"unavailable","reason":NaN}'}, "producer_json_invalid"),
+        (
+            {**result, "stdout": json.dumps({**observed, "untrusted": sentinel})},
+            "producer_evidence_invalid",
+        ),
+        ({"stdout": json.dumps(observed), "stderr": ""}, "producer_process_unexpected"),
     ]
-    for invalid in invalid_results:
+    for invalid, expected in invalid_results:
         category = BUDGET.o11y_availability_source_gate_diagnostic(invalid)
-        assert category == "source_readback_unavailable"
+        assert category == expected
         assert sentinel not in category
+
+
+def test_source_diagnostic_distinguishes_fixed_failure_categories_without_echoing_private_content():
+    sentinel = "PRIVATE-SENTINEL"
+    cases = [
+        ({"stdout": "{}", "stderr": ""}, "producer_process_unexpected"),
+        ({"rc": 0, "stdout": "{}", "stderr": sentinel}, "producer_stderr_present"),
+        ({"rc": 0, "stdout": " " * 65537, "stderr": ""}, "producer_stdout_oversized"),
+        ({"rc": 0, "stdout": '{"status":', "stderr": ""}, "producer_json_invalid"),
+        ({"rc": 0, "stdout": '{"status":"observed","status":"observed"}', "stderr": ""}, "producer_json_invalid"),
+        ({"rc": 0, "stdout": '{"n":NaN}', "stderr": ""}, "producer_json_invalid"),
+        ({"rc": 2, "stdout": json.dumps({"status": "observed"}), "stderr": ""}, "producer_evidence_invalid"),
+        (
+            {"rc": 0, "stdout": json.dumps({"status": "observed", "reason": sentinel}), "stderr": ""},
+            "producer_evidence_invalid",
+        ),
+    ]
+    for fields, expected in cases:
+        diagnostic = BUDGET.o11y_availability_source_gate_diagnostic(fields)
+        assert diagnostic == expected
+        assert sentinel not in diagnostic
 
 
 def test_availability_source_gate_diagnostic_accepts_native_self_only_readback():
@@ -495,11 +549,11 @@ def test_availability_source_gate_diagnostic_accepts_native_self_only_readback()
     float_scrape_up["evidence"]["samples"]["alloy_self"]["scrape_up"] = 1.0
     assert BUDGET.o11y_availability_source_gate_diagnostic({
         "rc": 0, "stdout": json.dumps(float_scrape_up), "stderr": "",
-    }) == "source_readback_unavailable"
+    }) == "producer_evidence_invalid"
     exponent_scrape_up = json.dumps(self_only).replace('"scrape_up": 1', '"scrape_up": 1e0', 1)
     assert BUDGET.o11y_availability_source_gate_diagnostic({
         "rc": 0, "stdout": exponent_scrape_up, "stderr": "",
-    }) == "source_readback_unavailable"
+    }) == "producer_evidence_invalid"
 
     malformed = []
     for freshness in (float("nan"), float("inf"), {"untrusted": "SENTINEL"}):
@@ -512,15 +566,15 @@ def test_availability_source_gate_diagnostic_accepts_native_self_only_readback()
     bool_limit = json.loads(json.dumps(self_only))
     bool_limit["evidence"]["detail"]["alloy_self"]["limits"]["sample_limit"] = True
     malformed.append(bool_limit)
-    for candidate in malformed:
+    for index, candidate in enumerate(malformed):
         assert BUDGET.o11y_availability_source_gate_diagnostic({
             "rc": 0, "stdout": json.dumps(candidate), "stderr": "",
-        }) == "source_readback_unavailable"
+        }) == ("producer_json_invalid" if index < 2 else "producer_evidence_invalid")
 
     overflow = json.dumps(self_only).replace('"freshness_seconds": 300', '"freshness_seconds": 1e10000')
     assert BUDGET.o11y_availability_source_gate_diagnostic({
         "rc": 0, "stdout": overflow, "stderr": "",
-    }) == "source_readback_unavailable"
+    }) == "producer_evidence_invalid"
 
 
 def test_availability_source_gate_diagnostic_consumes_real_helper_refusal_contract():
@@ -613,13 +667,16 @@ def test_availability_source_diagnostic_ansible_verbose_fixture_is_closed(tmp_pa
     environment = os.environ.copy()
     environment["ANSIBLE_FILTER_PLUGINS"] = str(ROOT / "platform/playbooks/filter_plugins")
     environment["ANSIBLE_COLLECTIONS_PATH"] = str(collections)
+    local_tmp = tmp_path / "ansible-local"
+    local_tmp.mkdir()
+    environment["ANSIBLE_LOCAL_TEMP"] = str(local_tmp)
     done = subprocess.run(
         [shutil.which("ansible-playbook"), "-vv", "-i", "localhost,", "-c", "local", str(playbook)],
         cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60, check=False,
     )
     output = done.stdout + done.stderr
     assert done.returncode != 0
-    assert "Current self-metrics producer diagnostic: source_readback_unavailable" in output, output
+    assert "Current self-metrics producer diagnostic: producer_process_unexpected" in output, output
     assert "strict source gate refused" not in output
     assert sentinel not in output
 

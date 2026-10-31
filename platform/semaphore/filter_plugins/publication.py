@@ -32,6 +32,59 @@ def publication_settings(record):
             if key not in {"survey_vars", "last_task", "tasks", "permissions"}}
 
 
+def effective_environment_ids(template):
+    """Return the exact effective binding set, or None for malformed metadata.
+
+    Semaphore v2.19.11 gives environment_ids precedence over environment_id.
+    Older scalar-only responses remain accepted.
+    """
+    if not isinstance(template, dict):
+        return None
+    scalar = template.get("environment_id")
+    if isinstance(scalar, bool) or not isinstance(scalar, int) or scalar <= 0:
+        return None
+    if "environment_ids" not in template:
+        return [scalar]
+    values = template["environment_ids"]
+    if (not isinstance(values, list) or len(values) != 1
+            or isinstance(values[0], bool) or not isinstance(values[0], int)
+            or values[0] <= 0 or values[0] != scalar):
+        return None
+    return values
+
+
+def template_environment_memberships(template):
+    """Return all valid effective group memberships for ownership checks."""
+    if not isinstance(template, dict):
+        return None
+    scalar = template.get("environment_id")
+    if isinstance(scalar, bool) or not isinstance(scalar, int) or scalar <= 0:
+        return None
+    if "environment_ids" not in template:
+        return [scalar]
+    values = template["environment_ids"]
+    if (not isinstance(values, list) or not values
+            or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values)
+            or len(set(values)) != len(values)):
+        return None
+    return values
+
+
+def publication_binding_matches(expected, actual, environment_id):
+    """Compare full template settings, tolerating only an omitted legacy ID array."""
+    if (not isinstance(expected, dict) or not isinstance(actual, dict)
+            or isinstance(environment_id, bool) or not isinstance(environment_id, int)
+            or environment_id <= 0
+            or effective_environment_ids(expected) != [environment_id]
+            or effective_environment_ids(actual) != [environment_id]):
+        return False
+    expected_settings = publication_settings(expected)
+    actual_settings = publication_settings(actual)
+    if "environment_ids" not in actual_settings:
+        actual_settings = {**actual_settings, "environment_ids": [actual_settings["environment_id"]]}
+    return expected_settings == actual_settings
+
+
 def survey_enum_option_problems(templates):
     """Return schema errors for enum choices in the templates being published.
 
@@ -136,5 +189,8 @@ def seed_environment_problems(environment, legacy_pin_ok=False):
 class FilterModule:
     def filters(self):
         return {"publication_matches": publication_matches, "publication_settings": publication_settings,
+                "effective_environment_ids": effective_environment_ids,
+                "template_environment_memberships": template_environment_memberships,
+                "publication_binding_matches": publication_binding_matches,
                 "seed_environment_problems": seed_environment_problems,
                 "survey_enum_option_problems": survey_enum_option_problems}
