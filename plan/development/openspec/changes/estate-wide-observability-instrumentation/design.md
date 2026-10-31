@@ -1439,6 +1439,75 @@ evaluation time and historical maxima are not sample timestamps. For a
 survey-only rerun without an apply bound, bind evidence to the actual current
 process start and the declared freshness window.
 
+### Ordinary-deploy source review with availability disabled (task 1.4a, 2026-10-31)
+
+**Source-only diagnosis.** At `a99eaec7ba4557d625e0f44e99f43371d2ff18a6`,
+`deploy-o11y.yml` requires source review for the reviewed legacy Alloy
+self-scrape even when availability is disabled. The supplied local reproduction
+executes the unmodified `step_start` function bodies with synthetic helper
+receipts and mocked Compose: valid disabled-mode source evidence reaches the
+unconditional staged namespace invocation and refuses before mocked Compose;
+invalid source evidence refuses first. The actual effective-Compose helper
+also rejects synthetic normalized Alloy OTLP `4317`/`4318` mappings because it
+rejects any Alloy `ports` key. Committed base Compose declares those OTLP
+publications and the availability overlay retains them. This diagnoses source
+compatibility only; it proves no installed provider result or real deployment.
+
+**Bounded correction.** In `platform/services/o11y/deployment/deploy.sh`,
+condition only the namespace invocation inside `compose_staged_up` on literal
+`O11Y_AVAILABILITY_ENABLED=true`. Keep the staged Compose path active whenever
+a source-review declaration is supplied, including disabled availability. Keep
+unique current-source verification, strict receipt parsing, pre-apply source
+and container hash plus epoch output, and the existing fresh post-apply
+producer assertion. Invalid, missing, duplicate, stale or ambiguous producer
+evidence must not acquire an off-mode bypass. Enabled availability retains
+initial, final pre-start and post-apply namespace checks; a final-check failure
+must refuse before Compose runs.
+
+In `platform/playbooks/files/summarize-o11y-scrape-baseline.py`, replace the
+blanket Alloy `ports` rejection with the minimal compatible port contract:
+permit the existing required OTLP publications to container ports `4317` and
+`4318`, including the reviewed configured host mapping, while refusing any
+publication of the `12345` admin listener (including remapped publication) or
+use of host port `12345`. Validate supported normalized mapping fields/types
+and port values; malformed or ambiguous data remains refused. The existing
+short-syntax branch also falls through to refusal for non-`12345` entries;
+correct only its narrow unambiguous supported representations, retaining
+refusal of unsupported/ambiguous shapes rather than adding a broad parser.
+Retain project-wide admin-publication checks and every other candidate,
+provider, namespace/network, command, image, mount, parser, current-producer,
+identity, freshness and work-budget gate. Do not change Compose, network
+policy, enabled listener isolation, activation inputs or shared lifecycle code.
+
+**Executable regression plan.** Extend the existing
+`platform/tests/test_o11y_scrape_budgets.py` shell coverage to execute the
+actual `step_start` and staged hook with synthetic source/namespace responses
+and mocked Compose, rather than only searching script text. Disabled mode with
+valid source must reach staged Compose without namespace calls; invalid source
+must refuse first. Enabled mode must prove ordered initial/final/post checks,
+and final-check refusal before Compose. Assert retained source/container-hash/
+epoch output and post-apply producer-boundary wiring. Extend the actual helper
+coverage in existing `platform/tests/test_o11y_scrape_baseline.py` for normalized
+OTLP mappings in both modes, supported short representations, admin-publication
+refusal and malformed/ambiguous shapes, retaining the existing namespace,
+network, parser and current-producer refusals. Demonstrate meaningful RED on
+the unmodified source and GREEN after the bounded correction.
+
+Only these three existing planning artifacts change in this planning step.
+Future implementation is bounded to the two source files and two existing test
+files named above, alongside those artifacts. Run focused budget/baseline tests,
+repository-required checks, local strict OpenSpec and whitespace validation,
+then independent review/fixes, green final-head CI and exact-head Dev merge
+gates before a merge commit. The coordinator reconciles current Dev before
+final integration; separately owned PR #803 canary work is excluded from this
+child and its task accounting. Later pinned, non-destructive ordinary deploy
+and producer readback through Semaphore remain separate runtime validation;
+source tests do not establish installed-provider compatibility, production or
+profile delivery. Keep 1.4a, parent 1.4 and all owning baseline, availability,
+coverage, alert, calibration, backup/restore, capacity, forecast, retention and
+growth gates open until their own evidence passes. No runtime action is part
+of this planning update.
+
 ### Typed native component and sample evidence
 
 Read only the fixed DETAIL endpoints inside Alloy loopback using the existing

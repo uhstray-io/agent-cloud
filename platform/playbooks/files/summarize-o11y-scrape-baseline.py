@@ -861,6 +861,57 @@ def _availability_namespace_fingerprint(
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _availability_compose_port(port: Any) -> tuple[int, int, str | None, str]:
+    """Parse only normalized mappings and unambiguous IPv4 short port forms."""
+    if isinstance(port, dict):
+        if set(port) - {"target", "published", "protocol", "host_ip"}:
+            raise Refusal("namespace_unverified")
+        target = port.get("target")
+        published = port.get("published")
+        protocol = port.get("protocol", "tcp")
+        host_ip = port.get("host_ip")
+        if host_ip is not None and not isinstance(host_ip, str):
+            raise Refusal("namespace_unverified")
+    elif isinstance(port, str):
+        match = re.fullmatch(
+            r"(?:(?P<host_ip>(?:[0-9]{1,3}\.){3}[0-9]{1,3}):)?"
+            r"(?P<published>[0-9]+):(?P<target>[0-9]+)(?:/(?P<protocol>[a-z]+))?",
+            port,
+        )
+        if match is None:
+            raise Refusal("namespace_unverified")
+        host_ip = match.group("host_ip")
+        published = match.group("published")
+        target = match.group("target")
+        protocol = match.group("protocol") or "tcp"
+    else:
+        raise Refusal("namespace_unverified")
+
+    def number(value: Any) -> int:
+        if type(value) is int:
+            result = value
+        elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+            result = int(value)
+        else:
+            raise Refusal("namespace_unverified")
+        if not 1 <= result <= 65535:
+            raise Refusal("namespace_unverified")
+        return result
+
+    target_number = number(target)
+    published_number = number(published)
+    if not isinstance(protocol, str) or protocol not in {"tcp", "udp", "sctp"}:
+        raise Refusal("namespace_unverified")
+    if host_ip is not None:
+        try:
+            ip = ipaddress.ip_address(host_ip)
+        except ValueError:
+            raise Refusal("namespace_unverified") from None
+        if not isinstance(ip, ipaddress.IPv4Address):
+            raise Refusal("namespace_unverified")
+    return target_number, published_number, host_ip, protocol
+
+
 def _verify_availability_effective_compose(
     deployment_dir: str, compose_cmd: list[str], overlays: list[str],
 ) -> str:
@@ -923,7 +974,6 @@ def _verify_availability_effective_compose(
         alloy_service.get("entrypoint") is not None
         or effective_command != ["run", f"--server.http.listen-addr={expected_listener}", "/etc/alloy/config.alloy"]
         or not isinstance(effective_command, list)
-        or "ports" in alloy_service
         or alloy_service.get("network_mode") is not None
         or alloy_service.get("image") != "docker.io/grafana/alloy:v1.5.1"
         or not isinstance(volumes, list)
@@ -950,18 +1000,22 @@ def _verify_availability_effective_compose(
         if not isinstance(service, dict) or service.get("network_mode") is not None:
             raise Refusal("namespace_unverified")
         ports = service.get("ports", [])
-        if ports is None:
-            ports = []
         if not isinstance(ports, list):
             raise Refusal("namespace_unverified")
         for port in ports:
-            if isinstance(port, dict):
-                if str(port.get("published")) == "12345":
+            target, published, host_ip, protocol = _availability_compose_port(port)
+            if target == 12345 or published == 12345:
+                raise Refusal("namespace_unverified")
+            if service is alloy_service and (target not in {4317, 4318} or protocol != "tcp"):
+                raise Refusal("namespace_unverified")
+            if service is alloy_service:
+                if host_ip is None:
                     raise Refusal("namespace_unverified")
-            elif isinstance(port, (str, int)) and re.search(r"(?:^|:)12345(?::|/|$)", str(port)):
-                raise Refusal("namespace_unverified")
-            else:
-                raise Refusal("namespace_unverified")
+                ip = ipaddress.ip_address(host_ip)
+                if not (ip.is_loopback or ip in ipaddress.ip_network("10.0.0.0/8")
+                        or ip in ipaddress.ip_network("172.16.0.0/12")
+                        or ip in ipaddress.ip_network("192.168.0.0/16")):
+                    raise Refusal("namespace_unverified")
     project = config.get("name")
     if not isinstance(project, str) or not project:
         raise Refusal("namespace_unverified")
