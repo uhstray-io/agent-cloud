@@ -25,7 +25,7 @@
 # OPA. OPA is called by skynet's own client (platform/services/skynet/deployment/CLAUDE.md:12, :93-94) and
 # by no Semaphore path in this repository. A GitHub code search of semaphoreui/semaphore (default branch, not the
 # v2.19.11 tag) for openpolicyagent, open-policy-agent and opa_url returned no hits on 2026-10-31. Neither OPA nor the project team
-# (manage-semaphore-access.yml, which lists svc-skynet at guest) limits what a launch can inject, so neither is
+# (manage-semaphore-access.yml, whose site-config declaration lists svc-skynet at guest) limits what a launch can inject, so neither is
 # a control on launches.
 #
 # Launch probe. The probe POSTs template -1 and expects 403. The guest role is refused at the permission gate

@@ -10,7 +10,8 @@ repository; its variables are listed in `deploy/tier2/README.md` there.
 
 1. `skynet` serves the orchestration API. It runs `service_onboarding`: a run takes a declared
    service through the registry steps, asks OPA for each decision, calls the served model
-   through agentgateway, and runs Ansible through Semaphore.
+   through agentgateway, and runs Ansible through Semaphore (launch steps are refused while svc-skynet is
+   guest; they return through the planned narrow launcher).
 2. `skynet-db` holds the checkpoints. It is not agentgateway's budget database and shares
    nothing with it.
 3. The image runs as uid 10001 and listens on `SKYNET_BIND=0.0.0.0`, `SKYNET_PORT=8080`
