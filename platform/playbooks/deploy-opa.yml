@@ -7,8 +7,8 @@
 #          issues the server leaf from step-ca and places the trust bundle in ./certs.
 # Phase 2: deploy.sh — container lifecycle (pull, up, wait running). With opa_tls it
 #          adds compose.tls.yml, which serves HTTPS from that leaf.
-# Phase 3: Verify — /health, a sample allow + deny decision, and the Rego unit tests
-#          (opa test) inside the container. With opa_tls the probes are HTTPS, verified
+# Phase 3: Verify — /health, a sample allow + deny decision, a policy write that must be
+#          refused (400), and the Rego unit tests (opa test) inside the container. With opa_tls the probes are HTTPS, verified
 #          against the step-ca bundle, and a plain-HTTP request must not get a 200.
 #
 # Listener TLS (opa_tls, production only): the declaration is one internal_leaves entry
@@ -348,8 +348,8 @@
       failed_when: _opa_deny_tls.rc != 0 or ((_opa_deny_tls.stdout | from_json).result | default({})).allowed | default(true) | bool
       when: _opa_tls and not ansible_check_mode
 
-    # The same write refusal over TLS. --fail is dropped so the 400 reaches --write-out instead of
-    # becoming curl's exit 22; only an exact 400 passes.
+    # The same write refusal over TLS. --fail is dropped so the expected 400 exits 0: a non-zero
+    # rc is then a transport failure (connection, TLS), and only an exact 400 passes.
     - name: "Policy writes over TLS are refused (PUT /v1/data -> 400, bundle-owned)"
       ansible.builtin.command:
         argv: >-
