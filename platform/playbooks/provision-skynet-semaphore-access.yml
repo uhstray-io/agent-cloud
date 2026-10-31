@@ -22,9 +22,9 @@
 # to guest in place (the shared task's membership step) and creates no account. The stored token is kept
 # when it still proves svc-skynet; the launch probe then expects 403 with that token.
 #
-# OPA. OPA is called by skynet's own client (platform/services/skynet/deployment/CLAUDE.md:12-13, :92-94) and
-# by no Semaphore path in this repository. A GitHub code search of semaphoreui/semaphore for openpolicyagent,
-# open-policy-agent and opa_url returned no hits on 2026-10-31. Neither OPA nor the project team
+# OPA. OPA is called by skynet's own client (platform/services/skynet/deployment/CLAUDE.md:12, :93-94) and
+# by no Semaphore path in this repository. A GitHub code search of semaphoreui/semaphore (default branch, not the
+# v2.19.11 tag) for openpolicyagent, open-policy-agent and opa_url returned no hits on 2026-10-31. Neither OPA nor the project team
 # (manage-semaphore-access.yml, which lists svc-skynet at guest) limits what a launch can inject, so neither is
 # a control on launches.
 #
