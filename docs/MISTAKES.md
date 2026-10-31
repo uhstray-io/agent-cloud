@@ -33,7 +33,7 @@ and why.
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x5** | Unverified claim | 5 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
-| 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | 1 | Convention |
+| 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 1 | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | 2 | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
@@ -364,6 +364,8 @@ command list; until then, `ruff check .; echo rc=$?` is the form.
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
 
+**Occurrences: 2** — (first occurrence undated), 2026-10-30
+
 **What happened.** Immediately after creating a runner group, its access list was checked
 at `.../runner-groups/5/repositories`. The group's real id was 6. The check silently
 verified a different group, and the shape of the output gave no hint — the id had been
@@ -377,6 +379,14 @@ into "verified something else".
 **Enforced by.** Convention. The playbook itself does this correctly, threading the
 created id through rather than recomputing it; the slip was in an ad-hoc check beside it,
 which is an argument for verifying through the automation rather than around it.
+
+**Occurrence 2 — 2026-10-30.** During the skynet production rollout, two Semaphore task ids
+reached the operator's status table without being read from the launcher's output: the root
+grow was reported as "10680-ish" before its log was read (it was 10680 — the guess happened to
+match), and SSH hardening was reported as task 11311 when the launcher had printed 10311. The
+rule did not fire because these were status summaries, not verification steps, and the rule's
+wording emphasises verification; an id in a report to the operator is a claim just the same.
+The ids were corrected from the launcher logs (`Task <id> launched`) before the final report.
 
 
 ### 1.5 A security control asserted from documentation, disproved by the first measurement
