@@ -80,6 +80,7 @@ class FakeAPI:
         self.status = status
         self.calls = []
         self.extra_templates = []
+        self.active_tasks = []
 
     def __call__(self, path, body=None):
         self.calls.append((path, copy.deepcopy(body)))
@@ -102,7 +103,7 @@ class FakeAPI:
                         self.env["secrets"] = [s for s in self.env["secrets"] if s["id"] != op["id"]]
             return copy.deepcopy(self.env)
         if path == "/tasks/last":
-            return []
+            return copy.deepcopy(self.active_tasks)
         if path == "/tasks":
             return {"id": 900, "status": self.status}
         if path == "/tasks/900":
@@ -255,6 +256,42 @@ def test_effective_legacy_scalar_only_binding_remains_supported():
     api.template.pop("environment_ids")
     template, _ = core.preflight(api, 1, TARGET)
     assert template["environment_id"] == 9
+
+
+def test_seed_preflight_allows_unrelated_unbound_template_without_writes():
+    api = FakeAPI()
+    api.extra_templates = [{"id": 7, "name": "Unbound unrelated template",
+                            "environment_id": 0, "environment_ids": []}]
+
+    template, _ = core.preflight(api, 1, TARGET)
+
+    assert template["id"] == TARGET.template_id
+    assert writes_of(api) == []
+
+
+def test_seed_submission_ignores_active_task_on_unrelated_unbound_template(capsys):
+    api = FakeAPI()
+    api.extra_templates = [{"id": 7, "name": "Unbound unrelated template",
+                            "environment_id": 0, "environment_ids": []}]
+    api.active_tasks = [{"id": 901, "template_id": 7, "status": "running"}]
+
+    cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+
+    submissions = [body for path, body in api.calls if path == "/tasks" and body]
+    assert len(submissions) == 1
+    assert submissions[0]["template_id"] == TARGET.template_id
+    assert [item["name"] for item in api.env["secrets"]] == ["BAO_ROLE_ID", "BAO_SECRET_ID"]
+    assert SECRET not in capsys.readouterr().out
+
+
+def test_selected_unbound_seed_binding_refuses_before_staging():
+    api = FakeAPI()
+    api.template.update(environment_id=0, environment_ids=[])
+
+    with pytest.raises(cli.Refusal, match="environment binding"):
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+
+    assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
 
 
 def test_array_drift_immediately_before_submission_retains_encrypted_inputs(monkeypatch):

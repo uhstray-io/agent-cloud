@@ -58,12 +58,16 @@ def template_environment_memberships(template):
     if not isinstance(template, dict):
         return None
     scalar = template.get("environment_id")
-    if isinstance(scalar, bool) or not isinstance(scalar, int) or scalar <= 0:
+    if isinstance(scalar, bool) or not isinstance(scalar, int) or scalar < 0:
         return None
     if "environment_ids" not in template:
-        return [scalar]
+        return [] if scalar == 0 else [scalar]
     values = template["environment_ids"]
-    if (not isinstance(values, list) or not values
+    if not isinstance(values, list):
+        return None
+    if scalar == 0:
+        return [] if not values else None
+    if (not values
             or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values)
             or len(set(values)) != len(values)):
         return None

@@ -80,3 +80,27 @@ def test_binding_comparison_normalizes_only_absent_legacy_array():
         {**scalar_only, "environment_id": 502},
     ):
         assert not publication.publication_binding_matches(expected, changed, 501)
+
+
+@pytest.mark.parametrize("template", [
+    {"environment_id": 0, "environment_ids": []},
+    {"environment_id": 0},
+])
+def test_unbound_template_has_no_environment_memberships(template):
+    assert publication.template_environment_memberships(template) == []
+
+
+@pytest.mark.parametrize("template", [
+    None,
+    {"environment_id": False},
+    {"environment_id": -1},
+    {"environment_id": 0, "environment_ids": [9]},
+    {"environment_id": 9, "environment_ids": []},
+    {"environment_id": 9, "environment_ids": None},
+    {"environment_id": 9, "environment_ids": [True]},
+    {"environment_id": 9, "environment_ids": [-1]},
+    {"environment_id": 9, "environment_ids": ["9"]},
+    {"environment_id": 9, "environment_ids": [9, 9]},
+])
+def test_malformed_or_contradictory_membership_metadata_stays_unknown(template):
+    assert publication.template_environment_memberships(template) is None

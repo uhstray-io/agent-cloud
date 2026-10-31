@@ -495,6 +495,20 @@ def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_r
         assert sentinel not in category
 
 
+@pytest.mark.parametrize("stderr", ["", "PRIVATE-TIMEOUT-STDERR-SENTINEL"])
+def test_native_readback_timeout_remains_a_bounded_unavailable_refusal(stderr):
+    envelope = {
+        "status": "unavailable", "reason": "native_readback_timeout", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    result = {"rc": 2, "stdout": json.dumps(envelope), "stderr": stderr}
+
+    diagnostic = BUDGET.o11y_availability_source_gate_diagnostic(result)
+    assert diagnostic == "native_readback_timeout"
+    assert BUDGET.o11y_availability_source_coverage(json.loads(result["stdout"]))["status"] == "unavailable"
+    assert "PRIVATE-TIMEOUT-STDERR-SENTINEL" not in diagnostic
+
+
 def test_source_diagnostic_distinguishes_fixed_failure_categories_without_echoing_private_content():
     sentinel = "PRIVATE-SENTINEL"
     cases = [

@@ -116,7 +116,7 @@ NATIVE_SOURCE_REFUSAL_REASONS = frozenset({
     "native_samples_missing", "native_samples_stale", "native_samples_ambiguous",
     "native_detail_unavailable", "native_detail_invalid", "native_component_absent",
     "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
-    "native_debug_stale", "native_debug_mismatch", "native_target_mismatch",
+    "native_debug_stale", "native_debug_mismatch", "native_readback_timeout", "native_target_mismatch",
     "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
 })
 SOURCE_GATE_REFUSAL_REASONS = READBACK_REASONS | SOURCE_READBACK_REASONS | NATIVE_SOURCE_REFUSAL_REASONS
