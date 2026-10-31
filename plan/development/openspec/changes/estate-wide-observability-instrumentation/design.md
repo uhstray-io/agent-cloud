@@ -252,7 +252,7 @@ Complete the remaining o11y/agentgateway user-visible and owning-task receipts f
 
 PR #682 head `8e32c3dbe0da05e58e303a2aab7c5647fa7780fa` passed independent review/fixes and green final-head CI, then merged to `dev` as `dbd06dd74b73f61e9cf464123729eb653fdb3af7`. Dev-bound stage 6182 and separate read-only cursor survey 6183 succeeded at that exact merge SHA. Survey 6183 reported a valid cursor, collector absent, no volume users, sufficient space, zero failed live checks, `NeedsChown=false`, and `NeedsCopyUp=true`. Non-destructive apply 6184 succeeded at 07:22:52–07:25:04 UTC: preflight, collector health, exact mount fields, UID-map equality, namespace write/rename probe, unchanged seven-container receiver set, and no-failed-task checks passed. The exact `{service="o11y/alloy",signal="container"}` Loki receipt succeeded after one retry. Independent read-only Grafana MCP readback found six exact-label samples in 07:23:56–07:25:56 UTC. Post-apply read-only survey 6185 reported the collector present, one volume user, valid cursor, no failed or unverified live checks, and `NeedsCopyUp=true`. This closes only the bounded 1.2f.2 collector gate. Parent 1.2 remains open for private ingress and the complete seven-day baseline. The baseline starts at 2026-10-16 07:25:04 UTC; its earliest full seven-day window ends at 2026-10-23 07:25:04 UTC, subject to completeness and representative coverage.
 
-The separate controlled gateway verification task 6186 completed 100 anonymous `401` requests to `/v1/models`, then failed the exact `signal=access-log` Loki check; its trace check did not run. Independent read-only Loki inspection found approximately 100 unlabelled `service=agentgateway` INFO records in 07:20–07:40 UTC (99 matched 401 `/v1/models`) and 14 `signal=span` records. Tempo search found 14 agentgateway traces started 07:28:31–07:30:28 UTC. The current gateway template's OTLP access fields include service and identity/path but no `signal`, while Alloy's label hints are `service,signal`. This remains a gateway-owned dependency; these observations do not prove every canary request correlated to a trace, and do not complete parent task 1.4.
+The separate controlled gateway verification task 6186 completed 100 anonymous `401` requests to `/v1/models`, then failed the exact `signal=access-log` Loki check; its trace check did not run. Independent read-only Loki inspection found approximately 100 unlabelled `service=agentgateway` INFO records in 07:20–07:40 UTC (99 matched 401 `/v1/models`) and 14 `signal=span` records. Tempo search found 14 agentgateway traces started 07:28:31–07:30:28 UTC. That historical receipt does not describe current source: `platform/services/agentgateway/deployment/templates/config.yaml.j2:315` already adds `signal=access-log` (blame commit `2922e1a8c`, 2026-10-20), while Alloy's label hints are `service,signal`. A fresh gated request cohort and runtime access-log/trace receipt remain unverified; these observations do not prove every canary request correlated to a trace, and do not complete parent task 1.4.
 
 Read-only expected-target survey task 6189 succeeded at the same exact merge SHA with `status=observed`, `reason=exact_match`, expected=11, active=11, matched=11, missing=0, unexpected=0, unhealthy=0. This point-in-time result does not prove seven-day coverage, loaded budget acceptance, alert delivery, or recovery. Retention, VM growth, and PBS allocation remain unauthorized.
 
@@ -1823,7 +1823,7 @@ gate and changes no PBS artifact scope. Publish only sanitized task IDs, SHAs
 and outcomes, never private environment/template/input IDs, addresses,
 selectors, topology or protected producer output.
 
-### Native query evaluation snapshot and live DETAIL clocks (2026-10-31; accepted plan)
+### Native query evaluation snapshot and live DETAIL clocks (2026-10-31; source complete, runtime acceptance bounded)
 
 **PR #801 source closure, separate from runtime refusal.** The supplied verified
 source record closes child 1.3a.4 only: feature
@@ -1848,9 +1848,10 @@ Task 10855 was operational SUCCESS but its native source projection was
 The controlled read-only timing proof reproduces a fresh sample becoming
 future-to-an-earlier-bound when evaluation moves; it does not establish task
 10855's exact conditional cause, all required families, body availability or
-producer acceptance. Earlier body-family EMPTY observations and the Alloy
-ExtraMetrics constructor/reload hypothesis remain separate, unresolved private
-observations, not remedies. Publish only sanitized task IDs, SHAs and fixed
+producer acceptance. Earlier body-family EMPTY observations are historical. The post-PR #802
+receipt below proves the current producer is legacy Prometheus, so the Alloy
+ExtraMetrics constructor/reload hypothesis is rejected as the current diagnosis.
+No native-body workaround or relaxed native acceptance follows. Publish only sanitized task IDs, SHAs and fixed
 outcomes, never raw metrics, private paths, addresses, topology, prompt bodies
 or protected output. No representative baseline, alert, backup/restore,
 capacity, calibration, forecast, retention or growth acceptance follows.
@@ -1889,7 +1890,7 @@ addresses the source-derived DETAIL timing race without asserting that it
 occurred in task 10855. Legacy active-target and loaded-limit checks remain
 strict; only its related sample URLs gain T binding.
 
-**Exact ownership and work bounds.** The later source change owns exactly SIX
+**Historical PR #802 ownership and work bounds.** The completed source change owned exactly SIX
 existing files: this `design.md`, `tasks.md`,
 `specs/platform/estate-instrumentation/spec.md`,
 `platform/playbooks/files/summarize-o11y-scrape-baseline.py`,
@@ -1904,6 +1905,9 @@ cap, aggregate bytes and shared deadlines. Measure actual maximum encoded
 paths including `time` during implementation; publish no estimated length as
 an observed result. Add no collector retry, extra API, receiver restart,
 deployment or upgrade, or new native network/port/mount/image/engine dependency.
+
+The following test/validation contract records the snapshot repair plan; the
+PR #802 source closure below supersedes its implementation-next-step wording.
 
 **Meaningful RED/GREEN and retained gates.** The delayed fake API must select
 from fixed histories according to ACTUAL production request URLs through the
@@ -1939,3 +1943,123 @@ it does not require a new routine approval question. No production deployment
 is part of this source repair. Keep owning parent runtime gates open. PBS
 package-channel choice remains pending and independent; physical origin is
 waived, with no new physical gate or PBS scope.
+
+### PR #802 source closure and bounded Dev receipts (2026-10-31)
+
+The supplied verified source record closes **only child 1.3b.3**: feature
+`326917dd057569b7ec23c5c7ff8109b304c5cc0a` merged through PR #802 to Dev as
+`a99eaec7ba4557d625e0f44e99f43371d2ff18a6`. Local Git confirms the merge's
+second parent and the exact six-file scope above. The supplied exact-head guard
+passed all 16 expected checks; independent actual GPT-6.1 Sol Medium read-only
+review was `APPROVED_SOURCE_ONLY`, CodeRabbit approved, and CI `41191390980`
+succeeded with 13 executed jobs and three path skips. Full local Python checks
+passed 9,500 tests and 376 subtests with zero skips; full BATS passed 1,185 tests
+with one existing formatter skip. These are accepted prior source-validation
+receipts, not checks rerun by this planning-only follow-up. The portable focused
+command uses `python3`; reproduction still requires the repository's Python,
+Ansible, collection, BATS and evaluator/engine prerequisites and the recorded
+per-process PATH correction. Portability of the command does not make that
+test environment irrelevant.
+
+The supplied read-only runtime record and private structured receipts bind the
+following sanitized outcomes to that exact controller Dev revision. Operational
+measurements remain in the private structured receipts:
+
+| Task | Narrow accepted evidence | Acceptance limit |
+|---|---|---|
+| 10884 | Alloy healthy; receiver checkout `67b9cffcdda8b3b10e840c50357c1b23f8410cbb` | Checkout HEAD only, not loaded revision/configuration or image identity |
+| 10885 | SUCCESS; fresh current **legacy Prometheus** producer verified | Existing legacy body exception `not_exposed_by_legacy_prometheus`; split loaded limits remain unverified, while on-disk split limits match reviewed source |
+| 10890 | SUCCESS; `exact_match` | Point-in-time membership only |
+| 10893 | SUCCESS; point budget verified at the approved unchanged retention baseline | Point budget only, not seven-day calibration, forecast, backup/restore, retention expansion or growth acceptance |
+
+This corrects the current-producer diagnosis; it does not accept native Alloy
+activation or introduce a native body exception. Parent 1.1, 1.3 and 1.4, the
+representative baseline, calibration, capacity/forecast, backup, immutable
+isolated restore, retention and growth gates stay open. Physical-origin
+attestation remains waived by the user; PBS package-channel choice remains
+pending. This planning follow-up performs no PBS mutation or runtime action.
+
+### Optional legacy gateway canary inherits the shared trace gate (accepted follow-up, 2026-10-31)
+
+**Demonstrated gap and placement.** At base `a99eaec7`,
+`platform/playbooks/verify-o11y-service.yml:97-181` defines the optional canary:
+its existing `_canary_on` is legacy mode plus boolean-converted
+`emit_agentgateway_canary`; tasks first capture the receiver clock, then inspect
+TLS material, resolve the listener and send 100 anonymous GET `/v1/models`
+requests expecting 401. The play has no shared trace-rollout include.
+`deploy-o11y.yml:309-319` and `deploy-agentgateway.yml:414-416` already include
+`tasks/assert-o11y-trace-rollout.yml`. EW 1.1 requires that gate before another
+tracing pilot, including this canary.
+
+Add **one include in the canary play's `pre_tasks`**, guarded by the existing
+`_canary_on`, before any canary timestamp, delegated receiver command, remote
+TLS inspection, resolution or request. Keep `gather_facts: false` and the
+existing `tasks` order: `test_service_o11y.bats:2414-2417` reads `tasks[0]` as
+the start-clock task. Preserve every task's existing `_canary_on` condition,
+including the TLS checks in `test_o11y_canary_gateway_tls.py:80-111`. The
+preflight must resolve receiver prerequisites through the shared task's
+`hostvars` lookup, not copy them onto the gateway or localhost. Refuse zero or
+multiple receivers through the shared exact-one assertion. Do not duplicate,
+loosen or edit that task; preserve its existing budget semantics, including
+its acceptance of a declared `0B` Prometheus cap.
+
+**Exact later source scope.** Change only
+`platform/playbooks/verify-o11y-service.yml` and
+`platform/tests/test_o11y_canary_gateway_tls.py`, plus these three existing EW
+planning artifacts for status. Preserve the shared gate, both deploy callers,
+the gateway configuration, all strict selector/freshness/receipt helpers,
+transport/TLS/no-key controls and existing BATS files byte-for-byte. The
+legacy template's survey at `platform/semaphore/templates.yml:111-154` has no
+`expected_repository_sha`; this follow-up does not add one, mutate a template
+or repository binding, invent launcher/API flags, or launch a canary/deploy.
+Any later runtime checkout provenance must be established through supported
+existing mechanisms as separate work; source acceptance is not launch proof.
+
+**Executable acceptance matrix.** Extend the existing TLS Python test file
+with an isolated synthetic-inventory Ansible harness. Read the actual canary
+play's `pre_tasks`, vars and conditions; execute its real include and the
+unchanged shared assertions, resolving only the include's filesystem location
+for the temporary harness. Put prerequisites only on the synthetic receiver
+host. Use local connections and `gather_facts: false`; replace every subsequent
+clock, stat, resolution and traffic operation with fixed debug/assert
+sentinels. Allowlist harness operations before execution so no URI, command,
+shell, secret read, real network, VM or container operation can run. Do not
+run the production playbook end to end in these tests.
+
+| Synthetic input | Required result |
+|---|---|
+| Legacy plus emit true; omit each shared prerequisite separately | Real Ansible refusal before any post-preflight sentinel |
+| Legacy plus emit true; zero or two receivers | Shared exact-one refusal before timestamp/inspection/traffic sentinels |
+| Legacy plus emit true; complete receiver prerequisites | Both real shared assertions pass and progression sentinels are reached |
+| Legacy with emit absent, boolean false or string `"false"` | New include skips without requiring receipts; canary sentinels remain skipped |
+| Strict with emit true or false and missing canary prerequisites | New include and canary sentinels skip; existing strict checks retain their separate contract |
+
+The per-prerequisite matrix covers `o11y_trace_rollout_enabled`,
+`o11y_alerts_enabled`, `o11y_metrics_receipt_id`,
+`o11y_alert_delivery_receipt_id`, `o11y_retention_receipt_id`,
+`o11y_cardinality_receipt_id`, `o11y_prom_retention`,
+`o11y_prom_retention_size`, `o11y_loki_retention`, `o11y_tempo_retention`,
+`o11y_scrape_sample_limit`, and `agentgateway_metrics_address`. Include disabled
+flags, invalid/nonpositive receipt IDs, invalid retention strings, zero sample
+budget and empty metrics address as refusals under the existing predicates.
+Do not strengthen or weaken those predicates in this slice. Assert the actual
+ordering and gate execution/skip results, not only include presence or a Python
+reimplementation of Jinja truthiness. Prove RED against a temporary gate-removed
+copy and GREEN with the include, without editing the tracked shared gate.
+
+**Implementation sequence and verification.** First build the safe harness and
+observe the absent-gate RED; then add the guarded `pre_tasks` include and obtain
+GREEN for the matrix. Preserve and rerun the existing TLS URL, leaf, CA,
+read-only resolution and no-key tests plus the BATS start-clock contract. Run
+`rtk proxy python3 -m pytest -q platform/tests/test_o11y_canary_gateway_tls.py`,
+`rtk proxy bats platform/tests/test_service_o11y.bats`, the repository-required
+checks, local strict OpenSpec validation and `rtk git diff --check`. The full
+repository BATS suite has its separately documented evaluator prerequisite;
+these new preflight tests themselves perform no container/network action.
+The validation environment must execute the Ansible matrix; missing Ansible
+or a skipped matrix is blocked validation, not a passing source gate.
+Require an independent source review, addressed findings and final-head green
+CI under the existing merge policy in a later implementation workflow. This
+planning invocation edits no code and performs only plan validation. Keep the
+new source tasks and all parent runtime gates open until their own criteria
+pass; no source test authorizes the actual canary.

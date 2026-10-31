@@ -32,6 +32,45 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
 
+### Requirement: Optional legacy gateway canary obeys the shared trace rollout gate
+Before the optional legacy gateway canary captures a receiver timestamp,
+inspects remote TLS material, resolves the listener or emits traffic, its
+existing play SHALL include `tasks/assert-o11y-trace-rollout.yml` in
+`pre_tasks`, guarded by the existing `_canary_on` legacy-plus-boolean-emit
+condition. Fact gathering SHALL remain disabled, and the existing first
+`tasks` entry SHALL remain the receiver-clock capture. The shared gate and
+its receiver-host prerequisite lookup SHALL remain unchanged; missing or
+ambiguous receivers and missing/invalid prerequisites SHALL refuse before any
+canary operation. Strict mode and legacy nonemitting verification SHALL NOT
+acquire these canary prerequisites. String `"false"` SHALL remain nonemitting.
+
+This source follow-up SHALL preserve strict selectors, freshness, transport,
+TLS verification, verifier leaf/CA use, read-only name resolution and the
+credential-free 100 GET `/v1/models` requests expecting 401 with proxy/netrc
+use disabled. It SHALL NOT change templates, surveys, repository bindings or
+invent launcher/API flags. Source tests SHALL execute the actual Ansible
+preflight/include/assertions and play conditions with synthetic inventory,
+receiver-only prerequisite values and safe progression sentinels; they SHALL
+NOT execute real network, secret, VM, container, command or remote-inspection
+operations. A copied predicate or include-presence assertion alone SHALL NOT
+satisfy this source gate. Source closure SHALL NOT establish launch provenance,
+a runtime request cohort, three-signal acceptance or parent 1.1/1.3/1.4 closure.
+
+#### Scenario: Legacy emitting canary refuses before any canary operation
+- **WHEN** legacy mode emits the canary and each shared receipt/budget prerequisite is omitted separately, a flag is disabled, a prerequisite is invalid under the existing shared predicate, or the receiver set has zero or multiple hosts
+- **THEN** actual Ansible execution of the shared preflight refuses before timestamp, TLS inspection, resolution and traffic progression sentinels
+- **AND** the source regression fails against a temporary gate-removed copy; no live action is used to establish RED or GREEN
+
+#### Scenario: Complete canary prerequisites permit progression
+- **WHEN** legacy emit is true, exactly one receiver has every valid shared prerequisite, and gateway/localhost do not carry substitute prerequisite values
+- **THEN** the real shared assertions pass and the safe harness reaches progression sentinels
+- **AND** existing TLS tests and the BATS first-task clock assumption remain satisfied; this is source evidence only, not traffic or delivery proof
+
+#### Scenario: Strict and nonemitting verification skip the canary gate
+- **WHEN** legacy emit is absent, boolean false or string `"false"`, or strict mode is selected with either emit value
+- **THEN** the new preflight include and canary operations skip without requiring trace-rollout prerequisites
+- **AND** existing strict target/selector/freshness validation and nonemitting checks retain their own unchanged contracts
+
 ### Requirement: Endpoint availability probes are reviewed, isolated, and bounded
 Continuous HTTP(S) endpoint availability MAY be enabled only for targets with a
 reviewed entry in the existing private `estate_coverage_inventory.targets`
@@ -198,7 +237,7 @@ encoded-path cap, aggregate response bytes and shared deadlines. Actual maximum
 encoded paths including `time` SHALL be measured during implementation; an
 estimated length SHALL NOT be reported as observed. It SHALL add no collector
 retry, extra API, receiver restart/deploy/upgrade or native network, port, mount,
-image or engine dependency. Source changes SHALL be limited to the three
+image or engine dependency. That snapshot repair's source changes SHALL be limited to the three
 existing planning artifacts, existing helper, baseline Python tests and native
 runner; the BATS entry point, CONTRIBUTING, playbooks, workflow, merge
 guard/fixtures, Compose, dependencies and unrelated files SHALL remain
@@ -626,6 +665,12 @@ When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destru
 - **THEN** receipt accounting accepts only those history observations and keeps evaluation-point counts distinct from independent source events
 - **AND** historical sample ages do not establish current freshness, and backend stored-byte changes do not establish calibrated persisted-byte conversion
 - **AND** representative baseline, isolated calibration, forecast, backup/restore, retention and disk-growth acceptance remain separate open gates; source tests and point-query proof cannot close them
+
+#### Scenario: Current legacy producer and point budgets do not accept native rollout or capacity expansion
+- **WHEN** fresh source-specific readback verifies the current legacy Prometheus producer, its existing unavailable-body category, exact target membership and point retention/series/volume/headroom budgets
+- **THEN** only those observations are accepted; split loaded limits remain unverified when the receipt cannot prove them, even when split on-disk limits match reviewed source
+- **AND** earlier Alloy ExtraMetrics hypotheses do not become a current diagnosis or authorize a native-body workaround; native positive body evidence and all native gates remain unchanged
+- **AND** a receiver checkout HEAD remains separate from loaded revision/configuration and image identity; merged source validation closes only its source child, not representative seven-day baseline, calibration/forecast, backup/immutable isolated restore, retention expansion or growth acceptance
 
 #### Scenario: Wave exceeds capacity
 - **WHEN** the forecasted wave exceeds a declared capacity or retention budget

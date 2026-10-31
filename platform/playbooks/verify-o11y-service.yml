@@ -111,6 +111,10 @@
       {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
          | map(attribute='dir') | first | default('') }}
     _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+  pre_tasks:
+    - name: Require shared trace rollout prerequisites before an emitting legacy canary
+      ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
+      when: _canary_on
   tasks:
     - name: Mark the canary start on the Tempo receiver clock
       ansible.builtin.command: date +%s
