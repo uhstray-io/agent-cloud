@@ -806,3 +806,32 @@ reset = cfields["confirm_reset"]
 assert reset.get("required") is True and "default_value" not in reset, reset
 PY
 }
+
+@test "skynet: verify proves skynet's own OPA client gets OPA's default deny, inside the container" {
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+verify = next(p for p in plays if str(p.get("name", "")).startswith("Phase 3"))
+tasks = verify["tasks"]
+names = [t.get("name", "") for t in tasks]
+probe = next(t for t in tasks if t.get("name", "").startswith("OPA decision through skynet's own client"))
+argv = probe["ansible.builtin.command"]["argv"]
+code = argv[-1]
+# skynet's real client, against the URL the container was given: not a hand-rolled request.
+assert argv[1:3] == ["exec", "skynet"], argv
+assert "from skynet.policy.opa import DecisionInput, OPAClient" in code, code
+assert "OPAClient(os.environ['SKYNET_OPA_URL']" in code, code
+assert "agent='skynet'" in code and "service='__agent_cloud_verify__'" in code, code
+# The printed verdict is OPA's, not a constant: allow/deny is mapped from decision.allowed.
+assert "print('decision=' + ('allow' if decision.allowed else 'deny'))" in code, code
+assert probe.get("check_mode") is False, probe
+check = next(t for t in tasks if t.get("name") == "Assert skynet reached OPA and was denied by default")
+that = check["ansible.builtin.assert"]["that"]
+assert "_skynet_opa.rc == 0" in that, that
+assert "(_skynet_opa.stdout_lines | last | default('')) == 'decision=deny'" in that, that
+# Runs after the read-token checks and before the step result is recorded.
+assert names.index(probe["name"]) < names.index(check["name"]) < names.index("Record the service-deploy step result"), names
+PY
+}
