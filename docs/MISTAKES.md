@@ -56,6 +56,7 @@ and why.
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
+| 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -171,7 +172,7 @@ and why.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | 1 | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | 1 | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | 1 | Test (real evaluation, current ansible-core) |
-| 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) | Mechanism never exercised | 2 | Test (`test_manage_secrets_scope.py`) |
+| 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) (widened by 10.32) | Mechanism never exercised | 2 | Test (`test_manage_secrets_scope.py`) |
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
@@ -186,6 +187,7 @@ and why.
 | 10.29 | Fixed the container hooks' HOME failure with a `docker` wrapper that patched the CLI path, while the design named the API socket and its open spike would have shown the CLI path was the cause; the wrapper never reached the process that runs jobs, so the runners kept failing | Mechanism never exercised | 1 | Playbook (requires Docker's CLI client, `DOCKER_HOST` probe) + local smoke harness (`hooks-smoke/`, must reproduce the shim failure) + test (`test_service_github_runner.bats`, `test_install_podman.bats`, mutation-checked) |
 | 10.30 | Recorded issue #604's fix as built when it merged; its `(Dev)` template had never been published, so the second operator stayed without access for nine days | Mechanism never exercised | 1 | Convention (catalog-drift check proposed) |
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
+| 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -1078,6 +1080,27 @@ contents; the transformations above it are.
 
 **Enforced by.** Convention. The brief's DEVIATION RULE caught this one: the worker stopped on
 a brief that contradicted the code.
+
+### 1.27 Attributed a regression to a PR without reading the history
+
+**Occurrences: 1** — 2026-10-29
+
+**What happened.** Reporting the OPA rollout, I told the operator that the general VM writers'
+preflight failure came from "the observability PR #765, merged 2026-10-29". I had read the
+failing preflight file and seen #765 among recent merges, and joined the two. The preflight
+commit (b842c847) and the env-only login arrived in PR #728, merged 2026-10-24, so the
+regression had been live five days, not hours. `git log` on the file and
+`gh api repos/<owner>/<repo>/commits/<sha>/pulls` settled it in two commands, run only the
+next day.
+
+**Root cause.** The attribution was inferred from what had merged recently, not read from the
+file's history. A recent merge near the symptom reads as its cause.
+
+**The rule.** Before naming the change that introduced a defect, read it: `git log` on the
+file (or `-S` for the line), then the PR that commit belongs to. State the commit, the PR and
+its merge date, or say the origin is unverified.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -4830,6 +4853,9 @@ status no longer holds. The current guard for both occurrences is
 `platform/tests/test_manage_secrets_scope.py`, as the 2026-09-29 notes record; the Index cell
 already names it.
 
+**Widened 2026-10-30 by 10.32.** A guard proven in its enabled form, but only in a test
+execution environment production's templates do not run in.
+
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 
 **Occurrences: 3** — 2026-09-28, 2026-09-30, 2026-10-14
@@ -5302,6 +5328,35 @@ their own token (`platform/semaphore/README.md`, "Getting your own operator toke
 recovery copy is for recovery only.
 
 **Enforced by.** Convention (the README steps, site-config #123).
+
+### 10.32 A guard proven in a test environment production's templates do not run in (widens 10.17)
+
+**Occurrences: 1** — 2026-10-30
+
+**What happened.** PR #728 (merged 2026-10-24) put the o11y restore-target preflight and guard in
+front of the five general VM writers (Provision, Resize, Destroy, Snapshot VM and Create VM
+Template) and changed their OpenBao login to read only `BAO_ROLE_ID`/`BAO_SECRET_ID` from the
+process environment. The preflight refuses `bao_role_id`, `bao_secret_id` and `openbao_addr` as
+extra vars, and the shared Semaphore environment those templates run in supplies the AppRole
+only as exactly those plaintext extra vars. Every production launch of the five `(Dev)`
+templates failed at the preflight from then on (tasks 9493, 10259, 10295); the OPA rollout
+provisioned through the `main`-bound template instead. The tests enabled the guard, but with
+the env vars set and no shared-environment extra vars, so they passed.
+
+**Root cause.** 10.17's rule asks for a guard to be proven enabled, with its input present and
+absent. The guard was proven enabled, in an execution environment the shared production
+templates do not have: the tests modelled the PBS templates' isolated environments, and the
+guard was then attached to templates bound to the shared one.
+
+**The rule.** A guard that constrains how a run is launched (its extra vars, its environment
+secrets) is proven against the environment each template it is attached to actually runs in.
+Attaching an existing guard to another template is a change to that template's launch contract,
+checked like one.
+
+**Enforced by.** `platform/tests/test_restore_guard_environment.py`: a template whose playbook
+reaches the restore-target preflight or guard, through imports or task includes, must declare
+`isolated_environment`. The five writers now do; their environments come from `Provision Seed
+Environment (Dev)`.
 
 ## 11. The largest one
 
