@@ -16,6 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "platform/tests"))
 from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
+from fake_semaphore import template_write  # noqa: E402 - the shared v2.19 template-write rule
 
 sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
 from publication import survey_enum_option_problems  # noqa: E402
@@ -29,6 +30,7 @@ TEMPLATE = {
     "repository_id": 5,
     "inventory_id": 37,
     "environment_id": 42,
+    "environment_ids": [42],
     "playbook": "platform/playbooks/store-tududi-api-token.yml",
     "app": "ansible",
     "arguments": '["--limit", "tududi"]',
@@ -149,15 +151,7 @@ class ScopedPublicationTests(unittest.TestCase):
                     ]
                     if cls.drop_setting:
                         value.pop("description", None)
-                    if "environment_ids" in cls.records[0]:
-                        # Semaphore v2.19.11 binds from `environment_ids` when the body carries it, and
-                        # copies `environment_id` into it only when the body omits the list
-                        # (db/Template.go ApplyLegacyEnvironmentField). A body echoing a stale list
-                        # therefore keeps the old binding (production task 10722).
-                        ids = value["environment_ids"] if value.get("environment_ids") is not None \
-                            else [value["environment_id"]]
-                        value["environment_ids"] = ids
-                        value["environment_id"] = ids[0]
+                    value = template_write(value)
                     cls.records[0] = value
                 return self.reply({})
 
