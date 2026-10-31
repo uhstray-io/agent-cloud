@@ -330,8 +330,10 @@
         _binding: >-
           {{ {'environment_id': _target.json.id}
              | combine({'environment_ids': [_target.json.id]} if 'environment_ids' in _template.json else {}) }}
-      when: not ansible_check_mode and (_template.json.environment_id != _target.json.id
-                                        or (_template.json.environment_ids | default([_target.json.id])) != [_target.json.id])
+      when:
+        - not ansible_check_mode
+        - (_template.json.environment_id != _target.json.id
+           or (_template.json.environment_ids | default([_target.json.id])) != [_target.json.id])
       changed_when: true
       no_log: true
 
