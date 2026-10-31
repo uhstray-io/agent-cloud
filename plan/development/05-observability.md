@@ -2507,3 +2507,38 @@ an OpenSpec live-acceptance criterion complete.
 > privacy, public receipt schema, survey behavior, and all distinct source-versus-live acceptance gates intact.
 > Verify with a test-first regression, focused pytest, syntax/lint and strict OpenSpec checks. This is source-only;
 > it does not rerun the historical task or close any live acceptance gate.
+
+### 2026-10-31 bounded Dev capacity and capability receipts
+
+Verified receipts at merged Dev `d41482be4944d5916030fbbbde147e5a686238f8`
+follow PR 797 source `b518f165dd22ff24528e4dcd0da5571d6e3be090`, independent
+Sol Medium and CodeRabbit approvals, passing final CI `41159999148`, and the
+exact-head read-only merge guard. Tasks 10752, 10762, 10763, 10765, and 10769
+accepted all five declared isolated-environment bindings, with empty
+plaintext/extra-var configuration, encrypted AppRole metadata, sole-template
+ownership, and shared/unrelated settings, surveys, repository, and inventory
+preserved. Task 10761 verified source policy and effective fixed-record
+data/metadata capabilities. Tasks 10767 and 10770 recorded scoped publication
+of the one missing declared controller catalog row and a converged rerun
+without duplicate environments or encrypted inputs. Capability verification
+did not read or write the coordination record and no VM, disk, filesystem,
+backup, restore, or cleanup operation occurred. These facts prove no
+coordination-record read/write or allocation/restore authorization. The
+[PBS task ledger](openspec/changes/pbs-vm-and-restore-gate/tasks.md) and
+[Dev runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/dev-bootstrap-publication-runbook.md)
+record the child acceptance and its remaining parent gates.
+
+Task 10753 reports healthy/running Alloy, zero restarts, no OOM, and receiver
+checkout `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; this is not loaded-config
+or image proof. Task 10755 correctly returned `native_debug_invalid`; protected
+producer output was not read. A local Go-template reproduction through the
+production row/parser boundary confirmed the default `time.Time` rendering is
+rejected by the strict RFC3339 consumer. The source now formats `StartedAt` as
+RFC3339Nano and retains the zero-time refusal sentinel. Task 10756 passed the
+seven-day readiness assertion after the nine-day lookback but produced no
+structured success receipt; the source now emits only the helper's closed JSON
+receipt after the assertion passes. The owned test suites and direct contracts
+passed 652 tests. These source changes and bounded receipts do not complete a
+fresh live producer receipt, representative baseline, forecast, calibration,
+backup/restore, retention, or growth gate. This entry changes no PBS task or
+gate.

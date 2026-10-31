@@ -3,6 +3,9 @@
 import copy
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -635,6 +638,86 @@ def test_history_survey_is_read_only_exact_revision_and_uses_only_fixed_series()
     assert "ready_for_separate_forecast_review" in source
     assert "growth" not in source.lower() and "forecast" in source.lower()
     assert "node_cpu_seconds_total" in source and "[5m]" in source
+
+
+def test_history_success_receipt_is_visible_only_after_readiness_assertion(tmp_path):
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        pytest.skip("ansible-playbook is not installed")
+    original = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-seven-day-capacity.yml").read_text())
+    actual_tasks = original[-1]["tasks"]
+    selected = [
+        copy.deepcopy(task)
+        for task in actual_tasks
+        if task.get("name") in {
+            "Read bounded Prometheus capacity history",
+            "Require seven days of fresh source and receiver-host observations",
+            "Record the bounded successful seven-day capacity receipt",
+        }
+    ]
+    assert [task["name"] for task in selected] == [
+        "Read bounded Prometheus capacity history",
+        "Require seven days of fresh source and receiver-host observations",
+        "Record the bounded successful seven-day capacity receipt",
+    ]
+    play_dir = tmp_path / "playbook"
+    files_dir = play_dir / "files"
+    local_tmp = tmp_path / "ansible-local"
+    files_dir.mkdir(parents=True)
+    local_tmp.mkdir()
+    helper = files_dir / "capacity-helper.py"
+    selected[0]["ansible.builtin.script"]["cmd"] = "{{ playbook_dir }}/files/capacity-helper.py"
+    playbook = play_dir / "capacity-flow.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "name": "Exercise the capacity history gate",
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "tasks": selected,
+    }]), encoding="utf-8")
+    env = {
+        **os.environ,
+        "ANSIBLE_LOCAL_TEMP": str(local_tmp),
+        "ANSIBLE_REMOTE_TEMP": str(local_tmp),
+    }
+
+    def run_case(payload, exit_code):
+        helper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            f"print({json.dumps(payload, sort_keys=True)!r})\n"
+            f"sys.exit({exit_code})\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [ansible_playbook, "-i", "localhost,", str(playbook)],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    success = {
+        "status": "ready_for_separate_forecast_review",
+        "history": {"source_samples": 9, "source_span_seconds": 691200},
+        "source_diagnostics": {"available": True},
+        "receiver_host_observations": {"cpu": {"points": 2017}},
+        "backend_stored_bytes": {name: {"change_bytes": 1} for name in sorted(survey.BACKENDS)},
+    }
+    successful_run = run_case(success, 0)
+    assert successful_run.returncode == 0, successful_run.stdout + successful_run.stderr
+    assert "Record the bounded successful seven-day capacity receipt" in successful_run.stdout
+    assert "ready_for_separate_forecast_review" in successful_run.stdout
+    assert r'\"source_samples\": 9' in successful_run.stdout
+    assert all(name in successful_run.stdout for name in survey.BACKENDS)
+
+    refused = {
+        "status": "insufficient",
+        "reason": "source_history_too_short",
+        "source_diagnostics": {"available": False},
+    }
+    refused_run = run_case(refused, 1)
+    assert refused_run.returncode != 0
+    assert "Require seven days of fresh source and receiver-host observations" in refused_run.stdout
+    assert "Record the bounded successful seven-day capacity receipt" not in refused_run.stdout
+    assert "ready_for_separate_forecast_review" not in refused_run.stdout
 
 
 def test_daily_units_are_bounded_and_the_history_survey_has_a_registered_template():

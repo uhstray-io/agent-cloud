@@ -691,6 +691,83 @@ def test_native_process_timestamp_preserves_subsecond_boundary():
     assert parsed == SURVEY.Decimal("1793210891.166822896")
 
 
+def test_podman_template_formats_started_at_as_rfc3339nano_for_the_strict_parser(tmp_path):
+    go = shutil.which("go")
+    assert go is not None, "Go is required to exercise the production Podman template formatter"
+    harness = tmp_path / "render_inspect.go"
+    harness.write_text(
+        '''package main
+import (
+    "encoding/json"
+    "os"
+    "text/template"
+    "time"
+)
+type State struct { Running bool; Pid int; StartedAt time.Time }
+type HostConfig struct { NetworkMode string; PortBindings map[string]any }
+type Config struct { Labels map[string]string }
+type Container struct { Id string; Image string; State State; HostConfig HostConfig; Config Config; Name string }
+func main() {
+    var started time.Time
+    var err error
+    if os.Args[2] != "zero" {
+        started, err = time.Parse(time.RFC3339Nano, os.Args[2])
+        if err != nil { panic(err) }
+    }
+    row := Container{
+        Id: "0123456789abcdef", Image: "docker.io/library/alpine:3.20",
+        State: State{Running: true, Pid: 1234, StartedAt: started},
+        HostConfig: HostConfig{NetworkMode: "bridge", PortBindings: map[string]any{}},
+        Config: Config{Labels: map[string]string{
+            "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy",
+        }},
+        Name: "/alloy",
+    }
+    funcs := template.FuncMap{"json": func(value any) string {
+        encoded, _ := json.Marshal(value)
+        return string(encoded)
+    }}
+    parsed, err := template.New("podman-inspect").Funcs(funcs).Parse(os.Args[1])
+    if err != nil { panic(err) }
+    if err := parsed.Execute(os.Stdout, row); err != nil { panic(err) }
+}
+''',
+        encoding="utf-8",
+    )
+    stamps = (
+        "2026-10-28T18:08:11.166822896Z",
+        "2026-10-28T18:08:11.166822897Z",
+        "2026-10-28T23:38:11.166822897+05:30",
+    )
+    parsed_stamps = []
+    for stamp in stamps:
+        rendered = subprocess.run(
+            [go, "run", str(harness), SURVEY.AVAILABILITY_INSPECT_FORMAT, stamp],
+            check=True, capture_output=True, text=True, timeout=60,
+        ).stdout.encode("utf-8")
+        record = SURVEY._availability_inspect(rendered)
+        assert record["started_at"] == stamp
+        parsed = SURVEY._parse_native_time(record["started_at"])
+        assert parsed == SURVEY._parse_native_time(stamp)
+        parsed_stamps.append(parsed)
+    assert parsed_stamps[1] - parsed_stamps[0] == SURVEY.Decimal("0.000000001")
+
+    zero_rendered = subprocess.run(
+        [go, "run", str(harness), SURVEY.AVAILABILITY_INSPECT_FORMAT, "zero"],
+        check=True, capture_output=True, text=True, timeout=60,
+    ).stdout.encode("utf-8")
+    zero_record = SURVEY._availability_inspect(zero_rendered)
+    assert zero_record["started_at"] == ""
+    for malformed in (zero_record["started_at"], "not-a-timestamp"):
+        with pytest.raises(SURVEY.Refusal, match="native_debug_invalid"):
+            SURVEY._parse_native_time(malformed)
+    malformed_fields = zero_rendered.decode("utf-8").split("\t")
+    malformed_fields[4] = "not-a-timestamp"
+    malformed_record = SURVEY._availability_inspect("\t".join(malformed_fields).encode("utf-8"))
+    with pytest.raises(SURVEY.Refusal, match="native_debug_invalid"):
+        SURVEY._parse_native_time(malformed_record["started_at"])
+
+
 def _prometheus_self_targets_document():
     identity = SURVEY._availability_self_identity("prod", "prod-west")
     target = {

@@ -143,7 +143,9 @@ SHARED_SCRAPE_LIMIT_FIELDS = (
 )
 AVAILABILITY_PROCESS_BYTES = 4096
 AVAILABILITY_INSPECT_FORMAT = (
-    '{{.Id}}\t{{.Image}}\t{{.State.Running}}\t{{.State.Pid}}\t{{.State.StartedAt}}\t'
+    '{{.Id}}\t{{.Image}}\t{{.State.Running}}\t{{.State.Pid}}\t'
+    '{{if .State.StartedAt.IsZero}}<nil>{{else}}'
+    '{{.State.StartedAt.Format "2006-01-02T15:04:05.999999999Z07:00"}}{{end}}\t'
     '{{.HostConfig.NetworkMode}}\t{{json .HostConfig.PortBindings}}\t'
     '{{index .Config.Labels "com.docker.compose.project"}}\t'
     '{{index .Config.Labels "com.docker.compose.service"}}\t{{.Name}}'
