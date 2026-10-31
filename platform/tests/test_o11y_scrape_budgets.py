@@ -989,6 +989,15 @@ step_start
     verify_phase = next(play for play in playbook if play.get("name") == "Phase 3: Verify o11y")
     task_names = [task.get("name") for task in verify_phase["tasks"]]
     assert "Read back the current Alloy self-metrics producer after lifecycle apply" in task_names
+    postapply_contract = {
+        "Read back the current Alloy self-metrics producer after lifecycle apply",
+        "Classify the private post-apply producer response",
+        "Report fixed post-apply producer status",
+        "Require fresh post-apply producer evidence for the reviewed source",
+    }
+    for task_name in postapply_contract:
+        task = next(task for task in verify_phase["tasks"] if task.get("name") == task_name)
+        assert task["when"] == ["not ansible_check_mode", "_o11y_source_review_required | bool"]
     lifecycle_phase = next(play for play in playbook if play.get("name") == "Phase 2: Start o11y")
 
     def nested_task_names(tasks):

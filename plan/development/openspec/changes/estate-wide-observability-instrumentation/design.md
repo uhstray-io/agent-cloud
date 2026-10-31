@@ -1493,9 +1493,9 @@ refusal and malformed/ambiguous shapes, retaining the existing namespace,
 network, parser and current-producer refusals. Demonstrate meaningful RED on
 the unmodified source and GREEN after the bounded correction.
 
-Only these three existing planning artifacts change in this planning step.
-Future implementation is bounded to the two source files and two existing test
-files named above, alongside those artifacts. Run focused budget/baseline tests,
+The initial planning step changed only these three existing planning artifacts.
+The bounded implementation described above is recorded by the checked child
+tasks; runtime acceptance remains separate. Run focused budget/baseline tests,
 repository-required checks, local strict OpenSpec and whitespace validation,
 then fresh complete independent review of all nine combined files/fixes, normal
 full push hooks, green combined-final-head CI, resolved feedback and the
@@ -2007,7 +2007,7 @@ BATS entry point, repository-required checks, local unscoped strict OpenSpec
 validation and diff checks. Obtain one independent review, fix findings,
 require green final-head CI, and run both exact-head Dev guard modes before a
 merge commit. Root retains integration/review ownership and the existing model
-policy. This invocation updates planning only; root separately invokes
+policy. The initial planning invocation updated planning only; root separately invokes
 apply/Luna High. Later existing Dev-bound read-only runtime verification is
 already authorized by the end-to-end user request, subject to actual gates;
 it does not require a new routine approval question. No production deployment
@@ -2026,7 +2026,7 @@ review was `APPROVED_SOURCE_ONLY`, CodeRabbit approved, and CI `41191390980`
 succeeded with 13 executed jobs and three path skips. Full local Python checks
 passed 9,500 tests and 376 subtests with zero skips; full BATS passed 1,185 tests
 with one existing formatter skip. These are accepted prior source-validation
-receipts, not checks rerun by this planning-only follow-up. The portable focused
+receipts, not checks rerun by the initial planning follow-up. The portable focused
 command uses `python3`; reproduction still requires the repository's Python,
 Ansible, collection, BATS and evaluator/engine prerequisites and the recorded
 per-process PATH correction. Portability of the command does not make that
