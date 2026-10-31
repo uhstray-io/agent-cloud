@@ -442,8 +442,8 @@ jobs:
 
       - name: Run Rego tests
         run: |
-          opa check --strict --bundle platform/services/opa/deployment/policies
-          opa test --bundle platform/services/opa/deployment/policies -v
+          opa check --strict platform/services/opa/deployment/policies
+          opa test platform/services/opa/deployment/policies -v
 
   test:
     name: Unit Tests

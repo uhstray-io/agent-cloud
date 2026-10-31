@@ -189,7 +189,7 @@ and why.
 | 10.30 | Recorded issue #604's fix as built when it merged; its `(Dev)` template had never been published, so the second operator stayed without access for nine days | Mechanism never exercised | 1 | Convention (catalog-drift check proposed) |
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
-| 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + CI Rego job in bundle mode |
+| 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -5456,8 +5456,8 @@ the refusal. "Read-only" means the running service refuses writes, not that its 
 **Enforced by.** Test (`platform/tests/test_service_opa.bats`: `--bundle /policies` closes both
 command lists; the verify tasks require exactly 400 on the plain and the TLS path) and the deploy
 itself: every `Deploy OPA` sends `PUT /v1/data/agentcloud_write_probe`, a path no rule reads, and
-fails unless OPA refuses it. CI and the deploy run `opa check`/`opa test` with `--bundle`, so the
-tests load the tree the way the server does.
+fails unless OPA refuses it. The deploy runs `opa test --bundle`, so its tests load the tree the
+way the server does, and a test refuses any data file in the tree that bundle mode would skip.
 
 ## 11. The largest one
 

@@ -201,6 +201,16 @@ task_with() {
   assert_grep -qF '/opa test --bundle /policies"' "$REPO_ROOT/platform/playbooks/deploy-opa.yml"
 }
 
+@test "opa: every data file in the policy tree is one bundle mode loads (data.json / data.yaml)" {
+  # A plain load reads any .json/.yaml as data; --bundle reads only data.json/data.yaml. CI's
+  # opa test still loads the tree plainly, so a stray data file would pass CI and be dropped at
+  # runtime. Name it data.json in its own directory instead.
+  local stray
+  stray="$(find "$DEPLOY_DIR/policies" -type f \( -name '*.json' -o -name '*.yaml' -o -name '*.yml' \) \
+    -not -name data.json -not -name data.yaml)"
+  [ -z "$stray" ]
+}
+
 @test "opa: the verify proves a policy write is refused with exactly 400, on the plain and the TLS path" {
   local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
   task_with "$pb" 'Policy writes are refused' > "$BATS_TEST_TMPDIR/write.yml"
