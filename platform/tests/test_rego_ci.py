@@ -21,8 +21,8 @@ def test_rego_job_verifies_opa_before_use_and_keeps_the_gate():
     assert script.index("sha256sum --check") < script.index("chmod 755")
 
     run = next(step for step in job["steps"] if step.get("name") == "Run Rego tests")["run"]
-    assert "opa check --strict platform/services/opa/deployment/policies" in run
-    assert "opa test platform/services/opa/deployment/policies -v" in run
+    assert "opa check --strict --bundle platform/services/opa/deployment/policies" in run
+    assert "opa test --bundle platform/services/opa/deployment/policies -v" in run
 
     gate = WORKFLOW["jobs"]["test"]
     assert gate["if"] == "always()"

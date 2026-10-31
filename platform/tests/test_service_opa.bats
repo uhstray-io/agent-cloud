@@ -191,9 +191,11 @@ task_with() {
 @test "opa: both command lists load ./policies as a bundle, so the REST write API is refused" {
   # Without --bundle, PUT /v1/data and /v1/policies (and DELETE /v1/data/agentcloud) succeed for
   # any caller the firewall admits; the :ro mount protects the files, not the running policy.
-  local f
+  local f args
   for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
-    [ "$(command_args "$f" | tail -n 2 | tr '\n' ' ')" = "--bundle /policies " ]
+    # The whole list ends in "--bundle /policies": strip that suffix and require it was there.
+    args="$(command_args "$f" | tr '\n' ' ')"
+    [ "${args% --bundle /policies }" != "$args" ]
   done
   # The Rego tests load the tree the way the server does.
   assert_grep -qF '/opa test --bundle /policies"' "$REPO_ROOT/platform/playbooks/deploy-opa.yml"

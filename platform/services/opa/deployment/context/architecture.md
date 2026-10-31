@@ -55,7 +55,7 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
   (OpenBao). Phase 3 ships decision logs to Loki via stdout.
 - Policies are mounted read-only from `./policies` and loaded as a bundle, so the REST
   write API is refused here too; a change is applied by redeploy (git pull + restart).
-  Rego is tested with `opa test /policies`.
+  Rego is tested with `opa test --bundle /policies`.
 - Local-dev also routes `opa.agent-cloud.test` through Caddy
   (`platform/inventory/local-dev.yml.example`, the `caddy_routes` OPA entry) so a
   caller such as skynet can verify a step-ca certificate. That route is a plain proxy
