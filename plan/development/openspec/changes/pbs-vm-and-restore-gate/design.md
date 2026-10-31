@@ -252,31 +252,32 @@ unchanged prior template configurations, source environment, repository and
 inventory. Environment task 10688 later failed its final binding assertion.
 Reconciliation found the dedicated environment created with empty JSON and
 plaintext configuration and exactly two encrypted AppRole inputs, but the
-selected template remained bound to the shared source environment. No retry,
-capability acceptance, or subsequent protected workflow is authorized by that
-partial result.
+selected template remained bound to the shared source environment. That partial result authorized no retry, capability acceptance, or subsequent
+protected workflow. It is a historical checkpoint superseded for environment
+convergence by the verified receipts below; reconcile state before any future
+write and never retry an uncertain operation blindly.
 
-The provisioner changes only legacy `environment_id` while copying the live
-`environment_ids` array unchanged. The pinned upstream model treats the array
-as authoritative and falls back to the scalar only when the array is absent
-([Template model](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/Template.go#L284-L290));
+The failed revision changed only legacy `environment_id` while copying the
+live `environment_ids` array unchanged. The pinned upstream model treats the
+array as authoritative and falls back to the scalar only when the array is
+absent ([Template model](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/Template.go#L284-L290));
 the SQL update applies that rule before writing environment associations
 ([store](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/sql/template.go#L150-L154)).
-Repair the shared provisioner to write and verify one consistent scalar/array
-binding. Preserve every other setting and survey, existing encrypted inputs,
-source/unrelated environments and templates, active-work refusal, and safe rerun
-behavior. Never discard the array from preservation checks or ignore a genuine
-configuration difference merely to pass the assertion.
+The repaired shared provisioner writes and verifies a consistent paired
+scalar/array binding while preserving every other setting and survey, encrypted
+inputs, source/unrelated environments and templates, active-work refusal, and
+safe rerun behavior. The acceptance receipt below verifies this repaired
+behavior across the five declared environments.
 
-The shared seed client must also enforce the complete effective binding before
+The shared seed client now enforces the complete effective binding before
 staging credentials, when proving exclusive ownership/active use, and immediately
-before task submission. Retain legacy scalar-only compatibility; refuse empty,
-malformed, contradictory or multi-environment seed bindings and drift. Add
-realistic API fixtures where a supplied array wins over the scalar, plus
-secondary-group ownership and pre-submit drift regressions. Keep the existing
-isolated-environment metadata guards rather than replacing them with a second
-policy. Review, final-head CI and a guarded Dev merge precede a reconciled retry;
-the capability receipt still gates convergence of the other four workflows.
+before task submission. It retains legacy scalar-only compatibility and refuses
+empty, malformed, contradictory or multi-environment seed bindings and drift.
+Regressions cover a supplied array winning over the scalar, secondary-group
+ownership and pre-submit drift. The existing isolated-environment metadata
+guards remain in place. Review, final-head CI, guarded Dev merge, and the
+reconciled runtime acceptance are recorded below; capability acceptance
+preceded convergence of the other four workflows.
 
 ### General VM writers' environments (2026-10-30)
 
@@ -292,6 +293,27 @@ reviewed provisioner. Neither the guard nor the shared environment changes.
 preflight to declare one.
 The `main`-bound copies need the same environments (`seed_variant=main`) before `dev` is
 promoted, because promotion brings them the guard.
+
+### Verified isolated-environment acceptance (2026-10-31)
+
+At merged Dev SHA `d41482be4944d5916030fbbbde147e5a686238f8`, tasks 10752,
+10762, 10763, 10765, and 10769 accepted all five declared isolated
+PBS/restore environment bindings. Readback verified empty plaintext and
+extra-var configuration, encrypted AppRole metadata, sole-template ownership,
+and preserved shared/unrelated settings, surveys, repository, and inventory.
+Capability task 10761 verified source policy plus effective data and metadata
+capabilities for fixed coordination records only; it performed no record
+read/write and authorizes no allocation or restore operation. Scoped publisher
+task 10767 created the missing `Provision PBS VM (Dev)` workflow catalog
+row. Rerun task 10770 converged to the same binding and encrypted-input
+metadata without duplicate environments or inputs; the binding update request remains part of
+that rerun. No VM, disk, filesystem, backup, restore, or cleanup operation was
+performed. Task 5.2g is complete; all parent declaration, writer-drain, guest,
+backup/restore, capacity, retention, and growth gates remain separate and open.
+Physical-origin attestation remains waived. The PBS package-source choice is
+pending the user's decision; neither enterprise subscription readiness nor
+no-subscription risk acceptance is declared. See the [task receipt](tasks.md)
+and [Dev runbook](implementation/dev-bootstrap-publication-runbook.md).
 
 ## Risks / Trade-offs
 

@@ -1643,3 +1643,60 @@ retention change, or VM mutation may make the short slice pass. Require focused
 tests, independent review, final-head CI, guarded Dev merge, and a fresh pinned
 Semaphore history receipt. Parent 1.3 and all forecast/calibration gates remain
 open until their separate evidence is accepted.
+
+### Native Alloy start-time serialization and successful history receipt (2026-10-31)
+
+The producer diagnostic obtains `State.StartedAt` through Go
+`text/template`. Native reproduction with the exact `AVAILABILITY_INSPECT_FORMAT`
+and Go `time.Time` values showed that the default template formatting emits
+Go's debugging representation (`2006-01-02 15:04:05.999999999 -0700 MST`),
+which the existing strict RFC3339 parser refuses as `native_debug_invalid`.
+The reproduction covered UTC and a nonzero offset with nanoseconds, and passed
+each rendered ten-field row through the actual `_availability_inspect` and
+`_parse_native_time` consumers. The source fix formats `StartedAt` with Go's explicit RFC3339Nano layout at
+the template boundary. The consumer parser stays strict; nanosecond comparisons
+and all existing
+freshness, process, network, loaded-configuration, identity, and privacy checks.
+Test the actual Go template rendering through the production row parser for UTC,
+nonzero offset, subsecond precision, and malformed/zero values; do not make the
+parser accept Go's debugging string.
+
+The seven-day helper emits one closed, bounded JSON receipt on success, with
+source diagnostics, history span/freshness/gap fields, receiver-host
+observations, and summaries for the five fixed backends. Its refusal receipt is
+also closed and contains only fixed status/reason and source diagnostics. Before this source fix, the successful helper output was available to the
+readiness assertion but was displayed only when the assertion failed. The
+playbook now emits that validated bounded receipt in a visible task result
+after the existing seven-day readiness assertion passes, so the owning
+Semaphore task retains successful history evidence. Do not display arbitrary command results, raw samples or labels,
+stderr, exception details, or helper output before the success predicate. Keep
+all nine-day lookback, seven-day minimum, time-span, uniqueness, freshness,
+coverage, cardinality, read-only, and failure gates unchanged. Exercise the
+actual Ansible task flow for success and refusal, including receipt visibility
+only after the successful assertion.
+
+Verified Dev receipts at merged SHA `d41482be4944d5916030fbbbde147e5a686238f8`
+follow PR 797 source `b518f165dd22ff24528e4dcd0da5571d6e3be090`, independent
+Sol Medium and CodeRabbit approvals, passing final CI `41159999148`, and the
+exact-head read-only merge guard. Tasks 10752, 10762, 10763, 10765, and 10769
+accepted all five declared isolated-environment bindings, including the
+empty-plaintext/extra-var boundary, encrypted AppRole metadata, sole-template
+ownership, and preservation of shared/unrelated settings, surveys, repository,
+and inventory. Task 10761 verified source policy and effective fixed-record
+data/metadata capabilities. Tasks 10767 and 10770 recorded the scoped missing
+catalog-row publication and a converged rerun without duplicate environments
+or encrypted inputs. These permissions do not authorize coordination-record
+reads/writes, VM/storage operations, or restore. The detailed PBS child receipt
+and its remaining parent gates are recorded in the [PBS task ledger](../pbs-vm-and-restore-gate/tasks.md)
+and [Dev runbook](../pbs-vm-and-restore-gate/implementation/dev-bootstrap-publication-runbook.md).
+
+The separate o11y receipts remain bounded: task 10753 reports healthy/running
+Alloy, zero restarts, no OOM, and receiver checkout
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`, not loaded configuration or image
+identity. Task 10755 correctly refused with `native_debug_invalid`; the
+protected producer body was not read. Task 10756 passed the seven-day readiness
+assertion after the nine-day lookback but retained no structured success
+receipt. The source formatter and successful receipt fixes in this change do
+not establish a fresh live producer receipt or representative baseline. Keep
+parent 1.3 and baseline, forecast, calibration, backup/restore, retention, and
+growth acceptance open.

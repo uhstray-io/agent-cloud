@@ -35,17 +35,25 @@ identity, or storage exists.
   no-subscription path is allowed only with explicit private
   `pbs_accept_no_subscription_risk: true` acceptance and is not an implicit
   production default.
-- The seven-day capacity/retention gate remains blocked by
-  `source_series_ambiguous`. That does not prove capacity, authorize VM growth,
-  or authorize retention changes. Task 4.4's second-PBS destination remains a
-  planning candidate only.
-- Dev task 10282, `Verify o11y Restore Coordination Capabilities`, refused the
+- **Bounded capacity receipt (task 10756):** the seven-day readiness
+  assertion passed after the nine-day history lookback, but the task output
+  retained no structured successful history receipt. The source now emits its
+  bounded receipt after the assertion; full representative baseline,
+  forecast/calibration, backup/restore, retention, and growth acceptance remain
+  open. Task 4.4's second-PBS destination remains a planning candidate only.
+- **Historical capability refusal (task 10282):** the verifier refused the
   shared environment's protected credential extra vars before authentication.
-  This source change adds one scoped Dev controller wrapper and distinct
-  environments for five explicit PBS/restore templates. Source declarations do
-  not prove those bindings were converged or the effective role passed its
-  capability check; preserve the shared environment and complete the sequence
-  under “Restore coordination source prerequisite” below.
+  This was resolved by the isolated-environment source workflow and the
+  verified Dev sequence below. At merged SHA
+  `d41482be4944d5916030fbbbde147e5a686238f8`, tasks 10752, 10762, 10763,
+  10765, and 10769 accepted all five declared environment bindings and
+  preserved shared/unrelated configuration. Task 10761 verified source policy
+  and effective fixed-record data/metadata capabilities. Task 10767 created
+  the missing `Provision PBS VM (Dev)` workflow catalog row, and task 10770
+  records the converged rerun. The capability check did not
+  read or write the coordination record. The environment/catalog operations
+  performed no VM/storage, backup, or restore mutation. Child 5.2g is complete,
+  while its parent gates remain open.
 
 ## Preconditions before allocation or guest configuration
 
@@ -195,12 +203,31 @@ already-suffixed names; it preserves their `agent-cloud dev` binding without
 adding another `(Dev)` suffix. Do not pass the provisioner's `seed_template`,
 `seed_variant`, or credential-replacement aliases through the wrapper.
 
-Converge only the capability-verification environment first. Read back its
-repository, playbook, inventory, source and isolated environment binding, empty
-JSON/plaintext configuration, encrypted AppRole metadata, and sole-template
-ownership. Then rerun the capability verifier and review its effective-policy
-receipt. Only a passing receipt permits one-at-a-time environment convergence
-for the remaining four templates. Keep the shared environment and generic VM
-templates unchanged. These configuration steps close no private declaration,
-writer-drain, target, backup, restore/cleanup, capacity, retention, or deployment
-gate.
+Verified Dev completion receipt: at merged SHA
+`d41482be4944d5916030fbbbde147e5a686238f8`, tasks 10752, 10762, 10763, 10765,
+and 10769 accepted all five bindings; task 10761 verified effective
+fixed-record capabilities; task 10767 created the missing `Provision PBS VM
+(Dev)` workflow catalog row; task 10770 confirmed rerun convergence without
+duplicate environments or encrypted inputs. This is recorded history; use the
+ordered procedure below for future convergence.
+
+For future convergence:
+
+1. Select only the declared capability-verification environment. Read back its
+   repository, playbook, inventory, source-environment and isolated-environment
+   bindings; confirm empty JSON/plaintext configuration, encrypted AppRole
+   metadata, sole-template ownership, and preserved shared/unrelated settings
+   and surveys.
+2. Run the capability verifier at the same reviewed SHA. Require a fresh
+   successful receipt proving source-policy and effective data/metadata
+   capabilities for the fixed records. Stop and reconcile any mismatch before
+   continuing. Capability verification does not read or write the coordination
+   record or authorize a VM/storage operation.
+3. Only after that receipt passes, converge the other four declared PBS/restore
+   environments one at a time. Re-read current state and reconcile each result
+   before the next launch. Never blindly retry an uncertain write.
+
+Preserve shared/unrelated environment and template ownership; generic VM-writer
+isolation remains under its separate owner. VM/disk operations still require
+their independent declaration, identity, capacity, writer-drain, and lifecycle
+gates. Environment acceptance is not live backup or restore acceptance.
