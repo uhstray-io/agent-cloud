@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # Structural and behavioural tests for skynet's own Semaphore identity: svc-skynet at project role
-# task_runner, provisioned by platform/playbooks/provision-skynet-semaphore-access.yml, which includes the
+# guest (read-only; interim since 2026-10-31, was task_runner), provisioned by
+# platform/playbooks/provision-skynet-semaphore-access.yml, which includes the
 # shared task file platform/playbooks/tasks/provision-semaphore-service-identity.yml.
 #
 # The shared file's request-level properties (no_log coverage, POST-only token mint, the proof's
@@ -29,15 +30,15 @@ setup() {
   assert_grep -qE '^  hosts: localhost$' "$PLAYBOOK"
 }
 
-@test "skynet access: identity is svc-skynet at project role task_runner, launch probe expects 404, store is services/skynet" {
+@test "skynet access: identity is svc-skynet at project role guest, launch probe expects 403, store is services/skynet" {
   python3 - "$PLAYBOOK" <<'PY'
 import sys, yaml
 v = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]["vars"]
 assert v["_svc_user"] == "svc-skynet", v["_svc_user"]
-# task_runner grants CanRunProjectTasks only (upstream db/ProjectUser.go:25). Guest would be refused at 403.
-assert v["_svc_role"] == "task_runner", v["_svc_role"]
-# A task_runner passes the launch gate and finds no template -1: 404, nothing launched.
-assert v["_svc_launch_status"] == 404, v["_svc_launch_status"]
+# guest holds no run permission (upstream db/ProjectUser.go:26), so the permission gate refuses the probe: 403, nothing launched.
+# Interim (operator decision 2026-10-31): task_runner carries CanRunProjectTasks, and any launch right can inject extra vars into a run on the shared runner.
+assert v["_svc_role"] == "guest", v["_svc_role"]
+assert v["_svc_launch_status"] == 403, v["_svc_launch_status"]
 assert v["_store_path"] == "services/skynet", v["_store_path"]
 assert v["_svc_display_name"] == "Skynet", v["_svc_display_name"]
 assert v["_svc_email"].startswith("svc-skynet@"), v["_svc_email"]

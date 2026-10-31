@@ -1,26 +1,37 @@
 ---
 # provision-skynet-semaphore-access.yml — skynet's own Semaphore identity: user svc-skynet at project role
-# task_runner. The skynet orchestration API launches Semaphore templates for OPA-approved proposals, so
-# it needs CanRunProjectTasks and no more.
+# guest, read-only. INTERIM, by operator decision of 2026-10-31. Skynet holds no launch right until a narrow
+# launcher (a separate, planned change) holds the launch token; then skynet loses its Semaphore token entirely.
 #
-# Why task_runner. Launching a task needs CanRunProjectTasks. task_runner is the least role that grants
-# it (upstream db/ProjectUser.go:25: task_runner = CanRunProjectTasks only). Guest holds no run permission
-# (db/ProjectUser.go:26), so it cannot launch, and owner or manager would grant rights skynet does not need.
+# Why guest. Semaphore v2.19.11 merges a launcher's task environment over the template's with no filter
+# (services/tasks/TaskRunner.go:395-425), and the merged environment becomes the playbook's extra vars
+# (services/tasks/local_executor.go:144-177; the only names removed are survey variables whose target is env).
+# So any role with CanRunProjectTasks can inject extra vars, templated ones included, into a run on the shared
+# runner, and the controller holds the AppRole (AGENTS.md, "Runtime access"). task_runner grants
+# CanRunProjectTasks and nothing else (db/ProjectUser.go:25). guest holds no run permission
+# (db/ProjectUser.go:26), so svc-skynet cannot launch at guest. Per-template roles and project-bound runners
+# are not in the community tree: pro/api/roles.go answers 404 to role writes and pro/api/projects/runners.go
+# to runner adds, so the project role is the only launch gate here. AGENTS.md, "Launch rights are runner
+# rights", is the rule this follows.
 #
-# Why not the controller token. secret/services/semaphore is the operator's and the controller's
-# identity. skynet gets a user of its own, so a launch names skynet's account, and the account's rights
-# are the task_runner role and nothing else.
+# Why a user of its own, not the controller token. secret/services/semaphore is the operator's and the
+# controller's identity. skynet's own account means a launch names skynet's account, and at guest that
+# account carries no launch right.
 #
-# What a launch means. A launch from this identity is a runner launch: a templated extra var runs code on
-# the runner, so launch rights are runner rights (AGENTS.md, "Launch rights are runner rights"). Two
-# controls hold the line, and this play adds neither: the OPA gate that approves each proposal upstream of
-# skynet, and the declared project team (manage-semaphore-access.yml), which must list svc-skynet at
-# task_runner before skynet may use the identity.
+# Re-roling. On an instance where svc-skynet already holds task_runner, this play moves that existing member
+# to guest in place (the shared task's membership step) and creates no account. The stored token is kept
+# when it still proves svc-skynet; the launch probe then expects 403 with that token.
 #
-# Launch probe. The probe POSTs template -1 and expects 404. task_runner passes the permission gate
-# (api/projects/project.go:97-98 refuses only roles without the permission), then finds no template -1, so
-# the request answers 404 and launches nothing (api/projects/tasks.go:45-48, api/helpers/write_response.go:41-44).
-# A 403 would mean the role lost run rights, and the play fails.
+# OPA. OPA is called by skynet's own client (platform/services/skynet/deployment/CLAUDE.md:12-13, :92-94) and
+# by no Semaphore path in this repository. A GitHub code search of semaphoreui/semaphore for openpolicyagent,
+# open-policy-agent and opa_url returned no hits on 2026-10-31. Neither OPA nor the project team
+# (manage-semaphore-access.yml, which lists svc-skynet at guest) limits what a launch can inject, so neither is
+# a control on launches.
+#
+# Launch probe. The probe POSTs template -1 and expects 403. The guest role is refused at the permission gate
+# (api/projects/project.go:97-98, wired on POST /tasks at api/router.go:285-287) before any template is read,
+# so nothing launches. A 404 would mean the role passed that gate (task_runner: no template -1 exists), and
+# the play fails on it.
 #
 # Order.
 #   1. Run this play once per instance, before declaring svc-skynet in semaphore_project_members:
@@ -40,19 +51,20 @@
 #
 # Check mode: reads run; every write is skipped, and the launch probe is never sent.
 #
-# Unverified here: no live run has been made from this change. The upstream reads are at tag v2.19.11,
+# Unverified here: no live run has been made from this change, and no guest probe has been observed on an
+# instance; the 403 comes from the upstream source cited above. The upstream reads are at tag v2.19.11,
 # fetched from GitHub. The compose default pins that version (platform/services/semaphore/deployment/
 # compose.yml:23); the image the production controller runs is not checked here.
 #
-# Usage: run from a Semaphore template once one declares this playbook. None does yet: templates.yml is
-# outside this change.
+# Usage: the Semaphore template `Provision skynet Semaphore Access` (templates.yml, with its (Dev) variant;
+# templates-local.yml has the (Local) one) runs this play.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
-- name: "Provision skynet's Semaphore identity (svc-skynet, task_runner)"
+- name: "Provision skynet's Semaphore identity (svc-skynet, guest)"
   hosts: localhost
   connection: local
   gather_facts: false
@@ -67,9 +79,10 @@
     # _pid is set by the resolve task below, before any Semaphore call. It is not a play var.
     _svc_user: "svc-skynet"
     _svc_display_name: "Skynet"
-    # task_runner: CanRunProjectTasks only. It passes the launch gate, so the probe answers 404, not 403.
-    _svc_role: "task_runner"
-    _svc_launch_status: 404
+    # guest: no run permission (upstream db/ProjectUser.go:26), so the launch gate refuses the probe with 403.
+    # Interim since 2026-10-31 (see the header); the role was task_runner before that.
+    _svc_role: "guest"
+    _svc_launch_status: 403
     _svc_email: "svc-skynet@{{ dev_zone | default('agent-cloud.test') }}"
     _store_path: "services/skynet"
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"

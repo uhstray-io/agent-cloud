@@ -874,8 +874,10 @@ templates:
         required: false
         default_value: "false"
 
-  # skynet's own Semaphore identity: svc-skynet, a non-admin account at project role task_runner (the least
-  # role that can launch; skynet launches OPA-gated templates), its token stored at secret/services/skynet.
+  # skynet's own Semaphore identity: svc-skynet, a non-admin account at project role guest (read-only). Interim,
+  # by operator decision of 2026-10-31: skynet holds no launch right until a narrow launcher (a planned change)
+  # holds the launch token, because any launch right can inject extra vars into a run on the shared runner
+  # (play header). Its token is stored at secret/services/skynet.
   # Run it BEFORE Deploy skynet (which reads that token and stops when it is absent), and before declaring
   # svc-skynet in semaphore_project_members (Manage Semaphore Access refuses a member with no account yet).
   - name: Provision skynet Semaphore Access

@@ -132,8 +132,8 @@ templates:
   - name: "Provision Console Semaphore Access (Local)"
     playbook: platform/playbooks/provision-console-semaphore-access.yml
 
-  # skynet's own Semaphore identity (svc-skynet, task_runner): run before Deploy skynet (Local), which reads
-  # the token this stores.
+  # skynet's own Semaphore identity (svc-skynet, guest, interim since 2026-10-31; was task_runner): run before
+  # Deploy skynet (Local), which reads the token this stores.
   - name: "Provision skynet Semaphore Access (Local)"
     playbook: platform/playbooks/provision-skynet-semaphore-access.yml
 
