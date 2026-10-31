@@ -718,8 +718,13 @@ def test_timestamp_query_builder_uses_exact_family_branches_and_restores_names()
         'job="alloy"', 'environment="prod"', 'cluster="prod-west"',
         'instance="alloy:12345"', 'target_id="service:o11y"',
     )
-    for matcher in matchers:
-        assert expression.count(matcher) == len(families)
+    branches = expression.split(" or on(__name__) ")
+    assert len(branches) == len(families)
+    for family, branch in zip(families, branches, strict=True):
+        assert branch.startswith(f'label_replace(timestamp({{__name__="{family}",')
+        assert branch.endswith(f'"__name__", "{family}", "job", ".*")')
+        for matcher in matchers:
+            assert branch.count(matcher) == 1
     value_path = SURVEY._availability_query_path(
         families, job="alloy", environment="prod", cluster="prod-west",
         instance="alloy:12345", target_id="service:o11y",
@@ -737,8 +742,8 @@ def test_native_promql_runner_builds_actual_expressions_and_semantic_mutants():
     assert len(expressions["health_families"]) == 6
     assert expressions["self_timestamps"].count("timestamp(") == 3
     assert expressions["health_timestamps"].count("timestamp(") == 6
-    assert expressions["max_self_path_length"] <= 4096
-    assert expressions["max_health_path_length"] <= 4096
+    assert expressions["max_self_api_path_length"] <= 4096
+    assert expressions["max_health_api_path_length"] <= 4096
     grouped = f'timestamp({expressions["self_values"]})'
     assert expressions["grouped_self"] == grouped
     plain_self, plain_health = NATIVE_PROMQL._query_mutants(expressions)
@@ -751,7 +756,15 @@ def test_native_promql_runner_builds_actual_expressions_and_semantic_mutants():
         'unexpected="preserved"' in sample["labels"]
         for sample in rules["tests"][0]["promql_expr_test"][1]["exp_samples"]
     )
-    assert len(rules["tests"][0]["input_series"]) == 3 + 6 + 5
+    input_series = rules["tests"][0]["input_series"]
+    assert len(input_series) == 3 + 6 + 6 + 5
+    self_decoys = [
+        sample for sample in input_series
+        if 'instance="alloy:wrong-instance"' in sample["series"]
+        or 'target_id="service:wrong-target"' in sample["series"]
+    ]
+    assert len(self_decoys) == 6
+    assert len(rules["tests"][0]["promql_expr_test"][0]["exp_samples"]) == 3
     NATIVE_PROMQL._consumer_fixture_check(SURVEY, expressions)
 
 

@@ -110,14 +110,21 @@ def _builder_expressions(helper):
     health_values = _expression(helper, health_families, **health_kwargs)
     self_timestamps = _expression(helper, self_families, timestamp=True, **self_kwargs)
     health_timestamps = _expression(helper, health_families, timestamp=True, **health_kwargs)
-    max_self_path = helper._availability_query_path(
-        self_families, job="alloy", environment="p" + "r" * 30,
-        cluster="c" * 64, instance="i" * 128, target_id="t" * 128, timestamp=True,
+    max_self_url = helper._availability_query_path(
+        self_families, job="alloy", environment="p" + "r" * 31,
+        cluster="c" * 64, instance="a" + ":" * 127,
+        target_id="a" + ":" * 127, timestamp=True,
     )
-    max_health_path = helper._availability_query_path(
+    max_health_url = helper._availability_query_path(
         health_families, job="a" + "b" * 63, environment="p" + "r" * 31,
         cluster="c" * 64, timestamp=True,
     )
+    if not max_self_url.startswith(helper.PROMETHEUS) or not max_health_url.startswith(helper.PROMETHEUS):
+        raise RunnerError("production query builder returned an unexpected maximum-context URL")
+    max_self_path = max_self_url.removeprefix(helper.PROMETHEUS)
+    max_health_path = max_health_url.removeprefix(helper.PROMETHEUS)
+    if not max_self_path.startswith("/api/v1/query?") or not max_health_path.startswith("/api/v1/query?"):
+        raise RunnerError("production query builder returned an unexpected maximum-context API path")
     if len(max_self_path) > 4096 or len(max_health_path) > 4096:
         raise RunnerError("supported maximum-context path exceeds the existing path ceiling")
     return {
@@ -129,8 +136,8 @@ def _builder_expressions(helper):
         "health_timestamps": health_timestamps,
         "grouped_self": f"timestamp({self_values})",
         "grouped_health": f"timestamp({health_values})",
-        "max_self_path_length": len(max_self_path),
-        "max_health_path_length": len(max_health_path),
+        "max_self_api_path_length": len(max_self_path),
+        "max_health_api_path_length": len(max_health_path),
     }
 
 
@@ -157,6 +164,14 @@ def _series_and_expected(expressions):
         value = 10 + len(series)
         series.append((family, labels, value))
         expected_self.append((labels, 0.0))
+        # Keep every other identity field correct so each decoy isolates one matcher.
+        for identity_field, wrong_value in (
+            ("instance", "alloy:wrong-instance"),
+            ("target_id", "service:wrong-target"),
+        ):
+            decoy_identity = {**self_identity, identity_field: wrong_value}
+            decoy_labels = {"__name__": family, **decoy_identity}
+            series.append((family, decoy_labels, 10 + len(series)))
     for identity_index, identity in enumerate(identities):
         for family_index, family in enumerate(expressions["health_families"]):
             # One required family is absent for the second identity; absence must stay absent.
@@ -526,11 +541,12 @@ def main(argv=None):
         if not args.baseline_red:
             print("PASS: unexpected label survives expression fixture and unchanged production consumer rejects it")
             print("PASS: absent family remains absent; source timestamps are 0s at a 2m evaluation time")
-            print("PASS: maximum supported caller context stays under the existing 4096-character path ceiling")
+            print("PASS: maximum supported caller context stays under the existing 4096-character API-path ceiling")
             print(
-                "PASS: maximum encoded paths are "
-                f"{expressions['max_self_path_length']} chars (self) and "
-                f"{expressions['max_health_path_length']} chars (health)"
+                "PASS: maximum encoded API paths are "
+                f"{expressions['max_self_api_path_length']} chars (self) and "
+                f"{expressions['max_health_api_path_length']} chars (health); "
+                "three expected self families exclude six identity decoys"
             )
         _cleanup(engine, owner, names, cleanup_deadline)
         cleanup_completed = True
