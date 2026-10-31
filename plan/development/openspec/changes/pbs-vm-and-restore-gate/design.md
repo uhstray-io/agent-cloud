@@ -220,10 +220,11 @@ Add one Dev-bound controller wrapper with an exact reviewed-checkout gate,
 fixed controller-loopback API destination, and an OpenBao destination anchored
 to the sole private inventory service declaration before credentials are used.
 Its selectable targets are only the five explicit Dev catalog rows named in
-task 5.2f. Each declares a distinct isolated environment. Reuse the provisioner's
-base-instance selection for these already-suffixed names and require their
-declared repository to remain `agent-cloud dev`; do not generate another Dev
-suffix or change the shared provisioner's variant policy.
+task 5.2f: the five protected PBS/restore targets. Each declares a distinct
+isolated environment. Generic VM writer isolation is handled separately below.
+Reuse the provisioner's base-instance selection for these already-suffixed names
+and require their declared repository to remain `agent-cloud dev`; do not
+generate another Dev suffix or change the shared provisioner's variant policy.
 
 Supply and verify explicit project, inventory, and current source-environment
 bindings. Preserve the provisioner's source preservation, encrypted credential
@@ -232,7 +233,9 @@ readback. A scoped publisher may create the new controller entry and publish
 surveys; existing target rebinding goes only through this reviewed provisioner.
 Do not mutate the shared environment, use a full-catalog publication, or weaken
 the restore preflight to admit legacy credential extra vars. Generic VM
-templates are outside this bounded convergence scope.
+templates are outside this wrapper's bounded convergence scope; their
+environment isolation follows the separate general-writer provisioner decision
+below.
 
 Converge the capability-verification template first and rerun its read-only
 verifier. Only a successful effective-policy/capability receipt permits the
@@ -241,16 +244,52 @@ still require their independent declaration, identity, capacity, writer-drain,
 and lifecycle gates. Source tests and environment creation are not live restore
 or backup acceptance.
 
+### Semaphore environment-array compatibility repair (2026-10-30)
+
+At reviewed Dev `338799e5e66a3a2260856258319200b3bbba25d3`, scoped
+publication task 10684 succeeded and readback proved one new controller with
+unchanged prior template configurations, source environment, repository and
+inventory. Environment task 10688 later failed its final binding assertion.
+Reconciliation found the dedicated environment created with empty JSON and
+plaintext configuration and exactly two encrypted AppRole inputs, but the
+selected template remained bound to the shared source environment. No retry,
+capability acceptance, or subsequent protected workflow is authorized by that
+partial result.
+
+The provisioner changes only legacy `environment_id` while copying the live
+`environment_ids` array unchanged. The pinned upstream model treats the array
+as authoritative and falls back to the scalar only when the array is absent
+([Template model](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/Template.go#L284-L290));
+the SQL update applies that rule before writing environment associations
+([store](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/sql/template.go#L150-L154)).
+Repair the shared provisioner to write and verify one consistent scalar/array
+binding. Preserve every other setting and survey, existing encrypted inputs,
+source/unrelated environments and templates, active-work refusal, and safe rerun
+behavior. Never discard the array from preservation checks or ignore a genuine
+configuration difference merely to pass the assertion.
+
+The shared seed client must also enforce the complete effective binding before
+staging credentials, when proving exclusive ownership/active use, and immediately
+before task submission. Retain legacy scalar-only compatibility; refuse empty,
+malformed, contradictory or multi-environment seed bindings and drift. Add
+realistic API fixtures where a supplied array wins over the scalar, plus
+secondary-group ownership and pre-submit drift regressions. Keep the existing
+isolated-environment metadata guards rather than replacing them with a second
+policy. Review, final-head CI and a guarded Dev merge precede a reconciled retry;
+the capability receipt still gates convergence of the other four workflows.
+
 ### General VM writers' environments (2026-10-30)
 
-Task 5.2a put the preflight and guard in front of the five general VM writers, while this
-section kept the generic templates on the shared environment. Together those made the writers
-fail on every production launch (tasks 9493, 10259, 10295). The shared environment holds the
-AppRole only as the plaintext extra vars the preflight refuses, and the writers log in only
-from `BAO_ROLE_ID`/`BAO_SECRET_ID`. Operator decision 2026-10-30: give the five writers
-isolated environments through the same reviewed provisioner. Neither the guard nor the shared
-environment changes. `test_restore_guard_environment.py` now requires every template that
-reaches the preflight to declare one.
+Task 5.2a put the preflight and guard in front of the five general VM writers,
+while the earlier version of the protected-wrapper section kept generic
+templates on the shared environment. Together those made the writers fail on
+every production launch (tasks 9493, 10259, 10295). The shared environment holds
+the AppRole only as the plaintext extra vars the preflight refuses, and the
+writers log in only from `BAO_ROLE_ID`/`BAO_SECRET_ID`. Operator decision
+2026-10-30: give the five writers isolated environments through the same
+reviewed provisioner. Neither the guard nor the shared environment changes.
+`test_restore_guard_environment.py` now requires every template that reaches the
+preflight to declare one.
 The `main`-bound copies need the same environments (`seed_variant=main`) before `dev` is
 promoted, because promotion brings them the guard.
 

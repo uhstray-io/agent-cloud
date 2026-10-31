@@ -1,5 +1,6 @@
 """Daily stored-byte sampling and the seven-day readiness gate fail closed."""
 
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -133,20 +134,20 @@ def test_history_requires_distinct_source_samples_across_seven_days():
 
 def test_history_excludes_carried_in_sample_from_window_evidence():
     now = 1_800_000_000
-    samples = [now - survey.RANGE_SECONDS - 12 * 60 * 60 + day * 86400 for day in range(9)]
+    samples = [now - survey.RANGE_SECONDS - 12 * 60 * 60 + day * 86400 for day in range(10)]
 
     receipt = survey.assess(_history(now, samples), now)
 
     assert receipt["status"] == "ready_for_separate_forecast_review"
-    assert receipt["history"]["source_samples"] == 8
-    assert receipt["history"]["source_span_seconds"] == 7 * 86400
+    assert receipt["history"]["source_samples"] == 9
+    assert receipt["history"]["source_span_seconds"] == 8 * 86400
     assert receipt["history"]["latest_sample_age_seconds"] == 12 * 60 * 60
-    assert receipt["source_diagnostics"]["canonical_source_events"] == 8
-    assert receipt["source_diagnostics"]["source_event_span_seconds"] == 7 * 86400
+    assert receipt["source_diagnostics"]["canonical_source_events"] == 9
+    assert receipt["source_diagnostics"]["source_event_span_seconds"] == 8 * 86400
     first_index = (samples[1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     last_index = (samples[-1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     assert all(
-        backend["source_samples"] == 8
+        backend["source_samples"] == 9
         and backend["first_bytes"] == 100 + first_index
         and backend["last_bytes"] == 100 + last_index
         for backend in receipt["backend_stored_bytes"].values()
@@ -160,6 +161,30 @@ def test_history_rejects_carried_in_sample_plus_only_seven_in_window_samples():
 
     with pytest.raises(survey.InsufficientHistory):
         survey.assess(_history(now, samples), now)
+
+
+def test_nine_day_query_admits_nine_daily_events_but_eight_day_slice_refuses_same_history():
+    now = 1_800_000_000
+    assert survey.RANGE_SECONDS == 9 * 86400
+    last_event = now - 12 * 60 * 60
+    offsets = [-691129, -604653, -518274, -431895, -345516, -259137, -172758, -86379, 0]
+    nine_day = _history(now, [last_event + offset for offset in offsets])
+    receipt = survey.assess(nine_day, now)
+    assert receipt["history"]["source_samples"] == 9
+    assert receipt["history"]["source_span_seconds"] == 691129
+
+    eight_day = copy.deepcopy(nine_day)
+    cutoff = now - 8 * 86400
+    for response in eight_day.values():
+        for series in response["data"]["result"]:
+            series["values"] = [point for point in series["values"] if int(point[0]) >= cutoff]
+    with pytest.raises(survey.InsufficientHistory) as error:
+        survey.assess(eight_day, now)
+    assert error.value.reason == "source_history_too_short"
+    diagnostics = survey.source_diagnostics(eight_day["source"])
+    assert diagnostics["canonical_source_events"] == 8
+    assert diagnostics["source_event_span_seconds"] == 604653
+    assert survey.MIN_HISTORY_SECONDS == 7 * 86400
 
 
 def test_history_rejects_a_stale_latest_capacity_sample():
@@ -519,7 +544,7 @@ def test_history_rejects_a_repeated_single_point_snapshot():
 
 def test_history_query_resolution_and_response_time_are_bounded(monkeypatch):
     assert survey.STEP_SECONDS == 300
-    assert survey.RANGE_SECONDS // survey.STEP_SECONDS + 1 == 2305
+    assert survey.RANGE_SECONDS // survey.STEP_SECONDS + 1 == 2593
     assert survey.MAX_RESPONSE_BYTES == 2_000_000
     assert survey.CURL_TIMEOUT_SECONDS == 15
     assert survey.QUERY_TIMEOUT_SECONDS == 20
