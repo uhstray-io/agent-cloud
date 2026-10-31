@@ -871,6 +871,137 @@ def test_default_off_source_transition_initializes_staged_helper_before_branch()
     assert "availability_source_helper" not in body
 
 
+def test_step_start_dispatch_preserves_source_review_and_availability_checkpoints(tmp_path):
+    script = (DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    main_call = '\nmain "$@"\n'
+    assert script.endswith(main_call)
+    # Execute the production function bodies verbatim, with only the script path
+    # fixed so the helper and deployment directory still resolve in this checkout.
+    function_source = script[:-len(main_call)].replace(
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        f'SCRIPT_DIR="{DEPLOY}"',
+        1,
+    )
+    functions_path = tmp_path / "deploy-functions.sh"
+    functions_path.write_text(function_source, encoding="utf-8")
+    events_path = tmp_path / "events.jsonl"
+    source_path = tmp_path / "source-receipt.json"
+    source_path.write_text('{"synthetic":"source review input"}\n', encoding="utf-8")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    python_stub = bindir / "python3"
+    python_real = shutil.which("python3")
+    assert python_real is not None
+    python_stub.write_text(
+        """#!/usr/bin/env bash
+set -eu
+if [[ "$1" == *summarize-o11y-scrape-baseline.py ]]; then
+  shift
+  if [[ "$1" == "--verify-availability-source" ]]; then
+    printf '{"event":"source"}\\n' >> "$DIAG_EVENTS"
+    if [[ "$DIAG_SCENARIO" == "source-invalid" ]]; then
+      echo '{"status":"unavailable","source":"unknown"}'
+      exit 2
+    fi
+    hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    printf '{"status":"observed","source":"alloy","container_identity_sha256":"%s"}\\n' "$hash"
+    exit 0
+  fi
+  if [[ "$1" == "--verify-availability-namespace" ]]; then
+    printf '{"event":"namespace","final_start":"%s"}\\n' "${O11Y_AVAILABILITY_FINAL_START:-}" >> "$DIAG_EVENTS"
+    if [[ "$DIAG_SCENARIO" == "enabled-final-failure" &&
+          "${O11Y_AVAILABILITY_FINAL_START:-}" == "true" ]]; then
+      exit 2
+    fi
+    exit 0
+  fi
+fi
+exec "__PYTHON_REAL__" "$@"
+""".replace("__PYTHON_REAL__", python_real),
+        encoding="utf-8",
+    )
+    python_stub.chmod(0o700)
+    wrapper = tmp_path / "run-step-start.sh"
+    wrapper.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+source "$DIAG_DEPLOY_FUNCTIONS"
+error() { printf 'ERROR: %s\\n' "$*" >&2; exit 97; }
+info() { :; }
+compose_up_if_changed() {
+  printf '%s\\n' '{"event":"compose_up_if_changed"}' >> "$DIAG_EVENTS"
+  if declare -F compose_staged_up >/dev/null; then compose_staged_up; fi
+}
+compose() { printf '%s\\n' '{"event":"compose"}' >> "$DIAG_EVENTS"; }
+step_start
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+
+    for scenario, availability in (
+        ("disabled-valid-source", "false"),
+        ("source-invalid", "false"),
+        ("enabled-valid-source", "true"),
+        ("enabled-final-failure", "true"),
+    ):
+        events_path.write_text("", encoding="utf-8")
+        env = os.environ.copy()
+        env.update({
+            "PATH": f"{bindir}:{env.get('PATH', '')}",
+            "DIAG_SCENARIO": scenario,
+            "DIAG_EVENTS": str(events_path),
+            "DIAG_DEPLOY_FUNCTIONS": str(functions_path),
+            "O11Y_AVAILABILITY_ENABLED": availability,
+            "O11Y_AVAILABILITY_SOURCE_FILE": str(source_path),
+            "LOCAL_MODE": "true",
+            "CONTAINER_ENGINE": "podman",
+        })
+        env.pop("COMPOSE_OVERLAYS", None)
+        result = subprocess.run(
+            ["bash", str(wrapper)], cwd=DEPLOY, env=env,
+            text=True, capture_output=True, timeout=10, check=False,
+        )
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        namespaces = [event for event in events if event["event"] == "namespace"]
+        sources = [event for event in events if event["event"] == "source"]
+        compose_calls = [event for event in events if event["event"] == "compose"]
+        if scenario == "disabled-valid-source":
+            assert result.returncode == 0
+            assert len(sources) == 1 and not namespaces and len(compose_calls) == 1
+            assert "O11Y_AVAILABILITY_PREAPPLY_SOURCE=alloy" in result.stdout
+            assert "O11Y_AVAILABILITY_PREAPPLY_CONTAINER_SHA256=" + "a" * 64 in result.stdout
+            assert re.search(r"O11Y_AVAILABILITY_PREAPPLY_EPOCH=[1-9][0-9]{8,}", result.stdout)
+        elif scenario == "source-invalid":
+            assert result.returncode == 97
+            assert len(sources) == 1 and not namespaces and not compose_calls
+        elif scenario == "enabled-valid-source":
+            assert result.returncode == 0
+            assert len(sources) == 1 and len(namespaces) == 3 and len(compose_calls) == 1
+            assert [event["final_start"] for event in namespaces] == ["", "true", ""]
+        else:
+            assert result.returncode == 97
+            assert len(sources) == 1 and len(namespaces) == 2 and not compose_calls
+            assert [event["final_start"] for event in namespaces] == ["", "true"]
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase_names = [play.get("name") for play in playbook]
+    assert phase_names.index("Phase 3: Verify o11y") > phase_names.index("Phase 2: Start o11y")
+    verify_phase = next(play for play in playbook if play.get("name") == "Phase 3: Verify o11y")
+    task_names = [task.get("name") for task in verify_phase["tasks"]]
+    assert "Read back the current Alloy self-metrics producer after lifecycle apply" in task_names
+    lifecycle_phase = next(play for play in playbook if play.get("name") == "Phase 2: Start o11y")
+
+    def nested_task_names(tasks):
+        for task in tasks:
+            yield task.get("name")
+            for key in ("block", "rescue", "always"):
+                nested = task.get(key)
+                if isinstance(nested, list):
+                    yield from nested_task_names(nested)
+
+    assert "Run deploy.sh (container lifecycle)" in nested_task_names(lifecycle_phase["tasks"])
+
+
 def test_candidate_hash_is_from_same_private_controller_renderer_not_installed_bytes():
     playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
     phase = next(play for play in playbook if play.get("name") == "Phase 1: Place repo + manage o11y secrets")

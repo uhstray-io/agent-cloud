@@ -117,7 +117,7 @@ recheck them immediately inside that lifecycle. Pod membership or an IP/path
 string alone SHALL NOT prove namespace identity. The availability overlay
 SHALL declare top-level `x-podman.in_pod=false`; loopback binding alone SHALL
 NOT count as isolation. Unknown, unstable, unreadable, conflicting, shared, or
-host-network identity; an effective published listener; or provider/process
+host-network identity; an effective published Alloy admin listener; or provider/process
 drift SHALL refuse before the handler is enabled. A failed privilege or
 inspection read SHALL remain unverified, never trigger a permission bypass.
 Pre-apply proof SHALL NOT require a future native sample; post-apply source
@@ -262,6 +262,45 @@ ownership labels. No bind mounts, named/shared volumes, host network, published
 ports, privilege, VM/daemon start, connection change or image deletion/prune is
 permitted. Failure/timeout cleanup SHALL remove only exact containers proven
 owned by this invocation, accounting for their anonymous storage.
+
+Ordinary deployment with availability disabled SHALL retain the staged Compose
+path whenever legacy self-metrics source review is required. Only the staged
+availability namespace invocation SHALL be conditional on literal
+`O11Y_AVAILABILITY_ENABLED=true`; unique current-source verification, strict
+receipt validation, pre-apply source/container hash/epoch and fresh post-apply
+producer proof SHALL remain mandatory for that source-reviewed path. Enabled
+availability SHALL retain initial, final pre-start and post-apply namespace
+checks, with final refusal before Compose execution.
+
+Effective-Compose validation SHALL permit the existing required Alloy OTLP
+publications to container ports `4317` and `4318`, including the reviewed
+configured host mapping. It SHALL refuse publication of the `12345` admin
+listener even through a different host port, use of host port `12345`, and
+malformed or ambiguous port data. Supported normalized mappings and narrow
+unambiguous short forms SHALL be validated without a broad parser rewrite;
+unsupported shapes SHALL remain refused. This compatibility correction SHALL
+preserve every other candidate/provider, namespace/network, command, image,
+mount, parser, producer, identity, freshness and work-budget gate. Existing OTLP
+ingress SHALL NOT count as an admin-listener publication or weaken enabled
+private-listener isolation. Synthetic source proof SHALL NOT establish an
+installed-provider result, real deployment or profile delivery.
+
+#### Scenario: Disabled availability retains staged source-reviewed deployment
+- **WHEN** availability is false and a source-review declaration is supplied to the actual shell lifecycle
+- **THEN** valid unique synthetic source evidence reaches staged mocked Compose without invoking namespace proof, while invalid source evidence refuses before Compose
+- **AND** pre-apply source/container-hash/epoch output and the existing fresh post-apply producer boundary remain required; disabled availability cannot bypass producer validation
+- **AND** executable regressions distinguish the unmodified failing dispatch from the correction without a real deploy
+
+#### Scenario: Enabled availability retains every namespace checkpoint
+- **WHEN** availability is literal true and source-reviewed lifecycle dispatch runs
+- **THEN** executable regression observes initial, final pre-start and post-apply namespace checks in order
+- **AND** a failed final check prevents Compose execution; enabled private-listener, topology, network and current-producer gates remain strict
+
+#### Scenario: Effective Compose retains OTLP without publishing the admin listener
+- **WHEN** the actual effective-Compose helper reads synthetic normalized base OTLP `4317`/`4318` publications or narrow supported unambiguous short forms in either availability mode
+- **THEN** those port representations pass the port contract while all remaining mode-specific candidate gates still apply
+- **AND** admin `12345` publication, including remapped publication, host port `12345`, malformed mappings/types/values and ambiguous short forms refuse
+- **AND** existing namespace/network/parser/current-producer regressions remain authoritative, with no installed-provider or runtime acceptance inferred
 
 #### Scenario: Native timestamp queries preserve families, identities, and raw sample times
 - **WHEN** the production builder's timestamp expressions are evaluated for the three self families and six health families across multiple identities

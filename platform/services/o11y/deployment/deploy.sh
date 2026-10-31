@@ -104,9 +104,11 @@ print(source, container_sha256)
       || error "Cannot record the source-transition apply boundary."
     printf 'O11Y_AVAILABILITY_PREAPPLY_EPOCH=%s\n' "$availability_preapply_epoch"
     compose_staged_up() {
-      if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_AVAILABILITY_FINAL_START=true \
-        python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
-        error "Availability final pre-start namespace and effective-compose proof is unverified."
+      if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
+        if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_AVAILABILITY_FINAL_START=true \
+          python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
+          error "Availability final pre-start namespace and effective-compose proof is unverified."
+        fi
       fi
       compose up -d --force-recreate --remove-orphans || return 1
     }
