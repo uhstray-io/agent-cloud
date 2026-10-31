@@ -524,7 +524,8 @@ class ScopedPublicationTests(unittest.TestCase):
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
         target = self.environments[1]
-        self.assertEqual(self.records[0], original | {"environment_id": target["id"], "environment_ids": [target["id"]]})
+        self.assertEqual(self.records[0],
+                         original | {"environment_id": target["id"], "environment_ids": [target["id"]]})
         writes = copy.deepcopy(self.writes)
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
