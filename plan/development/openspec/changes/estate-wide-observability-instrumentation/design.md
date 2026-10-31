@@ -1701,7 +1701,7 @@ not establish a fresh live producer receipt or representative baseline. Keep
 parent 1.3 and baseline, forecast, calibration, backup/restore, retention, and
 growth acceptance open.
 
-### Bounded native timestamp-query repair (2026-10-31; planned producer follow-up)
+### Bounded native timestamp-query repair (2026-10-31; source complete, runtime open)
 
 **Decision and scope.** Repair only the timestamp branch of
 `_availability_query_path` in
@@ -1711,7 +1711,8 @@ identity matcher. Apply `timestamp()` directly to that selector, restore its
 fixed `__name__` with `label_replace`, and join the branches with explicit
 `or on(__name__)`. Do not insert an intermediate expression before
 `timestamp()`: its value must be the raw source sample time, distinct from the
-later query evaluation time. Leave value-query construction unchanged.
+later query evaluation time. Leave value-query PromQL expressions unchanged;
+the following snapshot repair adds HTTP evaluation-time binding only.
 
 The sanitized read-only query proof for task 10809 records
 `duplicate_output_labelset` for the original grouped timestamp query. The
@@ -1752,9 +1753,9 @@ expression-test input on stdin and an empty `rule_files` list:
 ```
 
 Include unique invocation-owned container names and ownership labels. The
-completed read-only CI-routing review verified source support for this stdin
-shape; the exact container invocation has not been executed. Its successful
-execution remains an unchecked implementation gate, not a planning claim.
+original read-only CI-routing review established source support only. The
+subsequent PR #801 source closure below records successful execution of the
+exact bounded invocation; it does not establish production acceptance.
 Use supported Docker in CI and prefer usable existing Podman locally. Verify
 engine readiness and fail rather than skip when the engine, image or evaluator
 is unusable; do not fall back after an evaluator failure. Document in
@@ -1786,15 +1787,14 @@ do not count as defect detection. Preserve the existing StartedAt Go-template
 regression and all parser, identity, required-metric, freshness and API-budget
 regressions in `platform/tests/test_o11y_scrape_baseline.py`.
 
-**Later source ownership and validation.** The implementation owns exactly
+**Historical PR #801 source ownership and validation.** That implementation owned exactly
 eight files: this design, `tasks.md`,
 `specs/platform/estate-instrumentation/spec.md`, the existing helper and
-baseline Python test file, the new BATS entry point and Python runner, and
-`CONTRIBUTING.md`. No generated fixture is committed. This planning invocation
-edits only the three existing artifacts. The later implementation must pass
-focused Python regressions, the native BATS entry point, repository-required
-checks, independent review, final-head CI and the exact-head Dev merge guard.
-Source/test/point-query evidence cannot close parent runtime acceptance.
+baseline Python test file, the BATS entry point and Python runner, and
+`CONTRIBUTING.md`. No generated fixture was committed. The six-file ownership
+for the next snapshot repair is defined below; it does not reopen this old
+eight-file scope. Source/test/point-query evidence cannot close parent runtime
+acceptance.
 
 **Source-distinct private receipt accounting.** The supplied runtime record
 reports PR #800 merged as `8f39db502e91bc22eeed4189402e6d9d78949924`
@@ -1822,3 +1822,120 @@ waived and package-source choice remains pending; this repair adds no physical
 gate and changes no PBS artifact scope. Publish only sanitized task IDs, SHAs
 and outcomes, never private environment/template/input IDs, addresses,
 selectors, topology or protected producer output.
+
+### Native query evaluation snapshot and live DETAIL clocks (2026-10-31; accepted plan)
+
+**PR #801 source closure, separate from runtime refusal.** The supplied verified
+source record closes child 1.3a.4 only: feature
+`a0d2e245ee5bf0041efd832b664bffe74a853fe0` merged to Dev as
+`c2e280a727ad40965e1c32ab20f7b7cff80e3ca4` after independent exact-head
+Sol Medium approval, addressed CodeRabbit nitpicks, and passing read-only and
+merge guard modes. Normal full prepush passed 9,448 Python tests and 376
+subtests with zero local Python skips, plus 1,185 BATS tests with one unrelated
+skip. Final CI `41181649042` attempt 2 passed all 13 executed jobs with three
+path-proven Go skips. Attempt 1 reached the 30-minute Python core limit and
+was cancelled before a pytest summary; unchanged full attempt 2 passed, with
+core reporting 6,883 passed, six existing environment skips and 337 subtests
+in a 17m23s job. Tests, timeouts, workflow and merge policy were not relaxed.
+The native evaluator positive and both semantic mutant kills are source
+evidence; they do not establish a current producer or baseline acceptance.
+
+The supplied fresh read-only task 10853 at that controller merge reports
+healthy/running Alloy metadata, zero restarts and no OOM. Its receiver checkout
+HEAD receipt is checkout identity only, not loaded-config or image proof.
+Task 10855 was operational SUCCESS but its native source projection was
+`source=unknown`, `status=unavailable`, `reason=native_samples_stale`.
+The controlled read-only timing proof reproduces a fresh sample becoming
+future-to-an-earlier-bound when evaluation moves; it does not establish task
+10855's exact conditional cause, all required families, body availability or
+producer acceptance. Earlier body-family EMPTY observations and the Alloy
+ExtraMetrics constructor/reload hypothesis remain separate, unresolved private
+observations, not remedies. Publish only sanitized task IDs, SHAs and fixed
+outcomes, never raw metrics, private paths, addresses, topology, prompt bodies
+or protected output. No representative baseline, alert, backup/restore,
+capacity, calibration, forecast, retention or growth acceptance follows.
+
+**T: one receiver-owned Prometheus evaluation snapshot.** Resolve and validate
+one positive non-boolean integer receiver UTC epoch T per current-source
+invocation, before its related sample reads. Reuse T in EVERY native and legacy
+value/raw-timestamp HTTP query, including the composed native self-only and
+health stages. Each production-built URL carries exactly one canonical `time`
+parameter encoded from T. No builder or per-request default may recapture time;
+no extra clock API call or public launch clock override is introduced. Preserve
+the PromQL expressions, including the per-family direct `timestamp(selector)`,
+fixed-name restoration and `or on(__name__)`. Response evaluation timestamps
+never substitute for raw timestamp values. Native raw sample acceptance stays
+`max(process_start, preapply_bound, T - freshness) < raw_sample_time <= T`;
+legacy retains its existing applicable lower bounds and strict future bound.
+Full identities, uniqueness, all required families, loaded `extra_metrics=true`
+and positive body evidence remain authoritative; no optional body or native
+legacy exception is permitted. Clock skew is not repaired by tolerance.
+
+**D0/D: bounded live DETAIL observation, independent of T.** The existing live
+DETAIL batch is not historical Prometheus evaluation. Capture a finite positive
+fractional receiver UTC entry bound D0 immediately before that batch and a
+finite positive fractional completion bound D after it, without truncating or
+rounding either to integer seconds. Reject booleans, invalid types, nonfinite
+or nonpositive clock observations and D < D0; retain the existing strict
+monotonic deadline and aggregate byte bounds. Validate DETAIL `last_scrape`
+against D using the unchanged freshness widths and applicable process/preapply
+lower bounds: later than those lower bounds and D minus the applicable
+freshness, and no later than D. Do not require D0 to equal T, use D to refresh T,
+or compare D against T as the within-batch regression test. Internal clock seams
+may be injected/patched for deterministic tests; no launch override, public
+schema, tolerance or window-width change is allowed. These are two observation
+domains, not an atomic configuration/sample transaction. This bounded handling
+addresses the source-derived DETAIL timing race without asserting that it
+occurred in task 10855. Legacy active-target and loaded-limit checks remain
+strict; only its related sample URLs gain T binding.
+
+**Exact ownership and work bounds.** The later source change owns exactly SIX
+existing files: this `design.md`, `tasks.md`,
+`specs/platform/estate-instrumentation/spec.md`,
+`platform/playbooks/files/summarize-o11y-scrape-baseline.py`,
+`platform/tests/test_o11y_scrape_baseline.py`, and
+`platform/tests/o11y_native_promql_runner.py`. Keep the existing BATS entry
+point, `CONTRIBUTING.md`, playbooks, workflow, merge guard/fixtures, Compose,
+dependencies and unrelated files byte-identical. Return any demonstrated
+necessary interface adjustment to root before expanding ownership. Preserve
+at most six sample API calls: native self-only two, native health/self four,
+composed current-source six, and the existing legacy pair; keep the 4,096 path
+cap, aggregate bytes and shared deadlines. Measure actual maximum encoded
+paths including `time` during implementation; publish no estimated length as
+an observed result. Add no collector retry, extra API, receiver restart,
+deployment or upgrade, or new native network/port/mount/image/engine dependency.
+
+**Meaningful RED/GREEN and retained gates.** The delayed fake API must select
+from fixed histories according to ACTUAL production request URLs through the
+builder, batch and collector. Missing HTTP time must select moving-time data
+and produce current-code RED; corrected T must select matching historical
+values and raw times despite delay and newer arrivals. Cover native self-only,
+health/self and legacy paths, all related queries sharing T, and exactly one
+canonical HTTP time. Future-to-T, genuinely stale raw times despite later
+arrivals, process/preapply equality, missing/zero body, missing families,
+malformed/duplicate/wrong identity, aggregate bytes, oversized paths and
+deadline exhaustion remain refusers. A fresh response evaluation timestamp
+with stale raw time must still refuse.
+
+Exercise the actual DETAIL reader/parser/validator with valid fractional scrape
+time between D0 and D, requiring meaningful current-code RED and corrected
+GREEN. Future-to-D, stale, process/preapply equality, D < D0 and deadline cases
+must refuse; validate malformed/nonfinite/type-invalid D0/D observations too.
+Preserve the native Promtool positive plus grouped-timestamp and plain-`or`
+semantic mutant kills, the 20-series fixture and six identity decoys. The
+existing native runner needs URL-context coverage for time only; keep its
+expression evaluator and lifecycle unchanged. Retain StartedAt, parser,
+identity, required-body, freshness, work-budget and caller regressions.
+
+Run focused baseline/expected-target/budget Python checks, the existing native
+BATS entry point, repository-required checks, local unscoped strict OpenSpec
+validation and diff checks. Obtain one independent review, fix findings,
+require green final-head CI, and run both exact-head Dev guard modes before a
+merge commit. Root retains integration/review ownership and the existing model
+policy. This invocation updates planning only; root separately invokes
+apply/Luna High. Later existing Dev-bound read-only runtime verification is
+already authorized by the end-to-end user request, subject to actual gates;
+it does not require a new routine approval question. No production deployment
+is part of this source repair. Keep owning parent runtime gates open. PBS
+package-channel choice remains pending and independent; physical origin is
+waived, with no new physical gate or PBS scope.
