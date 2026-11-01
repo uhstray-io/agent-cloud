@@ -7,7 +7,10 @@ overlap — OPA never stores secrets or executes actions; it returns decisions.
 
 ## Query contract
 
-Agents query OPA over HTTP before executing a service action:
+Agents query OPA over HTTP before executing a service action. That check binds only the agent
+that asks: Semaphore itself never asks OPA, so a launch is not gated by OPA unless its launcher
+is (since 2026-10-31 skynet holds no launch rights; the planned launch gate asks OPA server-side,
+change `skynet-launch-containment`):
 
 ```text
 POST http://opa:8181/v1/data/agentcloud/decision
