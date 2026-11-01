@@ -10,6 +10,8 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -163,6 +165,127 @@ def run_sync(tmp_path, url, inventory, *options, token=TOKEN, path=None, env_ove
          "--project", "1", *options],
         input=token + "\n", text=True, capture_output=True, env=env, cwd=ROOT, check=False,
     )
+
+
+def _deadline_driver(tmp_path, child_source, options):
+    bindir = tmp_path / "deadline-bin"
+    bindir.mkdir()
+    child = bindir / "ansible-playbook"
+    child.write_text(child_source)
+    child.chmod(0o755)
+    source = tmp_path / "deadline inventory.yml"
+    source.write_text(VALID)
+    driver = tmp_path / "deadline-driver.py"
+    driver.write_text(
+        "import importlib.util, io, sys\n"
+        f"script = {str(SCRIPT)!r}\n"
+        "spec = importlib.util.spec_from_file_location('sync_inventory_deadline', script)\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "module.CHILD_TIMEOUT_SECONDS = 0.25\n"
+        f"sys.argv = [script, '--url', 'http://127.0.0.1:9', '--inventory', {str(source)!r}, *{options!r}]\n"
+        f"sys.stdin = io.StringIO({(TOKEN + chr(10))!r})\n"
+        "raise SystemExit(module.main())\n"
+    )
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
+    env["ANSIBLE_LOCAL_TEMP"] = str(tmp_path / "deadline-local")
+    env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "deadline-remote")
+    Path(env["ANSIBLE_LOCAL_TEMP"]).mkdir()
+    Path(env["ANSIBLE_REMOTE_TEMP"]).mkdir()
+    return driver, env
+
+
+@contextmanager
+def _run_deadline_driver(tmp_path, driver, env):
+    process = subprocess.Popen(
+        [sys.executable, str(driver)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=ROOT,
+        start_new_session=True,
+    )
+    try:
+        yield process.communicate(timeout=4), process.returncode
+    finally:
+        # Kill the owned session even if its leader already exited but a descendant remains.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if process.poll() is None:
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        for pidfile in tmp_path.glob("owned-*.pid"):
+            try:
+                os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError):
+                pass
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [([], "no write was requested"), (["--apply"], "write outcome is uncertain")],
+)
+def test_child_deadline_returns_fixed_safe_preview_or_uncertain_apply(
+    tmp_path, options, expected,
+):
+    pidfile = tmp_path / "owned-child.pid"
+    driver, env = _deadline_driver(
+        tmp_path,
+        "#!/usr/bin/env python3\n"
+        "import os,sys,time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
+        f"print({(PRIVATE + ' ' + TOKEN)!r}, file=sys.stderr, flush=True)\n"
+        "time.sleep(60)\n",
+        options,
+    )
+    with _run_deadline_driver(tmp_path, driver, env) as ((stdout, stderr), returncode):
+        assert returncode == 1
+        assert stdout == ""
+        assert expected in stderr
+        assert TOKEN not in stdout + stderr and PRIVATE not in stdout + stderr
+
+
+def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
+    child_pidfile = tmp_path / "owned-child.pid"
+    grandchild_pidfile = tmp_path / "owned-grandchild.pid"
+    late_marker = tmp_path / "grandchild-survived-deadline"
+    grandchild = (
+        "import os,time\n"
+        f"open({str(grandchild_pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
+        "time.sleep(1)\n"
+        f"open({str(late_marker)!r}, 'w').write('survived')\n"
+        "time.sleep(60)\n"
+    )
+    driver, env = _deadline_driver(
+        tmp_path,
+        "#!/usr/bin/env python3\n"
+        "import os,subprocess,sys,time\n"
+        f"open({str(child_pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
+        "time.sleep(60)\n",
+        ["--apply"],
+    )
+    with _run_deadline_driver(tmp_path, driver, env) as ((stdout, stderr), returncode):
+        assert returncode == 1
+        assert "write outcome is uncertain" in stderr
+        assert stdout == ""
+        assert TOKEN not in stdout + stderr and PRIVATE not in stdout + stderr
+        assert child_pidfile.exists() and grandchild_pidfile.exists()
+        time.sleep(1.2)
+        assert not late_marker.exists()
 
 
 def assert_clean(result):
@@ -401,7 +524,7 @@ def test_frontend_refuses_tty_before_reading_token(monkeypatch, capsys):
     )
     monkeypatch.setattr(module.sys, "stdin", TtyInput())
     monkeypatch.setattr(
-        module.subprocess, "run",
+        module.subprocess, "Popen",
         lambda *_args, **_kwargs: pytest.fail("child must not start"),
     )
     assert module.main() == 2

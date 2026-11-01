@@ -226,9 +226,10 @@ required to update a differing record. The token is read from stdin and passed
 to Ansible as JSON on child stdin. The sync child disables privilege escalation
 and debug logging, removes inherited log destinations and callback overrides,
 pins the repository config and redacting callback, enables supported module
-pipelining, and disables kept remote files. Child output is captured and only a
-fixed outcome is printed. The script never creates records or changes key
-bindings.
+pipelining, and disables kept remote files. The local Ansible child has a fixed
+five-minute deadline; on timeout, apply reports an uncertain write outcome for
+read-only reconciliation. Child output is captured and only a fixed outcome is
+printed. The script never creates records or changes key bindings.
 
 ```sh
 python3 scripts/semaphore-sync-inventory.py \

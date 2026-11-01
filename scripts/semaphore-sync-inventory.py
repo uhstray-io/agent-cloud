@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK = ROOT / "platform" / "semaphore" / "sync-inventory.yml"
 DIFF_SUMMARY = "Validated inventory differs; the existing record will be updated."
 MATCH_SUMMARY = "Validated inventory already matches; no write is needed."
+CHILD_TIMEOUT_SECONDS = 300
+CHILD_CLEANUP_TIMEOUT_SECONDS = 5
 
 
 def ansible_child_environment() -> dict[str, str]:
@@ -28,6 +31,38 @@ def ansible_child_environment() -> dict[str, str]:
     child_env["ANSIBLE_PIPELINING"] = "True"
     child_env["ANSIBLE_KEEP_REMOTE_FILES"] = "False"
     return child_env
+
+
+def stop_child_group(child: subprocess.Popen[bytes]) -> None:
+    """Stop the owned local child session and reap its direct child within a bound."""
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        try:
+            child.kill()
+        except OSError:
+            pass
+
+    # Descendants may inherit these pipes. Closing our ends avoids an unbounded drain.
+    for stream in (child.stdin, child.stdout, child.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+    try:
+        child.wait(timeout=CHILD_CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            child.kill()
+        except OSError:
+            pass
+        try:
+            child.wait(timeout=CHILD_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def main() -> int:
@@ -75,20 +110,47 @@ def main() -> int:
         argv.append("--check")
     child_env = ansible_child_environment()
     try:
-        result = subprocess.run(
+        child = subprocess.Popen(
             argv,
             cwd=ROOT,
             env=child_env,
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            check=False,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError:
         print("Unable to start the inventory synchronization play; it did not start.", file=sys.stderr)
         return 1
 
-    if result.returncode != 0:
+    try:
+        stdout, _stderr = child.communicate(
+            input=json.dumps(payload).encode(), timeout=CHILD_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        stop_child_group(child)
+        if not args.apply:
+            print("Inventory check exceeded its fixed deadline; no write was requested.", file=sys.stderr)
+        else:
+            print(
+                "Inventory synchronization exceeded its fixed deadline. The write outcome is uncertain; "
+                "reconcile the existing record with read-only access before any retry.",
+                file=sys.stderr,
+            )
+        return 1
+    except OSError:
+        stop_child_group(child)
+        if not args.apply:
+            print("Inventory check failed; no write was requested.", file=sys.stderr)
+        else:
+            print(
+                "Inventory synchronization did not complete. The write outcome is uncertain; "
+                "reconcile the existing record with read-only access before any retry.",
+                file=sys.stderr,
+            )
+        return 1
+
+    if child.returncode != 0:
         if not args.apply:
             print("Inventory check failed; no write was requested.", file=sys.stderr)
             return 1
@@ -99,13 +161,13 @@ def main() -> int:
         )
         return 1
 
-    if DIFF_SUMMARY in result.stdout:
+    if DIFF_SUMMARY.encode() in stdout:
         outcome = (
             "Inventory check completed; the existing record differs."
             if not args.apply
             else "Inventory synchronization completed; updated content was verified."
         )
-    elif MATCH_SUMMARY in result.stdout:
+    elif MATCH_SUMMARY.encode() in stdout:
         outcome = (
             "Inventory check completed; the existing record already matches."
             if not args.apply
