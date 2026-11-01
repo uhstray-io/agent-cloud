@@ -17,9 +17,10 @@ PARTITIONED_WORKFLOW_BLOB_SHA = "a4bd0d3db1de56fb2d7e0cf53fbbd879490838a0"
 AGW_PARTITIONED_WORKFLOW_BLOB_SHA = "0756135a07f33f103b1ea4b4bdd44f03e9af31a8"
 NODE_PARTITIONED_WORKFLOW_BLOB_SHA = "159efa1d6d6e2048a0d2cd84f8f185a92580a232"
 CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA = "ccd27624f66f4923bacea51976f708fa4b870a33"
+O11Y_PARTITIONED_WORKFLOW_BLOB_SHA = "394df64d123396dc2d73e9cc840b19adf491ac0b"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
-    "Python Playbook Safety", "Python Agentgateway", "Node pi provider",
+    "Python Playbook Safety", "Python Agentgateway", "Python o11y", "Node pi provider",
     "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
     "Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)", "Rust (console)",
 }
@@ -138,6 +139,7 @@ def required_jobs(files):
     return {
         "Detect changes": True, "Static Analysis": True, "Security Scan": True,
         "Python core": True, "Python Playbook Safety": True, "Python Agentgateway": True,
+        "Python o11y": True,
         "Node pi provider": True, "Python Semaphore": True, "Python NetBox": True,
         "Bash Tests": True, "Rego Tests": True, "Unit Tests": True, "Rust (console)": True,
         "Go lint (uhhcraft)": go, "Go test (uhhcraft)": go,
@@ -184,7 +186,7 @@ def workflow_bytes(api, commit_sha):
     return source, blob_sha
 
 
-def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False):
+def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, o11y=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -196,14 +198,16 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         "test": "Unit Tests", "go-lint": "Go lint (uhhcraft)",
         "go-test": "Go test (uhhcraft)", "go-build": "Go build (uhhcraft image)",
     }
-    if partitioned or agw or node or console:
+    if partitioned or agw or node or console or o11y:
         expected["python-playbook-safety"] = "Python Playbook Safety"
-    if agw or node or console:
+    if agw or node or console or o11y:
         expected["python-agentgateway"] = "Python Agentgateway"
-    if node or console:
+    if node or console or o11y:
         expected["node-pi-provider"] = "Node pi provider"
-    if console:
+    if console or o11y:
         expected["rust-console"] = "Rust (console)"
+    if o11y:
+        expected["python-o11y"] = "Python o11y"
     jobs = {}
     current = None
     in_jobs = False
@@ -342,11 +346,28 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Node pi provider partition may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == O11Y_PARTITIONED_WORKFLOW_BLOB_SHA:
+            check_workflow_policy(base, console=True)
+            check_workflow_policy(candidate, o11y=True)
+            if base == candidate:
+                raise Refusal("Rust console partition must transition to the exact Python o11y partition blob")
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed Rust console partition")
         check_workflow_policy(base, console=True)
         if base != candidate or workflow_records:
             raise Refusal("Rust console partition may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == O11Y_PARTITIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != O11Y_PARTITIONED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed Python o11y partition")
+        check_workflow_policy(base, o11y=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Python o11y partition may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
