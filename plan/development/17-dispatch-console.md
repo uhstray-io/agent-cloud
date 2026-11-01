@@ -214,6 +214,13 @@ run, step and owning role; every item links its Semaphore receipt.
 **Acceptance:** a request produces a plan with no side effects until approval; an OPA deny is
 shown with its rule; an approved plan runs only named Semaphore templates.
 
+> **2026-10-31 note on Phase 4.** Phase 4 is not built and waits on OPA and skynet in production (D29).
+> "All OPA-gated" above is the Phase 4 requirement, not current behaviour. Today skynet's own client asks
+> OPA before its launches, Semaphore does not ask OPA, and skynet can no longer launch (svc-skynet is
+> `guest`). A console-initiated launch will go through the planned launch gate (OpenSpec change
+> `skynet-launch-containment`), which reserves a caller slot for the console with no agent identities
+> until Phase 4.
+
 ### Phase 5 — Governance pages
 
 - Access (scoped roles, add user via blueprint), Secrets (metadata only, rotation), Policy

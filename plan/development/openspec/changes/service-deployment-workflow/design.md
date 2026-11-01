@@ -63,7 +63,10 @@ Verified on 2026-09-22:
   `db/Task.go:166-169`) and the runner applies it unconditionally. Any caller with an API
   token and run rights can run any branch that exists on the remote, feature branches
   included. For agents, OPA's branch rule (task 4.5) is therefore the only branch control;
-  recorded as `docs/MISTAKES.md` 1.9.
+  recorded as `docs/MISTAKES.md` 1.9. 2026-10-31: the branch rule exists in `agent_actions.rego`, but
+  it binds only a caller that asks OPA. skynet's client asks; Semaphore does not, so a launch made by a
+  `task_runner` outside skynet is not checked by OPA until the planned launch gate (OpenSpec change
+  `skynet-launch-containment`) lands.
 - **Semaphore sees `main` and `dev` only**, through two repository records; `dev_variant:
   true` is set on 35 templates in `templates.yml`, each generating a `(Dev)` twin. Local-dev
   has its own controller and `templates-local.yml` bound to the working tree.
@@ -283,6 +286,9 @@ what. The current model encodes the second one by duplicating 35 templates.
   The flag lets a caller name ANY pushed branch, so OPA's branch rule is what keeps agents
   on `main` or `dev`. The twins go after one live `dev` launch by branch confirms it; until
   then both coexist.
+  2026-10-31: the "Branch at launch" row above keeps its decision text. The OPA branch check it relies on
+  runs only for a caller that asks OPA. skynet's client does; Semaphore does not. The planned launch gate
+  (OpenSpec change `skynet-launch-containment`) would be the server-side check.
 
 ### Thread G: local NetBox, discovery on local-dev only
 

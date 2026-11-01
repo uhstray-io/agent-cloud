@@ -152,7 +152,7 @@ the service; the network path itself is in the companion document. The runtime c
 | OPA | Agent-action authorization (Rego) | Guardrail | Podman | None in Phase 1 (decisions, not secrets) | LIVE-LOCAL [17] | `opa/deployment/context/architecture.md` |
 | GitHub runners | Self-hosted CI for private repos | Automation | Host service; jobs in rootless podman | None (outbound only) | LIVE, two hosts [18] | `github-runner/CLAUDE.md` |
 | n8n | Workflow automation, queue mode | Automation | Rootless podman, 4 containers | Authentik forward_auth + n8n owner login | LIVE since 2026-09-02 [19] | `n8n/deployment/README.md` |
-| skynet | Orchestration API: runs the onboarding workflow, asks OPA, calls the model through agentgateway, runs Ansible through Semaphore | AI | Podman, API + its own Postgres | agentgateway key + skynet bearer | BUILT; no production route [20] | `skynet/deployment/CLAUDE.md` |
+| skynet | Orchestration API: runs the onboarding workflow, asks OPA, calls the model through agentgateway. Its launches through Semaphore are refused since svc-skynet became `guest` on 2026-10-31; the planned launch gate will carry them | AI | Podman, API + its own Postgres | agentgateway key + skynet bearer | BUILT; no production route; launches refused [20] | `skynet/deployment/CLAUDE.md` |
 | Dispatch Console | Operator administration UI (Rust) | Operator app | Podman, image built on the host | Native OIDC | BUILT; no production run recorded [21] | `console/deployment/CLAUDE.md` |
 | honcho | Memory API for team memory | Auxiliary | Rootless podman, 4 containers | JWT on `/v3`; Authentik forward_auth on `/docs` | LIVE [22] | `honcho/deployment/CLAUDE.md` |
 | tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | RETIRING: retired 2026-10-23, replaced by Plane [23] | `tududi/deployment/CLAUDE.md` |
@@ -335,14 +335,18 @@ flowchart LR
 
 Notable edges, each recorded where it lives:
 
-- **skynet to Semaphore.** skynet never runs Ansible itself; it launches templates, so every action
-  it proposes is executed by the automation layer [20].
+- **skynet to Semaphore.** skynet never runs Ansible itself. It launched templates until 2026-10-31, when
+  svc-skynet became `guest`; since then skynet launches nothing [20]. skynet's own client asks OPA before
+  each launch it makes, and Semaphore does not ask OPA. The launch gate that will ask OPA server-side is
+  planned (OpenSpec change `skynet-launch-containment`).
 - **agentgateway to OpenRouter.** A model declared with `provider: openrouter` is served through the
   gateway with a key only the gateway holds; it is optional and absent unless declared [16].
 - **n8n to tududi and GitHub.** The two-way task and issue sync runs as n8n workflows; it ends with
   tududi's teardown in Plane's final phase [23][39].
 - **Semaphore to NetBox.** A device creation proposed by skynet and allowed by OPA is executed by
-  the `Create NetBox Device` playbook with a scoped NetBox token [3].
+  the `Create NetBox Device` playbook with a scoped NetBox token [3]. The OPA check is the one skynet's
+  own client makes; Semaphore does not make it. skynet cannot currently launch this playbook, because
+  svc-skynet is `guest` (since 2026-10-31).
 
 ### 7. The AI path: propose, validate, execute
 
@@ -375,6 +379,9 @@ sequenceDiagram
 The four agent roles that may act are infrastructure, security, observability and service, each an
 OPA identity; destructive actions also need `human_approved` [40]. In production this path is not
 connected yet: skynet has no production route and the WisAI-to-skynet migration is PLANNED [20][41].
+The OPA decision in the diagram is the one skynet's own client makes; Semaphore does not ask OPA. skynet's
+launch step is refused while svc-skynet is `guest` (since 2026-10-31). The server-side gate that will ask
+OPA before each agent launch is planned in OpenSpec change `skynet-launch-containment`.
 
 ### 8. The service deployment workflow
 
@@ -585,7 +592,8 @@ These checks let a reader confirm the catalog without trusting the prose.
   per-job containerisation is not an enforced control, so nothing sensitive may sit on a runner
   host [18].
 - **Destructive operations are double-gated.** Every Clean Deploy requires `confirm_reset` naming
-  the target host, and destructive agent proposals need `human_approved` in OPA [3][40].
+  the target host, and destructive agent proposals need `human_approved` in OPA [3][40]. OPA decides
+  that only when a caller asks it: skynet's client does, Semaphore does not (see section 7).
 
 ## Where older documents disagree
 
