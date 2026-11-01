@@ -81,3 +81,90 @@
 - name: "Compose entrypoint"
   ansible.builtin.debug:
     msg: "Using: {{ _compose_check.stdout | trim }}"
+
+# ── Opt-in: an exact podman-compose release (Linux) ──────────────────────────
+# Ubuntu 24.04's apt podman-compose is 1.0.6, which cannot read the `!override` / `!reset`
+# merge tags a service's overlays may use (Plane's do; verified on the Plane VM 2026-10-31).
+# A caller that needs a newer release sets `podman_compose_version`; nothing changes for any
+# other host. The release's wheel is installed by hash into its own venv under
+# /opt/podman-compose/<version> and linked from /usr/local/bin, which precedes apt's /usr/bin
+# on PATH, so common.sh:detect_runtime picks it. Its two runtime dependencies (PyYAML,
+# python-dotenv) come from apt, seen through --system-site-packages, so PyPI supplies one
+# artifact only and that artifact is pinned by sha256.
+- name: "Pinned podman-compose release"
+  when:
+    - podman_compose_version is defined
+    - ansible_system == 'Linux'
+    # Local-dev runs inside the Semaphore container (no sudo, no apt), whose own composer is used.
+    - not (local_mode | default(false) | bool)
+  vars:
+    # One entry per release a caller may ask for: version -> the wheel's sha256 on PyPI.
+    _podman_compose_wheels:
+      "1.6.0": "98e48af25d44c10ecef948163bfcca002e32aa8bbb7e66593fbd4faff7270c30"
+    _pc_dir: "/opt/podman-compose/{{ podman_compose_version }}"
+  block:
+    - name: "Refuse a podman-compose release without a pinned wheel hash"
+      ansible.builtin.assert:
+        that: podman_compose_version | string in _podman_compose_wheels
+        fail_msg: >-
+          podman_compose_version {{ podman_compose_version }} has no pinned wheel sha256 in
+          tasks/install-podman-compose.yml; add it before asking for it.
+        quiet: true
+
+    - name: "Install the venv tooling and podman-compose's runtime dependencies (apt)"
+      ansible.builtin.apt:
+        name: [python3-venv, python3-yaml, python3-dotenv]
+        state: present
+        update_cache: true
+      become: true
+
+    - name: "Create the release's venv (sees apt's PyYAML and python-dotenv)"
+      ansible.builtin.command:
+        argv: [python3, -m, venv, --system-site-packages, "{{ _pc_dir }}"]
+        creates: "{{ _pc_dir }}/bin/python"
+      become: true
+
+    - name: "Write the hash-pinned requirement"
+      ansible.builtin.copy:
+        dest: "{{ _pc_dir }}/requirements.txt"
+        content: |
+          podman-compose=={{ podman_compose_version }} --hash=sha256:{{ _podman_compose_wheels[podman_compose_version | string] }}
+        mode: "0644"
+      become: true
+
+    - name: "Install the release by hash, without dependencies"
+      ansible.builtin.command:
+        argv:
+          - "{{ _pc_dir }}/bin/pip"
+          - install
+          - --no-deps
+          - "--only-binary=:all:"
+          - --require-hashes
+          - -r
+          - "{{ _pc_dir }}/requirements.txt"
+        creates: "{{ _pc_dir }}/bin/podman-compose"
+      become: true
+
+    - name: "Link it ahead of apt's podman-compose"
+      ansible.builtin.file:
+        src: "{{ _pc_dir }}/bin/podman-compose"
+        dest: /usr/local/bin/podman-compose
+        state: link
+        force: true
+      become: true
+
+    - name: "Read back the podman-compose on PATH"
+      ansible.builtin.command: podman-compose --version
+      register: _pc_version
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: "The pinned release is the one on PATH"
+      ansible.builtin.assert:
+        that: podman_compose_version | string in _pc_version.stdout
+        fail_msg: >-
+          expected podman-compose {{ podman_compose_version }} on PATH, found:
+          {{ (_pc_version.stdout_lines | default(['nothing'])) | last }}
+        quiet: true
+      when: not ansible_check_mode
