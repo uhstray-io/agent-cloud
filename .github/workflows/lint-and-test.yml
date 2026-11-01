@@ -233,8 +233,8 @@ jobs:
           ansible-galaxy collection install -r collections/requirements.yml
 
       # Keep pytest's configured root testpaths active so newly registered suites
-      # remain covered. Deselect only the bounded NetBox, Semaphore, playbook safety, and
-      # agentgateway slices; each has its own job below.
+      # remain covered. Deselect only the bounded NetBox, Semaphore, playbook safety,
+      # agentgateway, and o11y slices; each has its own job below.
       #
       # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
       # subprocesses, so they spread across cores instead of queueing behind each other.
@@ -272,6 +272,47 @@ jobs:
           --deselect=platform/tests/test_agw_mcp_verify.py
           --deselect=platform/tests/test_agw_openrouter.py
           --deselect=platform/tests/test_agw_stream_usage.py
+          --deselect=platform/tests/test_o11y_backup_artifact.py
+          --deselect=platform/tests/test_o11y_backup_job.py
+          --deselect=platform/tests/test_o11y_budget_daily_ingestion.py
+          --deselect=platform/tests/test_o11y_budget_inference_peak.py
+          --deselect=platform/tests/test_o11y_budget_receipt_overrides.py
+          --deselect=platform/tests/test_o11y_canary_gateway_tls.py
+          --deselect=platform/tests/test_o11y_capacity_history.py
+          --deselect=platform/tests/test_o11y_coverage_census.py
+          --deselect=platform/tests/test_o11y_coverage_contract.py
+          --deselect=platform/tests/test_o11y_coverage_refresh.py
+          --deselect=platform/tests/test_o11y_coverage_semaphore.py
+          --deselect=platform/tests/test_o11y_dashboard_asserts.py
+          --deselect=platform/tests/test_o11y_expected_metrics_targets.py
+          --deselect=platform/tests/test_o11y_fault_drill.py
+          --deselect=platform/tests/test_o11y_grouped_alert_proof.py
+          --deselect=platform/tests/test_o11y_host_storage_diagnostic.py
+          --deselect=platform/tests/test_o11y_inventory_provenance.py
+          --deselect=platform/tests/test_o11y_isolated_restore.py
+          --deselect=platform/tests/test_o11y_journal_collector.py
+          --deselect=platform/tests/test_o11y_log_source_survey.py
+          --deselect=platform/tests/test_o11y_pbs_operations.py
+          --deselect=platform/tests/test_o11y_pbs_physical_storage.py
+          --deselect=platform/tests/test_o11y_pbs_provenance.py
+          --deselect=platform/tests/test_o11y_pbs_receipts.py
+          --deselect=platform/tests/test_o11y_preflight_fixture.py
+          --deselect=platform/tests/test_o11y_private_artifact.py
+          --deselect=platform/tests/test_o11y_profile_pilot_acceptance.py
+          --deselect=platform/tests/test_o11y_profile_pilot_operation_guard.py
+          --deselect=platform/tests/test_o11y_profile_restart_durability.py
+          --deselect=platform/tests/test_o11y_receiver_capabilities.py
+          --deselect=platform/tests/test_o11y_restore_capabilities.py
+          --deselect=platform/tests/test_o11y_restore_coordination.py
+          --deselect=platform/tests/test_o11y_restore_feasibility.py
+          --deselect=platform/tests/test_o11y_restore_target.py
+          --deselect=platform/tests/test_o11y_restore_target_guard.py
+          --deselect=platform/tests/test_o11y_restored_guest.py
+          --deselect=platform/tests/test_o11y_scrape_baseline.py
+          --deselect=platform/tests/test_o11y_scrape_budgets.py
+          --deselect=platform/tests/test_o11y_trace_metrics_config.py
+          --deselect=platform/tests/test_o11y_verify_log_signal.py
+          --deselect=platform/tests/test_o11y_workflow_environment.py
 
   python-playbook-safety:
     name: Python Playbook Safety
@@ -339,6 +380,74 @@ jobs:
           platform/tests/test_agw_mcp_verify.py
           platform/tests/test_agw_openrouter.py
           platform/tests/test_agw_stream_usage.py
+
+  python-o11y:
+    name: Python o11y
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          pip install -r platform/requirements-test.txt
+          pip install -r platform/requirements-controller.txt
+          ansible-galaxy collection install -r collections/requirements.yml
+
+      # The test_o11y_*.py files present when this shard was split out of Python core, by path.
+      # A test_o11y_*.py file added later stays in Python core until a reviewed change adds it
+      # here and to core's --deselect list, which is a workflow edit and needs a new pinned blob.
+      # test_o11y_native_promql.bats is a BATS suite and runs in Bash Tests.
+      - name: Run Python o11y tests
+        run: >-
+          pytest -v -x -n auto --dist worksteal --durations=20
+          platform/tests/test_o11y_backup_artifact.py
+          platform/tests/test_o11y_backup_job.py
+          platform/tests/test_o11y_budget_daily_ingestion.py
+          platform/tests/test_o11y_budget_inference_peak.py
+          platform/tests/test_o11y_budget_receipt_overrides.py
+          platform/tests/test_o11y_canary_gateway_tls.py
+          platform/tests/test_o11y_capacity_history.py
+          platform/tests/test_o11y_coverage_census.py
+          platform/tests/test_o11y_coverage_contract.py
+          platform/tests/test_o11y_coverage_refresh.py
+          platform/tests/test_o11y_coverage_semaphore.py
+          platform/tests/test_o11y_dashboard_asserts.py
+          platform/tests/test_o11y_expected_metrics_targets.py
+          platform/tests/test_o11y_fault_drill.py
+          platform/tests/test_o11y_grouped_alert_proof.py
+          platform/tests/test_o11y_host_storage_diagnostic.py
+          platform/tests/test_o11y_inventory_provenance.py
+          platform/tests/test_o11y_isolated_restore.py
+          platform/tests/test_o11y_journal_collector.py
+          platform/tests/test_o11y_log_source_survey.py
+          platform/tests/test_o11y_pbs_operations.py
+          platform/tests/test_o11y_pbs_physical_storage.py
+          platform/tests/test_o11y_pbs_provenance.py
+          platform/tests/test_o11y_pbs_receipts.py
+          platform/tests/test_o11y_preflight_fixture.py
+          platform/tests/test_o11y_private_artifact.py
+          platform/tests/test_o11y_profile_pilot_acceptance.py
+          platform/tests/test_o11y_profile_pilot_operation_guard.py
+          platform/tests/test_o11y_profile_restart_durability.py
+          platform/tests/test_o11y_receiver_capabilities.py
+          platform/tests/test_o11y_restore_capabilities.py
+          platform/tests/test_o11y_restore_coordination.py
+          platform/tests/test_o11y_restore_feasibility.py
+          platform/tests/test_o11y_restore_target.py
+          platform/tests/test_o11y_restore_target_guard.py
+          platform/tests/test_o11y_restored_guest.py
+          platform/tests/test_o11y_scrape_baseline.py
+          platform/tests/test_o11y_scrape_budgets.py
+          platform/tests/test_o11y_trace_metrics_config.py
+          platform/tests/test_o11y_verify_log_signal.py
+          platform/tests/test_o11y_workflow_environment.py
 
   node-pi-provider:
     name: Node pi provider
@@ -448,7 +557,7 @@ jobs:
   test:
     name: Unit Tests
     if: always()
-    needs: [python-core, python-playbook-safety, python-agentgateway, node-pi-provider, python-netbox, python-semaphore, bats, rego, rust-console]
+    needs: [python-core, python-playbook-safety, python-agentgateway, python-o11y, node-pi-provider, python-netbox, python-semaphore, bats, rego, rust-console]
     runs-on: ubuntu-latest
     steps:
       - name: Require every test group to succeed
@@ -456,6 +565,7 @@ jobs:
           PYTHON_CORE_RESULT: ${{ needs.python-core.result }}
           PYTHON_PLAYBOOK_SAFETY_RESULT: ${{ needs.python-playbook-safety.result }}
           PYTHON_AGENTGATEWAY_RESULT: ${{ needs.python-agentgateway.result }}
+          PYTHON_O11Y_RESULT: ${{ needs.python-o11y.result }}
           NODE_PI_PROVIDER_RESULT: ${{ needs.node-pi-provider.result }}
           PYTHON_NETBOX_RESULT: ${{ needs.python-netbox.result }}
           PYTHON_SEMAPHORE_RESULT: ${{ needs.python-semaphore.result }}
@@ -463,12 +573,13 @@ jobs:
           REGO_RESULT: ${{ needs.rego.result }}
           RUST_CONSOLE_RESULT: ${{ needs.rust-console.result }}
         run: |
-          printf 'Python core: %s\nPython Playbook Safety: %s\nPython Agentgateway: %s\nNode pi provider: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\nRust console: %s\n' \
-            "$PYTHON_CORE_RESULT" "$PYTHON_PLAYBOOK_SAFETY_RESULT" "$PYTHON_AGENTGATEWAY_RESULT" "$NODE_PI_PROVIDER_RESULT" \
+          printf 'Python core: %s\nPython Playbook Safety: %s\nPython Agentgateway: %s\nPython o11y: %s\nNode pi provider: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\nRust console: %s\n' \
+            "$PYTHON_CORE_RESULT" "$PYTHON_PLAYBOOK_SAFETY_RESULT" "$PYTHON_AGENTGATEWAY_RESULT" "$PYTHON_O11Y_RESULT" "$NODE_PI_PROVIDER_RESULT" \
             "$PYTHON_NETBOX_RESULT" "$PYTHON_SEMAPHORE_RESULT" "$BATS_RESULT" "$REGO_RESULT" "$RUST_CONSOLE_RESULT"
           test "$PYTHON_CORE_RESULT" = success
           test "$PYTHON_PLAYBOOK_SAFETY_RESULT" = success
           test "$PYTHON_AGENTGATEWAY_RESULT" = success
+          test "$PYTHON_O11Y_RESULT" = success
           test "$NODE_PI_PROVIDER_RESULT" = success
           test "$PYTHON_NETBOX_RESULT" = success
           test "$PYTHON_SEMAPHORE_RESULT" = success

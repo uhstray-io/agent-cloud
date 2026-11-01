@@ -34,6 +34,10 @@ AGW_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
 NODE_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-node-partition.txt").read_bytes()
 
+# The workflow as it stood before the Python o11y job was added.
+CONSOLE_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-console-partition.txt").read_bytes()
+
 
 def _blob_sha(source):
     return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
@@ -44,7 +48,8 @@ assert _blob_sha(INTERMEDIATE_PARTITIONED_WORKFLOW) == "29020efdaa1747bd2dc42d4c
 assert _blob_sha(PARTITIONED_WORKFLOW) == guard.PARTITIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(AGW_WORKFLOW) == guard.AGW_PARTITIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(NODE_WORKFLOW) == guard.NODE_PARTITIONED_WORKFLOW_BLOB_SHA
-assert _blob_sha(CURRENT_WORKFLOW) == guard.CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(CONSOLE_WORKFLOW) == guard.CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.O11Y_PARTITIONED_WORKFLOW_BLOB_SHA
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -182,6 +187,14 @@ class FakeGitHub:
 
     def set_console_transition(self):
         self.workflow_sources[BASE] = NODE_WORKFLOW
+        self.workflow_sources[HEAD] = CONSOLE_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_o11y_transition(self):
+        self.workflow_sources[BASE] = CONSOLE_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
@@ -261,6 +274,9 @@ class MergeGuardTests(unittest.TestCase):
             (lambda api: api.jobs.pop("Rust (console)"), "Missing expected Actions jobs"),
             (lambda api: api.jobs["Rust (console)"].update(conclusion="failure"), "Rust (console) is failure"),
             (lambda api: api.jobs["Rust (console)"].update(conclusion="skipped"), "was skipped"),
+            (lambda api: api.jobs.pop("Python o11y"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs["Python o11y"].update(conclusion="failure"), "Python o11y is failure"),
+            (lambda api: api.jobs["Python o11y"].update(conclusion="skipped"), "was skipped"),
             (lambda api: api.jobs["Python Playbook Safety"].update(
                 status="in_progress", conclusion=None), "incomplete"),
             (lambda api: api.jobs["Python Playbook Safety"].update(
@@ -362,8 +378,28 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_console_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = CONSOLE_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
         run_refusal(self, api, "Rust console partition may only remain byte-identical")
+
+    def test_o11y_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Python o11y partition may only remain byte-identical")
+
+    def test_o11y_partition_unchanged_passes_the_workflow_check(self):
+        api = FakeGitHub()
+        api.workflow_source = CURRENT_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_console_partition_pr_without_the_python_o11y_job_is_refused(self):
+        # What happens live to a pull request opened before the transition: its workflow runs no
+        # Python o11y job, so the required-job gate refuses it until it merges dev.
+        api = FakeGitHub()
+        api.workflow_source = CONSOLE_WORKFLOW
+        api.jobs.pop("Python o11y")
+        run_refusal(self, api, "Missing expected Actions jobs")
 
     def test_agentgateway_to_node_transition_is_allowed(self):
         api = FakeGitHub()
@@ -442,35 +478,103 @@ class MergeGuardTests(unittest.TestCase):
         cases = [
             ("node to console with extra byte", lambda api: (
                 api.set_console_transition(),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW + b"# extra\n"))),
             ("partitioned base to console head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, PARTITIONED_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
             ("pre-partition base to console head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
             ("agentgateway base to console head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
             ("node base to console head with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW + b"# extra\n"))),
             ("node base with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW + b"# extra\n"),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
             ("console base to node head", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW))),
             ("console base to agentgateway head", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW))),
             ("console base to partitioned head", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, PARTITIONED_WORKFLOW))),
             ("console base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("console base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW + b"# extra\n"))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api)
+
+    def test_console_to_o11y_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_o11y_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_console_to_o11y_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_o11y_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_o11y_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_o11y_transition_or_o11y_baseline_is_accepted(self):
+        cases = [
+            ("console to o11y with extra byte", lambda api: (
+                api.set_o11y_transition(),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+            ("node base to o11y head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("partitioned base to o11y head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PARTITIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("pre-partition base to o11y head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("agentgateway base to o11y head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("console base to o11y head with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+            ("console base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("o11y base to console head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("o11y base to node head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW))),
+            ("o11y base to agentgateway head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW))),
+            ("o11y base to partitioned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PARTITIONED_WORKFLOW))),
+            ("o11y base with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n"),
                 api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
-            ("console base to edited head", lambda api: (
+            ("o11y base to edited head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
         ]
@@ -542,8 +646,9 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_partitioned_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = PARTITIONED_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
-        run_refusal(self, api, "byte-identical on subsequent PRs")
+        run_refusal(self, api, "Credential-safe partition may only remain byte-identical")
 
     def test_agentgateway_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
@@ -810,25 +915,32 @@ class MergeGuardTests(unittest.TestCase):
             guard.check_workflow_policy(changed, node=True)
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
             guard.check_workflow_policy(changed, console=True)
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, o11y=True)
 
     def test_each_policy_state_requires_exactly_its_own_job_set(self):
         guard.check_workflow_policy(PARTITIONED_WORKFLOW, partitioned=True)
         guard.check_workflow_policy(AGW_WORKFLOW, agw=True)
         guard.check_workflow_policy(NODE_WORKFLOW, node=True)
-        guard.check_workflow_policy(CURRENT_WORKFLOW, console=True)
+        guard.check_workflow_policy(CONSOLE_WORKFLOW, console=True)
+        guard.check_workflow_policy(CURRENT_WORKFLOW, o11y=True)
         for label, source, kwargs in (
             ("agentgateway workflow read as playbook safety", AGW_WORKFLOW, {"partitioned": True}),
             ("playbook safety workflow read as agentgateway", PARTITIONED_WORKFLOW, {"agw": True}),
             ("agentgateway workflow read as node", AGW_WORKFLOW, {"node": True}),
             ("node workflow read as agentgateway", NODE_WORKFLOW, {"agw": True}),
             ("node workflow read as console", NODE_WORKFLOW, {"console": True}),
-            ("console workflow read as node", CURRENT_WORKFLOW, {"node": True}),
+            ("console workflow read as node", CONSOLE_WORKFLOW, {"node": True}),
             ("agentgateway job renamed", AGW_WORKFLOW.replace(
                 b"name: Python Agentgateway", b"name: Python Agw", 1), {"agw": True}),
             ("node job renamed", NODE_WORKFLOW.replace(
                 b"name: Node pi provider", b"name: Node pi", 1), {"node": True}),
-            ("rust console job renamed", CURRENT_WORKFLOW.replace(
+            ("rust console job renamed", CONSOLE_WORKFLOW.replace(
                 b"name: Rust (console)", b"name: Rust console", 1), {"console": True}),
+            ("console workflow read as o11y", CONSOLE_WORKFLOW, {"o11y": True}),
+            ("o11y workflow read as console", CURRENT_WORKFLOW, {"console": True}),
+            ("python o11y job renamed", CURRENT_WORKFLOW.replace(
+                b"name: Python o11y", b"name: Python O11y", 1), {"o11y": True}),
         ):
             with self.subTest(label=label), self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
                 guard.check_workflow_policy(source, **kwargs)
@@ -840,7 +952,7 @@ class MergeGuardTests(unittest.TestCase):
             1,
         )
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
-            guard.check_workflow_policy(changed, console=True)
+            guard.check_workflow_policy(changed, o11y=True)
 
     def test_ambiguous_merge_response_is_read_back_and_never_retried(self):
         api = FakeGitHub()
