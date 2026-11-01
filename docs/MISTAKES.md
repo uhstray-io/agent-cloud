@@ -140,7 +140,7 @@ and why.
 | 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
-| 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s | Process | 1 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
+| 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -3767,7 +3767,7 @@ push stays governed by the operator's global instructions, the harness settings 
 
 ### 5.22 The `Python core` CI job outgrew its 30-minute timeout as the suite grew
 
-**Occurrences: 1** — 2026-10-14
+**Occurrences: 2** — 2026-10-14, 2026-10-31
 
 **What happened.** On the `docs/records-2026-10-14-night` branch (PR 638), `Python core` was cancelled by
 `timeout-minutes: 30` twice: run 38650903648 (22:55:59 to 23:26:15 UTC) and run 38651137374 (00:30:59 to
@@ -3788,6 +3788,14 @@ complete, disjoint and mandatory (extended with 641), so a split cannot lose a t
 measure runtime: a shard growing back toward 30 minutes is caught by nothing but the cancellation itself, so
 that part is Convention. Proposal: have the workflow report each Python shard's duration against its timeout
 and warn above a fraction of it.
+
+**Occurrence 2 — 2026-10-31.** `Python core` was cancelled at the limit on two unrelated PRs within the hour:
+#805, run 41240831437 (20:51:17 to 21:21:36 UTC), and #806, run 41242063719 (21:07:08 to 21:37:25 UTC). Each was
+at 98 to 99% with no failed test. Each rerun passed, at 25m47s and 27m59s, so the shard now finishes within
+about two minutes of its timeout when it passes at all. Why the rule did not fire: nobody adding tests
+looks at the shard's duration, and nothing reports it, which is exactly the Convention gap above. Another
+split is due. It is a workflow change, so it also needs a reviewed transition in `scripts/merge-when-green.py`,
+which pins the workflow's exact bytes.
 
 ## 6. Working from assumptions about files
 
