@@ -21,6 +21,7 @@ PYTHON_SHARDS = {
     "python-core": "Run Python core tests",
     "python-playbook-safety": "Run Python Playbook Safety tests",
     "python-agentgateway": "Run Python Agentgateway tests",
+    "python-playbook-runs": "Run Python Playbook Runs tests",
     "python-netbox": "Run NetBox Python tests",
     "python-semaphore": "Run Semaphore Python tests",
 }
@@ -90,8 +91,24 @@ def test_python_shards_keep_root_discovery_and_select_whole_safety_files():
     agw_files = {arg for arg in agw_run.split() if arg.startswith("platform/tests/")}
     assert agw_files, "the Python Agentgateway shard names no test files"
     assert all(Path(name).name.startswith("test_agw_") and (REPO / name).is_file() for name in agw_files)
+    runs = jobs["python-playbook-runs"]
+    runs_run, runs_env = _pytest_step(runs, PYTHON_SHARDS["python-playbook-runs"])
+    runs_files = {arg for arg in runs_run.split() if arg.startswith("platform/tests/")}
+    assert runs_files, "the Python Playbook Runs shard names no test files"
+    assert all((REPO / name).is_file() for name in runs_files)
+    assert all(flag in runs_run for flag in PYTEST_FLAGS)
+    assert runs["timeout-minutes"] == 30
+    _, core_env = _pytest_step(core, PYTHON_SHARDS["python-core"])
+    assert runs_env == core_env, "the Playbook Runs shard must run with core's environment"
+    runs_checkout = next(step for step in runs["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    assert runs_checkout.get("with", {}).get("persist-credentials") is False
+    runs_dependencies = next(step["run"] for step in runs["steps"] if step.get("name") == "Install test dependencies")
+    assert "platform/requirements-test.txt" in runs_dependencies
+    assert "platform/requirements-controller.txt" in runs_dependencies
+    assert "collections/requirements.yml" in runs_dependencies
     assert {arg.split("=", 1)[1] for arg in core_run.split() if arg.startswith("--deselect=")} == {
         "platform/services/netbox/deployment/tests/", "platform/semaphore/tests/", *SAFETY_FILES, *agw_files,
+        *runs_files,
     }
     assert all(flag in agw_run for flag in PYTEST_FLAGS)
     assert agw["timeout-minutes"] == 30
@@ -125,6 +142,7 @@ def test_python_shards_collect_exactly_the_root_node_ids():
 
     assert shards["python-playbook-safety"], "the Python Playbook Safety shard is empty"
     assert shards["python-agentgateway"], "the Python Agentgateway shard is empty"
+    assert shards["python-playbook-runs"], "the Python Playbook Runs shard is empty"
     for (left_name, left), (right_name, right) in combinations(shards.items(), 2):
         overlap = left & right
         assert not overlap, f"{left_name} and {right_name} overlap: {sorted(overlap)[:10]}"
@@ -150,13 +168,14 @@ def test_unit_tests_aggregate_requires_playbook_safety_success_for_every_result(
     assert aggregate["if"] == "always()"
     assert "python-playbook-safety" in aggregate["needs"]
     assert "python-agentgateway" in aggregate["needs"]
+    assert "python-playbook-runs" in aggregate["needs"]
     assert "node-pi-provider" in aggregate["needs"]
     assert "rust-console" in aggregate["needs"]
     gate = aggregate["steps"][0]
     required = {
         "PYTHON_CORE_RESULT", "PYTHON_PLAYBOOK_SAFETY_RESULT", "PYTHON_AGENTGATEWAY_RESULT",
-        "NODE_PI_PROVIDER_RESULT", "PYTHON_NETBOX_RESULT", "PYTHON_SEMAPHORE_RESULT", "BATS_RESULT", "REGO_RESULT",
-        "RUST_CONSOLE_RESULT",
+        "PYTHON_PLAYBOOK_RUNS_RESULT", "NODE_PI_PROVIDER_RESULT", "PYTHON_NETBOX_RESULT", "PYTHON_SEMAPHORE_RESULT",
+        "BATS_RESULT", "REGO_RESULT", "RUST_CONSOLE_RESULT",
     }
     assert set(gate["env"]) == required
     for name in required:
