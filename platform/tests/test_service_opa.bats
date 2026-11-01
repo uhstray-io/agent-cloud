@@ -249,6 +249,28 @@ task_with() {
   assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/read-tls.yml"
 }
 
+@test "opa: the verify proves a decision asking for engine internals (?explain=full) is refused with 401, on the plain and the TLS path" {
+  # ?explain=full on the decision path returns the evaluation trace of the policy and its data,
+  # so the authorization policy admits a decision only with no query parameters.
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Decision with explain is refused' > "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF 'method: POST' "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF '{{ _opa_url }}/v1/data/agentcloud/decision?explain=full"' "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF "_opa_explain.status != 401" "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF "(_opa_explain.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/explain.yml"
+  task_with "$pb" 'Decision with explain over TLS is refused' > "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "/v1/data/agentcloud/decision?explain=full'" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "(_opa_explain_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/explain-tls.yml"
+  # The rule itself, and its unit tests.
+  local authz="$DEPLOY_DIR/policies/system/authz.rego" tests="$DEPLOY_DIR/policies/system/authz_test.rego"
+  assert_grep -qF 'count(object.get(input, "params", {})) == 0' "$authz"
+  assert_grep -qE '^test_deny_decision_explain if' "$tests"
+  assert_grep -qE '^test_deny_decision_instrument if' "$tests"
+}
+
 @test "opa authz: the policy admits exactly the decision POST and the health GET, and its tests exist" {
   # Deny-by-default: the only two allow rules are the decision API and /health. Adding a third
   # changes what an admitted caller may reach, so it must be an explicit, reviewed change here.

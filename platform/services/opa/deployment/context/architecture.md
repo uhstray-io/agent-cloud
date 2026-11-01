@@ -43,10 +43,13 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
   serial.
 - **Access control is the host firewall plus the authorization policy.** OPA has no login.
   Port 8281 is admitted only from its callers' inventory groups (`firewall_allow_groups`), and
-  `--authorization=basic` asks `system.authz` about every request: the decision POST and
-  `GET /health` are answered, and every other request gets 401 `unauthorized`. So an admitted
-  caller can ask for decisions and health, and nothing else (no data reads, no queries, no
-  metrics, no writes).
+  `--authorization=basic` asks `system.authz` about every request: the decision POST (with no
+  query parameters) and `GET /health` are answered, and every other request gets 401
+  `unauthorized`. So an admitted caller can ask for decisions and health, and nothing else (no
+  data reads, no queries, no metrics, no writes). The decision must carry no parameters because
+  `?explain=full` returns the whole evaluation trace (76 KB of policy and data for one request,
+  measured on `opa:1.0.0-static`). The diagnostic listener (8282, never published) is covered by
+  the same policy: `/metrics` and the data paths answer 401 there too (measured 2026-10-31).
 - **The running policy is read-only.** OPA loads `/policies` as a bundle (`--bundle`), so it
   refuses every `PUT`/`PATCH`/`DELETE` on `/v1/data` and `/v1/policies`. The authorization policy
   refuses those writes first, with 401, so the bundle's 400 answers only if the authorization

@@ -301,6 +301,21 @@
       failed_when: _opa_read.status != 401 or (_opa_read.json.code | default('')) != 'unauthorized'
       when: not ansible_check_mode and not _opa_tls
 
+    # A decision that asks for engine internals (?explain=full returns the evaluation trace of the
+    # policy and its data) is a data read: the authorization policy admits the decision only with
+    # no query parameters.
+    - name: "Decision with explain is refused (POST /v1/data/agentcloud/decision?explain=full -> 401)"
+      ansible.builtin.uri:
+        url: "{{ _opa_url }}/v1/data/agentcloud/decision?explain=full"
+        method: POST
+        body_format: json
+        body:
+          input: {agent: nemoclaw, action: read, service: nocodb}
+        status_code: [401]
+      register: _opa_explain
+      failed_when: _opa_explain.status != 401 or (_opa_explain.json.code | default('')) != 'unauthorized'
+      when: not ansible_check_mode and not _opa_tls
+
     # ── Listener TLS (opa_tls): the same checks over HTTPS ───────────────────
     - name: "OPA health over TLS (/health -> 200, against the step-ca bundle)"
       ansible.builtin.command:
@@ -390,6 +405,20 @@
       failed_when: >-
         _opa_read_tls.rc != 0 or (_opa_read_tls.stdout_lines | last) != '401'
         or ((_opa_read_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'unauthorized'
+      when: _opa_tls and not ansible_check_mode
+
+    - name: "Decision with explain over TLS is refused (?explain=full -> 401)"
+      ansible.builtin.command:
+        argv: >-
+          {{ (_opa_tls_args | reject('equalto', '--fail') | list)
+             + ['--header', 'Content-Type: application/json',
+                '--data', ({'input': {'agent': 'nemoclaw', 'action': 'read', 'service': 'nocodb'}} | to_json),
+                '--write-out', '\n%{http_code}', _opa_url ~ '/v1/data/agentcloud/decision?explain=full'] }}
+      register: _opa_explain_tls
+      changed_when: false
+      failed_when: >-
+        _opa_explain_tls.rc != 0 or (_opa_explain_tls.stdout_lines | last) != '401'
+        or ((_opa_explain_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'unauthorized'
       when: _opa_tls and not ansible_check_mode
 
     # --bundle, as the server loads it: bundle mode reads only data.json/data.yaml as data, so a

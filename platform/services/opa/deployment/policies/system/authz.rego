@@ -11,16 +11,20 @@
 # every data document and query arbitrary paths. Bundle mode (--bundle) separately refuses writes,
 # but it does not refuse reads.
 #
-# input.path is the request path split on "/" (the query string is not part of it).
+# input.path is the request path split on "/"; the query string arrives separately as input.params.
 # Tests: authz_test.rego, one allowed and one denied case per request this API serves or must refuse.
 
 package system.authz
 
 default allow := false
 
+# A decision carries no query parameters. On the decision path OPA honours explain, instrument,
+# metrics, provenance and pretty: `?explain=full` returned a 76 KB evaluation trace of the policy
+# and its data for one request (measured on opa:1.0.0-static, 2026-10-31), which is a data read.
 allow if {
 	input.method == "POST"
 	input.path == ["v1", "data", "agentcloud", "decision"]
+	count(object.get(input, "params", {})) == 0
 }
 
 allow if {

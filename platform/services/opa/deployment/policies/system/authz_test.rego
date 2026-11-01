@@ -18,6 +18,28 @@ test_allow_health_get if {
 	authz.allow with input as {"method": "GET", "path": ["health"]}
 }
 
+test_allow_decision_post_with_empty_params if {
+	authz.allow with input as {"method": "POST", "path": ["v1", "data", "agentcloud", "decision"], "params": {}}
+}
+
+# Denied: a decision asking for engine internals (each returns more than the decision itself).
+
+test_deny_decision_explain if {
+	not authz.allow with input as {"method": "POST", "path": ["v1", "data", "agentcloud", "decision"], "params": {"explain": ["full"]}}
+}
+
+test_deny_decision_instrument if {
+	not authz.allow with input as {"method": "POST", "path": ["v1", "data", "agentcloud", "decision"], "params": {"instrument": ["true"]}}
+}
+
+test_deny_decision_metrics if {
+	not authz.allow with input as {"method": "POST", "path": ["v1", "data", "agentcloud", "decision"], "params": {"metrics": [""]}}
+}
+
+test_deny_decision_provenance if {
+	not authz.allow with input as {"method": "POST", "path": ["v1", "data", "agentcloud", "decision"], "params": {"provenance": [""]}}
+}
+
 # Denied: data reads and writes, queries, policy writes, metrics, and the boolean decision path.
 
 test_deny_policy_write_probe_put if {
