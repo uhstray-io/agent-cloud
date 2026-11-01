@@ -214,10 +214,14 @@ def test_child_environment_overrides_inherited_ansible_debug_and_callback_settin
         "ANSIBLE_STDOUT_CALLBACK": "json",
         "ANSIBLE_CALLBACKS_ENABLED": "timer",
         "ANSIBLE_CALLBACK_PLUGINS": "/tmp/inherited-callbacks",
+        "ANSIBLE_BECOME": "True",
+        "ANSIBLE_BECOME_METHOD": "su",
+        "ANSIBLE_BECOME_EXE": "/tmp/same-user-su-shim",
     }.items():
         monkeypatch.setenv(name, value)
     child_env = module.ansible_child_environment()
     assert child_env["ANSIBLE_CONFIG"] == str(ROOT / "ansible.cfg")
+    assert child_env["ANSIBLE_BECOME"] == "False"
     assert child_env["ANSIBLE_DEBUG"] == "False"
     assert "ANSIBLE_LOG_PATH" not in child_env
     assert "ANSIBLE_CALLBACKS_ENABLED" not in child_env
@@ -636,6 +640,22 @@ def test_actual_uri_module_tempfile_red_without_pipelining_green_with_pipelining
     env["ANSIBLE_REMOTE_TEMP"] = str(remote_green)
     env["SEMAPHORE_TOKEN"] = ENV_TOKEN
     env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{env.get('PATH', '')}"
+    shim_marker = tmp_path / "same-user-su-shim-invoked"
+    become_shim = tmp_path / "same-user-su-shim"
+    become_shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import subprocess,sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(shim_marker)!r}).write_text('invoked\\n')\n"
+        "args=sys.argv[1:]\n"
+        "# Execute only as the test's current user; never invoke a privilege tool.\n"
+        "command=args[args.index('-c')+1]\n"
+        "raise SystemExit(subprocess.call(['/bin/sh','-c',command]))\n"
+    )
+    become_shim.chmod(0o755)
+    env["ANSIBLE_BECOME"] = "True"
+    env["ANSIBLE_BECOME_METHOD"] = "su"
+    env["ANSIBLE_BECOME_EXE"] = str(become_shim)
     green = subprocess.Popen(
         [str(SCRIPT), "--url", url, "--inventory", str(source)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -654,6 +674,7 @@ def test_actual_uri_module_tempfile_red_without_pipelining_green_with_pipelining
         assert not green_files
         assert TOKEN not in green_out + green_err
         assert ENV_TOKEN not in green_out + green_err
+        assert not shim_marker.exists(), "inherited become settings invoked the same-user shim"
         assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == script_digest
         print(json.dumps({
             "proof": "actual canonical URI request held while scanning Ansible temp files",

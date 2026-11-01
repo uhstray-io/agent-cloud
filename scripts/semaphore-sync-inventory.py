@@ -21,6 +21,7 @@ def ansible_child_environment() -> dict[str, str]:
     child_env.pop("ANSIBLE_LOG_PATH", None)
     child_env.pop("ANSIBLE_CALLBACKS_ENABLED", None)
     child_env["ANSIBLE_CONFIG"] = str(ROOT / "ansible.cfg")
+    child_env["ANSIBLE_BECOME"] = "False"
     child_env["ANSIBLE_DEBUG"] = "False"
     child_env["ANSIBLE_STDOUT_CALLBACK"] = "redact_requests"
     child_env["ANSIBLE_CALLBACK_PLUGINS"] = str(ROOT / "callback_plugins")
