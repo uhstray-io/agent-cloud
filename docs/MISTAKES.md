@@ -54,9 +54,10 @@ and why.
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
-| 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there | Unverified claim | 1 | Convention |
+| 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -190,7 +191,7 @@ and why.
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
-| 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
+| 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | 1 | Convention |
@@ -1075,6 +1076,8 @@ until re-read; file paths and line numbers do not survive 1,700 commits.
 
 **Enforced by.** Convention.
 
+The rule is widened in 1.28.
+
 ### 1.26 Briefed an executor with an API field shape read from one line of the source
 
 **Occurrences: 1** — 2026-10-29
@@ -1115,6 +1118,28 @@ file's history. A recent merge near the symptom reads as its cause.
 **The rule.** Before naming the change that introduced a defect, read it: `git log` on the
 file (or `-S` for the line), then the PR that commit belongs to. State the commit, the PR and
 its merge date, or say the origin is unverified.
+
+**Enforced by.** Convention.
+
+### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
+
+**What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
+`[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
+test, and cited a throwaway Bats file it had run to show it. I relayed that to Joe as a
+checked fact. It was false. Its probe put the failing case on the loop's last pass, and the
+loop was the test's last statement, so the body's exit status carried it: the one position
+where `[[ ]]` does fail (11.1). CI's `test_assertions_are_real.bats` ratchet refused the
+assertion, and the reviewer corrected itself on the next pass.
+
+**Root cause.** 1.25's rule is worded around `file:line` pointers, so it did not fire for a
+claim about behaviour. And a claim that arrived with an experiment read as already verified:
+I checked that a probe had run, not that its setup covered the case it claimed to cover.
+
+**The rule.** Supersedes 1.25's scope. Any subagent claim, about code, behaviour or a tool,
+is unverified until re-checked, and that includes a claim backed by the subagent's own test.
+An experiment counts as evidence only after its setup has been read against the exact case
+in question (here: the failing input placed where the real test puts it, not where it
+happens to pass). Until then, a claim reaches Joe or a merge decision labelled `unverified:`.
 
 **Enforced by.** Convention.
 
@@ -5520,6 +5545,18 @@ where the class was found; the ratchet holds the rest at a visible number rather
 than pretending the debt is gone.
 
 **Status 2026-10-02.** The ratchet named above was extended by PR #392: `platform/tests/test_assertions_are_real.bats` adds the `grep -v -q` and `|| true` scans, held in `platform/tests/known_inert_assertions.txt`.
+
+**Occurrences: 2** — (first undated), 2026-10-31
+
+**Occurrence 2 — 2026-10-31.** Writing the OPA flag-order test in #810, I used a bare
+`[[ "$args" == *" --authorization=basic --bundle /policies " ]]` inside a `for` loop,
+mid-body. The ratchet failed CI, as designed, before review or merge; the fix is a
+plain `[ "${args%" --authorization=basic --bundle /policies "}" != "$args" ]`. Why the
+rule did not fire: I was rewriting the check after a different guard (no line windows)
+had refused the first version, and reached for `[[ ]]` from habit. The only gate
+before CI is the pre-push hook's BATS run, and this session was pushing with
+`SKIP_TESTS=1` after that hook had run past an hour. The enforcement held; the cost
+was one CI cycle.
 
 ### 11.2 Sourcing a config file instead of reading it
 
