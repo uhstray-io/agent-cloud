@@ -11,12 +11,20 @@ Only the two named members are read, by exact name. Both are verified in memory 
 as one JSON object; nothing is written to disk, so a dry run fetches and verifies for real
 without a write to guard. A changed or tampered release prints nothing and exits non-zero.
 
+After the compose file's digest matches, its short image names are qualified with their
+registry (`makeplane/x` -> `docker.io/makeplane/x`, `postgres:15` -> `docker.io/library/postgres:15`).
+Plane's file uses Docker Hub short names; a host whose registries.conf defines no search
+registry (Ubuntu 24.04's podman, the production Plane VM) refuses them, and the platform qualifies
+images rather than relying on search registries (platform/tests/test_compose_image_qualified.py).
+The digest is checked on Plane's bytes as published; only the printed copy is qualified.
+
 Usage: fetch_setup.py <version> <compose-sha256> <variables-sha256>
 """
 
 import hashlib
 import io
 import json
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -39,6 +47,23 @@ def verified_members(blob, expected):
         return out
 
 
+IMAGE_LINE = re.compile(r"^([ \t]*image:[ \t]*)(\S+)[ \t]*$", re.M)
+
+
+def qualify(ref):
+    """A Docker Hub short name with its registry; a name that already has one is left alone."""
+    if "${" in ref:
+        return ref  # a variable: nothing to qualify safely
+    first, slash, _ = ref.partition("/")
+    if slash and ("." in first or ":" in first or first == "localhost"):
+        return ref  # already names a registry
+    return f"docker.io/{ref}" if slash else f"docker.io/library/{ref}"
+
+
+def qualify_images(compose):
+    return IMAGE_LINE.sub(lambda m: m.group(1) + qualify(m.group(2)), compose)
+
+
 def main(argv):
     if len(argv) != 4:
         sys.exit(__doc__.strip().splitlines()[-1])
@@ -50,7 +75,9 @@ def main(argv):
         files = verified_members(blob, {MEMBERS[0]: compose_sha, MEMBERS[1]: vars_sha})
     except (KeyError, ValueError, zipfile.BadZipFile) as exc:
         sys.exit(f"Refusing Plane {version} setup files: {exc}")
-    print(json.dumps({name: data.decode("utf-8") for name, data in files.items()}))
+    out = {name: data.decode("utf-8") for name, data in files.items()}
+    out[MEMBERS[0]] = qualify_images(out[MEMBERS[0]])
+    print(json.dumps(out))
 
 
 if __name__ == "__main__":
