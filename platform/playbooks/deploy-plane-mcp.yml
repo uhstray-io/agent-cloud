@@ -38,6 +38,9 @@
   gather_facts: false
   become: false
   vars:
+    # The same release Deploy Plane pins on this host (tasks/install-podman-compose.yml): the link
+    # is host-wide, so this deploy asks for it too rather than depend on which ran first.
+    podman_compose_version: "1.6.0"
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/platform/services/plane-mcp/deployment"
