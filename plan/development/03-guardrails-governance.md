@@ -926,7 +926,7 @@ Each step runs through Semaphore, check mode first.
 11. [ ] `Renew Internal Certs (Dev)`: a check-mode run (10389) admits the leaf as class `opa-server`, with 29 of 30 days left. The served-serial proof runs at its first renewal. The template offers no `--tags verify`, and a rotation drill would reissue every leaf on every host.
 12. [ ] skynet: its group is already admitted (site-config #127; applied by task 10337). Remaining: point skynet at `https://opa.<dns_site>.<dns_zone>:8281`, mapping the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe.
 
-13. [ ] Redeploy with bundle mode (P6): `Deploy OPA (Dev)`, check mode then real; the verify must show the policy write refused.
+13. [x] Redeploy with bundle mode (P6, #805): `Deploy OPA (Dev)` check mode (task 11117), then real (task 11119). The TLS write probe passed: production OPA refused `PUT /v1/data` with 400 `invalid_parameter`. Allow and deny decisions were verified over TLS, and `opa test --bundle` passed 101/101.
 
 **Known gaps:**
 - `Verify Service Health` is not declared for OPA. Its `uri` probe has no server-name override, and the name does not resolve on the OPA host. The deploy's own verify covers `/health`.
