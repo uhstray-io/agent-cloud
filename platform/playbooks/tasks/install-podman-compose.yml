@@ -5,8 +5,9 @@
 #   - `podman compose` (preferred; ships with podman 4.4+ as a built-in plugin)
 #   - `podman-compose`  (Python script fallback)
 #
-# platform/lib/common.sh:detect_runtime picks whichever is available, so we
-# don't pin a specific one — we just need the host to have one.
+# platform/lib/common.sh:detect_runtime picks whichever is available. By default no specific
+# release is pinned; a caller that needs one sets `podman_compose_version` (the opt-in block at
+# the end of this file), and the "Compose entrypoint" line below reports the state before it.
 #
 # OS support:
 #   - Linux (Ubuntu 22.04/24.04): apt, requires become
@@ -121,7 +122,9 @@
     - name: "Create the release's venv (sees apt's PyYAML and python-dotenv)"
       ansible.builtin.command:
         argv: [python3, -m, venv, --system-site-packages, "{{ _pc_dir }}"]
-        creates: "{{ _pc_dir }}/bin/python"
+        # bin/pip, not bin/python: an interrupted creation can leave python without pip, and a
+        # guard on python would then skip the rebuild on every re-run.
+        creates: "{{ _pc_dir }}/bin/pip"
       become: true
 
     - name: "Write the hash-pinned requirement"
@@ -145,6 +148,8 @@
         creates: "{{ _pc_dir }}/bin/podman-compose"
       become: true
 
+    # Host-wide: every compose user on this host now resolves this release, and dropping
+    # podman_compose_version later does not remove the link (to move it, set another pinned version).
     - name: "Link it ahead of apt's podman-compose"
       ansible.builtin.file:
         src: "{{ _pc_dir }}/bin/podman-compose"
@@ -164,7 +169,8 @@
       ansible.builtin.assert:
         that: podman_compose_version | string in _pc_version.stdout
         fail_msg: >-
-          expected podman-compose {{ podman_compose_version }} on PATH, found:
-          {{ (_pc_version.stdout_lines | default(['nothing'])) | last }}
+          expected podman-compose {{ podman_compose_version }} on PATH; `podman-compose --version`
+          answered rc={{ _pc_version.rc | default('none') }}
+          stdout={{ (_pc_version.stdout | default(''))[:200] }} stderr={{ (_pc_version.stderr | default(''))[:200] }}
         quiet: true
       when: not ansible_check_mode

@@ -53,3 +53,20 @@ def test_every_version_a_playbook_asks_for_is_pinned():
                 asked.add(str(version))
     assert asked, "no playbook asks for a podman-compose release"
     assert asked <= pinned, f"asked for but not pinned: {asked - pinned}"
+
+
+def test_the_release_is_linked_ahead_of_apt_and_read_back():
+    link = STEPS["Link it ahead of apt's podman-compose"]["ansible.builtin.file"]
+    assert link["dest"] == "/usr/local/bin/podman-compose"
+    assert link["state"] == "link" and link["force"] is True
+    read = STEPS["Read back the podman-compose on PATH"]
+    assert read["check_mode"] is False and read["register"] == "_pc_version"
+    that = STEPS["The pinned release is the one on PATH"]["ansible.builtin.assert"]["that"]
+    assert "_pc_version.stdout" in that and "podman_compose_version" in that
+
+
+def test_the_venv_and_install_steps_are_guarded_for_re_runs():
+    venv = STEPS["Create the release's venv (sees apt's PyYAML and python-dotenv)"]["ansible.builtin.command"]
+    assert venv["creates"].endswith("/bin/pip")
+    pip = STEPS["Install the release by hash, without dependencies"]["ansible.builtin.command"]
+    assert pip["creates"].endswith("/bin/podman-compose")
