@@ -38,6 +38,10 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
   serial.
 - **Access control is the host firewall.** OPA is still unauthenticated; port 8281 is
   admitted only from its callers' inventory groups (`firewall_allow_groups`).
+- **The running policy is read-only.** OPA loads `/policies` as a bundle (`--bundle`), so it
+  refuses every `PUT`/`PATCH`/`DELETE` on `/v1/data` and `/v1/policies` with HTTP 400. Before
+  2026-10-31 it did not: an admitted caller could rewrite the catalog or the Rego
+  (`docs/MISTAKES.md` 10.33). The deploy's verify sends one refused write to prove it.
 - **No Caddy route and no public DNS.** Until internal DNS is authoritative, each caller
   maps the name to the VM's address itself.
 
@@ -49,8 +53,9 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
 - **Phase 1 is unauthenticated** — internal-only, returns decisions not secrets,
   so there are no OPA credentials yet. Phase 2 adds per-agent bearer tokens
   (OpenBao). Phase 3 ships decision logs to Loki via stdout.
-- Policies are mounted read-only from `./policies`; a change is applied by
-  redeploy (git pull + restart). Rego is tested with `opa test /policies`.
+- Policies are mounted read-only from `./policies` and loaded as a bundle (writes refused,
+  as in production); a change is applied by redeploy (git pull + restart).
+  Rego is tested with `opa test --bundle /policies`.
 - Local-dev also routes `opa.agent-cloud.test` through Caddy
   (`platform/inventory/local-dev.yml.example`, the `caddy_routes` OPA entry) so a
   caller such as skynet can verify a step-ca certificate. That route is a plain proxy

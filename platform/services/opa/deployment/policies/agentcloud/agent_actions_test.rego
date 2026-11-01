@@ -1,4 +1,4 @@
-# Unit tests for the agent action policy. Run: opa test /policies -v
+# Unit tests for the agent action policy. Run: opa test --bundle /policies -v
 # (the deploy playbook runs this inside the container after start).
 package agentcloud_test
 

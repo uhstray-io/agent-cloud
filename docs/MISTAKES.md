@@ -120,7 +120,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 5 | Pre-push hook |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`) | Process | 6 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -189,6 +189,7 @@ and why.
 | 10.30 | Recorded issue #604's fix as built when it merged; its `(Dev)` template had never been published, so the second operator stayed without access for nine days | Mechanism never exercised | 1 | Convention (catalog-drift check proposed) |
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
+| 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -3241,6 +3242,17 @@ before any push. Why the rule did not fire: the merge felt like bookkeeping rath
 change, and the test run was there as a report, not as a gate. The pre-push hook is still the
 mechanical backstop; the rule stands as written.
 
+**Occurrence 2026-10-30 (a push with the hook switched off).** Pushed the
+`fix/seed-bind-environment-ids` commits from `5290a190` on (PR #798) with `SKIP_TESTS=1`. The skip
+was meant for the agentgateway TLS-probe tests that fail under the workstation's Python 3.14
+("Missing Authority Key Identifier"; CI pins 3.12), but it skipped the whole suite, including
+`platform/tests/test_check_mode_contract.py`, which the new bind task broke: its `when:` joined
+`not ansible_check_mode` to an `or`. A ruff line-length error rode along. CI caught both before
+merge; `ebdcef76` and `1fb408b7` fixed them. Why the rule did not fire: the hook is the gate, and
+it was bypassed whole to get past an unrelated, known-red set. Proposed guard: the pre-push hook
+runs pytest under a Python 3.12 when one is installed, or deselects only the named 3.14 failures,
+so `SKIP_TESTS=1` is never the way past them.
+
 ### 5.3 Merging while the review was rate-limited
 
 **What happened.** Merged a pull request while the review bot reported
@@ -5417,6 +5429,35 @@ checked like one.
 reaches the restore-target preflight or guard, through imports or task includes, must declare
 `isolated_environment`. The five writers now do; their environments come from `Provision Seed
 Environment (Dev)`.
+
+### 10.33 Deployed the guardrail with its write API open; a read-only mount was taken for an immutable policy
+
+**What happened.** Production OPA went live on 2026-10-29 (Semaphore task 10380) running
+`opa run --server ... /policies`: the policy tree loaded as a plain path. In that mode OPA's REST
+API accepts writes. Port 8281 is admitted from the console and skynet hosts, so either could
+rewrite the catalog or the Rego that decides what it may do. The 2026-10-31 security review found
+it, and it was reproduced locally on the same 1.0.0-static image and the real tree:
+`PUT /v1/data/agentcloud/catalog` answered 204 and flipped a denied decision to allowed;
+`PUT /v1/policies/<id>` answered 200; `DELETE /v1/data/agentcloud` answered 204. Nothing was sent
+to production.
+
+**Root cause.** The plan recorded "Policies come from the placed monorepo (read-only bind mount)"
+(plan 03, P4) and the architecture note "Access control is the host firewall". Neither was tested
+against the engine's own mutation surface. The `:ro` mount protects the files, not the running
+policy, and for OPA, admission through the firewall included permission to write. The
+`/security-review` the branch workflow requires before a PR (AGENTS.md, step 4), which would have
+read the command line with this question in mind, was skipped for #778.
+
+**The rule.** A guardrail service's own write surface is part of its threat model. Before
+calling a policy or secret engine deployed, send it one write as an admitted caller and require
+the refusal. "Read-only" means the running service refuses writes, not that its files are mounted
+`:ro`.
+
+**Enforced by.** Test (`platform/tests/test_service_opa.bats`: `--bundle /policies` closes both
+command lists; the verify tasks require exactly 400 on the plain and the TLS path) and the deploy
+itself: every `Deploy OPA` sends `PUT /v1/data/agentcloud_write_probe`, a path no rule reads, and
+fails unless OPA refuses it. The deploy runs `opa test --bundle`, so its tests load the tree the
+way the server does, and a test refuses any data file in the tree that bundle mode would skip.
 
 ## 11. The largest one
 

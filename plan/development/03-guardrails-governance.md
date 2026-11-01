@@ -899,13 +899,14 @@ D29) waits on both OPA and skynet.
 | P3 | **Server TLS from a step-ca leaf in the first deploy.** Leaf `opa-server`, SAN `opa.<dns_site>.<dns_zone>`, served by OPA itself (`--tls-cert-file`, `--tls-cert-refresh-period=30s`). No client-certificate authentication | HTTP first, TLS later; mutual TLS | skynet requires `https://`. OPA re-reads the files every 30 s, which picks up the renewal's `current` swap without a restart (measured locally 2026-10-29 with the 1.0.0-static image) |
 | P4 | **Policies come from the placed monorepo** (read-only bind mount). The deployed branch decides which Rego is live; a change is applied by redeploy | OPA bundles | No bundle build or serving infrastructure to run |
 | P5 | Production runs **`Deploy OPA (Dev)` with `service_branch=dev`** until `dev` is promoted | Waiting for promotion | Same as the console rollout |
+| P6 | **OPA loads `./policies` in bundle mode** (`--bundle`, 2026-10-31). OPA then owns every data and policy path and refuses `PUT`/`PATCH`/`DELETE` on `/v1/data` and `/v1/policies` with HTTP 400. This is a local directory loaded as a bundle, not a bundle server, so P4 stands | The plain path load P4 shipped with | The read-only mount protects the files, not the running policy. Under a plain load, any caller the firewall admits could rewrite the catalog or the Rego, or delete `/v1/data/agentcloud` (each measured locally on the 1.0.0-static image: 204 or 200). Bundle mode gave identical decisions on the real tree (13 sample inputs and the whole `/v1/data` document) and `opa test` 101/101. `docs/MISTAKES.md` 10.33 |
 
 ### What the code does
 
 - `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback), `opa_tls`, and an `https://` `opa_internal_url`.
 - With `opa_tls` set, it checks the leaf's declaration in `internal_leaves`: server profile, this host, `<deploy>/certs/<leaf>`, reload `none`, the server name in its SANs.
 - It issues the leaf if none is current (`tasks/mint-internal-cert.yml`, key made on the OPA host), places the CA bundle (`tasks/distribute-ca-root.yml`), and starts OPA with `compose.tls.yml`. That overlay adds userns keep-id for the image's uid 1000, the `./certs` directory mount, and the TLS flags.
-- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, and `opa test /policies`.
+- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, that a policy write (`PUT /v1/data/agentcloud_write_probe`, a path no rule reads) is refused with exactly 400, and `opa test --bundle /policies`.
 - `renew-internal-certs.yml` admits the leaf as class `opa-server` and proves it by a TLS connection verified by name, comparing the served serial with `current`.
 
 ### Production checklist
@@ -924,6 +925,8 @@ Each step runs through Semaphore, check mode first.
 10. [x] `Probe Reachability (Dev)`: from `console_svc`, 8281 open (10387); from `dns_svc`, 8281 closed (10388).
 11. [ ] `Renew Internal Certs (Dev)`: a check-mode run (10389) admits the leaf as class `opa-server`, with 29 of 30 days left. The served-serial proof runs at its first renewal. The template offers no `--tags verify`, and a rotation drill would reissue every leaf on every host.
 12. [ ] skynet: its group is already admitted (site-config #127; applied by task 10337). Remaining: point skynet at `https://opa.<dns_site>.<dns_zone>:8281`, mapping the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe.
+
+13. [ ] Redeploy with bundle mode (P6): `Deploy OPA (Dev)`, check mode then real; the verify must show the policy write refused.
 
 **Known gaps:**
 - `Verify Service Health` is not declared for OPA. Its `uri` probe has no server-name override, and the name does not resolve on the OPA host. The deploy's own verify covers `/health`.
