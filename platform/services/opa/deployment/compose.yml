@@ -1,8 +1,9 @@
 # OPA — Open Policy Agent: the cross-service authorization decision point of the
 # Guardrail Layer (OpenBao owns credentials, Kyverno owns k8s admission, OPA owns
 # everything else — "are you allowed to do this?"). Policies are Rego under
-# ./policies, mounted read-only (policy-as-code). Phase 1: unauthenticated
-# internal decision API (it returns decisions, not secrets). deploy.sh is
+# ./policies, mounted read-only (policy-as-code). Access: the host firewall admits the
+# callers, and --authorization=basic with policies/system/authz.rego admits only the
+# decision API and /health (everything else answers 401). deploy.sh is
 # container-lifecycle only. Plan: plan/development/03-guardrails-governance.md (OPA section).
 name: opa
 
@@ -24,9 +25,15 @@ services:
       # comes from each query's `input`.
       - --set=decision_logs.console=true
       - --set=status.console=true
+      # Authorization: OPA asks data.system.authz.allow (policies/system/authz.rego) about every
+      # request on this listener and answers 401 unless it is true. Without it, any caller the
+      # firewall admits can read the data documents and query arbitrary paths.
+      - --authorization=basic
       # Load ./policies as a bundle: OPA then owns every data and policy path and refuses
-      # PUT/PATCH/DELETE on /v1/data and /v1/policies (HTTP 400). Without it any caller that
-      # reaches the port can rewrite the guardrail; the :ro mount protects only the files.
+      # PUT/PATCH/DELETE on /v1/data and /v1/policies (HTTP 400 once the authorization policy
+      # above admits the request; the authorization policy refuses them first, with 401).
+      # Without it any caller that reaches the port can rewrite the guardrail; the :ro mount
+      # protects only the files.
       - --bundle
       - /policies
     ports:

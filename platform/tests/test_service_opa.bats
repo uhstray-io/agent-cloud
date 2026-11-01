@@ -211,19 +211,96 @@ task_with() {
   [ -z "$stray" ]
 }
 
-@test "opa: the verify proves a policy write is refused with exactly 400, on the plain and the TLS path" {
+@test "opa: the verify proves a policy write is refused with exactly 401 (authorization policy), on the plain and the TLS path" {
   local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
   task_with "$pb" 'Policy writes are refused' > "$BATS_TEST_TMPDIR/write.yml"
   assert_grep -qF 'method: PUT' "$BATS_TEST_TMPDIR/write.yml"
   assert_grep -qF '/v1/data/agentcloud_write_probe' "$BATS_TEST_TMPDIR/write.yml"
-  assert_grep -qF "_opa_write.status != 400" "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF "_opa_write.status != 401" "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF "(_opa_write.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/write.yml"
   assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/write.yml"
+  refute_grep -qF "status_code: [400]" "$BATS_TEST_TMPDIR/write.yml"
   task_with "$pb" 'Policy writes over TLS are refused' > "$BATS_TEST_TMPDIR/write-tls.yml"
   assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/write-tls.yml"
   assert_grep -qF "'--request', 'PUT'" "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qF "(_opa_write_tls.stdout_lines | last) != '400'" "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qF ".code | default('')) != 'invalid_parameter'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "(_opa_write_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF ".code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/write-tls.yml"
   assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/write-tls.yml"
   # The probe never writes under a package a decision reads.
   refute_grep -qE '/v1/(data/agentcloud/|policies)' "$BATS_TEST_TMPDIR/write.yml" "$BATS_TEST_TMPDIR/write-tls.yml"
+}
+
+@test "opa: the verify proves a data read is refused with exactly 401 (authorization policy), on the plain and the TLS path" {
+  # GET /v1/data would return every data document (agent catalogs, guardrail rules), so the
+  # authorization policy must refuse it, on both listeners, with the same JSON shape as a write.
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Data reads are refused' > "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF 'method: GET' "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF '{{ _opa_url }}/v1/data"' "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF "_opa_read.status != 401" "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF "(_opa_read.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/read.yml"
+  task_with "$pb" 'Data reads over TLS are refused' > "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "_opa_url ~ '/v1/data'" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "(_opa_read_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "_opa_read_tls.stdout_lines[:-1]" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF ".code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/read-tls.yml"
+}
+
+@test "opa: the verify proves a decision asking for engine internals (?explain=full) is refused with 401, on the plain and the TLS path" {
+  # ?explain=full on the decision path returns the evaluation trace of the policy and its data,
+  # so the authorization policy admits a decision only with no query parameters.
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Decision with explain is refused' > "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF 'method: POST' "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF '{{ _opa_url }}/v1/data/agentcloud/decision?explain=full"' "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF "_opa_explain.status != 401" "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF "(_opa_explain.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/explain.yml"
+  task_with "$pb" 'Decision with explain over TLS is refused' > "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "/v1/data/agentcloud/decision?explain=full'" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "(_opa_explain_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/explain-tls.yml"
+  # The rule itself, and its unit tests.
+  local authz="$DEPLOY_DIR/policies/system/authz.rego" tests="$DEPLOY_DIR/policies/system/authz_test.rego"
+  assert_grep -qF 'count(object.get(input, "params", {})) == 0' "$authz"
+  assert_grep -qE '^test_deny_decision_explain if' "$tests"
+  assert_grep -qE '^test_deny_decision_instrument if' "$tests"
+}
+
+@test "opa authz: the policy admits exactly the decision POST and the health GET, and its tests exist" {
+  # Deny-by-default: the only two allow rules are the decision API and /health. Adding a third
+  # changes what an admitted caller may reach, so it must be an explicit, reviewed change here.
+  local authz="$DEPLOY_DIR/policies/system/authz.rego" tests="$DEPLOY_DIR/policies/system/authz_test.rego"
+  [ -f "$authz" ]
+  [ -f "$tests" ]
+  assert_grep -qx 'package system.authz' "$authz"
+  assert_grep -qx 'default allow := false' "$authz"
+  [ "$(grep -c '^allow if' "$authz")" -eq 2 ]
+  assert_grep -qF 'input.method == "POST"' "$authz"
+  assert_grep -qF 'input.path == ["v1", "data", "agentcloud", "decision"]' "$authz"
+  assert_grep -qF 'input.method == "GET"' "$authz"
+  assert_grep -qF 'input.path == ["health"]' "$authz"
+  # The unit tests cover the admitted requests and the refused ones.
+  assert_grep -qE '^test_allow_decision_post if' "$tests"
+  assert_grep -qE '^test_allow_health_get if' "$tests"
+  assert_grep -qE '^test_deny_policy_write_probe_put if' "$tests"
+  assert_grep -qE '^test_deny_data_root_get if' "$tests"
+  assert_grep -qE '^test_deny_metrics_get if' "$tests"
+}
+
+@test "opa: both command lists pass --authorization=basic, directly before --bundle" {
+  # Without the flag the policy is never asked, and every request reaches the handlers.
+  local f
+  for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
+    [ "$(command_args "$f" | grep -cxF -- '--authorization=basic')" -eq 1 ]
+    # The command ends with the flag, then the bundle it guards (anchored on the whole list).
+    local args
+    args="$(command_args "$f" | tr '\n' ' ')"
+    # `[ ]`, not `[[ ]]`: a false `[[ ]]` mid-body does not fail a Bats test (test_assertions_are_real.bats).
+    [ "${args%" --authorization=basic --bundle /policies "}" != "$args" ]
+  done
 }

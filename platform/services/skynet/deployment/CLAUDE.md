@@ -95,6 +95,7 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
   OPA's default deny. So OPA must be running and must admit skynet (production: OPA's
   `firewall_allow_groups` names `skynet_svc`; local-dev: the OPA stack is up) before a skynet deploy
   can pass. A failure's message names TLS, resolution, the firewall or the decision contract.
+  The verify also sends skynet's transport a `PUT` to `/v1/data/agentcloud_write_probe` on OPA, which must get 401: OPA's authorization policy admits only decisions and health.
 
 ## Networks and reachability
 

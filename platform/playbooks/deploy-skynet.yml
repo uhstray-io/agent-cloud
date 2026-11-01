@@ -549,12 +549,53 @@
           name resolution (the OPA host mapping), a refused or timed-out connection (OPA's firewall
           admits skynet_svc), or OPAContractError (the decision path or rule).
 
+    # OPA's authorization policy admits skynet's decision and health calls and nothing else. skynet
+    # gets the same transport as its decision probe above (urllib, the container's trust store) and
+    # asks for a write to a path no policy reads. OPA must refuse it with 401; anything else means
+    # the authorization policy is missing or admits writes. The probe path is outside every package,
+    # so a write that got through changes no decision.
+    - name: "Skynet cannot write to OPA (PUT /v1/data -> 401, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import os
+            import urllib.error
+            import urllib.request
+            request = urllib.request.Request(
+                os.environ['SKYNET_OPA_URL'] + '/v1/data/agentcloud_write_probe',
+                data=b'{}',
+                headers={'Content-Type': 'application/json'},
+                method='PUT',
+            )
+            try:
+                print(urllib.request.urlopen(request, timeout=10).status)
+            except urllib.error.HTTPError as error:
+                print(error.code)
+      register: _skynet_opa_write
+      changed_when: false
+      check_mode: false
+
+    - name: "Assert skynet's OPA write was refused (401)"
+      ansible.builtin.assert:
+        that:
+          - _skynet_opa_write.stdout | trim == '401'
+        fail_msg: >-
+          skynet's PUT to OPA /v1/data answered {{ _skynet_opa_write.stdout | trim }}, not 401. 200
+          means OPA accepted a write from skynet; 400 means the authorization policy is not loaded
+          (the bundle refused it instead); anything else means the path or the server is wrong.
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           skynet healthy — /skynet/healthz 200; run endpoint 400 with the api token and 401 without
           (inside the container, :8080); read token lists runs (200) and cannot start one (401);
-          skynet's own OPA client got OPA's default deny over {{ skynet_opa_url | default('its OPA URL') }}.
+          skynet's own OPA client got OPA's default deny over {{ skynet_opa_url | default('its OPA URL') }},
+          and OPA refused skynet's write to /v1/data (401).
           Published on skynet_publish_bind:skynet_publish_port; the gateway's /skynet/ route is separate.
 
     # Last: every verify task above passed (a failure stops the play before this records).

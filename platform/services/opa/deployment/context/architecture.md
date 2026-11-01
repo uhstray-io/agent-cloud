@@ -7,7 +7,10 @@ overlap — OPA never stores secrets or executes actions; it returns decisions.
 
 ## Query contract
 
-Agents query OPA over HTTP before executing a service action:
+Agents query OPA over HTTP before executing a service action. That check binds only the agent
+that asks: Semaphore itself never asks OPA, so a launch is not gated by OPA unless its launcher
+is (since 2026-10-31 skynet holds no launch rights; the planned launch gate asks OPA server-side,
+change `skynet-launch-containment`):
 
 ```text
 POST http://opa:8181/v1/data/agentcloud/decision
@@ -18,7 +21,9 @@ POST http://opa:8181/v1/data/agentcloud/decision
               "action": "...", "reason": "allowed by agent policy" } }
 ```
 
-`/v1/data/agentcloud/allow` returns just the boolean. Static permissions live in
+The authorization policy (`policies/system/authz.rego`, see below) refuses every other
+path to a caller, `/v1/data/agentcloud/allow` included, so the decision document is the only
+way a caller reads the answer. Static permissions live in
 `policies/agentcloud/data.json` (per-agent action catalogs, destructive-template
 list); dynamic context (`human_approved`, `template_name`, counts, time) is
 supplied per-query in `input` — never stored in OPA.
@@ -36,12 +41,21 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
 - **Renewal needs no restart.** OPA re-reads the certificate every 30 s
   (`--tls-cert-refresh-period`), so renewal declares reload `none`, then proves the served
   serial.
-- **Access control is the host firewall.** OPA is still unauthenticated; port 8281 is
-  admitted only from its callers' inventory groups (`firewall_allow_groups`).
+- **Access control is the host firewall plus the authorization policy.** OPA has no login.
+  Port 8281 is admitted only from its callers' inventory groups (`firewall_allow_groups`), and
+  `--authorization=basic` asks `system.authz` about every request: the decision POST (with no
+  query parameters) and `GET /health` are answered, and every other request gets 401
+  `unauthorized`. So an admitted caller can ask for decisions and health, and nothing else (no
+  data reads, no queries, no metrics, no writes). The decision must carry no parameters because
+  `?explain=full` returns the whole evaluation trace (76 KB of policy and data for one request,
+  measured on `opa:1.0.0-static`). The diagnostic listener (8282, never published) is covered by
+  the same policy: `/metrics` and the data paths answer 401 there too (measured 2026-10-31).
 - **The running policy is read-only.** OPA loads `/policies` as a bundle (`--bundle`), so it
-  refuses every `PUT`/`PATCH`/`DELETE` on `/v1/data` and `/v1/policies` with HTTP 400. Before
-  2026-10-31 it did not: an admitted caller could rewrite the catalog or the Rego
-  (`docs/MISTAKES.md` 10.33). The deploy's verify sends one refused write to prove it.
+  refuses every `PUT`/`PATCH`/`DELETE` on `/v1/data` and `/v1/policies`. The authorization policy
+  refuses those writes first, with 401, so the bundle's 400 answers only if the authorization
+  policy is not loaded. Before 2026-10-31 nothing refused them: an admitted caller could rewrite
+  the catalog or the Rego (`docs/MISTAKES.md` 10.33). The deploy's verify sends one refused write
+  and one refused data read, both 401, to prove it.
 - **No Caddy route and no public DNS.** Until internal DNS is authoritative, each caller
   maps the name to the VM's address itself.
 
@@ -50,12 +64,13 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
 - Reached by agents + the control plane as `opa:8181` on the `local-dev`
   network; published to `127.0.0.1:8281` for host diagnostics + smoke checks
   (8181 is NocoDB's local bind, so the host port defaults to `OPA_PORT=8281`).
-- **Phase 1 is unauthenticated** — internal-only, returns decisions not secrets,
-  so there are no OPA credentials yet. Phase 2 adds per-agent bearer tokens
-  (OpenBao). Phase 3 ships decision logs to Loki via stdout.
-- Policies are mounted read-only from `./policies` and loaded as a bundle (writes refused,
-  as in production); a change is applied by redeploy (git pull + restart).
-  Rego is tested with `opa test --bundle /policies`.
+- **No OPA credentials.** The listener has no login: it is internal-only, returns decisions
+  not secrets, and the authorization policy limits every caller to the decision POST and
+  `/health` (the same as production). Phase 2 adds per-agent bearer tokens (OpenBao). Phase 3
+  ships decision logs to Loki via stdout.
+- Policies are mounted read-only from `./policies` and loaded as a bundle, with the same
+  authorization policy as production (writes and data reads refused, as in production); a change
+  is applied by redeploy (git pull + restart). Rego is tested with `opa test --bundle /policies`.
 - Local-dev also routes `opa.agent-cloud.test` through Caddy
   (`platform/inventory/local-dev.yml.example`, the `caddy_routes` OPA entry) so a
   caller such as skynet can verify a step-ca certificate. That route is a plain proxy
@@ -69,6 +84,11 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
 
 ## Policy modules
 
+- `system/authz.rego` — the authorization policy for OPA's own HTTP API (`--authorization=basic`,
+  `data.system.authz.allow`). Deny by default; exactly two requests are allowed: the decision POST
+  (`/v1/data/agentcloud/decision`) and `GET /health`. `system/authz_test.rego` has one allowed and
+  one denied case for each request the API serves or must refuse. Adding a third allowed request
+  widens what every admitted caller can reach, so it is a reviewed change to this file.
 - `agentcloud/agent_actions.rego` — per-agent action authorization; `deny` (e.g.
   destructive Semaphore templates without `human_approved`) takes precedence
   over `allow`.
