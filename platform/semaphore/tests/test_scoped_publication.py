@@ -16,6 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "platform/tests"))
 from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
+from fake_semaphore import template_write  # noqa: E402 - the shared v2.19 template-write rule
 
 sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
 from publication import survey_enum_option_problems  # noqa: E402
@@ -29,6 +30,7 @@ TEMPLATE = {
     "repository_id": 5,
     "inventory_id": 37,
     "environment_id": 42,
+    "environment_ids": [42],
     "playbook": "platform/playbooks/store-tududi-api-token.yml",
     "app": "ansible",
     "arguments": '["--limit", "tududi"]',
@@ -149,15 +151,7 @@ class ScopedPublicationTests(unittest.TestCase):
                     ]
                     if cls.drop_setting:
                         value.pop("description", None)
-                    if "environment_ids" in cls.records[0]:
-                        # Semaphore v2.19.11 binds from `environment_ids` when the body carries it, and
-                        # copies `environment_id` into it only when the body omits the list
-                        # (db/Template.go ApplyLegacyEnvironmentField). A body echoing a stale list
-                        # therefore keeps the old binding (production task 10722).
-                        ids = value["environment_ids"] if value.get("environment_ids") is not None \
-                            else [value["environment_id"]]
-                        value["environment_ids"] = ids
-                        value["environment_id"] = ids[0]
+                    value = template_write(value)
                     cls.records[0] = value
                 return self.reply({})
 
@@ -503,6 +497,9 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_provisioner_encrypts_runtime_auth_preserves_source_and_converges(self):
         self.prepare_seed_template()
+        # A template read back without environment_ids (an older record shape); the v2.19 test
+        # below starts from the list.
+        self.records[0].pop("environment_ids")
         original = copy.deepcopy(self.records[0])
         source = copy.deepcopy(self.environments[0])
         code, output = self.run_play(provision=True)
@@ -522,8 +519,7 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_provisioner_binds_through_environment_ids_on_semaphore_v2_19(self):
         self.prepare_seed_template()
-        self.records[0]["environment_ids"] = [self.records[0]["environment_id"]]
-        original = copy.deepcopy(self.records[0])
+        original = copy.deepcopy(self.records[0])  # TEMPLATE carries environment_ids, as v2.19 does
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
         target = self.environments[1]

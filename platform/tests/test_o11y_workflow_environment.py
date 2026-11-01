@@ -16,6 +16,7 @@ import harness_sandbox
 import pytest
 import yaml
 from fake_http import DrainingHandler
+from fake_semaphore import template_write
 from playbook_yaml import REPO
 
 WRAPPER = REPO / "platform/playbooks/provision-o11y-workflow-environment.yml"
@@ -181,17 +182,7 @@ class _SemaphoreAndBao(DrainingHandler):
                 return self.reply({})
         for index, row in enumerate(type(self).records):
             if self.path == f"/api/project/1/templates/{row['id']}":
-                stored = value.copy()
-                if type(self).legacy_environment_ids:
-                    # Older API fixtures ignore the newer array field entirely.
-                    stored.pop("environment_ids", None)
-                elif "environment_ids" in stored:
-                    # Match the pinned SQL update: the supplied array wins and
-                    # projects its first ID into the legacy scalar field.
-                    stored["environment_id"] = stored["environment_ids"][0]
-                else:
-                    # The legacy scalar is used only when the array is absent.
-                    stored["environment_ids"] = [stored["environment_id"]]
+                stored = template_write(value, legacy=type(self).legacy_environment_ids)
                 type(self).records[index] = stored
                 return self.reply(stored)
         return self.reply({}, 404)
