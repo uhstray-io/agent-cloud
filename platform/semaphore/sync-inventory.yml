@@ -17,8 +17,8 @@
 # Semaphore's own configuration from inside a Semaphore job is avoided by
 # convention, same as setup-templates.yml and bootstrap-semaphore-repositories.yml.
 #
-# Supply SEMAPHORE_TOKEN through the approved executor, or use its existing
-# OpenBao controller AppRole (see README.md); do not copy credentials into argv.
+# Direct playbook callers may supply SEMAPHORE_TOKEN or use the controller AppRole.
+# The operator frontend supplies its token on stdin and previews unless --apply is set.
 #   SEMAPHORE_URL=https://semaphore.uhstray.io \
 #     ansible-playbook platform/semaphore/sync-inventory.yml \
 #       -e inventory_source=../site-config/inventory/production.yml \
@@ -43,8 +43,29 @@
     _ssh_key_id: "{{ semaphore_inventory_ssh_key_id | default(0) | int }}"
 
   tasks:
-    - name: "Resolve approved Semaphore runtime access"
+    - name: "Preflight the sync-only token route"
+      ansible.builtin.include_tasks: tasks/runtime-preflight.yml
+      when: sync_inventory_token is defined
+
+    - name: "Validate the sync-only runtime token"
+      ansible.builtin.assert:
+        that:
+          - sync_inventory_token is string
+          - sync_inventory_token | length > 0
+        fail_msg: "The sync-only Semaphore token input is invalid."
+        quiet: true
+      when: sync_inventory_token is defined
+      no_log: true
+
+    - name: "Take the sync-only input token"
+      ansible.builtin.set_fact:
+        _token: "{{ sync_inventory_token }}"
+      when: sync_inventory_token is defined
+      no_log: true
+
+    - name: "Resolve existing shared runtime access"
       ansible.builtin.include_tasks: tasks/runtime-access.yml
+      when: sync_inventory_token is not defined
 
     - name: "Validate inputs"
       ansible.builtin.assert:
@@ -62,10 +83,12 @@
       ansible.builtin.slurp:
         src: "{{ inventory_source }}"
       register: _src
+      no_log: true
 
     - name: "Decode it"
       ansible.builtin.set_fact:
         _content: "{{ _src.content | b64decode }}"
+      no_log: true
 
     - name: "Refuse to push an empty inventory"
       # A blank push would leave the orchestrator with no hosts and every later
@@ -73,13 +96,14 @@
       ansible.builtin.assert:
         that:
           - _content | trim | length > 0
-        fail_msg: "{{ inventory_source }} is empty — refusing to blank Semaphore's inventory."
+        fail_msg: "The inventory source is empty; refusing to blank Semaphore's inventory."
 
     - name: "Sanity-check it parses as YAML"
       ansible.builtin.assert:
         that:
           - (_content | from_yaml) is mapping
-        fail_msg: "{{ inventory_source }} does not parse as a YAML mapping — refusing to push it."
+        fail_msg: "The inventory source is not a YAML mapping; refusing to push it."
+      no_log: true
 
     # Count actual hosts using Ansible's OWN inventory parser rather than a
     # hand-rolled YAML walker. `{}` and a groups-only skeleton are both non-empty
@@ -95,10 +119,15 @@
     # grammar; reimplementing it here would just be a second thing to get wrong.
     - name: "Enumerate hosts with ansible-inventory"
       ansible.builtin.command:
-        argv: [ansible-inventory, -i, "{{ inventory_source }}", --list]
+        argv:
+          - ansible-inventory
+          - -i
+          - "{{ inventory_source }}"
+          - --list
       register: _inv_list
       changed_when: false
       check_mode: false
+      no_log: true
 
     - name: "Count them"
       ansible.builtin.set_fact:
@@ -109,11 +138,9 @@
         that:
           - (_host_count | int) > 0
         fail_msg: >-
-          {{ inventory_source }} parses but declares NO hosts. Pushing it would
-          leave Semaphore with an inventory it cannot run anything against, and
-          every later task would fail looking like a connectivity problem.
-          Refusing.
-        success_msg: "{{ inventory_source }} declares {{ _host_count }} host(s)."
+          The inventory parses but declares no hosts. Refusing to replace the
+          Semaphore inventory with an inventory that has no hosts.
+        success_msg: "The validated inventory declares {{ _host_count }} host(s)."
 
     - name: "Read existing inventory records"
       ansible.builtin.uri:
@@ -124,10 +151,12 @@
         follow_redirects: none
       register: _invs
       check_mode: false
+      no_log: true
 
     - name: "Locate the target record"
       ansible.builtin.set_fact:
         _match: "{{ (_invs.json | selectattr('name', 'equalto', _name) | list | first) | default({}) }}"
+      no_log: true
 
     - name: "Require the record to exist"
       # Creating one would also need the right ssh_key_id and type, which are
@@ -137,16 +166,15 @@
         that:
           - _match | length > 0
         fail_msg: >-
-          No Semaphore inventory record named '{{ _name }}'. Available:
-          {{ _invs.json | map(attribute='name') | list | join(', ') }}.
-          Create it once in Semaphore (type static-yaml), then re-run.
+          The declared Semaphore inventory record does not exist. Create the
+          intended static-yaml record through its approved configuration path.
 
     - name: "Report whether anything changes"
       ansible.builtin.debug:
         msg: >-
-          {{ 'Content differs — will update record ' ~ _match.id ~ " ('" ~ _name ~ "')."
+          {{ 'Validated inventory differs; the existing record will be updated.'
              if (_match.inventory | default('')) != _content
-             else "Record " ~ _match.id ~ " ('" ~ _name ~ "') already matches the file — no write." }}
+             else 'Validated inventory already matches; no write is needed.' }}
 
     - name: "Update the record"
       ansible.builtin.uri:
@@ -170,6 +198,7 @@
         - not ansible_check_mode
         - (_match.inventory | default('')) != _content
       changed_when: true
+      no_log: true
 
     - name: "Re-read to confirm"
       ansible.builtin.uri:
@@ -181,6 +210,7 @@
       register: _after
       changed_when: false
       check_mode: false
+      no_log: true
 
     - name: "Verify the push actually landed"
       # Dry run: nothing was pushed, so the stored record may still differ.
@@ -188,9 +218,14 @@
       ansible.builtin.assert:
         that:
           - (_after.json.inventory | default('')) == _content
-        fail_msg: >-
-          Semaphore's stored inventory still differs from {{ inventory_source }}
-          after the write — do not trust a later run against it.
-        success_msg: >-
-          Record {{ _match.id }} ('{{ _name }}') matches {{ inventory_source }}
-          ({{ _content | length }} characters).
+          - (_after.json.id | int) == (_match.id | int)
+          - _after.json.name == _match.name
+          - (_after.json.project_id | int) == (_match.project_id | int)
+          - _after.json.type == _match.type
+          - (_after.json.ssh_key_id | int) == (_match.ssh_key_id | default(_ssh_key_id) | int)
+          - >-
+            (_after.json.become_key_id | default(none)) ==
+            (_match.become_key_id | default(none))
+        fail_msg: "Semaphore inventory readback did not match; reconcile before retrying."
+        success_msg: "The existing Semaphore inventory matches the validated source."
+      no_log: true

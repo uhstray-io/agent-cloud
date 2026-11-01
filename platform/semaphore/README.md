@@ -218,6 +218,42 @@ Without a token, the operator launches from the UI and the agent hands over the
 exact template name, survey values and verification commands. Do not fabricate
 access by reading the controller's own token out of OpenBao from a workstation.
 
+### Synchronize an existing inventory record
+
+Use `scripts/semaphore-sync-inventory.py` to preview the canonical inventory-sync
+play with your own Semaphore API token. Preview is the default; `--apply` is
+required to update a differing record. The token is read from stdin and passed
+to Ansible as JSON on child stdin. The sync child disables privilege escalation
+and debug logging, removes inherited log destinations and callback overrides,
+pins the repository config and redacting callback, enables supported module
+pipelining, and disables kept remote files. Child output is captured and only a
+fixed outcome is printed. The script never creates records or changes key
+bindings.
+
+```sh
+python3 scripts/semaphore-sync-inventory.py \
+  --url https://semaphore.example \
+  --inventory "$HOME/site-config/inventory/production.yml" \
+  --name production \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+Apply a reviewed preview explicitly:
+
+```sh
+python3 scripts/semaphore-sync-inventory.py \
+  --apply \
+  --url https://semaphore.example \
+  --inventory "$HOME/site-config/inventory/production.yml" \
+  --name production \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+If an apply reports an uncertain outcome, use a read-only check of the existing
+record before any retry; a failed process does not prove the server rejected a
+write. Existing direct `ansible-playbook platform/semaphore/sync-inventory.yml`
+callers continue to use `SEMAPHORE_TOKEN` or the controller AppRole.
+
 ## Two catalog rules, enforced by tests
 
 - **A step template new with the service deployment workflow has a `(Dev)` variant.** Its
