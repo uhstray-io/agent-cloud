@@ -15,9 +15,15 @@ MATCH_SUMMARY = "Validated inventory already matches; no write is needed."
 
 
 def ansible_child_environment() -> dict[str, str]:
-    """Keep this stdin-token child from serializing URI arguments to temp files."""
+    """Keep the sync child from leaking credentials through Ansible diagnostics."""
     child_env = os.environ.copy()
     child_env.pop("SEMAPHORE_TOKEN", None)
+    child_env.pop("ANSIBLE_LOG_PATH", None)
+    child_env.pop("ANSIBLE_CALLBACKS_ENABLED", None)
+    child_env["ANSIBLE_CONFIG"] = str(ROOT / "ansible.cfg")
+    child_env["ANSIBLE_DEBUG"] = "False"
+    child_env["ANSIBLE_STDOUT_CALLBACK"] = "redact_requests"
+    child_env["ANSIBLE_CALLBACK_PLUGINS"] = str(ROOT / "callback_plugins")
     child_env["ANSIBLE_PIPELINING"] = "True"
     child_env["ANSIBLE_KEEP_REMOTE_FILES"] = "False"
     return child_env
@@ -34,12 +40,25 @@ def main() -> int:
     mode.add_argument("--check", action="store_true", help="preview without updating the record (default)")
     args = parser.parse_args()
 
+    if not args.url:
+        print("Semaphore URL is required; no synchronization was started.", file=sys.stderr)
+        return 2
+    if sys.stdin.isatty():
+        print("Operator token must be provided on stdin; no synchronization was started.", file=sys.stderr)
+        return 2
+
     token = sys.stdin.read()
     if token.endswith("\n"):
         token = token[:-1]
         if token.endswith("\r"):
             token = token[:-1]
-    if not token or "\n" in token or "\r" in token:
+    if (
+        not token
+        or "\n" in token
+        or "\r" in token
+        or any(ord(char) < 32 or ord(char) == 127 for char in token)
+        or any(marker in token for marker in ("{{", "{%", "{#"))
+    ):
         print("Invalid operator token input; no synchronization was started.", file=sys.stderr)
         return 2
 

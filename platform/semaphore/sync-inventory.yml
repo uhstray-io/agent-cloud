@@ -78,7 +78,6 @@
           Configure approved runtime access (platform/semaphore/README.md) and pass
           -e inventory_source=<path to the inventory file>
           (optionally -e inventory_name=<record name>, default 'production').
-      no_log: true
 
     - name: "Read the source inventory"
       ansible.builtin.slurp:
@@ -98,7 +97,6 @@
         that:
           - _content | trim | length > 0
         fail_msg: "The inventory source is empty; refusing to blank Semaphore's inventory."
-      no_log: true
 
     - name: "Sanity-check it parses as YAML"
       ansible.builtin.assert:
@@ -126,9 +124,6 @@
           - -i
           - "{{ inventory_source }}"
           - --list
-          - --extra-vars
-          - "@/dev/stdin"
-        stdin: "{}"
       register: _inv_list
       changed_when: false
       check_mode: false
@@ -173,7 +168,6 @@
         fail_msg: >-
           The declared Semaphore inventory record does not exist. Create the
           intended static-yaml record through its approved configuration path.
-      no_log: true
 
     - name: "Report whether anything changes"
       ansible.builtin.debug:

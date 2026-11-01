@@ -52,6 +52,7 @@ def _fixture_checkout(tmp_path: Path, *, api_origin=None, catalog_change=None) -
         "platform/semaphore/repositories.yml",
         "platform/semaphore/filter_plugins/publication.py",
         "platform/semaphore/tasks/runtime-access.yml",
+        "platform/semaphore/tasks/runtime-preflight.yml",
         "platform/semaphore/tasks/isolated-environments.yml",
     ]
     for relative in paths:

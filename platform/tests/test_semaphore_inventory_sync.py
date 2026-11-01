@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -44,6 +45,8 @@ class FakeSemaphore(BaseHTTPRequestHandler):
         return self.headers.get("Authorization") == f"Bearer {TOKEN}"
 
     def do_GET(self):
+        if self.path.startswith("/api/"):
+            self.state["api_requests"] += 1
         if self.path == "/v1/secret/data/services/semaphore":
             if self.headers.get("X-Vault-Token") != "SYNTHETIC_BAO_TOKEN":
                 self.reply(403, {"error": PRIVATE})
@@ -101,7 +104,7 @@ class FakeSemaphore(BaseHTTPRequestHandler):
 @pytest.fixture
 def fake_api():
     FakeSemaphore.state = {
-        "record": dict(BASE), "gets": 0, "readbacks": 0, "puts": 0, "payload": None,
+        "record": dict(BASE), "gets": 0, "readbacks": 0, "puts": 0, "api_requests": 0, "payload": None,
         "mismatch": False, "accept_then_drop": False, "metadata_mismatch": False,
         "bao_logins": 0, "bao_reads": 0, "hold_collection_get": False,
         "request_held": threading.Event(), "release_request": threading.Event(),
@@ -178,6 +181,12 @@ def test_actual_child_stdin_is_only_token_channel_and_path_is_json(tmp_path, fak
         "data=json.load(sys.stdin)\n"
         f"assert hashlib.sha256(data['sync_inventory_token'].encode()).hexdigest()=={token_digest!r}\n"
         "assert 'SEMAPHORE_TOKEN' not in os.environ\n"
+        "assert os.environ['ANSIBLE_CONFIG'].endswith('/ansible.cfg')\n"
+        "assert os.environ['ANSIBLE_DEBUG']=='False'\n"
+        "assert 'ANSIBLE_LOG_PATH' not in os.environ\n"
+        "assert 'ANSIBLE_CALLBACKS_ENABLED' not in os.environ\n"
+        "assert os.environ['ANSIBLE_STDOUT_CALLBACK']=='redact_requests'\n"
+        "assert os.environ['ANSIBLE_CALLBACK_PLUGINS'].endswith('/callback_plugins')\n"
         f"assert all(hashlib.sha256(value.encode()).hexdigest()!={token_digest!r} for value in os.environ.values())\n"
         "assert data['inventory_source'].endswith('inventory with spaces.yml')\n"
         "assert '--extra-vars' in sys.argv and '@/dev/stdin' in sys.argv\n"
@@ -191,6 +200,72 @@ def test_actual_child_stdin_is_only_token_channel_and_path_is_json(tmp_path, fak
     assert result.stdout == "Inventory check completed; the existing record already matches.\n"
     assert_clean(result)
     assert all(TOKEN.encode() not in path.read_bytes() for path in tmp_path.rglob("*") if path.is_file())
+
+
+def test_child_environment_overrides_inherited_ansible_debug_and_callback_settings(monkeypatch):
+    module_spec = importlib.util.spec_from_file_location("sync_inventory_child_env", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    inherited_log = "/private/tmp/inherited-private-ansible.log"
+    for name, value in {
+        "ANSIBLE_CONFIG": "/tmp/inherited-ansible.cfg",
+        "ANSIBLE_DEBUG": "True",
+        "ANSIBLE_LOG_PATH": inherited_log,
+        "ANSIBLE_STDOUT_CALLBACK": "json",
+        "ANSIBLE_CALLBACKS_ENABLED": "timer",
+        "ANSIBLE_CALLBACK_PLUGINS": "/tmp/inherited-callbacks",
+    }.items():
+        monkeypatch.setenv(name, value)
+    child_env = module.ansible_child_environment()
+    assert child_env["ANSIBLE_CONFIG"] == str(ROOT / "ansible.cfg")
+    assert child_env["ANSIBLE_DEBUG"] == "False"
+    assert "ANSIBLE_LOG_PATH" not in child_env
+    assert "ANSIBLE_CALLBACKS_ENABLED" not in child_env
+    assert child_env["ANSIBLE_STDOUT_CALLBACK"] == "redact_requests"
+    assert child_env["ANSIBLE_CALLBACK_PLUGINS"] == str(ROOT / "callback_plugins")
+
+
+def test_inherited_ansible_debug_and_log_path_cannot_leak_preview_inventory(
+    tmp_path, fake_api,
+):
+    url, state = fake_api
+    source = tmp_path / "private preview inventory.yml"
+    source.write_text(VALID)
+    log_path = tmp_path / "inherited-ansible.log"
+    hostile_config = tmp_path / "inherited-ansible.cfg"
+    hostile_config.write_text(
+        "[defaults]\n"
+        "stdout_callback = json\n"
+        "callbacks_enabled = timer\n"
+        f"callback_plugins = {tmp_path / 'inherited-callbacks'}\n"
+        f"log_path = {log_path}\n"
+    )
+    local_tmp = tmp_path / "ansible-local"
+    remote_tmp = tmp_path / "ansible-remote"
+    local_tmp.mkdir()
+    remote_tmp.mkdir()
+    env = os.environ.copy()
+    env.update({
+        "ANSIBLE_CONFIG": str(hostile_config),
+        "ANSIBLE_DEBUG": "True",
+        "ANSIBLE_LOG_PATH": str(log_path),
+        "ANSIBLE_STDOUT_CALLBACK": "json",
+        "ANSIBLE_CALLBACKS_ENABLED": "timer",
+        "ANSIBLE_CALLBACK_PLUGINS": str(tmp_path / "inherited-callbacks"),
+        "ANSIBLE_LOCAL_TEMP": str(local_tmp),
+        "ANSIBLE_REMOTE_TEMP": str(remote_tmp),
+        "SEMAPHORE_TOKEN": ENV_TOKEN,
+        "PATH": f"{Path(ansible_bin('ansible-playbook')).parent}:{os.environ.get('PATH', '')}",
+    })
+    result = subprocess.run(
+        [str(SCRIPT), "--url", url, "--inventory", str(source)],
+        input=TOKEN + "\n", text=True, capture_output=True, env=env, cwd=ROOT, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert state["gets"] == state["readbacks"] == 1
+    assert state["puts"] == 0
+    assert not log_path.exists()
+    assert_clean(result)
 
 
 @pytest.mark.parametrize("inventory", ["", "{ broken", "groups: {}\n", "{}\n"])
@@ -283,7 +358,49 @@ def test_multiline_token_fails_before_child_or_api(tmp_path, fake_api):
     url, state = fake_api
     result = run_sync(tmp_path, url, VALID, token=f"{TOKEN}\nSECOND_LINE")
     assert result.returncode == 2 and state["gets"] == state["puts"] == 0
-    assert_clean(result)
+
+
+def test_frontend_refuses_empty_url_and_template_token_before_any_auth_or_api(tmp_path, fake_api):
+    url, state = fake_api
+    empty_url = run_sync(tmp_path, "", VALID)
+    assert empty_url.returncode == 2
+    assert state["gets"] == state["puts"] == state["bao_logins"] == state["bao_reads"] == 0
+    template_token = "{{ lookup('ansible.builtin.env', 'SEMAPHORE_TOKEN') }}"
+    result = run_sync(
+        tmp_path, url, VALID, token=template_token,
+        env_overrides={
+            "OPENBAO_ADDR": url,
+            "BAO_ROLE_ID": "SYNTHETIC_ROLE_ID",
+            "BAO_SECRET_ID": "SYNTHETIC_SECRET_ID",
+        },
+    )
+    assert result.returncode == 2
+    assert state["gets"] == state["puts"] == state["bao_logins"] == state["bao_reads"] == 0
+
+
+def test_frontend_refuses_tty_before_reading_token(monkeypatch, capsys):
+    module_spec = importlib.util.spec_from_file_location("sync_inventory_tty", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    class TtyInput:
+        def isatty(self):
+            return True
+
+        def read(self):
+            pytest.fail("TTY input must be refused before reading")
+
+    monkeypatch.setattr(
+        module.sys, "argv",
+        [str(SCRIPT), "--url", "https://example.invalid", "--inventory", "inventory.yml"],
+    )
+    monkeypatch.setattr(module.sys, "stdin", TtyInput())
+    monkeypatch.setattr(
+        module.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("child must not start"),
+    )
+    assert module.main() == 2
+    assert "Operator token must be provided on stdin" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("token", ["", None, [TOKEN]])
@@ -336,6 +453,30 @@ def test_existing_environment_token_route_still_runs_canonical_play(tmp_path, fa
     assert_clean(result)
 
 
+def test_direct_play_api_error_uses_repository_redaction_callback(tmp_path, fake_api):
+    url, state = fake_api
+    source = tmp_path / "direct-api-error.yml"
+    source.write_text(VALID)
+    env = os.environ.copy()
+    env["ANSIBLE_CONFIG"] = str(ROOT / "ansible.cfg")
+    env["SEMAPHORE_TOKEN"] = "WRONG_DIRECT_TOKEN_CANARY"
+    env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{env.get('PATH', '')}"
+    env["ANSIBLE_LOCAL_TEMP"] = str(tmp_path / "direct-local")
+    env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "direct-remote")
+    Path(env["ANSIBLE_LOCAL_TEMP"]).mkdir()
+    Path(env["ANSIBLE_REMOTE_TEMP"]).mkdir()
+    extra = json.dumps({"semaphore_url": url, "inventory_source": str(source)})
+    result = subprocess.run(
+        [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--extra-vars", extra],
+        text=True, capture_output=True, env=env, cwd=ROOT, check=False,
+    )
+    raw = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert state["api_requests"] == 1 and state["puts"] == 0
+    for canary in ("WRONG_DIRECT_TOKEN_CANARY", TOKEN, PRIVATE, ENV_TOKEN):
+        assert canary not in raw
+
+
 def test_existing_controller_approle_route_still_resolves_and_syncs(tmp_path, fake_api):
     url, state = fake_api
     source = tmp_path / "approle-route.yml"
@@ -366,6 +507,11 @@ def test_existing_controller_approle_route_still_resolves_and_syncs(tmp_path, fa
             ROOT / "platform/playbooks/collect-service-conformance.yml",
             "playbooks",
             "../semaphore/tasks/runtime-access.yml",
+        ),
+        (
+            ROOT / "platform/playbooks/tasks/provision-semaphore-service-identity.yml",
+            "playbooks/tasks",
+            "../../semaphore/tasks/runtime-access.yml",
         ),
     ],
 )
@@ -493,29 +639,39 @@ def test_actual_uri_module_tempfile_red_without_pipelining_green_with_pipelining
     green = subprocess.Popen(
         [str(SCRIPT), "--url", url, "--inventory", str(source)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, env=env, cwd=ROOT,
+        text=True, env=env, cwd=ROOT, start_new_session=True,
     )
-    green.stdin.write(TOKEN + "\n")
-    green.stdin.flush()
-    green.stdin.close()
-    green.stdin = None
-    assert fake_api_state["request_held"].wait(timeout=20), "protected canonical URI GET was not held"
-    green_files = _token_files((local_green, remote_green))
-    fake_api_state["release_request"].set()
-    green_out, green_err = green.communicate(timeout=30)
-    assert green.returncode == 0, green_out + green_err
-    assert not green_files
-    assert TOKEN not in green_out + green_err
-    assert ENV_TOKEN not in green_out + green_err
-    assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == script_digest
-    print(json.dumps({
-        "proof": "actual canonical URI request held while scanning Ansible temp files",
-        "synthetic_only": True,
-        "pipelining_off_token_files": len(red_files),
-        "pipelining_on_token_files": len(green_files),
-        "wrapper_stdout_leaked_token": False,
-        "source_unchanged": True,
-    }, sort_keys=True))
+    try:
+        green.stdin.write(TOKEN + "\n")
+        green.stdin.flush()
+        green.stdin.close()
+        green.stdin = None
+        assert fake_api_state["request_held"].wait(timeout=20), "protected canonical URI GET was not held"
+        green_files = _token_files((local_green, remote_green))
+        fake_api_state["release_request"].set()
+        green_out, green_err = green.communicate(timeout=30)
+        assert green.returncode == 0, green_out + green_err
+        assert not green_files
+        assert TOKEN not in green_out + green_err
+        assert ENV_TOKEN not in green_out + green_err
+        assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == script_digest
+        print(json.dumps({
+            "proof": "actual canonical URI request held while scanning Ansible temp files",
+            "synthetic_only": True,
+            "pipelining_off_token_files": len(red_files),
+            "pipelining_on_token_files": len(green_files),
+            "wrapper_stdout_leaked_token": False,
+            "source_unchanged": True,
+        }, sort_keys=True))
+    finally:
+        fake_api_state["release_request"].set()
+        if green.poll() is None:
+            try:
+                os.killpg(green.pid, signal.SIGTERM)
+                green.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(green.pid, signal.SIGKILL)
+                green.wait(timeout=5)
 
 
 def test_runtime_access_keeps_shared_preflight_and_existing_auth_routes():
@@ -528,9 +684,9 @@ def test_runtime_access_keeps_shared_preflight_and_existing_auth_routes():
     assert "non-cleartext transport to Semaphore" in preflight
 
 
-def test_canonical_play_keeps_both_credential_routes_and_inventory_stdin_parser():
+def test_canonical_play_keeps_both_credential_routes_and_inventory_parser():
     play = PLAYBOOK.read_text()
     assert "ansible.builtin.include_tasks: tasks/runtime-preflight.yml" in play
     assert "ansible.builtin.include_tasks: tasks/runtime-access.yml" in play
-    assert '"@/dev/stdin"' in play
-    assert 'stdin: "{}"' in play
+    assert "- ansible-inventory" in play
+    assert "sync_inventory_token" not in (ROOT / "platform/semaphore/tasks/runtime-access.yml").read_text()
