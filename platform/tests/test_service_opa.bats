@@ -297,7 +297,9 @@ task_with() {
   local f
   for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
     [ "$(command_args "$f" | grep -cxF -- '--authorization=basic')" -eq 1 ]
-    [ "$(command_args "$f" | tail -n 3 | head -n 1)" = "--authorization=basic" ]
-    [ "$(command_args "$f" | tail -n 2 | head -n 1)" = "--bundle" ]
+    # The command ends with the flag, then the bundle it guards (anchored on the whole list).
+    local args
+    args="$(command_args "$f" | tr '\n' ' ')"
+    [[ "$args" == *" --authorization=basic --bundle /policies " ]]
   done
 }
