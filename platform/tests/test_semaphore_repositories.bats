@@ -184,6 +184,12 @@ print('\n'.join(bad) if bad else 'OK')
   [ -f "$f" ]
   # The Bearer token crosses the wire on every request.
   assert_grep -qF 'ansible.builtin.include_tasks: tasks/runtime-access.yml' "$f"
+  assert_grep -qF 'sync_inventory_token is defined' "$f"
+  assert_grep -qF 'tasks/runtime-preflight.yml' "$f"
+  ! grep -qE 'sync_inventory_token' "$REPO_ROOT/platform/semaphore/tasks/runtime-access.yml"
+  assert_grep -qF 'runtime-preflight.yml' "$REPO_ROOT/platform/semaphore/tasks/runtime-access.yml"
+  assert_grep -qF 'require-parsed-inventory.yml' "$REPO_ROOT/platform/semaphore/tasks/runtime-preflight.yml"
+  assert_grep -qF 'non-cleartext transport to Semaphore' "$REPO_ROOT/platform/semaphore/tasks/runtime-preflight.yml"
   # `{}` is non-empty AND parses as a mapping, so it cleared both earlier checks
   # while still being hostless — a push would blank the orchestrator.
   grep -qE 'Refuse a hostless inventory' "$f"

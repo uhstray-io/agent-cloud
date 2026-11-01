@@ -91,6 +91,42 @@ controller's own API token.
 
 ## Launching a task from outside the controller (the API path)
 
+### Synchronize an existing inventory record
+
+Use `scripts/semaphore-sync-inventory.py` to preview the canonical inventory-sync
+play with your own Semaphore API token. Preview is the default; `--apply` is
+required to update a differing record. The token is read from stdin and passed
+to Ansible as JSON on child stdin. The sync child enables supported module
+pipelining and disables kept remote files so URI module arguments are not
+materialized in temporary module files. Child output is captured and only a
+fixed outcome is printed. The script never creates records or changes key
+bindings.
+
+```sh
+python3 scripts/semaphore-sync-inventory.py \
+  --url https://semaphore.example \
+  --inventory "$HOME/site-config/inventory/production.yml" \
+  --name production \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+Apply a reviewed preview explicitly:
+
+```sh
+python3 scripts/semaphore-sync-inventory.py \
+  --apply \
+  --url https://semaphore.example \
+  --inventory "$HOME/site-config/inventory/production.yml" \
+  --name production \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+If an apply reports an uncertain outcome, use a read-only check of the existing
+record before any retry; a failed process does not prove the server rejected a
+write. Existing direct `ansible-playbook platform/semaphore/sync-inventory.yml`
+callers continue to use `SEMAPHORE_TOKEN` or the controller AppRole.
+
+
 No workstation path to the production controller was verified in the 2026-09-14
 check: no `SEMAPHORE_TOKEN` was set, the operating evidence came from the UI, and an anonymous
 request to `https://semaphore.uhstray.io/api/ping` is answered by Cloudflare with

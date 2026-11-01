@@ -1,0 +1,13 @@
+---
+# Shared checks that must run before any Semaphore credential route is selected.
+- name: "Require the inventory to have parsed"
+  ansible.builtin.include_tasks: ../playbooks/tasks/require-parsed-inventory.yml
+  when: (ansible_inventory_sources | default([]) | list) != (lookup('ansible.builtin.config', 'DEFAULT_HOST_LIST') | list)
+
+- name: "Require a non-cleartext transport to Semaphore"
+  ansible.builtin.assert:
+    that:
+      - _semaphore_url is match('^(https://|http://(localhost|127(\.[0-9]{1,3}){3})([:/]|$))')
+      - (_semaphore_url | urlsplit('username')) is none
+      - (_semaphore_url | urlsplit('password')) is none
+    fail_msg: "Set semaphore_url or SEMAPHORE_URL to HTTPS or loopback HTTP without URL credentials."

@@ -15,6 +15,29 @@ The platform SHALL maintain a reviewable coverage declaration for every deployed
 - **WHEN** a source directory exists without a deployed target declaration
 - **THEN** the coverage report lists it as planned or unclassified and does not assert live telemetry
 
+### Requirement: Operator inventory synchronization preserves stdin isolation and the canonical lifecycle
+
+The operator inventory-sync frontend SHALL read credentials only from stdin and pass them to the canonical inventory-sync play only through child stdin. It SHALL NOT place credential values in argv, environment, files, or visible output. The existing parsed-inventory and transport checks SHALL run for every authentication route. Existing callers SHALL retain their declared environment/AppRole behavior.
+
+#### Scenario: Stdin credential reaches only the canonical child input
+- WHEN a synthetic operator credential is supplied to the frontend
+- THEN the actual canonical child input receives it through stdin, and inspected arguments, environment, files and visible output do not contain it
+- AND invalid input refuses before any API write.
+
+#### Scenario: Validated synchronization is idempotent and preserves metadata
+- WHEN the source is nonempty valid YAML with actual Ansible hosts and the declared existing record is selected
+- THEN matching content performs no PUT; differing content performs at most one PUT and requires exact content readback
+- AND id, name, project, type and SSH/become key bindings remain preserved
+- AND empty, malformed or hostless sources and missing records refuse without a write.
+
+#### Scenario: Uncertain write acknowledgement requires reconciliation
+- WHEN a possible inventory write fails or loses its acknowledgement
+- THEN the outcome remains uncertain until read-only reconciliation
+- AND the frontend neither retries automatically nor claims that no write occurred
+- AND readback mismatch refuses success without exposing private inventory, credentials, headers or raw responses.
+
+Proposal intent remains unchanged. Production deployment, template/repository mutation, retention expansion, VM growth, PBS operations and backup/restore acceptance are outside these additions.
+
 ### Requirement: Required telemetry is collected and correlated
 Every deployed target SHALL declare applicable logs, metrics, health, and traces with a verified source or a reviewed exclusion reason. Supported host and application logs SHALL be queryable; metrics-capable targets SHALL expose verified metrics; request-serving targets SHALL provide traces when their runtimes support safe instrumentation. The same declared service identity and inventory-derived environment SHALL join applicable logs, metrics, and traces, and verification SHALL use a fresh signal from the exact target.
 
