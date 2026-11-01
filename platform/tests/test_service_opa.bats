@@ -300,6 +300,7 @@ task_with() {
     # The command ends with the flag, then the bundle it guards (anchored on the whole list).
     local args
     args="$(command_args "$f" | tr '\n' ' ')"
-    [[ "$args" == *" --authorization=basic --bundle /policies " ]]
+    # `[ ]`, not `[[ ]]`: a false `[[ ]]` mid-body does not fail a Bats test (test_assertions_are_real.bats).
+    [ "${args%" --authorization=basic --bundle /policies "}" != "$args" ]
   done
 }
