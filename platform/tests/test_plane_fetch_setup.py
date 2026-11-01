@@ -60,6 +60,10 @@ def test_extra_members_are_ignored_not_extracted():
     ("ghcr.io/org/app:1", "ghcr.io/org/app:1"),
     ("localhost/app:dev", "localhost/app:dev"),
     ("registry.local:5000/app:1", "registry.local:5000/app:1"),
+    ("myregistry:5000/app:1", "myregistry:5000/app:1"),
+    ('"makeplane/x:1"', '"docker.io/makeplane/x:1"'),
+    ("'postgres:15'", "'docker.io/library/postgres:15'"),
+    ("makeplane/x:${APP_RELEASE}", "docker.io/makeplane/x:${APP_RELEASE}"),
     ("${PLANE_IMAGE}", "${PLANE_IMAGE}"),
 ])
 def test_short_image_names_get_their_registry(given, qualified):
@@ -72,3 +76,41 @@ def test_only_image_lines_are_rewritten_and_indentation_is_kept():
     assert fetch_setup.qualify_images(compose) == (
         "services:\n  api:\n    image: docker.io/makeplane/backend-commercial:v3.3.3\n"
         "    command: postgres:15 is not an image line\n  db:\n    image: docker.io/library/postgres:15.7-alpine\n")
+
+
+
+def run_main(monkeypatch, capsys, compose):
+    """fetch_setup.main against a local zip in place of the download, pinned on Plane's own bytes."""
+    blob = zip_of({"docker-compose.yml": compose, "variables.env": VARS})
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(fetch_setup.urllib.request, "urlopen", lambda *a, **k: Resp(blob))
+    sums = pins(compose)
+    fetch_setup.main(["fetch_setup.py", "v0", sums["docker-compose.yml"], sums["variables.env"]])
+    return capsys.readouterr().out
+
+
+def test_main_checks_plane_bytes_then_prints_the_qualified_file(monkeypatch, capsys):
+    import json
+
+    out = json.loads(run_main(monkeypatch, capsys, b"services:\n  a:\n    image: makeplane/x:1\n"))
+    assert out["docker-compose.yml"] == "services:\n  a:\n    image: docker.io/makeplane/x:1\n"
+    assert out["variables.env"] == VARS.decode()
+
+
+@pytest.mark.parametrize("compose", [
+    b"services:\n  a:\n    image: postgres:15 # pinned\n",
+    b"services:\n  a:\n    image: &img postgres:15\n",
+    b"services:\n  a:\n    - image: postgres:15\n",
+])
+def test_an_image_the_rewrite_cannot_qualify_refuses_the_fetch(monkeypatch, capsys, compose):
+    with pytest.raises(SystemExit) as stop:
+        run_main(monkeypatch, capsys, compose)
+    assert "without a registry" in str(stop.value)
+    assert capsys.readouterr().out == ""

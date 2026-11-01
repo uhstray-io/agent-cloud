@@ -19,6 +19,8 @@ either repository**. On every run, `deploy-plane.yml`:
    (`makeplane/x` -> `docker.io/makeplane/x`, `postgres:15` -> `docker.io/library/postgres:15`),
    after the digest check. Ubuntu 24.04's podman defines no search registry and refuses short
    names (production deploy, Semaphore task 11139); the platform qualifies rather than adding one.
+   An image line it cannot rewrite refuses the fetch. Guarded by `test_plane_fetch_setup.py`
+   (the platform's `test_compose_image_qualified.py` sees only committed files).
 4. Places the Compose file here as `compose.yml` (gitignored), and renders `.env` from
    `variables.env` with every agent-cloud value replaced (`templates/env.j2`).
 

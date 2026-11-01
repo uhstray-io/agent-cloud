@@ -15,8 +15,11 @@ After the compose file's digest matches, its short image names are qualified wit
 registry (`makeplane/x` -> `docker.io/makeplane/x`, `postgres:15` -> `docker.io/library/postgres:15`).
 Plane's file uses Docker Hub short names; a host whose registries.conf defines no search
 registry (Ubuntu 24.04's podman, the production Plane VM) refuses them, and the platform qualifies
-images rather than relying on search registries (platform/tests/test_compose_image_qualified.py).
-The digest is checked on Plane's bytes as published; only the printed copy is qualified.
+images rather than relying on search registries. The digest is checked on Plane's bytes as
+published; only the printed copy is qualified. Any `image:` line left without a registry after
+that (a form the rewrite does not handle, such as an anchor or a trailing comment) refuses the
+fetch, so the deploy stops here rather than at the pull. platform/tests/test_plane_fetch_setup.py
+guards this; the platform's test_compose_image_qualified.py sees only committed compose files.
 
 Usage: fetch_setup.py <version> <compose-sha256> <variables-sha256>
 """
@@ -50,18 +53,40 @@ def verified_members(blob, expected):
 IMAGE_LINE = re.compile(r"^([ \t]*image:[ \t]*)(\S+)[ \t]*$", re.M)
 
 
-def qualify(ref):
-    """A Docker Hub short name with its registry; a name that already has one is left alone."""
-    if "${" in ref:
-        return ref  # a variable: nothing to qualify safely
+def registry_named(ref):
     first, slash, _ = ref.partition("/")
-    if slash and ("." in first or ":" in first or first == "localhost"):
-        return ref  # already names a registry
-    return f"docker.io/{ref}" if slash else f"docker.io/library/{ref}"
+    return bool(slash) and ("." in first or ":" in first or first == "localhost")
+
+
+def qualify(ref):
+    """A Docker Hub short name with its registry; a name that already has one is left alone.
+
+    A quoted value keeps its quotes. A value whose first path component is a variable, or that is
+    a YAML anchor or alias, is left as it is (and then refused by unqualified(), not guessed at).
+    """
+    quote = ref[0] if ref[:1] in ("'", '"') and ref[-1:] == ref[:1] and len(ref) > 1 else ""
+    bare = ref[1:-1] if quote else ref
+    if bare[:1] in ("&", "*") or "${" in bare.partition("/")[0] or registry_named(bare):
+        return ref
+    return quote + (f"docker.io/{bare}" if "/" in bare else f"docker.io/library/{bare}") + quote
 
 
 def qualify_images(compose):
     return IMAGE_LINE.sub(lambda m: m.group(1) + qualify(m.group(2)), compose)
+
+
+# Any `image:` key, in any form the rewrite above may not handle (list item, comment, CRLF, anchor).
+ANY_IMAGE = re.compile(r"^[ \t]*(?:-[ \t]+)?image:[ \t]*([^\r\n]*?)[ \t]*(?:#[^\r\n]*)?\r?$", re.M)
+
+
+def unqualified(compose):
+    """The image values still without a registry: each one would fail a pull on such a host."""
+    bad = []
+    for value in ANY_IMAGE.findall(compose):
+        bare = value.strip("'\"")
+        if not (registry_named(bare) or bare.partition("/")[0].startswith("${")):
+            bad.append(value)
+    return bad
 
 
 def main(argv):
@@ -77,6 +102,9 @@ def main(argv):
         sys.exit(f"Refusing Plane {version} setup files: {exc}")
     out = {name: data.decode("utf-8") for name, data in files.items()}
     out[MEMBERS[0]] = qualify_images(out[MEMBERS[0]])
+    left = unqualified(out[MEMBERS[0]])
+    if left:
+        sys.exit(f"Refusing Plane {version} setup files: image references without a registry: {left}")
     print(json.dumps(out))
 
 
