@@ -54,9 +54,10 @@ and why.
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
-| 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there | Unverified claim | 2 | Convention |
+| 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1075,21 +1076,7 @@ until re-read; file paths and line numbers do not survive 1,700 commits.
 
 **Enforced by.** Convention.
 
-**Occurrences: 2** — 2026-10-23, 2026-10-31
-
-**Occurrence 2 — 2026-10-31.** Not a line number this time: a reviewer subagent's
-behavioural claim. Reviewing #810, it reported that a false `[[ ]]` inside the new
-flag-order loop in `platform/tests/test_service_opa.bats` fails the test, citing a
-throwaway Bats file it had run. I relayed that to Joe as a checked fact. It was false:
-its probe put the failing case on the loop's last pass, and the loop was the test's
-last statement, so the body's exit status carried it; that is the one position where
-`[[ ]]` does fail (11.1). CI's `test_assertions_are_real.bats` ratchet refused the
-assertion, and the reviewer corrected itself on the next pass. Why the rule did not
-fire: it is worded around `file:line` pointers, and I read a claim that came with its
-own experiment as already verified. An experiment is evidence only once its setup is
-checked against the case it claims to cover. Widened reading, same rule: any
-subagent claim, including one that cites its own test, is re-checked before it
-reaches Joe or a merge decision.
+The rule is widened in 1.28.
 
 ### 1.26 Briefed an executor with an API field shape read from one line of the source
 
@@ -1131,6 +1118,28 @@ file's history. A recent merge near the symptom reads as its cause.
 **The rule.** Before naming the change that introduced a defect, read it: `git log` on the
 file (or `-S` for the line), then the PR that commit belongs to. State the commit, the PR and
 its merge date, or say the origin is unverified.
+
+**Enforced by.** Convention.
+
+### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
+
+**What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
+`[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
+test, and cited a throwaway Bats file it had run to show it. I relayed that to Joe as a
+checked fact. It was false. Its probe put the failing case on the loop's last pass, and the
+loop was the test's last statement, so the body's exit status carried it: the one position
+where `[[ ]]` does fail (11.1). CI's `test_assertions_are_real.bats` ratchet refused the
+assertion, and the reviewer corrected itself on the next pass.
+
+**Root cause.** 1.25's rule is worded around `file:line` pointers, so it did not fire for a
+claim about behaviour. And a claim that arrived with an experiment read as already verified:
+I checked that a probe had run, not that its setup covered the case it claimed to cover.
+
+**The rule.** Supersedes 1.25's scope. Any subagent claim, about code, behaviour or a tool,
+is unverified until re-checked, and that includes a claim backed by the subagent's own test.
+An experiment counts as evidence only after its setup has been read against the exact case
+in question (here: the failing input placed where the real test puts it, not where it
+happens to pass). Until then, a claim reaches Joe or a merge decision labelled `unverified:`.
 
 **Enforced by.** Convention.
 
