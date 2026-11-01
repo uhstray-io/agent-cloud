@@ -52,7 +52,9 @@ the orchestrator, check mode, the Semaphore environment model and local NetBox.
   lives only in the gitignored local inventory.
 - **Semaphore environments are simplified** to one template catalog, with the branch as a
   launch parameter gated by OPA instead of a generated `(Dev)` twin per template, while the
-  local-dev and production instances stay separate controllers.
+  local-dev and production instances stay separate controllers. 2026-10-31: the OPA gate on the launch
+  parameter is not enforced against Semaphore today. skynet's client asks OPA; Semaphore does not. The
+  planned launch gate (OpenSpec change `skynet-launch-containment`) would ask OPA server-side.
 - **NetBox runs on local-dev**, app tier under podman, with discovery scoped to local-dev
   targets only and a guard that refuses any production range.
 - **Tracking MVP**: a scheduled collector writes per-step status to NetBox custom fields and
