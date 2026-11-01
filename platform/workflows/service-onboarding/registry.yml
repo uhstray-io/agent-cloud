@@ -11,7 +11,7 @@
 #   diagram_label    the box text in docs/agent-cloud-service-deploy.excalidraw (line breaks as
 #                    spaces); every step is drawn
 #   added            true for a step added after the first drawing (plan 15, D6, and edge-dns)
-#   owner            OPA identity allowed to launch the executor (data.json allowed_templates)
+#   owner            OPA identity skynet asks before launching the executor (data.json allowed_templates); Semaphore never asks OPA, planned gate: skynet-launch-containment
 #   executor         Semaphore template name that converges/validates the step; "Deploy {service}"
 #                    is resolved per service. null for a reasoning step (it only proposes; the
 #                    steps in `feeds` execute) or for an executor not built yet (planned_executor)
