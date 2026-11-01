@@ -10,10 +10,11 @@ import signal
 import subprocess
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from fake_http import DrainingHandler
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "semaphore-sync-inventory.py"
@@ -27,7 +28,7 @@ BASE = {
 }
 
 
-class FakeSemaphore(BaseHTTPRequestHandler):
+class FakeSemaphore(DrainingHandler):
     state = None
 
     def log_message(self, _format, *_args):
