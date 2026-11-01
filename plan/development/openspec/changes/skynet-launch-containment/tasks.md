@@ -1,6 +1,6 @@
 ## 1. Prerequisites
 
-- [ ] 1.1 Production OPA refuses policy and data writes (the OPA session's bundle-mode PR merged and deployed; its verify proves `PUT /v1/data` is refused)
+- [ ] 1.1 Production OPA refuses policy and data writes and serves only decisions and health (#805 and #810 merged and deployed; Deploy OPA's verify proves `PUT /v1/data` and `GET /v1/data` are refused)
 - [ ] 1.2 Confirm the current `agentcloud` rego ignores an added `settings` input field: `opa test /policies` green with a decision test that sends `settings`
 - [ ] 1.3 svc-skynet is `guest` in production (agent-cloud and site-config demotion PRs merged, Provision skynet Semaphore Access (Dev) re-run, launch probe 403)
 - [ ] 1.4 Validation gate: scenario "skynet's own token cannot launch" holds in production (403 on `POST /api/project/{p}/tasks` with skynet's token)
@@ -13,7 +13,7 @@
 - [ ] 2.4 Launch: task body built from scratch (`template_id`, `environment`, `message`, `params`), dedup against a running task for the same step (409), task tag `<caller> <workflow_id> <step_id>`, check mode refused outside the verified Semaphore versions
 - [ ] 2.5 HTTPS listener that reloads its certificate when the file changes; structured decision/launch log lines without secrets
 - [ ] 2.6 Unit tests covering every refusal, the OPA verdict paths, the exact task body, dedup and certificate reload, with fake OPA and Semaphore servers
-- [ ] 2.7 Validation gate: scenarios "Undeclared key is refused", "Templated value is refused", "Template off the allowlist", "OPA denies", "OPA unreachable" and "The created task holds only validated values" pass in the unit tests
+- [ ] 2.7 Validation gate: scenarios "Undeclared key is refused", "Templated value is refused", "Template off the allowlist", "OPA denies", "OPA unreachable", "The created task holds only validated values" and "Task message for skynet" pass in the gate's unit tests
 
 ## 3. Deployment as code (agent-cloud)
 
@@ -31,7 +31,7 @@
 - [ ] 4.1 Semaphore client: `launch()` calls the gate when `SKYNET_LAUNCH_GATE_URL` is set, refuses to launch otherwise; reads (`task`, `wait`, `output`) keep using skynet's guest token
 - [ ] 4.2 Tests with a fake gate: request shape, error mapping (403/409/400/503 recorded as step `fail`), no direct-launch fallback
 - [ ] 4.3 Publish the image, record its digest
-- [ ] 4.4 Validation gate: scenario "Task message for skynet" passes with the fake gate (`skynet <workflow_id> <step_id>`)
+- [ ] 4.4 Validation gate: scenario "Task message for skynet" holds end to end: skynet's client, launching through the locally deployed gate, creates a task tagged `skynet <workflow_id> <step_id>`
 
 ## 5. Production rollout
 

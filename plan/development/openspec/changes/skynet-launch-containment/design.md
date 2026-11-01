@@ -27,8 +27,8 @@ See proposal.md (Why). Facts that shape the approach:
   defaults, task tag, check mode) preserved.
 
 **Non-Goals:**
-- Making OPA's own API read/write-safe: the OPA session's bundle mode and this session's
-  `--authorization=basic` change are prerequisites tracked as their own changes.
+- Making OPA's own API read/write-safe: bundle mode (agent-cloud #805) and the authorization policy
+  (agent-cloud #810, `--authorization=basic`) are prerequisites tracked as their own pull requests.
 - skynet's read API transport (its own TLS leaf): a separate change.
 - The console's Phase 4 proposal flow: it gets a caller token and agent set here, but its client is the
   console's work.
@@ -98,7 +98,7 @@ See proposal.md (Why). Facts that shape the approach:
 
 ## Migration Plan
 
-1. Land OPA write refusal (OPA session) — prerequisite.
+1. Land OPA write refusal (#805) and the authorization policy (#810) — prerequisites.
 2. Build and test the gate locally (local-dev template), then production: VM via the workflow
    (allocate IP, provision, keys, harden, firewall), Provision launch-gate Semaphore Access, Deploy
    launch-gate, verify.

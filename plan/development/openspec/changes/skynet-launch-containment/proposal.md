@@ -16,7 +16,10 @@ needs the same path.
   service, deployed through the service deployment workflow like every other service.
 - It holds the only launch-capable Semaphore token for agent-initiated work, as its own identity
   `svc-launch-gate` at project role `task_runner`. skynet and the console never hold one.
-- A caller sends `{template, survey, agent, step, git_branch}`. launch-gate refuses, before any call out:
+- A caller sends `{template, survey, agent, workflow_id, step, dry_run}`, plus optional `proposal` and
+  `context` forwarded to OPA unchanged. The Git branch is not a request field: the gate reads it from the
+  template's repository record in Semaphore, so a caller cannot name a branch the template does not run
+  from. launch-gate refuses, before any call out:
   a template not on its allowlist, a survey key the template does not declare, a missing required survey
   field, any value that is not a plain string, and any value containing `{{`, `{%` or `{#`.
 - It then asks OPA server-side (`POST /v1/data/agentcloud/decision`) with the caller's identity as the
@@ -53,8 +56,8 @@ needs the same path.
 - **site-config:** `launch_gate_svc` host and VM declaration (NetBox IP, vmid), its `internal_leaves`
   entry, firewall rules (launch-gate admits skynet and console; skynet's and the console's egress
   unaffected), `semaphore_project_members` gains `svc-launch-gate: task_runner`.
-- **OPA:** prerequisite, tracked separately: writes refused (bundle mode, the OPA session) and then
-  `--authorization=basic` limiting the API to decisions and health. launch-gate's VM is added to OPA's
+- **OPA:** prerequisite, tracked separately: writes refused (bundle mode, agent-cloud #805) and then
+  `--authorization=basic` limiting the API to decisions and health (agent-cloud #810). launch-gate's VM is added to OPA's
   firewall allow list.
 - **Production:** one new VM; svc-skynet stays `guest`.
 

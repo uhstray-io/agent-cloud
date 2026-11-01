@@ -16,8 +16,10 @@ that can run tasks, and every agent-initiated launch MUST be created by that ide
 - **THEN** Semaphore answers 403 and no task is created
 
 #### Scenario: Declared team matches
-- **WHEN** Manage Semaphore Access runs in check mode
-- **THEN** the only non-human member with a role that can run tasks is the launch gate's identity
+- **WHEN** Manage Semaphore Access runs in check mode against the reviewed `semaphore_project_members`
+  declaration
+- **THEN** it reports no role change, and in that declaration `svc-launch-gate` is the only service
+  account (`svc-` name) with a role that can run tasks
 
 ### Requirement: Callers are authenticated and bound to their agent identities
 The launch gate SHALL require a bearer token per caller and MUST map each token to a fixed set of
@@ -41,7 +43,8 @@ contain exactly the validated survey values (with declared defaults filled in fo
 fields) and no other extra variable, inventory, limit, tag or argument override.
 
 #### Scenario: Undeclared key is refused
-- **WHEN** a request for template `Deploy skynet (Dev)` includes a key the template does not declare
+- **WHEN** a request for template `Deploy agentgateway (Dev)` (on the allowlist: `service-agent`'s
+  `service_deploy_templates`) includes a key the template does not declare
 - **THEN** the launch gate answers 400 naming the key, and calls neither OPA nor Semaphore
 
 #### Scenario: Templated value is refused
@@ -61,7 +64,8 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 ### Requirement: OPA decides server-side before every launch
 For every request that passes validation, the launch gate SHALL query OPA's decision endpoint itself,
 with the caller's agent identity, action `run_task`, the template name, the step, the Git branch the
-template runs from and the exact survey values to be launched, and MUST launch only when OPA answers
+template runs from (read by the gate from the template's repository record, never taken from the
+caller) and the exact survey values to be launched, and MUST launch only when OPA answers
 `allowed: true`. An OPA deny, an error, an unreachable OPA or a response without `allowed` MUST
 result in no launch.
 
