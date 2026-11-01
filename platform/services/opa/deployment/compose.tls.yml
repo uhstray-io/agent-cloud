@@ -33,5 +33,7 @@ services:
       - --tls-cert-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/cert.pem
       - --tls-private-key-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/key.pem
       - --tls-cert-refresh-period=30s
+      # Same position as in compose.yml: authorization policy, then the bundle.
+      - --authorization=basic
       - --bundle
       - /policies

@@ -835,3 +835,33 @@ assert "(_skynet_opa.stdout_lines | last | default('')) == 'decision=deny'" in t
 assert names.index(probe["name"]) < names.index(check["name"]) < names.index("Record the service-deploy step result"), names
 PY
 }
+
+@test "skynet: verify proves skynet cannot write to OPA (PUT /v1/data -> 401), inside the container and after the decision check" {
+  # OPA's authorization policy admits decisions and health only, so skynet's own transport must be
+  # refused a write. The probe is a real PUT through urllib, the same trust path as the decision.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+verify = next(p for p in plays if str(p.get("name", "")).startswith("Phase 3"))
+tasks = verify["tasks"]
+names = [t.get("name", "") for t in tasks]
+probe = next(t for t in tasks if t.get("name", "") == "Skynet cannot write to OPA (PUT /v1/data -> 401, inside the container)")
+argv = probe["ansible.builtin.command"]["argv"]
+code = argv[-1]
+assert argv[1:3] == ["exec", "skynet"], argv
+assert "os.environ['SKYNET_OPA_URL'] + '/v1/data/agentcloud_write_probe'" in code, code
+assert "method='PUT'" in code, code
+assert "print(urllib.request.urlopen(request, timeout=10).status)" in code, code
+assert "except urllib.error.HTTPError as error:" in code, code
+assert probe.get("check_mode") is False, probe
+check = next(t for t in tasks if t.get("name") == "Assert skynet's OPA write was refused (401)")
+that = check["ansible.builtin.assert"]["that"]
+assert "_skynet_opa_write.stdout | trim == '401'" in that, that
+decision = "OPA decision through skynet's own client (default deny, inside the container)"
+decision_check = "Assert skynet reached OPA and was denied by default"
+assert names.index(decision) < names.index(decision_check) < names.index(probe["name"]) < names.index(check["name"]) < names.index("Report"), names
+assert names.index(check["name"]) < names.index("Record the service-deploy step result"), names
+PY
+}

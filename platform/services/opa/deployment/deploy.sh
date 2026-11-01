@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # OPA — container lifecycle only.
 #
-# Phase 1 has no secrets (OPA returns decisions, not credentials) and runs
-# unauthenticated on the internal network, so there is no .env to template — the
-# Rego policies under ./policies are the config, mounted read-only. This script
+# OPA has no secrets (it returns decisions, not credentials) and no login: the callers the
+# host firewall admits reach it, and the authorization policy (policies/system/authz.rego)
+# limits them to decisions and health. So there is no .env to template — the Rego policies
+# under ./policies are the config, mounted read-only. This script
 # does NOT generate secrets; it pulls, starts the server, and confirms the
 # container is running. The deploy playbook verifies the HTTP API + runs the
 # Rego unit tests. Plan: plan/development/03-guardrails-governance.md (OPA section).
