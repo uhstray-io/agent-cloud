@@ -310,7 +310,7 @@ fi
 log_success "OPA loaded ${POLICY_COUNT} policy module(s)"
 
 # Smoke test: query a policy
-RESULT=$(curl -s -X POST http://localhost:8181/v1/data/agentcloud/allow \
+RESULT=$(curl -s -X POST http://localhost:8181/v1/data/agentcloud/decision \
   -H "Content-Type: application/json" \
   -d '{"input":{"agent":"smoke-test","action":"test","service":"opa"}}')
 
@@ -739,7 +739,7 @@ This plan slots into the existing implementation roadmap. OPA is a **Guardrail L
 7. Add OPA to `platform/semaphore/templates.yml` + run `setup-templates.yml`
 8. Create OPA AppRole via `manage-approle.yml` (minimal — read own config)
 9. Deploy via Semaphore "Deploy OPA" template
-10. Verify: `curl http://opa-svc:8181/v1/data/agentcloud/allow` returns decisions
+10. Verify: `POST /v1/data/agentcloud/decision` returns decisions (the authorization policy admits only that path and `GET /health`; other paths answer 401)
 
 **Acceptance criteria:**
 - OPA container healthy on port 8181
