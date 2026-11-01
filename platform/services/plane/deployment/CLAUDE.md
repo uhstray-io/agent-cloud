@@ -15,7 +15,13 @@ either repository**. On every run, `deploy-plane.yml`:
    written on the controller, so a dry run fetches and verifies for real.
 2. Verifies **each file's** sha256 against `_plane_setup_pins` in the playbook. Not the zip's
    digest, which changes on every download because the server stamps entry dates per request.
-3. Places the Compose file here as `compose.yml` (gitignored), and renders `.env` from
+3. Qualifies the Compose file's Docker Hub short image names with their registry
+   (`makeplane/x` -> `docker.io/makeplane/x`, `postgres:15` -> `docker.io/library/postgres:15`),
+   after the digest check. Ubuntu 24.04's podman defines no search registry and refuses short
+   names (production deploy, Semaphore task 11139); the platform qualifies rather than adding one.
+   An image line it cannot rewrite refuses the fetch. Guarded by `test_plane_fetch_setup.py`
+   (the platform's `test_compose_image_qualified.py` sees only committed files).
+4. Places the Compose file here as `compose.yml` (gitignored), and renders `.env` from
    `variables.env` with every agent-cloud value replaced (`templates/env.j2`).
 
 Moving to another release means pinning that release's two digests in the playbook: a
