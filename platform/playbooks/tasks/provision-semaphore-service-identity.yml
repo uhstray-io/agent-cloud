@@ -3,7 +3,7 @@
 # task-runner Semaphore identity". Included (include_tasks) by a calling play AFTER that play has refused a
 # loopback override and a production run with no declared project, and has resolved _pid. Callers today:
 #   provision-console-semaphore-access.yml  svc-console at guest (the Dispatch Console, D20)
-#   provision-skynet-semaphore-access.yml   svc-skynet at task_runner (skynet's launch identity)
+#   provision-skynet-semaphore-access.yml   svc-skynet at guest (interim since 2026-10-31; was task_runner)
 #
 # Why one file. The console play carried the account, membership, token and proof steps in ~500 lines. A
 # second copy for skynet would drift exactly where drift is dangerous: the store merge, the transport guard,

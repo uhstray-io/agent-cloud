@@ -10,7 +10,8 @@ repository; its variables are listed in `deploy/tier2/README.md` there.
 
 1. `skynet` serves the orchestration API. It runs `service_onboarding`: a run takes a declared
    service through the registry steps, asks OPA for each decision, calls the served model
-   through agentgateway, and runs Ansible through Semaphore.
+   through agentgateway, and runs Ansible through Semaphore (launch steps are refused while svc-skynet is
+   guest; they return through the planned narrow launcher).
 2. `skynet-db` holds the checkpoints. It is not agentgateway's budget database and shares
    nothing with it.
 3. The image runs as uid 10001 and listens on `SKYNET_BIND=0.0.0.0`, `SKYNET_PORT=8080`
@@ -52,8 +53,9 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
   skynet's own path. The deploy never generates it, and manage-secrets refuses the run by name,
   before any OpenBao write, when it is absent. It is never the operator's token.
 - The svc-skynet account and its project role come from `Provision skynet Semaphore Access`
-  (`platform/playbooks/provision-skynet-semaphore-access.yml`): project role `task_runner`, the least
-  Semaphore role that can launch a task. Run it before this deploy.
+  (`platform/playbooks/provision-skynet-semaphore-access.yml`): project role `guest`, read-only. This is
+  interim, from 2026-10-31 (the role was `task_runner` until then): launch rights return only through the
+  planned narrow launcher, a separate change. Run it before this deploy.
 - `read_token` is generated once, like `api_token`, and never shared-read here.
 - `skynet_image` has no default. Nothing in this directory names a registry.
 - The inventory publish values are optional. A declared `skynet_publish_bind` must be one

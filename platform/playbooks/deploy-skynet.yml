@@ -64,7 +64,8 @@
     # Console's read path (it shared-reads secret/services/skynet:read_token). manage-secrets
     # generates each once into OpenBao and reuses it on later runs.
     # semaphore_api_token is type existing: NEVER generated. It is the token of the svc-skynet
-    # account (project role task_runner), written to secret/services/skynet by
+    # account (project role guest, read-only, interim since 2026-10-31; launch rights return only
+    # through the planned narrow launcher), written to secret/services/skynet by
     # "Provision skynet Semaphore Access", which must run first. _required_existing_secrets stops
     # the run before any OpenBao write when it is absent; the monorepo is already placed by then
     # (manage-secrets runs after place-monorepo), which is harmless and re-run safe.

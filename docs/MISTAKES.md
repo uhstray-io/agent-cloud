@@ -34,7 +34,7 @@ and why.
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x5** | Unverified claim | 5 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
-| 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 1 | Test |
+| 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | 2 | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
@@ -395,6 +395,8 @@ The ids were corrected from the launcher logs (`Task <id> launched`) before the 
 
 ### 1.5 A security control asserted from documentation, disproved by the first measurement
 
+**Occurrences: 2** — (first occurrence undated), 2026-10-31
+
 **What happened.** The self-hosted runner design claimed that setting the runner's
 container-hook variable makes every job's steps execute inside a container "whether or
 not the workflow asked", and argued at length that this beat a workflow-level
@@ -418,6 +420,8 @@ it is containerised, so the claim cannot be re-made without the measurement
 contradicting it. The corrected spec states what is actually enforced: workspace
 destruction between jobs, no host administration from a job, and network-level egress
 denial, all three verified on the live host.
+
+**Occurrence 2 — 2026-10-31.** During the skynet rollout, the operator was offered "a separate Semaphore project" as a way to narrow what skynet's task_runner identity could launch, and chose it. The claim was not tested from the attacker's position: AGENTS.md already records that launch rights are runner rights (a task's environment becomes its extra vars unfiltered), and upstream services/tasks/TaskRunner.go:395-425 confirms the merge, so a separate project limits a buggy launcher, not a compromised one. Caught before any build when the lead read the task-creation source; the operator re-decided (a narrow launcher; svc-skynet demoted to guest meanwhile). Why the rule did not fire: the option was framed as an access-scope choice, not as a security control, so the "observe it fail to permit" step was skipped.
 
 ---
 
