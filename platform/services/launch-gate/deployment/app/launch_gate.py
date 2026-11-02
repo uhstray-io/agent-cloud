@@ -1,0 +1,409 @@
+"""Validation core of the launch gate: the rules an agent-initiated Semaphore launch must pass.
+
+The gate is a stdlib HTTP service between the agents (skynet, the Dispatch Console) and Semaphore.
+It authenticates the caller, checks the request against its allowlist and the template's declared
+survey fields, asks OPA for a decision, and only then creates the task. This module holds the rules
+and does no network I/O: config loading, bearer authentication, request parsing, agent and template
+authorisation, the survey merge, and the OPA input and Semaphore task body. The HTTP server and the
+clients import these and add no rules of their own.
+"""
+
+import hmac
+import json
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlsplit
+
+TERMINAL = frozenset({"success", "error", "stopped"})
+
+# Exact Semaphore releases whose task body and check-mode flag were verified. Mirrors
+# scripts/semaphore-launch.py:45 (VERIFIED_DRY_RUN_VERSIONS). Exact, not a series: another patch
+# release may read params.dry_run differently, and a mis-read flag means a real run.
+VERIFIED_DRY_RUN_VERSIONS = frozenset({"v2.17.31", "v2.18.12", "v2.19.11"})
+
+MAX_VALUE = 4096
+MAX_BODY = 65536
+MAX_TEMPLATE = 200
+MIN_TOKEN = 32
+
+# Matched with fullmatch, never with a trailing "$": "$" also matches before a final newline,
+# which would let "infra-agent\n" through.
+_CALLER = re.compile(r"[a-z][a-z0-9-]{0,31}")
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_SURVEY_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_TEMPLATE_MARKERS = ("{{", "{%", "{#")
+_REQUEST_KEYS = frozenset({"template", "survey", "agent", "workflow_id", "step", "dry_run", "proposal", "context"})
+_REQUIRED_CONFIG = frozenset(
+    {
+        "semaphore_url",
+        "semaphore_project",
+        "opa_url",
+        "allowlist",
+        "callers",
+        "listen_host",
+        "listen_port",
+        "tls_cert",
+        "tls_key",
+    }
+)
+_OPTIONAL_CONFIG = frozenset({"opa_ca_bundle", "local_mode"})
+_BEARER = "Bearer "
+
+
+class ConfigError(Exception):
+    """The gate's configuration is unusable. The message names a field or variable, never a value."""
+
+
+class Refusal(Exception):
+    """A request the gate refuses. ``str()`` is the detail, which never echoes a survey value."""
+
+    def __init__(self, status: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.code = code
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class Config:
+    semaphore_url: str
+    semaphore_project: int
+    semaphore_token: str
+    opa_url: str
+    opa_ca_bundle: str | None
+    allowlist: frozenset[str]
+    callers: dict[str, frozenset[str]]
+    caller_tokens: dict[str, str]
+    listen_host: str
+    listen_port: int
+    tls_cert: str
+    tls_key: str
+    local_mode: bool
+
+    def __repr__(self) -> str:
+        # Tokens never print. Field names and non-secret values stay, so a config dump is still readable.
+        callers = {name: sorted(agents) for name, agents in self.callers.items()}
+        return (
+            f"Config(semaphore_url={self.semaphore_url!r}, semaphore_project={self.semaphore_project!r}, "
+            "semaphore_token='<redacted>', "
+            f"opa_url={self.opa_url!r}, opa_ca_bundle={self.opa_ca_bundle!r}, "
+            f"allowlist={sorted(self.allowlist)!r}, callers={callers!r}, caller_tokens='<redacted>', "
+            f"listen_host={self.listen_host!r}, listen_port={self.listen_port!r}, "
+            f"tls_cert={self.tls_cert!r}, tls_key={self.tls_key!r}, local_mode={self.local_mode!r})"
+        )
+
+
+@dataclass(frozen=True)
+class LaunchRequest:
+    template: str
+    survey: dict[str, str]
+    agent: str
+    workflow_id: str
+    step: str
+    dry_run: bool
+    proposal: dict[str, Any] | None
+    context: dict[str, Any] | None
+
+
+def load_config(path: str, environ: Mapping[str, str]) -> Config:
+    """Read the config file and take the tokens from the environment. Raises ConfigError, never prints a value."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"config file {path} is unreadable or is not JSON") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError("config file must hold a JSON object")
+    unknown = sorted(set(raw) - _REQUIRED_CONFIG - _OPTIONAL_CONFIG)
+    if unknown:
+        raise ConfigError(f"unknown config key(s): {', '.join(unknown)}")
+    missing = sorted(_REQUIRED_CONFIG - set(raw))
+    if missing:
+        raise ConfigError(f"missing config key(s): {', '.join(missing)}")
+
+    local_mode = raw.get("local_mode", False)
+    if not isinstance(local_mode, bool):
+        raise ConfigError("local_mode must be true or false")
+    opa_ca_bundle = raw.get("opa_ca_bundle")
+    if opa_ca_bundle is not None:
+        opa_ca_bundle = _text(opa_ca_bundle, "opa_ca_bundle")
+
+    callers = _callers(raw["callers"])
+    caller_tokens: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    for name in callers:
+        var = _caller_token_var(name)
+        token = _token(environ, var)
+        if token in seen:
+            raise ConfigError(f"{var} repeats the token of {_caller_token_var(seen[token])}")
+        seen[token] = name
+        caller_tokens[name] = token
+
+    return Config(
+        semaphore_url=_base_url(raw["semaphore_url"], "semaphore_url", local_mode),
+        semaphore_project=_positive_int(raw["semaphore_project"], "semaphore_project"),
+        semaphore_token=_token(environ, "LAUNCH_GATE_SEMAPHORE_TOKEN"),
+        opa_url=_base_url(raw["opa_url"], "opa_url", local_mode),
+        opa_ca_bundle=opa_ca_bundle,
+        allowlist=frozenset(_str_list(raw["allowlist"], "allowlist")),
+        callers=callers,
+        caller_tokens=caller_tokens,
+        listen_host=_text(raw["listen_host"], "listen_host"),
+        listen_port=_port(raw["listen_port"]),
+        tls_cert=_text(raw["tls_cert"], "tls_cert"),
+        tls_key=_text(raw["tls_key"], "tls_key"),
+        local_mode=local_mode,
+    )
+
+
+def _text(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{name} must be a non-empty string")
+    return value
+
+
+def _positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{name} must be a positive integer")
+    return value
+
+
+def _port(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        raise ConfigError("listen_port must be an integer from 1 to 65535")
+    return value
+
+
+def _str_list(value: object, name: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ConfigError(f"{name} must be a list of non-empty strings")
+    return value
+
+
+def _base_url(value: object, name: str, local_mode: bool) -> str:
+    url = _text(value, name).rstrip("/")
+    schemes = {"https", "http"} if local_mode else {"https"}
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError as exc:
+        raise ConfigError(f"{name} is not a valid URL") from exc
+    if parts.scheme not in schemes or not host:
+        raise ConfigError(f"{name} must be an https:// URL (http:// only when local_mode is true)")
+    return url
+
+
+def _callers(value: object) -> dict[str, frozenset[str]]:
+    if not isinstance(value, dict):
+        raise ConfigError("callers must be an object of caller name to agent list")
+    callers: dict[str, frozenset[str]] = {}
+    for name, agents in value.items():
+        if not _CALLER.fullmatch(name):
+            raise ConfigError(
+                "caller names are 1-32 characters: a lowercase letter, then lowercase letters, digits or hyphens"
+            )
+        callers[name] = frozenset(_str_list(agents, f"callers.{name}"))
+    return callers
+
+
+def _caller_token_var(name: str) -> str:
+    return "LAUNCH_GATE_CALLER_TOKEN_" + name.upper().replace("-", "_")
+
+
+def _token(environ: Mapping[str, str], var: str) -> str:
+    value = environ.get(var)
+    if not value:
+        raise ConfigError(f"{var} is missing or empty")
+    if len(value) < MIN_TOKEN:
+        raise ConfigError(f"{var} is shorter than {MIN_TOKEN} characters")
+    return value
+
+
+def _unauthorized() -> Refusal:
+    return Refusal(401, "unauthorized", "missing or invalid bearer token")
+
+
+def authenticate(header: str | None, config: Config) -> str:
+    """Return the caller whose token the Bearer header presents. Every token is compared; none is skipped."""
+    if not isinstance(header, str) or not header.startswith(_BEARER):
+        raise _unauthorized()
+    presented = header[len(_BEARER) :].encode("utf-8")
+    matched: str | None = None
+    for name, token in config.caller_tokens.items():
+        # Bytes on both sides: compare_digest raises TypeError on a non-ASCII str.
+        if hmac.compare_digest(presented, token.encode("utf-8")) and matched is None:
+            matched = name
+    if matched is None:
+        raise _unauthorized()
+    return matched
+
+
+def parse_request(body: bytes) -> LaunchRequest:
+    """Parse and check the request's shape and its literal survey values. No outbound call happens here."""
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (ValueError, RecursionError) as exc:
+        raise Refusal(400, "bad_request", "body is not UTF-8 JSON") from exc
+    if not isinstance(data, dict):
+        raise Refusal(400, "bad_request", "body must be a JSON object")
+    unknown = sorted(set(data) - _REQUEST_KEYS)
+    if unknown:
+        raise Refusal(400, "bad_request", f"unknown request key(s): {', '.join(unknown)}")
+
+    template = _required_str(data, "template")
+    agent = _required_str(data, "agent")
+    workflow_id = _required_str(data, "workflow_id")
+    step = _required_str(data, "step")
+    if not template or len(template) > MAX_TEMPLATE:
+        raise Refusal(400, "bad_request", f"template must be 1 to {MAX_TEMPLATE} characters")
+    for key, value in (("agent", agent), ("workflow_id", workflow_id), ("step", step)):
+        if not _IDENTIFIER.fullmatch(value):
+            raise Refusal(400, "bad_request", f"{key} is not a valid identifier")
+
+    survey = _survey(data.get("survey", {}))
+
+    dry_run = data.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        raise Refusal(400, "bad_request", "dry_run must be true or false")
+
+    optional: dict[str, dict[str, Any] | None] = {}
+    for key in ("proposal", "context"):
+        value = data.get(key)
+        if key in data and not isinstance(value, dict):
+            raise Refusal(400, "bad_request", f"{key} must be a JSON object when present")
+        optional[key] = value
+
+    return LaunchRequest(
+        template=template,
+        survey=survey,
+        agent=agent,
+        workflow_id=workflow_id,
+        step=step,
+        dry_run=dry_run,
+        proposal=optional["proposal"],
+        context=optional["context"],
+    )
+
+
+def _required_str(data: dict[str, Any], key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise Refusal(400, "bad_request", f"{key} is missing or not a string")
+    return value
+
+
+def _survey(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise Refusal(400, "bad_request", "survey must be a JSON object")
+    survey: dict[str, str] = {}
+    for key, item in value.items():
+        if not _SURVEY_NAME.fullmatch(key):
+            raise Refusal(400, "bad_request", "a survey field name is not a valid identifier")
+        if not isinstance(item, str):
+            raise Refusal(400, "bad_request", f"survey field {key} must be a string")
+        if len(item) > MAX_VALUE:
+            raise Refusal(400, "bad_request", f"survey field {key} is longer than {MAX_VALUE} characters")
+        if any(marker in item for marker in _TEMPLATE_MARKERS):
+            raise Refusal(400, "bad_request", f"survey field {key} contains a template marker")
+        survey[key] = item
+    return survey
+
+
+def authorize_local(caller: str, req: LaunchRequest, config: Config) -> None:
+    """Check the caller may act as the request's agent, then that the template is allowlisted. Agent first."""
+    if req.agent not in config.callers.get(caller, frozenset()):
+        raise Refusal(403, "agent_not_permitted", f"caller {caller} may not act as agent {req.agent}")
+    if req.template not in config.allowlist:
+        raise Refusal(403, "template_not_allowed", f"template {req.template} is not on the launch allowlist")
+
+
+def merge_survey(template: dict[str, Any], survey: dict[str, str]) -> dict[str, str]:
+    """Check the request against the template's declared survey fields and return the values to launch.
+
+    Semaphore fills declared defaults only in its web form, never for an API-created task, so the
+    gate fills them here, as the form would. An explicit value always wins.
+    """
+    name = template.get("name")
+    survey_vars = template.get("survey_vars")
+    if survey_vars is None:
+        survey_vars = []
+    if not isinstance(survey_vars, list):
+        raise Refusal(502, "semaphore_unreadable", f"survey fields of {name} are unreadable")
+    declared: list[dict[str, Any]] = []
+    for var in survey_vars:
+        # A field of unknown shape is refused, not skipped: skipping could hide a default.
+        if not isinstance(var, dict) or not isinstance(var.get("name"), str):
+            raise Refusal(502, "semaphore_unreadable", f"a survey field of {name} is unreadable")
+        declared.append(var)
+
+    names = {var["name"] for var in declared}
+    undeclared = sorted(set(survey) - names)
+    if undeclared:
+        raise Refusal(400, "undeclared_field", f"not survey fields of {name}: {', '.join(undeclared)}")
+
+    merged: dict[str, str] = {}
+    for var in declared:
+        var_name, default = var["name"], var.get("default_value")
+        if var_name in survey or default in (None, ""):
+            continue
+        if not isinstance(default, str):
+            raise Refusal(502, "bad_default", f"survey field {var_name} of {name} has a non-string default")
+        merged[var_name] = default
+    values = {**merged, **survey}
+
+    for var in declared:
+        if var.get("required") is True and not values.get(var["name"]):
+            raise Refusal(400, "missing_required", f"required survey field {var['name']} of {name} has no value")
+    return values
+
+
+def opa_input(req: LaunchRequest, git_branch: str, values: dict[str, str]) -> dict[str, Any]:
+    """The OPA input for one launch, built from scratch. Only proposal and context come from the request."""
+    body: dict[str, Any] = {
+        "agent": req.agent,
+        "service": "semaphore",
+        "action": "run_task",
+        "template_name": req.template,
+        "human_approved": False,
+        "step": req.step,
+        "git_branch": git_branch,
+        "settings": dict(values),
+    }
+    if req.proposal is not None:
+        body["proposal"] = req.proposal
+    if req.context is not None:
+        body["context"] = req.context
+    return body
+
+
+def task_message(caller: str, workflow_id: str, step: str) -> str:
+    """The Semaphore task message. Skynet's tasks keep the ``skynet <workflow_id> <step_id>`` form."""
+    return f"{caller} {workflow_id} {step}"
+
+
+def task_body(
+    template_id: int,
+    project: int,
+    values: dict[str, str],
+    *,
+    dry_run: bool,
+    message: str,
+) -> dict[str, Any]:
+    """The exact POST body for a launch. Check mode lives in ``params``, never at the top."""
+    # No git_branch in this body, on purpose. agent_actions.rego reads a missing git_branch as
+    # main (object.get(input, "git_branch", "main")), so a branch set here would run code OPA never
+    # assessed as main. A task-level branch also overrides the template's own branch
+    # (agent-cloud docs/MISTAKES.md 1.9). Nothing else is set either: no arguments, limit,
+    # inventory_id, playbook, environment_id or tags, so the run takes only the validated values.
+    body: dict[str, Any] = {
+        "project_id": project,
+        "template_id": template_id,
+        "message": message,
+    }
+    if values:
+        body["environment"] = json.dumps(values, sort_keys=True)
+    if dry_run:
+        body["params"] = {"dry_run": True, "diff": True}
+    return body
