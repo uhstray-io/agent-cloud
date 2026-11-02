@@ -1,9 +1,9 @@
 ## 1. Prerequisites
 
-- [ ] 1.1 Production OPA refuses policy and data writes and serves only decisions and health (#805 and #810 merged and deployed; Deploy OPA's verify proves `PUT /v1/data` and `GET /v1/data` are refused)
-- [ ] 1.2 Confirm the current `agentcloud` rego ignores an added `settings` input field: `opa test /policies` green with a decision test that sends `settings`
-- [ ] 1.3 svc-skynet is `guest` in production (agent-cloud and site-config demotion PRs merged, Provision skynet Semaphore Access (Dev) re-run, launch probe 403)
-- [ ] 1.4 Validation gate: scenario "skynet's own token cannot launch" holds in production (403 on `POST /api/project/{p}/tasks` with skynet's token)
+- [x] 1.1 Production OPA refuses policy and data writes and serves only decisions and health (#805 and #810 merged and deployed; Deploy OPA's verify proves `PUT /v1/data` and `GET /v1/data` are refused)
+- [x] 1.2 Confirm the current `agentcloud` rego ignores an added `settings` input field: `opa test /policies` green with a decision test that sends `settings`
+- [x] 1.3 svc-skynet is `guest` in production (agent-cloud and site-config demotion PRs merged, Provision skynet Semaphore Access (Dev) re-run, launch probe 403)
+- [x] 1.4 Validation gate: scenario "skynet's own token cannot launch" holds in production (403 on `POST /api/project/{p}/tasks` with skynet's token)
 
 ## 2. Gate service (agent-cloud, `platform/services/launch-gate/`)
 
