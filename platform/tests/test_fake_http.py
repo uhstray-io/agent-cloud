@@ -100,7 +100,8 @@ def _used_after_close(func):
             # A port, or a string built around one; a call's result (a process run) is not a port.
             for sub in ([] if isinstance(node.value, ast.Call) else ast.walk(node.value)):
                 if isinstance(sub, ast.Attribute) and sub.attr in PORT_READS and isinstance(sub.value, ast.Name):
-                    derived[node.targets[0].id] = (node.lineno, sub.value.id)
+                    # Every assignment counts: a name set in two branches has two origins.
+                    derived.setdefault(node.targets[0].id, []).append((node.lineno, sub.value.id))
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in CLOSE_CALLS and isinstance(node.func.value, ast.Name)):
             closes.append((node.lineno, node.func.value.id))
@@ -118,9 +119,9 @@ def _used_after_close(func):
         for load in loads:
             if load.lineno <= line or id(load) in receivers:
                 continue
-            origin = derived.get(load.id)
+            from_closed = any(src == name and at < line for at, src in derived.get(load.id, []))
             aimed = load.id == name and (id(load) in port_reads or id(load) in call_args)
-            if aimed or (origin and origin[1] == name and origin[0] < line):
+            if aimed or from_closed:
                 found.append(f"{func.name}:{load.lineno} aims at {load.id} after {name} was closed at {line}")
     return found
 
@@ -142,6 +143,10 @@ def test_the_guard_flags_each_freed_port_shape():
         "server stopped, then passed on": "def t(g):\n    s = g()\n    s.stop()\n    run(s)\n",
         "port read, then server closed": (
             "def t(g):\n    s = g()\n    port = s.server_port\n    s.shutdown()\n    s.server_close()\n"
+            "    run(port)\n"),
+        "one name set in two branches, one from a closed socket": (
+            "def t(open_):\n    l = socket.socket()\n    if open_:\n        port = l.getsockname()[1]\n"
+            "    else:\n        c = socket.socket()\n        port = c.getsockname()[1]\n        c.close()\n"
             "    run(port)\n"),
         "socket closed, port returned": (
             "def t():\n    c = socket.socket()\n    c.bind(('127.0.0.1', 0))\n    port = c.getsockname()[1]\n"

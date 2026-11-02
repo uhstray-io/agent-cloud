@@ -2179,7 +2179,10 @@ then aim at its port.
 **Enforced by.** Test: `platform/tests/test_fake_http.py::test_a_test_never_aims_at_a_port_it_has_just_freed` walks every
 function in `platform/tests/` and fails on a port value, port read or call argument from a server or socket used
 after that function stopped or closed it; `test_the_guard_flags_each_freed_port_shape` mutation-checks it on the
-three shapes found, and `test_refused_port_refuses_at_once_and_is_never_handed_out` checks the port itself. Not
+shapes found (one name set in two branches included; run against the pre-fix files it flags all eight sites),
+and `test_refused_port_refuses_at_once_and_is_never_handed_out` checks the port itself. The guard sees only
+objects the function assigns itself: a fixture parameter that is stopped and then aimed at, or a port read inside
+`with socket.socket() as s:` and used after the block, is not caught (no such site exists today). Also not
 covered: `test_nemoclaw_policy.py::_candidate_port()` and `test_agw_stream_usage.py::_free_port()` hand a freed
 port to a process that binds it, a different race (the first says so in its docstring).
 
