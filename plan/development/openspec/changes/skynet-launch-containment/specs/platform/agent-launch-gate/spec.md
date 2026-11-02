@@ -45,7 +45,8 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 #### Scenario: Undeclared key is refused
 - **WHEN** a request for template `Deploy agentgateway (Dev)` (on the allowlist: `service-agent`'s
   `service_deploy_templates`) includes a key the template does not declare
-- **THEN** the launch gate answers 400 naming the key, and calls neither OPA nor Semaphore
+- **THEN** the launch gate answers 400 naming the key, asks OPA nothing and creates no task (it
+  reads the template's survey declarations from Semaphore, the only call it makes)
 
 #### Scenario: Templated value is refused
 - **WHEN** a request carries a survey value containing `{{`
@@ -82,8 +83,8 @@ result in no launch.
 - **THEN** the launch gate creates exactly one task and answers with its id
 
 ### Requirement: Launches are idempotent and recorded
-The launch gate SHALL refuse to create a second task for a template whose previous task for the same
-workflow and step is still running, SHALL tag every task it creates with a message naming the caller,
+The launch gate SHALL refuse to create a task for a template while any earlier task of that template is
+still running (skynet's rule today, which covers a repeat of the same workflow and step), SHALL tag every task it creates with a message naming the caller,
 workflow and step (skynet's tasks keep the `skynet <workflow_id> <step_id>` form the console reads),
 and MUST log each decision and launch (caller, agent, template, step, OPA verdict, task id) without
 any secret value.
