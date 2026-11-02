@@ -6,19 +6,23 @@ survey fields, asks OPA for a decision, and only then creates the task. The rule
 that do no network I/O: config loading, bearer authentication, request parsing, agent and template
 authorisation, the survey merge, and the OPA input and Semaphore task body. Below them sit the
 Semaphore and OPA clients and the request flow (Gate), which add the I/O and the check order but
-no rule of their own. The HTTP server imports these and adds no rules of its own.
+no rule of their own. The HTTPS listener (GateServer, GateHandler) and the entry point (main) sit
+on top: TLS with certificate reload, HTTP framing and the body cap, with no rule of their own.
 """
 
 import hmac
 import http.client
 import json
+import os
 import re
 import ssl
 import sys
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -640,6 +644,15 @@ def _stdout_log(event: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def _stderr(line: str) -> None:
+    # Fixed text only: an exception message can carry a survey value, a token or a path.
+    try:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 class Gate:
     """The request flow, in design decision 4's order. Each check is a core function; this class sequences them."""
 
@@ -671,7 +684,12 @@ class Gate:
             event["exception"] = type(exc).__name__
         event["outcome"] = status
         event["error"] = None if status == 201 else payload["error"]
-        self._log(event)
+        try:
+            self._log(event)
+        except Exception:
+            # A task may already exist, and its id must still reach the caller, so a failed log write
+            # never replaces the response.
+            _stderr("launch-gate: log write failed")
         return status, payload
 
     def _launch(self, headers: Mapping[str, str], body: bytes, event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -734,3 +752,218 @@ class Gate:
             f"task {task_id} launched but its check mode was not recorded ({note}); "
             "treat it as a real run until inspected",
         )
+
+
+# ---------- HTTPS listener and entry point (transport only; no rule of its own) ----------
+
+DEFAULT_CONFIG = "/etc/launch-gate/config.json"
+# Bounds the TLS handshake and every read or write on a connection, so a silent client ends.
+CONNECTION_TIMEOUT = 10.0
+
+
+class TLSLoadError(Exception):
+    """The certificate or key cannot be loaded. ``str()`` is the failure's class name, never a path."""
+
+
+def _fingerprint(cert_path: str, key_path: str) -> tuple[tuple[str, int, int, int], ...]:
+    """Identity of the two files in use. Each path is resolved on every call: renewal swaps the ``current``
+    symlink to a new serial directory, and the stat has to describe the file that is in use now."""
+    parts = []
+    for path in (cert_path, key_path):
+        resolved = os.path.realpath(path)
+        status = os.stat(resolved)
+        parts.append((resolved, status.st_ino, status.st_mtime_ns, status.st_size))
+    return tuple(parts)
+
+
+def _server_context(cert_path: str, key_path: str) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert_path, key_path)
+    return context
+
+
+class GateServer(ThreadingHTTPServer):
+    """The HTTPS listener. Each connection gets a thread, its TLS handshake runs on that thread, and the
+    certificate files are checked on every connection, so a renewal is served without a restart."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address: tuple[str, int], gate: Gate, cert_path: str, key_path: str) -> None:
+        # The context loads before the socket is bound, so a bad certificate never holds the port.
+        self._cert_path = cert_path
+        self._key_path = key_path
+        self._lock = threading.Lock()
+        try:
+            self._fingerprint = _fingerprint(cert_path, key_path)
+            self._ssl_context = _server_context(cert_path, key_path)
+        except (OSError, ssl.SSLError, ValueError) as exc:
+            raise TLSLoadError(type(exc).__name__) from exc
+        self.gate = gate
+        super().__init__(address, GateHandler)
+
+    def get_request(self) -> tuple[ssl.SSLSocket, Any]:
+        sock, addr = self.socket.accept()
+        try:
+            # The handshake is NOT done here. This is the accept loop; one silent client must not hold it.
+            tls = self._current_context().wrap_socket(sock, server_side=True, do_handshake_on_connect=False)
+        except Exception:
+            sock.close()
+            raise
+        return tls, addr
+
+    def _current_context(self) -> ssl.SSLContext:
+        """The context for the files as they stand now. A failed reload keeps the last good context serving
+        and leaves the fingerprint as it was, so the next connection tries again."""
+        with self._lock:
+            try:
+                fingerprint = _fingerprint(self._cert_path, self._key_path)
+                if fingerprint != self._fingerprint:
+                    self._ssl_context = _server_context(self._cert_path, self._key_path)
+                    self._fingerprint = fingerprint
+            except Exception as exc:
+                self._reload_failed(exc)
+            return self._ssl_context
+
+    def _reload_failed(self, exc: Exception) -> None:
+        # The class name only, as the gate's own events carry: a message can name a path.
+        event = {"event": "tls_reload_failed", "error": type(exc).__name__}
+        log = getattr(self.gate, "_log", None)
+        if callable(log):
+            try:
+                log(event)
+                return
+            except Exception:
+                pass
+        _stderr(f"launch-gate: TLS certificate reload failed ({type(exc).__name__})")
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # The default prints a traceback with the client's address. A reset connection is ordinary traffic.
+        _stderr(f"launch-gate: connection error ({type(sys.exc_info()[1]).__name__})")
+
+
+def _content_length(values: list[str] | None) -> int | None:
+    """The declared body length, or None when the header is missing, repeated, or not plain ASCII digits."""
+    if not values or len(values) != 1:
+        return None
+    value = values[0]
+    # int() would also take "+5", "1_0" and Unicode digits; a length must be plain digits.
+    if not (value.isascii() and value.isdigit()):
+        return None
+    return int(value)
+
+
+def _headers(message: Any) -> dict[str, str]:
+    pairs = message.items()
+    if sum(1 for name, _ in pairs if name.lower() == "authorization") > 1:
+        # Two Authorization headers are ambiguous. The gate refuses them, so neither is passed on.
+        return {name: value for name, value in pairs if name.lower() != "authorization"}
+    return dict(pairs)
+
+
+class GateHandler(BaseHTTPRequestHandler):
+    """Frames HTTP for the gate. It reads a body only where the gate takes one, and it answers nothing to a
+    connection whose TLS handshake failed."""
+
+    server_version = "launch-gate"
+    sys_version = ""
+    _tls_failed = False
+
+    def setup(self) -> None:
+        self.request.settimeout(CONNECTION_TIMEOUT)
+        try:
+            self.request.do_handshake()
+        except (ssl.SSLError, OSError):
+            # Plain HTTP, a client that stalls, or one that closes early: no reply and no request read.
+            self._tls_failed = True
+            return
+        super().setup()
+
+    def handle(self) -> None:
+        if not self._tls_failed:
+            super().handle()
+
+    def finish(self) -> None:
+        # setup() returned before the stream files existed, so the base finish() must not run.
+        if not self._tls_failed:
+            super().finish()
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """The gate writes its own events. The default access log writes every client address to stderr."""
+
+    def do_GET(self) -> None:
+        self._dispatch("GET")
+
+    def do_POST(self) -> None:
+        self._dispatch("POST")
+
+    def do_PUT(self) -> None:
+        self._dispatch("PUT")
+
+    def do_PATCH(self) -> None:
+        self._dispatch("PATCH")
+
+    def do_DELETE(self) -> None:
+        self._dispatch("DELETE")
+
+    def _dispatch(self, method: str) -> None:
+        body = b""
+        if method == "POST":
+            length = _content_length(self.headers.get_all("Content-Length"))
+            if length is None:
+                self._reply(400, {"error": "bad_request", "detail": "Content-Length required"})
+                return
+            if length > MAX_BODY:
+                # Refused unread: an oversize body is never buffered, and the gate never sees it.
+                self._reply(413, {"error": "too_large"})
+                return
+            body = self.rfile.read(length)
+        path = self.path.split("?", 1)[0]
+        status, payload = self.server.gate.handle(method, path, _headers(self.headers), body)
+        self._reply(status, payload)
+
+    def _reply(self, status: int, payload: dict[str, Any]) -> None:
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(data)
+        self.close_connection = True
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point: ``main [config.json]``. Returns the exit status; 2 means the gate did not start."""
+    args = argv or []
+    path = args[0] if args else os.environ.get("LAUNCH_GATE_CONFIG", DEFAULT_CONFIG)
+    try:
+        config = load_config(path, os.environ)
+    except ConfigError as exc:
+        _stderr(f"launch-gate: {exc}")
+        return 2
+    try:
+        opa = OPAClient(config.opa_url, ca_bundle=config.opa_ca_bundle)
+    except (OSError, ssl.SSLError) as exc:
+        _stderr(f"launch-gate: OPA CA bundle unreadable ({type(exc).__name__})")
+        return 2
+    semaphore = SemaphoreClient(config.semaphore_url, config.semaphore_project, config.semaphore_token)
+    gate = Gate(config, semaphore, opa)
+    try:
+        server = GateServer((config.listen_host, config.listen_port), gate, config.tls_cert, config.tls_key)
+    except TLSLoadError as exc:
+        _stderr(f"launch-gate: TLS certificate or key unreadable ({exc})")
+        return 2
+    except OSError as exc:
+        _stderr(f"launch-gate: cannot listen on {config.listen_host}:{config.listen_port} ({type(exc).__name__})")
+        return 2
+    with server:
+        _stdout_log({"event": "listening", "host": config.listen_host, "port": config.listen_port})
+        server.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
