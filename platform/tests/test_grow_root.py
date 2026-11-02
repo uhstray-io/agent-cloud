@@ -23,6 +23,7 @@ PLAYBOOKS = {
     "grow-semaphore-root.yml": ("semaphore_svc", "Grow Semaphore Root (Dev)"),
     "grow-console-root.yml": ("console_svc", "Grow Console Root (Dev)"),
     "grow-skynet-root.yml": ("skynet_svc", "Grow skynet Root (Dev)"),
+    "grow-plane-root.yml": ("plane_svc", "Grow Plane Root (Dev)"),
 }
 GiB = 1024 ** 3
 
