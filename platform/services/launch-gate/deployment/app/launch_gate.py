@@ -2,16 +2,22 @@
 
 The gate is a stdlib HTTP service between the agents (skynet, the Dispatch Console) and Semaphore.
 It authenticates the caller, checks the request against its allowlist and the template's declared
-survey fields, asks OPA for a decision, and only then creates the task. This module holds the rules
-and does no network I/O: config loading, bearer authentication, request parsing, agent and template
-authorisation, the survey merge, and the OPA input and Semaphore task body. The HTTP server and the
-clients import these and add no rules of their own.
+survey fields, asks OPA for a decision, and only then creates the task. The rules are pure functions
+that do no network I/O: config loading, bearer authentication, request parsing, agent and template
+authorisation, the survey merge, and the OPA input and Semaphore task body. Below them sit the
+Semaphore and OPA clients and the request flow (Gate), which add the I/O and the check order but
+no rule of their own. The HTTP server imports these and adds no rules of its own.
 """
 
 import hmac
+import http.client
 import json
 import re
-from collections.abc import Mapping
+import ssl
+import sys
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -407,3 +413,324 @@ def task_body(
     if dry_run:
         body["params"] = {"dry_run": True, "diff": True}
     return body
+
+
+# ---------- clients and request flow (I/O; no rule of its own) ----------
+
+MAX_RESPONSE = 16 * 1024 * 1024
+SEMAPHORE_TIMEOUT = 15.0
+OPA_TIMEOUT = 5.0
+DECISION_PATH = "/v1/data/agentcloud/decision"
+UNCERTAIN = "submission outcome uncertain; a task may be running, check the template's tasks before launching again"
+Log = Callable[[dict[str, Any]], None]
+
+
+class Denied(Refusal):
+    """OPA answered ``allowed: false``. ``reason`` is OPA's own text, returned to the caller."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(403, "opa_denied", "OPA denied the launch")
+        self.reason = reason
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect. urllib would otherwise replay the Authorization header at the new location."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _Failed(Exception):
+    """A transport, HTTP or read failure. Its text is a label (a class name or a status), never a body."""
+
+
+def _opener(context: ssl.SSLContext) -> urllib.request.OpenerDirector:
+    # ProxyHandler({}): an environment proxy must never see the bearer token or the launch body.
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=context),
+        _NoRedirect(),
+    )
+
+
+def _fetch(
+    opener: urllib.request.OpenerDirector,
+    method: str,
+    url: str,
+    timeout: float,
+    *,
+    token: str | None = None,
+    payload: Any = None,
+) -> bytes:
+    headers = {"Accept": "application/json"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token is not None:
+        headers["Authorization"] = _BEARER + token
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            raw = response.read(MAX_RESPONSE + 1)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise _Failed(f"HTTP {exc.code}") from None
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+        raise _Failed(type(exc).__name__) from None
+    if len(raw) > MAX_RESPONSE:
+        raise _Failed("response larger than 16 MiB")
+    return raw
+
+
+def _parse(raw: bytes) -> Any:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError):
+        raise _Failed("response was not JSON") from None
+
+
+def _is_id(value: object) -> bool:
+    # bool is an int subclass; a JSON true must never pass as an id.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+class SemaphoreClient:
+    """The Semaphore calls one launch needs, all in project ``project``. Every failure raises Refusal."""
+
+    def __init__(
+        self,
+        base_url: str,
+        project: int,
+        token: str,
+        *,
+        ssl_context: ssl.SSLContext | None = None,
+        timeout: float = SEMAPHORE_TIMEOUT,
+    ) -> None:
+        self._base = base_url.rstrip("/")
+        self._prefix = f"/api/project/{project}"
+        self._token = token
+        self._timeout = timeout
+        context = ssl_context if ssl_context is not None else ssl.create_default_context()
+        self._opener = _opener(context)
+
+    def _call(self, method: str, path: str, payload: Any = None, *, parse: bool = True) -> Any:
+        try:
+            raw = _fetch(self._opener, method, self._base + path, self._timeout, token=self._token, payload=payload)
+            return _parse(raw) if parse else None
+        except _Failed as exc:
+            raise Refusal(502, "semaphore_unreadable", f"Semaphore {method} {path} failed ({exc})") from None
+
+    def template(self, name: str) -> dict[str, Any]:
+        """The live template whose name is exactly ``name``, read back by id. Never guesses between matches."""
+        listing = self._call("GET", f"{self._prefix}/templates")
+        if not isinstance(listing, list):
+            raise Refusal(502, "semaphore_unreadable", "Semaphore template listing is not a list")
+        matches = [t for t in listing if isinstance(t, dict) and t.get("name") == name]
+        if not matches:
+            raise Refusal(502, "template_not_found", f"no Semaphore template is named {name}")
+        if len(matches) > 1:
+            raise Refusal(502, "template_ambiguous", f"{len(matches)} Semaphore templates are named {name}")
+        template_id = matches[0].get("id")
+        if not _is_id(template_id):
+            raise Refusal(502, "semaphore_unreadable", f"template {name} has no readable id")
+        detail = self._call("GET", f"{self._prefix}/templates/{template_id}")
+        if not isinstance(detail, dict) or not _is_id(detail.get("id")):
+            raise Refusal(502, "semaphore_unreadable", f"template {name} detail is unreadable")
+        return detail
+
+    def branch(self, repository_id: object) -> str:
+        """The Git branch of the template's repository record. Read from Semaphore, never from the caller."""
+        unreadable = Refusal(502, "semaphore_unreadable", "the template's repository record is unreadable")
+        if not _is_id(repository_id):
+            raise unreadable
+        listing = self._call("GET", f"{self._prefix}/repositories")
+        if not isinstance(listing, list):
+            raise unreadable
+        for record in listing:
+            if isinstance(record, dict) and _is_id(record.get("id")) and record["id"] == repository_id:
+                git_branch = record.get("git_branch")
+                if isinstance(git_branch, str) and git_branch:
+                    return git_branch
+                raise unreadable
+        raise unreadable
+
+    def version(self) -> str:
+        info = self._call("GET", "/api/info")
+        if not isinstance(info, dict):
+            return "unknown"
+        return str(info.get("version", "unknown"))
+
+    def running(self, template_id: int) -> list[Any]:
+        """Ids of the template's tasks that are not terminal. A task with no readable status counts as running."""
+        recent = self._call("GET", f"{self._prefix}/tasks/last")
+        if not isinstance(recent, list):
+            raise Refusal(502, "semaphore_unreadable", "Semaphore task history is not a list")
+        busy: list[Any] = []
+        for task in recent:
+            if not isinstance(task, dict) or task.get("template_id") != template_id:
+                continue
+            status = task.get("status")
+            if not (isinstance(status, str) and status in TERMINAL):
+                busy.append(task.get("id"))
+        return busy
+
+    def create(self, body: dict[str, Any]) -> int:
+        """POST one task. Any failure is an uncertain outcome: the server may have accepted it. Never retried."""
+        try:
+            task = self._call("POST", f"{self._prefix}/tasks", body)
+        except Refusal:
+            raise Refusal(502, "outcome_uncertain", UNCERTAIN) from None
+        task_id = task.get("id") if isinstance(task, dict) else None
+        if not _is_id(task_id):
+            raise Refusal(502, "outcome_uncertain", UNCERTAIN)
+        return task_id
+
+    def task(self, task_id: int) -> dict[str, Any]:
+        detail = self._call("GET", f"{self._prefix}/tasks/{task_id}")
+        if not isinstance(detail, dict):
+            raise Refusal(502, "semaphore_unreadable", f"task {task_id} is unreadable")
+        return detail
+
+    def stop(self, task_id: int) -> None:
+        self._call("POST", f"{self._prefix}/tasks/{task_id}/stop", {}, parse=False)
+
+
+class OPAClient:
+    """OPA's decision endpoint. The gate launches only on an answer of exactly ``allowed: true``."""
+
+    def __init__(self, base_url: str, *, ca_bundle: str | None = None, timeout: float = OPA_TIMEOUT) -> None:
+        context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
+        self._url = base_url.rstrip("/") + DECISION_PATH
+        self._timeout = timeout
+        self._opener = _opener(context)
+
+    def decide(self, decision_input: dict[str, Any]) -> str:
+        """Return OPA's reason when allowed. Raises Denied on allowed false, Refusal 503 on anything else."""
+        try:
+            raw = _fetch(self._opener, "POST", self._url, self._timeout, payload={"input": decision_input})
+            body = _parse(raw)
+        except _Failed:
+            raise _opa_unavailable() from None
+        result = body.get("result") if isinstance(body, dict) else None
+        if not isinstance(result, dict):
+            raise _opa_unavailable()
+        allowed = result.get("allowed")
+        if allowed is True:
+            return str(result.get("reason", ""))
+        if allowed is False:
+            raise Denied(str(result.get("reason", "")))
+        raise _opa_unavailable()
+
+
+def _opa_unavailable() -> Refusal:
+    return Refusal(503, "opa_unavailable", "OPA decision unavailable")
+
+
+def _authorization(headers: Mapping[str, str]) -> str | None:
+    # Header names are case-insensitive. Two Authorization headers are ambiguous, so neither is trusted.
+    values = [value for name, value in headers.items() if name.lower() == "authorization"]
+    return values[0] if len(values) == 1 else None
+
+
+def _stdout_log(event: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(event, sort_keys=True) + "\n")
+    sys.stdout.flush()
+
+
+class Gate:
+    """The request flow, in design decision 4's order. Each check is a core function; this class sequences them."""
+
+    def __init__(self, config: Config, semaphore: SemaphoreClient, opa: OPAClient, *, log: Log | None = None) -> None:
+        self._config = config
+        self._semaphore = semaphore
+        self._opa = opa
+        self._log = log if log is not None else _stdout_log
+
+    def handle(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
+        if method == "GET" and path == "/healthz":
+            return 200, {"status": "ok"}
+        if path != "/v1/launch":
+            return 404, {"error": "not_found"}
+        if method != "POST":
+            return 405, {"error": "method_not_allowed"}
+
+        event: dict[str, Any] = {"event": "launch"}
+        try:
+            status, payload = self._launch(headers, body, event)
+        except Refusal as exc:
+            status, payload = exc.status, {"error": exc.code, "detail": exc.detail}
+            if isinstance(exc, Denied):
+                payload["reason"] = exc.reason
+                event["reason"] = exc.reason
+        except Exception as exc:
+            # The class name only: an exception message can carry a survey value or a token.
+            status, payload = 500, {"error": "internal"}
+            event["exception"] = type(exc).__name__
+        event["outcome"] = status
+        event["error"] = None if status == 201 else payload["error"]
+        self._log(event)
+        return status, payload
+
+    def _launch(self, headers: Mapping[str, str], body: bytes, event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        caller = authenticate(_authorization(headers), self._config)
+        event.update(caller=caller, reason=None, task_id=None)
+        req = parse_request(body)
+        event.update(
+            agent=req.agent,
+            template=req.template,
+            step=req.step,
+            workflow_id=req.workflow_id,
+            dry_run=req.dry_run,
+            survey_keys=sorted(req.survey),
+        )
+        authorize_local(caller, req, self._config)
+        template = self._semaphore.template(req.template)
+        values = merge_survey(template, req.survey)
+        branch = self._semaphore.branch(template.get("repository_id"))
+        if req.dry_run:
+            version = self._semaphore.version()
+            if version.split("-")[0] not in VERIFIED_DRY_RUN_VERSIONS:
+                raise Refusal(400, "dry_run_unverified", f"check mode is not verified for Semaphore {version}")
+        reason = self._opa.decide(opa_input(req, branch, values))
+        event["reason"] = reason
+        template_id = template["id"]
+        busy = self._semaphore.running(template_id)
+        if busy:
+            ids = ", ".join(str(task) for task in busy)
+            raise Refusal(409, "already_running", f"template {req.template} already has a running task: {ids}")
+        message = task_message(caller, req.workflow_id, req.step)
+        task_id = self._semaphore.create(
+            task_body(template_id, self._config.semaphore_project, values, dry_run=req.dry_run, message=message)
+        )
+        event["task_id"] = task_id
+        if req.dry_run:
+            self._check_mode_recorded(task_id)
+        return 201, {
+            "task_id": task_id,
+            "message": message,
+            "decision": {"allowed": True, "reason": reason},
+        }
+
+    def _check_mode_recorded(self, task_id: int) -> None:
+        """Read the task back. Anything short of a positive params.dry_run is a real run: stop it and refuse."""
+        try:
+            task = self._semaphore.task(task_id)
+        except Refusal:
+            task = {}
+        params = task.get("params")
+        if isinstance(params, dict) and params.get("dry_run") is True:
+            return
+        try:
+            self._semaphore.stop(task_id)
+            note = "stop requested"
+        except Refusal:
+            note = "stop request also failed"
+        raise Refusal(
+            502,
+            "dry_run_not_recorded",
+            f"task {task_id} launched but its check mode was not recorded ({note}); "
+            "treat it as a real run until inspected",
+        )
