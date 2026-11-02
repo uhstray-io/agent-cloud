@@ -18,6 +18,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
+from fake_http import refused_port
 
 REPO = playbook_yaml.REPO
 PROBE = REPO / "platform/playbooks/probe-reachability.yml"
@@ -66,11 +67,7 @@ def _listen(family, addr):
 def ports():
     """(an open port with a listener, a port with none)."""
     with _listen(socket.AF_INET, "127.0.0.1") as opened:
-        free = socket.socket()
-        free.bind(("127.0.0.1", 0))
-        closed = free.getsockname()[1]
-        free.close()
-        yield opened, closed
+        yield opened, refused_port()
 
 
 @pytest.fixture

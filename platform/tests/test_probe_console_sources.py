@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/probe-console-sources.yml"
@@ -353,15 +353,6 @@ SENT_PVE = "SENTINEL-PROXMOX-TOKEN-5e21b8"
 CLIENT = "fake-approle-client-token"
 
 
-def _closed_port():
-    """A loopback port nothing listens on: a connection to it gets no HTTP answer."""
-    closed = socket.socket()
-    closed.bind(("127.0.0.1", 0))
-    port = closed.getsockname()[1]
-    closed.close()
-    return port
-
-
 def _serve(answer):
     class Handler(DrainingHandler):
         def do_GET(self):
@@ -468,13 +459,7 @@ def probe_run(tmp_path):
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         servers.append(listener)
-        if proxmox_open:
-            pve_port = listener.getsockname()[1]
-        else:
-            closed = socket.socket()
-            closed.bind(("127.0.0.1", 0))
-            pve_port = closed.getsockname()[1]
-            closed.close()
+        pve_port = listener.getsockname()[1] if proxmox_open else refused_port()
         inventory = {"all": {"children": {"console_svc": {"hosts": {"console-probe": {
             "ansible_connection": "local",
             "openbao_addr": openbao_url or f"http://127.0.0.1:{bao.server_address[1]}",
@@ -589,7 +574,7 @@ def test_a_netbox_status_that_is_not_a_login_prompt_fails_by_name_and_runs_no_to
 
 @NEEDS_ANSIBLE
 def test_a_netbox_with_no_http_answer_fails_by_name_and_runs_no_token_read(probe_run):
-    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_url=f"http://127.0.0.1:{_closed_port()}")
+    proc = probe_run(netbox_stored=True, proxmox_open=True, netbox_url=f"http://127.0.0.1:{refused_port()}")
     out = proc.stdout + proc.stderr
     assert proc.returncode != 0, out
     assert "NetBox: no HTTP answer from the console VM" in out, out
@@ -602,7 +587,7 @@ def test_a_netbox_with_no_http_answer_fails_by_name_and_runs_no_token_read(probe
 
 @NEEDS_ANSIBLE
 def test_a_closed_openbao_endpoint_is_no_http_answer_and_fails_the_play_by_name(probe_run):
-    proc = probe_run(netbox_stored=True, proxmox_open=True, openbao_url=f"http://127.0.0.1:{_closed_port()}")
+    proc = probe_run(netbox_stored=True, proxmox_open=True, openbao_url=f"http://127.0.0.1:{refused_port()}")
     out = proc.stdout + proc.stderr
     assert proc.returncode != 0, out
     assert "OpenBao endpoint: no HTTP answer from the console VM" in out, out

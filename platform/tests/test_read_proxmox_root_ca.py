@@ -30,7 +30,6 @@ import hashlib
 import json
 import os
 import re
-import socket
 import ssl
 import subprocess
 import threading
@@ -40,7 +39,7 @@ from pathlib import Path
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 from test_pve_pinned_get import _generate_leaf
 
 REPO = Path(__file__).resolve().parents[2]
@@ -878,11 +877,7 @@ def test_a_custom_served_certificate_is_named_by_its_basename_and_nothing_is_pri
 
 @needs_ansible
 def test_an_unreachable_api_is_named_by_exit_code_and_its_url_is_not_printed_at_default_verbosity(tmp_path, leaf):
-    closed = socket.socket()
-    closed.bind(("127.0.0.1", 0))
-    port = closed.getsockname()[1]
-    closed.close()
-    url = f"https://127.0.0.1:{port}"
+    url = f"https://127.0.0.1:{refused_port()}"
     done = _run(_harness(tmp_path, url, TOKEN_ID, pin=leaf.colon), verbosity=None)
     out = done.stdout + done.stderr
     assert done.returncode != 0, out[-1500:]

@@ -22,7 +22,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 
 REPO = playbook_yaml.REPO
 PLAYBOOK = REPO / "platform/playbooks/probe-agentgateway-client-tls.yml"
@@ -288,12 +288,8 @@ def test_a_server_certificate_the_probe_cannot_verify_is_inconclusive_not_a_refu
     assert gw.seen == []
 
 
-def test_a_gateway_that_is_not_listening_is_inconclusive(tmp_path, pki, listener):
-    gw = listener("san-first")
-    port = gw.server_port
-    gw.shutdown()
-    gw.server_close()
-    rc, out = _run(tmp_path, pki, f"https://localhost:{port}")
+def test_a_gateway_that_is_not_listening_is_inconclusive(tmp_path, pki):
+    rc, out = _run(tmp_path, pki, f"https://localhost:{refused_port()}")
     assert rc != 0 and "inconclusive" in out, out
     assert set(_report(out)["classes"].values()) == {"connection-refused"}, out
 

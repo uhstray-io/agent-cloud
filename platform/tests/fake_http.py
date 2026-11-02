@@ -7,10 +7,37 @@ task, an unexplained authentication failure. It only surfaces under load (pytest
 so it cannot be left to each fake remembering. This base reads the whole declared body
 before the do_* method runs, on every path, and serves it back from memory: handlers
 keep calling self.rfile.read(...) exactly as before.
+
+It also holds `refused_port()`, the one port a test aims at when it needs "nothing listens here".
 """
 
 import io
+import socket
 from http.server import BaseHTTPRequestHandler
+
+# Below every ephemeral range (Linux 32768-60999, macOS 49152-65535), so a bind to port 0 never
+# returns it, and nothing listens on it: a connection is refused at once on both.
+REFUSED_PORT = 1
+
+
+def refused_port():
+    """A loopback port that refuses connections and that no parallel test can be handed.
+
+    A port freed by stopping a server or closing a socket is NOT that: a bind to port 0 in another
+    xdist worker can be handed it, and the request meant to find nothing reaches that worker's
+    server instead. One such request landed on the conformance test's upstream stub and failed
+    it (docs/MISTAKES.md 2.33). Holding the port bound without listening does not work either:
+    macOS then leaves the connect to time out instead of refusing it.
+    """
+    with socket.socket() as probe:
+        probe.settimeout(2)
+        try:
+            probe.connect(("127.0.0.1", REFUSED_PORT))
+        except ConnectionRefusedError:
+            return REFUSED_PORT
+        except OSError as error:
+            raise RuntimeError(f"127.0.0.1:{REFUSED_PORT} did not refuse a connection: {error}") from error
+    raise RuntimeError(f"something listens on 127.0.0.1:{REFUSED_PORT}; refused_port() needs it closed")
 
 
 class DrainingHandler(BaseHTTPRequestHandler):
