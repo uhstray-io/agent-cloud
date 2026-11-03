@@ -2,6 +2,8 @@
 //! the browser hydrates it. Every page except the sign-in screen sits under
 //! `Shell`, which owns the sidebar and the scope bar.
 
+mod access;
+mod access_api;
 mod api;
 mod compute;
 mod empty;
@@ -21,10 +23,10 @@ mod work_detail;
 
 use dioxus::prelude::*;
 
+use access::Access;
 use compute::Compute;
 use empty::{
-    Access, AiGateway, CiCd, Dashboard, LlmAccess, NotFound, OrgSettings, Policy, Telemetry,
-    TenantSettings,
+    AiGateway, CiCd, Dashboard, LlmAccess, NotFound, OrgSettings, Policy, Telemetry, TenantSettings,
 };
 use profile::Profile;
 use secrets::Secrets;
