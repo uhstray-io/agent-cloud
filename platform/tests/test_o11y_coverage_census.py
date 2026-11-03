@@ -1,7 +1,9 @@
 import hashlib
 import importlib.util
 import io
+import ipaddress
 import json
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -16,6 +18,9 @@ SPEC.loader.exec_module(CENSUS)
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
 REPO_SHA = "a" * 40
 INVENTORY_REVISION = "b" * 40
+# Deterministic synthetic host from the canonical RFC1918 test network; this is
+# not derived from any site inventory or deployment topology.
+PRIVATE_TEST_IP = str(ipaddress.ip_network("192.168.0.0/16")[20])
 
 
 def signal(receipt=None, reference="semaphore/task/123"):
@@ -64,6 +69,44 @@ def target(target_id="service:alpha", identity="alpha", signals=None, target_typ
         },
         "template_references": ["Verify o11y Target Receipt"],
     }
+
+
+def availability_target(
+    target_id="service:alpha", identity="alpha", environment="production",
+    endpoint=None,
+):
+    if endpoint is None:
+        endpoint = f"https://{PRIVATE_TEST_IP}/healthz"
+    declaration = target(target_id=target_id, identity=identity)
+    declaration["signals"]["health"] = {
+        "applicable": True,
+        "selector": (
+            f'probe_success{{job="o11y-availability",target_id="{target_id}",'
+            f'environment="{environment}",cluster="prod-cluster"}}'
+        ),
+        "collection_method": "alloy-blackbox-http",
+        "freshness_seconds": 300,
+        "endpoint": endpoint,
+        "expected_status_codes": [200],
+        "tls_server_name": "health.example.invalid",
+        "trust": "system",
+    }
+    declaration["environment"] = environment
+    declaration["budget"]["health"] = {
+        "interval_seconds": 60,
+        "scrape_timeout_seconds": 20,
+        "probe_timeout_seconds": 10,
+        "body_size_limit_bytes": 4096,
+        "samples_per_scrape": 64,
+    }
+    declaration["receipt_reference"].pop("health", None)
+    return declaration
+
+
+def prepare_availability(targets, **kwargs):
+    if kwargs.get("enabled"):
+        kwargs.setdefault("inventory_revision", CENSUS.canonical_inventory_revision(targets))
+    return CENSUS.prepare_availability_targets(targets, **kwargs)
 
 
 def receipt(target_id="service:alpha", signal_name="logs", inventory_revision=INVENTORY_REVISION,
@@ -141,6 +184,215 @@ class CoverageCensusTests(unittest.TestCase):
             NOW,
             verified_receipts=verified_receipts,
         )
+
+    def test_availability_inventory_is_default_off_and_projects_only_fixed_contract(self):
+        declaration = availability_target()
+        CENSUS.validate([declaration])
+        disabled = prepare_availability(
+            [declaration], enabled=False, reviewed=False, limits=None,
+            receiver_environment="production", cluster="prod-cluster",
+            shared_sample_limit=2000,
+        )
+        self.assertEqual(disabled, {"enabled": False, "targets": [], "limits": {}})
+        self.assertEqual(
+            prepare_availability(
+                [{"malformed": "unrelated legacy declaration"}], enabled=False,
+                reviewed=False, limits=None, receiver_environment="production",
+                cluster="prod-cluster", shared_sample_limit=None,
+            ),
+            {"enabled": False, "targets": [], "limits": {}},
+        )
+
+        prepared = prepare_availability(
+            [declaration], enabled=True, reviewed=True,
+            limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            receiver_environment="production", cluster="prod-cluster",
+            shared_sample_limit=2000,
+        )
+        self.assertEqual(prepared["enabled"], True)
+        self.assertEqual(prepared["targets"], [{
+            "module_name": "health_01",
+            "target_id": "service:alpha", "service_identity": "alpha",
+            "environment": "production", "cluster": "prod-cluster",
+            "endpoint": f"https://{PRIVATE_TEST_IP}/healthz",
+            "freshness_seconds": 300,
+            "expected_status_codes": [200], "tls_server_name": "health.example.invalid",
+            "trust": "system", "interval_seconds": 60,
+            "scrape_timeout_seconds": 20, "probe_timeout_seconds": 10,
+            "body_size_limit_bytes": 4096, "samples_per_scrape": 64,
+            "blackbox_config": json.dumps({"modules": {"health_01": {
+                "prober": "http", "timeout": "10s", "http": {
+                    "method": "GET", "valid_status_codes": [200],
+                    "follow_redirects": False, "proxy_from_environment": False,
+                    "body_size_limit": "4096B",
+                    "tls_config": {
+                        "insecure_skip_verify": False,
+                        "server_name": "health.example.invalid",
+                    },
+                },
+            }}}, sort_keys=True, separators=(",", ":")),
+        }])
+
+        internal_ca = availability_target()
+        internal_ca["signals"]["health"]["trust"] = "internal-ca"
+        ca_module = json.loads(prepare_availability(
+            [internal_ca], enabled=True, reviewed=True,
+            limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            receiver_environment="production", cluster="prod-cluster",
+            shared_sample_limit=2000,
+        )["targets"][0]["blackbox_config"])["modules"]["health_01"]
+        self.assertEqual(ca_module["http"]["tls_config"], {
+            "insecure_skip_verify": False,
+            "server_name": "health.example.invalid",
+            "ca_file": "/certs/step-ca-bundle.crt",
+        })
+
+    def test_availability_requires_literal_rfc1918_http_target_and_exact_contract(self):
+        cases = [
+            ("https://health.example.invalid/healthz", "endpoint"),
+            (f"https://{PRIVATE_TEST_IP}/healthz?token=x", "endpoint"),
+            (f"https://user@{PRIVATE_TEST_IP}/healthz", "endpoint"),
+            ("https://8.8.8.8/healthz", "endpoint"),
+            (f"https://{PRIVATE_TEST_IP}/healthz#ready", "endpoint"),
+            (f"https://{PRIVATE_TEST_IP}/" + "a" * 2048, "endpoint"),
+        ]
+        for endpoint, _ in cases:
+            declaration = availability_target(endpoint=endpoint)
+            with self.subTest(endpoint=endpoint), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                prepare_availability(
+                    [declaration], enabled=True, reviewed=True,
+                    limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+                    receiver_environment="production", cluster="prod-cluster",
+                    shared_sample_limit=2000,
+                )
+
+        http_target = availability_target(endpoint=f"http://{PRIVATE_TEST_IP}/healthz")
+        http_target["signals"]["health"].pop("trust")
+        http_target["signals"]["health"].pop("tls_server_name")
+        prepared = prepare_availability(
+            [http_target], enabled=True, reviewed=True,
+            limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            receiver_environment="production", cluster="prod-cluster",
+            shared_sample_limit=2000,
+        )
+        http_config = json.loads(prepared["targets"][0]["blackbox_config"])["modules"]["health_01"]["http"]
+        self.assertNotIn("tls_config", http_config)
+
+    def test_availability_rejects_status_booleans_bad_tls_and_over_budget_values(self):
+        invalid = []
+        item = availability_target()
+        item["signals"]["health"]["expected_status_codes"] = [True]
+        invalid.append(item)
+        item = availability_target()
+        item["signals"]["health"]["trust"] = "insecure"
+        invalid.append(item)
+        item = availability_target()
+        item["signals"]["health"]["selector"] = '{target_id="service:alpha"}'
+        invalid.append(item)
+        item = availability_target()
+        item["budget"]["health"]["probe_timeout_seconds"] = 11
+        invalid.append(item)
+        item = availability_target()
+        item["budget"]["health"]["samples_per_scrape"] = 257
+        invalid.append(item)
+        item = availability_target()
+        item["signals"]["health"]["freshness_seconds"] = 60
+        invalid.append(item)
+        for declaration in invalid:
+            with self.subTest(declaration=declaration), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                prepare_availability(
+                    [declaration], enabled=True, reviewed=True,
+                    limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+                    receiver_environment="production", cluster="prod-cluster",
+                    shared_sample_limit=2000,
+                )
+
+    def test_availability_freshness_must_exceed_the_reviewed_scrape_interval(self):
+        declaration = availability_target()
+        declaration["signals"]["health"]["freshness_seconds"] = 61
+        prepared = prepare_availability(
+            [declaration], enabled=True, reviewed=True,
+            limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            receiver_environment="production", cluster="prod-cluster",
+            shared_sample_limit=2000,
+        )
+        self.assertEqual(prepared["targets"][0]["freshness_seconds"], 61)
+
+        declaration["signals"]["health"]["freshness_seconds"] = 60
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            CENSUS.validate([declaration])
+
+    def test_availability_https_server_name_is_dns_not_an_ip_literal(self):
+        accepted = availability_target()
+        self.assertEqual(prepare_availability(
+            [accepted], enabled=True, reviewed=True,
+            limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            receiver_environment="production", cluster="prod-cluster",
+            shared_sample_limit=2000,
+        )["targets"][0]["tls_server_name"], "health.example.invalid")
+
+        literal = availability_target()
+        literal["signals"]["health"]["tls_server_name"] = PRIVATE_TEST_IP
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            prepare_availability(
+                [literal], enabled=True, reviewed=True,
+                limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+                receiver_environment="production", cluster="prod-cluster",
+                shared_sample_limit=2000,
+            )
+
+    def test_availability_requires_reviewed_nonempty_targets_and_matching_limits(self):
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            prepare_availability(
+                [], enabled=True, reviewed=True,
+                limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+                receiver_environment="production", cluster="prod-cluster",
+                shared_sample_limit=2000,
+            )
+        for limits in (
+            {"max_targets": True, "max_total_timeout_seconds": 10, "max_series": 6},
+            {"max_targets": 1, "max_total_timeout_seconds": 121, "max_series": 6},
+            {"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 5},
+            {"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 385},
+        ):
+            with self.subTest(limits=limits), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                prepare_availability(
+                    [availability_target()], enabled=True, reviewed=True, limits=limits,
+                    receiver_environment="production", cluster="prod-cluster",
+                    shared_sample_limit=2000,
+                )
+        declaration = availability_target()
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            CENSUS.prepare_availability_targets(
+                [declaration], enabled=True, reviewed=True,
+                inventory_revision="a" * 64,
+                limits={"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+                receiver_environment="production", cluster="prod-cluster",
+                shared_sample_limit=2000,
+            )
+
+    def test_availability_cli_emits_only_the_fixed_sanitized_projection(self):
+        payload = {
+            "targets": [availability_target()],
+            "inventory_revision": CENSUS.canonical_inventory_revision([availability_target()]),
+            "enabled": True,
+            "reviewed": True,
+            "limits": {"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            "receiver_environment": "production",
+            "cluster": "prod-cluster",
+            "shared_sample_limit": 2000,
+        }
+        result = subprocess.run(
+            ["python3", str(SCRIPT), "--prepare-availability"],
+            input=json.dumps(payload), text=True, capture_output=True, check=True,
+        )
+        output = json.loads(result.stdout)
+        self.assertEqual(output["enabled"], True)
+        target_output = output["targets"][0]
+        self.assertEqual(target_output["endpoint"], f"https://{PRIVATE_TEST_IP}/healthz")
+        tls = json.loads(target_output["blackbox_config"])["modules"]["health_01"]["http"]["tls_config"]
+        self.assertEqual(tls["insecure_skip_verify"], False)
+        self.assertNotIn("password", result.stdout.lower())
 
     def test_optional_profiles_signal_preserves_the_existing_four_signal_contract(self):
         declaration = target(signals={name: signal_excluded(name) for name in CENSUS.SIGNALS})
@@ -256,6 +508,21 @@ class CoverageCensusTests(unittest.TestCase):
         self.assertEqual(
             CENSUS.validate_signal_observation(observation("metrics", sibling))["reason"],
             "identity_mismatch",
+        )
+        probe_only = prometheus(values=[[1300, "1"]])
+        probe_only["data"]["result"][0]["metric"]["job"] = "o11y-availability"
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("metrics", probe_only))["reason"],
+            "reserved_health_producer",
+        )
+        mixed = prometheus(values=[[1300, "1"]])
+        mixed["data"]["result"].append({
+            "metric": {"target_id": "service:alpha", "job": "o11y-availability"},
+            "values": [[1300, "1"]],
+        })
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("metrics", mixed))["reason"],
+            "reserved_health_producer",
         )
 
     def test_strict_health_uses_latest_float_sample_and_requires_one(self):

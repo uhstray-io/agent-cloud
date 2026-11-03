@@ -1,0 +1,15 @@
+services:
+  alloy:
+    volumes:
+      - type: bind
+        source: ./certs/o11y-otlp-server
+        target: /certs/otlp-server
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./certs/step-ca-bundle.crt
+        target: /certs/step-ca-bundle.crt
+        read_only: true
+        bind:
+          create_host_path: false

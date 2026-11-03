@@ -38,6 +38,16 @@ selector is sourced from Prometheus service labels, so it covers metric-enabled
 local and remote services; use Logs Drilldown and the coverage declaration for
 log-only targets.
 
+The same private `estate_coverage_inventory.targets` declaration can describe
+an opt-in health-only `alloy-blackbox-http` signal. Its source contract accepts
+only a fixed RFC1918 IPv4 HTTP(S) GET endpoint, exact statuses, verified TLS,
+disabled redirects/proxying, fixed labels, and reviewed finite per-target and
+aggregate budgets. The source ceilings are documented in the o11y deployment
+README; they are not live cadence or production defaults. Availability remains
+off until actual receiver namespace isolation and post-apply native component
+readback are proven. A health response does not establish application metrics,
+overall service health, or estate coverage.
+
 Service graph rollout records use the same per-service coverage declaration:
 logs, metrics, traces, and profiles are each marked applicable, unsupported,
 or not applicable, with an exact-target readback receipt for every applicable
@@ -1542,8 +1552,10 @@ Proxmox's [disk inventory API](https://github.com/proxmox/pve-storage/blob/maste
 returns paths and optional model/health data; its [device scan](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
 includes several block-device classes while excluding iSCSI. An exact PV path
 join alone cannot distinguish directly attached media from every virtual or
-remote-backed block device. Require separate physical-origin evidence and a
-reviewed private store declaration before allocating a PBS VM disk.
+remote-backed block device. The operator decision dated 2026-10-29 removes
+physical-origin/BMC/chassis attestation as a prerequisite. The reviewed private
+store declaration, API identity pin, exact lineage, health, and capacity gates
+remain required; no host physical disk operation is authorized.
 
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
@@ -1878,6 +1890,31 @@ regression plans representative metrics and log panels without variable
 overrides; this checks query interpolation only, not backend availability or
 Grafana rendering.
 
+## 2026-10-20 conformance failure specificity
+
+Read-only Dev-bound dashboard observations 7727 and 7728 used controller
+revision `fad68aea3330230afc1908c4523b14f030df8150` and receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. The Overview observation returned
+data for four queried panels. The conformance query-data check passed four
+panels and classified current workflow failures as present, the inventory
+marker as fresh, and 36 workflow completion-age series as known. These are
+query observations, not proof that the dashboard rendered in a browser, and
+the failure count does not identify which service and step failed.
+
+The bounded verifier now reads only the exact provisioned "Latest step status
+by service" query, validates service names against public component directories
+and step names against the workflow registry, and emits at most 50 sorted
+service/step pairs plus categorical unknown and truncation counts. It discards
+all other Loki labels and sample values. The query's 45-minute `last_over_time`
+reduction represents current recorded state: a newer pass or skip replaces an
+older failure. A full 1000-task history window remains marked
+`history_incomplete`; retained state may have no task ID or completion time.
+The source change has not yet run through Dev-bound Semaphore. The historical
+failed-task panel remains outside this readback because its query returns log
+bodies. Keep workflow task 7.5 open until the changed verifier is read back,
+NetBox writes and the single-writer gate have evidence, and the rendered matrix
+is checked.
+
 Read-only production Semaphore tasks 6594, 6599, 6600, and 6603 reported:
 SMART category `passed` for the selected disk, with no serial-to-chassis
 comparison; six non-PBS artifact candidates across three active
@@ -1942,8 +1979,9 @@ top-level disk-path join with `used=LVM`, SMART category `passed`, and at least
 30% reported VG capacity remaining after the proposed 512-GiB disk. It reports
 only fixed status and booleans and leaves allocation, device safety, PBS and
 filesystem readiness, and write authorization false. A match against the
-private pin is API drift detection only: the operator's local hardware
-attestation is not independently compared with a chassis or BMC identity.
+private pin is API drift detection only; it does not
+independently prove physical origin. Physical-origin/BMC/chassis attestation
+is not a prerequisite per the operator decision dated 2026-10-29.
 This preflight does not create a VM, disk, filesystem, or PBS instance and does
 not change retention. It cannot pass until the private site-config inventory
 contains a reviewed pin; this repository contains no such private value.
@@ -1968,8 +2006,24 @@ selected API disk, the direct LVM disk-path lineage matched, SMART reported
 `passed`, and a proposed 512-GiB data disk left at least 30% reported VG
 headroom. Allocation, device safety, filesystem and PBS readiness, and write
 authorization remain **false**. The identity pin detects API-observed drift;
-it does not independently establish the disk's physical chassis origin. No
+it does not independently establish the disk's physical chassis origin. Per
+the operator decision dated 2026-10-29, that physical-origin comparison is
+not a prerequisite; the API and storage-lineage gates remain unchanged. No
 VM, disk, filesystem, or PBS instance was created and no retention changed.
+
+#### Later GET-only allocation preflight (2026-10-29)
+
+Existing Dev catalog template 341 was independently read back with its expected
+bindings. GET-only Semaphore task 10372 ran at exact reviewed Dev commit
+`ac2b5b6f7076e73bd4a41a12644fb2fb9f10e872`; it completed successfully, and its
+fixed public message parsed and validated. The sanitized result reported
+`backing_identity_matches=true`, `direct_lvm_disk_lineage=true`,
+`smart_health=passed`, and `reported_vg_headroom_passes_512_gib=true`.
+`allocation_authorized`, `device_safety_verified`,
+`filesystem_readiness_verified`, `pbs_readiness_verified`, and
+`write_authorized` were all `false`. This task created no VM, disk, filesystem,
+or PBS object and changed no retention or deployment. It does not authorize an
+allocation or establish guest, PBS, backup, restore, or retention acceptance.
 
 ### 2026-10-18 PBS VM census and static IP reservation
 
@@ -2040,12 +2094,12 @@ private `proxmox_pbs_storage_node`; do not reuse the VM image store identity,
 which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
 workflow checks the exact node and active file-store status, preserves the
 existing content list, applies the `import` union with Proxmox's observed digest,
-and reads the config back. Its check mode is read-only. Template publication
-stays blocked until the private declaration is reviewed and a successful run
-confirms the exact store now includes `import`. No Proxmox config changed in
-task 7081. The physical-disk origin remains operator-attested; the
-serial-to-chassis match is not independently verified. No template VM, PBS VM,
-or data disk has been created.
+and reads the config back. Its check mode is read-only. Task 7081 made no
+Proxmox config change. At the time of this receipt, physical-disk origin
+remained operator-attested and the serial-to-chassis match was not
+independently verified. The operator decision dated 2026-10-29 later removed
+that comparison as a prerequisite; this historical receipt remains unchanged.
+No template VM, PBS VM, or data disk has been created.
 
 Production Semaphore task 7106 refused before issuing any Proxmox request: the
 workflow's initial inventory URL assertion required HTTPS, while the shared
@@ -2053,5 +2107,438 @@ OpenBao transport guard explicitly permits internal RFC1918 HTTP. The public
 workflow now requires a nonempty private inventory URL, still requires exact
 equality with Semaphore's OpenBao URL, and delegates transport policy to the
 shared guard before the AppRole lookup. Task 7106 made no Proxmox read or write;
-the import-content verification gate remains open until a reviewed rerun proves
-the exact store configuration.
+the later reviewed rerun closed that gate.
+
+At reviewed Dev `a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`, scoped
+Semaphore template publisher tasks 7124 and 7125 succeeded and verified the
+import-content template declaration. Import-content task 7128 confirmed in
+read-only check mode that `import` was absent; task 7129 applied the
+observed-digest union and verified readback; task 7131 confirmed a second run
+was unchanged. GET-only candidate survey task 7132 then found active import
+candidates, two free VMID candidates, and an available declared VM image store.
+NetBox allocator task 7140 found 32 free addresses on the declared network;
+a live pfSense DHCP boundary check left seven eligible. Task 7143 checked the
+selected address in read-only mode, and task 7145 reserved it with the exact
+PBS description and verified NetBox readback. Address and VMID values remain
+private. Template publication awaits the separate PBS host declaration,
+reviewed private inventory merge, Semaphore sync, and exact inventory readback.
+No template VM, PBS VM, or data disk has been created; retention is unchanged.
+
+The first scoped Semaphore publisher check, task 7152, refused because the
+Debian template workflow did not yet exist as a Semaphore template; it made no
+configuration change. The documented one-template creation path then passed
+check mode in task 7155. Task 7156 created only `Provision PBS Debian Cloud
+Template (Dev)` and read back its exact Dev repository, inventory, environment,
+and playbook bindings at reviewed Dev
+`a7f348067bdd3cec935f8ae64ceeb1e49492c7c3`. It did not run the playbook or
+create a Proxmox template. That run still awaits the reviewed private PBS host
+declaration and inventory sync.
+
+PR #715 added the separate Dev-bound PBS guest-disk attachment source workflow
+for OpenSpec task 3.1. It verifies the exact declared guest, network, OS disk,
+and data-disk slot; an already matching `scsi1` is a safe rerun without another
+capacity allocation. If `scsi1` is absent, it reuses the pinned backing survey
+and 512-GiB headroom preflight, re-reads the VM config, and sends one
+digest-protected Proxmox API request. Check mode performs reads only. PR #715
+passed final CI and CodeRabbit review and merged to `dev` at
+`621396b660c120056fc835900d70a38618f87535` (reviewed head
+`bc0ca6d3b29ee1db8ef78bcfccf8a0e0e7f75451bc`). Its initial allocation request
+does not set the required `ac-pbs-data-<vm_vmid>` serial. A serial-aware
+bootstrap enhancement must land and be read back before any live disk
+allocation. The Dev task has not been published/read back here and no live disk
+was allocated; tasks 3.2 and 3.3 remain open.
+
+### PBS guest filesystem and service source integration (2026-10-20)
+
+The reviewed guest filesystem head `05acf2269081cf9e273fb77c0a5d1ffbd66ad280`
+and service head `4b4ef07c7bee21adee14ec55900de56ba5a76d28` are integrated by
+normal merge commits `c07a91e5` and `72f7a24b` after PR #715's exact head,
+retaining its transport-test and visible-token assertions. PR #715 subsequently
+merged to Dev at `621396b660c120056fc835900d70a38618f87535` after final CI and
+CodeRabbit approval. The guest workflow identifies the one 512-GiB whole
+virtual disk by the Proxmox serial `ac-pbs-data-<vm_vmid>` (at most 18 ASCII
+bytes for the six-digit VMID), formats only a proven blank disk as ext4, and
+mounts it by UUID at `/srv/pbs-data` with `noatime`. Service configuration
+independently re-proves serial, size, UUID, mount, and fstab state before
+package or datastore writes. It verifies the installed shared helper against
+the exact reviewed checkout, then uses its no-follow containment checks to
+require the datastore as a real direct child on the pinned filesystem and
+reject symlinks and nested mounts, including for registered datastores. The
+helper and disk contract are source dependencies; no receipt or marker is
+treated as proof.
+
+Two Dev-only Semaphore catalog definitions were added with the guest and
+service source integration. Each
+targets the `agent-cloud dev` repository, requires only
+`expected_repository_sha`, and names the matching guest or service playbook.
+The service's Proxmox repository channel remains an explicit private-inventory
+choice: enterprise needs an already-active subscription before changes, while
+no-subscription requires explicit operator acceptance and is not an automatic
+fallback. Safe enterprise subscription-key provisioning remains a separate
+dependency. Task 4.1 creates no Linux root password or PBS API token; the
+datastore-scoped PVE identity and OpenBao token lifecycle belongs to task 4.2.
+
+Source validation in the integration checkout: 277 focused tests passed, and
+the three synthetic guest task-sequence cases also passed in a separate,
+scoped-escalation run: normal mode with the current helper, check mode with the
+helper absent, and check mode with an outdated helper. Both PBS playbooks passed
+Ansible syntax checks (with the expected absent-private-inventory `pbs_svc`
+warning). Ruff passed. Full
+`ansible-lint platform/playbooks/ platform/semaphore/` passed with zero fatal
+failures and three existing unrelated Jinja-spacing warnings; YAML lint exited
+0 with existing line-length warnings. Strict OpenSpec validation from the local
+`plan/development/openspec` root reports this change valid. These are source-only
+results. The Dev
+Semaphore entries have not been published or read back, and no template VM,
+PBS VM, data disk, filesystem, mount, or PBS service has been observed live.
+Task 3.2 remains open. The source implementation for 3.3 and 4.1 is recorded
+separately from their original acceptance checkboxes; those remain open until
+the guest preservation, mount, and PBS health receipts are collected.
+
+### PBS backup access source integration (2026-10-20)
+
+The independently reviewed and fix-verified PBS backup-access head
+`9f6b041a4f85ef56b92f7fe14cc7001c1b9c1fd5` is merged into the bootstrap
+integration branch by normal merge commit `4f02fdc0`. It adds the
+OpenBao-backed PBS token lifecycle, exact non-propagating
+`DatastoreBackup` grants at `/datastore/o11y`, PVE PBS storage registration,
+and checks that the existing backup jobs and storage remain unchanged. The
+Dev-only `Configure PBS Backup Access (Dev)` catalog entry requires only
+`expected_repository_sha`; host, storage, and secret values remain private
+inventory/OpenBao inputs. The reviewed Dev merge `f259e2a77515115306563f0dcb96db1142060519`
+(PR #723) is also integrated by normal merge commit `88736a8d`; it carries the
+gateway access-discriminator source and is unrelated to PBS live state.
+
+The third Dev-only Semaphore catalog definition, `Configure PBS Backup Access
+(Dev)`, binds `platform/playbooks/configure-pbs-backup-access.yml` to the
+`agent-cloud dev` repository and requires only the exact reviewed SHA. The
+source implementation does not create a PBS user/token, grant an ACL,
+register PVE storage, or redirect any backup job until its guarded Dev-bound
+workflow is explicitly executed. No live PBS identity, OpenBao credential,
+ACL, PVE target, or backup has been observed. Tasks 3.3, 4.1, and 4.2 have
+reviewed source workflows; their original acceptance items remain open until
+the separate live receipts recorded in OpenSpec task subtasks. Tasks 3.2, 4.3,
+and 4.4 also remain open. This source branch is not yet merged to Dev, so the
+catalog workflows are not published or runnable from Dev.
+
+The combined integration validation was rerun after merging the reviewed
+backup-access branch and Dev PR #723. The focused PBS bootstrap/service/access
+and OpenBao-guard suite passed **331 tests**, including the three synthetic
+Ansible selector task sequences (normal mode/current helper, check mode/absent
+helper, and check mode/outdated helper); 18 subtests passed. All four PBS
+attachment, guest filesystem, service, and backup-access playbooks passed
+Ansible syntax check, with the expected missing-private-inventory `pbs_svc`
+warning on guest-targeted playbooks. Repository Ruff passed. Full Ansible lint
+processed 368 files with zero fatal failures and three existing Jinja-spacing
+warnings. Repository YAML lint exited 0 with existing line-length warnings.
+Strict OpenSpec validation passed. These checks prove source behavior against
+synthetic fixtures only; no Semaphore API, Proxmox API, PBS guest, OpenBao, or
+live storage was contacted.
+
+### PBS verify-only paths and restore-target preflight (2026-10-20)
+
+The source integration adds `verify`-tagged read-only paths for guest disk,
+PBS service, backup access, and restore-target preflight. These paths inspect
+existing state and refuse missing components; they do not prepare a disk,
+install packages, change service state, create secrets, grant ACLs, register
+storage, or reserve a restore VMID. PBS service verification uses the package
+path `/usr/sbin/proxmox-backup-manager` and read-only API/CLI health checks.
+
+OpenSpec tasks 3.3, 4.1, 4.2, and 5.1 distinguish checked source subtasks
+from still-open live acceptance. Task 3.3 still needs the guest rerun and data
+preservation receipt; 4.1 needs live UUID mount and PBS health readback; 4.2
+needs actual identity, token, ACL, and PVE storage verification; 5.1 needs the
+private target/artifact declaration and live exact-artifact preflight. The
+serial-aware bootstrap change must be published and read back from Dev before
+any live disk allocation. No PBS VM, disk, filesystem, mount, service,
+credential, ACL, PVE storage, or restore target has been validated live.
+
+The source-only restore preflight is merged from reviewed head
+`9099a421b01016226cb806560c43a6d6da819d69` by merge `64ed7ae0`. The target is
+still disconnected and undeclared. Current VMID availability authority is
+required; ACL census visibility is explicitly unverified. Capacity and
+retention remain blocked by the separate seven-day capacity gate.
+
+The separate read-only Seven-Day Capacity History survey, task 7710, ran from
+reviewed controller Dev `f259e2a77515115306563f0dcb96db1142060519` against
+expected and measured receiver source
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. It refused with
+`source_series_ambiguous`. The receipt proves no capacity gate pass or
+forecast, and it made no state mutation. The cause remains unconfirmed; the
+next step is a bounded diagnostic to distinguish duplicate collectors from a
+label migration. Do not prune/reset data or relax the single-source guard.
+Retention changes and VM growth remain blocked pending a successful seven-day
+capacity gate.
+
+Final integrated source validation on the bootstrap branch ran 116 focused
+tests, followed by four separately escalated synthetic Ansible task-sequence
+cases; all passed. The latter cover guest selector behavior and backup-access
+refusal assertions using disposable fixtures. They do not exercise live
+OpenBao, PBS, PVE, or Semaphore requests. `--list-tasks --tags verify` confirms
+tag selection but does not expand dynamic includes; the included transport
+guard's `apply.tags` and read-only child task were inspected separately. All
+four playbooks passed syntax check. Ruff passed; full Ansible lint reported
+zero failures and three existing Jinja-spacing warnings; YAML lint exited 0
+with existing line-length warnings; strict OpenSpec validation passed. These
+are source checks only and do not close the live acceptance items above.
+
+### 2026-10-24 isolated restore and cleanup source
+
+The isolated restore executor and separately launched cleanup are implemented
+in the feature worktree described by
+[`isolated-restore-executor.md`](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor.md)
+and its [operator runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/isolated-restore-executor-runbook.md).
+The source authenticates the four prerequisite task outputs in order and uses
+the copy-readiness receipt's closed `normalized_restore_locator` as the dynamic
+artifact location. Static source/copy/target hosts, nodes, and storage IDs stay
+in private inventory; a caller or legacy protected-copy selector is refused.
+Before using the copy, restore compares fresh destination PVE content and the
+PBS manifest to readiness, verifies the dedicated destination restore Reader
+identity and current PVE storage configuration fingerprints, then validates
+the exact artifact config before reservation. The Reader
+`o11y-copy-restore@pbs!pve-restore` is separate from the destination copy
+Manager and is the only PBS identity used by restore-side manifest reads. The
+artifact gate admits only the reviewed provisioner-shaped cloud-init config,
+the provisioner's exact `serial0: socket`, and canonical PVE
+`meta: creation-qemu=<version>,ctime=<epoch>`; arbitrary serial settings and
+unknown or malformed metadata are refused in artifact and target validation.
+Its regenerated target auxiliary is checked separately from included backup
+disks, and source cloud-init and NIC identity/network data is scrubbed before
+boot. The shared fixed-mode receipt validator and journal cover restore,
+isolation, start, guest execution, stop, and cleanup writes. The guest checker
+runs only through QGA and emits a bounded private receipt. Cleanup derives that
+receipt from authenticated task output and proves the full journal/version and
+exact target state before deletion. Its current private pin is verified
+independently from the historical restore pin, allowing unrelated private
+inventory changes while requiring the declared target and artifact evidence to
+remain unchanged.
+
+This is source implementation only. Independent component reviews of the PBS,
+restore, and capability scopes are complete; actionable findings were fixed and
+verified. Final combined-head CI and publication/readback for the integrated
+PBS/restore source remain pending. Scoped policy catalog publication task 8650
+created only `Apply Policy - Semaphore (Dev)` (template 351, repository 5,
+environment 2, inventory 2, `apply-policy-semaphore.yml`, no survey); the
+existing main-bound policy template 50 bindings were unchanged. No policy apply
+or effective-capability verification ran. Private target declaration, actual
+Reader and ACL readback, all-writer drain, protected-copy restore while primary
+PBS is unavailable, and live restore/cleanup remain open. Keep OpenSpec 5.2,
+the seven-day capacity forecast, and the separate 90d/45d/45d retention
+decision open; no live restore, cleanup, or storage change was performed for
+this source work.
+
+### 2026-10-24 limited observability and backup probes
+
+Sanitized task 8632 ran at controller `482a81c72cdf8b36e9f1245b7b07c3437b932cf3`
+with receiver revision `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`. The dashboard
+probe reported five failed workflow steps; all five had unknown completion
+age. Three series/identities were unclassified, with no unknown label-shape or
+sample records. This is a limited dashboard observation, not proof that a
+restore or PBS workflow ran successfully.
+
+Sanitized backup inspection task 8634 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3`. It verified that the selected
+backup job is enabled and includes o11y, but found no successful backup within
+26 hours. The selected destination was reported low on free space. A separate
+node task log produced a `no_space` hint, but its task identity did not match
+the selected job, so that hint cannot be attributed to that job. No fresh PBS
+artifact or PBS-side verification was established.
+
+Sanitized task 8638 succeeded at controller
+`482a81c72cdf8b36e9f1245b7b07c3437b932cf3` with receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; its selected agentgateway scrape
+returned one series with values. This establishes scrape visibility only. It
+does not prove application health, service-level conformance, or fleet-wide
+coverage.
+
+Capacity refresh task 8623 had one source series and one series at the latest
+evaluation, no overlapping source events/evaluations, and no unknown label
+keys. It clears the earlier duplicate-source ambiguity for that read, but its
+source history is too short to provide a seven-day forecast or pass the
+capacity gate. The task used controller `391a4f7c168a51cf753d0a7cce202724a89b3b95`
+and expected receiver revision
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`.
+
+None of these probes validates the private PBS placement, protected-copy
+failover with primary PBS unavailable, effective OpenBao role capabilities,
+writer drain, restore-target availability, or isolated restore/cleanup. They
+do not close OpenSpec 4.3, 4.4b/c, 5.1b, 5.2, 5.3, the seven-day forecast, or
+the separate 90d/45d/45d retention gate.
+
+Two later read-only observations further bound readiness. Service overview
+task 8645 used the same controller and receiver revisions. The Logvolume result
+was partial: 3 of 6 targets had data. Recent gateway access records were empty,
+so that verifier returned `ERROR`; recent container logs were expected to be
+empty. The absence of query errors is not proof of delivery or application
+health. The selected agentgateway scrape observation remains limited to its
+single series and roughly six-hour window.
+
+Configuration census task 8647 completed at controller commit
+`06ad8c32358518a1dc52181fde10439a8d431980`: 31 candidates, 9 declared
+targets, 31 unverified targets, 0 duplicate identities, and an inventory
+revision was present. Coverage was incomplete for 9 targets and unverified for
+22; signal states were incomplete for 3 and undeclared for 33; there were no
+missing template references. Its launch deliberately supplied no receipt task
+IDs, and it did not prove receiver coverage. This is a current configuration
+census, not evidence that telemetry is absent, applications are healthy, or
+fleet coverage is verified. All target receipt gates remain open.
+
+Scoped catalog publication task 8650 succeeded at Dev commit
+`06ad8c32358518a1dc52181fde10439a8d431980`. It created only the
+`Apply Policy - Semaphore (Dev)` template (template 351), bound to repository
+5, environment 2, inventory 2, and `apply-policy-semaphore.yml`, with no
+survey fields. Existing main-bound policy template 50's bindings remained
+unchanged. The task published the policy-application mechanism only; no policy
+apply or effective-capability verification was run, so guarded-writer
+activation remains blocked.
+
+Capacity task 8658 at Dev commit `e68ca3de948914cb5ba820c92e12627277d468d6`
+ended with `source_history_too_short`: it evaluated 2,305 points (at least
+2,017 expected), saw 16 canonical source events (at least 8 expected), but the
+observed event span was 604,701 seconds, 99 seconds short of the 604,800-second
+window. The separate seven-day forecast gate remains open; elapsed time alone
+does not extend the observed source-event span.
+
+Conformance task 8659 at the same controller revision queried both exact
+service-conformance panels successfully over 24 hours. Categorical age data was
+available, but the identity join remained unverified: five failed pairs had
+unknown age, and the age-map diagnostics reported three registry-unknown rows.
+The map was rejected; per-pair missing/unavailable counters were zero. This is
+not application-health or delivery proof and does not close service conformance.
+
+These observations do not change the prior acceptance boundary: they do not
+prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
+effective role capabilities, writer drain, or isolated restore/cleanup. The
+capacity source ambiguity is cleared for the observed refresh only; its history
+remains too short for the separate seven-day forecast.
+
+### 2026-10-27 conformance dashboard rendering
+
+The live conformance dashboard (schema v8 on Grafana 11.4) rendered the
+service/step/state table and the separate completion-age table correctly,
+including `Unknown` ages. On refresh, after valid collector markers aged beyond
+45 minutes, previously tracked failures and services changed to `No recent data`,
+the marker status read `No valid marker in 45m`, and completion age read
+`Unknown completion time`. This verifies rendering and stale-state behavior
+only. It does not close OpenSpec 7.4, the collector pipeline, or the drill, and
+does not identify a cause for the stale markers.
+
+The live “Selected source records observed (5m)” stat initially rendered
+Grafana's default `Value#A`–`Value#F` names even though its query legends were
+human-readable. The source dashboard now overrides each frame by its stable query
+ref ID to the existing source label. This is source-only; the live dashboard has
+not yet received this change.
+
+### 2026-10-28 bounded browser trace/log pivot
+
+A read-only browser pass followed one existing agentgateway access record to its
+Tempo trace, which rendered two spans. The selected server span's Logs link
+returned three matching Loki records using exact service and trace matching in a
+bounded window around the span. This establishes one existing-data browser
+access-log → trace → logs pivot. It does not establish pivots for other services,
+profile pivots, unsampled requests, privacy of callback payloads, mTLS, or
+sustained ingestion. No trace IDs, identity values, private addresses, or raw
+log/trace payloads were retained. Controller and receiver source revisions were
+not read back during this observation, so it does not establish which source
+revision was live.
+
+### 2026-10-28 OTLP mTLS prover diagnostics
+
+The Linux Python-core CI run for source head `931a72c` stopped after 5,455
+passed, 6 skipped, and 321 subtests passed, with one failure in the
+valid-client HTTP/2 test's later missing-client refusal check. The valid journal
+client proof succeeded; the script then returned
+`UNVERIFIED_NO_CLIENT_AUTH`. A bounded native-Linux ARM reproduction using
+Python 3.12.15/OpenSSL 3.0.22 matched that failure on diagnostic-only source:
+the write-first missing-client probe failed at `SETTINGS_WRITE` with
+`ssl.SSLError` and no reason. It also reproduced a separate foreign-client
+failure under load on source `c8368e5`, after valid-client and missing-client
+proofs had succeeded. A temporary read-first variant completed 100/100 full
+proof cycles and observed `TLSV13_ALERT_CERTIFICATE_REQUIRED` for the missing
+client and `TLSV1_ALERT_UNKNOWN_CA` for the foreign client. Four no-auth fixture
+controls remained unverified. This supports the negative-probe write/alert
+ordering as the cause in the ARM reproduction, but does not establish x86_64 CI
+parity.
+
+The source now uses a negative-only probe mode for the missing-client and
+foreign-CA legs. When that handshake completes with TLS 1.3 and ALPN h2, the
+probe reads for a certificate-auth alert before sending any application bytes.
+Only an explicit alert in the existing certificate-auth allowlist during this
+post-authentication read proves refusal. A plaintext alert before ServerHello,
+or any alert before the server identity and ALPN are verified, remains
+unverified. Application data, EOF, timeout, transport errors, and other TLS
+errors also remain unverified. The valid journal-client leg retains the
+SETTINGS/ACK/serial proof. Fixed diagnostics report the negative probe's
+phase/state without changing stdout or exit status.
+A focused fixture regression records that no HTTP/2 bytes are sent on negative
+probes, verifies early application data and EOF still fail closed, and rejects a
+plaintext certificate-required alert from a peer with no server identity. No CI
+rerun or x86_64 reproduction has yet confirmed the diagnosis.
+
+Follow-up review added the OpenSSL `SSLV3_ALERT_BAD_CERTIFICATE` and
+`SSLV3_ALERT_CERTIFICATE_UNKNOWN` reason labels to the explicit certificate
+rejection allowlist. A focused test injects those reason values at the prover's
+SSL exception boundary and confirms an unrelated SSL alert still fails closed;
+neighboring tests continue to exercise real missing-client and foreign-CA TLS
+handshakes. Renewal stats now describe the OTLP proof and matched server serial
+for its two fixed leaf classes, while the gateway-probe proof text is emitted
+only for `probe-client`. The Linux ARM comparison supports the sequencing
+diagnosis, but the CI x86_64 failure has not been rerun to confirm it.
+
+The exact cached Alloy v1.5.1 receiver image accepted full plaintext and TLS
+renders of the receiver config, and the receiver component reported healthy in
+two consecutive samples for each mode in a bounded network-none fixture. The
+TLS files were synthetic and supplied through tmpfs; this did not exercise a TLS
+handshake, client refusal, deployed read-only bind mounts, telemetry delivery,
+or production activation. Alloy v1.9.2 for the journal remains uncached and
+unverified. The evidence is recorded in
+`/private/tmp/o11y-alloy-pinned-validation-20261028/result.md`; it does not mark
+an OpenSpec live-acceptance criterion complete.
+
+> **Expected-target survey Linux argv transport source fix (2026-10-29, plan before implementation):** The
+> reviewed helper is 218,419 bytes. An isolated cached Linux container reproduced `E2BIG` (`OSError`, errno 7,
+> `Argument list too long`) when the helper was passed as the `python3 -c` argument. This proves the transport
+> fails at the current source size on Linux; it makes that a strong explanation for the later sanitized
+> Semaphore survey's empty output/from-JSON failure, but does not prove task 10278's historical root cause.
+> Change only `survey-o11y-expected-metrics-targets.yml` and its focused regression: stage the helper bytes
+> retained by the existing exact-reviewed-checkout gate into a private receiver temp directory, invoke Python
+> with the short helper path and reviewed declaration on protected stdin, and remove the exact temp directory
+> from an unconditional `always` path with a creation-failure guard. Keep the source/revision gate, declaration
+> privacy, public receipt schema, survey behavior, and all distinct source-versus-live acceptance gates intact.
+> Verify with a test-first regression, focused pytest, syntax/lint and strict OpenSpec checks. This is source-only;
+> it does not rerun the historical task or close any live acceptance gate.
+
+### 2026-10-31 bounded Dev capacity and capability receipts
+
+Verified receipts at merged Dev `d41482be4944d5916030fbbbde147e5a686238f8`
+follow PR 797 source `b518f165dd22ff24528e4dcd0da5571d6e3be090`, independent
+Sol Medium and CodeRabbit approvals, passing final CI `41159999148`, and the
+exact-head read-only merge guard. Tasks 10752, 10762, 10763, 10765, and 10769
+accepted all five declared isolated-environment bindings, with empty
+plaintext/extra-var configuration, encrypted AppRole metadata, sole-template
+ownership, and shared/unrelated settings, surveys, repository, and inventory
+preserved. Task 10761 verified source policy and effective fixed-record
+data/metadata capabilities. Tasks 10767 and 10770 recorded scoped publication
+of the one missing declared controller catalog row and a converged rerun
+without duplicate environments or encrypted inputs. Capability verification
+did not read or write the coordination record and no VM, disk, filesystem,
+backup, restore, or cleanup operation occurred. These facts prove no
+coordination-record read/write or allocation/restore authorization. The
+[PBS task ledger](openspec/changes/pbs-vm-and-restore-gate/tasks.md) and
+[Dev runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/dev-bootstrap-publication-runbook.md)
+record the child acceptance and its remaining parent gates.
+
+Task 10753 reports healthy/running Alloy, zero restarts, no OOM, and receiver
+checkout `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; this is not loaded-config
+or image proof. Task 10755 correctly returned `native_debug_invalid`; protected
+producer output was not read. A local Go-template reproduction through the
+production row/parser boundary confirmed the default `time.Time` rendering is
+rejected by the strict RFC3339 consumer. The source now formats `StartedAt` as
+RFC3339Nano and retains the zero-time refusal sentinel. Task 10756 passed the
+seven-day readiness assertion after the nine-day lookback but produced no
+structured success receipt; the source now emits only the helper's closed JSON
+receipt after the assertion passes. The owned test suites and direct contracts
+passed 652 tests. These source changes and bounded receipts do not complete a
+fresh live producer receipt, representative baseline, forecast, calibration,
+backup/restore, retention, or growth gate. This entry changes no PBS task or
+gate.

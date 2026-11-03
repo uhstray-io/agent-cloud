@@ -6,6 +6,8 @@
 #
 # Run: bats platform/tests/test_service_opa.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/opa/deployment"
@@ -23,7 +25,7 @@ setup() {
 
 @test "opa: prod default image is the multi-arch -static tag (arm64-safe), pinned" {
   # plain tag is amd64-only and crashes under emulation on the arm64 VM.
-  grep -qE '\$\{OPA_IMAGE:-openpolicyagent/opa:[0-9]+\.[0-9]+\.[0-9]+-static\}' "$DEPLOY_DIR/compose.yml"
+  grep -qE '\$\{OPA_IMAGE:-docker\.io/openpolicyagent/opa:[0-9]+\.[0-9]+\.[0-9]+-static\}' "$DEPLOY_DIR/compose.yml"
 }
 
 @test "opa: deploy.sh is executable, bash, sources common.sh, uses compose, no secrets" {
@@ -63,4 +65,242 @@ setup() {
 
 @test "opa: data.json is valid JSON with the agent catalogs" {
   python3 -c "import json; d=json.load(open('$POL_DIR/data.json'))['catalog']; assert 'nemoclaw' in d and 'netclaw' in d and 'semaphore' in d"
+}
+
+# ── Listener TLS (opa_tls, production) ──────────────────────────────────────────
+
+# The "- item" lines under a service's `command:` key, without the dash.
+command_args() {
+  awk '/^    command:/{f=1; next} f && /^    [a-z_]+:/{f=0} f && /^      - /{sub(/^      - /, ""); print}' "$1"
+}
+
+# The whole Ansible task (a "    - name:" block) of a playbook whose text matches the pattern.
+task_with() {
+  awk -v pat="$2" '
+    function flush() { if (!done && buf ~ pat) { printf "%s", buf; done = 1 } }
+    /^    - name:/ { flush(); buf = "" }
+    { buf = buf $0 "\n" }
+    END { flush() }
+  ' "$1"
+}
+
+@test "opa tls overlay: keep-id to uid 1000, ./certs mounted read-only as a directory" {
+  local f="$DEPLOY_DIR/compose.tls.yml"
+  [ -f "$f" ]
+  assert_grep -qxF '    userns_mode: "keep-id:uid=1000,gid=1000"' "$f"
+  assert_grep -qxF '      - ./certs:/certs:ro' "$f"
+}
+
+@test "opa tls overlay: command repeats every compose.yml argument, adds the three TLS flags before /policies" {
+  local base="$DEPLOY_DIR/compose.yml" over="$DEPLOY_DIR/compose.tls.yml" arg
+  [ -n "$(command_args "$base")" ]
+  while IFS= read -r arg; do
+    assert_grep -qxF -- "      - $arg" "$over"
+  done < <(command_args "$base")
+  [ "$(command_args "$over" | wc -l | tr -d ' ')" -eq "$(( $(command_args "$base" | wc -l | tr -d ' ') + 3 ))" ]
+  assert_grep -qxF -- '      - --tls-cert-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/cert.pem' "$over"
+  assert_grep -qxF -- '      - --tls-private-key-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/key.pem' "$over"
+  assert_grep -qxF -- '      - --tls-cert-refresh-period=30s' "$over"
+  [ "$(command_args "$over" | tail -n 1)" = "/policies" ]
+}
+
+@test "opa: certs/ is gitignored, so the issued leaf and bundle are neither committed nor deleted by the rsync" {
+  assert_grep -qxF 'certs/' "$DEPLOY_DIR/.gitignore"
+}
+
+@test "opa tls: the server leaf is issued from step-ca after the repo is placed, only under opa_tls" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml" place mint
+  place=$(grep -n 'tasks/place-monorepo.yml' "$pb" | head -n 1 | cut -d: -f1)
+  mint=$(grep -n 'tasks/mint-internal-cert.yml' "$pb" | head -n 1 | cut -d: -f1)
+  [ -n "$place" ]
+  [ -n "$mint" ]
+  [ "$mint" -gt "$place" ]
+  task_with "$pb" 'tasks/mint-internal-cert.yml' > "$BATS_TEST_TMPDIR/mint.yml"
+  assert_grep -qx '      when: _opa_tls' "$BATS_TEST_TMPDIR/mint.yml"
+  assert_grep -qF '_mint_name: "{{ _opa_server_leaf }}"' "$BATS_TEST_TMPDIR/mint.yml"
+  assert_grep -qF "_mint_ca_host: \"{{ groups['step_ca_svc'] | first }}\"" "$BATS_TEST_TMPDIR/mint.yml"
+  assert_grep -qF '_mint_reissue: false' "$BATS_TEST_TMPDIR/mint.yml"
+}
+
+@test "opa tls: the step-ca trust bundle is placed in ./certs, only under opa_tls" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'tasks/distribute-ca-root.yml' > "$BATS_TEST_TMPDIR/bundle.yml"
+  assert_grep -qx '      when: _opa_tls' "$BATS_TEST_TMPDIR/bundle.yml"
+  assert_grep -qF '_ca_root_dest_dir: "{{ _deploy_dir }}"' "$BATS_TEST_TMPDIR/bundle.yml"
+  assert_grep -qF "_ca_host: \"{{ groups['step_ca_svc'] | first }}\"" "$BATS_TEST_TMPDIR/bundle.yml"
+}
+
+@test "opa tls: deploy.sh gets compose.tls.yml and the leaf name only under opa_tls" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Run deploy.sh' > "$BATS_TEST_TMPDIR/deploy.yml"
+  assert_grep -qF "COMPOSE_OVERLAYS: \"{{ 'compose.tls.yml' if _opa_tls else '' }}\"" "$BATS_TEST_TMPDIR/deploy.yml"
+  assert_grep -qF "OPA_SERVER_LEAF: \"{{ opa_server_leaf | default('opa-server') }}\"" "$BATS_TEST_TMPDIR/deploy.yml"
+}
+
+@test "opa tls: the declaration must name the leaf, its profile, dir, reload and the verify URL" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Refuse opa_tls without its server leaf' > "$BATS_TEST_TMPDIR/decl.yml"
+  assert_grep -qF "_opa_leaf_decl[0].profile == 'server'" "$BATS_TEST_TMPDIR/decl.yml"
+  assert_grep -qF "_opa_leaf_decl[0].dir == _deploy_dir ~ '/certs/' ~ _opa_server_leaf" "$BATS_TEST_TMPDIR/decl.yml"
+  assert_grep -qF "_opa_leaf_decl[0].reload == 'none'" "$BATS_TEST_TMPDIR/decl.yml"
+  assert_grep -qF "_opa_tls_name in (_opa_leaf_decl[0].sans" "$BATS_TEST_TMPDIR/decl.yml"
+  assert_grep -qF "opa_internal_url | default('', true) | string) == 'https://' ~ _opa_tls_name" "$BATS_TEST_TMPDIR/decl.yml"
+  assert_grep -qF "_opa_server_leaf is match(" "$BATS_TEST_TMPDIR/decl.yml"
+}
+
+@test "opa tls: the verify probes HTTPS through curl against the step-ca bundle, and refuses a plain-HTTP 200" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  sed -n '/^    _opa_tls_args:/,/^  tasks:/p' "$pb" > "$BATS_TEST_TMPDIR/args.yml"
+  assert_grep -qx -- '      - --cacert' "$BATS_TEST_TMPDIR/args.yml"
+  assert_grep -qF -- '"{{ _deploy_dir }}/certs/step-ca-bundle.crt"' "$BATS_TEST_TMPDIR/args.yml"
+  assert_grep -qx -- '      - --resolve' "$BATS_TEST_TMPDIR/args.yml"
+  task_with "$pb" 'OPA health over TLS' > "$BATS_TEST_TMPDIR/health.yml"
+  assert_grep -qF '_opa_tls_args' "$BATS_TEST_TMPDIR/health.yml"
+  assert_grep -qx '      when: _opa_tls' "$BATS_TEST_TMPDIR/health.yml"
+  task_with "$pb" 'Plain HTTP to the TLS listener' > "$BATS_TEST_TMPDIR/plain.yml"
+  assert_grep -qF 'failed_when: false' "$BATS_TEST_TMPDIR/plain.yml"
+  task_with "$pb" 'Refuse a plain-HTTP 200' > "$BATS_TEST_TMPDIR/refuse.yml"
+  assert_grep -qF "trim != '200'" "$BATS_TEST_TMPDIR/refuse.yml"
+}
+
+@test "opa tls: the TLS decisions are gated on opa_tls and the plain ones on its absence" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'ansible.builtin.uri:' > "$BATS_TEST_TMPDIR/uri-health.yml"
+  assert_grep -qx '      when: not _opa_tls' "$BATS_TEST_TMPDIR/uri-health.yml"
+  task_with "$pb" 'Sample decision: nemoclaw read nocodb -> allow' > "$BATS_TEST_TMPDIR/plain-allow.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/plain-allow.yml"
+  task_with "$pb" 'Sample decision: unknown agent -> deny' > "$BATS_TEST_TMPDIR/plain-deny.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/plain-deny.yml"
+  task_with "$pb" 'Sample decision over TLS: nemoclaw' > "$BATS_TEST_TMPDIR/tls-allow.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/tls-allow.yml"
+  task_with "$pb" 'Sample decision over TLS: unknown agent' > "$BATS_TEST_TMPDIR/tls-deny.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/tls-deny.yml"
+}
+
+@test "opa: a production deploy requires listener TLS and an https verify URL" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Refuse a production deploy without its declared bind' > "$BATS_TEST_TMPDIR/prod.yml"
+  assert_grep -qF -e "- opa_tls | default(false) | bool" "$BATS_TEST_TMPDIR/prod.yml"
+  assert_grep -qF "is match('^https://')" "$BATS_TEST_TMPDIR/prod.yml"
+  refute_grep -qF "https?://" "$BATS_TEST_TMPDIR/prod.yml"
+  assert_grep -qF "when: not (local_mode | default(false) | bool)" "$BATS_TEST_TMPDIR/prod.yml"
+}
+
+# ── Read-only policy (bundle mode) ──────────────────────────────────────────────
+
+@test "opa: both command lists load ./policies as a bundle, so the REST write API is refused" {
+  # Without --bundle, PUT /v1/data and /v1/policies (and DELETE /v1/data/agentcloud) succeed for
+  # any caller the firewall admits; the :ro mount protects the files, not the running policy.
+  local f args
+  for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
+    # The whole list ends in "--bundle /policies": strip that suffix and require it was there.
+    args="$(command_args "$f" | tr '\n' ' ')"
+    [ "${args% --bundle /policies }" != "$args" ]
+  done
+  # The Rego tests load the tree the way the server does.
+  assert_grep -qF '/opa test --bundle /policies"' "$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+}
+
+@test "opa: every data file in the policy tree is one bundle mode loads (data.json / data.yaml)" {
+  # A plain load reads any .json/.yaml as data; --bundle reads only data.json/data.yaml. CI's
+  # opa test still loads the tree plainly, so a stray data file would pass CI and be dropped at
+  # runtime. Name it data.json in its own directory instead.
+  local stray
+  stray="$(find "$DEPLOY_DIR/policies" -type f \( -name '*.json' -o -name '*.yaml' -o -name '*.yml' \) \
+    -not -name data.json -not -name data.yaml)"
+  [ -z "$stray" ]
+}
+
+@test "opa: the verify proves a policy write is refused with exactly 401 (authorization policy), on the plain and the TLS path" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Policy writes are refused' > "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF 'method: PUT' "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF '/v1/data/agentcloud_write_probe' "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF "_opa_write.status != 401" "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qF "(_opa_write.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/write.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/write.yml"
+  refute_grep -qF "status_code: [400]" "$BATS_TEST_TMPDIR/write.yml"
+  task_with "$pb" 'Policy writes over TLS are refused' > "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "'--request', 'PUT'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF "(_opa_write_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qF ".code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/write-tls.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/write-tls.yml"
+  # The probe never writes under a package a decision reads.
+  refute_grep -qE '/v1/(data/agentcloud/|policies)' "$BATS_TEST_TMPDIR/write.yml" "$BATS_TEST_TMPDIR/write-tls.yml"
+}
+
+@test "opa: the verify proves a data read is refused with exactly 401 (authorization policy), on the plain and the TLS path" {
+  # GET /v1/data would return every data document (agent catalogs, guardrail rules), so the
+  # authorization policy must refuse it, on both listeners, with the same JSON shape as a write.
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Data reads are refused' > "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF 'method: GET' "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF '{{ _opa_url }}/v1/data"' "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF "_opa_read.status != 401" "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qF "(_opa_read.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/read.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/read.yml"
+  task_with "$pb" 'Data reads over TLS are refused' > "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "_opa_url ~ '/v1/data'" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "(_opa_read_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF "_opa_read_tls.stdout_lines[:-1]" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qF ".code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/read-tls.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/read-tls.yml"
+}
+
+@test "opa: the verify proves a decision asking for engine internals (?explain=full) is refused with 401, on the plain and the TLS path" {
+  # ?explain=full on the decision path returns the evaluation trace of the policy and its data,
+  # so the authorization policy admits a decision only with no query parameters.
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+  task_with "$pb" 'Decision with explain is refused' > "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF 'method: POST' "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF '{{ _opa_url }}/v1/data/agentcloud/decision?explain=full"' "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF "_opa_explain.status != 401" "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qF "(_opa_explain.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/explain.yml"
+  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/explain.yml"
+  task_with "$pb" 'Decision with explain over TLS is refused' > "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "/v1/data/agentcloud/decision?explain=full'" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qF "(_opa_explain_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/explain-tls.yml"
+  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/explain-tls.yml"
+  # The rule itself, and its unit tests.
+  local authz="$DEPLOY_DIR/policies/system/authz.rego" tests="$DEPLOY_DIR/policies/system/authz_test.rego"
+  assert_grep -qF 'count(object.get(input, "params", {})) == 0' "$authz"
+  assert_grep -qE '^test_deny_decision_explain if' "$tests"
+  assert_grep -qE '^test_deny_decision_instrument if' "$tests"
+}
+
+@test "opa authz: the policy admits exactly the decision POST and the health GET, and its tests exist" {
+  # Deny-by-default: the only two allow rules are the decision API and /health. Adding a third
+  # changes what an admitted caller may reach, so it must be an explicit, reviewed change here.
+  local authz="$DEPLOY_DIR/policies/system/authz.rego" tests="$DEPLOY_DIR/policies/system/authz_test.rego"
+  [ -f "$authz" ]
+  [ -f "$tests" ]
+  assert_grep -qx 'package system.authz' "$authz"
+  assert_grep -qx 'default allow := false' "$authz"
+  [ "$(grep -c '^allow if' "$authz")" -eq 2 ]
+  assert_grep -qF 'input.method == "POST"' "$authz"
+  assert_grep -qF 'input.path == ["v1", "data", "agentcloud", "decision"]' "$authz"
+  assert_grep -qF 'input.method == "GET"' "$authz"
+  assert_grep -qF 'input.path == ["health"]' "$authz"
+  # The unit tests cover the admitted requests and the refused ones.
+  assert_grep -qE '^test_allow_decision_post if' "$tests"
+  assert_grep -qE '^test_allow_health_get if' "$tests"
+  assert_grep -qE '^test_deny_policy_write_probe_put if' "$tests"
+  assert_grep -qE '^test_deny_data_root_get if' "$tests"
+  assert_grep -qE '^test_deny_metrics_get if' "$tests"
+}
+
+@test "opa: both command lists pass --authorization=basic, directly before --bundle" {
+  # Without the flag the policy is never asked, and every request reaches the handlers.
+  local f
+  for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
+    [ "$(command_args "$f" | grep -cxF -- '--authorization=basic')" -eq 1 ]
+    # The command ends with the flag, then the bundle it guards (anchored on the whole list).
+    local args
+    args="$(command_args "$f" | tr '\n' ' ')"
+    # `[ ]`, not `[[ ]]`: a false `[[ ]]` mid-body does not fail a Bats test (test_assertions_are_real.bats).
+    [ "${args%" --authorization=basic --bundle /policies "}" != "$args" ]
+  done
 }

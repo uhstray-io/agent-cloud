@@ -8,8 +8,15 @@ groups:
     folder: agent-cloud
     interval: 60s
     rules:
+{% set _availability_projection = _o11y_availability | default({}) %}
+{% set _availability_targets = _availability_projection.get('targets', []) %}
+{% set _availability_uids = ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'] %}
+{% set _availability_on = _availability_projection.get('enabled', false) | bool
+   and _availability_targets | length > 0
+   and o11y_alerts_enabled | default(false) | bool
+   and o11y_alert_canary_service is not defined %}
       - uid: o11y_service_down
-        title: Service metrics endpoint down
+        title: Service telemetry scrape failed
         condition: B
         data:
           - refId: A
@@ -45,9 +52,11 @@ groups:
         execErrState: Alerting
         for: 2m
         annotations:
-          summary: A declared service metrics endpoint is unreachable.
+          summary: A declared service telemetry scrape has failed.
           dashboard_url: '/d/service-overview?var-service={% raw %}{{ $labels.service }}{% endraw %}'
-          description: Check the declared metrics target and its service onboarding receipt.
+          description: >-
+            Check the declared scrape target, receiver, and source health. This does not by itself
+            establish an application outage.
         labels:
           severity: critical
           owner: platform-operations
@@ -61,6 +70,74 @@ groups:
           group_wait: 30s
           group_interval: 5m
           repeat_interval: 4h
+{% endif %}
+{% macro availability_rule(uid, title, expression, range_from, summary, description) %}
+      - uid: {{ uid }}
+        title: {{ title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: {{ range_from }}, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ expression | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: {{ summary | to_json }}
+          description: {{ description | to_json }}
+          dashboard_url: '/d/service-overview?var-service={% raw %}{{ $labels.service }}{% endraw %}'
+        labels:
+          severity: critical
+          service: '{% raw %}{{ $$labels.service }}{% endraw %}'
+          target_id: '{% raw %}{{ $$labels.target_id }}{% endraw %}'
+          owner: platform-operations
+          environment: '{% raw %}{{ $$labels.environment }}{% endraw %}'
+          cluster: '{% raw %}{{ $$labels.cluster }}{% endraw %}'
+        isPaused: false
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endmacro %}
+{% if _availability_on %}
+{% set _availability_queries = namespace(failed=[], missing=[], max_freshness=0) %}
+{% for target in _availability_targets %}
+{% set _identity = 'job="o11y-availability",instance="' ~ target.target_id ~ '",service="' ~ target.service_identity ~ '",target_id="' ~ target.target_id ~ '",environment="' ~ target.environment ~ '",cluster="' ~ target.cluster ~ '"' %}
+{% set _selector = '{' ~ _identity ~ '}' %}
+{% set _availability_queries.failed = _availability_queries.failed + ['(1 - probe_success' ~ _selector ~ ') and on(job,instance,service,target_id,environment,cluster) (up' ~ _selector ~ ' == 1)'] %}
+{% set _availability_queries.missing = _availability_queries.missing + ['absent_over_time(probe_success' ~ _selector ~ '[' ~ (target.freshness_seconds | int) ~ 's]) unless on(job,instance,service,target_id,environment,cluster) (up' ~ _selector ~ ' == 0)'] %}
+{% set _availability_queries.max_freshness = [_availability_queries.max_freshness, target.freshness_seconds | int] | max %}
+{% endfor %}
+{{ availability_rule('o11y_endpoint_probe_failed', 'Endpoint health check failed', _availability_queries.failed | join(' or '), 300,
+     'A reviewed endpoint health check has failed while its scrape is healthy.',
+     'Check the fixed endpoint health contract and the source target. A failed probe is distinct from a failed telemetry scrape.') }}
+{{ availability_rule('o11y_endpoint_probe_missing', 'Endpoint health data missing', _availability_queries.missing | join(' or '), _availability_queries.max_freshness,
+     'A reviewed endpoint health sample has been missing for its configured freshness window.',
+     'Check the fixed endpoint target and native Alloy scrape. Only a failed scrape for this same target identity suppresses this missing-data alert.') }}
 {% endif %}
       - uid: o11y_receiver_root_disk_low
         title: Receiver host root filesystem below 10%
@@ -756,6 +833,7 @@ groups:
    deleted because Grafana may preserve omitted provisioned rules. #}
 {% set _deleted_uids = ([] if _dgx_on else _inference_uids)
      + ([] if _probe_on else _probe_uids)
+     + ([] if _availability_on else _availability_uids)
      + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent']) %}
 {% if _deleted_uids %}
 deleteRules:

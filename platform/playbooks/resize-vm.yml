@@ -42,6 +42,11 @@
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: "Resize VM — {{ target_service | default('vmid ' ~ (target_vmid | default('?'))) }}"
   hosts: localhost
@@ -62,9 +67,11 @@
         Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
   vars:
     _project_root: "{{ project_root | default(playbook_dir + '/..') }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
 
     _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
       'secret/data/services/proxmox',
@@ -181,8 +188,9 @@
               - _bao_url | length > 0
             fail_msg: >-
               Pass -e target_service=<name> (with an entry in proxmox/vm-specs.yml),
-              or -e target_vmid=<id> -e target_node=<node>. openbao_addr (or
-              OPENBAO_ADDR) + AppRole creds must also be set.
+              or -e target_vmid=<id> -e target_node=<node>. The guard also requires private
+              inventory with exactly one openbao_svc.service_url matching openbao_addr,
+              plus protected BAO_ROLE_ID / BAO_SECRET_ID environment credentials.
 
         - name: "Require at least one dimension to converge"
           ansible.builtin.assert:
@@ -365,6 +373,12 @@
                  | combine({} if not (_want_agent | bool) or (_have_agent | bool) else
                      {'agent': (['enabled=1'] + (_agent_items | reject('match', '^(enabled=)?[01]$') | list)) | join(',')}) }}
 
+        - name: "Guard target VMID before configuration write"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Apply cores/memory/agent to the VM config"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -379,6 +393,12 @@
           changed_when: _cfg_changes | length > 0
 
         # ── Apply: disk growth ──────────────────────────────────────────────────
+        - name: "Guard target VMID before disk growth"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Grow the disk"
           # Proxmox takes an INCREMENT (+NG) for a grow. Computed as the delta so
           # re-running is a no-op rather than adding the full size again.
@@ -425,6 +445,12 @@
             - _needs_restart | bool
             - _allow_reboot | bool
           block:
+            - name: "Guard target VMID before shutdown"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
             - name: "Shut the guest down cleanly"
               ansible.builtin.uri:
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/shutdown"
@@ -443,6 +469,12 @@
               delay: 5
               changed_when: false
               when: not ansible_check_mode
+
+            - name: "Guard target VMID before restart"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
 
             - name: "Start the guest again"
               ansible.builtin.uri:
@@ -472,6 +504,12 @@
               register: _rescue_state
               changed_when: false
               when: not ansible_check_mode
+
+            - name: "Recovery: guard target VMID before start"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
 
             - name: "Recovery: bring a stopped guest back up"
               # Only when it is actually stopped. A guest still mid-shutdown must not

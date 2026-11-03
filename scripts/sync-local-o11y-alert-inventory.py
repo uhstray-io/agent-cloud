@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Copy the reviewed private Discord destination into local Semaphore inventory.
 
-Reads site-config's production declaration and changes only two entries in the
-existing local o11y_svc INI group. The operator token arrives on stdin. Without
---apply this is a read-only preview; rerunning an applied revision is a no-op.
+Reads site-config's production declaration and changes only two variables in the
+local o11y_svc group of the static-yaml inventory record Semaphore stores. The
+operator token arrives on stdin. Without --apply this is a read-only preview;
+rerunning an applied revision is a no-op.
 """
 
 import argparse
@@ -22,7 +23,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = ("o11y_alert_discord_guild_id", "o11y_alert_discord_channel_id")
-SECTION = "[o11y_svc:vars]"
 PROJECTION = Path.home() / ".agent-cloud-local/o11y-alert-destination.json"
 
 
@@ -54,32 +54,20 @@ def destination(source):
 
 
 def overlay(inventory, values):
-    lines = inventory.splitlines(keepends=True)
-    headers = [i for i, line in enumerate(lines) if line.strip() == SECTION]
-    hosts = [i for i, line in enumerate(lines) if line.strip() == "[o11y_svc]"]
-    if len(headers) != 1 or len(hosts) != 1:
-        raise Refusal("Local inventory must declare exactly one o11y service and vars section")
-    host_end = next((i for i in range(hosts[0] + 1, len(lines))
-                     if re.fullmatch(r"\s*\[[^\]]+\]\s*", lines[i])), len(lines))
-    declared_hosts = [line.split()[0] for line in lines[hosts[0] + 1:host_end]
-                      if line.strip() and not line.lstrip().startswith(("#", ";"))]
-    if declared_hosts != ["o11y-local"]:
+    try:
+        data = yaml.safe_load(inventory)
+        group = data["all"]["children"]["o11y_svc"]
+        hosts = list(group["hosts"])
+    except (yaml.YAMLError, KeyError, TypeError):
+        raise Refusal("Local inventory must declare exactly one o11y service group") from None
+    if hosts != ["o11y-local"]:
         raise Refusal("Local o11y group must contain only its declared receiver host")
-    start = headers[0] + 1
-    end = next((i for i in range(start, len(lines)) if re.fullmatch(r"\s*\[[^\]]+\]\s*", lines[i])), len(lines))
-    block = lines[start:end]
-    for name, value in values.items():
-        matches = [i for i, line in enumerate(block) if re.match(rf"^\s*{re.escape(name)}\s*=", line)]
-        if len(matches) > 1:
-            raise Refusal(f"Local inventory has duplicate {name} entries")
-        replacement = f"{name}={value}\n"
-        if matches:
-            block[matches[0]] = replacement
-        else:
-            if block and not block[-1].endswith("\n"):
-                block[-1] += "\n"
-            block.append(replacement)
-    return "".join(lines[:start] + block + lines[end:])
+    group_vars = group.get("vars") or {}
+    wanted = {name: int(value) for name, value in values.items()}
+    if all(group_vars.get(name) == value for name, value in wanted.items()):
+        return inventory
+    group["vars"] = {**group_vars, **wanted}
+    return yaml.safe_dump(data, sort_keys=False)
 
 
 def save_projection(values, source_sha):
@@ -157,9 +145,9 @@ def main():
         current = request("GET")
         if (not isinstance(current, dict) or current.get("id") != args.inventory
                 or current.get("project_id") != args.project
-                or current.get("name") != "local" or current.get("type") != "static"
+                or current.get("name") != "local" or current.get("type") != "static-yaml"
                 or not isinstance(current.get("inventory"), str)):
-            raise Refusal("Target is not the reviewed local static inventory")
+            raise Refusal("Target is not the reviewed local static-yaml inventory")
         desired = overlay(current["inventory"], values)
         if desired == current["inventory"]:
             if args.apply:

@@ -28,9 +28,19 @@ otelcol.processor.attributes "journal_labels" {
 otelcol.exporter.otlp "journal" {
   client {
     endpoint = {{ (o11y_otlp_bind ~ ':' ~ (o11y_otlp_port | default(4317) | string)) | to_json }}
+{% if o11y_otlp_tls_enabled | default(false) | bool %}
+    tls {
+      ca_file = "/certs/step-ca-bundle.crt"
+      cert_file = "/certs/journal-client/current/cert.pem"
+      key_file = "/certs/journal-client/current/key.pem"
+      server_name = {{ o11y_otlp_tls_server_name | to_json }}
+      reload_interval = "1m"
+    }
+{% else %}
     tls {
       insecure = true
     }
+{% endif %}
   }
   retry_on_failure {
     enabled = true

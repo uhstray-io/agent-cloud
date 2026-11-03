@@ -1,0 +1,25 @@
+# skynet — production overlay. deploy.sh appends it outside LOCAL_MODE, the same way o11y's
+# deploy.sh loads its compose.prod.yml. compose.local.yml is the local-dev counterpart and is never
+# loaded with it.
+#
+# skynet calls OPA over https, and OPA's leaf is signed by the internal step-ca for a name that has
+# no DNS record in production. Two settings on the skynet service make that call verify:
+#   - extra_hosts maps the OPA name to the address the inventory declares (skynet_opa_ip). The two
+#     values reach this file through .env (SKYNET_OPA_HOSTNAME, SKYNET_OPA_IP), rendered outside
+#     local mode by templates/env.j2.
+#   - SSL_CERT_FILE REPLACES the process's whole trust store, so it names the combined bundle: the
+#     step-ca root and intermediate plus this VM's public roots. The gateway and Semaphore are
+#     public-chain hosts, so the public roots must stay trusted. tasks/distribute-ca-root.yml writes
+#     that bundle into ./certs, which is mounted read-only here.
+#
+# Both variables are required (:?), so compose refuses to start without them rather than starting
+# with no mapping and failing later at the OPA call.
+
+services:
+  skynet:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle-combined.crt
+    extra_hosts:
+      - "${SKYNET_OPA_HOSTNAME:?set skynet_opa_url in the inventory}:${SKYNET_OPA_IP:?set skynet_opa_ip in the inventory}"

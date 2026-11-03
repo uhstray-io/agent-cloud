@@ -5,15 +5,21 @@
 # the upgrade proceed. The snapshot is the catastrophic-failure rollback point
 # (in addition to whatever app-level rollback the upgrade itself provides).
 #
-# Reusable in BOTH contexts (no fork):
+# Reusable in both contexts (no fork):
 #   * Via Semaphore — creds come from OpenBao (secret/services/proxmox), AppRole
 #     injected by the Semaphore environment. Pass pve_vmid + pve_node.
 #   * Operator-side (e.g. the Semaphore self-upgrade, which cannot run via
-#     Semaphore) — pass PVE_TOKEN_SECRET (env) + pve_api_host/pve_token_id (-e);
-#     that bypasses the OpenBao lookup entirely.
+#     Semaphore) — a protected PVE_TOKEN_SECRET (environment or extra var) skips
+#     only this play's Proxmox credential lookup. Both modes require private
+#     inventory with exactly one openbao_svc.service_url matching openbao_addr,
+#     plus protected BAO_ROLE_ID and BAO_SECRET_ID environment credentials for
+#     the restore-target guard.
 #
 # Usage (operator-side):
-#   PVE_TOKEN_SECRET=… ansible-playbook platform/playbooks/snapshot-vm.yml \
+#   # Provide PVE_TOKEN_SECRET through a protected operator environment or extra var;
+#   # do not put its value on the command line. Keep the required Bao credentials in
+#   # the protected BAO_ROLE_ID / BAO_SECRET_ID environment.
+#   ansible-playbook platform/playbooks/snapshot-vm.yml \
 #     -e pve_api_host=https://<pve>:8006 -e pve_node=<node> -e pve_vmid=<id> \
 #     -e pve_token_id='<user>@<realm>!<token-name>' -e snapshot_name=preupgrade-<svc>-<ts>
 #
@@ -24,6 +30,11 @@
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: "Proxmox pre-upgrade snapshot (create, wait, validate)"
   hosts: localhost
@@ -35,14 +46,18 @@
       # Never forward the Proxmox bearer header if an endpoint redirects.
       follow_redirects: none
   vars:
-    # Operator-side secret (extra-var or env). When present, the OpenBao lookup is
-    # skipped — so this runs without Semaphore/AppRole creds.
+    # Operator-side Proxmox secret (extra-var or env). It skips only this play's
+    # Proxmox credential lookup; the restore-target guard still requires protected
+    # Semaphore AppRole credentials before any QEMU mutation.
     _pve_secret_in: "{{ pve_token_secret | default(lookup('env', 'PVE_TOKEN_SECRET'), true) | default('', true) }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
-    # Short-circuit ternary: the lookup is evaluated ONLY when no direct secret was
-    # supplied (Semaphore path). Operator path -> {} -> no OpenBao call.
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
+    # Short-circuit ternary: this Proxmox credential lookup runs only when no direct
+    # secret was supplied. The separate restore-target guard always authenticates
+    # to OpenBao with the protected Semaphore AppRole before any QEMU mutation.
     _pve_data: >-
       {{ {} if (_pve_secret_in | length > 0)
          else lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox',
@@ -111,6 +126,12 @@
           Snapshotting VM {{ pve_vmid }} ({{ _vm_status.json.data.name | default('?') }},
           status={{ _vm_status.json.data.status | default('?') }}) on node {{ pve_node }}
           as snapshot '{{ _snapname }}' (vmstate={{ _vmstate }}).
+
+    - name: "Guard target VMID before snapshot creation"
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ pve_vmid }}"]
+      tags: [always]
 
     - name: "Create the snapshot (returns a task UPID)"
       ansible.builtin.uri:

@@ -1,0 +1,36 @@
+# plane-mcp — Plane's MCP server (makeplane/plane-mcp-server) as its own compose project, beside Plane.
+#
+# One service, `mcp`, on Plane's stack network (`plane_default`), so it reaches Plane's API and Redis by
+# service name (api:8000, plane-redis:6379). Plane's own compose file is fetched per deploy and never
+# edited (platform/services/plane/deployment/CLAUDE.md), so the MCP server cannot be a service in it.
+#
+# Ansible's deploy-plane-mcp.yml renders .env BEFORE this stack starts: the OAuth client id and secret
+# Plane issued to the registered MCP app, from OpenBao. deploy.sh is container lifecycle only.
+#
+# The server refuses to start without PLANE_OAUTH_PROVIDER_CLIENT_ID (plane_oauth_provider.py raises
+# ValueError), so this project runs only after Plane is up and the app is registered.
+#
+# No ports here. deploy.sh applies compose.publish.yml outside local mode; local mode reaches the
+# container by name over the local-dev network (compose.local.yml).
+#
+# Author: Joseph A. Wisneski IV
+
+name: plane-mcp
+
+services:
+  mcp:
+    # Fully qualified (podman short-name rule, platform/tests/test_compose_image_qualified.py). The tag is
+    # required from .env, so the pinned version lives in one place: templates/env.j2.
+    image: docker.io/makeplane/plane-mcp-server:${PLANE_MCP_VERSION:?set PLANE_MCP_VERSION in .env}
+    container_name: plane-mcp
+    restart: always
+    env_file:
+      - .env
+    networks: [plane]
+
+networks:
+  plane:
+    # Plane's stack network. Plane runs as compose project `plane`, so its default network is plane_default.
+    # External: this project never creates or removes it.
+    external: true
+    name: plane_default

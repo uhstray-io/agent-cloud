@@ -32,8 +32,16 @@ def test_normal_and_clean_deploy_run_guard_before_mutation():
     clean_play = next(play for play in clean if play.get("name") == "Clean o11y deployment")
 
     assert deploy_play["tasks"][0]["ansible.builtin.include_tasks"] == GUARD_TASK
-    assert clean_play["tasks"][0]["ansible.builtin.include_tasks"] == GUARD_TASK
-    assert not any("clean-service.yml" in str(task) for task in clean_play["tasks"][:2])
+    clean_tasks = clean_play["tasks"]
+    assert clean_tasks[0]["ansible.builtin.include_tasks"] == "tasks/assert-reset-confirmed.yml"
+    profile_guard = next(task for task in clean_tasks if task.get("name") ==
+                         "Refuse an unverified profile pilot operation before o11y cleanup")
+    tls_guard = next(task for task in clean_tasks if task.get("name") ==
+                     "Refuse TLS-enabled clean deploy before any teardown")
+    destroy = next(task for task in clean_tasks if task.get("name") == "Destroy existing deployment")
+    assert clean_tasks.index(profile_guard) < clean_tasks.index(destroy)
+    assert clean_tasks.index(tls_guard) < clean_tasks.index(destroy)
+    assert not any("clean-service.yml" in str(task) for task in clean_tasks[:clean_tasks.index(destroy)])
 
 
 def test_shared_guard_has_no_file_container_or_volume_mutation():

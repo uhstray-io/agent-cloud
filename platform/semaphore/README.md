@@ -75,9 +75,14 @@ admins, project members whose role can run tasks, those users' API tokens, and i
 (incoming webhooks, which copy payload values into the task environment).
 
 **Manage Semaphore Access** holds all four to a declaration: `semaphore_project_members`
-(username to role, the whole team) and `semaphore_admin_users`, both in the private
-inventory's top-level `all.vars` (the play runs on implicit `localhost`, which receives no
-group's vars; `promote-semaphore-admins.yml` reads `semaphore_admin_users` the same way). Run it
+(username to role, the whole team) and the admin roster, all in the private inventory's
+top-level `all.vars` (the play runs on implicit `localhost`, which receives no group's vars;
+`promote-semaphore-admins.yml` reads them the same way). The admin roster is derived, never
+hand-granted: every `platform_admins` entry (the administrator list the Authentik deploy
+renders into `platform-admins`) except the service account, plus `semaphore_admin_users` for
+Semaphore-only admins such as the local bootstrap account. A platform admin's first SSO sign-in
+creates a plain account; **Promote Semaphore Admins** then grants the flag and reads it back,
+and the access report names each declared admin still to promote (issue #604). Run it
 under check mode first; the report lists the live team, admins and integrations by name. A real
 run adds declared accounts, sets declared roles, removes undeclared members and reads the team
 back; a declaration naming an account that does not exist stops it before any write. It never demotes a system admin or deletes an integration: each is named and fails the
@@ -173,10 +178,45 @@ inventory before revocation. Run it during an exclusive token-change window:
 the API has no server-side compare-and-delete, so another operator changing
 tokens outside this command cannot honor the local lock.
 
-Until an operator token is provisioned, the honest state is: **operator launches
-from the UI; the agent hands over the exact template name, survey values and the
-verification commands.** Do not fabricate access by reading the controller's own
-token out of OpenBao from a workstation.
+### Getting your own operator token
+
+Every operator mints their own token, under their own Semaphore account, so each
+launch is attributed to the person who made it (issue #741). Nobody hands out a
+token, and nobody uses another account's token.
+
+1. **Be declared.** An administrator is an entry in `platform_admins`; any other
+   operator is an entry in `semaphore_project_members` (username to role). Both are
+   in site-config's top-level `all.vars`, so access changes through a reviewed diff. Someone
+   who can launch these templates can override the declaration with an extra var, but launch
+   rights are already runner rights (above), so that grants nothing they did not hold.
+2. **Sign in once** at the controller in a browser, through SSO. The browser passes
+   the Cloudflare challenge that blocks a scripted `/api/auth/login`. The first
+   sign-in creates a plain account that belongs to no project.
+3. **An admin converges access.** For an administrator, **Promote Semaphore Admins (Dev)**
+   sets the admin flag and reads it back. For any other operator, **Manage Semaphore
+   Access (Dev)** adds the declared membership; run it under check mode first. Until
+   one of these runs, the account sees only the **New project** button (issue #604).
+4. **Mint the token.** In the user menu, open **API Tokens** (`/tokens`) and choose
+   **New Token**. The page is open to every signed-in user, not only admins
+   (Semaphore v2.19.11 `web/src/App.vue`, `web/src/views/Tokens.vue`); it calls
+   `POST /api/user/tokens` for your own account.
+5. **Store it** at `~/.config/semaphore/operator-token`, mode `0600`, and pass it on
+   stdin only. A request that carries an `Authorization` header passes the edge's
+   WAF skip rule, so `scripts/semaphore-launch.py` works from the workstation.
+
+`site-config/secrets/semaphore/semaphore_api_token.txt` holds the bootstrap `admin`
+account's token, as recovery material. It is not anyone's daily operator token.
+Rotate your own token with `scripts/semaphore-rotate-token.py` (above).
+
+When the bootstrap `admin` token is rotated, the recovery copy is part of the same change.
+The rotation script updates only the `--backup` file it is given, never site-config. Once the
+script finishes, open a site-config PR that replaces the recovery copy with the new value
+(check it first with `GET /api/user`), or deletes the file. A rotation that skipped this
+left the copy revoked and sent an operator down a dead path (`docs/MISTAKES.md` 10.31).
+
+Without a token, the operator launches from the UI and the agent hands over the
+exact template name, survey values and verification commands. Do not fabricate
+access by reading the controller's own token out of OpenBao from a workstation.
 
 ## Two catalog rules, enforced by tests
 
@@ -299,6 +339,11 @@ An environment provisioned before 2026-09-25 carries an `openbao_addr` pin. Publ
 refuses it until **Provision Seed Environment** runs again, which removes the pin and keeps
 the AppRole inputs.
 
+If a task launch fails with `cannot decrypt access key, perhaps encryption key was changed`,
+Semaphore's encryption key changed under existing inputs. Run **Provision Seed Environment**
+for that seed template with `seed_replace_auth=true`: it overwrites the two AppRole inputs in
+place from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
+
 1. **Once per seed template and variant:** run **Provision Seed Environment (Dev)**
    with `seed_template` set to the declared base name, plus the verified
    `semaphore_project_id`, `semaphore_inventory_id` and `semaphore_source_environment_id`
@@ -340,6 +385,59 @@ An interrupted run leaves the encrypted input in place and names it, so it can b
 reconciled rather than silently retried. Postiz provider credentials use
 `scripts/postiz-seed-input.py`, which shares the same lookup, preflight and lifecycle code
 (`scripts/semaphore_seed.py`, also the Semaphore client `scripts/semaphore-launch.py` uses).
+
+## Isolate protected o11y PBS workflow environments
+
+The five explicit Dev PBS/restore coordination templates also use dedicated
+`isolated_environment` declarations because their protected preflight refuses the
+controller credentials when they arrive as launch extra vars. Use **Provision o11y
+Workflow Environment (Dev)**, which pins an exact reviewed checkout, the controller's
+loopback API, the sole inventory `openbao_svc.service_url`, and the supplied project,
+inventory, and current source-environment IDs. It accepts only one of these templates:
+
+Before its command-bearing checkout verifier runs, the wrapper refuses every
+`ansible_` extra-var name. Put controller and connection settings in inventory;
+inventory-sourced context remains valid. The existing bootstrap AppRole inputs
+and `openbao_addr` are checked through their separate inventory/transport gates.
+
+- `Verify o11y Restore Coordination Capabilities (Dev)`
+- `Preflight o11y Restore Target (Dev)`
+- `Provision PBS Debian Cloud Template (Dev)`
+- `Attach PBS Data Disk (Dev)`
+- `Provision PBS VM (Dev)`
+
+These rows already carry explicit `(Dev)` names and bind to `agent-cloud dev`. The
+wrapper passes the selected row to the shared provisioner using its `main` base-instance
+mode, which preserves that name and repository without generating another suffix. Run
+the wrapper once per target with the exact reviewed repository SHA and the verified
+project, inventory, and current shared source-environment IDs. It validates the existing
+source `openbao_addr` against the sole private inventory endpoint and uses the source
+environment's existing AppRole inputs in memory for this controller operation. It creates
+or reuses the target's own empty environment, stores only encrypted AppRole inputs, and
+binds only the selected template. The source environment and generic VM/shared templates
+remain intact.
+
+Converge the capability-verification template first, then rerun its read-only verifier.
+Only after that live capability receipt passes should the other four target environments
+be converged one at a time. Environment setup does not accept private declarations,
+effective role capabilities, target readiness, backup/restore evidence, or authorize VM,
+disk, retention, or deployment writes. Keep the protected extra-var refusal in each
+target playbook; do not repair the shared environment or pass credentials as survey data.
+
+The five general VM writers (Provision VM, Resize VM, Destroy VM, Snapshot VM and Create VM
+Template) run the same restore-target guard, so each declares its own `isolated_environment`
+as well. Give each `(Dev)` copy its environment with `Provision Seed Environment (Dev)`
+(`seed_template` = the base name, `seed_variant` = `dev`), the same reviewed provisioner the
+seed templates use. Bound to the shared environment they fail at the preflight on every
+launch; `platform/tests/test_restore_guard_environment.py` refuses a guarded template without
+an isolated environment. Prove each one afterwards with a check-mode run of the `(Dev)` writer
+(Destroy VM in check mode only); the seed CLI's `--verify-only` does not apply to these.
+
+**Before promoting `dev` to `main`**, run the same provisioner with `seed_variant=main` for each
+of the five. Promotion brings the guard to the `main`-bound copies, which are still bound to the
+shared environment until then, and every one of them would then refuse to run. A full-catalog
+publication likewise creates the base templates' own environments empty and binds them: run the
+provisioner for those before using a `main`-bound copy.
 
 ## Publish the local observability alert destination
 

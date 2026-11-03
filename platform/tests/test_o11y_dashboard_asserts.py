@@ -259,7 +259,7 @@ def test_unknown_newest_step_completion_replaces_older_known_age_without_fallbac
     assert transformations[-1]["options"]["renamePattern"] == "Age"
     assert "Latest step status by service" in step_ages["description"]
     assert "task_id, completed_at_seconds" in provenance_expr
-    assert 'step!="none"' in provenance_expr
+    assert 'service=~".+", step=~".+", step!="none"' in provenance_expr
     assert "unknown" in provenance["description"]
     assert "collector" in provenance["description"].lower()
     assert "not workflow completion" in provenance["description"]
@@ -272,6 +272,20 @@ def test_overview_source_status_queries_match_disjoint_aggregate_selectors_and_s
     aggregate_by_source = {
         target["legendFormat"].split(" · ", 1)[0]: _selector(target["expr"])
         for target in aggregate["targets"]
+    }
+    assert aggregate["fieldConfig"]["overrides"] == []
+    source_display_names = {
+        override["matcher"]["options"]: override["properties"][0]["value"]
+        for override in status["fieldConfig"]["overrides"]
+        if override["matcher"]["id"] == "byFrameRefID"
+    }
+    assert source_display_names == {
+        "A": "Legacy container",
+        "B": "Journal container",
+        "C": "Access",
+        "D": "Span",
+        "E": "Conformance",
+        "F": "Unclassified",
     }
     status_by_source = {target["legendFormat"]: _selector(target["expr"])
                         for target in status["targets"]}

@@ -16,7 +16,7 @@ The system SHALL discover visible PBS-related VM, store, and supported Debian te
 - **THEN** the workflow refuses and no provisioning request is sent
 
 ### Requirement: Guarded PBS VM and data disk
-The system SHALL create or adopt only the PBS VM declared in private inventory, using a supported Debian guest and static address. Before a new 512-GiB data disk is allocated, it SHALL revalidate the pinned backing identity, direct LVM lineage, SMART health, store and VG linkage, 30% residual reported headroom, target ownership, and the exact VM and disk state. It SHALL never initialize a host physical disk or replace an existing service VM.
+The system SHALL create or adopt only the PBS VM declared in private inventory, using a supported Debian guest and static address. Before a new 512-GiB data disk is allocated, it SHALL revalidate the pinned backing identity, direct LVM lineage, SMART health, store and VG linkage, 30% residual reported headroom, target ownership, and the exact VM and disk state. Physical-origin/chassis attestation is not a prerequisite (operator decision, 2026-10-29); these API and storage checks do not prove physical origin. The system SHALL never initialize a host physical disk or replace an existing service VM.
 
 #### Scenario: Matching new allocation
 - **WHEN** the declaration is unique, the live preflight passes, and the target VM and disk are absent
@@ -47,6 +47,26 @@ The system SHALL configure a backup credential that cannot prune or delete exist
 #### Scenario: Ownership or restore evidence is missing
 - **WHEN** the artifact, target, or restored data cannot be verified
 - **THEN** the workflow refuses to mark the restore gate complete and preserves existing services and volumes
+
+#### Scenario: Restore uses authenticated readiness for artifact placement
+- **WHEN** restore authenticates the ordered PBS task chain and the copy-readiness receipt
+- **THEN** it derives the artifact locator from that receipt, compares it with fresh destination PVE and manifest readback, and verifies the current destination Reader identity and storage configuration fingerprints; a caller or legacy inventory artifact selector is refused
+
+#### Scenario: Restore action response is uncertain
+- **WHEN** any restore, isolation, start, guest-exec, stop, or cleanup mutation has an unknown response or mismatched versioned journal readback
+- **THEN** the workflow preserves the target and current journal state, does not retry or adopt a nonce, and does not report success or clean the target
+
+#### Scenario: Restore proof requires historical data
+- **WHEN** the restored guest exposes expected volume paths but cannot prove rootless volume ownership, exact mounts, Grafana database integrity, or receipt-bound historical backend data
+- **THEN** the restore remains unverified; paths alone cannot satisfy the restore gate
+
+#### Scenario: Cleanup selects a prior task
+- **WHEN** cleanup is launched with a prior restore task ID, reviewed restore and cleanup code SHAs, and the current private site-config SHA
+- **THEN** it authenticates the completed task's project, status, reviewed commit, ordered output, and one fixed-contract receipt, compares the full coordination record/version, and deletes only the stopped target still owned by that record
+
+#### Scenario: Cleanup absence is ambiguous
+- **WHEN** the delete task, target config, or exact VMID absence cannot be authoritatively verified
+- **THEN** cleanup refuses to mark the record cleaned and preserves the record; arbitrary API errors or filtered list absence are not proof
 
 ### Requirement: Retention gate remains independent
 The system SHALL keep Prometheus, Loki, and Tempo at 15d, 7d, and 168h until an immutable or equivalent protected local copy, a successful isolated restore, and the separate seven-day capacity gate are all verified. A PBS protected flag or backup-only token alone SHALL NOT satisfy immutable-copy evidence.

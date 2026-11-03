@@ -1,0 +1,53 @@
+---
+# provision-console-approle.yml — Provision the Dispatch Console's OpenBao AppRole (plan 17, D27).
+#
+# Creates (or updates) the `console` policy and AppRole and stores its role_id and secret_id at
+# secret/services/approles/console. The console logs in with this AppRole at run time, so it reads its
+# own paths (secret/services/console/*) and never Semaphore's broad credential.
+#
+# The policy is single-sourced from config/policies/console.hcl, the file the OpenBao policy
+# apply playbooks read. The AppRole binds the policy by the same name, so the file stem `console`
+# is load-bearing.
+#
+# Token and secret_id limits are the manage-approle.yml defaults. The secret_id is minted only when
+# none is stored; rotating it is rotate-console-credentials.yml's job.
+#
+# Run via Semaphore: "Provision Console AppRole" (Dev variant), or directly:
+#   BAO_ROLE_ID=... BAO_SECRET_ID=... ansible-playbook provision-console-approle.yml
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Provision the console AppRole and policy"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR')) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _approle_name: "console"
+    _approle_policy: "{{ lookup('file', playbook_dir ~ '/../services/openbao/deployment/config/policies/console.hcl') }}"
+  tasks:
+    - name: "Validate OpenBao connection and admin auth inputs are set"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _bao_role_id | length > 0
+          - _bao_secret_id | length > 0
+        fail_msg: >-
+          Missing OpenBao inputs — set openbao_addr/bao_role_id/bao_secret_id
+          (or OPENBAO_ADDR/BAO_ROLE_ID/BAO_SECRET_ID in the environment). These
+          are normally injected by Semaphore's environment.
+        quiet: true
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      # Before the admin login: this play sends the admin credential to _bao_url (AGENTS.md, assert-bao-transport.yml).
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Create/update the console AppRole + policy"
+      ansible.builtin.include_tasks: tasks/manage-approle.yml

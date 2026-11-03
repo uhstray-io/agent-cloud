@@ -1,0 +1,79 @@
+# Build one closed PBS workflow receipt and make only that object visible through
+# Semaphore CUSTOM STATS. Inputs are include vars owned by the fixed caller.
+- name: Refuse externally supplied PBS receipt internals
+  ansible.builtin.assert:
+    that:
+      - >-
+        ['pbs_receipt_contract', 'pbs_receipt_public_sha', 'pbs_receipt_private_sha',
+        'pbs_receipt_inventory_fingerprint', 'pbs_receipt_source_fingerprint',
+        'pbs_receipt_artifact_fingerprint', 'pbs_receipt_observed_start',
+        'pbs_receipt_observed_end', 'pbs_receipt_evidence', 'pbs_receipt_status',
+        'pbs_receipt_reason', '_pbs_receipt_raw',
+        '_o11y_pbs_receipt']
+        | select('in', hostvars[inventory_hostname]) | list | length == 0
+    fail_msg: "PBS receipt inputs are reserved for the fixed workflow executor."
+    quiet: true
+  run_once: true
+
+- name: Validate fixed PBS receipt inputs
+  ansible.builtin.assert:
+    that:
+      - pbs_receipt_contract in ['o11y-pbs-backup/v1', 'o11y-pbs-verify/v1', 'o11y-pbs-copy-sync/v1', 'o11y-pbs-copy-ready/v1']
+      - pbs_receipt_status | default('complete') in ['complete', 'ready']
+      - pbs_receipt_reason | default('none') is string
+      - pbs_receipt_public_sha == expected_repository_sha
+      - pbs_receipt_private_sha == site_config_base_sha
+      - pbs_receipt_inventory_fingerprint is match('^[0-9a-f]{64}$')
+      - pbs_receipt_source_fingerprint is match('^[0-9a-f]{64}$')
+      - pbs_receipt_observed_start is match('^20[0-9]{2}-[0-9]{2}-[0-9]{2}T')
+      - pbs_receipt_observed_end is match('^20[0-9]{2}-[0-9]{2}-[0-9]{2}T')
+      - pbs_receipt_evidence is mapping
+    fail_msg: "The PBS workflow could not assemble its fixed receipt contract."
+    quiet: true
+  no_log: true
+
+- name: Create the canonical completed PBS receipt
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/files/o11y_pbs_receipts.py"]
+    stdin: >-
+      {{ {'operation': 'complete_receipt', 'contract': pbs_receipt_contract,
+          'public_sha': pbs_receipt_public_sha, 'private_sha': pbs_receipt_private_sha,
+          'inventory_fingerprint': pbs_receipt_inventory_fingerprint,
+          'source_fingerprint': pbs_receipt_source_fingerprint,
+          'artifact_fingerprint': pbs_receipt_artifact_fingerprint,
+          'observed_start': pbs_receipt_observed_start,
+          'observed_end': pbs_receipt_observed_end,
+          'evidence': pbs_receipt_evidence,
+          'status': pbs_receipt_status | default('complete'),
+          'reason': pbs_receipt_reason | default('none')} | to_json }}
+    stdin_add_newline: false
+  register: _pbs_receipt_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the canonical PBS receipt to pass its closed schema
+  ansible.builtin.assert:
+    that:
+      - _pbs_receipt_raw.rc == 0
+      - (_pbs_receipt_raw.stdout | from_json).status == pbs_receipt_status | default('complete')
+      - (_pbs_receipt_raw.stdout | from_json).reason == pbs_receipt_reason | default('none')
+      - (_pbs_receipt_raw.stdout | from_json).contract == pbs_receipt_contract
+      - (_pbs_receipt_raw.stdout | from_json).receipt_fingerprint is match('^[0-9a-f]{64}$')
+    fail_msg: "The PBS workflow refused to emit an invalid or incomplete receipt."
+    quiet: true
+  no_log: true
+
+- name: Retain the validated PBS receipt in protected controller state
+  ansible.builtin.set_fact:
+    _o11y_pbs_receipt: "{{ _pbs_receipt_raw.stdout | from_json }}"
+  no_log: true
+
+- name: Emit the closed PBS receipt to Semaphore task output
+  ansible.builtin.set_stats:
+    data:
+      o11y_pbs_receipt: "{{ _o11y_pbs_receipt }}"
+    per_host: false
+    aggregate: false
+  run_once: true

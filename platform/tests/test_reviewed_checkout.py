@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/reviewed-checkout.py"
@@ -319,3 +320,29 @@ def test_rejects_unsupported_worktree_types_and_modes(clean_checkout):
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     with pytest.raises(CHECKOUT.Refusal, match="checkout_worktree_mode"):
         _verify(checkout, revision)
+
+
+def test_payload_limit_accepts_sixteen_and_refuses_seventeen(clean_checkout):
+    checkout, _revision = clean_checkout
+    paths = []
+    for index in range(CHECKOUT.MAX_PAYLOAD_PATHS):
+        relative = f"payload/item-{index:02d}.txt"
+        path = checkout / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"payload {index}\n", encoding="utf-8")
+        paths.append(relative)
+    _git(checkout, "add", "payload", check=True)
+    _git(checkout, "commit", "-qm", "add bounded payload fixtures", check=True)
+    revision = _git(checkout, "rev-parse", "HEAD", capture_output=True, text=True, check=True).stdout.strip()
+    _git(checkout, "update-ref", "refs/remotes/origin/dev", revision, check=True)
+
+    result = _verify(checkout, revision, paths)
+    assert set(result["payloads"]) == set(paths)
+    with pytest.raises(CHECKOUT.Refusal, match="payload_paths_invalid"):
+        _verify(checkout, revision, paths + ["payload/over-limit.txt"])
+
+
+def test_reviewed_checkout_playbook_uses_same_sixteen_path_cap():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/require-reviewed-checkout.yml").read_text())
+    assertions = plays[0]["tasks"][0]["ansible.builtin.assert"]["that"]
+    assert "_reviewed_checkout_requested_payloads | length <= 16" in assertions

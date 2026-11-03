@@ -125,6 +125,7 @@
       environment:
         O11Y_JOURNAL_DIRECTORY: "{{ o11y_journal_directory }}"
         O11Y_JOURNAL_CONFIG_SHA: survey
+        O11Y_OTLP_TLS_ENABLED: "{{ 'true' if (o11y_otlp_tls_enabled | default(false) | bool) else 'false' }}"
       register: _journal_provider_config
       changed_when: false
       failed_when: false
@@ -222,11 +223,22 @@
         done;
         exit 1
     _journal_config_path: "{{ _journal_deploy_dir }}/config/journal.alloy"
+    _journal_tls_mounts: >-
+      {{ ['--mount', 'type=bind,src=' ~ _journal_deploy_dir ~ '/certs/o11y-journal,dst=/certs/journal-client,ro',
+          '--mount', 'type=bind,src=' ~ _journal_deploy_dir ~ '/certs/step-ca-bundle.crt,dst=/certs/step-ca-bundle.crt,ro']
+         if (o11y_otlp_tls_enabled | default(false) | bool) else [] }}
 
   tasks:
     - name: Leave the apply play when the reviewed action is stop
       ansible.builtin.meta: end_host
       when: journal_collector_action | default('apply') != 'apply'
+      tags: [always]
+
+    - name: Validate receiver and journal TLS files before journal config or container changes
+      ansible.builtin.include_tasks: tasks/assert-o11y-otlp-tls.yml
+      vars:
+        _deploy_dir: "{{ _journal_deploy_dir }}"
+      when: o11y_otlp_tls_enabled | default(false) | bool
       tags: [always]
 
     - name: Require the declared rootless Podman host and exact receiver endpoint
@@ -500,20 +512,11 @@
 
     - name: Validate the candidate config with the pinned Alloy image before any collector recreation
       ansible.builtin.command:
-        argv:
-          - podman
-          - run
-          - --pull=never
-          - --rm
-          - --network
-          - none
-          - --read-only
-          - --mount
-          - "type=bind,src={{ _journal_candidate_path }},dst=/etc/alloy/journal.alloy,ro"
-          - "{{ _journal_image }}"
-          - validate
-          - --stability.level=generally-available
-          - /etc/alloy/journal.alloy
+        argv: >-
+          {{ ['podman', 'run', '--pull=never', '--rm', '--network', 'none', '--read-only',
+              '--mount', 'type=bind,src=' ~ _journal_candidate_path ~ ',dst=/etc/alloy/journal.alloy,ro']
+             + _journal_tls_mounts
+             + [_journal_image, 'validate', '--stability.level=generally-available', '/etc/alloy/journal.alloy'] }}
       register: _journal_config_validation
       changed_when: false
       failed_when: false
@@ -717,11 +720,12 @@
 
         - name: Start only the journal collector service
           ansible.builtin.command:
-            argv: [podman-compose, -p, o11y-journal, -f, compose.journal.yml, up, --no-deps, -d, journal-collector]
+            argv: "{{ ['podman-compose', '-p', 'o11y-journal', '-f', 'compose.journal.yml'] + (['-f', 'compose.journal.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + ['up', '--no-deps', '-d', 'journal-collector'] }}"
             chdir: "{{ _journal_deploy_dir }}"
           environment:
             O11Y_JOURNAL_DIRECTORY: "{{ _journal_directory }}"
             O11Y_JOURNAL_CONFIG_SHA: "{{ _journal_candidate_stat.stat.checksum }}"
+            O11Y_OTLP_TLS_ENABLED: "{{ 'true' if (o11y_otlp_tls_enabled | default(false) | bool) else 'false' }}"
           register: _journal_up
           changed_when: _journal_up.stdout | length > 0 or _journal_up.stderr | length > 0
           when: not ansible_check_mode
@@ -1133,6 +1137,41 @@
               The live collector mount identity, writable mode, user namespace mapping,
               or effective positions access could not be verified.
             quiet: true
+
+        - name: Read the collector's fixed certificate mount metadata
+          ansible.builtin.command:
+            argv: [podman, inspect, --format, "{{ '{{' }}json .Mounts{{ '}}' }}", o11y-journal-collector]
+          register: _journal_tls_mount_readback
+          changed_when: false
+          no_log: true
+          when: not ansible_check_mode
+
+        - name: Parse only the two fixed TLS mount records
+          ansible.builtin.set_fact:
+            _journal_tls_runtime_mounts: >-
+              {{ (_journal_tls_mount_readback.stdout | from_json)
+                 | selectattr('Destination', 'in', ['/certs/journal-client', '/certs/step-ca-bundle.crt'])
+                 | list }}
+          no_log: true
+          when: not ansible_check_mode
+
+        - name: Require exact read-only runtime TLS mounts
+          ansible.builtin.assert:
+            that:
+              - (_journal_tls_runtime_mounts | length) == (2 if (o11y_otlp_tls_enabled | default(false) | bool) else 0)
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Destination', 'equalto', '/certs/journal-client') | list | length) == 1
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Destination', 'equalto', '/certs/step-ca-bundle.crt') | list | length) == 1
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Source', 'equalto', _journal_deploy_dir ~ '/certs/o11y-journal')
+                 | selectattr('Destination', 'equalto', '/certs/journal-client') | selectattr('RW', 'equalto', false) | list | length) == 1
+              - not (o11y_otlp_tls_enabled | default(false) | bool) or
+                (_journal_tls_runtime_mounts | selectattr('Source', 'equalto', _journal_deploy_dir ~ '/certs/step-ca-bundle.crt')
+                 | selectattr('Destination', 'equalto', '/certs/step-ca-bundle.crt') | selectattr('RW', 'equalto', false) | list | length) == 1
+            fail_msg: "The live journal collector does not have exactly the declared read-only TLS mounts."
+            quiet: true
+          when: not ansible_check_mode
 
         - name: Read back the seven receiver container identities and states
           ansible.builtin.shell:

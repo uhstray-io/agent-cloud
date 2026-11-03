@@ -1,9 +1,16 @@
+import importlib.util
+import ipaddress
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from ansible_python import needs_ansible
 from jinja2 import Environment, StrictUndefined, Undefined
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +25,14 @@ LIMITS = {
     "label_name_length_limit": 128,
     "label_value_length_limit": 2048,
 }
+# Deterministic synthetic host from the canonical RFC1918 test network; this is
+# not derived from any site inventory or deployment topology.
+PRIVATE_TEST_IP = str(ipaddress.ip_network("192.168.0.0/16")[20])
+FILTER_PATH = ROOT / "platform/playbooks/filter_plugins/o11y_scrape_budget.py"
+FILTER_SPEC = importlib.util.spec_from_file_location("o11y_scrape_budget", FILTER_PATH)
+assert FILTER_SPEC and FILTER_SPEC.loader
+BUDGET = importlib.util.module_from_spec(FILTER_SPEC)
+FILTER_SPEC.loader.exec_module(BUDGET)
 LIMIT_FIELDS = {
     "body_size_limit": f"{LIMITS['body_size_limit_bytes']}B",
     "sample_limit": LIMITS["sample_limit"],
@@ -73,11 +88,90 @@ def _render_yaml(name, **values):
     return yaml.safe_load(_environment().from_string(source).render(**values))
 
 
+def _render_alloy(**values):
+    return _environment().from_string(
+        (DEPLOY / "templates/config.alloy.j2").read_text(encoding="utf-8")
+    ).render(**values)
+
+
 def _assert_bounded(job, sample_limit=None):
     assert job["body_size_limit"] == LIMIT_FIELDS["body_size_limit"]
     assert job["sample_limit"] == (LIMIT_FIELDS["sample_limit"] if sample_limit is None else sample_limit)
     for key in ("label_limit", "label_name_length_limit", "label_value_length_limit"):
         assert job[key] == LIMIT_FIELDS[key]
+
+
+def _alloy_prometheus_relabel_rules(rendered):
+    component = rendered.split('prometheus.relabel "bounded_labels" {', 1)[1].split(
+        'prometheus.remote_write "local"', 1
+    )[0]
+    rules = []
+    for body in re.findall(r"\brule\s*\{([^{}]*)\}", component):
+        fields = {}
+        for name, value in re.findall(r"^\s*(\w+)\s*=\s*(.+?)\s*$", body, re.MULTILINE):
+            fields[name] = json.loads(value)
+        rules.append(fields)
+    return rules
+
+
+def _apply_alloy_prometheus_relabel_rules(labels, rules):
+    labels = labels.copy()
+    for rule in rules:
+        action = rule.get("action", "replace")
+        supported_fields = {
+            "labeldrop": {"action", "regex"},
+            "replace": {
+                "action", "source_labels", "regex", "replacement", "target_label", "separator"
+            },
+        }.get(action)
+        if supported_fields is None:
+            raise AssertionError(f"unexpected relabel action in bounded_labels: {action}")
+        unsupported_fields = set(rule) - supported_fields
+        if unsupported_fields:
+            raise AssertionError(
+                f"unsupported relabel rule fields for {action}: {sorted(unsupported_fields)}"
+            )
+
+        if action == "labeldrop":
+            pattern = re.compile(rule["regex"])
+            labels = {name: value for name, value in labels.items() if not pattern.fullmatch(name)}
+        elif action == "replace":
+            source = rule.get("separator", ";").join(
+                labels.get(name, "") for name in rule.get("source_labels", [])
+            )
+            match = re.fullmatch(rule.get("regex", "(.*)"), source)
+            if match:
+                replacement = re.sub(
+                    r"\$(\d+)",
+                    lambda group, match=match: match.group(int(group.group(1))) or "",
+                    rule.get("replacement", "$1"),
+                )
+                labels[rule["target_label"]] = replacement
+    return labels
+
+
+def test_alloy_relabel_evaluator_rejects_unsupported_fields():
+    rule = {
+        "action": "replace",
+        "source_labels": [],
+        "regex": "(.*)",
+        "replacement": "inventory-cluster",
+        "target_label": "cluster",
+        "unexpected": "ignored",
+    }
+    with pytest.raises(AssertionError, match="unsupported relabel rule fields for replace"):
+        _apply_alloy_prometheus_relabel_rules({}, [rule])
+
+
+def test_alloy_relabel_evaluator_rejects_unsupported_actions():
+    rule = {
+        "action": "hashmod",
+        "source_labels": ["cluster"],
+        "modulus": 2,
+        "target_label": "cluster_hash",
+    }
+    with pytest.raises(AssertionError, match="unexpected relabel action in bounded_labels: hashmod"):
+        _apply_alloy_prometheus_relabel_rules({"cluster": "inventory-cluster"}, [rule])
 
 
 def test_alloy_compose_environment_forwards_bounded_scrape_budgets_without_secrets():
@@ -129,6 +223,904 @@ def test_alloy_socket_discovery_and_container_metrics_render_only_in_local_mode(
         assert component in local
         assert component in production
     assert "unix:///var/run/docker.sock" not in production
+
+
+def test_availability_source_renders_bounded_native_components_and_preserves_self_monitor():
+    prepared = {
+        "enabled": True,
+        "limits": {"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+        "targets": [{
+            "module_name": "health_01", "target_id": "service:alpha",
+            "service_identity": "alpha", "environment": "production", "cluster": "prod-cluster",
+            "endpoint": f"https://{PRIVATE_TEST_IP}/healthz", "expected_status_codes": [200],
+            "tls_server_name": "health.example.invalid", "trust": "system",
+            "interval_seconds": 60, "scrape_timeout_seconds": 20,
+            "probe_timeout_seconds": 10, "body_size_limit_bytes": 4096,
+            "samples_per_scrape": 64,
+            "blackbox_config": json.dumps({"modules": {"health_01": {
+                "prober": "http", "timeout": "10s", "http": {
+                    "method": "GET", "valid_status_codes": [200],
+                    "follow_redirects": False, "proxy_from_environment": False,
+                    "body_size_limit": "4096B",
+                    "tls_config": {"insecure_skip_verify": False, "server_name": "health.example.invalid"},
+                },
+            }}}, sort_keys=True, separators=(",", ":")),
+        }],
+    }
+    rendered = _render_alloy(
+        local_mode=False, _o11y_availability=prepared,
+        o11y_cluster="prod-cluster", o11y_environment="production",
+        _o11y_forbidden_metric_label_names_regex=POLICY,
+    )
+    assert 'prometheus.exporter.blackbox "health_01"' in rendered
+    assert 'job_name = "o11y-availability"' in rendered
+    assert 'instance = "service:alpha"' in rendered
+    assert 'labels = {\n      service = "alpha",' in rendered
+    assert '"service": "alpha"' not in rendered
+    assert 'probe_http_status_code|scrape_samples_scraped|scrape_body_size_bytes' in rendered
+    assert "proxy_from_environment" in rendered and "insecure_skip_verify" in rendered
+    assert 'prometheus.scrape "alloy_self"' in rendered
+    assert '"__address__" = "127.0.0.1:12345"' in rendered
+    assert '"instance" = "alloy:12345"' in rendered
+    assert '\\"body_size_limit\\":\\"4096B\\"' in rendered  # blackbox health-response cap
+    availability_scrape = rendered.split('prometheus.scrape "health_01" {', 1)[1].split("\n}", 1)[0]
+    self_scrape = rendered.split('prometheus.scrape "alloy_self" {', 1)[1].split("\n}", 1)[0]
+    assert 'body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"' in availability_scrape
+    assert 'body_size_limit = "4096B"' not in availability_scrape
+    assert 'body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"' in self_scrape
+    for field, env_name in (
+        ("label_limit", "O11Y_SCRAPE_LABEL_LIMIT"),
+        ("label_name_length_limit", "O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"),
+        ("label_value_length_limit", "O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT"),
+    ):
+        expression = f'{field} = encoding.from_json(sys.env("{env_name}"))'
+        assert expression in availability_scrape
+        assert expression in self_scrape
+    assert 'sample_limit = 64' in availability_scrape
+    assert 'sample_limit = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))' not in availability_scrape
+    assert 'sample_limit = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))' in self_scrape
+    assert "extra_metrics = true" in availability_scrape
+    assert "extra_metrics = true" in self_scrape
+    assert 'prometheus.remote_write "local"' in rendered
+    assert 'target_label  = "environment"' in rendered
+
+
+def test_availability_off_leaves_alloy_probe_and_self_scrape_absent():
+    rendered = _render_alloy(
+        local_mode=False, o11y_cluster="prod-cluster", o11y_environment="production",
+        _o11y_forbidden_metric_label_names_regex=POLICY,
+    )
+    assert "prometheus.exporter.blackbox" not in rendered
+    assert 'prometheus.scrape "alloy_self"' not in rendered
+    assert 'prometheus.remote_write "local"' not in rendered
+
+
+def test_availability_source_budget_consumer_keeps_prometheus_body_unavailable_and_native_positive():
+    prometheus = {
+        "status": "observed", "source": "prometheus", "intended_source": "prometheus",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "prometheus",
+            "alloy_self": {"up": 1, "scrape_samples_scraped": 415},
+            "scrape_body_size_bytes": {
+                "status": "unavailable", "reason": "legacy_extra_scrape_metrics_not_enabled",
+            },
+        },
+    }
+    assert BUDGET.o11y_availability_source_coverage(prometheus) == {
+        "status": "observed", "source": "prometheus", "matches_intended": True,
+        "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+        "body_counter": "not_exposed_by_legacy_prometheus",
+    }
+    prom_native_absence = json.loads(json.dumps(prometheus))
+    prom_native_absence["evidence"]["native_components"] = {
+        "status": "observed", "reason": "native_components_absent", "component_count": 3,
+    }
+    assert BUDGET.o11y_availability_source_coverage(prom_native_absence) == {
+        "status": "observed", "source": "prometheus", "matches_intended": True,
+        "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+        "body_counter": "not_exposed_by_legacy_prometheus", "native_components": "absent",
+    }
+    prom_native_absence["evidence"]["native_components"]["reason"] = "component_status_unavailable"
+    assert BUDGET.o11y_availability_source_coverage(prom_native_absence)["status"] == "unavailable"
+    malformed_prometheus = json.loads(json.dumps(prometheus))
+    malformed_prometheus["evidence"]["scrape_body_size_bytes"] = {"status": "observed", "value": 0}
+    assert BUDGET.o11y_availability_source_coverage(malformed_prometheus)["status"] == "unavailable"
+    bool_self_up = json.loads(json.dumps(prometheus))
+    bool_self_up["evidence"]["alloy_self"]["up"] = True
+    float_self_up = json.loads(json.dumps(prometheus))
+    float_self_up["evidence"]["alloy_self"]["up"] = 1.0
+    for malformed in (bool_self_up, float_self_up):
+        assert BUDGET.o11y_availability_source_gate_diagnostic({
+            "rc": 0, "stdout": json.dumps(malformed), "stderr": "",
+        }) == "producer_evidence_invalid"
+
+    native_intended_but_prom_current = json.loads(json.dumps(prometheus))
+    native_intended_but_prom_current.update(intended_source="alloy", matches_intended=False)
+    projected = BUDGET.o11y_availability_source_coverage(native_intended_but_prom_current)
+    assert projected["status"] == "observed" and projected["source"] == "prometheus"
+    assert projected["matches_intended"] is False
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": json.dumps(native_intended_but_prom_current), "stderr": "",
+    }) == "producer_mismatch"
+    inconsistent_source_match = json.loads(json.dumps(native_intended_but_prom_current))
+    inconsistent_source_match["matches_intended"] = True
+    assert BUDGET.o11y_availability_source_coverage(inconsistent_source_match)["status"] == "unavailable"
+    missing_native = {
+        "status": "unavailable", "reason": "native_source_unavailable", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_coverage(missing_native) == {
+        "status": "unavailable", "reason": "native_source_unavailable", "source": "unknown",
+    }
+
+    limits = {
+        "body_size_limit": 16_777_216, "sample_limit": 1000, "label_limit": 64,
+        "label_name_length_limit": 128, "label_value_length_limit": 2048,
+    }
+    native = {
+        "status": "observed", "source": "alloy", "intended_source": "alloy",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "alloy",
+            "detail": {
+                "status": "observed", "reason": "fixed_native_components_loaded", "target_count": 1,
+                "targets": [{
+                    "target_id": "service:api",
+                    "status": "observed",
+                    "probe_health": "down",
+                    "limits": limits,
+                }],
+                "alloy_self": {"status": "observed", "limits": limits},
+            },
+            "samples": {
+                "status": "observed", "reason": "fresh_native_samples", "freshness_seconds": 300,
+                "alloy_self": {"status": "observed", "scrape_up": 1,
+                                "scrape_samples_scraped": 415, "scrape_body_size_bytes": 73_675},
+                "targets": [{
+                    "target_id": "service:api", "status": "observed", "scrape_up": 1,
+                    "probe_success": 0, "probe_http_status_code": 503, "probe_duration_seconds": "0.25",
+                    "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
+                }],
+            },
+        },
+    }
+    assert BUDGET.o11y_availability_source_coverage(native) == {
+        "status": "observed", "source": "alloy", "matches_intended": True,
+        "sample_count": 1, "probe_failed_count": 1, "scrape_failed_count": 0,
+        "body_counter": "observed_positive",
+    }
+
+    malformed_native = []
+    unknown_loaded_limit = json.loads(json.dumps(native))
+    unknown_loaded_limit["evidence"]["detail"]["alloy_self"]["limits"]["unknown"] = "SENTINEL"
+    malformed_native.append(unknown_loaded_limit)
+    oversized_loaded_limit = json.loads(json.dumps(native))
+    oversized_loaded_limit["evidence"]["detail"]["targets"][0]["limits"]["sample_limit"] = 100_001
+    malformed_native.append(oversized_loaded_limit)
+    bool_probe_success = json.loads(json.dumps(native))
+    bool_probe_success["evidence"]["samples"]["targets"][0]["probe_success"] = True
+    malformed_native.append(bool_probe_success)
+    bool_http_status = json.loads(json.dumps(native))
+    bool_http_status["evidence"]["samples"]["targets"][0]["probe_http_status_code"] = True
+    malformed_native.append(bool_http_status)
+    nonfinite_duration = json.loads(json.dumps(native))
+    nonfinite_duration["evidence"]["samples"]["targets"][0]["probe_duration_seconds"] = "Infinity"
+    malformed_native.append(nonfinite_duration)
+    for malformed in malformed_native:
+        assert BUDGET.o11y_availability_source_gate_diagnostic({
+            "rc": 0, "stdout": json.dumps(malformed), "stderr": "",
+        }) == "producer_evidence_invalid"
+
+
+def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_results():
+    observed = {
+        "status": "observed", "source": "prometheus", "intended_source": "prometheus",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "prometheus",
+            "alloy_self": {"up": 1, "scrape_samples_scraped": 415},
+            "scrape_body_size_bytes": {
+                "status": "unavailable", "reason": "legacy_extra_scrape_metrics_not_enabled",
+            },
+        },
+    }
+    result = {"rc": 0, "stdout": json.dumps(observed), "stderr": ""}
+    assert BUDGET.o11y_availability_source_gate_diagnostic(result) == "producer_observed"
+
+    known_failure = {
+        "status": "unavailable", "reason": "native_source_stale", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**result, "stdout": json.dumps(known_failure)}
+    ) == "producer_evidence_invalid"
+
+    refusal_result = {**result, "rc": 2, "stdout": json.dumps(known_failure)}
+    assert BUDGET.o11y_availability_source_gate_diagnostic(refusal_result) == "native_source_stale"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**refusal_result, "stderr": "PRIVATE-STDERR-SENTINEL"}
+    ) == "native_source_stale"
+    loaded_refusal = {
+        "status": "unavailable", "reason": "buildinfo_unavailable", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 2, "stdout": json.dumps(loaded_refusal), "stderr": "PRIVATE-STDERR-SENTINEL",
+    }) == "buildinfo_unavailable"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**refusal_result, "stdout": json.dumps(observed)}
+    ) == "producer_exit_code_mismatch"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {**result, "stdout": json.dumps(known_failure)}
+    ) == "producer_evidence_invalid"
+
+    sentinel = "SECRET-SENTINEL-MUST-NOT-ESCAPE"
+    invalid_results = [
+        ({**result, "rc": 1}, "producer_process_unexpected"),
+        ({**result, "rc": 3}, "producer_process_unexpected"),
+        ({**result, "rc": True}, "producer_process_unexpected"),
+        ({**result, "rc": "0"}, "producer_process_unexpected"),
+        (
+            {**refusal_result, "stdout": json.dumps({**known_failure, "reason": "unknown_refusal"})},
+            "producer_evidence_invalid",
+        ),
+        ({**result, "stderr": sentinel}, "producer_stderr_present"),
+        ({**result, "stdout": sentinel}, "producer_json_invalid"),
+        ({**result, "stdout": "{" + (" " * 65536)}, "producer_stdout_oversized"),
+        ({**result, "stdout": '{"status":"unavailable","status":"observed"}'}, "producer_json_invalid"),
+        (
+            {**result, "stdout": json.dumps({**known_failure, "reason": sentinel})},
+            "producer_evidence_invalid",
+        ),
+        (
+            {**refusal_result, "stdout": json.dumps({**known_failure, "extra": sentinel})},
+            "producer_evidence_invalid",
+        ),
+        (
+            {**refusal_result, "stdout": json.dumps({**known_failure, "source": True})},
+            "producer_evidence_invalid",
+        ),
+        ({**refusal_result, "stdout": '{"status":"unavailable","status":"unavailable"}'}, "producer_json_invalid"),
+        ({**refusal_result, "stdout": '{"status":"unavailable","reason":NaN}'}, "producer_json_invalid"),
+        (
+            {**result, "stdout": json.dumps({**observed, "untrusted": sentinel})},
+            "producer_evidence_invalid",
+        ),
+        ({"stdout": json.dumps(observed), "stderr": ""}, "producer_process_unexpected"),
+    ]
+    for invalid, expected in invalid_results:
+        category = BUDGET.o11y_availability_source_gate_diagnostic(invalid)
+        assert category == expected
+        assert sentinel not in category
+
+
+@pytest.mark.parametrize("stderr", ["", "PRIVATE-TIMEOUT-STDERR-SENTINEL"])
+def test_native_readback_timeout_remains_a_bounded_unavailable_refusal(stderr):
+    envelope = {
+        "status": "unavailable", "reason": "native_readback_timeout", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    result = {"rc": 2, "stdout": json.dumps(envelope), "stderr": stderr}
+
+    diagnostic = BUDGET.o11y_availability_source_gate_diagnostic(result)
+    assert diagnostic == "native_readback_timeout"
+    assert BUDGET.o11y_availability_source_coverage(json.loads(result["stdout"]))["status"] == "unavailable"
+    assert "PRIVATE-TIMEOUT-STDERR-SENTINEL" not in diagnostic
+
+
+def test_source_diagnostic_distinguishes_fixed_failure_categories_without_echoing_private_content():
+    sentinel = "PRIVATE-SENTINEL"
+    cases = [
+        ({"stdout": "{}", "stderr": ""}, "producer_process_unexpected"),
+        ({"rc": 0, "stdout": "{}", "stderr": sentinel}, "producer_stderr_present"),
+        ({"rc": 0, "stdout": " " * 65537, "stderr": ""}, "producer_stdout_oversized"),
+        ({"rc": 0, "stdout": '{"status":', "stderr": ""}, "producer_json_invalid"),
+        ({"rc": 0, "stdout": '{"status":"observed","status":"observed"}', "stderr": ""}, "producer_json_invalid"),
+        ({"rc": 0, "stdout": '{"n":NaN}', "stderr": ""}, "producer_json_invalid"),
+        ({"rc": 2, "stdout": json.dumps({"status": "observed"}), "stderr": ""}, "producer_evidence_invalid"),
+        (
+            {"rc": 0, "stdout": json.dumps({"status": "observed", "reason": sentinel}), "stderr": ""},
+            "producer_evidence_invalid",
+        ),
+    ]
+    for fields, expected in cases:
+        diagnostic = BUDGET.o11y_availability_source_gate_diagnostic(fields)
+        assert diagnostic == expected
+        assert sentinel not in diagnostic
+
+
+def test_availability_source_gate_diagnostic_accepts_native_self_only_readback():
+    limits = {
+        "body_size_limit": 2048, "sample_limit": 1000, "label_limit": 16,
+        "label_name_length_limit": 64, "label_value_length_limit": 256,
+    }
+    self_only = {
+        "status": "observed", "source": "alloy", "intended_source": "alloy",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "alloy",
+            "detail": {
+                "status": "observed", "reason": "fixed_native_components_loaded",
+                "target_count": 0, "targets": [],
+                "alloy_self": {"status": "observed", "limits": limits},
+            },
+            "samples": {
+                "status": "observed", "reason": "fresh_native_samples", "freshness_seconds": 300,
+                "alloy_self": {
+                    "status": "observed", "scrape_up": 1,
+                    "scrape_samples_scraped": 415, "scrape_body_size_bytes": 1234,
+                },
+                "targets": [],
+            },
+        },
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": json.dumps(self_only), "stderr": "",
+    }) == "producer_observed"
+
+    float_scrape_up = json.loads(json.dumps(self_only))
+    float_scrape_up["evidence"]["samples"]["alloy_self"]["scrape_up"] = 1.0
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": json.dumps(float_scrape_up), "stderr": "",
+    }) == "producer_evidence_invalid"
+    exponent_scrape_up = json.dumps(self_only).replace('"scrape_up": 1', '"scrape_up": 1e0', 1)
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": exponent_scrape_up, "stderr": "",
+    }) == "producer_evidence_invalid"
+
+    malformed = []
+    for freshness in (float("nan"), float("inf"), {"untrusted": "SENTINEL"}):
+        candidate = json.loads(json.dumps(self_only))
+        candidate["evidence"]["samples"]["freshness_seconds"] = freshness
+        malformed.append(candidate)
+    unknown_limit = json.loads(json.dumps(self_only))
+    unknown_limit["evidence"]["detail"]["alloy_self"]["limits"]["unknown"] = "SENTINEL"
+    malformed.append(unknown_limit)
+    bool_limit = json.loads(json.dumps(self_only))
+    bool_limit["evidence"]["detail"]["alloy_self"]["limits"]["sample_limit"] = True
+    malformed.append(bool_limit)
+    for index, candidate in enumerate(malformed):
+        assert BUDGET.o11y_availability_source_gate_diagnostic({
+            "rc": 0, "stdout": json.dumps(candidate), "stderr": "",
+        }) == ("producer_json_invalid" if index < 2 else "producer_evidence_invalid")
+
+    overflow = json.dumps(self_only).replace('"freshness_seconds": 300', '"freshness_seconds": 1e10000')
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": 0, "stdout": overflow, "stderr": "",
+    }) == "producer_evidence_invalid"
+
+
+def test_availability_source_gate_diagnostic_consumes_real_helper_refusal_contract():
+    helper = ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py"
+    environment = os.environ.copy()
+    # Invalid input is rejected before the helper can contact a receiver or container engine.
+    environment["O11Y_AVAILABILITY_SOURCE_JSON"] = "{}"
+    done = subprocess.run(
+        [sys.executable, str(helper), "--verify-availability-source"],
+        cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert done.returncode == 2
+    assert done.stderr == ""
+    refusal = json.loads(done.stdout)
+    assert refusal == {
+        "status": "unavailable", "reason": "native_declaration_invalid", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+    assert BUDGET.o11y_availability_source_gate_diagnostic({
+        "rc": done.returncode, "stdout": done.stdout, "stderr": done.stderr,
+    }) == "native_declaration_invalid"
+
+
+def test_availability_source_diagnostic_precedes_unchanged_protected_gate():
+    tasks = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/prepare-o11y-availability.yml").read_text(encoding="utf-8")
+    )
+    diagnostic_set = next(
+        task for task in tasks if task.get("name") == "Validate the fixed current source diagnostic category"
+    )
+    visible = next(
+        task for task in tasks if task.get("name") == "Report only the fixed current source diagnostic category"
+    )
+    gate = next(
+        task for task in tasks if task.get("name") == "Require one fresh and unambiguous current self-metrics producer"
+    )
+    assert tasks.index(diagnostic_set) < tasks.index(visible) < tasks.index(gate)
+    assert diagnostic_set["no_log"] is True
+    assert "_o11y_current_source_raw | o11y_availability_source_gate_diagnostic" in diagnostic_set[
+        "ansible.builtin.set_fact"
+    ]["_o11y_current_source_diagnostic"]
+    assert visible["ansible.builtin.debug"]["msg"] == (
+        "Current self-metrics producer diagnostic: {{ _o11y_current_source_diagnostic }}"
+    )
+    assert visible["when"][-1] == "_o11y_current_source_diagnostic != 'producer_observed'"
+    assert gate["no_log"] is True
+    assert gate["ansible.builtin.assert"]["that"] == [
+        "_o11y_current_source_raw.rc == 0",
+        "(_o11y_current_source_raw.stdout | from_json).status == 'observed'",
+        "(_o11y_current_source_raw.stdout | from_json).source in ['prometheus', 'alloy']",
+        "(_o11y_current_source_raw.stdout | from_json).matches_intended is boolean",
+    ]
+
+
+@needs_ansible
+def test_availability_source_diagnostic_ansible_verbose_fixture_is_closed(tmp_path):
+    sentinel = "SOURCE-DIAGNOSTIC-SECRET-SENTINEL"
+    playbook = tmp_path / "diagnostic.yml"
+    playbook.write_text(
+        """---
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Produce an untrusted failing helper result
+      ansible.builtin.shell: >-
+        printf '%s' SOURCE-DIAGNOSTIC-SECRET-SENTINEL;
+        printf '%s' SOURCE-DIAGNOSTIC-SECRET-SENTINEL >&2;
+        exit 1
+      register: _o11y_current_source_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+    - name: Reduce the protected result
+      ansible.builtin.set_fact:
+        _o11y_current_source_diagnostic: "{{ _o11y_current_source_raw | o11y_availability_source_gate_diagnostic }}"
+      no_log: true
+    - name: Emit fixed category
+      ansible.builtin.debug:
+        msg: "Current self-metrics producer diagnostic: {{ _o11y_current_source_diagnostic }}"
+    - name: Preserve strict refusal
+      ansible.builtin.assert:
+        that: _o11y_current_source_raw.rc == 0
+        fail_msg: strict source gate refused
+      no_log: true
+""",
+        encoding="utf-8",
+    )
+    collections = tmp_path / "collections"
+    collections.mkdir()
+    environment = os.environ.copy()
+    environment["ANSIBLE_FILTER_PLUGINS"] = str(ROOT / "platform/playbooks/filter_plugins")
+    environment["ANSIBLE_COLLECTIONS_PATH"] = str(collections)
+    local_tmp = tmp_path / "ansible-local"
+    local_tmp.mkdir()
+    environment["ANSIBLE_LOCAL_TEMP"] = str(local_tmp)
+    done = subprocess.run(
+        [shutil.which("ansible-playbook"), "-vv", "-i", "localhost,", "-c", "local", str(playbook)],
+        cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60, check=False,
+    )
+    output = done.stdout + done.stderr
+    assert done.returncode != 0
+    assert "Current self-metrics producer diagnostic: producer_process_unexpected" in output, output
+    assert "strict source gate refused" not in output
+    assert sentinel not in output
+
+
+def test_prometheus_alloy_job_is_omitted_only_for_availability_mode():
+    base = {
+        "local_mode": False, "o11y_environment": "production",
+        "o11y_scrape_limits_reviewed": True, "o11y_scrape_limits": LIMITS.copy(),
+        "_o11y_forbidden_metric_label_names_regex": POLICY,
+    }
+    normal = _render_yaml("prometheus.yml.j2", **base)
+    enabled = _render_yaml(
+        "prometheus.yml.j2", **base,
+        o11y_availability_probes_enabled=True,
+    )
+    normal_jobs = {job["job_name"] for job in normal["scrape_configs"]}
+    enabled_jobs = {job["job_name"] for job in enabled["scrape_configs"]}
+    assert "alloy" in normal_jobs
+    assert "alloy" not in enabled_jobs
+
+
+def test_availability_compose_overlays_bind_only_loopback_and_deduplicate_ca_mount():
+    deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase = next(play for play in deploy if play.get("name") == "Phase 2: Start o11y")
+    lifecycle_block = next(task for task in phase["tasks"] if "block" in task)
+    deploy_task = next(
+        task for task in lifecycle_block["block"]
+        if task.get("name") == "Run deploy.sh (container lifecycle)"
+    )
+    overlays = deploy_task["environment"]["COMPOSE_OVERLAYS"]
+    env = Environment(undefined=StrictUndefined)
+    env.filters["bool"] = bool
+    targets = [{"trust": "internal-ca"}]
+    base = {
+        "local_mode": False, "o11y_otlp_tls_enabled": False,
+        "o11y_inference_probe_enabled": False,
+        "_o11y_availability": {"enabled": True, "targets": targets},
+    }
+    rendered = env.from_string(overlays).render(**base)
+    assert rendered == "capacity/compose.textfile.yml compose.availability.yml compose.availability-ca.yml"
+    combined_tls = env.from_string(overlays).render(**{**base, "o11y_otlp_tls_enabled": True})
+    assert combined_tls == "capacity/compose.textfile.yml compose.otlp-tls.yml compose.availability.yml"
+
+    availability_overlay = yaml.safe_load(
+        (DEPLOY / "compose.availability.yml").read_text(encoding="utf-8")
+    )
+    availability = availability_overlay["services"]["alloy"]
+    assert availability["command"][1] == "--server.http.listen-addr=127.0.0.1:12345"
+    assert availability_overlay["x-podman"] == {"in_pod": False}
+    assert "ports" not in availability
+    ca_overlay = yaml.safe_load((DEPLOY / "compose.availability-ca.yml").read_text(encoding="utf-8"))
+    ca = ca_overlay["services"]["alloy"]["volumes"]
+    assert ca == [{
+        "type": "bind", "source": "./certs/step-ca-bundle.crt",
+        "target": "/certs/step-ca-bundle.crt", "read_only": True,
+        "bind": {"create_host_path": False},
+    }]
+
+
+def test_deploy_availability_gates_current_and_postapply_source_before_reporting():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase = next(play for play in plays if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    tasks = phase["tasks"]
+    prepare = next(
+        index for index, task in enumerate(tasks)
+        if task.get("name") == "Prepare the bounded private availability source projection"
+    )
+    placement = next(
+        index for index, task in enumerate(tasks)
+        if task.get("name") == "Place the monorepo + ensure podman/compose"
+    )
+    assert prepare < placement
+    validator_path = ROOT / "platform/playbooks/tasks/prepare-o11y-availability.yml"
+    validator = yaml.safe_load(validator_path.read_text(encoding="utf-8"))
+    namespace = next(
+        task for task in validator
+        if task.get("name") == "Prove current Alloy namespace isolation before placement when probes are enabled"
+    )
+    assert namespace["ansible.builtin.script"]["cmd"].endswith("--verify-availability-namespace")
+    assert namespace["no_log"] is True and namespace["when"] == "_o11y_availability.enabled | bool"
+    namespace_result = next(
+        task for task in validator
+        if task.get("name") == "Require actual current Alloy network namespace isolation before placement"
+    )
+    assert namespace_result["ansible.builtin.assert"]["that"][0] == "_o11y_namespace_preplacement.rc == 0"
+    assert not any(
+        "Refuse availability deployment until runtime isolation" in task.get("name", "")
+        for task in tasks
+    )
+    command = next(
+        task for task in validator
+        if task.get("name") == "Validate and privately prepare the reviewed availability projection"
+    )
+    assert command["no_log"] is True and command["failed_when"] is False
+    assert command["delegate_to"] == "localhost"
+    projection = next(
+        task for task in validator
+        if task.get("name") == "Store the protected availability projection for the renderer"
+    )
+    assert projection["no_log"] is True
+    reviewed_source = next(
+        task for task in validator
+        if task.get("name") == "Prove the current Alloy self-metrics producer before a reviewed source transition"
+    )
+    assert reviewed_source["no_log"] is True
+    assert "ansible.builtin.script" in reviewed_source
+    assert "O11Y_AVAILABILITY_SOURCE_JSON" in reviewed_source["environment"]
+    assert reviewed_source["environment"]["O11Y_DEPLOYMENT_DIR"] == "{{ _deploy_dir }}"
+    assert reviewed_source["environment"]["COMPOSE_CMD"] == "podman-compose"
+    assert "equalto', 'alloy:12345'" in reviewed_source["when"]
+    phase_two = next(play for play in plays if play.get("name") == "Phase 2: Start o11y")
+    lifecycle_block = next(task for task in phase_two["tasks"] if "block" in task)
+    lifecycle = next(
+        task for task in lifecycle_block["block"]
+        if task.get("name") == "Run deploy.sh (container lifecycle)"
+    )
+    assert "namespace_snapshot_sha256" in lifecycle["environment"][
+        "O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256"
+    ]
+    assert "runtime_context_sha256" in lifecycle["environment"][
+        "O11Y_EXPECTED_RUNTIME_CONTEXT_SHA256"
+    ]
+    source_file = next(
+        task for task in lifecycle_block["block"]
+        if task.get("name") == "Write the protected source-review declaration"
+    )
+    assert source_file["no_log"] is True and source_file["ansible.builtin.copy"]["mode"] == "0600"
+    postapply = next(
+        task for task in next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")["tasks"]
+        if task.get("name") == "Read back the current Alloy self-metrics producer after lifecycle apply"
+    )
+    assert postapply["no_log"] is True
+    assert "require_health_targets" in postapply["ansible.builtin.command"]["stdin"]
+    classified = next(
+        task for task in next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")["tasks"]
+        if task.get("name") == "Classify the private post-apply producer response"
+    )
+    assert "rescue" in classified
+    assert all(step.get("no_log") is True for step in classified["block"] + classified["rescue"])
+    report = next(
+        task for task in next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")["tasks"]
+        if task.get("name") == "Report fixed post-apply producer status"
+    )
+    assert "no_log" not in report
+    assert "_o11y_source_postapply_raw" not in str(report)
+    deploy_script = (DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    namespace_checks = [
+        offset for offset in range(len(deploy_script))
+        if deploy_script.startswith("--verify-availability-namespace --candidate", offset)
+    ]
+    apply = deploy_script.index("compose_up_if_changed config")
+    staged_hook = deploy_script.index("compose_staged_up() {")
+    final_apply = deploy_script.index("compose up -d --force-recreate --remove-orphans", staged_hook)
+    assert len(namespace_checks) == 3
+    assert namespace_checks[0] < staged_hook < namespace_checks[1] < final_apply
+    assert final_apply < apply < namespace_checks[2]
+    source_check = deploy_script.index("--verify-availability-source")
+    boundary = deploy_script.index("O11Y_AVAILABILITY_PREAPPLY_EPOCH=")
+    assert namespace_checks[0] < source_check < boundary < apply
+    assert 'O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR"' in deploy_script[
+        source_check - 180 : source_check + 120
+    ]
+
+
+def test_default_off_source_transition_initializes_staged_helper_before_branch():
+    script = (DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    start = script.index("step_start() {")
+    end = script.index("\nstep_wait_healthy()", start)
+    body = script[start:end]
+    declaration = body.index(
+        'local availability_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"'
+    )
+    enable_branch = body.index('if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then')
+    source_branch = body.index('if [ -n "${O11Y_AVAILABILITY_SOURCE_FILE:-}" ]; then')
+    staged_hook = body.index("compose_staged_up() {")
+    assert declaration < enable_branch < source_branch < staged_hook
+    assert 'python3 "$availability_helper" --verify-availability-source' in body
+    assert "availability_source_helper" not in body
+
+
+def test_step_start_dispatch_preserves_source_review_and_availability_checkpoints(tmp_path):
+    script = (DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    main_call = '\nmain "$@"\n'
+    assert script.endswith(main_call)
+    # Execute the production function bodies verbatim, with only the script path
+    # fixed so the helper and deployment directory still resolve in this checkout.
+    function_source = script[:-len(main_call)].replace(
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        f'SCRIPT_DIR="{DEPLOY}"',
+        1,
+    )
+    functions_path = tmp_path / "deploy-functions.sh"
+    functions_path.write_text(function_source, encoding="utf-8")
+    events_path = tmp_path / "events.jsonl"
+    source_path = tmp_path / "source-receipt.json"
+    source_path.write_text('{"synthetic":"source review input"}\n', encoding="utf-8")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    python_stub = bindir / "python3"
+    python_real = shutil.which("python3")
+    assert python_real is not None
+    python_stub.write_text(
+        """#!/usr/bin/env bash
+set -eu
+if [[ "$1" == *summarize-o11y-scrape-baseline.py ]]; then
+  shift
+  if [[ "$1" == "--verify-availability-source" ]]; then
+    printf '{"event":"source"}\\n' >> "$DIAG_EVENTS"
+    if [[ "$DIAG_SCENARIO" == "source-invalid" ]]; then
+      echo '{"status":"unavailable","source":"unknown"}'
+      exit 2
+    fi
+    hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    printf '{"status":"observed","source":"alloy","container_identity_sha256":"%s"}\\n' "$hash"
+    exit 0
+  fi
+  if [[ "$1" == "--verify-availability-namespace" ]]; then
+    printf '{"event":"namespace","final_start":"%s"}\\n' "${O11Y_AVAILABILITY_FINAL_START:-}" >> "$DIAG_EVENTS"
+    if [[ "$DIAG_SCENARIO" == "enabled-final-failure" &&
+          "${O11Y_AVAILABILITY_FINAL_START:-}" == "true" ]]; then
+      exit 2
+    fi
+    exit 0
+  fi
+fi
+exec "__PYTHON_REAL__" "$@"
+""".replace("__PYTHON_REAL__", python_real),
+        encoding="utf-8",
+    )
+    python_stub.chmod(0o700)
+    wrapper = tmp_path / "run-step-start.sh"
+    wrapper.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+source "$DIAG_DEPLOY_FUNCTIONS"
+error() { printf 'ERROR: %s\\n' "$*" >&2; exit 97; }
+info() { :; }
+compose_up_if_changed() {
+  printf '%s\\n' '{"event":"compose_up_if_changed"}' >> "$DIAG_EVENTS"
+  if declare -F compose_staged_up >/dev/null; then compose_staged_up; fi
+}
+compose() { printf '%s\\n' '{"event":"compose"}' >> "$DIAG_EVENTS"; }
+step_start
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+
+    for scenario, availability in (
+        ("disabled-valid-source", "false"),
+        ("source-invalid", "false"),
+        ("enabled-valid-source", "true"),
+        ("enabled-final-failure", "true"),
+    ):
+        events_path.write_text("", encoding="utf-8")
+        env = os.environ.copy()
+        env.update({
+            "PATH": f"{bindir}:{env.get('PATH', '')}",
+            "DIAG_SCENARIO": scenario,
+            "DIAG_EVENTS": str(events_path),
+            "DIAG_DEPLOY_FUNCTIONS": str(functions_path),
+            "O11Y_AVAILABILITY_ENABLED": availability,
+            "O11Y_AVAILABILITY_SOURCE_FILE": str(source_path),
+            "LOCAL_MODE": "true",
+            "CONTAINER_ENGINE": "podman",
+        })
+        env.pop("COMPOSE_OVERLAYS", None)
+        result = subprocess.run(
+            ["bash", str(wrapper)], cwd=DEPLOY, env=env,
+            text=True, capture_output=True, timeout=10, check=False,
+        )
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        namespaces = [event for event in events if event["event"] == "namespace"]
+        sources = [event for event in events if event["event"] == "source"]
+        compose_calls = [event for event in events if event["event"] == "compose"]
+        if scenario == "disabled-valid-source":
+            assert result.returncode == 0
+            assert len(sources) == 1 and not namespaces and len(compose_calls) == 1
+            assert "O11Y_AVAILABILITY_PREAPPLY_SOURCE=alloy" in result.stdout
+            assert "O11Y_AVAILABILITY_PREAPPLY_CONTAINER_SHA256=" + "a" * 64 in result.stdout
+            assert re.search(r"O11Y_AVAILABILITY_PREAPPLY_EPOCH=[1-9][0-9]{8,}", result.stdout)
+        elif scenario == "source-invalid":
+            assert result.returncode == 97
+            assert len(sources) == 1 and not namespaces and not compose_calls
+        elif scenario == "enabled-valid-source":
+            assert result.returncode == 0
+            assert len(sources) == 1 and len(namespaces) == 3 and len(compose_calls) == 1
+            assert [event["final_start"] for event in namespaces] == ["", "true", ""]
+        else:
+            assert result.returncode == 97
+            assert len(sources) == 1 and len(namespaces) == 2 and not compose_calls
+            assert [event["final_start"] for event in namespaces] == ["", "true"]
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase_names = [play.get("name") for play in playbook]
+    assert phase_names.index("Phase 3: Verify o11y") > phase_names.index("Phase 2: Start o11y")
+    verify_phase = next(play for play in playbook if play.get("name") == "Phase 3: Verify o11y")
+    task_names = [task.get("name") for task in verify_phase["tasks"]]
+    assert "Read back the current Alloy self-metrics producer after lifecycle apply" in task_names
+    postapply_contract = {
+        "Read back the current Alloy self-metrics producer after lifecycle apply",
+        "Classify the private post-apply producer response",
+        "Report fixed post-apply producer status",
+        "Require fresh post-apply producer evidence for the reviewed source",
+    }
+    for task_name in postapply_contract:
+        task = next(task for task in verify_phase["tasks"] if task.get("name") == task_name)
+        assert task["when"] == ["not ansible_check_mode", "_o11y_source_review_required | bool"]
+    lifecycle_phase = next(play for play in playbook if play.get("name") == "Phase 2: Start o11y")
+
+    def nested_task_names(tasks):
+        for task in tasks:
+            yield task.get("name")
+            for key in ("block", "rescue", "always"):
+                nested = task.get(key)
+                if isinstance(nested, list):
+                    yield from nested_task_names(nested)
+
+    assert "Run deploy.sh (container lifecycle)" in nested_task_names(lifecycle_phase["tasks"])
+
+
+def test_candidate_hash_is_from_same_private_controller_renderer_not_installed_bytes():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    phase = next(play for play in playbook if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    tasks = phase["tasks"]
+    candidate = next(
+        task for task in tasks
+        if task.get("name") == "Derive the reviewed Alloy candidate digest from the committed renderer"
+    )
+    render = next(task for task in candidate["block"] if "ansible.builtin.template" in task)
+    stat = next(task for task in candidate["block"] if "ansible.builtin.stat" in task)
+    renderer = next(
+        task for task in tasks
+        if task.get("name") == "Render Alloy config with the inventory cluster label"
+    )
+    assert render["delegate_to"] == stat["delegate_to"] == "localhost"
+    assert render["ansible.builtin.template"]["src"] == renderer["ansible.builtin.template"]["src"]
+    assert stat["ansible.builtin.stat"]["path"] == "{{ _o11y_candidate_tmp.path }}/config.alloy"
+    assert candidate["always"][0]["delegate_to"] == "localhost"
+    assert candidate["always"][0]["ansible.builtin.file"]["state"] == "absent"
+    assert not any(
+        task.get("ansible.builtin.stat", {}).get("path") == "{{ _deploy_dir }}/config/config.alloy"
+        for task in tasks
+    )
+
+
+@pytest.mark.parametrize(
+    ("inventory", "expected"),
+    [
+        ({}, {"cluster": "agent-cloud-local", "environment": "local"}),
+        (
+            {"o11y_cluster": "inventory-east", "o11y_environment": "dev"},
+            {"cluster": "inventory-east", "environment": "dev"},
+        ),
+    ],
+)
+def test_local_alloy_inventory_labels_replace_app_values_and_keep_bounded_identity(inventory, expected):
+    rendered = _environment().from_string(
+        (DEPLOY / "templates/config.alloy.j2").read_text(encoding="utf-8")
+    ).render(
+        local_mode=True,
+        _o11y_forbidden_metric_label_names_regex=POLICY,
+        **inventory,
+    )
+    rules = _alloy_prometheus_relabel_rules(rendered)
+
+    assert rules[0] == {"action": "labeldrop", "regex": POLICY}
+    assert rules[1:] == [
+        {
+            "source_labels": [],
+            "regex": "(.*)",
+            "replacement": expected["cluster"],
+            "target_label": "cluster",
+            "action": "replace",
+        },
+        {
+            "source_labels": [],
+            "regex": "(.*)",
+            "replacement": expected["environment"],
+            "target_label": "environment",
+            "action": "replace",
+        },
+    ]
+
+    discovery = rendered.split('discovery.relabel "metrics" {', 1)[1].split(
+        'prometheus.scrape "local_containers"', 1
+    )[0]
+    assert 'action        = "keep"' in discovery
+    assert 'regex         = "true"' in discovery
+    assert 'action        = "drop"' in discovery
+    assert 'target_label  = "service"' in discovery
+    assert 'target_label  = "component"' in discovery
+    assert 'target_label  = "target_id"' in discovery
+    scrape = rendered.split('prometheus.scrape "local_containers" {', 1)[1].split(
+        'prometheus.relabel "bounded_labels"', 1
+    )[0]
+    assert 'scrape_interval = "15s"' in scrape
+    assert 'sample_limit    = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))' in scrape
+    assert 'label_limit     = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_LIMIT"))' in scrape
+    assert 'label_name_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"))' in scrape
+    assert 'label_value_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT"))' in scrape
+
+    identities = {
+        "__name__": "http_requests_total",
+        "service": "checkout/api",
+        "component": "api",
+        "target_id": "service:checkout",
+        "instance": "checkout-api:8080",
+        "status": "200",
+    }
+    for cluster in (None, expected["cluster"], "app-selected-wrong-cluster"):
+        for environment in (None, expected["environment"], "app-selected-prod"):
+            sample = identities.copy()
+            if cluster is not None:
+                sample["cluster"] = cluster
+            if environment is not None:
+                sample["environment"] = environment
+            sample["path"] = "/private/request/path"
+
+            without_inventory_rules = _apply_alloy_prometheus_relabel_rules(sample, rules[:1])
+            if cluster != expected["cluster"]:
+                assert without_inventory_rules.get("cluster") != expected["cluster"]
+            if environment != expected["environment"]:
+                assert without_inventory_rules.get("environment") != expected["environment"]
+
+            relabeled = _apply_alloy_prometheus_relabel_rules(sample, rules)
+
+            assert relabeled["cluster"] == expected["cluster"]
+            assert relabeled["environment"] == expected["environment"]
+            assert {key: relabeled[key] for key in identities} == identities
+            assert "path" not in relabeled
 
 
 def test_all_prometheus_scrape_jobs_render_finite_limits_and_keep_identity_policy():

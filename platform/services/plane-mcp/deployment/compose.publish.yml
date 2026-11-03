@@ -1,0 +1,12 @@
+# compose.publish.yml — the one host publish. deploy.sh applies it outside local mode only.
+#
+# Production's platform Caddy runs on another VM. It proxies to the inventory's bind and port over plain
+# HTTP; TLS terminates at Caddy. The container always listens on 8211: plane_mcp/__main__.py hardcodes
+# uvicorn's port to 8211.
+#
+# Author: Joseph A. Wisneski IV
+
+services:
+  mcp:
+    ports:
+      - "${PLANE_MCP_BIND:-127.0.0.1}:${PLANE_MCP_PORT:-8211}:8211"

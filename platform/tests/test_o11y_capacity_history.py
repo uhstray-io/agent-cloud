@@ -1,10 +1,15 @@
 """Daily stored-byte sampling and the seven-day readiness gate fail closed."""
 
+import copy
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import playbook_yaml
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -113,22 +118,39 @@ def test_history_requires_distinct_source_samples_across_seven_days():
     assert receipt["receiver_host_observations"]["cpu"]["points"] >= 2017
     assert receipt["receiver_host_observations"]["cpu"]["p95_method"] == "p95_of_evaluated_five_minute_means"
     assert set(receipt["backend_stored_bytes"]) == survey.BACKENDS
+    assert receipt["source_diagnostics"] == {
+        "available": True,
+        "source_series_count": 1,
+        "label_variation": dict.fromkeys(survey.DIAGNOSTIC_LABEL_KEYS),
+        "unrecognized_label_key_count": 0,
+        "series_at_latest_evaluation": 1,
+        "overlapping_evaluations": 0,
+        "overlapping_source_events": 0,
+        "source_evaluation_points": survey.MIN_METRIC_POINTS,
+        "canonical_source_events": 8,
+        "source_event_span_seconds": survey.MIN_HISTORY_SECONDS,
+        "required_source_evaluation_points": survey.MIN_METRIC_POINTS,
+        "required_canonical_source_events": 8,
+        "required_source_event_span_seconds": survey.MIN_HISTORY_SECONDS,
+    }
 
 
 def test_history_excludes_carried_in_sample_from_window_evidence():
     now = 1_800_000_000
-    samples = [now - survey.RANGE_SECONDS - 12 * 60 * 60 + day * 86400 for day in range(9)]
+    samples = [now - survey.RANGE_SECONDS - 12 * 60 * 60 + day * 86400 for day in range(10)]
 
     receipt = survey.assess(_history(now, samples), now)
 
     assert receipt["status"] == "ready_for_separate_forecast_review"
-    assert receipt["history"]["source_samples"] == 8
-    assert receipt["history"]["source_span_seconds"] == 7 * 86400
+    assert receipt["history"]["source_samples"] == 9
+    assert receipt["history"]["source_span_seconds"] == 8 * 86400
     assert receipt["history"]["latest_sample_age_seconds"] == 12 * 60 * 60
+    assert receipt["source_diagnostics"]["canonical_source_events"] == 9
+    assert receipt["source_diagnostics"]["source_event_span_seconds"] == 8 * 86400
     first_index = (samples[1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     last_index = (samples[-1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     assert all(
-        backend["source_samples"] == 8
+        backend["source_samples"] == 9
         and backend["first_bytes"] == 100 + first_index
         and backend["last_bytes"] == 100 + last_index
         for backend in receipt["backend_stored_bytes"].values()
@@ -142,6 +164,30 @@ def test_history_rejects_carried_in_sample_plus_only_seven_in_window_samples():
 
     with pytest.raises(survey.InsufficientHistory):
         survey.assess(_history(now, samples), now)
+
+
+def test_nine_day_query_admits_nine_daily_events_but_eight_day_slice_refuses_same_history():
+    now = 1_800_000_000
+    assert survey.RANGE_SECONDS == 9 * 86400
+    last_event = now - 12 * 60 * 60
+    offsets = [-691129, -604653, -518274, -431895, -345516, -259137, -172758, -86379, 0]
+    nine_day = _history(now, [last_event + offset for offset in offsets])
+    receipt = survey.assess(nine_day, now)
+    assert receipt["history"]["source_samples"] == 9
+    assert receipt["history"]["source_span_seconds"] == 691129
+
+    eight_day = copy.deepcopy(nine_day)
+    cutoff = now - 8 * 86400
+    for response in eight_day.values():
+        for series in response["data"]["result"]:
+            series["values"] = [point for point in series["values"] if int(point[0]) >= cutoff]
+    with pytest.raises(survey.InsufficientHistory) as error:
+        survey.assess(eight_day, now)
+    assert error.value.reason == "source_history_too_short"
+    diagnostics = survey.source_diagnostics(eight_day["source"])
+    assert diagnostics["canonical_source_events"] == 8
+    assert diagnostics["source_event_span_seconds"] == 604653
+    assert survey.MIN_HISTORY_SECONDS == 7 * 86400
 
 
 def test_history_rejects_a_stale_latest_capacity_sample():
@@ -184,6 +230,123 @@ def test_history_failure_categories_are_bounded_by_prerequisite():
 
 
 @pytest.mark.parametrize(
+    ("samples", "expected_points", "expected_events", "expected_span"),
+    [
+        ([0, 1, 2, 3, 4, 5, 6, 7], 8, 8, 7 * 86400),
+        ([0, 1, 2, 3, 4, 5, 7], survey.MIN_METRIC_POINTS, 7, 7 * 86400),
+        ([0, 1, 2, 3, 4, 5, 5.5, 6], survey.MIN_METRIC_POINTS, 8, 6 * 86400),
+    ],
+    ids=["few-evaluations", "few-distinct-events", "short-event-span"],
+)
+def test_short_source_history_receipt_identifies_the_failed_threshold(
+    samples, expected_points, expected_events, expected_span, monkeypatch, capsys
+):
+    now = 1_800_000_000
+    start = now - 7 * 86400
+    sample_times = [start + int(day * 86400) for day in samples]
+    responses = _history(now, sample_times)
+    if expected_points == 8:
+        responses["source"] = _matrix(
+            "source",
+            [{"metric": {}, "values": [[timestamp, str(timestamp)] for timestamp in sample_times]}],
+        )
+
+    with pytest.raises(survey.InsufficientHistory) as error:
+        survey.assess(responses, now)
+
+    diagnostic = survey.source_diagnostics(responses["source"])
+    assert error.value.reason == "source_history_too_short"
+    assert diagnostic["source_evaluation_points"] == expected_points
+    assert diagnostic["canonical_source_events"] == expected_events
+    assert diagnostic["source_event_span_seconds"] == expected_span
+    assert diagnostic["required_source_evaluation_points"] == survey.MIN_METRIC_POINTS
+    assert diagnostic["required_canonical_source_events"] == 8
+    assert diagnostic["required_source_event_span_seconds"] == survey.MIN_HISTORY_SECONDS
+
+    monkeypatch.setattr(survey.time, "time", lambda: now)
+    monkeypatch.setattr(survey, "query", lambda metric, *_args: responses[metric])
+    assert survey.main() == 1
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "source_history_too_short"
+    assert receipt["source_diagnostics"]["source_evaluation_points"] == expected_points
+    assert receipt["source_diagnostics"]["canonical_source_events"] == expected_events
+    assert receipt["source_diagnostics"]["source_event_span_seconds"] == expected_span
+
+
+@pytest.mark.parametrize(
+    ("value", "aggregate_diagnostics_available"),
+    [(True, True), (float("nan"), False), (float("inf"), False)],
+    ids=["boolean", "nan", "infinity"],
+)
+def test_source_history_thresholds_are_unknown_for_non_numeric_or_nonfinite_points(
+    value, aggregate_diagnostics_available
+):
+    body = _matrix("source", [{"metric": {}, "values": [[1_800_000_000, value]]}])
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["available"] is aggregate_diagnostics_available
+    assert diagnostic["source_evaluation_points"] is None
+    assert diagnostic["canonical_source_events"] is None
+    assert diagnostic["source_event_span_seconds"] is None
+    assert diagnostic["required_source_evaluation_points"] == survey.MIN_METRIC_POINTS
+
+
+@pytest.mark.parametrize("metric", [None, "missing", []], ids=["null", "missing", "nondict"])
+@pytest.mark.parametrize("values", [[], [[1_800_000_000, "1_799_999_999"]]], ids=["empty", "positive"])
+def test_source_history_thresholds_are_unknown_for_malformed_metric_labels(metric, values):
+    row = {"values": values}
+    if metric != "missing":
+        row["metric"] = metric
+    diagnostic = survey.source_diagnostics(_matrix("source", [row]))
+
+    assert diagnostic["source_evaluation_points"] is None
+    assert diagnostic["canonical_source_events"] is None
+    assert diagnostic["source_event_span_seconds"] is None
+
+
+def test_malformed_source_metric_does_not_change_assessment_acceptance():
+    now = 1_800_000_000
+    responses = _history(now)
+    responses["source"]["data"]["result"][0]["metric"] = None
+
+    result = survey.assess(responses, now)
+
+    assert result["status"] == "ready_for_separate_forecast_review"
+    assert result["source_diagnostics"]["source_evaluation_points"] is None
+
+
+def test_source_history_thresholds_are_unknown_for_ambiguous_or_fractional_source_rows():
+    ambiguous = _matrix(
+        "source",
+        [
+            {"metric": {}, "values": [[1_800_000_000, "1_799_999_999"]]},
+            {"metric": {}, "values": [[1_800_000_300, "1_800_000_299"]]},
+        ],
+    )
+    fractional = _matrix(
+        "source", [{"metric": {}, "values": [[1_800_000_000.5, "1_799_999_999"]]}]
+    )
+
+    for body in (ambiguous, fractional):
+        diagnostic = survey.source_diagnostics(body)
+        assert diagnostic["source_evaluation_points"] is None
+        assert diagnostic["canonical_source_events"] is None
+        assert diagnostic["source_event_span_seconds"] is None
+
+
+def test_empty_single_source_reports_zero_counts_without_claiming_history():
+    body = _matrix("source", [{"metric": {}, "values": []}])
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["source_evaluation_points"] == 0
+    assert diagnostic["canonical_source_events"] == 0
+    assert diagnostic["source_event_span_seconds"] == 0
+
+
+@pytest.mark.parametrize(
     "reason",
     [
         "source_series_ambiguous",
@@ -202,7 +365,11 @@ def test_failure_receipt_contains_only_fixed_category(reason, monkeypatch, capsy
 
     assert survey.main() == 1
     output = capsys.readouterr().out
-    assert json.loads(output) == {"status": "insufficient", "reason": reason}
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == reason
+    assert receipt["source_diagnostics"]["available"] is False
+    assert receipt["source_diagnostics"]["source_series_count"] is None
     assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
 
 
@@ -214,10 +381,10 @@ def test_failure_receipt_rejects_unrecognized_reason_text(monkeypatch, capsys):
 
     assert survey.main() == 1
     output = capsys.readouterr().out
-    assert json.loads(output) == {
-        "status": "insufficient",
-        "reason": "malformed_or_incomplete_history",
-    }
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "malformed_or_incomplete_history"
+    assert receipt["source_diagnostics"]["available"] is False
     assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
 
 
@@ -242,8 +409,128 @@ def test_cli_classifies_empty_source_and_malformed_rows_without_leaking(
 
     assert survey.main() == 1
     output = capsys.readouterr().out
-    assert json.loads(output) == {"status": "insufficient", "reason": expected_reason}
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == expected_reason
+    assert receipt["source_diagnostics"]["available"] is True
+    assert receipt["source_diagnostics"]["source_series_count"] == (1 if malformed_metric else 0)
     assert "private" not in output and "stderr" not in output and "192.0.2.1" not in output
+
+
+def test_malformed_source_history_keeps_refusal_and_returns_unavailable_diagnostics(monkeypatch, capsys):
+    now = 1_800_000_000
+    responses = _history(now)
+    responses["source"]["data"]["result"][0]["values"] = ["private-label-value"]
+    monkeypatch.setattr(survey.time, "time", lambda: now)
+    monkeypatch.setattr(survey, "query", lambda metric, *_args: responses[metric])
+
+    assert survey.main() == 1
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "malformed_or_incomplete_history"
+    assert receipt["source_diagnostics"]["available"] is False
+    assert receipt["source_diagnostics"]["source_series_count"] is None
+    assert "private-label-value" not in output
+
+
+def test_source_diagnostics_refuse_fractional_timestamp_alignment():
+    body = _matrix(
+        "source",
+        [{"metric": {}, "values": [[1_800_000_000.5, "1_799_999_999"]]}],
+    )
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["available"] is False
+    assert diagnostic["series_at_latest_evaluation"] is None
+    assert diagnostic["overlapping_evaluations"] is None
+    assert diagnostic["overlapping_source_events"] is None
+
+
+def test_source_diagnostics_reports_target_id_and_component_variation_as_booleans():
+    body = _matrix(
+        "source",
+        [
+            {
+                "metric": {"component": "receiver-host", "target_id": "service:o11y"},
+                "values": [[1_800_000_000, "1_799_999_999"]],
+            },
+            {
+                "metric": {"component": "changed-component", "target_id": "changed-target"},
+                "values": [[1_800_000_300, "1_800_000_299"]],
+            },
+        ],
+    )
+
+    diagnostic = survey.source_diagnostics(body)
+
+    assert diagnostic["available"] is True
+    assert diagnostic["label_variation"]["component"] is True
+    assert diagnostic["label_variation"]["target_id"] is True
+    assert isinstance(diagnostic["label_variation"]["component"], bool)
+    assert isinstance(diagnostic["label_variation"]["target_id"], bool)
+
+
+@pytest.mark.parametrize(
+    ("overlap", "expected_latest", "expected_evaluation_overlap", "expected_event_overlap"),
+    [(False, 1, 0, 0), (True, 2, 2017, 8)],
+)
+def test_ambiguous_source_receipt_reports_only_bounded_aggregate_diagnostics(
+    overlap, expected_latest, expected_evaluation_overlap, expected_event_overlap, monkeypatch, capsys
+):
+    now = 1_800_000_000
+    responses = _history(now)
+    first = responses["source"]["data"]["result"][0]
+    first["metric"] = {
+        "component": "private-component-value-first-9a2f",
+        "target_id": "private-target-value-first-14b7",
+    }
+    second = json.loads(json.dumps(first))
+    second["metric"] = {
+        "component": "private-component-value-second-1c8e",
+        "cluster": "private-cluster-value-9f3a",
+        "environment": "dev",
+        "instance": "192.0.2.44:9100",
+        "job": "receiver-host",
+        "service": "private-service-value-7b12",
+        "target_id": "private-target-value-second-6de0",
+        "unapproved_sensitive_label_name": "private-value-6d51",
+    }
+    if not overlap:
+        second["values"] = [
+            [int(evaluation) + 2 * survey.RANGE_SECONDS, str(int(value) + 2 * survey.RANGE_SECONDS)]
+            for evaluation, value in second["values"]
+        ]
+    responses["source"]["data"]["result"].append(second)
+    monkeypatch.setattr(survey.time, "time", lambda: now)
+    monkeypatch.setattr(survey, "query", lambda metric, *_args: responses[metric])
+
+    assert survey.main() == 1
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    diagnostic = receipt["source_diagnostics"]
+    assert receipt["status"] == "insufficient"
+    assert receipt["reason"] == "source_series_ambiguous"
+    assert diagnostic["available"] is True
+    assert diagnostic["source_series_count"] == 2
+    assert diagnostic["series_at_latest_evaluation"] == expected_latest
+    assert diagnostic["overlapping_evaluations"] == expected_evaluation_overlap
+    assert diagnostic["overlapping_source_events"] == expected_event_overlap
+    assert diagnostic["label_variation"]["cluster"] is True
+    assert diagnostic["label_variation"]["component"] is True
+    assert diagnostic["label_variation"]["instance"] is True
+    assert diagnostic["label_variation"]["target_id"] is True
+    assert diagnostic["unrecognized_label_key_count"] == 1
+    assert "private-cluster-value-9f3a" not in output
+    assert "private-component-value-first-9a2f" not in output
+    assert "private-component-value-second-1c8e" not in output
+    assert "private-target-value-first-14b7" not in output
+    assert "private-target-value-second-6de0" not in output
+    assert "private-service-value-7b12" not in output
+    assert "192.0.2.44:9100" not in output
+    assert "unapproved_sensitive_label_name" not in output
+    assert "private-value-6d51" not in output
 
 
 def test_history_rejects_a_repeated_single_point_snapshot():
@@ -260,7 +547,7 @@ def test_history_rejects_a_repeated_single_point_snapshot():
 
 def test_history_query_resolution_and_response_time_are_bounded(monkeypatch):
     assert survey.STEP_SECONDS == 300
-    assert survey.RANGE_SECONDS // survey.STEP_SECONDS + 1 == 2305
+    assert survey.RANGE_SECONDS // survey.STEP_SECONDS + 1 == 2593
     assert survey.MAX_RESPONSE_BYTES == 2_000_000
     assert survey.CURL_TIMEOUT_SECONDS == 15
     assert survey.QUERY_TIMEOUT_SECONDS == 20
@@ -305,7 +592,9 @@ def test_deploy_gates_capacity_collector_and_units_for_local_mode():
     plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
     p1 = next(play for play in plays if str(play.get("name", "")).startswith("Phase 1"))
     p2 = next(play for play in plays if str(play.get("name", "")).startswith("Phase 2"))
-    overlay = next(task for task in p2["tasks"] if task.get("name") == "Run deploy.sh (container lifecycle)")
+    overlay = next(
+        task for task in playbook_yaml.tasks(p2["tasks"])
+        if task.get("name") == "Run deploy.sh (container lifecycle)")
     jinja = Environment()
     jinja.filters["bool"] = bool
     template = jinja.from_string(overlay["environment"]["COMPOSE_OVERLAYS"])
@@ -315,12 +604,12 @@ def test_deploy_gates_capacity_collector_and_units_for_local_mode():
     probe_artefacts = p1["vars"]["_probe_host_artefacts"]
     assert all("o11y_capacity" not in path for path in probe_artefacts)
     install = next(
-        task for task in p1["tasks"]
+        task for task in playbook_yaml.tasks(p1["tasks"])
         if task.get("name") == "Install the read-only o11y capacity sampler"
     )
     assert install["when"] == "not (local_mode | default(false) | bool)"
     sample = next(
-        task for task in p2["tasks"]
+        task for task in playbook_yaml.tasks(p2["tasks"])
         if task.get("name") == "Take a complete capacity sample after the stack is available"
     )
     assert sample["when"] == [
@@ -349,6 +638,86 @@ def test_history_survey_is_read_only_exact_revision_and_uses_only_fixed_series()
     assert "ready_for_separate_forecast_review" in source
     assert "growth" not in source.lower() and "forecast" in source.lower()
     assert "node_cpu_seconds_total" in source and "[5m]" in source
+
+
+def test_history_success_receipt_is_visible_only_after_readiness_assertion(tmp_path):
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        pytest.skip("ansible-playbook is not installed")
+    original = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-seven-day-capacity.yml").read_text())
+    actual_tasks = original[-1]["tasks"]
+    selected = [
+        copy.deepcopy(task)
+        for task in actual_tasks
+        if task.get("name") in {
+            "Read bounded Prometheus capacity history",
+            "Require seven days of fresh source and receiver-host observations",
+            "Record the bounded successful seven-day capacity receipt",
+        }
+    ]
+    assert [task["name"] for task in selected] == [
+        "Read bounded Prometheus capacity history",
+        "Require seven days of fresh source and receiver-host observations",
+        "Record the bounded successful seven-day capacity receipt",
+    ]
+    play_dir = tmp_path / "playbook"
+    files_dir = play_dir / "files"
+    local_tmp = tmp_path / "ansible-local"
+    files_dir.mkdir(parents=True)
+    local_tmp.mkdir()
+    helper = files_dir / "capacity-helper.py"
+    selected[0]["ansible.builtin.script"]["cmd"] = "{{ playbook_dir }}/files/capacity-helper.py"
+    playbook = play_dir / "capacity-flow.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "name": "Exercise the capacity history gate",
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "tasks": selected,
+    }]), encoding="utf-8")
+    env = {
+        **os.environ,
+        "ANSIBLE_LOCAL_TEMP": str(local_tmp),
+        "ANSIBLE_REMOTE_TEMP": str(local_tmp),
+    }
+
+    def run_case(payload, exit_code):
+        helper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            f"print({json.dumps(payload, sort_keys=True)!r})\n"
+            f"sys.exit({exit_code})\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [ansible_playbook, "-i", "localhost,", str(playbook)],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    success = {
+        "status": "ready_for_separate_forecast_review",
+        "history": {"source_samples": 9, "source_span_seconds": 691200},
+        "source_diagnostics": {"available": True},
+        "receiver_host_observations": {"cpu": {"points": 2017}},
+        "backend_stored_bytes": {name: {"change_bytes": 1} for name in sorted(survey.BACKENDS)},
+    }
+    successful_run = run_case(success, 0)
+    assert successful_run.returncode == 0, successful_run.stdout + successful_run.stderr
+    assert "Record the bounded successful seven-day capacity receipt" in successful_run.stdout
+    assert "ready_for_separate_forecast_review" in successful_run.stdout
+    assert r'\"source_samples\": 9' in successful_run.stdout
+    assert all(name in successful_run.stdout for name in survey.BACKENDS)
+
+    refused = {
+        "status": "insufficient",
+        "reason": "source_history_too_short",
+        "source_diagnostics": {"available": False},
+    }
+    refused_run = run_case(refused, 1)
+    assert refused_run.returncode != 0
+    assert "Require seven days of fresh source and receiver-host observations" in refused_run.stdout
+    assert "Record the bounded successful seven-day capacity receipt" not in refused_run.stdout
+    assert "ready_for_separate_forecast_review" not in refused_run.stdout
 
 
 def test_daily_units_are_bounded_and_the_history_survey_has_a_registered_template():

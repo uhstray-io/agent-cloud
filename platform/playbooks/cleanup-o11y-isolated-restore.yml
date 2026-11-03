@@ -1,0 +1,663 @@
+---
+# Separately authenticate and remove only the stopped target owned by a
+# successful isolated-restore task.
+
+- name: Refuse caller supplied internal state
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require one declared source o11y host
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Require one declared restore target
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_restore_target_svc
+    preflight_group_expected: o11y_restore_target_svc
+    _preflight_redact_hostnames: true
+
+- name: Require the exact reviewed cleanup implementation
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/cleanup-o11y-isolated-restore.yml
+      - platform/playbooks/files/o11y_isolated_restore.py
+      - platform/playbooks/files/o11y_restore_cloud_init.py
+      - platform/playbooks/files/o11y_restore_coordination.py
+      - platform/playbooks/files/o11y_pbs_receipts.py
+      - platform/playbooks/files/validate-o11y-restore-task.py
+      - platform/playbooks/files/inspect_o11y_restore_target.py
+      - platform/playbooks/tasks/o11y-restore-coordination.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+
+- name: Clean one previously verified and stopped isolated target
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: true
+      follow_redirects: none
+      use_netrc: false
+      use_proxy: false
+  vars:
+    _cleanup_sources: "{{ groups['o11y_svc'] | default([]) }}"
+    _cleanup_targets: "{{ groups['o11y_restore_target_svc'] | default([]) }}"
+    _cleanup_source: "{{ _cleanup_sources | first | default('') }}"
+    _cleanup_target: "{{ _cleanup_targets | first | default('') }}"
+    _cleanup_target_ref:
+      node: "{{ hostvars[_cleanup_target].o11y_restore_target_node | default('') if _cleanup_target else '' }}"
+      vmid: "{{ hostvars[_cleanup_target].o11y_restore_target_vmid | default(0) | int if _cleanup_target else 0 }}"
+    _cleanup_target_declaration:
+      vmid: "{{ hostvars[_cleanup_target].o11y_restore_target_vmid | default(0) | int if _cleanup_target else 0 }}"
+      node: "{{ hostvars[_cleanup_target].o11y_restore_target_node | default('') if _cleanup_target else '' }}"
+      storage_id: "{{ hostvars[_cleanup_target].o11y_restore_target_storage_id | default('') if _cleanup_target else '' }}"
+      network_mode: "{{ hostvars[_cleanup_target].o11y_restore_target_network_mode | default('') if _cleanup_target else '' }}"
+      headroom_percent: "{{ hostvars[_cleanup_target].o11y_restore_target_headroom_percent | default(0) | int if _cleanup_target else 0 }}"
+    _cleanup_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _cleanup_bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _cleanup_bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    _cleanup_prohibited_extra_names:
+      - openbao_addr
+      - bao_role_id
+      - bao_secret_id
+      - proxmox_validate_certs
+      - vm_vmid
+      - vm_node
+      - o11y_restore_target_vmid
+      - o11y_restore_target_node
+      - o11y_restore_target_storage_id
+      - o11y_restore_target_network_mode
+      - o11y_restore_target_headroom_percent
+      - o11y_restore_coordination_request
+      - _o11y_restore_coordination_bao_url
+      - _o11y_restore_coordination_bao_token
+      - o11y_restore_receipt
+      - o11y_restore_target_ref
+      - _cleanup_receipt
+      - _cleanup_record
+    _cleanup_forged_extra_names: "{{ _cleanup_prohibited_extra_names | intersect('' | extra_var_names) }}"
+    _cleanup_coordination_path: "{{ _cleanup_bao_url }}/v1/secret/data/coordination/o11y-restore-target"
+  tasks:
+    - name: Require only the exact restore task and repository selectors
+      ansible.builtin.assert:
+        that:
+          - _cleanup_forged_extra_names | length == 0
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_restore_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - site_config_base_sha | default('') is match('^[0-9a-f]{40}$')
+          - restore_task_id | default(0) | int > 0
+          - _cleanup_sources | length == 1
+          - _cleanup_targets | length == 1
+          - hostvars[_cleanup_source].vm_vmid | string != _cleanup_target_ref.vmid | string
+          - _cleanup_target_ref.node is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - _cleanup_target_ref.vmid | string is match('^[1-9][0-9]{0,8}$')
+          - _cleanup_bao_url | length > 0
+        fail_msg: "Cleanup requires one exact restore task ID, reviewed repository revisions, and privately declared target."
+        quiet: true
+
+    - name: Refuse unsafe OpenBao transport before credential access
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _cleanup_bao_url }}"
+
+    - name: Authenticate the fixed OpenBao AppRole
+      ansible.builtin.uri:
+        url: "{{ _cleanup_bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _cleanup_bao_role_id }}"
+          secret_id: "{{ _cleanup_bao_secret_id }}"
+        status_code: [200]
+      register: _cleanup_bao_auth
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read protected service API credentials
+      ansible.builtin.set_fact:
+        _cleanup_pve: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_cleanup_bao_url, auth_method='approle', role_id=_cleanup_bao_role_id, secret_id=_cleanup_bao_secret_id) }}"
+        _cleanup_semaphore: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore', url=_cleanup_bao_url, auth_method='approle', role_id=_cleanup_bao_role_id, secret_id=_cleanup_bao_secret_id) }}"
+      no_log: true
+
+    - name: Keep fixed API endpoints and credentials in controller memory
+      ansible.builtin.set_fact:
+        _cleanup_pve_host: "{{ _cleanup_pve.url | default('') }}"
+        _cleanup_pve_token_id: "{{ _cleanup_pve.token_id | default('') }}"
+        _cleanup_pve_token: "{{ _cleanup_pve.api_token | default('') }}"
+        _cleanup_semaphore_url: "{{ _cleanup_semaphore.url | default('') }}"
+        _cleanup_semaphore_token: "{{ _cleanup_semaphore.api_token | default('') }}"
+        _cleanup_project_id: "{{ estate_coverage_semaphore_project_id | default(0) | int }}"
+      no_log: true
+
+    - name: Require authenticated endpoints and protected authorization
+      ansible.builtin.assert:
+        that:
+          - _cleanup_bao_auth.status | default(0) == 200
+          - _cleanup_bao_auth.json.auth.client_token | default('') | length > 0
+          - _cleanup_pve_host is match('^https://')
+          - _cleanup_pve_token_id | length > 0
+          - _cleanup_pve_token | length > 0
+          - _cleanup_semaphore_url is match('^https://[^/]+$')
+          - _cleanup_semaphore_token | length > 0
+          - _cleanup_project_id > 0
+        fail_msg: "The protected APIs are unavailable to the cleanup controller."
+        quiet: true
+      no_log: true
+
+    - name: Fetch the exact prior restore task by its explicit ID
+      ansible.builtin.uri:
+        url: "{{ _cleanup_semaphore_url }}/api/project/{{ _cleanup_project_id }}/tasks/{{ restore_task_id | int }}"
+        headers:
+          Authorization: "Bearer {{ _cleanup_semaphore_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _cleanup_task
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require an exact successful task identity before reading its output
+      ansible.builtin.assert:
+        that:
+          - _cleanup_task.status | default(0) == 200
+          - _cleanup_task.json.id | default(0) | int == restore_task_id | int
+          - _cleanup_task.json.project_id | default(0) | int == _cleanup_project_id
+          - _cleanup_task.json.template_id | default(0) | int > 0
+          - _cleanup_task.json.commit_hash | default('') == expected_restore_repository_sha
+          - _cleanup_task.json.status | default('') == 'success'
+        fail_msg: "The selected restore task is not the exact successful task for this reviewed revision."
+        quiet: true
+      no_log: true
+
+    - name: Fetch all bounded task output rows
+      ansible.builtin.uri:
+        url: "{{ _cleanup_semaphore_url }}/api/project/{{ _cleanup_project_id }}/tasks/{{ restore_task_id | int }}/output"
+        headers:
+          Authorization: "Bearer {{ _cleanup_semaphore_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _cleanup_output
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the current restore template and repository bindings
+      ansible.builtin.uri:
+        url: "{{ _cleanup_semaphore_url }}/api/project/{{ _cleanup_project_id }}/{{ item.path }}"
+        headers:
+          Authorization: "Bearer {{ _cleanup_semaphore_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      loop:
+        - {name: template, path: "templates/{{ _cleanup_task.json.template_id }}"}
+      loop_control:
+        label: "restore template metadata"
+      register: _cleanup_template_read
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the task to use the current declared Dev restore template
+      ansible.builtin.assert:
+        that:
+          - _cleanup_output.status | default(0) == 200
+          - (_cleanup_template_read.results | first).json.name == 'Restore o11y from Protected PBS Copy (Dev)'
+          - (_cleanup_template_read.results | first).json.playbook == 'platform/playbooks/restore-o11y-isolated.yml'
+          - (_cleanup_template_read.results | first).json.repository_id == estate_coverage_semaphore_repository_id
+        fail_msg: "The successful task is not bound to the current reviewed Dev restore template."
+        quiet: true
+      no_log: true
+
+    - name: Parse the exact restore task launch record
+      ansible.builtin.set_fact:
+        _cleanup_restore_launch: "{{ (_cleanup_task.json.environment | from_json) if (_cleanup_task.json.environment is string) else _cleanup_task.json.environment }}"
+      no_log: true
+
+    - name: Validate the unique private restore receipt and historical task output
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/validate-o11y-restore-task.py"]
+        stdin: >-
+          {{ {'restore_proof': {'task': _cleanup_task.json,
+              'output_rows': _cleanup_output.json | default([]),
+              'public_sha': expected_restore_repository_sha,
+              'expected_project_id': _cleanup_project_id,
+              'expected_task_id': restore_task_id | int,
+              'expected_template_id': _cleanup_task.json.template_id | int,
+              'expected_launch': _cleanup_restore_launch,
+              'selector': 'type', 'expected_selector': 'restore_receipt/v3'}} | to_json }}
+        stdin_add_newline: false
+      register: _cleanup_receipt_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid closed receipt with a complete restore journal
+      ansible.builtin.assert:
+        that:
+          - _cleanup_receipt_raw.rc == 0
+          - (_cleanup_receipt_raw.stdout | from_json).receipt.type == 'restore_receipt/v3'
+          - (_cleanup_receipt_raw.stdout | from_json).receipt.target_state == 'stopped'
+          - (_cleanup_receipt_raw.stdout | from_json).receipt.coordination_record.phase == 'awaiting_receipt'
+        fail_msg: "The restore receipt or its authenticated output is incomplete or forged."
+        quiet: true
+      no_log: true
+
+    - name: Retain the authenticated full receipt and private journal snapshot
+      ansible.builtin.set_fact:
+        _cleanup_verified: "{{ _cleanup_receipt_raw.stdout | from_json }}"
+        _cleanup_receipt: "{{ (_cleanup_receipt_raw.stdout | from_json).receipt }}"
+        _cleanup_record: "{{ (_cleanup_receipt_raw.stdout | from_json).receipt.coordination_record }}"
+        _cleanup_version: "{{ (_cleanup_receipt_raw.stdout | from_json).receipt.coordination_version | int }}"
+      no_log: true
+
+    - name: Reprove exact current private inventory bytes against the restore binding
+      ansible.builtin.include_tasks: tasks/o11y-pbs-inventory-provenance.yml
+      vars:
+        _pbs_provenance_template_name: Cleanup o11y Isolated Restore (Dev)
+        _pbs_provenance_playbook: platform/playbooks/cleanup-o11y-isolated-restore.yml
+
+    - name: Validate independent historical and current private inventory pins
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'cleanup_inventory_pins',
+              'payload': {'restore_launch_private_sha': _cleanup_restore_launch.site_config_base_sha,
+                          'restore_receipt_private_sha': _cleanup_record.private_inventory_sha,
+                          'current_private_sha': site_config_base_sha,
+                          'current_provenance_private_sha': _pbs_inventory_provenance.private_sha,
+                          'current_inventory_provenance': _pbs_inventory_provenance.inventory_provenance,
+                          'current_inventory_fingerprint': _pbs_inventory_provenance.inventory_fingerprint}} | to_json }}
+        stdin_add_newline: false
+      register: _cleanup_inventory_pins_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require both private pins without conflating their histories
+      ansible.builtin.assert:
+        that:
+          - _pbs_inventory_provenance.status == 'observed'
+          - _cleanup_inventory_pins_raw.rc == 0
+          - (_cleanup_inventory_pins_raw.stdout | from_json).status == 'verified'
+        fail_msg: "The historical restore pin and current cleanup inventory proof are inconsistent or incomplete."
+        quiet: true
+      no_log: true
+
+    - name: Bind the receipt to the current private target declaration
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: "{{ {'mode': 'target_identity', 'target': _cleanup_target_declaration} | to_json }}"
+        stdin_add_newline: false
+      register: _cleanup_target_identity_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require exact target and declaration fingerprints
+      ansible.builtin.assert:
+        that:
+          - _cleanup_target_identity_raw.rc == 0
+          - (_cleanup_target_identity_raw.stdout | from_json).target_fingerprint == _cleanup_record.target_fingerprint
+          - (_cleanup_target_identity_raw.stdout | from_json).declaration_fingerprint == _cleanup_record.declaration_fingerprint
+          - _cleanup_record.phase == 'awaiting_receipt'
+          - _cleanup_record.pending is none
+          - _cleanup_record.receipt_fingerprint == _cleanup_receipt.receipt_fingerprint
+        fail_msg: "The current private target no longer matches the authenticated receipt."
+        quiet: true
+      no_log: true
+
+    - name: Read fresh coordination metadata and complete private record
+      ansible.builtin.uri:
+        url: "{{ _cleanup_bao_url }}/v1/secret/{{ item.path }}/coordination/o11y-restore-target"
+        headers:
+          X-Vault-Token: "{{ _cleanup_bao_auth.json.auth.client_token }}"
+        unredirected_headers: [X-Vault-Token]
+        status_code: [200, 404]
+      loop:
+        - {name: metadata, path: metadata}
+        - {name: data, path: data}
+      loop_control:
+        label: "fixed restore journal read"
+      register: _cleanup_journal_read
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Verify the actual coordination version against the receipt snapshot
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: >-
+          {{ {'mode': 'inspect',
+              'metadata_status': (_cleanup_journal_read.results | selectattr('item.name', 'equalto', 'metadata') | first).status,
+              'metadata': (_cleanup_journal_read.results | selectattr('item.name', 'equalto', 'metadata') | first).json.data | default(none),
+              'data_status': (_cleanup_journal_read.results | selectattr('item.name', 'equalto', 'data') | first).status,
+              'secret': (_cleanup_journal_read.results | selectattr('item.name', 'equalto', 'data') | first).json | default(none)} | to_json }}
+        stdin_add_newline: false
+      register: _cleanup_fresh_snapshot_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require exact journal snapshot and version before target inspection
+      ansible.builtin.assert:
+        that:
+          - _cleanup_fresh_snapshot_raw.rc == 0
+          - (_cleanup_fresh_snapshot_raw.stdout | from_json).record == _cleanup_record
+          - (_cleanup_fresh_snapshot_raw.stdout | from_json).version | int == _cleanup_version
+        fail_msg: "The private coordination record or version changed after the restore task completed."
+        quiet: true
+      no_log: true
+
+    - name: Read current target state and full VM configuration
+      ansible.builtin.uri:
+        url: "{{ _cleanup_pve_host }}/api2/json/nodes/{{ _cleanup_target_ref.node | urlencode }}/qemu/{{ _cleanup_target_ref.vmid }}/{{ item.path }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _cleanup_pve_token_id }}={{ _cleanup_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      loop:
+        - {name: status, path: status/current}
+        - {name: config, path: config}
+      loop_control:
+        label: "exact owned target read"
+      register: _cleanup_target_read
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Validate stopped isolated target configuration and exact source disks
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_isolated_restore.py"]
+        stdin: >-
+          {{ {'mode': 'cleanup_target_config',
+              'config': {'status': (_cleanup_target_read.results | selectattr('item.name', 'equalto', 'config') | first).status,
+                         'data': (_cleanup_target_read.results | selectattr('item.name', 'equalto', 'config') | first).json.data},
+              'target_vmid': _cleanup_target_ref.vmid | int,
+              'marker': 'o11y-restore:' ~ _cleanup_record.declaration_fingerprint,
+              'expected_disk_keys': (_cleanup_receipt.artifact_config.disks | map(attribute='device') | list),
+              'storage_id': _cleanup_target_declaration.storage_id,
+              'expected_config_sha256': _cleanup_receipt.isolation_config_sha256} | to_json }}
+        stdin_add_newline: false
+      register: _cleanup_config_validated
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require stopped target and unchanged isolation fingerprint before CAS transfer
+      ansible.builtin.assert:
+        that:
+          - (_cleanup_target_read.results | selectattr('item.name', 'equalto', 'status') | first).json.data.status == 'stopped'
+          - _cleanup_config_validated.rc == 0
+          - (_cleanup_config_validated.stdout | from_json).nic_count == 0
+          - (_cleanup_config_validated.stdout | from_json).config_sha256 == _cleanup_receipt.isolation_config_sha256
+        fail_msg: "The owned target is running, changed, networked, or has a pending mutation; keep it and the journal."
+        quiet: true
+      no_log: true
+
+    - name: Build exact authenticated restore-task proof for cleanup ownership transfer
+      ansible.builtin.set_fact:
+        _cleanup_task_proof:
+          type: prior_restore_task_proof/v2
+          task_id: "{{ restore_task_id | int }}"
+          task_status: success
+          output_fingerprint: "{{ _cleanup_verified.output_fingerprint }}"
+          receipt_fingerprint: "{{ _cleanup_receipt.receipt_fingerprint }}"
+          bindings:
+            operation_id: "{{ _cleanup_record.operation_id }}"
+            target_fingerprint: "{{ _cleanup_record.target_fingerprint }}"
+            artifact_fingerprint: "{{ _cleanup_record.artifact_fingerprint }}"
+            restore_nonce: "{{ _cleanup_record.restore_nonce }}"
+            public_sha: "{{ _cleanup_record.public_sha }}"
+            private_inventory_sha: "{{ _cleanup_record.private_inventory_sha }}"
+            restore_upid: "{{ _cleanup_record.restore_upid }}"
+          coordination_record: "{{ _cleanup_record }}"
+          coordination_version: "{{ _cleanup_version }}"
+        _cleanup_declaration:
+          declaration_fingerprint: "{{ _cleanup_record.declaration_fingerprint }}"
+          target_fingerprint: "{{ _cleanup_record.target_fingerprint }}"
+          artifact_fingerprint: "{{ _cleanup_record.artifact_fingerprint }}"
+          public_sha: "{{ _cleanup_record.public_sha }}"
+          private_inventory_sha: "{{ _cleanup_record.private_inventory_sha }}"
+        _cleanup_delete_request_fingerprint: "{{ {'node': _cleanup_target_ref.node, 'vmid': _cleanup_target_ref.vmid | int, 'action': 'qmdestroy', 'receipt_sha256': _cleanup_receipt.receipt_fingerprint} | to_json(sort_keys=true) | hash('sha256') }}"
+      no_log: true
+
+    - name: Transfer ownership and persist delete intent with exact journal CAS
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _cleanup_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _cleanup_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: start_cleanup
+          declaration: "{{ _cleanup_declaration }}"
+          target_ref: "{{ _cleanup_target_ref }}"
+          expected_record: "{{ _cleanup_record }}"
+          expected_version: "{{ _cleanup_version }}"
+          nonce: "{{ _cleanup_record.restore_nonce }}"
+          evidence: "{{ _cleanup_task_proof }}"
+          action: null
+          request_fingerprint: "{{ _cleanup_delete_request_fingerprint }}"
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Retain the exact cleanup nonce and delete journal version
+      ansible.builtin.set_fact:
+        _cleanup_active_record: "{{ _o11y_rc_plan.record }}"
+        _cleanup_active_version: "{{ _o11y_rc_plan.expected_version | int }}"
+        _cleanup_nonce: "{{ _o11y_rc_plan.record.active_nonce }}"
+      no_log: true
+
+    - name: Delete only the authenticated disconnected target
+      ansible.builtin.uri:
+        url: "{{ _cleanup_pve_host }}/api2/json/nodes/{{ _cleanup_target_ref.node | urlencode }}/qemu/{{ _cleanup_target_ref.vmid }}"
+        method: DELETE
+        headers:
+          Authorization: "PVEAPIToken={{ _cleanup_pve_token_id }}={{ _cleanup_pve_token }}"
+        unredirected_headers: [Authorization]
+        body_format: form-urlencoded
+        body: {}
+        status_code: [200]
+      register: _cleanup_delete_submit
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require and record the exact returned qmdestroy UPID
+      ansible.builtin.assert:
+        that:
+          - _cleanup_delete_submit.status | default(0) == 200
+          - _cleanup_delete_submit.json.data is string
+          - _cleanup_delete_submit.json.data is match('^UPID:')
+        fail_msg: "The deletion response is uncertain; retain the cleanup journal and target for review."
+        quiet: true
+      no_log: true
+
+    - name: Record the actual qmdestroy UPID through exact CAS readback
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _cleanup_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _cleanup_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: record_handle
+          declaration: "{{ _cleanup_declaration }}"
+          target_ref: "{{ _cleanup_target_ref }}"
+          expected_record: "{{ _cleanup_active_record }}"
+          expected_version: "{{ _cleanup_active_version }}"
+          nonce: "{{ _cleanup_nonce }}"
+          evidence: null
+          action: delete
+          request_fingerprint: "{{ _cleanup_delete_request_fingerprint }}"
+          handle_type: upid
+          handle: "{{ _cleanup_delete_submit.json.data }}"
+          effect_fingerprint: null
+
+    - name: Retain the exact pending delete handle
+      ansible.builtin.set_fact:
+        _cleanup_pending_record: "{{ _o11y_rc_plan.record }}"
+        _cleanup_pending_version: "{{ _o11y_rc_plan.expected_version | int }}"
+      no_log: true
+
+    - name: Poll only the journaled qmdestroy task to success
+      ansible.builtin.uri:
+        url: "{{ _cleanup_pve_host }}/api2/json/nodes/{{ _cleanup_target_ref.node | urlencode }}/tasks/{{ _cleanup_delete_submit.json.data | urlencode }}/status"
+        headers:
+          Authorization: "PVEAPIToken={{ _cleanup_pve_token_id }}={{ _cleanup_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: [200]
+      register: _cleanup_task_status
+      until: _cleanup_task_status.json.data.status | default('') == 'stopped'
+      retries: 360
+      delay: 10
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require successful qmdestroy completion
+      ansible.builtin.assert:
+        that:
+          - _cleanup_task_status.json.data.status == 'stopped'
+          - _cleanup_task_status.json.data.exitstatus == 'OK'
+        fail_msg: "The delete task did not complete successfully; retain the cleanup journal."
+        quiet: true
+      no_log: true
+
+    - name: Prove exact target config absence and fresh VMID availability
+      ansible.builtin.uri:
+        url: "{{ _cleanup_pve_host }}/api2/json/{{ item.path }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _cleanup_pve_token_id }}={{ _cleanup_pve_token }}"
+        unredirected_headers: [Authorization]
+        status_code: "{{ item.status }}"
+      loop:
+        - {name: node-config, path: "nodes/{{ _cleanup_target_ref.node | urlencode }}/qemu/{{ _cleanup_target_ref.vmid }}/config", status: [404]}
+        - {name: nextid, path: "cluster/nextid?vmid={{ _cleanup_target_ref.vmid }}", status: [200]}
+      loop_control:
+        label: "authoritative exact absence proof"
+      register: _cleanup_absence_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require PVE authoritative absence and same-VMID nextid echo
+      ansible.builtin.assert:
+        that:
+          - (_cleanup_absence_reads.results | selectattr('item.name', 'equalto', 'node-config') | first).status == 404
+          - (_cleanup_absence_reads.results | selectattr('item.name', 'equalto', 'nextid') | first).status == 200
+          - (_cleanup_absence_reads.results | selectattr('item.name', 'equalto', 'nextid') | first).json.data | int == _cleanup_target_ref.vmid | int
+        fail_msg: "Proxmox did not authoritatively prove this exact VMID absent and reusable."
+        quiet: true
+      no_log: true
+
+    - name: Build verified delete effect from task and absence readbacks
+      ansible.builtin.set_fact:
+        _cleanup_delete_effect:
+          type: delete_effect/v2
+          action: delete
+          node: "{{ _cleanup_target_ref.node }}"
+          vmid: "{{ _cleanup_target_ref.vmid | int }}"
+          task_state: stopped
+          exit_status: OK
+          task_output_sha256: "{{ _cleanup_task_status.json.data | to_json(sort_keys=true) | hash('sha256') }}"
+        _cleanup_absence_evidence:
+          node: "{{ _cleanup_target_ref.node }}"
+          vmid: "{{ _cleanup_target_ref.vmid | int }}"
+          nextid_status: 200
+          nextid_echo: "{{ _cleanup_target_ref.vmid | int }}"
+          node_config_status: 404
+          target_fingerprint: "{{ _cleanup_record.target_fingerprint }}"
+        _cleanup_final_bindings:
+          operation_id: "{{ _cleanup_record.operation_id }}"
+          target_fingerprint: "{{ _cleanup_record.target_fingerprint }}"
+          artifact_fingerprint: "{{ _cleanup_record.artifact_fingerprint }}"
+          restore_nonce: "{{ _cleanup_record.restore_nonce }}"
+          active_nonce: "{{ _cleanup_nonce }}"
+          prior_authenticated_task_id: "{{ restore_task_id | int }}"
+          public_sha: "{{ _cleanup_record.public_sha }}"
+          private_inventory_sha: "{{ _cleanup_record.private_inventory_sha }}"
+      no_log: true
+
+    - name: Compute delete effect fingerprint from verified task status
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_restore_coordination.py"]
+        stdin: "{{ {'mode': 'effect_fingerprint', 'action': 'delete', 'evidence': _cleanup_delete_effect, 'target': _cleanup_target_ref, 'record': _cleanup_pending_record} | to_json }}"
+        stdin_add_newline: false
+      register: _cleanup_delete_effect_fp_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Commit verified deletion effect through the action journal CAS
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _cleanup_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _cleanup_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: verify_effect
+          declaration: "{{ _cleanup_declaration }}"
+          target_ref: "{{ _cleanup_target_ref }}"
+          expected_record: "{{ _cleanup_pending_record }}"
+          expected_version: "{{ _cleanup_pending_version }}"
+          nonce: "{{ _cleanup_nonce }}"
+          evidence: "{{ _cleanup_delete_effect }}"
+          action: delete
+          request_fingerprint: "{{ _cleanup_delete_request_fingerprint }}"
+          handle_type: upid
+          handle: "{{ _cleanup_delete_submit.json.data }}"
+          effect_fingerprint: "{{ (_cleanup_delete_effect_fp_raw.stdout | from_json).effect_fingerprint }}"
+
+    - name: Build closed cleanup receipt from successful task and exact absence
+      ansible.builtin.set_fact:
+        _cleanup_cleaned_evidence:
+          type: pve_delete_verification/v2
+          task_id: "{{ restore_task_id | int }}"
+          delete_upid: "{{ _cleanup_delete_submit.json.data }}"
+          task_state: stopped
+          exit_status: OK
+          target_absence: "{{ _cleanup_absence_evidence }}"
+          bindings: "{{ _cleanup_final_bindings }}"
+      no_log: true
+
+    - name: CAS the terminal cleaned record after exact readback
+      ansible.builtin.include_tasks: tasks/o11y-restore-coordination.yml
+      vars:
+        _o11y_restore_coordination_bao_url: "{{ _cleanup_bao_url }}"
+        _o11y_restore_coordination_bao_token: "{{ _cleanup_bao_auth.json.auth.client_token }}"
+        o11y_restore_coordination_request:
+          transition: cleaned
+          declaration: "{{ _cleanup_declaration }}"
+          target_ref: "{{ _cleanup_target_ref }}"
+          expected_record: "{{ _o11y_rc_plan.record }}"
+          expected_version: "{{ _o11y_rc_plan.expected_version | int }}"
+          nonce: "{{ _cleanup_nonce }}"
+          evidence: "{{ _cleanup_cleaned_evidence }}"
+          action: null
+          request_fingerprint: null
+          handle_type: null
+          handle: null
+          effect_fingerprint: null
+
+    - name: Report content-free cleanup result
+      ansible.builtin.debug:
+        msg:
+          status: cleaned
+          target_state: absent
+          target_fingerprint: "{{ _cleanup_record.target_fingerprint }}"
+          receipt_fingerprint: "{{ _cleanup_receipt.receipt_fingerprint }}"

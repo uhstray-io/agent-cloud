@@ -66,7 +66,8 @@ class FakeAPI:
     def __init__(self, bound_env=9, status="success"):
         self.template = {"id": 301, "name": "Seed OpenBao Key (Dev)",
                          "playbook": "platform/playbooks/seed-openbao-key.yml",
-                         "environment_id": bound_env, "app": "ansible", "arguments": None,
+                         "environment_id": bound_env, "environment_ids": [bound_env],
+                         "app": "ansible", "arguments": None,
                          "repository_id": 5, "inventory_id": 2}
         self.env = {"id": 9, "project_id": 1, "name": "OpenBao key seed inputs (Dev)", "json": "{}",
                     "env": "{}", "secrets": [{"id": 1, "name": "BAO_ROLE_ID", "type": "env"},
@@ -78,11 +79,15 @@ class FakeAPI:
                        "git_branch": "dev"}]
         self.status = status
         self.calls = []
+        self.extra_templates = []
+        self.active_tasks = []
 
     def __call__(self, path, body=None):
         self.calls.append((path, copy.deepcopy(body)))
         if path == "/templates":
-            return [copy.deepcopy(self.template), {"id": 5, "name": "Deploy n8n", "environment_id": 2}]
+            return [copy.deepcopy(self.template), {"id": 5, "name": "Deploy n8n", "environment_id": 2,
+                                                   "environment_ids": [2]},
+                    *copy.deepcopy(self.extra_templates)]
         if path == "/templates/301":
             return copy.deepcopy(self.template)
         if path == "/environment":
@@ -98,7 +103,7 @@ class FakeAPI:
                         self.env["secrets"] = [s for s in self.env["secrets"] if s["id"] != op["id"]]
             return copy.deepcopy(self.env)
         if path == "/tasks/last":
-            return []
+            return copy.deepcopy(self.active_tasks)
         if path == "/tasks":
             return {"id": 900, "status": self.status}
         if path == "/tasks/900":
@@ -186,7 +191,11 @@ def test_a_consistent_seed_passes_every_mode(monkeypatch, tmp_path, capsys, mode
 
 @pytest.mark.parametrize("mode", [(), ("--verify-only", "--apply"), ("--apply",)])
 @pytest.mark.parametrize("drift", [{"repository_id": 4}, {"inventory_id": 7}, {"arguments": '["-e","x=1"]'},
-                                   {"app": "terraform"}, {"_env_json": '{"openbao_addr":"https://elsewhere.example"}'}])
+                                   {"app": "terraform"}, {"environment_ids": [2]},
+                                   {"environment_ids": []}, {"environment_ids": [True]},
+                                   {"environment_ids": "9"},
+                                   {"environment_ids": [9, 9]},
+                                   {"_env_json": '{"openbao_addr":"https://elsewhere.example"}'}])
 def test_a_rebound_or_reshaped_template_is_refused_before_any_write(monkeypatch, tmp_path, capsys, mode, drift):
     # Review of PR #205: a template rebound to another repository or inventory after
     # provisioning, or given arguments, must get no staged input and no task, in any mode.
@@ -224,6 +233,105 @@ def test_a_leftover_input_of_another_seed_refuses_the_seed_before_any_write():
     with pytest.raises(cli.Refusal, match="leftover inputs: SEED_X_API_KEY"):
         cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
     assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
+
+
+def test_secondary_environment_group_owner_refuses_before_staging():
+    api = FakeAPI()
+    api.extra_templates = [{"id": 7, "name": "Other", "environment_id": 2, "environment_ids": [2, 9]}]
+    with pytest.raises(cli.Refusal, match="other templates"):
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+    assert writes_of(api) == []
+
+
+def test_contradictory_legacy_scalar_and_array_refuse_before_staging():
+    api = FakeAPI()
+    api.template["environment_id"] = 10
+    with pytest.raises(cli.Refusal, match="environment binding"):
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+    assert writes_of(api) == []
+
+
+def test_effective_legacy_scalar_only_binding_remains_supported():
+    api = FakeAPI()
+    api.template.pop("environment_ids")
+    template, _ = core.preflight(api, 1, TARGET)
+    assert template["environment_id"] == 9
+
+
+def test_seed_preflight_allows_unrelated_unbound_template_without_writes():
+    api = FakeAPI()
+    api.extra_templates = [{"id": 7, "name": "Unbound unrelated template",
+                            "environment_id": 0, "environment_ids": []}]
+
+    template, _ = core.preflight(api, 1, TARGET)
+
+    assert template["id"] == TARGET.template_id
+    assert writes_of(api) == []
+
+
+def test_seed_submission_ignores_active_task_on_unrelated_unbound_template(capsys):
+    api = FakeAPI()
+    api.extra_templates = [{"id": 7, "name": "Unbound unrelated template",
+                            "environment_id": 0, "environment_ids": []}]
+    api.active_tasks = [{"id": 901, "template_id": 7, "status": "running"}]
+
+    cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+
+    submissions = [body for path, body in api.calls if path == "/tasks" and body]
+    assert len(submissions) == 1
+    assert submissions[0]["template_id"] == TARGET.template_id
+    assert [item["name"] for item in api.env["secrets"]] == ["BAO_ROLE_ID", "BAO_SECRET_ID"]
+    assert SECRET not in capsys.readouterr().out
+
+
+def test_selected_unbound_seed_binding_refuses_before_staging():
+    api = FakeAPI()
+    api.template.update(environment_id=0, environment_ids=[])
+
+    with pytest.raises(cli.Refusal, match="environment binding"):
+        cli.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+
+    assert not any(body for path, body in api.calls if path in ("/environment/9", "/tasks"))
+
+
+def test_array_drift_immediately_before_submission_retains_encrypted_inputs(monkeypatch):
+    api = FakeAPI()
+    original = FakeAPI.__call__
+    staged = False
+
+    def drift_on_template_read(self, path, body=None):
+        nonlocal staged
+        if path == "/environment/9" and body is not None:
+            staged = True
+        if path == "/templates/301" and body is None and staged:
+            self.template["environment_ids"] = [9, 10]
+        return original(self, path, body)
+
+    monkeypatch.setattr(FakeAPI, "__call__", drift_on_template_read)
+    with pytest.raises(cli.Refusal, match="template changed"):
+        core.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+    assert not any(path == "/tasks" and body for path, body in api.calls)
+
+
+def test_secondary_owner_added_after_staging_blocks_task_submission(monkeypatch):
+    api = FakeAPI()
+    original = FakeAPI.__call__
+    staged = False
+
+    def owner_after_staging(self, path, body=None):
+        nonlocal staged
+        result = original(self, path, body)
+        if path == "/environment/9" and body is not None:
+            staged = True
+        if path == "/templates" and staged:
+            self.extra_templates = [{"id": 7, "name": "Other", "environment_id": 2, "environment_ids": [2, 9]}]
+            result = [*result, *copy.deepcopy(self.extra_templates)]
+        return result
+
+    monkeypatch.setattr(FakeAPI, "__call__", owner_after_staging)
+    with pytest.raises(cli.Refusal, match="other templates"):
+        core.stage_and_seed(api, 1, TARGET, {"BAO_VALUE": SECRET})
+    assert not any(path == "/tasks" and body for path, body in api.calls)
 
 
 def test_the_clean_environment_rule_refuses_any_address_pin():

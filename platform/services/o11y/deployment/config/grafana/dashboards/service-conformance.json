@@ -62,7 +62,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [45m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\", status=~\"^(no_history|has_history|history_incomplete)$\"} | json | inventory_code=~\"^(0|1|2)$\" | marker_time_seconds=~\"^[0-9]+$\" | __error__=\"\" | unwrap inventory_code | __error__=\"\" [45m]) by (service) * 0))"
+          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", service=~\".+\", step=~\".+\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [45m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\", status=~\"^(no_history|has_history|history_incomplete)$\"} | json | inventory_code=~\"^(0|1|2)$\" | marker_time_seconds=~\"^[0-9]+$\" | __error__=\"\" | unwrap inventory_code | __error__=\"\" [45m]) by (service) * 0))"
         }
       ]
     },
@@ -268,7 +268,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [45m]) by (service, step)"
+          "expr": "last_over_time({job=\"agent-cloud-conformance\", service=~\".+\", step=~\".+\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [45m]) by (service, step)"
         }
       ],
       "transformations": [
@@ -327,7 +327,7 @@
             "uid": "loki"
           },
           "queryType": "range",
-          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"} | json | line_format \"{{.service}}/{{.step}} task={{.task_id}}: {{printf \\\"%.180s\\\" .error}}\" | keep job, service, step, status",
+          "expr": "{job=\"agent-cloud-conformance\", service=~\".+\", step=~\".+\", status=\"fail\"} | json | line_format \"{{.service}}/{{.step}} task={{.task_id}}: {{printf \\\"%.180s\\\" .error}}\" | keep job, service, step, status",
           "maxLines": 100
         }
       ],
@@ -403,7 +403,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "min(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step) > -1)"
+          "expr": "min(last_over_time({job=\"agent-cloud-conformance\", service=~\".+\", step=~\".+\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step) > -1)"
         }
       ],
       "options": {
@@ -460,7 +460,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step)"
+          "expr": "last_over_time({job=\"agent-cloud-conformance\", service=~\".+\", step=~\".+\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step)"
         }
       ],
       "transformations": [
@@ -518,7 +518,7 @@
           },
           "queryType": "range",
           "maxLines": 100,
-          "expr": "{job=\"agent-cloud-conformance\", step!=\"none\"} | json task_id, completed_at_seconds"
+          "expr": "{job=\"agent-cloud-conformance\", service=~\".+\", step=~\".+\", step!=\"none\"} | json task_id, completed_at_seconds"
         }
       ]
     }

@@ -21,7 +21,7 @@ import playbook_yaml
 import pytest
 import seed_harness
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 
 REPO = playbook_yaml.REPO
 PLAYBOOK = REPO / "platform/playbooks/probe-agentgateway-isolation.yml"
@@ -243,9 +243,10 @@ def test_a_control_identity_that_is_refused_too_fails_the_run(tmp_path, gateway)
 
 def test_a_gateway_that_is_not_listening_fails_with_no_http_answer(tmp_path, gateway):
     gw = gateway()
-    gw.stop()
+    gw.url = f"http://127.0.0.1:{refused_port()}"  # not gw.stop(): a freed port can go to another test
     rc, out, _ = _run(tmp_path, gw)
     assert rc != 0 and "no HTTP answer" in out, out
+    assert gw.seen == []
 
 
 def test_a_blank_control_survey_value_takes_the_first_other_identity(tmp_path, gateway):
@@ -292,6 +293,11 @@ def test_the_cap_itself_is_allowed(tmp_path, gateway):
     pytest.param({"agw_isolation_control": "ghost"}, {}, "must be declared in agw_identities and differ",
                  id="control-undeclared"),
     pytest.param({}, {"agw_clients": [BURST]}, "must be declared in agw_identities and differ", id="no-other-identity"),
+    pytest.param({"agw_isolation_control": CONTROL},
+                 {"agw_models": [{"name": "m"}, {"name": "p", "pool_identity": CONTROL}]},
+                 "'other' is a shared-pool identity", id="control-is-a-pool"),
+    pytest.param({}, {"agw_models": [{"name": "m"}, {"name": "p", "pool_identity": BURST}]},
+                 "'isolation-probe' is a shared-pool identity", id="burst-is-a-pool"),
     pytest.param({}, {"agw_client_policies": {BURST: {"tokens_per_hour": 20, "allowed_models": ["nope"]}}},
                  "at least one declared agw_models name", id="burst-allowed-no-declared-model"),
 ])

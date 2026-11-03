@@ -488,7 +488,7 @@ templates:
       # list of the playbook's profiles.
       - name: netbox_token_profile
         title: Token profile
-        description: "device-writer (skynet device create), workflow-collector (the conformance collector), or vm-recorder (validate-address)."
+        description: "device-writer (skynet device create), workflow-collector (the conformance collector), vm-recorder (validate-address), or console (Dispatch Console read-only inventory)."
         type: enum
         required: false
         default_value: device-writer
@@ -496,6 +496,7 @@ templates:
           - { name: "device-writer", value: "device-writer" }
           - { name: "workflow-collector", value: "workflow-collector" }
           - { name: "vm-recorder", value: "vm-recorder" }
+          - { name: "console", value: "console" }
 
   - name: Ensure NetBox Prefix
     playbook: platform/playbooks/ensure-netbox-prefix.yml
@@ -809,6 +810,145 @@ templates:
         required: false
         default_value: "false"
 
+  # The Dispatch Console (platform/services/console): the image is built on the host from the
+  # committed sources (no registry). Dev-only until promotion, like agentgateway below: main has no
+  # console code yet, so the main-bound template cannot run; the "(Dev)" variant can.
+  - name: Deploy console
+    playbook: platform/playbooks/deploy-console.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate the container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+      - name: console_force_rebuild
+        title: "Force image rebuild"
+        description: "true to rebuild the console image even when its build inputs match the image on the host"
+        type: string
+        required: false
+        default_value: "false"
+
+  # OPA, the Guardrail-layer decision API (platform/services/opa). No secrets: the policies travel with
+  # the placed monorepo, so the deployed branch decides which Rego is live. Production binds the VM's
+  # LAN address, serves HTTPS from the step-ca leaf the deploy issues, and the host firewall admits
+  # only its callers (plan 03, OPA production deployment).
+  # Until dev is promoted, production runs the "(Dev)" variant with service_branch=dev.
+  - name: Deploy OPA
+    playbook: platform/playbooks/deploy-opa.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # The skynet orchestration API (OpenSpec service-deployment-workflow, task 3.7). Its Semaphore token is
+  # the svc-skynet account's, written to secret/services/skynet by "Provision skynet Semaphore Access":
+  # run that FIRST, because this deploy stops before any write when the token is absent. The gateway's
+  # /skynet/ route stays off until this deploy has run once. main has no skynet deploy until dev is
+  # promoted, so the main-bound template cannot run; the "(Dev)" variant can.
+  - name: Deploy skynet
+    playbook: platform/playbooks/deploy-skynet.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
+  # skynet's own Semaphore identity: svc-skynet, a non-admin account at project role guest (read-only). Interim,
+  # by operator decision of 2026-10-31: skynet holds no launch right until a narrow launcher (a planned change)
+  # holds the launch token, because any launch right can inject extra vars into a run on the shared runner
+  # (play header). Its token is stored at secret/services/skynet.
+  # Run it BEFORE Deploy skynet (which reads that token and stops when it is absent), and before declaring
+  # svc-skynet in semaphore_project_members (Manage Semaphore Access refuses a member with no account yet).
+  - name: Provision skynet Semaphore Access
+    playbook: platform/playbooks/provision-skynet-semaphore-access.yml
+    dev_variant: true
+
+  # The Dispatch Console's own read-only Semaphore identity (plan 17, D20): svc-console, a non-admin
+  # account at project role guest, its token stored at secret/services/console. Run it BEFORE Deploy
+  # console (which reads that token and stops when it is absent), and before Manage Semaphore Access
+  # declares svc-console (which refuses a declared member with no account yet).
+  - name: Provision Console Semaphore Access
+    playbook: platform/playbooks/provision-console-semaphore-access.yml
+    dev_variant: true
+
+  # The Dispatch Console's read-only Proxmox identity (plan 17, D22): console@pve with PVEAuditor on /,
+  # and a privilege-separated token with the same grant, stored at secret/services/proxmox. Run it
+  # before Deploy console when the console_svc host declares console_proxmox_url. Refuses to replace a
+  # live token: the survey flag is only for a stored token that Proxmox no longer has.
+  - name: Provision Console Proxmox Token
+    playbook: platform/playbooks/provision-console-proxmox-token.yml
+    dev_variant: true
+    survey_vars:
+      - name: console_proxmox_token_recreate
+        title: "Recreate stored token"
+        description: "Default false. Only when secret/services/proxmox holds a console_token that Proxmox no longer has: mint a replacement and overwrite it."
+        type: string
+        required: false
+        default_value: "false"
+      - name: console_proxmox_token_replace
+        title: "Replace unrecoverable token"
+        description: "Default false. Only when Proxmox has the console token but secret/services/proxmox lost its value: revoke exactly that one token and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
+
+  # The Dispatch Console's Grafana token (plan 17, task 8.0a): a Viewer service-account token on
+  # o11y's Grafana, 90-day lifetime, kept at secret/services/o11y:console_grafana_token. Reuses it
+  # until under 30 days remain, then mints a new one. Renewed monthly by Rotate Console Credentials (Dev), which
+  # imports this playbook; run it directly for an out-of-band renewal.
+  - name: Provision Console Grafana Token
+    playbook: platform/playbooks/provision-console-grafana-token.yml
+    dev_variant: true
+
+  # The Dispatch Console's own OpenBao AppRole (plan 17, D27): the console policy (read on its own paths only) and
+  # role_id/secret_id at secret/services/approles/console. Run before Deploy console when console_openbao_url is set,
+  # and before Rotate Console Credentials (Dev), which rotates the secret_id this creates.
+  - name: Provision Console AppRole
+    playbook: platform/playbooks/provision-console-approle.yml
+    dev_variant: true
+
+  # Read-only reachability of the Dispatch Console's Phase 3 sources (plan 17 task 6.3) from the console VM:
+  # NetBox, Proxmox and OpenBao, names and booleans only. Fails when a configured source does not answer.
+  - name: Probe Console Sources
+    playbook: platform/playbooks/probe-console-sources.yml
+    dev_variant: true
+
+  # Read-only: prints the Proxmox cluster root CA (public certificate and fingerprint) to pin as site-config
+  # console_proxmox_ca_pem. The admin token is sent only over a connection pinned to the API leaf certificate's
+  # SHA-256, which the operator confirms from an independent vantage: a first run with no value observes the
+  # fingerprint and stops before any token use. The playbook header gives the cross-check to run before pinning.
+  - name: Read Proxmox Root CA
+    playbook: platform/playbooks/read-proxmox-root-ca.yml
+    dev_variant: true
+    survey_vars:
+      - name: proxmox_leaf_sha256
+        title: "Proxmox API leaf certificate SHA-256"
+        description: "Leaf certificate SHA-256 confirmed out of band; empty = observe and stop"
+        type: string
+        required: false
+        default_value: ""
+
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
@@ -1057,6 +1197,26 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Deploy Plane
+    playbook: platform/playbooks/deploy-plane.yml
+    dev_variant: true
+    # Plane work tracker, Commercial edition. Plane's own Compose file is fetched
+    # and sha256-verified on every run (its EULA forbids committing it). Native
+    # in-app auth; Caddy is a plain reverse_proxy, no forward_auth.
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
     survey_vars:
@@ -1227,6 +1387,61 @@ templates:
         required: false
         default_value: "main"
 
+  # OPA keeps no data (read-only policy mount, no volume). In production the clean also removes the
+  # deploy directory, issued certificates included, so the redeploy issues a new server leaf; the old
+  # one stays valid until it expires.
+  - name: Clean Deploy OPA
+    playbook: platform/playbooks/clean-deploy-opa.yml
+    dev_variant: true
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # Dev-only until promotion, for the same reason as Deploy console above.
+  - name: Clean Deploy console
+    playbook: platform/playbooks/clean-deploy-console.yml
+    dev_variant: true
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # Destroys skynet's run and workflow state (its Postgres volume). The api_token, read_token and
+  # db_password come back from OpenBao, and the svc-skynet token too, so a fresh deploy needs only
+  # Provision skynet Semaphore Access to have run before. main has no skynet deploy until promotion.
+  - name: Clean Deploy skynet
+    playbook: platform/playbooks/clean-deploy-skynet.yml
+    dev_variant: true
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy agentgateway
     playbook: platform/playbooks/clean-deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
@@ -1293,6 +1508,39 @@ templates:
     # against an account that no longer exists — re-issue the key after
     # re-registering. Set postiz_disable_registration back to false first, or
     # nobody can sign in to the rebuilt stack.
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy Plane MCP
+    playbook: platform/playbooks/deploy-plane-mcp.yml
+    dev_variant: true
+    # Plane's MCP server beside Plane, its own compose project. Registers (or repairs) Plane's OAuth
+    # application for it inside plane-api and keeps the client credentials in OpenBao. Run after
+    # Deploy Plane. Not a separately tracked service (no service-deploy step result).
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Clean Deploy Plane
+    playbook: platform/playbooks/clean-deploy-plane.yml
+    # DESTRUCTIVE: wipes Plane's containers and every named volume (database,
+    # Redis, RabbitMQ, uploads, proxy state). Every workspace, project and work
+    # item is gone and first-run configuration runs again. Secrets come back from
+    # OpenBao unchanged, so the rebuilt stack keeps its keys.
     survey_vars:
       - name: confirm_reset
         title: "Confirm: host whose data is destroyed"
@@ -1772,6 +2020,54 @@ templates:
         type: string
         required: true
 
+  - name: Reconcile Plane Members
+    playbook: platform/playbooks/reconcile-plane-members.yml
+    # Plane workspace membership follows the Authentik groups: platform-admins -> Admin,
+    # developers and business users -> Member, everyone else removed. READ-ONLY unless apply is
+    # true (the survey default is false, so a UI launch only reports the plan).
+    dev_variant: true
+    survey_vars:
+      - name: apply
+        title: "Apply the plan"
+        description: "true to invite, set roles and remove; anything else only reports the plan"
+        type: string
+        required: false
+        default_value: "false"
+      - name: allow_mass_removal
+        title: "Allow mass removal"
+        description: "true only when the groups really shrank: an apply removing more than half the workspace, or with no desired members, is refused otherwise"
+        type: string
+        required: false
+        default_value: "false"
+
+  - name: Sync Plane Projects
+    playbook: platform/playbooks/sync-plane-projects.yml
+    # Open OpenSpec tasks of every repository enabled in platform/services/plane/projects.yml
+    # become Plane work items, one module per change. CREATE-ONLY: nothing already in Plane is
+    # changed, and no item is ever given a status. Launch it as a dry run to see the counts it
+    # would create. The schedule is added once production holds Plane (change task 4.4).
+    dev_variant: true
+
+  - name: Back Up Plane DB
+    playbook: platform/playbooks/backup-plane-db.yml
+    # Timestamped pg_dump of Plane's Postgres (plane-db) into an owner-only backup dir on the
+    # VM. Run before every Plane release bump and before a clean deploy whose data matters.
+    # Read-only against the database; each run writes a NEW file. Uploads are not in it.
+    dev_variant: true
+
+  - name: Restore Plane DB
+    playbook: platform/playbooks/restore-plane-db.yml
+    # DESTRUCTIVE: overwrites Plane's database with a named dump, through a staging database
+    # (the prior one is kept as plane_prev), and brings the stack back through deploy.sh in an
+    # always: block. The play hard-requires plane_dump_file. The path is not a secret.
+    dev_variant: true
+    survey_vars:
+      - name: plane_dump_file
+        title: "Dump file path"
+        description: "Explicit dump to restore (named in Back Up Plane DB's report). Never 'the latest'."
+        type: string
+        required: true
+
   - name: Provision Seed Environment
     playbook: platform/playbooks/provision-seed-environment.yml
     # Gives ONE declared seed template (isolated_environment in this file) its own
@@ -1800,6 +2096,46 @@ templates:
         description: "Use dev until the seed access-verification code is promoted to main."
         type: string
         default_value: dev
+        required: true
+      - name: seed_replace_auth
+        title: "Replace existing AppRole inputs"
+        description: "true only after Semaphore's encryption key changed (inputs present but undecryptable)"
+        type: string
+        default_value: "false"
+        required: false
+
+  - name: Provision o11y Workflow Environment (Dev)
+    playbook: platform/playbooks/provision-o11y-workflow-environment.yml
+    repository: agent-cloud dev
+    dev_variant: false
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Full commit approved for this controller change."
+        type: string
+        required: true
+      - name: o11y_workflow_target
+        title: "Owned Dev workflow"
+        description: "Select one of the five declared PBS restore coordination templates."
+        type: enum
+        required: true
+        values:
+          - { name: "Verify o11y Restore Coordination Capabilities (Dev)", value: "Verify o11y Restore Coordination Capabilities (Dev)" }
+          - { name: "Preflight o11y Restore Target (Dev)", value: "Preflight o11y Restore Target (Dev)" }
+          - { name: "Provision PBS Debian Cloud Template (Dev)", value: "Provision PBS Debian Cloud Template (Dev)" }
+          - { name: "Attach PBS Data Disk (Dev)", value: "Attach PBS Data Disk (Dev)" }
+          - { name: "Provision PBS VM (Dev)", value: "Provision PBS VM (Dev)" }
+      - name: semaphore_project_id
+        title: "Verified project ID"
+        type: string
+        required: true
+      - name: semaphore_inventory_id
+        title: "Verified inventory ID"
+        type: string
+        required: true
+      - name: semaphore_source_environment_id
+        title: "Verified current source-environment ID"
+        type: string
         required: true
 
   - name: Seed Postiz Secrets
@@ -2069,6 +2405,52 @@ templates:
         type: string
         required: true
 
+  # Grow the Semaphore host's root filesystem into its virtual disk, online, from Semaphore
+  # itself (same helper as Grow o11y Root). Dev-bound; dry run shows the chain and steps.
+  - name: Grow Semaphore Root (Dev)
+    playbook: platform/playbooks/grow-semaphore-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
+  # Grow the console host's root filesystem into its virtual disk, online (same helper as
+  # Grow o11y Root). Dev-bound; dry run shows the chain and steps.
+  - name: Grow Console Root (Dev)
+    playbook: platform/playbooks/grow-console-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
+  # skynet's root, grown into its 40G disk the same way (grow-skynet-root.yml); run after Provision VM.
+  - name: Grow skynet Root (Dev)
+    playbook: platform/playbooks/grow-skynet-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
+  # Plane's root, grown into its 64G disk the same way (grow-plane-root.yml); run after Provision VM.
+  - name: Grow Plane Root (Dev)
+    playbook: platform/playbooks/grow-plane-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
   - name: Survey o11y Backup Readiness (Dev)
     playbook: platform/playbooks/survey-o11y-backup-readiness.yml
     repository: agent-cloud dev
@@ -2161,6 +2543,8 @@ templates:
   - name: Provision PBS Debian Cloud Template (Dev)
     playbook: platform/playbooks/provision-pbs-debian-template.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS Debian template inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2245,6 +2629,270 @@ templates:
         required: true
     # Reads the existing protected survey payload and private inventory identity
     # pin. It emits fixed status only and authorizes no allocation or writes.
+
+  - name: Attach PBS Data Disk (Dev)
+    playbook: platform/playbooks/attach-pbs-data-disk.yml
+    repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS data-disk inputs (Dev)
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the guarded PBS virtual-disk attachment"
+        type: string
+        required: true
+    # The target VM, node, and thick-LVM store come from private inventory. The
+    # workflow re-runs the pinned host-storage preflight and writes only scsi1.
+
+  - name: Prepare PBS Guest Data Disk (Dev)
+    playbook: platform/playbooks/prepare-pbs-guest-data-disk.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS guest filesystem preparation"
+        type: string
+        required: true
+    # Selects and formats only the VMID-derived serial-pinned virtual disk,
+    # mounts it by UUID, and verifies filesystem and mount readback.
+
+  - name: Configure PBS Service (Dev)
+    playbook: platform/playbooks/configure-pbs.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS service configuration"
+        type: string
+        required: true
+    # Repository channel and explicit risk acceptance are private inventory;
+    # this task adds no PBS API token or Linux root password.
+
+  - name: Configure PBS Backup Access (Dev)
+    playbook: platform/playbooks/configure-pbs-backup-access.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for PBS backup access configuration"
+        type: string
+        required: true
+    # PBS/OpenBao/PVE identity state comes from the declared private inventory
+    # and OpenBao. No credential or target values are launch-time survey input.
+
+  - name: Configure o11y PBS Copy Access (Dev)
+    playbook: platform/playbooks/configure-o11y-pbs-copy-access.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the separate PBS copy identities"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+    # Source Reader, destination Manager and destination restore Reader are
+    # fixed in code; all secret material comes from OpenBao.
+
+  - name: Register o11y PBS Restore Storage (Dev)
+    playbook: platform/playbooks/register-o11y-pbs-restore-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for protected PBS restore storage registration"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+    # Static PVE placement is private inventory; PVE API and the dedicated PBS
+    # restore token are sourced from OpenBao. This workflow never uses Manager.
+
+  - name: Preflight o11y Restore Target (Dev)
+    playbook: platform/playbooks/preflight-o11y-restore-target.yml
+    repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: o11y restore-target inputs (Dev)
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only restore-target preflight"
+        type: string
+        required: true
+    # Reads private target/artifact declarations and Proxmox state only. It
+    # reserves no VMID, creates no VM, and emits no private identity values.
+
+  - name: Backup o11y to PBS (Dev)
+    playbook: platform/playbooks/backup-o11y-to-pbs.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the o11y PBS backup"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+
+  - name: Verify o11y PBS Artifact (Dev)
+    playbook: platform/playbooks/verify-o11y-pbs-artifact.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the PBS artifact verification"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+
+  - name: Sync o11y Protected PBS Copy (Dev)
+    playbook: platform/playbooks/sync-o11y-protected-pbs-copy.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for destination initiated protected-copy sync"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+      - name: verify_task_id
+        title: "Successful PBS verification task ID"
+        description: "Exact completed Verify o11y PBS Artifact task ID"
+        type: integer
+        required: true
+
+  - name: Verify o11y Protected PBS Copy Readiness (Dev)
+    playbook: platform/playbooks/verify-o11y-protected-pbs-copy.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for protected-copy readback"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+      - name: verify_task_id
+        title: "Successful PBS verification task ID"
+        description: "Exact completed Verify o11y PBS Artifact task ID"
+        type: integer
+        required: true
+      - name: sync_task_id
+        title: "Successful copy sync task ID"
+        description: "Exact completed Sync o11y Protected PBS Copy task ID"
+        type: integer
+        required: true
+
+  - name: Restore o11y from Protected PBS Copy (Dev)
+    playbook: platform/playbooks/restore-o11y-isolated.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the isolated restore"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this runtime"
+        type: string
+        required: true
+      - name: backup_task_id
+        title: "Successful backup task ID"
+        description: "Exact completed Backup o11y to PBS task ID"
+        type: integer
+        required: true
+      - name: pbs_verify_task_id
+        title: "Successful PBS verification task ID"
+        description: "Exact completed Verify o11y PBS Artifact task ID"
+        type: integer
+        required: true
+      - name: copy_sync_task_id
+        title: "Successful copy sync task ID"
+        description: "Exact completed Sync o11y Protected PBS Copy task ID"
+        type: integer
+        required: true
+      - name: copy_ready_task_id
+        title: "Successful copy readiness task ID"
+        description: "Exact completed Verify o11y Protected PBS Copy Readiness task ID"
+        type: integer
+        required: true
+    # The private selector, target, protected endpoint and credentials are all
+    # inventory/OpenBao sourced. The task emits a private receipt only on success.
+
+  - name: Cleanup o11y Isolated Restore (Dev)
+    playbook: platform/playbooks/cleanup-o11y-isolated-restore.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for authenticated cleanup"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Current private inventory commit SHA"
+        description: "Exact site-config main commit whose production inventory bytes match this cleanup run"
+        type: string
+        required: true
+      - name: expected_restore_repository_sha
+        title: "Reviewed restore commit SHA"
+        description: "Exact Dev commit recorded by the successful isolated restore task"
+        type: string
+        required: true
+      - name: restore_task_id
+        title: "Successful restore task ID"
+        description: "Exact successful isolated restore task that printed the private receipt"
+        type: integer
+        required: true
+
+  # Read-only activation gate: verify the injected AppRole's exact effective
+  # capabilities and the stored policy before enabling guarded writers.
+  - name: Verify o11y Restore Coordination Capabilities (Dev)
+    playbook: platform/playbooks/verify-o11y-restore-coordination-capabilities.yml
+    repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: o11y restore-capability inputs (Dev)
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for policy and capability verification"
+        type: string
+        required: true
 
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
@@ -2490,6 +3138,8 @@ templates:
 
   - name: Apply Policy - Semaphore
     playbook: platform/playbooks/apply-policy-semaphore.yml
+    # Publish this policy from reviewed Dev before activating Dev-bound guard writers.
+    dev_variant: true
 
   - name: Apply Policy - NemoClaw
     playbook: platform/playbooks/apply-policy-nemoclaw.yml
@@ -2631,15 +3281,20 @@ templates:
         required: false
         default_value: "caddy_svc"
 
-  # Promote every declared platform admin (inventory var semaphore_admin_users)
-  # to a Semaphore admin via the API. Sanctioned replacement for the manual
-  # grant — Semaphore 2.18.12 has no group->role mapping (closes task #37).
+  # Promote every declared admin to a Semaphore admin via the API: each entry of
+  # platform_admins (the administrator list the Authentik deploy renders into
+  # platform-admins) plus semaphore_admin_users. Sanctioned replacement for the
+  # manual grant: Semaphore 2.18.12 has no group->role mapping (closes task #37;
+  # derived from platform_admins since #604). The Dev copy runs the derivation
+  # from dev before it is promoted to main.
   - name: Promote Semaphore Admins
     playbook: platform/playbooks/promote-semaphore-admins.yml
+    dev_variant: true
 
   # Launch rights are runner rights (plan 01, "Launch permission is runner access"): hold the
   # project team, the system admins and the integrations to the private declarations
-  # semaphore_project_members and semaphore_admin_users. Run under check mode first.
+  # semaphore_project_members, platform_admins and semaphore_admin_users. Run under check
+  # mode first.
   - name: Manage Semaphore Access
     playbook: platform/playbooks/manage-semaphore-access.yml
     dev_variant: true
@@ -2680,12 +3335,22 @@ templates:
 
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: VM template inputs
     # main's copy predates the workflow step result (vm-template) and the cloud-init
     # drive match; the (Dev) variant runs the current code before promotion.
     dev_variant: true
 
   - name: Destroy VM
     playbook: platform/playbooks/destroy-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Destroy VM inputs
     # DESTRUCTIVE. Inventory-first like Provision VM; refuses unless the live VM matches
     # the declaration on vmid+name+node AND the launch names the vmid in confirm_destroy.
     dev_variant: true
@@ -2708,6 +3373,11 @@ templates:
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Provision VM inputs
     # main's copy of this playbook predates the inventory-first fix ("make it runnable
     # from Semaphore at all"), so the dev-bound variant is the only way to exercise the
     # current code before promotion. Permanent, not a branch workaround.
@@ -2727,6 +3397,8 @@ templates:
   - name: Provision PBS VM (Dev)
     playbook: platform/playbooks/provision-pbs-vm.yml
     repository: agent-cloud dev
+    dev_variant: false
+    isolated_environment: PBS VM inputs (Dev)
     survey_vars:
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
@@ -2829,8 +3501,60 @@ templates:
         type: string
         required: false
 
+  # Ephemeral runner lifecycle (openspec add-ephemeral-github-runners): keeps each ephemeral
+  # host's root-only stock of just-in-time runner configurations full, minted on the
+  # controller from the App key in OpenBao, and fails while a host's supervisor is stopped or
+  # quarantined. A host on the default persistent lifecycle is skipped, so the schedule
+  # changes nothing until a host declares github_runner_lifecycle: ephemeral. Dev-bound like
+  # the o11y watcher: a schedule on a main-bound base would run `main`, which has no copy of
+  # the playbook until promotion. The App client id comes from the inventory
+  # (github_app_client_id), because a schedule cannot answer a survey.
+  - name: Stock GitHub Runner JIT (Dev)
+    playbook: platform/playbooks/stock-github-runner-jit.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/10 * * * *"
+
+  # The Dispatch Console's read-only GitHub credential (plan 17, task 8.0b): an installation token
+  # for agent-cloud alone with read permissions only, written to secret/services/console/github
+  # (field token). Installation tokens live ONE HOUR; */45 fires at :00 and :45, so the worst gap
+  # between two refreshes is 45 minutes. Dev-bound for the reason the JIT stock above gives: a
+  # schedule on the main-bound base would run `main`, which has no copy of this playbook until
+  # promotion. No survey: a schedule cannot answer one, and the grant is declared in the playbook.
+  - name: Refresh Console GitHub Token (Dev)
+    playbook: platform/playbooks/refresh-console-github-token.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/45 * * * *"
+
+  # The Dispatch Console's monthly credential rotation (plan 17, D27): a new secret_id for the console AppRole (its
+  # role_id is unchanged), the Grafana Viewer token renewed under its 30-day threshold, a redeploy that carries the new
+  # secret_id, and only then the replaced secret_id destroyed. The playbook pins the run to the commit the console is
+  # deployed from. Dev-bound for the reason the GitHub refresh above gives: a schedule on the main-bound base would run
+  # `main`, which has no copy of this playbook until promotion. Monthly: about three attempts inside the 90-day
+  # secret_id TTL, and a Grafana renewal well before its 30-day threshold. No survey: a schedule cannot answer one.
+  - name: Rotate Console Credentials (Dev)
+    playbook: platform/playbooks/rotate-console-credentials.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "0 7 1 * *"
+    # Declared because the imported deploy reads service_branch (test_placement_branch_guard.py). The rotation
+    # pins the console's deployed commit, which deploy-console.yml reads first, so this field changes nothing.
+    survey_vars:
+      - name: service_branch
+        title: "Branch (unused by the rotation)"
+        description: "No effect: the rotation redeploys the commit the console already runs. To deploy a branch, run Deploy console."
+        type: string
+        required: false
+        default_value: "dev"
+
   - name: Resize VM
     playbook: platform/playbooks/resize-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Resize VM inputs
     dev_variant: true
     # Converges a live VM's cores/memory/disk to the spec declared in
     # site-config/proxmox/vm-specs.yml. Edit the spec, then run this — the
@@ -2857,6 +3581,11 @@ templates:
 
   - name: Snapshot VM
     playbook: platform/playbooks/snapshot-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Snapshot VM inputs
     # main's copy predates the dry-run (check mode) support and the no-redirect bearer
     # header; the (Dev) variant runs the current code before promotion.
     dev_variant: true

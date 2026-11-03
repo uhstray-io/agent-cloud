@@ -1,0 +1,48 @@
+# Authentik blueprint — Dispatch Console OIDC (OAuth2) provider + application.
+# config-as-code, applied by the worker. The client_secret is injected from the
+# worker's env (CONSOLE_OIDC_CLIENT_SECRET, sourced from OpenBao via env.j2) so no
+# secret lives in git. The console reads the SAME secret via manage-secrets
+# _shared_reads (its deploy playbook, added with the console deploy).
+#
+# Slug consistency: the application slug, the provider name and the client_id are
+# all "console". The signing key is RS256 (the Authentik Self-signed Certificate
+# default). Callback: {BASE_URL}/auth/callback (the console's own axum route).
+version: 1
+metadata:
+  name: agent-cloud - console OIDC
+context:
+  # Rendered from inventory at deploy (deploy-authentik.yml templates this file) so
+  # the content is env-specific and Authentik re-applies it. Default is local-dev.
+  console_redirect: "{{ console_redirect_uri | default('https://console.agent-cloud.test:8443/auth/callback') }}"
+  console_launch: "{{ console_launch_url | default('https://console.agent-cloud.test:8443/') }}"
+entries:
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider-console
+    identifiers:
+      name: console
+    attrs:
+      client_type: confidential
+      client_id: console
+      client_secret: !Env CONSOLE_OIDC_CLIENT_SECRET
+      authorization_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      signing_key:
+        !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      redirect_uris:
+        - matching_mode: strict
+          url: !Context console_redirect
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        # profile carries the `groups` claim (same as agentgateway-oidc.yaml).
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+  - model: authentik_core.application
+    identifiers:
+      slug: console
+    attrs:
+      name: Dispatch Console
+      provider: !KeyOf provider-console
+      meta_launch_url: !Context console_launch
+      open_in_new_tab: true

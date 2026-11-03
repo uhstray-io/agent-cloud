@@ -68,6 +68,17 @@ test_generated_dev_suffix_matches_base_name if {
 	agentcloud.allow with input as _run("security-agent", "Harden SSH (Dev)", "access-harden")
 }
 
+# The launch gate adds `settings`, the exact survey values it will launch (change
+# skynet-launch-containment, design decision 6); no rule reads it yet, so it changes no verdict.
+test_launch_gate_settings_field_keeps_an_allow if {
+	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": "x_svc"}})
+}
+
+test_launch_gate_settings_field_keeps_a_deny if {
+	d := agentcloud.decision with input as object.union(_run("o11y-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": "x_svc"}})
+	not d.allowed
+}
+
 test_service_deploy_list_covers_a_listed_service if {
 	agentcloud.allow with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi"), {"template_name": "Deploy tududi (Dev)"})
 }

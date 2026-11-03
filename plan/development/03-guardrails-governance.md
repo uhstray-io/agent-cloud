@@ -13,7 +13,8 @@
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
 **Date:** 2026-04-07
-**Status:** Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
+**Status:** Production DEPLOYED 2026-10-29 (own VM, step-ca server TLS, firewall-admitted callers); skynet's call path pending. See "Production deployment" below.
+Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
 local pattern (`platform/services/opa/deployment/`, `deploy-opa.yml`, `opa_svc`
 inventory group, "Deploy OPA (Local)" Semaphore template). Unauthenticated
 internal decision API on `opa:8181` (local-dev), host diagnostics `127.0.0.1:8281`.
@@ -309,7 +310,7 @@ fi
 log_success "OPA loaded ${POLICY_COUNT} policy module(s)"
 
 # Smoke test: query a policy
-RESULT=$(curl -s -X POST http://localhost:8181/v1/data/agentcloud/allow \
+RESULT=$(curl -s -X POST http://localhost:8181/v1/data/agentcloud/decision \
   -H "Content-Type: application/json" \
   -d '{"input":{"agent":"smoke-test","action":"test","service":"opa"}}')
 
@@ -738,7 +739,7 @@ This plan slots into the existing implementation roadmap. OPA is a **Guardrail L
 7. Add OPA to `platform/semaphore/templates.yml` + run `setup-templates.yml`
 8. Create OPA AppRole via `manage-approle.yml` (minimal — read own config)
 9. Deploy via Semaphore "Deploy OPA" template
-10. Verify: `curl http://opa-svc:8181/v1/data/agentcloud/allow` returns decisions
+10. Verify: `POST /v1/data/agentcloud/decision` returns decisions (the authorization policy admits only that path and `GET /health`; other paths answer 401)
 
 **Acceptance criteria:**
 - OPA container healthy on port 8181
@@ -880,6 +881,56 @@ graph TD
 | **IMPLEMENTATION_PLAN.md** | OPA enables policy enforcement for Phase 1 integrations (Semaphore template governance, NocoDB CRUD scoping); does not block existing phases |
 | **NETCLAW-INTEGRATION-PLAN.md** | OPA enforces CIDR scoping and ITSM gating for NetClaw network operations; NetClaw queries OPA before any scan or config push |
 | **UNIFICATION-PLAN.md** | OPA is listed as P0 priority alongside Kyverno in the "Recommended Additions" section; Governance Agent (P1) wraps OPA + NeMo Guardrails |
+
+---
+
+## Production deployment (2026-10-29)
+
+OPA ran on local-dev only until this landed on 2026-10-29. Its first production caller is skynet. skynet's deploy refuses an
+`skynet_opa_url` that is not `https://` (`deploy-skynet.yml`). The Dispatch Console's proposal path (plan 17,
+D29) waits on both OPA and skynet.
+
+### Decisions (Joseph, 2026-10-29)
+
+| # | Decision | Rejected | Why |
+|---|---|---|---|
+| P1 | OPA runs on its **own small VM** (`opa_svc`, host `opa`) | Co-hosting on the console VM | The workflow and firewall model assume one service per VM; the console set the precedent (plan 17 D21) |
+| P2 | **LAN bind plus host firewall.** OPA publishes 8281 on the VM's LAN address. `apply-firewall.yml` admits that port only from its callers' groups (`firewall_allow_groups`, port detection off). No Caddy route, no public DNS | A Caddy route; OPA bearer tokens | OPA returns decisions, not secrets. A Caddy route cannot be restricted to the LAN: production Caddy does not see the real peer address (2026-09-15). Tokens would add a credential to every caller for no gain over the firewall |
+| P3 | **Server TLS from a step-ca leaf in the first deploy.** Leaf `opa-server`, SAN `opa.<dns_site>.<dns_zone>`, served by OPA itself (`--tls-cert-file`, `--tls-cert-refresh-period=30s`). No client-certificate authentication | HTTP first, TLS later; mutual TLS | skynet requires `https://`. OPA re-reads the files every 30 s, which picks up the renewal's `current` swap without a restart (measured locally 2026-10-29 with the 1.0.0-static image) |
+| P4 | **Policies come from the placed monorepo** (read-only bind mount). The deployed branch decides which Rego is live; a change is applied by redeploy | OPA bundles | No bundle build or serving infrastructure to run |
+| P5 | Production runs **`Deploy OPA (Dev)` with `service_branch=dev`** until `dev` is promoted | Waiting for promotion | Same as the console rollout |
+| P6 | **OPA loads `./policies` in bundle mode** (`--bundle`, 2026-10-31). OPA then owns every data and policy path and refuses `PUT`/`PATCH`/`DELETE` on `/v1/data` and `/v1/policies` with HTTP 400. This is a local directory loaded as a bundle, not a bundle server, so P4 stands | The plain path load P4 shipped with | The read-only mount protects the files, not the running policy. Under a plain load, any caller the firewall admits could rewrite the catalog or the Rego, or delete `/v1/data/agentcloud` (each measured locally on the 1.0.0-static image: 204 or 200). Bundle mode gave identical decisions on the real tree (13 sample inputs and the whole `/v1/data` document) and `opa test` 101/101. `docs/MISTAKES.md` 10.33 |
+
+### What the code does
+
+- `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback), `opa_tls`, and an `https://` `opa_internal_url`.
+- With `opa_tls` set, it checks the leaf's declaration in `internal_leaves`: server profile, this host, `<deploy>/certs/<leaf>`, reload `none`, the server name in its SANs.
+- It issues the leaf if none is current (`tasks/mint-internal-cert.yml`, key made on the OPA host), places the CA bundle (`tasks/distribute-ca-root.yml`), and starts OPA with `compose.tls.yml`. That overlay adds userns keep-id for the image's uid 1000, the `./certs` directory mount, and the TLS flags.
+- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, that a policy write (`PUT /v1/data/agentcloud_write_probe`, a path no rule reads) is refused with exactly 400, and `opa test --bundle /policies`.
+- `renew-internal-certs.yml` admits the leaf as class `opa-server` and proves it by a TLS connection verified by name, comparing the served serial with `current`.
+
+### Production checklist
+
+Each step runs through Semaphore, check mode first.
+
+1. [x] Capacity: `Validate Proxmox Cluster (Dev)`, task 10225. crabnebula has the most free memory. VMIDs 200–222 are taken, so the VM gets 223.
+2. [x] Address: `Allocate NetBox IP (Dev)`, reserve the declared address (task 10229; the address is in site-config). The reservation passed the live pfSense DHCP boundary check.
+3. [x] site-config #126 declares host `opa`, group `opa_svc` (VM, bind, TLS variables, firewall) and the `vm-specs.yml` entry, without the leaf.
+4. [x] agent-cloud #778 merged to `dev`. `Deploy OPA (Dev)` and `Clean Deploy OPA (Dev)` published with the survey publisher's scoped create (tasks 10327, 10329). Inventory synced with `platform/semaphore/sync-inventory.yml`.
+5. [x] (Steps 5 and 6 ran before step 4's merge: they need only the synced inventory.) Lookup Service Inventory and Validate Address Free passed (tasks 10257, 10258). The address was not in ARP; NetBox VM record 52 was created as planned.
+6. [x] Provision VM (task 10261) ran from the `main`-bound template: the `(Dev)` Provision VM failed its o11y restore-target preflight (task 10259), because the production environment supplies `bao_role_id`, `bao_secret_id` and `openbao_addr` as extra vars and the preflight refuses them. Then Generate Service SSH Key (10270), Distribute SSH Keys (10273), Back Up Service SSH Key (10276, site-config #128), Verify Host Access (10279) plus an operator-side key-only login, and Harden SSH (10285). The disk is declared at the template's 20G, so the root needed no grow.
+7. [x] site-config #129 declares the `opa-server` leaf, merged after #778. Inventory synced, then `Deploy step-ca (Dev)` put the SAN in the CA's name policy (task 10331; root fingerprint unchanged).
+8. [x] Apply Firewall before the first deploy (task 10337): default-deny inbound; 8281 only from `console_svc` and `skynet_svc`. The first attempt (10336) hit the shared-inventory parse race and was rerun in a quiet window.
+9. [x] `Deploy OPA (Dev)` with `service_branch=dev` (task 10380): leaf issued on the host, HTTPS health verified against the step-ca bundle, sample allow and deny decisions correct, plain HTTP refused, `opa test` 101/101. The first attempt (10339) created no container: production podman refuses short image names. The fix is #780, and MISTAKES 2.31 records it. Re-run converges (10381): leaf kept, healthy. Ensure Service Persistence (10383), Verify Service Persistence (10385) and Snapshot Access (10386) passed.
+10. [x] `Probe Reachability (Dev)`: from `console_svc`, 8281 open (10387); from `dns_svc`, 8281 closed (10388).
+11. [ ] `Renew Internal Certs (Dev)`: a check-mode run (10389) admits the leaf as class `opa-server`, with 29 of 30 days left. The served-serial proof runs at its first renewal. The template offers no `--tags verify`, and a rotation drill would reissue every leaf on every host.
+12. [ ] skynet: its group is already admitted (site-config #127; applied by task 10337). Remaining: point skynet at `https://opa.<dns_site>.<dns_zone>:8281`, mapping the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe.
+
+13. [x] Redeploy with bundle mode (P6, #805): `Deploy OPA (Dev)` check mode (task 11117), then real (task 11119). The TLS write probe passed: production OPA refused `PUT /v1/data` with 400 `invalid_parameter`. Allow and deny decisions were verified over TLS, and `opa test --bundle` passed 101/101.
+
+**Known gaps:**
+- `Verify Service Health` is not declared for OPA. Its `uri` probe has no server-name override, and the name does not resolve on the OPA host. The deploy's own verify covers `/health`.
+- A first check-mode deploy on a fresh VM fails at the health probe: `deploy.sh` is skipped in check mode, so no container is running yet. The first dry run proves only the guards and the placement.
 
 <!-- ======================= source: MAIN-BRANCH-PROTECTION-PLAN.md ======================= -->
 

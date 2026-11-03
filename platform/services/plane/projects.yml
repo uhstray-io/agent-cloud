@@ -1,0 +1,67 @@
+# projects.yml — repository -> Plane project declaration for the OpenSpec sync
+# (sync-plane-projects, plan/development/openspec/changes/deploy-plane-work-management, task 4.1).
+#
+# One entry per repository in platform/services/tududi/sync/github-mapping.yml. The sync reads
+# each repository's OpenSpec changes with platform/services/plane/lib/openspec_to_plane.py and
+# creates modules and work items. It is create-only: an item that already exists is never
+# changed, so status, assignees and labels set in Plane survive a re-run.
+#
+# Fields:
+#   repo        owner/name of the repository whose OpenSpec changes are read
+#   identifier  Plane project identifier: at most 10 characters, uppercase letters and digits only
+#   name        Plane project name, the repository name
+#   private     GitHub visibility of the repository, as checked with gh on 2026-10-29
+#   enabled     false keeps the entry declared but not synced; the two public repositories start enabled
+#
+# Keys are permanent: the repo is the external_id of the project and of every module and item
+# beneath it. Renaming a repo entry either stops the sync (its identifier is still taken) or, with a
+# new identifier, creates a second project whose items duplicate the old one's.
+#
+# Every name here is already public in this repository's plan documents. Nothing here is a
+# credential or an address.
+plane_projects:
+  - repo: uhstray-io/huhhb
+    identifier: HUHHB
+    name: huhhb
+    private: false
+    enabled: true
+  - repo: uhstray-io/zerds
+    identifier: ZERDS
+    name: zerds
+    private: true
+    enabled: false
+  - repo: uhstray-io/atlas
+    identifier: ATLAS
+    name: atlas
+    private: true
+    enabled: false
+  - repo: uhstray-io/zerds-website
+    identifier: ZWEB
+    name: zerds-website
+    private: true
+    enabled: false
+  - repo: uhstray-io/weft
+    identifier: WEFT
+    name: weft
+    private: true
+    enabled: false
+  - repo: uhstray-io/scientific-business
+    identifier: SCIBIZ
+    name: scientific-business
+    private: true
+    enabled: false
+  - repo: uhstray-io/www
+    identifier: WWW
+    name: www
+    private: true
+    enabled: false
+  - repo: uhstray-io/dev-test
+    identifier: DEVTEST
+    name: dev-test
+    private: true
+    enabled: false
+  - repo: uhstray-io/agent-cloud
+    identifier: AC
+    name: agent-cloud
+    private: false
+    enabled: true

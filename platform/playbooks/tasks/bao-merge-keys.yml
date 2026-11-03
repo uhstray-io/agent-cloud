@@ -32,6 +32,10 @@
 #                    compared with the initial read before the version-CAS write.
 #                    When provided, this multi-key guard supersedes the single-key
 #                    form and is useful when preflight proved a related credential.
+#   _bm_guard_absent_keys optional list of unique key names that must be absent
+#                    from the same fresh read used for the version-CAS write.
+#                    Presence is based on key membership, so null and false values
+#                    still fail the guard. Omission is equivalent to an empty list.
 #
 # Sets for the caller:
 #   _bm_changed      whether anything was written
@@ -49,6 +53,15 @@
       - _bm_path is defined and _bm_path | length > 0
       - ((_bm_data | default({})) | length > 0) or ((_bm_remove | default([])) | length > 0)
       - _bm_guard_values is not defined or _bm_guard_values is mapping
+      - >-
+        _bm_guard_absent_keys is not defined
+        or (
+          _bm_guard_absent_keys is sequence
+          and _bm_guard_absent_keys is not string
+          and _bm_guard_absent_keys is not mapping
+          and (_bm_guard_absent_keys | select('string') | list | length) == (_bm_guard_absent_keys | length)
+          and (_bm_guard_absent_keys | unique | list | length) == (_bm_guard_absent_keys | length)
+        )
     fail_msg: "bao-merge-keys.yml needs _bm_url, _bm_token, _bm_path and a non-empty _bm_data dict or _bm_remove list."
   no_log: true
 
@@ -120,6 +133,17 @@
   when: _bm_guard_values is defined or _bm_guard_key is defined
   no_log: true
 
+- name: "Require guarded OpenBao keys to be absent"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_bm_current | dict2items
+          | selectattr('key', 'in', _bm_guard_absent_keys | default([]))
+          | list | length) == 0
+    fail_msg: "A guarded OpenBao key is already present; no write occurred."
+  when: (_bm_guard_absent_keys | default([]) | length) > 0
+  no_log: true
+
 - name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
   # Server-side JSON merge-patch: OpenBao merges into the CURRENT version, so a
   # concurrent write to a sibling key cannot be clobbered by a read-modify-write.
@@ -140,6 +164,7 @@
     - _bm_existing.status == 200
     - _bm_guard_values is not defined
     - _bm_guard_key is not defined
+    - (_bm_guard_absent_keys | default([]) | length) == 0
     - ((_bm_current | combine(_bm_set)) != _bm_current) or ((_bm_del | intersect(_bm_current.keys() | list)) | length > 0)
   register: _bm_patch
   # uri does not mark a POST/PATCH as changed on its own — measured: a PATCH that
@@ -166,7 +191,7 @@
     status_code: [200, 400]
   when:
     - not ansible_check_mode
-    - _bm_guard_values is defined or _bm_guard_key is defined
+    - _bm_guard_values is defined or _bm_guard_key is defined or (_bm_guard_absent_keys | default([]) | length) > 0
     - _bm_existing.status == 200
     - _bm_guarded_data != _bm_current
   register: _bm_guarded
@@ -228,6 +253,7 @@
     - (_bm_create.status | default(0)) == 400
     - _bm_guard_values is not defined
     - _bm_guard_key is not defined
+    - (_bm_guard_absent_keys | default([]) | length) == 0
   register: _bm_patch_after_race
   changed_when: true
   delegate_to: localhost
@@ -238,8 +264,9 @@
     that: _bm_create.status == 200
     fail_msg: "OpenBao rejected the version-guarded creation; retry after checking the live key."
   when:
-    - _bm_guard_values is defined or _bm_guard_key is defined
+    - _bm_guard_values is defined or _bm_guard_key is defined or (_bm_guard_absent_keys | default([]) | length) > 0
     - _bm_create is not skipped
+  no_log: true
 
 - name: "Record whether anything was written"
   ansible.builtin.set_fact:

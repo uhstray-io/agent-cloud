@@ -180,7 +180,10 @@ policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-loc
   `bootstrap-local-dev.yml` generates (`_inv_ini`), not `platform/inventory/local-dev.yml`,
   so `stop_extra_containers` for `netbox-local` is declared in both. An
   existing local Semaphore picks it up when `make local-bootstrap` re-runs its
-  "Create or update local inventory" step.
+  "Create or update local inventory" step. That step registers Ansible's `--export`
+  YAML of the rendered INI as a `static-yaml` record with a literal
+  `all.vars.openbao_addr`, because the seed templates' address check reads that
+  address from the inventory file.
 
 **Stopping the foundation.** `make local-service-down` cannot stop the genesis foundation:
 the local Semaphore cannot stop itself, and the foundation is genesis-managed, not
@@ -364,4 +367,5 @@ not establish production discovery readiness.
 | Semaphore container exits (2) | `podman logs local-semaphore` — dialect/image regression; keep the pinned tag |
 | Task fails at OpenBao auth | Re-run bootstrap (regenerates AppRole secret-id + environment) |
 | Task: "no hosts matched" | The static inventory in Semaphore is managed by bootstrap — re-run it; don't hand-edit |
+| Task launch fails with "cannot decrypt access key, perhaps encryption key was changed" | Semaphore's `access_key_encryption` changed, so the environment's stored encrypted inputs no longer decrypt. Cause: `config.json` used to live in the container layer, and any recreate minted a new key (2026-10-24). Fix now: `config.json` lives on `local-semaphore-data` (`SEMAPHORE_CONFIG_PATH`), and bootstrap carries an older container's key onto that volume before any recreate. Check: `podman exec local-semaphore test -f /var/lib/semaphore/config/config.json && echo present`. Recovery for inputs already orphaned: run `Provision Seed Environment` for the seed template (`platform/semaphore/templates.yml`, `isolated_environment`) with `seed_replace_auth=true`. It overwrites the two undecryptable AppRole inputs in place with the values from OpenBao (same ids, so a failure partway leaves the pair whole for a retry), and leaves every other input alone. Use it only after the encryption key changed; a normal run keeps `seed_replace_auth=false`. (Before this flag existed, the inputs were removed through the API by hand; that was a one-time stopgap.) |
 | Control-plane reset | `make local-clean` is destructive: it removes vault/orchestrator data and tool state while other service volumes remain. Back up and plan matching service recovery before use |

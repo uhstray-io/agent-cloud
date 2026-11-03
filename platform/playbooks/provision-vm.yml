@@ -7,6 +7,11 @@
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
 
 - name: "Pre-validate: Cluster ready for VM provisioning"
   ansible.builtin.import_playbook: proxmox-validate.yml
@@ -25,10 +30,12 @@
   vars:
     _project_root: "{{ project_root | default(playbook_dir + '/..') }}"
     # OpenBao connection
-    _bao_url: "{{ openbao_addr | default('') }}"
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
 
     # Secrets from OpenBao
     _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
@@ -620,6 +627,12 @@
         # and when the declaration names another node the new VM is migrated there
         # offline (a stopped VM with local disks moves with `targetstorage`) before it is
         # configured. Same-node declarations behave exactly as before.
+        - name: "Guard target and clone-source VMIDs before cloning"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}", "{{ _tmpl_vmid }}"]
+          tags: [always]
+
         - name: "Clone template to new VM (on the template's node)"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _tmpl_vmid }}/clone"
@@ -704,6 +717,12 @@
             _do_migrate: "{{ (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) == _tmpl_node }}"
           when: _do_migrate | bool
 
+        - name: "Guard target and clone-source VMIDs before migration"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}", "{{ _tmpl_vmid }}"]
+          tags: [always]
+
         - name: "Migrate the new VM offline to the declared node (local disks onto the declared storage)"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _vmid }}/migrate"
@@ -780,6 +799,12 @@
             - _vm_lock.attempts | default(0) >= 60
           when: not ansible_check_mode
 
+        - name: "Guard target VMID before configuration"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Configure VM resources and cloud-init"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -802,6 +827,12 @@
             status_code: [200]
           when: not ansible_check_mode
 
+        - name: "Guard target VMID before tag update"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
         - name: "Set Proxmox tags"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -811,6 +842,12 @@
               tags: "{{ _tags }}"
             status_code: [200]
           when: not ansible_check_mode
+
+        - name: "Guard target VMID before disk resize"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
 
         - name: "Resize disk to size — {{ _disk }}"
           ansible.builtin.uri:
@@ -914,6 +951,12 @@
           when:
             - ansible_check_mode
             - _pre_start.json.data.status != "running"
+
+        - name: "Guard target VMID before start"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
 
         - name: "Start VM"
           ansible.builtin.uri:

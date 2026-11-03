@@ -13,10 +13,16 @@
 # controller's loopback API and compares them with two private inventory declarations
 # (filter semaphore_access_drift):
 #   semaphore_project_members   {username: role} — the whole team, nothing implied
-#   semaphore_admin_users       [username]       — shared with promote-semaphore-admins.yml
-# Both belong in the inventory's top-level all.vars: this play runs on implicit localhost,
+#   the admin roster            filter semaphore_admin_roster, shared with
+#                               promote-semaphore-admins.yml: every platform_admins entry (the
+#                               administrator list the Authentik deploy renders into
+#                               platform-admins, so admin is derived, never hand-granted) plus
+#                               semaphore_admin_users [username] for Semaphore-only admins
+# All three belong in the inventory's top-level all.vars: this play runs on implicit localhost,
 # which receives no group's vars (verified with ansible-inventory --host localhost; a
 # declaration under a group reads as absent, and every admin is then reported undeclared).
+# This play never promotes: Promote Semaphore Admins does, and the report names each declared
+# admin it has still to promote.
 # Under --check it only reports, names and roles only; the report is how the current roster is
 # read before the declaration exists. A real run converges the team: it adds a declared account,
 # sets a declared role and removes an undeclared member, then reads the team back. It never
@@ -50,6 +56,10 @@
     - name: "Semaphore runtime access (injected token, or the controller AppRole)"
       ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
 
+    - name: "Resolve the declared Semaphore admins"
+      ansible.builtin.set_fact:
+        _admins_declared: "{{ semaphore_admin_users | default([]) | semaphore_admin_roster(platform_admins | default(none)) }}"
+
     - name: "Read the project team, the accounts and the integrations"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/{{ item }}"
@@ -68,7 +78,7 @@
         _drift: >-
           {{ _reads.results[0].json | semaphore_access_drift(
                semaphore_project_members | default(none), _reads.results[1].json,
-               semaphore_admin_users | default([]), _reads.results[2].json) }}
+               _admins_declared, _reads.results[2].json) }}
         _roster:
           members: "{{ _reads.results[0].json | items2dict(key_name='username', value_name='role') }}"
           admins: "{{ _reads.results[1].json | selectattr('admin') | map(attribute='username') | list }}"
@@ -79,6 +89,9 @@
         msg:
           - "Project {{ _pid }} team: {{ _roster.members }}"
           - "System admins: {{ _roster.admins }}"
+          - "Declared admins: {{ _admins_declared }}{{ '' if platform_admins is defined else ' (platform_admins is not visible to this play: nothing derived)' }}"
+          - "Declared admins to promote (Promote Semaphore Admins): {{ _admins_declared | difference(_roster.admins) | intersect(_reads.results[1].json | map(attribute='username') | list) }}"
+          - "Declared admins with no account yet (each signs in once): {{ _admins_declared | difference(_reads.results[1].json | map(attribute='username') | list) }}"
           - "Integrations: {{ _roster.integrations }}"
           - "To add: {{ _drift.add | map(attribute='username') | list }}"
           - "Role changes: {{ _drift.set_role | map(attribute='username') | list }}"
@@ -144,7 +157,7 @@
       vars:
         _left: >-
           {{ _after.json | semaphore_access_drift(semaphore_project_members, _reads.results[1].json,
-             semaphore_admin_users | default([]), []) }}
+             _admins_declared, []) }}
       ansible.builtin.assert:
         that: (_left.add + _left.set_role + _left.remove) | length == 0
         fail_msg: >-

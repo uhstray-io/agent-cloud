@@ -313,10 +313,14 @@ TEMPFILE_USERS = {
     "tasks/backup-ssh-key-to-site-config.yml": "pair derivation scratch",
     "tasks/site-config-clone.yml": "clone and deploy-key scratch",
     "generate-service-ssh-key.yml": "ssh-keygen output scratch",
+    "deploy-o11y.yml": "controller-rendered candidate and protected source-review input",
     "run-agw-conformance.yml": "conformance key files and results, removed in an always: block",
+    "survey-o11y-scrape-baseline.yml": "controller-rendered candidate for source proof",
     "verify-o11y-profile-pilot.yml": "disposable profile candidates in tmpfs, removed in an always: block",
     "accept-o11y-profile-pilot.yml": "rendered candidates and helper files in tmpfs, removed in an always: block",
     "restart-o11y-pyroscope-durability.yml": "fixed verifier workspace in tmpfs, removed in an always: block",
+    "survey-o11y-expected-metrics-targets.yml": "private reviewed helper source workspace, contains no SSH key",
+    "provision-console-proxmox-token.yml": "per-run Proxmox CA file for TLS verification, removed in an always: block",
 }
 
 

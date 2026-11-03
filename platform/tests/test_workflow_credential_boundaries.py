@@ -41,28 +41,41 @@ def _named(path: Path, name: str) -> dict:
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
-    sort = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: sort the lookups")
+    path = PLAYBOOKS / "collect-service-conformance.yml"
+    sort = _named(path, "NetBox: keep only bounded lookup data")
+    classify = _named(path, "NetBox: classify complete reads and unique matches")
+    hold = _named(path, "NetBox: hold classified lookup outcomes")
     results = [
         {"item": "svc-a", "status": 200,
-         "json": {"count": 1, "results": [{"id": 7, "custom_fields": {"ac_workflow_status": {"fw-harden": "pass"}}}]},
+         "json": {"count": 1, "next": None, "previous": None, "results": [{"id": 7, "custom_fields": {
+             "ac_workflow_status": {"fw-harden": "pass"}, "unrelated_private_field": "netbox-extra-secret"}}]},
          "invocation": {"module_args": {"headers": {"Authorization": "Bearer nbt_secret.value"}}}},
-        {"item": "svc-b", "status": 200, "json": {"count": 0, "results": []}},
+        {"item": "svc-b", "status": 200, "json": {"count": 0, "next": None, "previous": None, "results": []}},
         # a record whose status field was never written reads as {}, not null
         {"item": "svc-d", "status": 200,
-         "json": {"count": 1, "results": [{"id": 4, "custom_fields": {"ac_workflow_status": None}}]}},
+         "json": {"count": 1, "next": None, "previous": None,
+                  "results": [{"id": 4, "custom_fields": {"ac_workflow_status": None}}]}},
         # same-named VMs in two clusters: never write the first (PR 195 Codex review)
-        {"item": "svc-c", "status": 200, "json": {"count": 2, "results": [{"id": 8}, {"id": 9}]}},
+        {"item": "svc-c", "status": 200,
+         "json": {"count": 2, "next": None, "previous": None, "results": [{"id": 8}, {"id": 9}]}},
     ]
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
-        "vars": {"_vms": {"results": results}},
-        "tasks": [sort, {"ansible.builtin.debug": {"msg": "FOUND {{ _vm_found | to_json }}"}},
+        "vars": {
+            "_vms": {"results": results},
+            "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
+            "_select": {"stdout": json.dumps({"inventory_services": ["svc-a", "svc-b", "svc-c", "svc-d"]})},
+                 "_netbox_url": "http://netbox.test"},
+        "tasks": [sort, classify, hold, {"ansible.builtin.debug": {"msg": "FOUND {{ _vm_found | to_json }}"}},
                   {"ansible.builtin.debug": {"msg": "AMBIGUOUS {{ _vm_ambiguous | to_json }}"}}],
     }]
     path = tmp_path / "sort.yml"
     path.write_text(yaml.safe_dump(harness))
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
+    env["ANSIBLE_LOCAL_TEMP"] = str(tmp_path / "ansible-local")
+    env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "ansible-remote")
+    env["TMPDIR"] = "/private/tmp"
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
                          text=True, capture_output=True, check=True).stdout
     line = next(ln for ln in out.splitlines() if "FOUND " in ln)
@@ -72,6 +85,80 @@ def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
                      {"item": "svc-d", "id": 4, "status": {}}]
     assert '"AMBIGUOUS [\\"svc-c\\"]"' in out, out[-600:]
     assert "nbt_secret" not in out
+    assert "netbox-extra-secret" not in out
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_incomplete_netbox_reads_are_not_classified_as_empty_success(tmp_path):
+    path = PLAYBOOKS / "collect-service-conformance.yml"
+    tasks = [
+        _named(path, "NetBox: keep only bounded lookup data"),
+        _named(path, "NetBox: classify complete reads and unique matches"),
+        _named(path, "NetBox: hold classified lookup outcomes"),
+    ]
+    harness = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {
+            "_vms": {
+                "results": [{"item": "svc-a", "status": 503,
+                             "invocation": {"module_args": {"headers": {"Authorization": "Bearer private"}}}}]
+            },
+                 "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
+                 "_select": {"stdout": json.dumps({"inventory_services": ["svc-a", "svc-b"]})},
+                 "_netbox_url": "http://netbox.test"},
+        "tasks": [*tasks, {"ansible.builtin.debug": {
+            "msg": "STATE={{ _netbox_state | to_json }} UNKNOWN={{ _vm_unknown | to_json }}"}}],
+    }]
+    harness_path = tmp_path / "unknown-netbox.yml"
+    harness_path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    env["ANSIBLE_LOCAL_TEMP"] = str(tmp_path / "ansible-local")
+    env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "ansible-remote")
+    env["TMPDIR"] = "/private/tmp"
+    result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness_path)], cwd=REPO, env=env,
+                            text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert '\\"complete\\": false' in out, out
+    assert '\\"unknown\\": [\\"svc-a\\", \\"svc-b\\"]' in out, out
+    assert "private" not in out
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_nonterminal_netbox_page_is_unknown_without_echoing_next_url(tmp_path):
+    path = PLAYBOOKS / "collect-service-conformance.yml"
+    tasks = [
+        _named(path, "NetBox: keep only bounded lookup data"),
+        _named(path, "NetBox: classify complete reads and unique matches"),
+        _named(path, "NetBox: hold classified lookup outcomes"),
+    ]
+    next_url = "https://private.invalid/api/?token=private-next-url"
+    harness = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {
+            "_vms": {"results": [{"item": "svc-a", "status": 200,
+                                   "json": {"count": 1, "next": next_url, "previous": None,
+                                            "results": [{"id": 7, "custom_fields": {}}]}}]},
+            "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
+            "_select": {"stdout": json.dumps({"inventory_services": ["svc-a"]})},
+            "_netbox_url": "http://netbox.test",
+        },
+        "tasks": [*tasks, {"ansible.builtin.debug": {
+            "msg": "STATE={{ _netbox_state | to_json }} UNKNOWN={{ _vm_unknown | to_json }}"}}],
+    }]
+    harness_path = tmp_path / "nonterminal-netbox.yml"
+    harness_path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path / "ansible-local"),
+               ANSIBLE_REMOTE_TEMP=str(tmp_path / "ansible-remote"), TMPDIR="/private/tmp")
+    result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness_path)], cwd=REPO, env=env,
+                            text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '\\"complete\\": false' in result.stdout, result.stdout
+    assert '\\"unknown\\": [\\"svc-a\\"]' in result.stdout, result.stdout
+    assert next_url not in result.stdout
+    assert "private-next-url" not in result.stdout
 
 
 def test_validate_address_hides_its_token_bearing_requests():

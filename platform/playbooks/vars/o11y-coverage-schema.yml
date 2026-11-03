@@ -58,6 +58,31 @@ o11y_coverage_schema:
     - inventory_host
     - endpoint
     - network_path
+  availability_health_private_fields:
+    - endpoint
+    - expected_status_codes
+    - tls_server_name
+    - trust
+  availability_health_method: alloy-blackbox-http
+  availability_health_selector_format: 'probe_success{job="o11y-availability",target_id="<target_id>",environment="<environment>",cluster="<o11y_cluster>"}'
+  availability_trust_values:
+    - system
+    - internal-ca
+  availability_health_budget_fields:
+    - interval_seconds
+    - scrape_timeout_seconds
+    - probe_timeout_seconds
+    - body_size_limit_bytes
+    - samples_per_scrape
+  availability_source_safety_ceilings:
+    max_targets: 64
+    max_interval_seconds: 3600
+    max_probe_timeout_seconds: 10
+    max_scrape_timeout_seconds: 30
+    max_body_size_limit_bytes: 65536
+    max_samples_per_scrape: 256
+    max_total_probe_timeout_seconds: 120
+    max_series: 384
 
 # site-config supplies this object as an inventory group variable. A declared
 # receipt_reference is an intended audit link, not proof that the referenced
@@ -92,6 +117,15 @@ o11y_coverage_schema:
 #           collection_method: alloy
 #           receipt_reference: semaphore/task/123
 #           freshness_seconds: 3600
+#
+# Optional private availability health method (all values stay in site-config):
+#   signals.health.collection_method: alloy-blackbox-http
+#   signals.health.selector: 'probe_success{job="o11y-availability",target_id="service:example",environment="production",cluster="<existing cluster>"}'
+#   signals.health.endpoint: https://<RFC1918 IPv4>/healthz
+#   signals.health.expected_status_codes: [200]
+#   signals.health.tls_server_name: health.<private-domain> # HTTPS only
+#   signals.health.trust: system # or internal-ca; HTTPS only
+#   budget.health: {interval_seconds: <reviewed>, scrape_timeout_seconds: <reviewed>, probe_timeout_seconds: <reviewed>, body_size_limit_bytes: <reviewed>, samples_per_scrape: <reviewed>}
 #         profiles: # optional fifth signal; declarations use the pinned CPU profile type
 #           applicable: true
 #           selector: '{target_id="service:example"}'

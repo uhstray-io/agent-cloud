@@ -74,6 +74,25 @@ gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
 model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
 inference latency dashboard links to it.
 
+## OTLP receiver mutual TLS source contract
+
+`o11y_otlp_tls_enabled` defaults false. When enabled, the existing OTLP gRPC
+listener requires a step-ca client certificate, and the receiver-host journal
+collector presents its fixed `o11y-journal` client leaf while verifying the required
+`o11y_otlp_tls_server_name`. The receiver uses its fixed `o11y-otlp-server` leaf and
+the authoritative root/intermediate bundle. Both certificate directories and the
+bundle are mounted read-only. Alloy rereads staged leaves natively; existing
+connections are not immediately reauthenticated after a reload.
+
+Alloy's client-CA check verifies trust-chain membership, not a gateway-specific SAN,
+so the existing source-scoped firewall remains part of the sender boundary. The
+source change does not enable private inventory or prove live activation. Leaf
+issuance, gateway exporter transport, coordinated journal/receiver rollout, runtime
+mount and delivery checks, and OpenSpec task 6.5 handshake/refusal evidence remain
+separate gates. Keep the switch false until those owners coordinate the rollout.
+TLS-enabled Clean Deploy is refused because it would remove the issued certificate
+tree.
+
 ## OTLP receiver resource bounds — source slice for task 3.3
 
 Both OTLP inputs pass directly through their own Alloy memory limiter before
@@ -152,6 +171,47 @@ at a time; they do not cap lifetime series churn as label values change across
 scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
+
+### Native endpoint availability source contract — task 2.2/3.3 source slice
+
+The private estate declaration remains the only target authority. An applicable
+`signals.health` entry may opt into `collection_method: alloy-blackbox-http`
+with one fixed RFC1918 IPv4 HTTP(S) GET endpoint, exact accepted statuses, and
+`budget.health` interval, timeout, body, and sample limits. HTTPS requires a
+reviewed DNS server name and `system` or `internal-ca` trust; certificate
+verification stays enabled. Redirects and environment proxying are disabled.
+Endpoints, TLS names, and activation limits belong in site-config, never in this
+repository, command logs, or rendered labels.
+
+Source validation requires a matching canonical inventory revision, explicit
+reviewed enablement, a nonempty deployed target set, receiver-matching
+environment, and finite limits. Source safety ceilings are 64 targets, 30–3600
+second intervals, probe timeout at most 10 seconds, scrape timeout at most 30
+seconds with probe < scrape <= interval, response bodies at most 65,536 bytes,
+raw scrape samples at most 256 and within the existing shared cap, aggregate
+probe timeout at most 120 seconds, and at most 384 retained series. These are
+hard source ceilings, not production defaults or a measured cadence. The
+candidate retains six fixed families and fixed service, target, environment,
+cluster, job, and instance labels; endpoint text is not a label.
+
+Availability is explicitly off by default. Enabling it requires
+`o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed` to be
+true, a revision-matched `estate_coverage_inventory` target declaration, and
+finite reviewed limits. Before placement and immediately before lifecycle
+apply, the deployer must prove the actual Linux network namespace is distinct;
+after apply it must bind the new Alloy process to the reviewed candidate and
+pass the fixed component, target, loaded-limit, and fresh-sample readback gates.
+These source gates and their regressions are implemented. A bounded pinned
+Alloy v1.5.1 fixture also parsed the expected component metadata after warm-up.
+No production inventory or live source transition has been accepted, and the
+fixture does not prove fresh sample delivery or endpoint health; runtime
+availability and probe traffic remain unverified. Candidate rendering, source
+tests, and the public source flag alone do not establish runtime availability.
+The Alloy handler and profile consumer use loopback in the availability overlay;
+internal-CA trust uses the existing public CA bundle in a read-only mount,
+deduplicated with the OTLP TLS overlay. Existing self-monitor labels and metrics
+are forwarded through the existing private receiver path. Keep task 3.3 and all
+live acceptance gates open.
 
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
@@ -461,6 +521,21 @@ validated before placement and serialized as PromQL/YAML strings. Target rules
 use `absent_over_time(up{...}[5m])` and hold for two minutes. An endpoint that
 still exists with `up=0` remains the service-down condition; a target missing
 from Prometheus for five minutes is the disappeared-target condition.
+
+The optional native endpoint-health rules keep three observations separate:
+`probe_success=0` means the reviewed health contract failed while its scrape is
+healthy, `up=0` means telemetry collection failed, and an absent exact
+`probe_success` series is missing health data. The failed-probe rule requires
+`up=1` for the same six-label target identity. The missing-probe rule uses the
+reviewed health freshness window and is suppressed only by `up=0` for that same
+identity. The existing generic service rule reports a telemetry scrape failure
+and does not claim the application is down. Both endpoint rules use the
+existing alert enablement, canary, ownership, and Discord route; disabling the
+source, alerts, or activating the canary removes the rules through the existing
+`deleteRules` cleanup. A rendered rule and source-level PromQL evaluation do not
+prove Grafana readback, live firing/recovery, endpoint behavior, or notification
+delivery. The `agent-cloud-conformance` silence duration remains private and
+must follow its verified schedule; no default cadence is inferred here.
 
 When production alerts or the reviewed-target gate turns off, Grafana's generated
 file keeps every validated previously owned target UID as a paused `vector(0)`
@@ -965,6 +1040,18 @@ root-filesystem, and load collectors. Its exact container isolation, metrics
 availability, and host-versus-guest root filesystem parity require a passing
 Semaphore runtime readback.
 
+`instrument-host-o11y.yml` can attach a reviewed estate target ID to host
+exporter series with the inventory boolean `o11y_host_metrics_identity_enabled: true`.
+It resolves the existing deployed declaration by exact `inventory_host` and
+effective service identity, validates the full declaration through the existing
+coverage schema, and refuses before exporter or scrape changes if the binding is
+missing or ambiguous. Absent/false preserves legacy labels. The target labels
+include `target_id`, `component=node-exporter`, and `metrics_scope=host`; returned
+`node_memory_MemAvailable_bytes` must match all three and the host. This host
+probe does not rewrite or satisfy an application-specific metrics selector and
+does not establish application health or other signal coverage. It is a source
+mechanism only; private enrollment and runtime receipts remain separate gates.
+
 In production, `deploy-o11y.yml` installs an idempotent daily rootless-Podman sampler. Local mode
 skips the systemd sampler and applies the textfile collector overlay only when the optional
 inference probe is enabled. The production sampler
@@ -1202,10 +1289,15 @@ the declared private `o11y_otlp_bind`, at port `4318` and path `/v1/logs`.
 This receiver is separate from the gateway's OTLP/gRPC listener on `4317`.
 Site-config allows TCP/4318 only from the controller CIDR. The collector checks
 that its URL exactly matches the receiver bind and fails visibly when delivery
-fails. Alloy applies `job`, `service`, `step`, and `status` as the conformance-
-specific Loki labels. The shared Loki writer also adds `cluster` and
+fails. Alloy's conformance-specific label hint includes `job`, `service`,
+`step`, `status`, and `kind`. Existing per-step records retain their four-label
+schema; the fixed completion receipt adds only `kind=run` and has no `service`
+or `step`. Per-service dashboard queries require nonempty `service` and `step`
+labels, keeping that global clock record out of service state, failure, and
+inventory-marker rows. The shared Loki writer also adds `cluster` and
 `environment` labels; task identifiers and error details stay in the log body.
-Local development keeps the loopback direct-Loki path.
+This source contract does not prove a live receipt or Loki readback. Local
+development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 

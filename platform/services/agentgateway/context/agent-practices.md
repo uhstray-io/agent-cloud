@@ -137,7 +137,9 @@ Local-dev deploys run `make local-deploy-agentgateway` (`deployment/README.md`; 
 
 Decided by OPA on the committed catalog
 (`platform/services/opa/deployment/policies/agentcloud/data.json`, rules in
-`agent_actions.rego`):
+`agent_actions.rego`). skynet's own client asks OPA before its launches; Semaphore does not ask OPA,
+and the planned launch gate (OpenSpec change `skynet-launch-containment`) will. The list below is what
+the catalog says, not what Semaphore enforces today:
 
 - **`service-agent`** may launch `Deploy agentgateway` — it is on its closed
   `service_deploy_templates` list — only as registry step `service-deploy`, only with a
@@ -163,14 +165,16 @@ Decided by OPA on the committed catalog
   it is on no workflow role's `allowed_templates`. A service proposal naming it is denied
   ("service proposal names a destructive template").
 - **Manage agentgateway Client Key** and **Rollback Inference Route.** Neither is on any
-  workflow role's `allowed_templates` or `service_deploy_templates` (`data.json`), so OPA
-  denies them to `infra-agent`, `security-agent`, `o11y-agent`, `service-agent` and `network-agent`. Note: the
+  workflow role's `allowed_templates` or `service_deploy_templates` (`data.json`), so OPA's
+  decision denies them to `infra-agent`, `security-agent`, `o11y-agent`, `service-agent` and `network-agent`. Note: the
   legacy `skynet` and `nemoclaw` catalog entries declare no `allowed_templates`
   (`data.json:3`, `data.json:62`), so they are not role-scoped (`agent_actions.rego:74`): OPA
   limits their `run_task` by template only through the destructive rule
   (`agent_actions.rego:68-70`), and by branch through the `main`|`dev` gate that applies to
-  every agent launch (`agent_actions.rego:258-267`). Neither stops them launching these two
-  templates from `main` or `dev`. This file forbids those two templates to any agent by
+  every agent launch OPA is asked about (`agent_actions.rego:258-267`). Neither stops them launching
+  these two templates from `main` or `dev`. Whether any of this binds depends on the caller asking OPA:
+  skynet's client does, Semaphore does not, and the planned launch gate will (OpenSpec change
+  `skynet-launch-containment`). This file forbids those two templates to any agent by
   practice; rotation, revocation and rollback are operator actions.
 - **Add a client by any route other than inventory.** Adding a client is adding the name to
   `agw_clients` (or declaring the admin) and deploying; that inventory change lands through a pull request
@@ -192,7 +196,9 @@ Decided by OPA on the committed catalog
 
 One row per operation, each naming only templates, variables and commands that exist (the full table,
 with sources, is "Operator operations" in `context/architecture.md`). Who may launch which template is
-decided by OPA, as under "What an agent may do" and "What an agent may not do" above; this table lists
+decided by OPA's catalog, as under "What an agent may do" and "What an agent may not do" above
+(skynet's client asks OPA before its launches; Semaphore does not ask, and the planned launch gate
+will); this table lists
 the operations, not the permissions. Each template has a generated `(Dev)` variant.
 
 | Operation | Template or command | Variables and notes |
