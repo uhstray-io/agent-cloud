@@ -89,6 +89,31 @@ def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("ambiguous", [[], ["svc-c", "svc-e"]])
+def test_the_run_record_names_the_ambiguous_vms_and_their_count(tmp_path, ambiguous):
+    # A service whose name matches two NetBox VM records is neither written nor counted anywhere
+    # durable: the debug report named it, the RUN line the run keeps did not. The run record now
+    # carries the names and their count under one stable key, and the run still does not fail.
+    task = _named(PLAYBOOKS / "collect-service-conformance.yml",
+                  "Record the aggregate for the report and the dashboard")
+    agg = {"status_by_service": {}, "failed_steps": {}, "report": {"svc-a": []},
+           "loki_streams": [{"stream": {"service": "svc-a"}}], "otlp_payload": {"resourceLogs": []}}
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "vars": {"_agg": agg, "_vm_ambiguous": ambiguous}, "tasks": [task]}]
+    path = tmp_path / "record.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                         text=True, capture_output=True, check=True).stdout
+    run = next(ln for ln in out.splitlines() if "RUN: " in ln)
+    conformance = json.loads(run.split("RUN: ", 1)[1])["conformance"]
+    assert conformance["netbox_ambiguous_vm"] == {"count": len(ambiguous), "services": ambiguous}, run
+    assert conformance["report"] == {"svc-a": []}
+    assert "loki_streams" not in conformance and "otlp_payload" not in conformance
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 def test_incomplete_netbox_reads_are_not_classified_as_empty_success(tmp_path):
     path = PLAYBOOKS / "collect-service-conformance.yml"
     tasks = [
@@ -164,6 +189,8 @@ def test_nonterminal_netbox_page_is_unknown_without_echoing_next_url(tmp_path):
 def test_validate_address_hides_its_token_bearing_requests():
     path = PLAYBOOKS / "validate-address-free.yml"
     for name in ("NetBox: find the service's VM record and the Proxmox clusters",
+                 "NetBox: find the tenant discovery places the VM under",
+                 "NetBox: find the site discovery places the VM at",
                  "NetBox: create the VM record (planned, in the Proxmox cluster)"):
         task = _named(path, name)
         assert task.get("no_log") is True and task.get("failed_when") is False, name
@@ -223,6 +250,7 @@ def test_validate_address_reaches_a_verdict(tmp_path, records, errors):
     path = PLAYBOOKS / "validate-address-free.yml"
     tasks = [_named(path, "Decide"), _named(path, "Decide: judge the address and the record placement")]
     variables = {"_arp_hits": [], "_own_vm": False, "_ip": "192.0.2.10", "_vmid": 1, "_name": "svc",
+                 "_placement_errors": [],  # the tenant and site decision, covered by test_validate_address_placement
                  "_nb": {"results": [{"json": {"count": len(records), "results": records}},
                                      {"json": {"results": [PVE_CLUSTER]}}]}}
     got, _ = _run_tasks(tmp_path, tasks, variables, "_address_errors")

@@ -95,12 +95,22 @@ See proposal.md (Why). Facts that shape the approach:
   VM with one open port, no shell-outs, no templating of inputs and no other workloads; its token never
   leaves OpenBao and the gate's `.env`.
 - [A literal survey value used unsafely inside an allowlisted playbook] → The allowlist is the OPA
-  catalog, every addition is reviewed; OPA receives the exact values and can bound them.
+  catalog, every addition is reviewed; OPA receives the exact values and bounds the ones that select
+  hosts: `target_service` must name one `<name>_svc` group, or one bare service name (never `all`,
+  `ungrouped` or `localhost`) for the templates in `catalog.semaphore.bare_service_name_templates`, and
+  `target_host` one plain host name, never `all`, `ungrouped` or `localhost` (`agent_actions.rego`,
+  PR 829). Other values are bounded by the template's
+  survey type (enum, integer) and by the playbook that reads them.
 - [`context` is caller-supplied and some rules read it (the firewall rules compare proposals against
   `context.controller_cidr`, the access rules against `context.groups`)] → The gate forwards it
   unchanged, so a caller can shape the facts those rules judge. Acceptable while skynet is the only
   caller and its context comes from snapshots it read; a follow-up should have the gate, or OPA's own
   data, supply those facts instead.
+- [`proposal` is caller-supplied, and the deny rules read it (proposal presence, verdict, firewall, service and
+  access rules)] → The gate forwards it unchanged, as it does `context`. No allow rule reads `proposal` or
+  `context` (`agent_actions.rego`, the `allow` rule), so a forged value changes only whether those deny rules
+  fire. The template, branch and declared survey values that run are not taken from the proposal, and
+  `task_body` carries none of it. Accepted for the same reason as the `context` risk above.
 - [OPA input fields the caller could forge] → The gate builds the input from scratch: `service`,
   `action` and `human_approved: false` are fixed, `agent` comes from the token map, and only
   `proposal` and `context` are taken from the request. A caller cannot set `human_approved`.
