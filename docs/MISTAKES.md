@@ -1102,6 +1102,8 @@ contents; the transformations above it are.
 **Enforced by.** Convention. The brief's DEVIATION RULE caught this one: the worker stopped on
 a brief that contradicted the code.
 
+
+The rule is widened in 1.29.
 ### 1.27 Attributed a regression to a PR without reading the history
 
 **Occurrences: 1** — 2026-10-29
