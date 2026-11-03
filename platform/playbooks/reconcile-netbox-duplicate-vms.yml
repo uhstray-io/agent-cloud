@@ -123,6 +123,25 @@
           return row["comments"].startswith("VMID:") and row["vcpus"] is not None
 
 
+      def signals(row):
+          # The per-record flags an ambiguous group reports, so the operator sees why it did not qualify. Metadata only:
+          # never the description, the comments, an address or an address id.
+          return {
+              "id": row["id"],
+              "tenant": row["tenant"],
+              "created": row["created"],
+              "bare": is_bare(row),
+              "discovery": is_disc(row),
+              "marker": row["description"] == MARKER,
+              "vcpus_set": row["vcpus"] is not None,
+              "vmid_comment": row["comments"].startswith("VMID:"),
+              "comments_empty": row["comments"] == "",
+              "interfaces": row["interface_count"],
+              "virtual_disks": row["virtual_disk_count"],
+              "primary_ip": bool(row["primary_ip4_id"] or row["primary_ip6_id"]),
+          }
+
+
       def blockers(row):
           reasons = []
           if row["interface_count"] is None:
@@ -165,7 +184,12 @@
                   if len(group) == 2 and len(bares) == 1 and len(discs) == 1:
                       candidates.append((bares[0], discs[0]))
                   else:
-                      ambiguous.append({"name": group[0]["name"], "cluster": group[0]["cluster"], "count": len(group)})
+                      ambiguous.append({
+                          "name": group[0]["name"],
+                          "cluster": group[0]["cluster"],
+                          "count": len(group),
+                          "records": [signals(r) for r in sorted(group, key=lambda r: r["id"])],
+                      })
 
               ids = [row["id"] for pair in candidates for row in pair]
               creators = {}
@@ -344,7 +368,7 @@
       when: not ansible_check_mode
       changed_when: true
 
-    # ── the result: exactly one line (ids, pair and cluster names, tenant names, created times, actions) ──────────────────────────────────
+    # ── the result: exactly one line (ids, pair and cluster names, tenant names, created times, actions, and the flags of each record in an ambiguous group) ──
     - name: "Hold the result line the NetBox shell printed"
       ansible.builtin.set_fact:
         # The conditional reads only the branch that ran, so the skipped task's result is never touched.
@@ -360,7 +384,7 @@
       ansible.builtin.set_fact:
         _result: "{{ _result_lines[0] | regex_replace('^RECONCILE_RESULT ', '') | from_json }}"
 
-    - name: "Show the result (ids, names, tenants, created times, actions)"
+    - name: "Show the result (ids, names, tenants, created times, actions, per-record flags of ambiguous groups)"
       ansible.builtin.debug:
         var: _result
 

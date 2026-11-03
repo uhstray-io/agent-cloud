@@ -825,12 +825,57 @@ def test_an_unconfirmed_origin_is_reported_and_never_touched(tmp_path, bare_crea
     assert after == before
 
 
+# The per-record flags an ambiguous group reports, for the records _vm builds (tenant uhstray, created 2026-11-01).
+def _bare_signals(vm_id):
+    return {
+        "id": vm_id,
+        "tenant": "uhstray",
+        "created": "2026-11-01 10:00:00+00:00",
+        "bare": True,
+        "discovery": False,
+        "marker": True,
+        "vcpus_set": False,
+        "vmid_comment": False,
+        "comments_empty": True,
+        "interfaces": 0,
+        "virtual_disks": 0,
+        "primary_ip": False,
+    }
+
+
+def _disc_signals(vm_id):
+    return {
+        "id": vm_id,
+        "tenant": "uhstray",
+        "created": "2026-11-01 10:00:00+00:00",
+        "bare": False,
+        "discovery": True,
+        "marker": False,
+        "vcpus_set": True,
+        "vmid_comment": True,
+        "comments_empty": False,
+        "interfaces": 0,
+        "virtual_disks": 0,
+        "primary_ip": False,
+    }
+
+
 def test_a_group_of_three_records_is_ambiguous_and_untouched(tmp_path):
-    before = _merge(_pair(), {"vms": [_vm(12, "dns", bare=False)], "changes": _creates(12, [DISCOVERY])})
+    # The discovery record of id 12 is listed first in the database. The report still lists the records sorted by id.
+    pair = _pair()
+    extra = {"vms": [_vm(12, "dns", bare=False)], "changes": _creates(12, [DISCOVERY])}
+    before = {"vms": extra["vms"] + pair["vms"], "changes": pair["changes"] + extra["changes"]}
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode == 0, proc.stderr
     assert result["ok"] is True and result["pairs"] == []
-    assert result["ambiguous"] == [{"name": "dns", "cluster": "uhstray-cluster", "count": 3}]
+    assert result["ambiguous"] == [
+        {
+            "name": "dns",
+            "cluster": "uhstray-cluster",
+            "count": 3,
+            "records": [_bare_signals(10), _disc_signals(11), _disc_signals(12)],
+        }
+    ]
     assert after == before
 
 
@@ -838,7 +883,31 @@ def test_two_bare_records_are_ambiguous_and_untouched(tmp_path):
     before = {"vms": [_vm(10, "dns", bare=True), _vm(11, "dns", bare=True)], "changes": []}
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode == 0, proc.stderr
-    assert result["ambiguous"] == [{"name": "dns", "cluster": "uhstray-cluster", "count": 2}]
+    assert result["ambiguous"] == [
+        {
+            "name": "dns",
+            "cluster": "uhstray-cluster",
+            "count": 2,
+            "records": [_bare_signals(10), _bare_signals(11)],
+        }
+    ]
+    assert after == before
+
+
+def test_a_bare_record_that_lost_its_marker_makes_the_pair_ambiguous_and_its_flags_say_why(tmp_path):
+    # An edited description takes the record off the bare shape, so the pair is no longer a pair: the group is
+    # ambiguous and nothing is written. The flags show the marker gone and the record no longer bare. The edited text
+    # itself never reaches the output.
+    before = _pair()
+    before["vms"][0]["description"] = "Edited by hand"
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is True and result["pairs"] == []
+    lost_marker = {**_bare_signals(10), "bare": False, "marker": False}
+    assert result["ambiguous"] == [
+        {"name": "dns", "cluster": "uhstray-cluster", "count": 2, "records": [lost_marker, _disc_signals(11)]}
+    ]
+    assert "Edited by hand" not in proc.stdout
     assert after == before
 
 
