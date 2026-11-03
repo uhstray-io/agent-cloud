@@ -45,7 +45,7 @@ and why.
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
-| 1.16 | **x2** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | 2 | Convention |
+| 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
@@ -54,9 +54,11 @@ and why.
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
-| 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there | Unverified claim | 1 | Convention |
+| 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) | Unverified claim | 2 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -71,7 +73,7 @@ and why.
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | 1 | Test + **repo-wide normalisation outstanding** |
-| 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | 2 | Test (anchored + active-construct) |
+| 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red) | **x3** False green | 3 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
@@ -89,6 +91,7 @@ and why.
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
 | 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
+| 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -120,7 +123,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`) | Process | 6 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards) | Process | 7 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -190,7 +193,7 @@ and why.
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
-| 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
+| 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | 1 | Convention |
@@ -784,7 +787,7 @@ alone are listed as plain-value limits.
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 2** — 2026-09-25, 2026-10-03
+**Occurrences: 3** — 2026-09-25, 2026-10-03, 2026-11-02
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -816,6 +819,27 @@ only then written down; the number was also derived from a report in hand, so it
 measured. The rule covers it — a count is the output of a command over the whole set, not a
 reading of its first entries. Corrected in the architecture doc and the task log from the
 saved task output (12/13 semantic, 0/13 shape).
+
+**Occurrence 3 — 2026-11-02.** PR #817's body stated, under Evidence, "The guard failed on all
+eight sites before they were changed." No command had run the guard against the pre-fix files:
+the eight sites were the ones fixed, and the guard passed afterwards, so the coverage was
+assumed from both ends. Run against the pre-fix copies (the original guard,
+`f9f47603:platform/tests/test_fake_http.py::_used_after_close`, over every function node of the seven
+touched files at `6afa8f1c`, deduplicated to file and function), it flags 7 distinct sites: a port
+name set in two branches (`pve_port` in `test_probe_console_sources.py::run`) kept only its last
+origin. The guard was fixed (`233ef50b`); the same run with the fixed guard flags 8 distinct sites,
+and the body was corrected before merge. Why the rule did not fire: the claim was coverage ("all eight"), not a count of
+files, and it sat in a PR body, which the rule does not name; it was also written while
+summarising work just finished, when results feel in hand. The rule covers it: a number or an
+"all" in written evidence is the output of a command run over the whole set at the time of
+writing.
+
+**Proposed mechanical check (count of 3).** `scripts/merge-when-green.py` fetches the PR
+(`get_pr`), whose response carries the body, but does not inspect it today (the only body it reads
+is each conversation comment's). The check would refuse a body whose Evidence section states a count or an "all"/"every"
+claim on a bullet that names no command in backticks, so every such claim carries the command
+that produced it. Not built: it would refuse prose that states counts honestly in other ways,
+and its wording needs the operator's decision before it gates merges.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
@@ -1075,6 +1099,8 @@ until re-read; file paths and line numbers do not survive 1,700 commits.
 
 **Enforced by.** Convention.
 
+The rule is widened in 1.28.
+
 ### 1.26 Briefed an executor with an API field shape read from one line of the source
 
 **Occurrences: 1** — 2026-10-29
@@ -1097,6 +1123,8 @@ contents; the transformations above it are.
 **Enforced by.** Convention. The brief's DEVIATION RULE caught this one: the worker stopped on
 a brief that contradicted the code.
 
+The rule is widened in 1.29.
+
 ### 1.27 Attributed a regression to a PR without reading the history
 
 **Occurrences: 1** — 2026-10-29
@@ -1117,6 +1145,63 @@ file (or `-S` for the line), then the PR that commit belongs to. State the commi
 its merge date, or say the origin is unverified.
 
 **Enforced by.** Convention.
+
+### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
+
+**What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
+`[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
+test, and cited a throwaway Bats file it had run to show it. I relayed that to Joe as a
+checked fact. It was false. Its probe put the failing case on the loop's last pass, and the
+loop was the test's last statement, so the body's exit status carried it: the one position
+where `[[ ]]` does fail (11.1). CI's `test_assertions_are_real.bats` ratchet refused the
+assertion, and the reviewer corrected itself on the next pass.
+
+**Root cause.** 1.25's rule is worded around `file:line` pointers, so it did not fire for a
+claim about behaviour. And a claim that arrived with an experiment read as already verified:
+I checked that a probe had run, not that its setup covered the case it claimed to cover.
+
+**The rule.** Supersedes 1.25's scope. Any subagent claim, about code, behaviour or a tool,
+is unverified until re-checked, and that includes a claim backed by the subagent's own test.
+An experiment counts as evidence only after its setup has been read against the exact case
+in question (here: the failing input placed where the real test puts it, not where it
+happens to pass). Until then, a claim reaches Joe or a merge decision labelled `unverified:`.
+
+**Enforced by.** Convention.
+
+### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
+
+**Occurrences: 2** — 2026-11-02, 2026-11-03
+
+**What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
+container's checkout bind source had been deleted, so the encryption-key carry step in
+`platform/playbooks/bootstrap-local-dev.yml` could not start it. I briefed a worker to make the
+carry step decide from the data volume, and told it that the next task, "Recreate Semaphore if a
+required mount ... differs", would then fix the mount. I had read only that task's name. It
+compares mount destinations, not sources (`:777` collects `.Destination`; `:802-804` grep those
+destinations), so a stale source with the right destination passes and the start task fails one
+step later. The worker read the task, found the contradiction and stopped before writing code.
+
+**Root cause.** A task's name was taken as its behaviour. 1.26's rule is about a value's shape;
+this claim was about what code does, which that rule does not literally cover.
+
+**The rule.** Before a brief, plan or reply says what a task, function or step does, read its
+body. A name describes intent; the body is the behaviour. This widens 1.26 from a value's shape to
+any behavioural claim about code.
+
+**Enforced by.** Convention. The brief's DEVIATION RULE caught it again: the worker stopped on a
+brief that contradicted the code. Related: 1.26, 1.28.
+
+**Occurrence 2 — 2026-11-03.** Briefing PR 829's OPA rule bounding the agent-launched
+`target_service`, I wrote "inventory groups follow `<name>_svc`" and decided the value must match
+`^[a-z][a-z0-9_]*_svc$`, from that naming convention and one playbook (`harden-ssh.yml:32`). I had not
+read the other catalog templates that take the field. Four of them (Provision VM, Resize VM, Lookup
+Service Inventory, Validate Address Free) take a bare service name and append `_svc` themselves
+(`platform/playbooks/vars/declared-vm.yml:17`), so the rule would have denied every agent launch of them. The
+reviewer caught it with `opa eval`. The first fix then over-corrected to "any plain identifier", which
+admitted `localhost` (the controller) and parent groups; the second review caught that. The rule that
+landed names the bare-name templates in the catalog and requires a `_svc` group everywhere else. Why
+the rule did not fire: it was applied to the one playbook in view and not to the others the claim
+covered; the brief described what all of them do after reading one.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1539,7 +1624,7 @@ localhost-defaulting variant, which is the dangerous one — is a separate chang
 recorded here so it is not mistaken for done.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
-**Occurrences: 2** — 2026-08-25, 2026-08-25
+**Occurrences: 3** — 2026-08-25, 2026-08-25, 2026-11-02
 
 **What happened.** 2.12 records replacing a blacklist of forbidden write verbs
 with an invariant: within the validation step, every mention of the live
@@ -1577,6 +1662,20 @@ mention the same environment variable. Both bypasses were reproduced before
 fixing. The guard check now matches an active `include_tasks:` line, and the
 address check compares the whole normalised expression rather than a token within
 it.
+
+**Occurrence 3 — 2026-11-02.** The same unanchored match, this time failing red instead of
+passing green. The 2.33 fix made the "nothing listens here" port a constant, `REFUSED_PORT = 1`
+(`platform/tests/fake_http.py`). `test_reboot_and_probe.py` then asserted
+`f"{closed} was" not in r.stdout`, which is `"1 was"`, and that text also occurs inside the open
+port's own line whenever its number ends in 1 (`59171 was open, expected closed`), so the test
+failed about one run in ten. PR 818's CI hit it; `c5b1a5e9` matches the port as a whole number
+(`(?<!\d){closed} was`). Why the rule did not fire: it is written about allow-lists and guard
+lines, and a needle built from a number did not read as a substring claim, although it is one,
+about every number that ends in the same digits. **Proposed guard** (the count is now 3, so
+Convention is not enough): an AST ratchet in `platform/tests`, modelled on the
+`test_assertions_are_real.bats` ratchet, that flags any `in` / `not in` comparison whose needle is an f-string beginning
+with an interpolated value and whose haystack is captured output, held in a known-list like
+`known_inert_assertions.txt`, so a new one fails CI and existing ones are visible.
 
 ### 2.16 A test whose population was selected by the presence of the fix
 
@@ -2126,6 +2225,41 @@ carried list wins; an omitted one is filled from `environment_id`), and the prov
 The provisioner fix that landed is PR #797's (merged 2026-10-31), which reached the same cause
 independently and also added an `effective_environment_ids` readback; PR #798 added this fake and
 its test.
+
+### 2.33 A test aimed at a port it had just freed, and a parallel test was handed it
+
+**What happened.** On docs-only PR #807, `test_agw_conformance.py::test_the_playbook_runs_reports_and_removes_its_directory`
+failed in the `Python Agentgateway` job (run 41261060265, 2026-11-01): the playbook reported `PASS, 15/15`, but
+the stubs' request counts did not add up, and the upstream stub's first recorded request was
+`{"messages": [{"role": "user", "content": "ok"}], "max_tokens": 16}`. No conformance case sends that; only
+`probe-agentgateway-isolation.yml` does. On another xdist worker,
+`test_agw_isolation_probe.py::test_a_gateway_that_is_not_listening_fails_with_no_http_answer` had started its stub,
+stopped it, and run the probe against the freed port, expecting no answer (gw2, 01:26:35 to 01:26:42 UTC). The
+conformance test started on gw1 at 01:26:41 and bound its stubs to port 0. Inferred from that overlap and the
+stray body: one of them was handed the freed port, and the isolation probe's request landed on it. The test passed on rerun and in twelve isolated runs.
+
+**Root cause.** Freeing a port does not reserve it. The next bind to port 0 anywhere on the machine can be given it,
+and under pytest-xdist that bind is often another test's server. Eight sites used the shape: the three
+"not listening" gateway probe tests (isolation, client-TLS, gate), `_closed_port()` and an inline copy in
+`test_probe_console_sources.py`, the unreachable-API test in `test_read_proxmox_root_ca.py`, the `ports` fixture in
+`test_reboot_and_probe.py`, and the connect-failure test in `test_renew_internal_certs.py`. Keeping the port bound
+without listening is not a fix either: on macOS a connect to it times out instead of being refused (checked
+2026-11-02; Linux refuses).
+
+**The rule.** A test that needs "nothing listens here" aims at `fake_http.refused_port()`: port 1, below every
+ephemeral range, so no bind to port 0 is ever handed it, and a connection to it is refused at once (measured on
+macOS and on Linux, where port-0 binds drew only from 32768-60999). Never stop a server or close a socket and
+then aim at its port.
+
+**Enforced by.** Test: `platform/tests/test_fake_http.py::test_a_test_never_aims_at_a_port_it_has_just_freed` walks every
+function in `platform/tests/` and fails on a port value, port read or call argument from a server or socket used
+after that function stopped or closed it; `test_the_guard_flags_each_freed_port_shape` mutation-checks it on the
+shapes found (one name set in two branches included; run against the pre-fix files it flags all eight sites),
+and `test_refused_port_refuses_at_once_and_is_never_handed_out` checks the port itself. The guard sees only
+objects the function assigns itself: a fixture parameter that is stopped and then aimed at, or a port read inside
+`with socket.socket() as s:` and used after the block, is not caught (no such site exists today). Also not
+covered: `test_nemoclaw_policy.py::_candidate_port()` and `test_agw_stream_usage.py::_free_port()` hand a freed
+port to a process that binds it, a different race (the first says so in its docstring).
 
 ## 3. Acting on live state
 
@@ -3258,6 +3392,19 @@ merge; `ebdcef76` and `1fb408b7` fixed them. Why the rule did not fire: the hook
 it was bypassed whole to get past an unrelated, known-red set. Proposed guard: the pre-push hook
 runs pytest under a Python 3.12 when one is installed, or deselects only the named 3.14 failures,
 so `SKIP_TESTS=1` is never the way past them.
+
+**Occurrence 2026-11-02 (a new service pushed with the hook switched off).** Pushed PR 818's
+launch gate under `SKIP_TESTS=1` because the pre-push hook had run past an hour on this
+workstation, and ran only the gate's own three test files before each push. CI's Python core
+then failed on two repo-wide guards those files do not include: `test_tls_contexts_pinned.py`
+(the Semaphore and OPA client contexts set no minimum TLS version) and `test_fake_http.py` (the
+gate's production handler does not derive from the test base). Both run in seconds and would
+have failed locally. Fixed in `63ec30b8` before merge. Why the rule did not fire: with the
+full suite too slow to run, "the tests for what I changed" replaced "the suite", and the
+repo-wide scans are exactly the tests that cover files they do not name. **Proposed guard**,
+narrowing the 2026-10-30 proposal: `SKIP_TESTS=1` skips only the slow playbook-run tests; the
+pre-push hook always runs the fast repo-wide scans (the AST and text guards under
+`platform/tests` that read every file), so they cannot be bypassed with the rest.
 
 ### 5.3 Merging while the review was rate-limited
 
@@ -5522,6 +5669,18 @@ where the class was found; the ratchet holds the rest at a visible number rather
 than pretending the debt is gone.
 
 **Status 2026-10-02.** The ratchet named above was extended by PR #392: `platform/tests/test_assertions_are_real.bats` adds the `grep -v -q` and `|| true` scans, held in `platform/tests/known_inert_assertions.txt`.
+
+**Occurrences: 2** — (first undated), 2026-10-31
+
+**Occurrence 2 — 2026-10-31.** Writing the OPA flag-order test in #810, I used a bare
+`[[ "$args" == *" --authorization=basic --bundle /policies " ]]` inside a `for` loop,
+mid-body. The ratchet failed CI, as designed, before review or merge; the fix is a
+plain `[ "${args%" --authorization=basic --bundle /policies "}" != "$args" ]`. Why the
+rule did not fire: I was rewriting the check after a different guard (no line windows)
+had refused the first version, and reached for `[[ ]]` from habit. The only gate
+before CI is the pre-push hook's BATS run, and this session was pushing with
+`SKIP_TESTS=1` after that hook had run past an hour. The enforcement held; the cost
+was one CI cycle.
 
 ### 11.2 Sourcing a config file instead of reading it
 

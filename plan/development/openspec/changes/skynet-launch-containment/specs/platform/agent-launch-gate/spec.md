@@ -45,7 +45,8 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 #### Scenario: Undeclared key is refused
 - **WHEN** a request for template `Deploy agentgateway (Dev)` (on the allowlist: `service-agent`'s
   `service_deploy_templates`) includes a key the template does not declare
-- **THEN** the launch gate answers 400 naming the key, and calls neither OPA nor Semaphore
+- **THEN** the launch gate answers 400 naming the key, asks OPA nothing and creates no task (it
+  reads the template's survey declarations from Semaphore, the only call it makes)
 
 #### Scenario: Templated value is refused
 - **WHEN** a request carries a survey value containing `{{`
@@ -60,6 +61,23 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 - **WHEN** an allowed launch is created
 - **THEN** the task's recorded environment holds exactly the validated survey values plus declared
   defaults, and nothing else
+
+### Requirement: The code that runs is the branch OPA judged
+The launch gate SHALL take the branch from the template's repository record and MUST refuse a template
+that carries its own different branch. When the template declares a `service_branch` survey field (the
+branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
+whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
+values and integer fields ASCII digits with at most one leading minus.
+
+#### Scenario: Caller names another branch
+- **WHEN** a request for `Deploy agentgateway (Dev)` sets `service_branch` to a branch other than the
+  template's repository branch
+- **THEN** the launch gate answers 400, asks OPA nothing and creates no task
+
+#### Scenario: Branch filled from the record
+- **WHEN** a request omits `service_branch` for a template that declares it
+- **THEN** the created task's environment sets `service_branch` to the repository record's branch, the
+  same branch OPA was asked about
 
 ### Requirement: OPA decides server-side before every launch
 For every request that passes validation, the launch gate SHALL query OPA's decision endpoint itself,
@@ -82,8 +100,8 @@ result in no launch.
 - **THEN** the launch gate creates exactly one task and answers with its id
 
 ### Requirement: Launches are idempotent and recorded
-The launch gate SHALL refuse to create a second task for a template whose previous task for the same
-workflow and step is still running, SHALL tag every task it creates with a message naming the caller,
+The launch gate SHALL refuse to create a task for a template while any earlier task of that template is
+still running (skynet's rule today, which covers a repeat of the same workflow and step), SHALL tag every task it creates with a message naming the caller,
 workflow and step (skynet's tasks keep the `skynet <workflow_id> <step_id>` form the console reads),
 and MUST log each decision and launch (caller, agent, template, step, OPA verdict, task id) without
 any secret value.

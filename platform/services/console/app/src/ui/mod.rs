@@ -5,11 +5,15 @@
 mod api;
 mod compute;
 mod empty;
+mod gateway;
+mod gateway_api;
 mod icons;
 mod inventory;
 mod inventory_api;
 mod profile;
 mod scope;
+mod secrets;
+mod secrets_api;
 mod services;
 mod shell;
 mod status;
@@ -20,11 +24,10 @@ mod work_detail;
 use dioxus::prelude::*;
 
 use compute::Compute;
-use empty::{
-    Access, AiGateway, CiCd, Dashboard, LlmAccess, NotFound, OrgSettings, Policy, Secrets,
-    Telemetry, TenantSettings,
-};
+use empty::{Access, CiCd, Dashboard, NotFound, OrgSettings, Policy, Telemetry, TenantSettings};
+use gateway::{AiGateway, LlmAccess};
 use profile::Profile;
+use secrets::Secrets;
 use services::{ServiceDetail, Services};
 use shell::Shell;
 use topology::Topology;

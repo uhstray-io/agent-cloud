@@ -163,6 +163,8 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # First-run migrations can outlast deploy.sh's default wait (3600s); empty = that default.
+        PLANE_API_HEALTH_TIMEOUT: "{{ plane_api_health_timeout | default('') }}"
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
         FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
@@ -258,6 +260,8 @@
       environment:
         CONTAINER_ENGINE: "{{ _engine }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # First-run migrations can outlast deploy.sh's default wait (3600s); empty = that default.
+        PLANE_API_HEALTH_TIMEOUT: "{{ plane_api_health_timeout | default('') }}"
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy_proxy
       changed_when: "'DEPLOY_CHANGED=true' in _deploy_proxy.stdout_lines"

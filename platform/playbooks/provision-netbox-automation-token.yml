@@ -58,8 +58,9 @@
         permission: workflow-vm-record
         actions: [view, add]
         object_types: [virtualization.virtualmachine]
-        # read-only, a second permission: placing a VM needs its cluster, never adding one
-        view_object_types: [virtualization.cluster]
+        # read-only, a second permission: placing a VM needs its cluster, tenant and site (the
+        # tenant and site discovery writes it under), never adding any of them
+        view_object_types: [virtualization.cluster, tenancy.tenant, dcim.site]
         field: vm_recorder_api_token
         description: service deployment workflow VM record (validate-address)
       # Dispatch Console (plan 17, D22-D24): view only, on the six types the v1 console reads. D24 v1 reads

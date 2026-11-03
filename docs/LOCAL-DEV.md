@@ -79,7 +79,9 @@ The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
    Semaphore repository is a local path, so tasks run your *uncommitted*
    changes), and a **shared deploy dir** `/var/lib/agent-cloud-deploy` mounted
    at the *same absolute path* in the container and on the VM (see "host
-   bind-mounts" below)
+   bind-mounts" below). The last bootstrap's checkout wins: bootstrapping from
+   another worktree recreates Semaphore once (the data volume and its key are
+   kept), and a Semaphore task in flight is killed.
 
 State lands in `~/.agent-cloud-local/credentials.env` (0600, outside the repo).
 

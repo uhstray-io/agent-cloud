@@ -231,3 +231,13 @@ assert set(main) <= set(local), set(main) - set(local)
 PY
   grep -qF 'COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS} compose.local-ca.yml"' "$DEPLOY_DIR/deploy.sh"
 }
+
+@test "plane: the API health wait outlasts a first-run migration and is passed from inventory" {
+  # A fresh production database migrated for ~36 minutes (Semaphore task 11696 failed at 600s).
+  run grep -c 'wait_for_healthy plane-api "$API_HEALTH_TIMEOUT"' "$DEPLOY_DIR/deploy.sh"
+  [ "$output" = "2" ]
+  grep -q 'API_HEALTH_TIMEOUT="${PLANE_API_HEALTH_TIMEOUT:-3600}"' "$DEPLOY_DIR/deploy.sh"
+  refute_grep 'wait_for_healthy plane-api [0-9]' "$DEPLOY_DIR/deploy.sh"
+  run grep -c "PLANE_API_HEALTH_TIMEOUT: \"{{ plane_api_health_timeout | default('') }}\"" "$PLAYBOOK"
+  [ "$output" = "2" ]
+}
