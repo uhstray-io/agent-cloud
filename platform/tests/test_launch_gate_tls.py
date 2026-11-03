@@ -407,6 +407,32 @@ def test_a_body_trickled_past_the_request_deadline_is_refused_and_never_complete
     assert listener.gate.calls == []
 
 
+def test_headers_trickled_past_the_connection_deadline_are_cut(listener, monkeypatch):
+    # Each header byte arrives well inside CONNECTION_TIMEOUT, so only the whole-connection watchdog can end
+    # this one; without it the connection outlives the four-second loop below.
+    monkeypatch.setattr(lg, "CONNECTION_DEADLINE", 1.0)
+    tcp = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
+    sock = listener.client_context().wrap_socket(tcp, server_hostname="localhost")
+    ended = False
+    try:
+        sock.settimeout(0.1)
+        started = time.monotonic()
+        while not ended and time.monotonic() - started < 4:
+            try:
+                sock.sendall(b"X-Slow: y\r\n" if time.monotonic() - started > 0.05 else b"GET /healthz HTTP/1.1\r\n")
+                if not sock.recv(4096):
+                    ended = True
+            except TimeoutError:
+                pass
+            except OSError:
+                ended = True
+            time.sleep(0.1)
+    finally:
+        sock.close()
+    assert ended
+    assert listener.gate.calls == []
+
+
 def test_a_read_that_runs_out_the_request_deadline_is_answered_408(listener, monkeypatch):
     monkeypatch.setattr(lg, "REQUEST_DEADLINE", 1.0)
     # The headers and the first body byte arrive, then silence: the server's read of the rest is bounded by the

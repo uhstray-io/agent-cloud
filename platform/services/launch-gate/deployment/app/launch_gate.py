@@ -15,6 +15,7 @@ import http.client
 import json
 import os
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -835,7 +836,19 @@ MAX_CONNECTIONS = 16
 # Wall-clock budget for one request's body, from the end of the handshake. CONNECTION_TIMEOUT bounds each
 # read, not the request, so a client that trickles bytes could otherwise hold the connection open.
 REQUEST_DEADLINE = 30.0
+# Wall-clock limit for a whole connection, from the moment its thread starts: handshake, request line,
+# headers and body. Longer than REQUEST_DEADLINE so a body read still answers 408 before the cut.
+CONNECTION_DEADLINE = 45.0
 _READ_CHUNK = 64 * 1024
+
+
+def _cut(sock: Any) -> None:
+    # The plain socket's shutdown, not SSLSocket.shutdown: that one also clears the TLS state the handler
+    # thread may be reading through. Shutting the descriptor makes the blocked read return.
+    try:
+        socket.socket.shutdown(sock, socket.SHUT_RDWR)
+    except OSError:
+        pass
 
 
 class TLSLoadError(Exception):
@@ -903,9 +916,17 @@ class GateServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
+        # CONNECTION_TIMEOUT bounds each read and REQUEST_DEADLINE the body, but a client trickling its
+        # handshake or headers could still hold a slot for hours, and sixteen such clients would fill the
+        # cap. The watchdog bounds the whole connection: past CONNECTION_DEADLINE it shuts the socket, which
+        # ends whatever read the handler is blocked in.
+        watchdog = threading.Timer(CONNECTION_DEADLINE, _cut, args=(request,))
+        watchdog.daemon = True
+        watchdog.start()
         try:
             super().process_request_thread(request, client_address)
         finally:
+            watchdog.cancel()
             self._slots.release()
 
     def _current_context(self) -> ssl.SSLContext:

@@ -67,7 +67,7 @@ The launch gate SHALL take the branch from the template's repository record and 
 that carries its own different branch. When the template declares a `service_branch` survey field (the
 branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
 whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
-values and integer fields plain digits.
+values and integer fields ASCII digits with at most one leading minus.
 
 #### Scenario: Caller names another branch
 - **WHEN** a request for `Deploy agentgateway (Dev)` sets `service_branch` to a branch other than the
