@@ -1196,13 +1196,12 @@ brief that contradicted the code. Related: 1.26, 1.28.
 `^[a-z][a-z0-9_]*_svc$`, from that naming convention and one playbook (`harden-ssh.yml:32`). I had not
 read the other catalog templates that take the field. Four of them (Provision VM, Resize VM, Lookup
 Service Inventory, Validate Address Free) take a bare service name and append `_svc` themselves
-(`playbooks/vars/declared-vm.yml:17`), so the rule would have denied every agent launch of them. The
+(`platform/playbooks/vars/declared-vm.yml:17`), so the rule would have denied every agent launch of them. The
 reviewer caught it with `opa eval`. The first fix then over-corrected to "any plain identifier", which
 admitted `localhost` (the controller) and parent groups; the second review caught that. The rule that
 landed names the bare-name templates in the catalog and requires a `_svc` group everywhere else. Why
-the rule did not fire: it is phrased about one task's behaviour, and this was a claim about a field
-across many consumers. A claim of the form "every caller does X" needs every caller read, here a
-query of every catalog template whose survey declares the field, run before the brief was written.
+the rule did not fire: it was applied to the one playbook in view and not to the others the claim
+covered; the brief described what all of them do after reading one.
 
 ## 2. Tests that would have passed for the wrong reason
 

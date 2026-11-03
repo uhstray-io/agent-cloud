@@ -96,9 +96,10 @@ See proposal.md (Why). Facts that shape the approach:
   leaves OpenBao and the gate's `.env`.
 - [A literal survey value used unsafely inside an allowlisted playbook] → The allowlist is the OPA
   catalog, every addition is reviewed; OPA receives the exact values and bounds the ones that select
-  hosts: `target_service` must name one `<name>_svc` group, or one bare service name for the templates in
-  `catalog.semaphore.bare_service_name_templates`, and `target_host` one plain host name, never `all`,
-  `ungrouped` or `localhost` (`agent_actions.rego`, PR 829). Other values are bounded by the template's
+  hosts: `target_service` must name one `<name>_svc` group, or one bare service name (never `all`,
+  `ungrouped` or `localhost`) for the templates in `catalog.semaphore.bare_service_name_templates`, and
+  `target_host` one plain host name, never `all`, `ungrouped` or `localhost` (`agent_actions.rego`,
+  PR 829). Other values are bounded by the template's
   survey type (enum, integer) and by the playbook that reads them.
 - [`context` is caller-supplied and some rules read it (the firewall rules compare proposals against
   `context.controller_cidr`, the access rules against `context.groups`)] → The gate forwards it
