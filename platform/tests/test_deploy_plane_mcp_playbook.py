@@ -38,3 +38,24 @@ def test_the_registration_output_stays_out_of_the_log():
     task = register_task()
     assert task["no_log"] is True
     assert "client_secret" not in str(task["changed_when"])
+
+
+def phase3():
+    return next(p for p in PLAYS if p.get("name", "").startswith("Phase 3"))
+
+
+def test_the_anonymous_probe_reads_no_stdin():
+    # Over SSH an `exec -i` with empty stdin never sees end-of-file, so a readline() hangs the
+    # deploy (production Semaphore task 11731).
+    anon = next(t for t in phase3()["tasks"] if t["name"] == "An anonymous call is refused")
+    argv = anon["ansible.builtin.command"]["argv"]
+    assert "-i" not in argv and "stdin" not in anon["ansible.builtin.command"]
+    assert argv[-1] == "anonymous"
+    probe = phase3()["vars"]["_probe"]
+    assert 'sys.stdin.readline().strip() if sys.argv[2:3] == ["token"] else ""' in probe
+
+
+def test_the_token_probe_says_a_token_comes():
+    task = next(t for t in phase3()["tasks"] if t["name"].startswith("The token endpoint lists"))
+    argv = task["ansible.builtin.command"]["argv"]
+    assert "-i" in argv and argv[-1] == "token"
