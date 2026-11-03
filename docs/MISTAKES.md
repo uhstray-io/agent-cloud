@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) | Unverified claim | 1 | Convention |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) | Unverified claim | 2 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1170,7 +1170,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 1** — 2026-11-02
+**Occurrences: 2** — 2026-11-02, 2026-11-03
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1190,6 +1190,19 @@ any behavioural claim about code.
 
 **Enforced by.** Convention. The brief's DEVIATION RULE caught it again: the worker stopped on a
 brief that contradicted the code. Related: 1.26, 1.28.
+
+**Occurrence 2 — 2026-11-03.** Briefing PR 829's OPA rule bounding the agent-launched
+`target_service`, I wrote "inventory groups follow `<name>_svc`" and decided the value must match
+`^[a-z][a-z0-9_]*_svc$`, from that naming convention and one playbook (`harden-ssh.yml:32`). I had not
+read the other catalog templates that take the field. Four of them (Provision VM, Resize VM, Lookup
+Service Inventory, Validate Address Free) take a bare service name and append `_svc` themselves
+(`playbooks/vars/declared-vm.yml:17`), so the rule would have denied every agent launch of them. The
+reviewer caught it with `opa eval`. The first fix then over-corrected to "any plain identifier", which
+admitted `localhost` (the controller) and parent groups; the second review caught that. The rule that
+landed names the bare-name templates in the catalog and requires a `_svc` group everywhere else. Why
+the rule did not fire: it is phrased about one task's behaviour, and this was a claim about a field
+across many consumers. A claim of the form "every caller does X" needs every caller read, here a
+query of every catalog template whose survey declares the field, run before the brief was written.
 
 ## 2. Tests that would have passed for the wrong reason
 
