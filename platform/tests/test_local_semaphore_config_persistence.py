@@ -159,7 +159,10 @@ case "$1" in
   cp)
     log "$*"
     if [ -f "$STUB_ETC/config.json" ]; then
-      if [ "$3" = "-" ]; then tar -cf - -C "$STUB_ETC" config.json; exit $?; fi
+      if [ "$3" = "-" ]; then
+        if [ "$STUB_EMPTY_ARCHIVE" = yes ]; then tar -cf - -T /dev/null; exit $?; fi
+        tar -cf - -C "$STUB_ETC" config.json; exit $?
+      fi
       cp "$STUB_ETC/config.json" "$3"; exit $?
     fi
     echo 'Error: "/etc/semaphore/config.json" could not be found on container' >&2
@@ -193,7 +196,7 @@ class Run(NamedTuple):
 def _run(tmp_path: Path, tasks: list, *, exists: bool = True, state: str = "running",
          volume_config: str | None = None, etc_config: str | None = None, mount: str = VOLUME_NAME,
          start_fails: bool = False, run_fails: bool = False, stdin_run_fails: bool = False,
-         repo_src: str | None = None, share_src: str = DEPLOY_SHARE) -> Run:
+         empty_archive: bool = False, repo_src: str | None = None, share_src: str = DEPLOY_SHARE) -> Run:
     """Run the named tasks, then the debug task, against the stub. The checkout the playbook is
     run from is tmp_path/checkout, so a matching bind source is the default."""
     checkout = tmp_path / "checkout"
@@ -229,7 +232,8 @@ def _run(tmp_path: Path, tasks: list, *, exists: bool = True, state: str = "runn
                            "/var/lib/agent-cloud-deploy /var/lib/semaphore "),
                STUB_REPO_SRC=repo_src or str(checkout), STUB_SHARE_SRC=share_src,
                STUB_START_FAILS="yes" if start_fails else "no", STUB_RUN_FAILS="yes" if run_fails else "no",
-               STUB_STDIN_RUN_FAILS="yes" if stdin_run_fails else "no")
+               STUB_STDIN_RUN_FAILS="yes" if stdin_run_fails else "no",
+               STUB_EMPTY_ARCHIVE="yes" if empty_archive else "no")
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play)], cwd=REPO, env=env, text=True,
                          capture_output=True, check=False, timeout=120, stdin=subprocess.DEVNULL)
     lines = log.read_text().splitlines() if log.exists() else []
@@ -303,6 +307,26 @@ def test_a_failed_stdin_write_fails_the_play_and_never_removes_the_container(tmp
                repo_src=STALE_CHECKOUT, stdin_run_fails=True)
     assert run.out.returncode != 0, run.out.stdout + run.out.stderr
     assert run.verbs == ["run", "start", "cp", "run"]
+    assert not any(line.startswith("rm") for line in run.lines)
+    assert not run.volume_file.exists()
+    assert not run.state_dir.exists()
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    ("etc_config", "empty_archive"),
+    [("", False), (KEY, True)],
+    ids=["file-in-stream-is-empty", "stream-has-no-entries"],
+)
+def test_an_empty_layer_stream_is_none_and_never_writes_or_removes(tmp_path, etc_config, empty_archive):
+    """podman cp can succeed and still yield nothing for tar -xO. An empty key must not be written:
+    the volume would get an empty config.json, the carry would report carried, and the recreate would
+    remove the container."""
+    run = _run(tmp_path, [CARRY, RECREATE], state="exited", etc_config=etc_config, start_fails=True,
+               repo_src=STALE_CHECKOUT, empty_archive=empty_archive)
+    assert run.out.returncode != 0, run.out.stdout + run.out.stderr
+    assert '"stdout_lines": ["none"]' in run.out.stdout
+    assert run.verbs == ["run", "start", "cp"], "no write run follows an empty key"
     assert not any(line.startswith("rm") for line in run.lines)
     assert not run.volume_file.exists()
     assert not run.state_dir.exists()
