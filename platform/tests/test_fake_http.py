@@ -18,10 +18,19 @@ STANDALONE_HANDLERS = {
     "scripts/fake-inference-upstream.py": "standalone local-dev upstream; do_POST reads the body first",
 }
 
+# Production servers, not fakes: they cannot import a test helper, and they may refuse a body unread on
+# purpose (a size cap must not buffer what it refuses). Each must still read the body on its accepting path
+# (checked below: the class reads `rfile`).
+PRODUCTION_HANDLERS = {
+    "platform/services/launch-gate/deployment/app/launch_gate.py": (
+        "the launch gate; reads a POST body in _read_body, refuses one over MAX_BODY unread (413) and closes"
+    ),
+}
+
 
 def test_every_fake_server_derives_from_the_draining_base():
     """A handler on BaseHTTPRequestHandler directly can reply with the body unread -> RST."""
-    offenders, standalone = [], {}
+    offenders, standalone, production = [], {}, {}
     for path in sorted([*(ROOT / "platform").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]):
         if path.name == "fake_http.py":
             continue
@@ -32,11 +41,16 @@ def test_every_fake_server_derives_from_the_draining_base():
             ):
                 if rel in STANDALONE_HANDLERS:
                     standalone[rel] = node
+                elif rel in PRODUCTION_HANDLERS:
+                    production[rel] = node
                 else:
                     offenders.append(f"{rel}:{node.lineno} {node.name}")
     assert offenders == [], f"derive these from fake_http.DrainingHandler: {offenders}"
     # The allowlist only shrinks, and each entry must still read the body before replying.
     assert sorted(standalone) == sorted(STANDALONE_HANDLERS), sorted(standalone)
+    assert sorted(production) == sorted(PRODUCTION_HANDLERS), sorted(production)
+    for rel, node in production.items():
+        assert "rfile.read" in ast.unparse(node), f"{rel}: {node.name} never reads a request body"
     for rel, node in standalone.items():
         writers = [
             m for m in node.body if isinstance(m, ast.FunctionDef) and m.name in ("do_POST", "do_PUT", "do_PATCH")

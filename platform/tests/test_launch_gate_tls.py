@@ -132,7 +132,9 @@ class Listener:
     def client_context(self):
         bundle = self.root.parent / "trust.pem"
         bundle.write_bytes(b"".join(self.leaf_pems))
-        return ssl.create_default_context(cafile=str(bundle))
+        context = ssl.create_default_context(cafile=str(bundle))
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return context
 
     def close(self):
         self.server.shutdown()
@@ -409,7 +411,8 @@ def test_a_body_trickled_past_the_request_deadline_is_refused_and_never_complete
 
 def test_headers_trickled_past_the_connection_deadline_are_cut(listener, monkeypatch):
     # Each header byte arrives well inside CONNECTION_TIMEOUT, so only the whole-connection watchdog can end
-    # this one; without it the connection outlives the four-second loop below.
+    # this one; without it the connection outlives the four-second loop below. The cut must also never reach
+    # the gate: http.server reads end-of-stream as the end of the headers (CI caught it dispatching).
     monkeypatch.setattr(lg, "CONNECTION_DEADLINE", 1.0)
     tcp = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
     sock = listener.client_context().wrap_socket(tcp, server_hostname="localhost")
@@ -446,6 +449,28 @@ def test_a_launch_slower_than_the_connection_deadline_still_answers(listener, mo
     monkeypatch.setattr(listener.gate, "handle", slow)
     status, _ = _https(listener.port, listener.client_context(), "GET", "/healthz")
     assert status == 200
+
+
+def test_a_connection_the_watchdog_cut_never_reaches_the_gate(listener, monkeypatch):
+    # Platform-independent form of the trickle case above: whether a cut read returns end-of-stream (Linux,
+    # which http.server then takes as the end of the headers) or raises (macOS) varies, so the guard itself
+    # is driven here. A complete request on a connection marked cut must not be dispatched.
+    monkeypatch.setattr(listener.server, "disarm", lambda: True)
+    with pytest.raises((OSError, http.client.HTTPException)):
+        _https(listener.port, listener.client_context(), "GET", "/healthz")
+    assert listener.gate.calls == []
+
+
+def test_the_watchdog_marks_the_connection_before_it_shuts_it():
+    left, right = socket.socketpair()
+    fired = threading.Event()
+    try:
+        lg._cut(left, fired)
+        assert fired.is_set()
+        assert right.recv(1) == b""
+    finally:
+        left.close()
+        right.close()
 
 
 def test_a_read_that_runs_out_the_request_deadline_is_answered_408(listener, monkeypatch):

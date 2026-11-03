@@ -515,6 +515,13 @@ class _Failed(Exception):
     """A transport, HTTP or read failure. Its text is a label (a class name or a status), never a body."""
 
 
+def _client_context(cafile: str | None = None) -> ssl.SSLContext:
+    """A verifying client context, TLS 1.2 at least (platform/tests/test_tls_contexts_pinned.py)."""
+    context = ssl.create_default_context(cafile=cafile)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def _opener(context: ssl.SSLContext) -> urllib.request.OpenerDirector:
     # ProxyHandler({}): an environment proxy must never see the bearer token or the launch body.
     return urllib.request.build_opener(
@@ -584,8 +591,7 @@ class SemaphoreClient:
         self._prefix = f"/api/project/{project}"
         self._token = token
         self._timeout = timeout
-        context = ssl_context if ssl_context is not None else ssl.create_default_context()
-        self._opener = _opener(context)
+        self._opener = _opener(ssl_context if ssl_context is not None else _client_context())
 
     def _call(self, method: str, path: str, payload: Any = None, *, parse: bool = True) -> Any:
         try:
@@ -673,7 +679,7 @@ class OPAClient:
     """OPA's decision endpoint. The gate launches only on an answer of exactly ``allowed: true``."""
 
     def __init__(self, base_url: str, *, ca_bundle: str | None = None, timeout: float = OPA_TIMEOUT) -> None:
-        context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
+        context = _client_context(ca_bundle)
         self._url = base_url.rstrip("/") + DECISION_PATH
         self._timeout = timeout
         self._opener = _opener(context)
@@ -842,7 +848,10 @@ CONNECTION_DEADLINE = 45.0
 _READ_CHUNK = 64 * 1024
 
 
-def _cut(sock: Any) -> None:
+def _cut(sock: Any, fired: threading.Event) -> None:
+    # Marked first: http.server reads end-of-stream as the end of the headers, so a request cut mid-headers
+    # would otherwise be dispatched with what had arrived. The handler checks the mark before the gate.
+    fired.set()
     # The plain socket's shutdown, not SSLSocket.shutdown: that one also clears the TLS state the handler
     # thread may be reading through. Shutting the descriptor makes the blocked read return.
     try:
@@ -925,9 +934,11 @@ class GateServer(ThreadingHTTPServer):
         # socket, which ends whatever read the handler is blocked in. The handler disarms it once the request
         # is read (disarm()), so it never cuts a launch in progress: a task may exist by then, and its id
         # must reach the caller. The gate's own calls are bounded by their client timeouts.
-        watchdog = threading.Timer(CONNECTION_DEADLINE, _cut, args=(request,))
+        fired = threading.Event()
+        watchdog = threading.Timer(CONNECTION_DEADLINE, _cut, args=(request, fired))
         watchdog.daemon = True
         self._watch.timer = watchdog
+        self._watch.fired = fired
         watchdog.start()
         try:
             super().process_request_thread(request, client_address)
@@ -935,12 +946,15 @@ class GateServer(ThreadingHTTPServer):
             self.disarm()
             self._slots.release()
 
-    def disarm(self) -> None:
-        """Cancel this connection's watchdog. Called on the connection's own thread."""
+    def disarm(self) -> bool:
+        """Cancel this connection's watchdog; True when it had already cut the connection. Called on the
+        connection's own thread."""
         timer = getattr(self._watch, "timer", None)
         if timer is not None:
             timer.cancel()
             self._watch.timer = None
+        fired = getattr(self._watch, "fired", None)
+        return fired is not None and fired.is_set()
 
     def _current_context(self) -> ssl.SSLContext:
         """The context for the files as they stand now. A failed reload keeps the last good context serving
@@ -1057,7 +1071,10 @@ class GateHandler(BaseHTTPRequestHandler):
                 self._reply(408, {"error": "timeout"})
                 return
         path = self.path.split("?", 1)[0]
-        self.server.disarm()
+        if self.server.disarm():
+            # Cut by the watchdog: whatever was read is incomplete, and no reply can be sent.
+            self.close_connection = True
+            return
         status, payload = self.server.gate.handle(method, path, _headers(self.headers), body)
         self._reply(status, payload)
 
