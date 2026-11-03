@@ -58,6 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1122,6 +1123,8 @@ contents; the transformations above it are.
 **Enforced by.** Convention. The brief's DEVIATION RULE caught this one: the worker stopped on
 a brief that contradicted the code.
 
+The rule is widened in 1.29.
+
 ### 1.27 Attributed a regression to a PR without reading the history
 
 **Occurrences: 1** — 2026-10-29
@@ -1164,6 +1167,29 @@ in question (here: the failing input placed where the real test puts it, not whe
 happens to pass). Until then, a claim reaches Joe or a merge decision labelled `unverified:`.
 
 **Enforced by.** Convention.
+
+### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
+
+**Occurrences: 1** — 2026-11-02
+
+**What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
+container's checkout bind source had been deleted, so the encryption-key carry step in
+`platform/playbooks/bootstrap-local-dev.yml` could not start it. I briefed a worker to make the
+carry step decide from the data volume, and told it that the next task, "Recreate Semaphore if a
+required mount ... differs", would then fix the mount. I had read only that task's name. It
+compares mount destinations, not sources (`:777` collects `.Destination`; `:802-804` grep those
+destinations), so a stale source with the right destination passes and the start task fails one
+step later. The worker read the task, found the contradiction and stopped before writing code.
+
+**Root cause.** A task's name was taken as its behaviour. 1.26's rule is about a value's shape;
+this claim was about what code does, which that rule does not literally cover.
+
+**The rule.** Before a brief, plan or reply says what a task, function or step does, read its
+body. A name describes intent; the body is the behaviour. This widens 1.26 from a value's shape to
+any behavioural claim about code.
+
+**Enforced by.** Convention. The brief's DEVIATION RULE caught it again: the worker stopped on a
+brief that contradicted the code. Related: 1.26, 1.28.
 
 ## 2. Tests that would have passed for the wrong reason
 
