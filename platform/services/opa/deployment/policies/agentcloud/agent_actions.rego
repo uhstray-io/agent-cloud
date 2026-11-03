@@ -323,20 +323,48 @@ _declared_as_code(kind) if object.get(input, "target", "") in data.agentcloud.ca
 
 # --- Agent launches: survey input bounds ------------------------------------------------
 
-# The launch gate sends its exact survey values as `settings` (launch_gate.py opa_input). A playbook
-# puts target_service into a `hosts:` pattern, where `all`, `*`, `a:b` and `!x` widen one run to many
-# hosts, so an agent launch may name exactly one <name>_svc inventory group. A caller that sends no
-# `settings`, or none with this key, is unaffected: `target` stays undefined and the rule is silent.
-deny_reasons contains "target_service must name exactly one service group" if {
+# The launch gate sends its exact survey values as `settings` (launch_gate.py opa_input). Like the
+# branch rule, these bound only an agent launch: run_task on semaphore. A playbook reads target_service
+# two ways: as a `hosts:` pattern (the group `<name>_svc`, e.g. Harden SSH), and as a bare service name
+# it looks up with groups[target_service ~ '_svc'] (Provision VM, Resize VM, Lookup Service Inventory,
+# Validate Address Free; playbooks/vars/declared-vm.yml). Both forms are plain identifiers. What widens
+# one run is Ansible pattern syntax (* : , ! & ~ [) and the two built-in group keywords, all and
+# ungrouped, so those are refused. target_host (Provision VM selects a declaration with it) is one plain
+# host name. A caller that sends no `settings`, or none with the key, is unaffected: the bound value
+# stays undefined and the rule is silent. A `settings` that is present but not an object is refused.
+deny_reasons contains "target_service must be one plain group or service name" if {
+	input.service == "semaphore"
+	input.action == "run_task"
 	target := input.settings.target_service
-	not _one_service_group(target)
+	not _plain_service_name(target)
+}
+
+deny_reasons contains "target_host must be one plain host name" if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	host := input.settings.target_host
+	not _plain_host_name(host)
+}
+
+deny_reasons contains "settings must be an object" if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	"settings" in object.keys(input)
+	not is_object(input.settings)
 }
 
 # is_string first: regex.match on a non-string is an error, and a call that fails inside `not`
-# fails open, so the check is a helper that is negated as a whole (see _launch_branch_allowed).
-_one_service_group(target) if {
-	is_string(target)
-	regex.match("^[a-z][a-z0-9_]*_svc$", target)
+# fails open, so each check is a helper that is negated as a whole (see _launch_branch_allowed).
+_plain_service_name(name) if {
+	is_string(name)
+	regex.match("^[a-z][a-z0-9_]*$", name)
+	not name in {"all", "ungrouped"}
+}
+
+_plain_host_name(host) if {
+	is_string(host)
+	regex.match("^[a-z0-9][a-z0-9.-]*$", host)
+	not host in {"all", "ungrouped"}
 }
 
 # --- Allow ------------------------------------------------------------------------------
