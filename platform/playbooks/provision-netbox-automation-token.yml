@@ -65,30 +65,38 @@
       # Duplicate-VM reconciliation (reconcile-netbox-duplicate-vms.yml): view every VM, change one (the
       # custom-field PATCH), delete one (the bare record). The read-only views are the interfaces it refuses
       # on, the cluster and the tenant names it reports. Nothing here can add a VM.
-      # Least privilege, one ObjectPermission per grant. NetBox ORs a user's permissions, so an unconstrained
-      # change or delete on virtual machines would widen the two constrained ones: none is declared here.
-      # constraints is a Django filter (qs_filter_from_constraints: Q(**constraint)) and a null or empty one
-      # grants unconstrained access, so every constrained scope below has a non-empty dict (netbox v4.5.0,
-      # netbox/utilities/permissions.py and netbox/users/models/permissions.py).
+      # Least privilege, one ObjectPermission per grant. NetBox ORs a user's permissions, so a grant without a
+      # constraint would widen a constrained one. Constraints are a Django filter (qs_filter_from_constraints:
+      # Q(**constraint)); a null or empty entry grants unconstrained access (netbox v4.5.0,
+      # netbox/utilities/permissions.py). NetBox applies them where the viewset calls restrict(): the
+      # virtual-machine endpoints do, so the change and delete scopes bind. The changelog endpoint does NOT
+      # (netbox/core/api/views.py ObjectChangeViewSet is a plain DRF viewset), and has_perm ignores constraints
+      # (netbox/netbox/authentication/__init__.py ObjectPermissionMixin.has_perm), so the changelog scope is
+      # unconstrained: a constraint there would look like a restriction and restrict nothing.
+      # The change and delete constraints are disjoint: one needs comments that start with VMID: (never empty),
+      # the other needs empty comments. So no record can match both.
       vm-reconciler:
         user: workflow-vm-reconciler
         permission: workflow-vm-reconcile-vm-view
         actions: [view]
         object_types: [virtualization.virtualmachine]
-        view_object_types: [virtualization.vminterface, virtualization.cluster, tenancy.tenant, core.objectchange]
+        view_object_types: [virtualization.vminterface, virtualization.cluster, tenancy.tenant]
         view_permission: workflow-vm-reconcile-view
-        constrained_scopes:
-          # The PATCH targets a discovery record only (its comments start with the VMID the discovery worker writes).
+        extra_scopes:
+          - permission: workflow-vm-reconcile-changelog-view
+            actions: [view]
+            object_types: [core.objectchange]
+          # The PATCH targets a discovery record only: a VMID comment, and vcpus set (discovery always sets it).
           - permission: workflow-vm-reconcile-change
             actions: [change]
             object_types: [virtualization.virtualmachine]
-            constraints: {comments__startswith: "VMID:"}
-          # The DELETE targets a bare record only: the marker description and no vcpus, the exact shape
-          # validate-address-free.yml creates.
+            constraints: {comments__startswith: "VMID:", vcpus__isnull: false}
+          # The DELETE targets a bare record only: the marker description, no vcpus, and empty comments (the
+          # shape validate-address-free.yml creates: its POST sets no comments, and NetBox stores blank text).
           - permission: workflow-vm-reconcile-delete
             actions: [delete]
             object_types: [virtualization.virtualmachine]
-            constraints: {description: "Declared by the service deployment workflow (validate-address)", vcpus__isnull: true}
+            constraints: {description: "Declared by the service deployment workflow (validate-address)", vcpus__isnull: true, comments: ""}
         token_write_enabled: true
         field: vm_reconciler_api_token
         description: service deployment workflow duplicate VM reconciliation
@@ -109,6 +117,11 @@
     _profile_name: "{{ (netbox_token_profile | default('') | trim) or 'device-writer' }}"
     _profile: "{{ _profiles[_profile_name] }}"
     _user: "{{ _profile.user }}"
+    # Every ObjectPermission the profile declares, by name: the set the dedicated user must end up holding exactly.
+    _declared_perm_names: >-
+      {{ [_profile.permission]
+         + ([_profile.view_permission | default(_profile.permission ~ '-view')] if (_profile.view_object_types | default([])) else [])
+         + (_profile.extra_scopes | default([]) | map(attribute='permission') | list) }}
 
   tasks:
     - name: "Refuse an unknown token profile"
@@ -195,14 +208,14 @@
             username="{{ _user }}",
             defaults={"is_active": True},
         )
-        # (name, actions, object types, constraints): None is unconstrained. Constrained scopes arrive as JSON, so
+        # (name, actions, object types, constraints): None is unconstrained. Extra scopes arrive as JSON, so
         # true/null in a constraint stay valid Python.
         scopes = [("{{ _profile.permission }}", {{ _profile.actions | to_json }}, {{ _profile.object_types | to_json }}, None)]
         if {{ _profile.view_object_types | default([]) | to_json }}:
             scopes.append(("{{ _profile.view_permission | default(_profile.permission ~ '-view') }}", ["view"],
                            {{ _profile.view_object_types | default([]) | to_json }}, None))
-        scopes += [(s["permission"], s["actions"], s["object_types"], s["constraints"]) for s in
-                   json.loads({{ (_profile.constrained_scopes | default([])) | to_json | to_json }})]
+        scopes += [(s["permission"], s["actions"], s["object_types"], s.get("constraints")) for s in
+                   json.loads({{ (_profile.extra_scopes | default([])) | to_json | to_json }})]
         for name, actions, types, constraints in scopes:
             wanted = {ObjectType.objects.get_by_natural_key(*t.split(".")).pk for t in types}
             perm, created = ObjectPermission.objects.get_or_create(
@@ -210,7 +223,8 @@
             )
             changed |= created
             if not perm.enabled or perm.actions != actions or perm.constraints != constraints:
-                perm.enabled, perm.actions, perm.constraints = True, actions, constraints
+                perm.enabled, perm.actions = True, actions
+                perm.constraints = constraints
                 perm.save(update_fields=["enabled", "actions", "constraints"])
                 changed = True
             if set(perm.object_types.values_list("pk", flat=True)) != wanted:
@@ -219,11 +233,47 @@
             if not perm.users.filter(pk=user.pk).exists():
                 perm.users.add(user)
                 changed = True
+        # Exact convergence: the dedicated user holds the declared permissions and nothing else. Detach only (the
+        # ObjectPermission objects stay); a grant made by hand on this user is detached too. Names are printed.
+        declared = [name for name, *_ in scopes]
+        stale = list(ObjectPermission.objects.filter(users=user).exclude(name__in=declared).order_by("name"))
+        for perm in stale:
+            print("removed: " + perm.name)
+            perm.users.remove(user)
+            changed = True
         print("changed" if changed else "unchanged")
         PYSCRIPT
       register: _permissions
       changed_when: (_permissions.stdout_lines | default([]) | last | default('') | trim) == 'changed'
       when: not ansible_check_mode
+
+    - name: "Show the permissions removed from the dedicated user"
+      ansible.builtin.debug:
+        msg: "{{ _permissions.stdout_lines | select('match', '^removed: ') | list }}"
+      when: not ansible_check_mode
+
+    # The dry run changes nothing: it only reads which permissions a real run would detach.
+    - name: "Dry run: report the permissions the dedicated user would lose"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from django.contrib.auth import get_user_model
+        from users.models import ObjectPermission
+
+        user = get_user_model().objects.filter(username="{{ _user }}").first()
+        declared = {{ _declared_perm_names | to_json }}
+        if user is not None:
+            for name in ObjectPermission.objects.filter(users=user).exclude(name__in=declared).order_by("name").values_list("name", flat=True):
+                print("would remove: " + name)
+        PYSCRIPT
+      register: _would_remove
+      changed_when: false
+      check_mode: false
+      when: ansible_check_mode
+
+    - name: "Dry run: show the permissions that would be removed"
+      ansible.builtin.debug:
+        var: _would_remove.stdout_lines
+      when: ansible_check_mode
 
     - name: "Already provisioned — skip (idempotent)"
       when: (_nb_secret.json.data.data[_profile.field] | default('')) | length > 0

@@ -221,8 +221,10 @@
             {%- for vm in (page.json | default({})).get('results', []) -%}
               {%- set cluster = vm.get('cluster') or {} -%}
               {%- set tenant = vm.get('tenant') or {} -%}
-              {%- set is_bare = (vm.get('description') == _bare_marker) and (vm.get('vcpus') is none) -%}
+              {# The same predicates as the token's constraints (provision-netbox-automation-token.yml): a record the
+                 playbook calls bare is one the delete scope may remove, and a discovery one is one the change scope may patch. #}
               {%- set comments = (vm.get('comments') or '') | string -%}
+              {%- set is_bare = (vm.get('description') == _bare_marker) and (vm.get('vcpus') is none) and (comments == '') -%}
               {# A nested IP object is not a boolean: the bool filter reads a dict as False. Test the presence. #}
               {%- set has_ip = (vm.get('primary_ip4') is not none) or (vm.get('primary_ip6') is not none) -%}
               {%- set row = {
@@ -233,7 +235,7 @@
                     'tenant_name': tenant.get('name') or 'none',
                     'created': (vm.get('created') or 'unknown') | string,
                     'is_bare': is_bare,
-                    'is_disc': comments.startswith('VMID:') and not is_bare,
+                    'is_disc': comments.startswith('VMID:') and (vm.get('vcpus') is not none),
                     'has_ip': has_ip,
                     'custom_fields': vm.get('custom_fields') or {}
                   } -%}

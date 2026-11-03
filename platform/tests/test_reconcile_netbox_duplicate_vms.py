@@ -220,27 +220,80 @@ def _reconciler_profile():
     return playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]["vm-reconciler"]
 
 
-def test_the_vm_reconciler_profile_grants_view_unconstrained_and_change_and_delete_only_under_constraints():
+def test_the_vm_reconciler_profile_grants_view_and_change_and_delete_only_where_declared():
     profile = _reconciler_profile()
     assert profile["field"] == "vm_reconciler_api_token"
     assert profile["token_write_enabled"] is True
     assert profile["actions"] == ["view"]
     assert profile["object_types"] == ["virtualization.virtualmachine"]
     assert sorted(profile["view_object_types"]) == [
-        "core.objectchange", "tenancy.tenant", "virtualization.cluster", "virtualization.vminterface"]
-    scopes = profile["constrained_scopes"]
-    assert sorted(tuple(s["actions"]) for s in scopes) == [("change",), ("delete",)]
-    for scope in scopes:
+        "tenancy.tenant", "virtualization.cluster", "virtualization.vminterface"]
+    extra = {scope["permission"]: scope for scope in profile["extra_scopes"]}
+    assert set(extra) == {"workflow-vm-reconcile-changelog-view", "workflow-vm-reconcile-change",
+                          "workflow-vm-reconcile-delete"}
+    # NetBox does not apply object constraints to the changelog endpoint (ObjectChangeViewSet is not restricted),
+    # so the changelog scope carries none: a constraint there would look like a restriction and restrict nothing.
+    assert extra["workflow-vm-reconcile-changelog-view"] == {
+        "permission": "workflow-vm-reconcile-changelog-view", "actions": ["view"],
+        "object_types": ["core.objectchange"]}
+    change = extra["workflow-vm-reconcile-change"]
+    delete = extra["workflow-vm-reconcile-delete"]
+    assert change["actions"] == ["change"] and delete["actions"] == ["delete"]
+    for scope in (change, delete):
         assert scope["object_types"] == ["virtualization.virtualmachine"], scope
-        # NetBox: a null or empty constraint is unconstrained access, so a constrained scope must be a non-empty dict.
+        # NetBox: a null or empty constraint is unconstrained access, so a constrained scope is a non-empty dict.
         assert isinstance(scope["constraints"], dict) and scope["constraints"], scope
-    by_action = {tuple(s["actions"]): s["constraints"] for s in scopes}
-    assert by_action[("change",)] == {"comments__startswith": "VMID:"}
-    assert by_action[("delete",)] == {
-        "description": "Declared by the service deployment workflow (validate-address)", "vcpus__isnull": True}
-    names = [profile["permission"], profile["view_permission"], *(s["permission"] for s in scopes)]
-    assert len(set(names)) == 4, names
-    assert "add" not in {a for s in scopes for a in s["actions"]} | set(profile["actions"])
+    assert change["constraints"] == {"comments__startswith": "VMID:", "vcpus__isnull": False}
+    assert delete["constraints"] == {
+        "description": "Declared by the service deployment workflow (validate-address)",
+        "vcpus__isnull": True, "comments": ""}
+    names = [profile["permission"], profile["view_permission"], *(s["permission"] for s in profile["extra_scopes"])]
+    assert len(set(names)) == 5, names
+    assert "add" not in {a for s in profile["extra_scopes"] for a in s["actions"]} | set(profile["actions"])
+
+
+def _matches(constraints, record):
+    """The subset of NetBox's Q(**constraint) this profile uses: exact, __startswith and __isnull, ANDed."""
+    for key, want in constraints.items():
+        if key.endswith("__startswith"):
+            ok = str(record.get(key[:-len("__startswith")]) or "").startswith(want)
+        elif key.endswith("__isnull"):
+            ok = (record.get(key[:-len("__isnull")]) is None) == want
+        else:
+            ok = record.get(key) == want
+        if not ok:
+            return False
+    return True
+
+
+def test_the_change_and_delete_constraints_cannot_both_match_one_record():
+    extra = {s["permission"]: s for s in _reconciler_profile()["extra_scopes"]}
+    change = extra["workflow-vm-reconcile-change"]["constraints"]
+    delete = extra["workflow-vm-reconcile-delete"]["constraints"]
+    # Structural: one needs comments that start with VMID: (so never empty), the other needs empty comments.
+    assert change["comments__startswith"].startswith("VMID:") and delete["comments"] == ""
+    assert change["vcpus__isnull"] is False and delete["vcpus__isnull"] is True
+    # And over the shapes that exist, including the ones that differ in one field only.
+    marker = "Declared by the service deployment workflow (validate-address)"
+    shapes = [
+        {"description": marker, "vcpus": None, "comments": ""},            # the bare record
+        {"description": "Proxmox notes", "vcpus": 2.0, "comments": "VMID: 101. Host: pve1."},  # discovery
+        {"description": marker, "vcpus": None, "comments": "VMID: 9."},    # marker, no vcpus, VMID comment
+        {"description": marker, "vcpus": 2.0, "comments": ""},             # marker, vcpus set, no comments
+        {"description": "", "vcpus": None, "comments": ""},
+        {"description": "", "vcpus": 2.0, "comments": "VMID: 1."},
+    ]
+    for record in shapes:
+        assert not (_matches(change, record) and _matches(delete, record)), record
+    assert _matches(change, shapes[1]) and _matches(delete, shapes[0])
+    assert not _matches(delete, shapes[1]) and not _matches(change, shapes[0])
+
+
+def test_the_classifier_uses_the_same_predicates_as_the_constraints():
+    # A record the playbook calls bare must be one the delete scope can remove, and a discovery one one the change
+    # scope can patch. The two predicates are pinned to the constraints by their text.
+    assert "(vm.get('vcpus') is none) and (comments == '') -%}" in TEXT
+    assert "'is_disc': comments.startswith('VMID:') and (vm.get('vcpus') is not none)," in TEXT
 
 
 def test_the_reconciler_account_name_matches_the_vm_recorder_profile_user_the_creator_check_pins():
@@ -271,7 +324,8 @@ def _bare(vm_id, name, cluster=1, cf=None, ip=None, cluster_name="uhstray-cluste
 def _disc(vm_id, name, cluster=1, cf=None, cluster_name="uhstray-cluster"):
     return {"id": vm_id, "name": name, "cluster": {"id": cluster, "name": cluster_name},
             "tenant": {"id": 2, "name": "uhstray"}, "created": "2026-10-01T09:00:00Z",
-            "description": "Proxmox notes", "vcpus": 2.0, "comments": "VMID: 101. Host: pve1. Discovered via Proxmox API.",
+            "description": "Proxmox notes", "vcpus": 2.0,
+            "comments": "VMID: 101. Host: pve1. Discovered via Proxmox API.",
             "primary_ip4": None, "primary_ip6": None, "custom_fields": dict(_cf() if cf is None else cf)}
 
 
@@ -321,7 +375,8 @@ class FakeNetBox:
             return 200, {"count": len(ids), "next": None, "previous": None, "results": page}
         if url.path == "/api/core/object-changes/" and method == "GET":
             # The filter names the playbook must send: NetBox's ObjectChangeFilterSet (v4.5.0) takes them as given.
-            if query.get("changed_object_type") != ["virtualization.virtualmachine"] or query.get("action") != ["create"]:
+            wanted = {"changed_object_type": ["virtualization.virtualmachine"], "action": ["create"]}
+            if any(query.get(key) != value for key, value in wanted.items()):
                 return 400, {"detail": "unexpected filter"}
             vm_id = int(query["changed_object_id"][0])
             rows = [{"id": n, "action": "create", "changed_object_id": vm_id, "user_name": who}
@@ -535,7 +590,8 @@ def test_no_token_or_address_reaches_the_output_at_maximum_verbosity(reconcile):
 
 def test_the_creation_records_are_read_before_any_pair_is_selected_or_written():
     tasks = _tasks()
-    origin = next(i for i, t in enumerate(tasks) if t.get("name") == "NetBox: read the creation record of each candidate VM")
+    origin = next(i for i, t in enumerate(tasks)
+                  if t.get("name") == "NetBox: read the creation record of each candidate VM")
     judged = next(i for i, t in enumerate(tasks) if t.get("name") == "Judge the origin of each candidate pair")
     selected = next(i for i, t in enumerate(tasks)
                     if t.get("name") == "Hold the selected pairs (every verified pair when reconcile_names is blank)")
@@ -550,9 +606,11 @@ def test_the_creation_record_read_queries_the_changelog_for_creates_of_virtual_m
 
 
 def test_selection_and_the_unmatched_check_read_only_the_verified_pairs():
-    selection = str(_named("Hold the selected pairs (every verified pair when reconcile_names is blank)")["ansible.builtin.set_fact"])
+    selection = str(_named(
+        "Hold the selected pairs (every verified pair when reconcile_names is blank)")["ansible.builtin.set_fact"])
     assert "for p in _verified_pairs" in selection and "for p in _pairs" not in selection
-    unmatched = str(_named("Hold the requested names that match no verified duplicate pair")["ansible.builtin.set_fact"])
+    unmatched = str(_named(
+        "Hold the requested names that match no verified duplicate pair")["ansible.builtin.set_fact"])
     assert "_verified_pairs" in unmatched and re.search(r"(?<![A-Za-z_])_pairs\b", unmatched) is None
 
 
@@ -632,9 +690,272 @@ def test_the_permission_script_renders_each_scope_with_its_constraint(tmp_path):
     compile(text, "rendered-permission-script", "exec")
     literal = re.search(r"json\.loads\((\".*\")\)", text)
     assert literal, text
-    assert json.loads(ast.literal_eval(literal.group(1))) == profile["constrained_scopes"]
-    # The unconstrained view scope is rendered with a None constraint (its tuple ends None)); the parsed
-    # constraints above carry the exact dicts, so no raw-text match is needed (the JSON sits in a string literal).
-    assert "None)]" in text
-    delete = next(s for s in json.loads(ast.literal_eval(literal.group(1))) if s["actions"] == ["delete"])
-    assert delete["constraints"]["vcpus__isnull"] is True
+    assert json.loads(ast.literal_eval(literal.group(1))) == profile["extra_scopes"]
+    # The constraint is read with .get: the changelog scope has none, so it is rendered as None (unconstrained).
+    assert 's.get("constraints")' in text
+
+
+# --- convergence: the dedicated user ends with exactly the declared permissions -----------------------------
+#
+# The rendered permission snippet runs against a small in-memory stand-in for the NetBox ORM calls it makes
+# (get_user_model, ObjectPermission, ObjectType). The stand-in is test-only and keeps its state in a JSON file, so
+# the real snippet's detach logic, its idempotence and its check-mode silence are exercised. The stand-in is not
+# NetBox: that the M2M detach and the JSON constraints behave so in NetBox v4.5.0 is read from its source.
+
+FAKE_ORM = '''
+import atexit, json, os
+_STATE = os.environ["FAKE_NETBOX_STATE"]
+if os.path.exists(_STATE):
+    with open(_STATE) as fh:
+        _S = json.load(fh)
+else:
+    _S = {"users": {}, "perms": {}, "types": {}}
+
+
+def _save():
+    with open(_STATE, "w") as fh:
+        json.dump(_S, fh, sort_keys=True)
+
+
+atexit.register(_save)
+
+
+class _User:
+    def __init__(self, name):
+        self.username = name
+        self.pk = _S["users"][name]["id"]
+
+
+class _UserQS:
+    def __init__(self, names):
+        self._names = names
+
+    def first(self):
+        return _User(self._names[0]) if self._names else None
+
+
+class _UserManager:
+    def get_or_create(self, username, defaults=None):
+        if username in _S["users"]:
+            return _User(username), False
+        _S["users"][username] = {"id": len(_S["users"]) + 1}
+        return _User(username), True
+
+    def filter(self, username=None):
+        return _UserQS([username] if username in _S["users"] else [])
+
+
+def get_user_model():
+    class User:
+        objects = _UserManager()
+    return User
+
+
+class _Type:
+    def __init__(self, key):
+        self.pk = _S["types"].setdefault(key, len(_S["types"]) + 1)
+
+
+class _TypeManager:
+    def get_by_natural_key(self, app_label, model):
+        return _Type(app_label + "." + model)
+
+
+class ObjectType:
+    objects = _TypeManager()
+
+
+class _Exists:
+    def __init__(self, found):
+        self._found = found
+
+    def exists(self):
+        return self._found
+
+
+class _Related:
+    def __init__(self, perm, field):
+        self._perm, self._field = perm, field
+
+    def _ids(self):
+        return _S["perms"][self._perm][self._field]
+
+    def values_list(self, field, flat=False):
+        return list(self._ids())
+
+    def set(self, ids):
+        _S["perms"][self._perm][self._field] = list(ids)
+
+    def filter(self, pk=None):
+        return _Exists(pk in self._ids())
+
+    def add(self, user):
+        if user.pk not in self._ids():
+            self._ids().append(user.pk)
+
+    def remove(self, user):
+        if user.pk in self._ids():
+            self._ids().remove(user.pk)
+
+
+class _Perm:
+    _FIELDS = ("enabled", "actions", "constraints")
+
+    def __init__(self, name):
+        object.__setattr__(self, "name", name)
+
+    def __getattr__(self, key):
+        if key in _Perm._FIELDS:
+            return _S["perms"][self.name][key]
+        if key in ("object_types", "users"):
+            return _Related(self.name, key)
+        raise AttributeError(key)
+
+    def __setattr__(self, key, value):
+        if key not in _Perm._FIELDS:
+            raise AttributeError(key)
+        _S["perms"][self.name][key] = value
+
+    def save(self, update_fields=None):
+        pass
+
+
+class _PermQS:
+    def __init__(self, names):
+        self._names = list(names)
+
+    def filter(self, users=None):
+        return _PermQS([n for n in self._names if users.pk in _S["perms"][n]["users"]])
+
+    def exclude(self, name__in=()):
+        return _PermQS([n for n in self._names if n not in name__in])
+
+    def order_by(self, *fields):
+        return _PermQS(sorted(self._names))
+
+    def values_list(self, field, flat=False):
+        return list(self._names)
+
+    def __iter__(self):
+        return iter([_Perm(n) for n in self._names])
+
+
+class _PermManager:
+    def get_or_create(self, name, defaults=None):
+        if name in _S["perms"]:
+            return _Perm(name), False
+        record = {"enabled": True, "actions": [], "constraints": None, "object_types": [], "users": []}
+        record.update(defaults or {})
+        _S["perms"][name] = record
+        return _Perm(name), True
+
+    def filter(self, users=None):
+        return _PermQS(list(_S["perms"])).filter(users=users)
+
+
+class ObjectPermission:
+    objects = _PermManager()
+'''
+
+SHIM = {
+    "django/__init__.py": "",
+    "django/contrib/__init__.py": "",
+    "django/contrib/auth/__init__.py": "from _fake_orm import get_user_model\n",
+    "users/__init__.py": "",
+    "users/models.py": "from _fake_orm import ObjectPermission\n",
+    "core/__init__.py": "",
+    "core/models.py": "from _fake_orm import ObjectType\n",
+    "manage.py": "import sys\nexec(compile(sys.stdin.read(), '<shell>', 'exec'), {'__name__': '__main__'})\n",
+}
+
+DECLARED = {"workflow-vm-reconcile-vm-view", "workflow-vm-reconcile-view", "workflow-vm-reconcile-changelog-view",
+            "workflow-vm-reconcile-change", "workflow-vm-reconcile-delete"}
+
+
+def _seed_state():
+    def perm(users, actions=("view",)):
+        return {"enabled": True, "actions": list(actions), "constraints": None, "object_types": [], "users": users}
+    return {"users": {"workflow-vm-reconciler": {"id": 1}, "someone": {"id": 2}}, "types": {}, "perms": {
+        "workflow-vm-reconcile": perm([1], ("view", "change", "delete")),   # the earlier broad grant: undeclared
+        "manual-grant": perm([1]),                                          # granted by hand: undeclared
+        "workflow-vm-reconcile-vm-view": perm([1]),                         # declared, already attached
+        "other-user-perm": perm([2]),                                       # another account: not ours to touch
+    }}
+
+
+def _attached(state, user_id):
+    return {name for name, rec in state["perms"].items() if user_id in rec["users"]}
+
+
+@pytest.fixture
+def converge(tmp_path):
+    for rel, text in SHIM.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    (tmp_path / "_fake_orm.py").write_text(FAKE_ORM)
+    state = tmp_path / "state.json"
+
+    def run(check=False, seed=None):
+        if seed is not None:
+            state.write_text(json.dumps(seed, sort_keys=True))
+        manage = (f"FAKE_NETBOX_STATE={state} PYTHONPATH={tmp_path} python3 {tmp_path}/manage.py shell")
+        play = playbook_yaml.plays(PROVISION)[0]
+        names = {"Ensure NetBox automation user and scoped permissions",
+                 "Show the permissions removed from the dedicated user",
+                 "Dry run: report the permissions the dedicated user would lose",
+                 "Dry run: show the permissions that would be removed"}
+        tasks = [t for t in play["tasks"] if t.get("name") in names]
+        assert len(tasks) == 4, [t.get("name") for t in tasks]
+        harness = tmp_path / "harness.yml"
+        harness.write_text(yaml.safe_dump([{
+            "hosts": "localhost", "connection": "local", "gather_facts": False,
+            "vars": {**play["vars"], "_manage": manage, "netbox_token_profile": "vm-reconciler"},
+            "tasks": tasks,
+        }]))
+        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+        env["ANSIBLE_NOCOLOR"] = "1"
+        cmd = ["ansible-playbook", "-i", "localhost,", str(harness)] + (["--check"] if check else [])
+        proc = subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=300)
+        return proc, proc.stdout + proc.stderr, json.loads(state.read_text())
+
+    return run
+
+
+@NEEDS_ANSIBLE
+def test_the_dedicated_user_ends_with_exactly_the_declared_permissions(converge):
+    proc, out, state = converge(seed=_seed_state())
+    assert proc.returncode == 0, out
+    assert "removed: manual-grant" in out and "removed: workflow-vm-reconcile" in out, out
+    assert _attached(state, 1) == DECLARED, _attached(state, 1)
+    # Detach only: the stale grants still exist, and another account's grant is untouched.
+    assert "workflow-vm-reconcile" in state["perms"] and "manual-grant" in state["perms"]
+    assert _attached(state, 2) == {"other-user-perm"}
+
+
+@NEEDS_ANSIBLE
+def test_a_second_run_changes_nothing(converge):
+    converge(seed=_seed_state())
+    proc, out, state = converge()
+    assert proc.returncode == 0, out
+    assert "removed: " not in out, out
+    assert _attached(state, 1) == DECLARED
+    recap = re.search(r"changed=(\d+)", out.split("PLAY RECAP")[1])
+    assert recap and recap.group(1) == "0", out
+
+
+@NEEDS_ANSIBLE
+def test_check_mode_reports_the_removals_and_changes_nothing(converge):
+    seed = _seed_state()
+    proc, out, state = converge(check=True, seed=seed)
+    assert proc.returncode == 0, out
+    assert "would remove: manual-grant" in out and "would remove: workflow-vm-reconcile" in out, out
+    assert state == seed, "a dry run wrote to the store"
+    assert _attached(state, 1) == {"workflow-vm-reconcile", "manual-grant", "workflow-vm-reconcile-vm-view"}
+
+
+@NEEDS_ANSIBLE
+def test_the_removal_names_are_printed_and_no_token_is_in_the_output(converge):
+    proc, out, _ = converge(seed=_seed_state())
+    assert proc.returncode == 0, out
+    assert SENT not in out and CLIENT not in out
