@@ -80,10 +80,10 @@ test_launch_gate_settings_field_keeps_a_deny if {
 	not d.allowed
 }
 
-# target_service is one plain identifier: a group name (Harden SSH, a hosts: pattern) or a bare
-# service name (Provision VM and the others that append _svc themselves). Each bad value is its own
+# target_service names one <name>_svc group for a hosts: pattern (Harden SSH), or one bare service
+# name for the templates that append _svc themselves (Provision VM and the others). Each bad value is its own
 # test, so a failure names the value that got through; the non-string values guard the type check.
-_target_reason := "target_service must be one plain group or service name"
+_target_reason := "target_service must name one service group, or one service for the templates that take a bare name"
 
 _gate_input(target) := object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": target}})
 
@@ -170,6 +170,26 @@ test_launch_gate_target_service_false_is_denied if {
 }
 
 # A `settings` block without the key is outside the rule: the other survey values change nothing.
+# The controller and a parent group above the service groups are plain identifiers too, and each
+# widens a hosts: pattern; a bare service name is not a group at all.
+test_launch_gate_target_service_localhost_is_denied if {
+	d := agentcloud.decision with input as _gate_input("localhost")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_parent_group_is_denied if {
+	d := agentcloud.decision with input as _gate_input("servers")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_bare_name_is_denied_for_a_hosts_pattern if {
+	d := agentcloud.decision with input as _gate_input("postiz")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
 test_launch_gate_settings_without_target_service_keeps_an_allow if {
 	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"smoke": "1"}})
 }
@@ -184,6 +204,16 @@ test_provision_vm_bare_service_name_keeps_an_allow if {
 
 test_provision_vm_pbs_special_value_keeps_an_allow if {
 	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "pbs"})
+}
+
+test_provision_vm_target_service_localhost_is_denied if {
+	d := agentcloud.decision with input as _vm_run("Provision VM", "provision-vm", {"target_service": "localhost"})
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_provision_vm_dev_variant_keeps_the_bare_name_rule if {
+	agentcloud.allow with input as _vm_run("Provision VM (Dev)", "provision-vm", {"target_service": "postiz"})
 }
 
 test_provision_vm_bare_name_with_target_host_keeps_an_allow if {
@@ -212,6 +242,12 @@ test_validate_address_free_bare_service_name_keeps_an_allow if {
 # An underscore is not Ansible pattern syntax, and inventories hold host names that use it.
 test_provision_vm_target_host_with_underscore_keeps_an_allow if {
 	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "postiz", "target_host": "postiz_01"})
+}
+
+test_target_host_localhost_is_denied if {
+	d := agentcloud.decision with input as _host_input("localhost")
+	not d.allowed
+	contains(d.reason, _host_reason)
 }
 
 test_target_host_negation_is_denied if {

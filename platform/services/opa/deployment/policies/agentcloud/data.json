@@ -181,6 +181,12 @@
         "Clean Deploy ERPNext",
         "Wipe and Rebuild"
       ],
+      "bare_service_name_templates": [
+        "Provision VM",
+        "Resize VM",
+        "Lookup Service Inventory",
+        "Validate Address Free"
+      ],
       "launch_branches": [
         "main",
         "dev"
