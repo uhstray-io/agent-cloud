@@ -886,6 +886,9 @@ class GateServer(ThreadingHTTPServer):
         self._key_path = key_path
         self._lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        # One watchdog per connection thread; the handler runs on that same thread, so a thread-local
+        # lets it disarm its own.
+        self._watch = threading.local()
         try:
             self._fingerprint = _fingerprint(cert_path, key_path)
             self._ssl_context = _server_context(cert_path, key_path)
@@ -918,16 +921,26 @@ class GateServer(ThreadingHTTPServer):
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         # CONNECTION_TIMEOUT bounds each read and REQUEST_DEADLINE the body, but a client trickling its
         # handshake or headers could still hold a slot for hours, and sixteen such clients would fill the
-        # cap. The watchdog bounds the whole connection: past CONNECTION_DEADLINE it shuts the socket, which
-        # ends whatever read the handler is blocked in.
+        # cap. The watchdog bounds the client's part of the connection: past CONNECTION_DEADLINE it shuts the
+        # socket, which ends whatever read the handler is blocked in. The handler disarms it once the request
+        # is read (disarm()), so it never cuts a launch in progress: a task may exist by then, and its id
+        # must reach the caller. The gate's own calls are bounded by their client timeouts.
         watchdog = threading.Timer(CONNECTION_DEADLINE, _cut, args=(request,))
         watchdog.daemon = True
+        self._watch.timer = watchdog
         watchdog.start()
         try:
             super().process_request_thread(request, client_address)
         finally:
-            watchdog.cancel()
+            self.disarm()
             self._slots.release()
+
+    def disarm(self) -> None:
+        """Cancel this connection's watchdog. Called on the connection's own thread."""
+        timer = getattr(self._watch, "timer", None)
+        if timer is not None:
+            timer.cancel()
+            self._watch.timer = None
 
     def _current_context(self) -> ssl.SSLContext:
         """The context for the files as they stand now. A failed reload keeps the last good context serving
@@ -1003,6 +1016,9 @@ class GateHandler(BaseHTTPRequestHandler):
             super().handle()
 
     def finish(self) -> None:
+        # Disarmed before the socket closes, so a late watchdog never shuts a descriptor reused by another
+        # connection.
+        self.server.disarm()
         # setup() returned before the stream files existed, so the base finish() must not run.
         if not self._tls_failed:
             super().finish()
@@ -1041,6 +1057,7 @@ class GateHandler(BaseHTTPRequestHandler):
                 self._reply(408, {"error": "timeout"})
                 return
         path = self.path.split("?", 1)[0]
+        self.server.disarm()
         status, payload = self.server.gate.handle(method, path, _headers(self.headers), body)
         self._reply(status, payload)
 

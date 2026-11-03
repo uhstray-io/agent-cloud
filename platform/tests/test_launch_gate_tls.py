@@ -433,6 +433,21 @@ def test_headers_trickled_past_the_connection_deadline_are_cut(listener, monkeyp
     assert listener.gate.calls == []
 
 
+def test_a_launch_slower_than_the_connection_deadline_still_answers(listener, monkeypatch):
+    # The watchdog bounds the client's part only. A gate whose Semaphore and OPA calls outlast it may already
+    # have created a task, and the reply carrying the task id must still arrive (review of PR 818).
+    monkeypatch.setattr(lg, "CONNECTION_DEADLINE", 0.5)
+    answer = listener.gate.handle
+
+    def slow(method, path, headers, body):
+        time.sleep(1.5)
+        return answer(method, path, headers, body)
+
+    monkeypatch.setattr(listener.gate, "handle", slow)
+    status, _ = _https(listener.port, listener.client_context(), "GET", "/healthz")
+    assert status == 200
+
+
 def test_a_read_that_runs_out_the_request_deadline_is_answered_408(listener, monkeypatch):
     monkeypatch.setattr(lg, "REQUEST_DEADLINE", 1.0)
     # The headers and the first body byte arrive, then silence: the server's read of the rest is bounded by the
