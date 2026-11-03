@@ -69,6 +69,14 @@ def test_the_carry_script_never_prints_the_key():
     assert "echo \"$(" not in shell
 
 
+def test_the_layer_key_is_held_in_memory_and_never_written_to_a_temp_file():
+    shell = _task(CARRY)["ansible.builtin.shell"]
+    assert "mktemp" not in shell
+    assert "trap" not in shell
+    assert "key=$(podman cp" in shell
+    assert shell.index("set -o pipefail") < shell.index("podman start")
+
+
 def test_the_volume_probe_precedes_any_start():
     shell = _task(CARRY)["ansible.builtin.shell"]
     assert shell.index("podman run") < shell.index("podman start")
@@ -144,10 +152,16 @@ case "$1" in
       prev=$a
     done
     script=$(printf '%s' "$script" | sed -e "s|/var/lib/semaphore|$STUB_VOLUME|g" -e "s|/etc/semaphore|$STUB_ETC|g")
+    case "$script" in
+      *"/dev/stdin"*) if [ "$STUB_STDIN_RUN_FAILS" = yes ]; then echo "Error: write failed" >&2; exit 125; fi ;;
+    esac
     exec sh -c "$script" ;;
   cp)
     log "$*"
-    if [ -f "$STUB_ETC/config.json" ]; then cp "$STUB_ETC/config.json" "$3"; exit $?; fi
+    if [ -f "$STUB_ETC/config.json" ]; then
+      if [ "$3" = "-" ]; then tar -cf - -C "$STUB_ETC" config.json; exit $?; fi
+      cp "$STUB_ETC/config.json" "$3"; exit $?
+    fi
     echo 'Error: "/etc/semaphore/config.json" could not be found on container' >&2
     exit 125 ;;
   exec)
@@ -178,8 +192,8 @@ class Run(NamedTuple):
 
 def _run(tmp_path: Path, tasks: list, *, exists: bool = True, state: str = "running",
          volume_config: str | None = None, etc_config: str | None = None, mount: str = VOLUME_NAME,
-         start_fails: bool = False, run_fails: bool = False, repo_src: str | None = None,
-         share_src: str = DEPLOY_SHARE) -> Run:
+         start_fails: bool = False, run_fails: bool = False, stdin_run_fails: bool = False,
+         repo_src: str | None = None, share_src: str = DEPLOY_SHARE) -> Run:
     """Run the named tasks, then the debug task, against the stub. The checkout the playbook is
     run from is tmp_path/checkout, so a matching bind source is the default."""
     checkout = tmp_path / "checkout"
@@ -214,7 +228,8 @@ def _run(tmp_path: Path, tasks: list, *, exists: bool = True, state: str = "runn
                STUB_DESTS=("/run/podman/podman.sock /workspace/agent-cloud "
                            "/var/lib/agent-cloud-deploy /var/lib/semaphore "),
                STUB_REPO_SRC=repo_src or str(checkout), STUB_SHARE_SRC=share_src,
-               STUB_START_FAILS="yes" if start_fails else "no", STUB_RUN_FAILS="yes" if run_fails else "no")
+               STUB_START_FAILS="yes" if start_fails else "no", STUB_RUN_FAILS="yes" if run_fails else "no",
+               STUB_STDIN_RUN_FAILS="yes" if stdin_run_fails else "no")
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play)], cwd=REPO, env=env, text=True,
                          capture_output=True, check=False, timeout=120, stdin=subprocess.DEVNULL)
     lines = log.read_text().splitlines() if log.exists() else []
@@ -254,7 +269,7 @@ def test_the_carry_copies_only_when_the_volume_has_no_key(tmp_path, kwargs, resu
         assert run.etc_file.read_text() == KEY
     else:
         assert not run.volume_file.exists()
-    assert not list(run.state_dir.glob("carry.*")), "the temp dir is removed on every exit"
+    assert not run.state_dir.exists(), "nothing is written to the workstation disk"
 
 
 @needs_ansible
@@ -269,14 +284,28 @@ def test_the_probe_runs_from_the_containers_own_image_read_only_and_never_pulls(
 
 
 @needs_ansible
-def test_a_layer_key_reaches_the_volume_through_stdin_and_leaves_no_temp_file(tmp_path):
+def test_a_layer_key_reaches_the_volume_through_stdin_and_nothing_is_left_on_disk(tmp_path):
     run = _run(tmp_path, [CARRY], state="exited", etc_config=KEY, start_fails=True)
     assert run.out.returncode == 0, run.out.stdout + run.out.stderr
     copy = run.lines[-1]
     assert copy.startswith("run --rm -i --pull=never --entrypoint sh")
-    assert "cp /dev/stdin /var/lib/semaphore/config/config.json" in copy
+    assert "cp /dev/stdin" in copy and "mv" in copy
     assert run.volume_file.read_text() == KEY
-    assert not list(run.state_dir.glob("carry.*"))
+    assert not (run.volume_file.parent / "config.json.tmp").exists()
+    assert not run.state_dir.exists()
+
+
+@needs_ansible
+def test_a_failed_stdin_write_fails_the_play_and_never_removes_the_container(tmp_path):
+    """The write of the layer key is the only step that changes the volume. If its failure did not fail
+    the play, the carry would report carried and the recreate would remove the container."""
+    run = _run(tmp_path, [CARRY, RECREATE], state="exited", etc_config=KEY, start_fails=True,
+               repo_src=STALE_CHECKOUT, stdin_run_fails=True)
+    assert run.out.returncode != 0, run.out.stdout + run.out.stderr
+    assert run.verbs == ["run", "start", "cp", "run"]
+    assert not any(line.startswith("rm") for line in run.lines)
+    assert not run.volume_file.exists()
+    assert not run.state_dir.exists()
 
 
 @needs_ansible
@@ -300,7 +329,7 @@ def test_no_key_anywhere_reports_none_and_fails_the_task(tmp_path):
     assert run.out.returncode != 0
     assert run.verbs == ["run", "start", "cp"]
     assert not run.volume_file.exists()
-    assert not list(run.state_dir.glob("carry.*"))
+    assert not run.state_dir.exists()
 
 
 @needs_ansible

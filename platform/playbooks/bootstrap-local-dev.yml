@@ -747,11 +747,13 @@
     # own image: already local, so --pull=never fetches nothing, and it never starts the Semaphore
     # container. A probe error fails the task; it never falls through to a start. The container is
     # started only when the volume has no key. If it cannot start, its key, if any, is in the stopped
-    # container's layer (podman cp reads a stopped container). That copy reaches the volume through
-    # stdin of a throwaway container, never through a bind mount of a temp file, and the temp dir is
-    # removed on every exit. No key anywhere is "none", which fails the task. See docs/MISTAKES.md 3.16.
+    # container's layer (podman cp reads a stopped container). That key is read into the shell's
+    # memory and written to the volume only once the whole stream has arrived, so nothing lands on the
+    # workstation disk and a failed read writes nothing. The write goes through a temp name and mv.
+    # No key anywhere is "none", which fails the task. See docs/MISTAKES.md 3.16.
     - name: "Carry an existing Semaphore encryption key onto the data volume"
       ansible.builtin.shell: |
+        set -o pipefail
         ctr={{ _sem_name }}
         if ! podman container exists "$ctr"; then
           echo absent
@@ -772,16 +774,14 @@
         if [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' "$ctr")" != "running" ]; then
           if ! podman start "$ctr" >/dev/null; then
             [ -n "$vol" ] || { echo "$ctr cannot start and has no named data volume" >&2; exit 1; }
-            mkdir -p "{{ _state_dir }}" || exit 1
-            dir=$(mktemp -d "{{ _state_dir }}/carry.XXXXXX") || exit 1
-            trap 'rm -f "$dir/config.json"; rmdir "$dir"' EXIT
-            if ! podman cp "$ctr:/etc/semaphore/config.json" "$dir/config.json"; then
+            # The key is captured in memory, not in a file. A failed or truncated read leaves key empty
+            # or the pipeline failed, and then nothing is written to the volume.
+            if ! key=$(podman cp "$ctr:/etc/semaphore/config.json" - | tar -xO) || [ -z "$key" ]; then
               echo none
               exit 0
             fi
-            podman run --rm -i --pull=never --entrypoint sh -v "$vol:/var/lib/semaphore" "$image" \
-              -c 'mkdir -p /var/lib/semaphore/config && cp /dev/stdin /var/lib/semaphore/config/config.json && chmod 600 /var/lib/semaphore/config/config.json' \
-              < "$dir/config.json" || exit 1
+            printf '%s' "$key" | podman run --rm -i --pull=never --entrypoint sh -v "$vol:/var/lib/semaphore" "$image" \
+              -c 't=/var/lib/semaphore/config/config.json; mkdir -p /var/lib/semaphore/config && cp /dev/stdin "$t.tmp" && chmod 600 "$t.tmp" && mv "$t.tmp" "$t"' || exit 1
             echo carried
             exit 0
           fi
@@ -793,6 +793,9 @@
           elif [ -f /etc/semaphore/config.json ]; then
             mkdir -p /var/lib/semaphore/config && cp /etc/semaphore/config.json "$t" && chmod 600 "$t" && echo carried
           else echo none; fi'
+      args:
+        # pipefail is not POSIX: dash (the /bin/sh on Linux) rejects `set -o pipefail`.
+        executable: /bin/bash
       register: _sem_key_carry
       changed_when: "'carried' in _sem_key_carry.stdout_lines or 'started' in _sem_key_carry.stdout_lines"
       failed_when: "_sem_key_carry.rc != 0 or (_sem_key_carry.stdout_lines | last | default('')) not in ['absent', 'present', 'carried']"
@@ -853,6 +856,8 @@
           # only where a mount is, so a container whose checkout was deleted or moved passes it and
           # then cannot start (2026-11-02: crun could not stat the old source). Recreate when either
           # source differs from the one this run mounts. The data volume is kept: rm without -v.
+          # The checkout of the last bootstrap wins: bootstrapping from another worktree recreates Semaphore
+          # once (the data volume and its key are kept), and a Semaphore task in flight is killed.
           if [ "$REPO_SRC" != "{{ _repo_host_dir }}" ] || [ "$SHARE_SRC" != "{{ _deploy_share }}" ]; then
             podman rm -f {{ _sem_name }}
             echo recreated
