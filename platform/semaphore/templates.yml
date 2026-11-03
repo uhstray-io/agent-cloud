@@ -1955,6 +1955,10 @@ templates:
     # task, and removes it; seed_inputs is its allowlist. First installation:
     # run Provision Seed Environment for this template, then
     # `scripts/semaphore-seed-input.py --verify-only` (the read-only access check).
+    #
+    # bao_value_encoding (default plain) says how BAO_VALUE is encoded. The seed input is
+    # one line (the CLI refuses a newline), and a PEM private key is multi-line, so such a
+    # value is staged as base64 and the playbook decodes it before the merge.
     isolated_environment: OpenBao key seed inputs
     seed_inputs: [BAO_VALUE]
     seed_access_check: bao_verify_access_only
@@ -1974,6 +1978,12 @@ templates:
         description: "true = log in and read the path, then stop before any write"
         type: string
         default_value: "false"
+      - name: bao_value_encoding
+        title: "Value encoding"
+        description: "plain (default) or base64. Use base64 for a multi-line value such as a PEM key: the one-line input is decoded before it is stored."
+        type: string
+        default_value: "plain"
+        required: false
 
   - name: Rotate Semaphore Operator Token
     playbook: platform/playbooks/rotate-semaphore-api-token.yml

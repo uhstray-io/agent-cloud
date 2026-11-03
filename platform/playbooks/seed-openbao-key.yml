@@ -35,6 +35,11 @@
 # is outside what it stops (docs/MISTAKES.md 1.15). It must be https, OR http only to a
 # loopback/RFC1918 host (the internal OpenBao VLAN): the transport guard below refuses
 # public cleartext. AppRole creds are injected by the Semaphore environment.
+# bao_value_encoding (survey, default plain) names how BAO_VALUE is encoded. The seed input
+# is one line (scripts/semaphore-seed-input.py refuses a newline), and a PEM private key is
+# multi-line, so such a value is staged as base64 and decoded here, before the merge. The
+# base64 form is checked before the login (standard alphabet, a length that is a multiple of
+# four, a non-empty decode), and the value merged is the decoded text, never the base64.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -58,6 +63,12 @@
     # Environment first, so a stray extra var cannot override a configured secret.
     # The extra var still serves a local run, where nothing persists it.
     _bao_value: "{{ lookup('env', 'BAO_VALUE') | default(bao_value | default(''), true) }}"
+    # bao_value_encoding (survey): plain (default) or base64. A blank value means plain.
+    # Anything else is refused by the visible assert below, before the login.
+    _bao_value_encoding: "{{ bao_value_encoding | default('plain', true) }}"
+    # The text that is merged: BAO_VALUE decoded when base64, BAO_VALUE as given otherwise.
+    # Play vars are templated on use, so this decodes only after the base64 checks pass.
+    _bao_value_stored: "{{ _bao_value | b64decode if _bao_value_encoding == 'base64' else _bao_value }}"
 
   tasks:
     # Non-secret validation stays VISIBLE (no no_log) so a missing path/key/url
@@ -73,6 +84,14 @@
           Pass -e bao_path=services/<svc> -e bao_key=<key> and ensure
           openbao_addr (or OPENBAO_ADDR) + AppRole creds are set.
 
+    # Visible on purpose: the fail_msg names the setting, never the value.
+    - name: "Validate the value encoding"
+      ansible.builtin.assert:
+        that:
+          - _bao_value_encoding in ['plain', 'base64']
+        fail_msg: >-
+          bao_value_encoding must be plain (the default) or base64.
+
     - name: "Validate the secret value is present"
       ansible.builtin.assert:
         that:
@@ -82,6 +101,30 @@
           -e bao_value=<secret> (local run).
       no_log: true
       when: not (bao_verify_access_only | default(false) | bool)
+
+    # base64 checks: each rule is its own task, so the task NAME names the refused rule. A
+    # no_log result hides the fail_msg, so the name is the only readable part. They run in
+    # this order, so the decode runs only on input that passed the first two.
+    - name: "Refuse a BAO_VALUE with characters outside standard base64 (rule only; value not shown)"
+      ansible.builtin.assert:
+        that:
+          - _bao_value is match('^[A-Za-z0-9+/]+={0,2}$')
+      no_log: true
+      when: _bao_value_encoding == 'base64' and not (bao_verify_access_only | default(false) | bool)
+
+    - name: "Refuse a BAO_VALUE whose length is not a multiple of four (rule only; value not shown)"
+      ansible.builtin.assert:
+        that:
+          - (_bao_value | length) % 4 == 0
+      no_log: true
+      when: _bao_value_encoding == 'base64' and not (bao_verify_access_only | default(false) | bool)
+
+    - name: "Refuse a BAO_VALUE that does not decode to a non-empty value (rule only; value not shown)"
+      ansible.builtin.assert:
+        that:
+          - _bao_value_stored | length > 0
+      no_log: true
+      when: _bao_value_encoding == 'base64' and not (bao_verify_access_only | default(false) | bool)
 
     # role_id/secret_id/bao_value cross the wire to _bao_url — refuse to send
     # secret material over public cleartext. https is always allowed; http is
@@ -146,7 +189,7 @@
         _bm_url: "{{ _bao_url }}"
         _bm_token: "{{ _bao_auth.json.auth.client_token }}"
         _bm_path: "{{ bao_path }}"
-        _bm_data: "{{ {bao_key: _bao_value} }}"
+        _bm_data: "{{ {bao_key: _bao_value_stored} }}"
         _bm_on_missing: create
 
     - name: "Report the outcome (name only, value not logged)"
