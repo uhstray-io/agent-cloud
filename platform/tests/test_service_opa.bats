@@ -188,7 +188,7 @@ task_with() {
 
 # ── Read-only policy (bundle mode) ──────────────────────────────────────────────
 
-@test "opa: both command lists load ./policies as a bundle, so the REST write API is refused" {
+@test "opa: the verify runs the Rego tests as a bundle, the way the server loads them" {
   # Without --bundle, PUT /v1/data and /v1/policies (and DELETE /v1/data/agentcloud) succeed for
   # any caller the firewall admits; the :ro mount protects the files, not the running policy.
   # Both command lists ending in "--bundle /policies" is asserted by the --authorization test
