@@ -252,8 +252,9 @@ pub struct SiteView {
 #[derive(Serialize)]
 pub struct ClusterView {
     pub name: String,
-    /// The Proxmox nodes that host this cluster's matched VMs, by name. A node with no
-    /// matched VM of the cluster is not listed.
+    /// The Proxmox nodes, sorted by name. When the Proxmox cluster has this cluster's name, that
+    /// is every node of it, hosting a VM or not. Otherwise only the nodes that host this
+    /// cluster's matched VMs are listed.
     pub nodes: Vec<NodeView>,
     pub vms: Vec<VmView>,
 }
@@ -534,14 +535,26 @@ fn cluster_view(cluster: &NbCluster, join: &Join<'_>) -> ClusterView {
             vm_view(vm, live, join)
         })
         .collect();
-    let nodes: Vec<NodeView> = placed
-        .into_iter()
-        .filter_map(|name| {
-            join.proxmox
-                .and_then(|data| data.nodes.iter().find(|node| node.name == name))
-        })
-        .map(|node| node_view(node, join.admin))
-        .collect();
+    let nodes: Vec<NodeView> = match join.proxmox {
+        // The Proxmox cluster carries this cluster's name, so its nodes are this cluster's.
+        Some(data) if data.cluster_name.as_deref() == Some(cluster.name.as_str()) => {
+            let mut all: Vec<&PveNode> = data.nodes.iter().collect();
+            all.sort_by(|a, b| a.name.cmp(&b.name));
+            all.into_iter()
+                .map(|node| node_view(node, join.admin))
+                .collect()
+        }
+        // Any other cluster lists only the nodes its matched VMs run on, so it never claims
+        // the nodes of a different cluster.
+        _ => placed
+            .into_iter()
+            .filter_map(|name| {
+                join.proxmox
+                    .and_then(|data| data.nodes.iter().find(|node| node.name == name))
+            })
+            .map(|node| node_view(node, join.admin))
+            .collect(),
+    };
     ClusterView {
         name: cluster.name.clone(),
         nodes,
@@ -1237,7 +1250,7 @@ mod tests {
             .iter()
             .map(|n| n["name"].as_str().expect("name"))
             .collect();
-        assert_eq!(nodes, ["pve-01", "pve-02"]);
+        assert_eq!(nodes, ["pve-01", "pve-02", "pve-03"]);
         // A member sees node name and status only; the metrics are for platform admins.
         let node_keys: Vec<&str> = cluster["nodes"][0]
             .as_object()
@@ -1358,6 +1371,67 @@ mod tests {
         assert_eq!(node["name"], "pve-01");
         assert_eq!(node["maxcpu"], 16.0);
         assert_eq!(node["uptime"], 123456);
+    }
+
+    /// The names of a cluster's nodes, in the order the answer lists them.
+    fn node_names(cluster: &serde_json::Value) -> Vec<&str> {
+        cluster["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .map(|n| n["name"].as_str().expect("name"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cluster_named_like_the_proxmox_cluster_lists_every_node() {
+        let (state, _, _) = live_state().await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let cluster = &body["sites"][0]["clusters"][0];
+        assert_eq!(cluster["name"], "pve-prod");
+        assert_eq!(node_names(cluster), ["pve-01", "pve-02", "pve-03"]);
+        // pve-03 is offline and no guest runs on it: it is listed anyway.
+        assert_eq!(cluster["nodes"][2]["status"], "offline");
+    }
+
+    #[tokio::test]
+    async fn a_cluster_with_another_proxmox_name_lists_only_the_nodes_its_vms_run_on() {
+        let (state, _, pve_mock) = live_state().await;
+        *pve_mock.cluster.lock().expect("cluster name") = "other-cluster".to_string();
+        refresh(&state).await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["source"]["proxmox"], "ok");
+        assert_eq!(
+            node_names(&body["sites"][0]["clusters"][0]),
+            ["pve-01", "pve-02"],
+            "the placed nodes only; pve-03 belongs to no cluster this NetBox holds"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_cluster_name_read_keeps_the_source_ok_and_the_placed_nodes() {
+        let (state, _, pve_mock) = live_state().await;
+        pve_mock
+            .fail_status
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        refresh(&state).await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["source"]["proxmox"], "ok", "{text}");
+        assert!(body["error"]["proxmox"].is_null(), "{text}");
+        assert_eq!(body["stale"], false, "{text}");
+        assert_eq!(
+            node_names(&body["sites"][0]["clusters"][0]),
+            ["pve-01", "pve-02"]
+        );
     }
 
     #[tokio::test]

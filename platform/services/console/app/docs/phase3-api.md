@@ -117,11 +117,14 @@ The envelope is per authority, not single, so the UI can say which source is dow
 - A cluster whose scope is a location, a region or any type other than `dcim.site` is dropped and
   counted, even when its legacy `site` field names the site. The console does not yet resolve those
   scopes to a site, so it fails closed until it does. Such a cluster is never shown, to anyone.
-- `nodes` are the Proxmox nodes that host this cluster's matched VMs, sorted by name. A node with
-  no matched VM of the cluster is not listed. Every caller gets `name` and `status`. Platform
-  admins also get `cpu`, `maxcpu`, `mem`, `maxmem` and `uptime`; for anyone else those keys are
-  absent. Units are Proxmox's: `cpu` is a fraction of `maxcpu`, `mem`/`maxmem` are bytes,
-  `uptime` is seconds.
+- `nodes` are sorted by name. When the Proxmox cluster's name (`GET /api2/json/cluster/status`,
+  its `type: cluster` entry) equals this NetBox cluster's name, `nodes` is every node of that
+  Proxmox cluster, including one that hosts no VM and one that is offline. Otherwise `nodes` lists
+  only the Proxmox nodes that host this cluster's matched VMs, so a cluster never claims another
+  cluster's nodes. If the name read fails, the name is unknown and the second rule applies; the
+  Proxmox source stays `ok`. Every caller gets `name` and `status`. Platform admins also get
+  `cpu`, `maxcpu`, `mem`, `maxmem` and `uptime`; for anyone else those keys are absent. Units are
+  Proxmox's: `cpu` is a fraction of `maxcpu`, `mem`/`maxmem` are bytes, `uptime` is seconds.
 - VM `status` is the NetBox status. `live_status` is the Proxmox status, or `null` when no live
   state is joined. A VM is joined only when its name is unique across every declared NetBox site,
   in any tenant, and unique among the Proxmox guests. A name held twice on either side gets `null`,

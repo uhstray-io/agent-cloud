@@ -39,6 +39,10 @@ pub struct PveGuest {
 pub struct ProxmoxData {
     pub nodes: Vec<PveNode>,
     pub guests: Vec<PveGuest>,
+    /// The cluster's name as `GET /api2/json/cluster/status` gives it. `None` when that read
+    /// failed, or the API names no cluster (a standalone node). The inventory matches it to a
+    /// NetBox cluster's name to decide which nodes that cluster lists.
+    pub cluster_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,13 +71,30 @@ pub fn authorization(token_id: &str, token: &str) -> String {
     format!("PVEAPIToken={token_id}={token}")
 }
 
-/// Reads the cluster's nodes and guests in one request.
+/// Reads the cluster's nodes and guests, then its name. The name is a second request, and its
+/// failure leaves `cluster_name` unknown without failing the source.
 pub async fn fetch(
     http: &reqwest::Client,
     config: &ProxmoxConfig,
 ) -> Result<ProxmoxData, FetchError> {
+    let body = get(http, config, "/api2/json/cluster/resources")
+        .await?
+        .bytes()
+        .await
+        .map_err(transport_error)?;
+    let mut data = parse_resources(&body)?;
+    data.cluster_name = cluster_name(http, config).await;
+    Ok(data)
+}
+
+/// One authenticated GET. A non-success answer is a `Status` error; its body is not kept.
+async fn get(
+    http: &reqwest::Client,
+    config: &ProxmoxConfig,
+    path: &str,
+) -> Result<reqwest::Response, FetchError> {
     let response = http
-        .get(format!("{}/api2/json/cluster/resources", config.api_url))
+        .get(format!("{}{path}", config.api_url))
         .header(
             reqwest::header::AUTHORIZATION,
             authorization(&config.token_id, config.token.expose()),
@@ -86,8 +107,14 @@ pub async fn fetch(
     if !status.is_success() {
         return Err(FetchError::Status(status.as_u16()));
     }
-    let body = response.bytes().await.map_err(transport_error)?;
-    parse_resources(&body)
+    Ok(response)
+}
+
+/// The cluster's name from `cluster/status`, or `None` when that read fails.
+async fn cluster_name(http: &reqwest::Client, config: &ProxmoxConfig) -> Option<String> {
+    let response = get(http, config, "/api2/json/cluster/status").await.ok()?;
+    let body = response.bytes().await.ok()?;
+    parse_cluster_name(&body)
 }
 
 /// Keeps nodes and guests and drops every other resource type (storage, pools).
@@ -126,6 +153,17 @@ pub fn parse_resources(body: &[u8]) -> Result<ProxmoxData, FetchError> {
     Ok(data)
 }
 
+/// The name of the cluster entry in a `cluster/status` answer. `None` when the body does not
+/// decode, or has no cluster entry: a standalone node reports none.
+pub fn parse_cluster_name(body: &[u8]) -> Option<String> {
+    let envelope: StatusEnvelope = serde_json::from_slice(body).ok()?;
+    envelope
+        .data
+        .into_iter()
+        .find(|entry| entry.kind.as_deref() == Some("cluster"))?
+        .name
+}
+
 /// reqwest's own Display names the request URL, so it is classified, not shown.
 fn transport_error(err: reqwest::Error) -> FetchError {
     if err.is_timeout() {
@@ -140,6 +178,19 @@ fn transport_error(err: reqwest::Error) -> FetchError {
 #[derive(Deserialize)]
 struct Envelope {
     data: Vec<Resource>,
+}
+
+#[derive(Deserialize)]
+struct StatusEnvelope {
+    data: Vec<StatusEntry>,
+}
+
+/// One `cluster/status` entry: the cluster itself, or one of its nodes.
+#[derive(Deserialize)]
+struct StatusEntry {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    name: Option<String>,
 }
 
 /// One `cluster/resources` entry. Every field is optional on the wire, because the same
@@ -166,20 +217,26 @@ pub mod fixtures {
 
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use dioxus::server::axum::extract::State;
     use dioxus::server::axum::http::{header, HeaderMap, StatusCode};
     use dioxus::server::axum::response::{IntoResponse, Response};
     use dioxus::server::axum::routing::get;
-    use dioxus::server::axum::Router;
+    use dioxus::server::axum::{Json, Router};
 
     pub const TOKEN_ID: &str = "console@pve!ro";
     pub const TOKEN: &str = "pve-secret-value";
     pub const EXPECTED_AUTH: &str = "PVEAPIToken=console@pve!ro=pve-secret-value";
+    /// The cluster name `cluster/status` reports by default: the NetBox fixture's cluster.
+    pub const CLUSTER: &str = "pve-prod";
 
-    /// Two nodes; guests named like the NetBox fixture, plus a storage entry that must be ignored.
+    /// Three nodes, guests named like the NetBox fixture, and a storage entry that must be ignored.
+    /// `pve-03` is offline and hosts no guest, so only a cluster-wide listing shows it. It is
+    /// first in the array, out of name order, so the sort is tested as well.
     pub const RESOURCES: &str = r#"{"data":[
+        {"id":"node/pve-03","type":"node","node":"pve-03","status":"offline","maxcpu":8,
+         "maxmem":34359738368,"uptime":0},
         {"id":"node/pve-01","type":"node","node":"pve-01","status":"online","cpu":0.12,"maxcpu":16,
          "mem":8589934592,"maxmem":68719476736,"uptime":123456},
         {"id":"node/pve-02","type":"node","node":"pve-02","status":"online","cpu":0.05,"maxcpu":8,
@@ -195,17 +252,35 @@ pub mod fixtures {
         {"id":"storage/pve-01/local","type":"storage","node":"pve-01","storage":"local","status":"available"}
     ]}"#;
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     pub struct Mock {
         pub fail: Arc<AtomicBool>,
+        /// Fails `cluster/status` alone, so the resources read still succeeds.
+        pub fail_status: Arc<AtomicBool>,
+        /// The name `cluster/status` reports for the cluster entry.
+        pub cluster: Arc<Mutex<String>>,
     }
 
-    async fn resources(State(mock): State<Mock>, headers: HeaderMap) -> Response {
-        let auth = headers
+    impl Default for Mock {
+        fn default() -> Self {
+            Self {
+                fail: Arc::default(),
+                fail_status: Arc::default(),
+                cluster: Arc::new(Mutex::new(CLUSTER.to_string())),
+            }
+        }
+    }
+
+    fn auth_of(headers: &HeaderMap) -> String {
+        headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("")
-            .to_string();
+            .to_string()
+    }
+
+    async fn resources(State(mock): State<Mock>, headers: HeaderMap) -> Response {
+        let auth = auth_of(&headers);
         if mock.fail.load(Ordering::SeqCst) {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("boom {auth}")).into_response();
         }
@@ -215,9 +290,26 @@ pub mod fixtures {
         (StatusCode::OK, RESOURCES).into_response()
     }
 
+    async fn status(State(mock): State<Mock>, headers: HeaderMap) -> Response {
+        let auth = auth_of(&headers);
+        if mock.fail_status.load(Ordering::SeqCst) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("boom {auth}")).into_response();
+        }
+        if auth != EXPECTED_AUTH {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        let name = mock.cluster.lock().expect("cluster name").clone();
+        let body = serde_json::json!({"data": [
+            {"type": "node", "name": "pve-01", "online": 1},
+            {"type": "cluster", "name": name, "nodes": 3, "quorate": 1}
+        ]});
+        Json(body).into_response()
+    }
+
     pub fn router(mock: Mock) -> Router {
         Router::new()
             .route("/api2/json/cluster/resources", get(resources))
+            .route("/api2/json/cluster/status", get(status))
             .with_state(mock)
     }
 
@@ -247,7 +339,7 @@ pub mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{config_for, router, serve, Mock, EXPECTED_AUTH, TOKEN};
+    use super::fixtures::{config_for, router, serve, Mock, CLUSTER, EXPECTED_AUTH, TOKEN};
     use super::*;
 
     #[test]
@@ -261,10 +353,12 @@ mod tests {
     #[test]
     fn parse_keeps_nodes_and_guests_and_drops_storage() {
         let data = parse_resources(fixtures::RESOURCES.as_bytes()).expect("parse");
+        // Document order: the offline node comes first.
         let nodes: Vec<&str> = data.nodes.iter().map(|n| n.name.as_str()).collect();
-        assert_eq!(nodes, ["pve-01", "pve-02"]);
-        assert_eq!(data.nodes[0].status.as_deref(), Some("online"));
-        assert_eq!(data.nodes[0].maxcpu, Some(16.0));
+        assert_eq!(nodes, ["pve-03", "pve-01", "pve-02"]);
+        assert_eq!(data.nodes[0].status.as_deref(), Some("offline"));
+        assert_eq!(data.nodes[1].status.as_deref(), Some("online"));
+        assert_eq!(data.nodes[1].maxcpu, Some(16.0));
         let guests: Vec<&str> = data.guests.iter().map(|g| g.name.as_str()).collect();
         assert_eq!(guests, ["tududi", "gateway", "planned-vm", "wiki"]);
         assert_eq!(data.guests[0].vmid, Some(101));
@@ -308,13 +402,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cluster_name_is_the_cluster_entry_and_not_a_node() {
+        let body = br#"{"data":[
+            {"type":"node","name":"pve-01","online":1},
+            {"type":"cluster","name":"uhstray-cluster","nodes":11,"quorate":1}
+        ]}"#;
+        assert_eq!(parse_cluster_name(body).as_deref(), Some("uhstray-cluster"));
+    }
+
+    #[test]
+    fn a_standalone_node_or_an_undecodable_body_names_no_cluster() {
+        let standalone = br#"{"data":[{"type":"node","name":"pve-01","online":1}]}"#;
+        assert_eq!(parse_cluster_name(standalone), None);
+        assert_eq!(parse_cluster_name(b"{\"data\": not json"), None);
+    }
+
     #[tokio::test]
     async fn fetch_sends_the_pve_token_and_decodes_the_resources() {
         let addr = serve(router(Mock::default())).await;
         let data = fetch(&reqwest::Client::new(), &config_for(addr))
             .await
             .expect("fetch");
-        assert_eq!(data.nodes.len(), 2);
+        assert_eq!(data.nodes.len(), 3);
+        assert_eq!(data.guests.len(), 4);
+        assert_eq!(data.cluster_name.as_deref(), Some(CLUSTER));
+    }
+
+    #[tokio::test]
+    async fn a_failed_cluster_name_read_leaves_the_name_unknown_and_the_resources_read() {
+        let mock = Mock::default();
+        mock.fail_status
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let data = fetch(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect("the resources read still succeeds");
+        assert_eq!(data.cluster_name, None);
+        assert_eq!(data.nodes.len(), 3);
         assert_eq!(data.guests.len(), 4);
     }
 
