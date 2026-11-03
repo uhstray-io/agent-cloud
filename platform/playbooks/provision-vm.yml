@@ -118,6 +118,9 @@
     _name: "{{ _decl.vm_name | default(_svc.name | default(target_service)) }}"
     _node: "{{ target_node | default(_decl.vm_node | default(_svc.node | default(''))) }}"
     _cores: "{{ _decl.vm_cores | default(_svc.cores | default('')) }}"
+    # The CPU model (Proxmox `cpu`, declared as vm_cpu). Unset leaves Proxmox's default CPU. Checked
+    # for shape and for node support before the config write.
+    _cpu: "{{ _decl.vm_cpu | default(_svc.cpu | default('')) | string | trim }}"
     _mem: "{{ _decl.vm_memory | default(_svc.memory | default('')) }}"
     _disk: "{{ _decl.vm_disk | default(_svc.disk | default('')) }}"
     # Per-host opt-outs, read from the declared host like every value above: this play runs
@@ -201,6 +204,7 @@
               - vm_tags
               - vm_onboot
               - vm_agent
+              - vm_cpu
               - pbs_debian_template_vmid
               - pbs_debian_template_name
               - pbs_debian_template_node
@@ -242,6 +246,15 @@
               private site-config repo the runner never checks out. From a
               workstation you may instead pass -e project_root=<site-config path>.{% endif %}
             success_msg: "VM declaration for '{{ target_service }}' is complete."
+
+        # The same bare-name rule as resize-vm.yml: the PUT below writes this value as the whole `cpu`.
+        - name: "Validate the declared CPU model"
+          ansible.builtin.assert:
+            that:
+              - (_cpu | length) == 0 or (_cpu is match('^[A-Za-z0-9][A-Za-z0-9._-]*$'))
+            fail_msg: >-
+              vm_cpu '{{ _cpu }}' is not a bare Proxmox CPU model name (letters, digits,
+              '.', '_', '-'; for example x86-64-v3). Commas and '=' are refused. Nothing was written.
 
         # Keep this token-ID guard before the play's first URI call; later PVE
         # requests receive the credential from module_defaults.
@@ -805,6 +818,16 @@
             _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
           tags: [always]
 
+        # A named CPU model the declared node cannot back is refused before the config write below.
+        # The node is the declared one: the write goes to it, and a migration may still move the VM.
+        - name: "Refuse a named CPU model the node cannot provide"
+          ansible.builtin.include_tasks: tasks/assert-node-cpu-model.yml
+          vars:
+            _ncm_node: "{{ _node }}"
+            _ncm_want_cpu: "{{ _cpu }}"
+          when: _cpu | length > 0
+          tags: [always]
+
         - name: "Configure VM resources and cloud-init"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -814,6 +837,7 @@
               cores: "{{ _cores }}"
               memory: "{{ _mem }}"
               agent: "{{ _agent }}"
+              cpu: "{{ _cpu if (_cpu | length > 0) else omit }}"
               # Start with the node (Proxmox `onboot`, default 0 per qm(1)); a VM that does not
               # come back after a hypervisor reboot silently takes its service down. Workflow
               # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.

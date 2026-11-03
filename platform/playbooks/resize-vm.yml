@@ -1,7 +1,9 @@
 ---
 # resize-vm.yml — converge a live Proxmox VM's cores/memory/disk to its declared
-# spec, and its guest-agent channel (agent=1, as provision-vm.yml sets for new VMs; per-host
-# opt-out vm_agent: false). Composable and reusable for any service VM, now and later.
+# spec, its CPU model (cpu=<model>, declared as vm_cpu; refused before any write when the
+# node lacks the flags a named x86-64-v3/v4 model needs), and its guest-agent channel
+# (agent=1, as provision-vm.yml sets for new VMs; per-host opt-out vm_agent: false).
+# Composable and reusable for any service VM, now and later.
 #
 # THE MODEL: `site-config/proxmox/vm-specs.yml` is already the declared source of
 # truth that provision-vm.yml builds from. This playbook makes that declaration
@@ -125,6 +127,18 @@
     # restart. One definition for the restart decision and its warning.
     _agent_awaits_restart: "{{ (_want_agent | bool) and ((_agent_pending | bool) or not (_have_agent | bool)) }}"
 
+    # The CPU model: Proxmox `cpu`, declared as vm_cpu. Unset leaves the VM's CPU alone (no write,
+    # no restart). The value is checked as a bare model name before any write: a comma or '=' would
+    # carry extra property keys into the config.
+    _want_cpu: "{{ (_hv_vm_cpu | default(_svc.cpu | default(''))) | string | trim }}"
+    # `cpu` is a property string. The model is the bare first item, or cputype=<model> wherever it
+    # sits (Proxmox default_key, qemu-server CPUConfig.pm). key=value items (flags=+aes) are kept
+    # when the model changes.
+    _cpu_items: "{{ (_cfg.json.data.cpu | default('') | string).split(',') | select | list }}"
+    # A wanted model that differs from the config, or a write still pending from an earlier run,
+    # needs a restart when the guest is running. Same shape as the agent decision.
+    _cpu_awaits_restart: "{{ (_want_cpu | length > 0) and ((_cpu_pending | bool) or (_have_cpu != _want_cpu)) }}"
+
     _allow_reboot: "{{ allow_reboot | default(false) | bool }}"
     # Seconds to wait for a clean guest shutdown before giving up. A guest
     # without the agent, or one ignoring ACPI, will hit this.
@@ -149,6 +163,7 @@
             _hv_vm_vmid: "{{ _hv.vm_vmid | default(omit) }}"
             _hv_vm_node: "{{ _hv.vm_node | default(omit) }}"
             _hv_vm_agent: "{{ _hv.vm_agent | default(omit) }}"
+            _hv_vm_cpu: "{{ _hv.vm_cpu | default(omit) }}"
           vars:
             _grp: "{{ target_service | default('') }}_svc"
             _hv: "{{ hostvars[(groups[_grp] | default([]) | first) | default('')] | default({}) }}"
@@ -199,13 +214,24 @@
                 or (_want_memory | string | length > 0)
                 or (_want_disk_gb | string | length > 0)
                 or (_want_agent | bool)
+                or (_want_cpu | length > 0)
             fail_msg: >-
               Nothing to converge for '{{ target_service | default("(by vmid)") }}':
-              no vm_cores/vm_memory/vm_disk on its inventory host, no readable
+              no vm_cores/vm_memory/vm_disk/vm_cpu on its inventory host, no readable
               proxmox/vm-specs.yml, no resize_* override passed, and the guest-agent
               option opted out (vm_agent: false). Declare the
               sizes on the service's inventory host (the Semaphore-runnable path) or
               pass an override.
+
+        # A bare model name only, checked before any read or write. An empty value is unmanaged.
+        - name: "Validate the declared CPU model"
+          ansible.builtin.assert:
+            that:
+              - (_want_cpu | length) == 0 or (_want_cpu is match('^[A-Za-z0-9][A-Za-z0-9._-]*$'))
+            fail_msg: >-
+              vm_cpu '{{ _want_cpu }}' is not a bare Proxmox CPU model name (letters, digits,
+              '.', '_', '-'; for example x86-64-v3). Commas and '=' are refused: they would
+              carry extra CPU property keys into the config write. Nothing was written.
 
         # ── Read current state ──────────────────────────────────────────────────
         - name: "Read the VM's current config"
@@ -241,6 +267,14 @@
             _have_agent: "{{ _agent_items | select('match', '^(enabled=)?1$') | list | length > 0 }}"
             _agent_pending: >-
               {{ (_pending.json.data | default([]) | selectattr('key', 'equalto', 'agent')
+                  | selectattr('pending', 'defined') | list | length) > 0 }}
+            # The model the config names: '' when the key is absent (Proxmox's default CPU). The bare
+            # first item, or cputype=<model> wherever it sits.
+            _have_cpu: >-
+              {{ ((_cpu_items | select('match', '^cputype=') | map('regex_replace', '^cputype=', '') | list)
+                  + (_cpu_items | reject('match', '=') | list) + [''])[0] }}
+            _cpu_pending: >-
+              {{ (_pending.json.data | default([]) | selectattr('key', 'equalto', 'cpu')
                   | selectattr('pending', 'defined') | list | length) > 0 }}
             # What the guest is ACTUALLY running right now, which is not the same as
             # what its config says: a config write lands immediately but a guest
@@ -322,6 +356,9 @@
               - "memory: {{ _have_memory }}MB -> {{ _want_memory ~ 'MB' if (_want_memory | string | length > 0) else '(unchanged)' }}"
               - "agent:  {{ 'enabled' if _have_agent | bool else 'off' }} -> {{ 'enabled' if _want_agent | bool else '(unchanged)' }}{{ ' (pending restart)' if _agent_pending | bool else '' }}"
               - >-
+                cpu:    {{ _have_cpu if (_have_cpu | length > 0) else 'default' }} ->
+                {{ _want_cpu if (_want_cpu | length > 0) else '(unchanged)' }}{{ ' (pending restart)' if _cpu_pending | bool else '' }}
+              - >-
                 disk:   {{ (_have_disk_gb | default('?')) ~ 'G' }} ->
                 {{ (_want_disk_gb ~ 'G') if (_want_disk_gb | string | length > 0) else '(unchanged)' }}
                 on {{ _disk_device | default('(none found)') }}
@@ -360,6 +397,7 @@
                    or ((_want_cores | string | length > 0)
                        and (((_want_cores | int) * (_sockets | int)) != (_running_cores | int)))
                    or (_agent_awaits_restart | bool)
+                   or (_cpu_awaits_restart | bool)
                  ) }}
 
         - name: "Compute the config changes actually needed"
@@ -371,12 +409,25 @@
                    {} if (_want_memory | string | length == 0) or ((_want_memory | int) == (_have_memory | int))
                    else {'memory': _want_memory | int})
                  | combine({} if not (_want_agent | bool) or (_have_agent | bool) else
-                     {'agent': (['enabled=1'] + (_agent_items | reject('match', '^(enabled=)?[01]$') | list)) | join(',')}) }}
+                     {'agent': (['enabled=1'] + (_agent_items | reject('match', '^(enabled=)?[01]$') | list)) | join(',')})
+                 | combine({} if (_want_cpu | length == 0) or (_have_cpu == _want_cpu) else
+                     {'cpu': ([_want_cpu] + (_cpu_items | select('match', '^[a-z-]+=') | reject('match', '^cputype=') | list)) | join(',')}) }}
 
         - name: "Guard target VMID before configuration write"
           ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
           vars:
             _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
+        # A named CPU model the node cannot back is refused BEFORE the config write, so the config never
+        # names a CPU the guest cannot run. Reads the node only when this run writes the model or one is
+        # still pending from an earlier run; an unmanaged or already-matching CPU reads nothing.
+        - name: "Refuse a named CPU model the node cannot provide"
+          ansible.builtin.include_tasks: tasks/assert-node-cpu-model.yml
+          vars:
+            _ncm_node: "{{ _node }}"
+            _ncm_want_cpu: "{{ _want_cpu }}"
+          when: _cpu_awaits_restart | bool
           tags: [always]
 
         - name: "Apply cores/memory/agent to the VM config"
@@ -429,7 +480,8 @@
               {{ _sockets }} socket(s)) memory={{ _running_memory }}MB — it
               has no hotplug, so it keeps its old allocation until it next boots.
               {{ 'The guest-agent channel is also waiting for a restart. '
-                 if (_agent_awaits_restart | bool) else '' }}It
+                 if (_agent_awaits_restart | bool) else '' }}{{ 'The CPU model is also waiting for a restart. '
+                 if (_cpu_awaits_restart | bool) else '' }}It
               was NOT restarted. Re-run with -e allow_reboot=true during a
               maintenance window, or reboot the guest yourself.
           when:
