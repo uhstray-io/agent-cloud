@@ -1,0 +1,57 @@
+# launch-gate — the gate between the agents and Semaphore (skynet-launch-containment, Phase 3).
+#
+# One container: the stdlib Python service in ./app, run from a read-only bind mount. The image is an
+# official Python image pinned by digest in the inventory (launch_gate_image), passed through
+# LAUNCH_GATE_IMAGE. The gate has no database and no shell-out (app/launch_gate.py imports only the
+# standard library and never runs a subprocess).
+#
+# The gate publishes its HTTPS listener on ${LAUNCH_GATE_BIND}:${LAUNCH_GATE_PORT} (rendered from the
+# inventory; loopback 127.0.0.1:8443 by default). The container listens on 8443 inside, which is the
+# listen_port in templates/config.json.j2. Production declares the VM's LAN address in the inventory.
+# The host firewall rules that admit the callers are not part of this directory.
+#
+# deploy.sh is container lifecycle only. It does not generate secrets: .env and config.json are
+# rendered per deploy from OpenBao and the inventory before this stack starts.
+
+name: launch-gate
+
+services:
+  launch-gate:
+    image: ${LAUNCH_GATE_IMAGE:?set launch_gate_image in the inventory}
+    container_name: launch-gate
+    # Podman's boot unit starts only `restart: always` containers (test_restart_policy.bats).
+    restart: always
+    ports:
+      # The :- defaults keep an unset inventory on loopback.
+      - "${LAUNCH_GATE_BIND:-127.0.0.1}:${LAUNCH_GATE_PORT:-8443}:8443"
+    env_file:
+      - .env
+    environment:
+      # Never write bytecode: /app is read-only, and a .pyc would be a second copy of the code.
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      # The gate's source, read-only. A changed file changes the app digest, so the change-aware
+      # start recreates the container (deploy.sh).
+      - ./app:/app:ro
+      # The rendered config (templates/config.json.j2), a file mount. A changed file changes the
+      # config digest, so it recreates the container.
+      - ./config.json:/etc/launch-gate/config.json:ro
+      # A DIRECTORY mount for the TLS material. certs/<leaf>/current is a symlink that renewal swaps;
+      # a single-file mount would pin the inode a renewal replaces. The gate re-reads the leaf on
+      # every connection, so a renewal needs no restart (app/launch_gate.py, GateServer._current_context).
+      - ./certs:/certs:ro
+    command:
+      - python
+      - -I
+      - /app/launch_gate.py
+      - /etc/launch-gate/config.json
+    # Hardening. The root filesystem is read-only: the gate writes no file (its logs go to stdout and stderr). It
+    # needs no capability, because it listens on 8443, not a privileged port, so all are dropped. No
+    # process in the container gains privilege through exec.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # No compose healthcheck: the image is chosen in the inventory and may have no shell or HTTP client.
+    # The deploy playbook, a later change, proves the TLS listener from outside the container.

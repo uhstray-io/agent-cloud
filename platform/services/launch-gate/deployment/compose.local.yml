@@ -1,0 +1,27 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
+#
+# Carries what an overlay can add: a memory cap, the SELinux opt (the podman-machine VM enforces
+# SELinux on the bind mounts of ./app, ./config.json and ./certs), and the extra `local-dev` network so
+# a local caller reaches the gate by its container name. The ports come from the base file: this
+# overlay does not republish them.
+#
+# security_opt: this overlay adds label=disable and names nothing else. The base keeps
+# no-new-privileges:true. Checked with `podman-compose config` on compose.yml plus this file, under
+# podman-compose 1.0.6 (apt's release on Linux hosts unless a playbook opts into another) and 1.6.0 (the
+# Plane opt-in): both append the overlay's list to the base list, so both print no-new-privileges:true
+# once and label=disable once. Re-check the rendered output if the pinned release changes.
+
+networks:
+  # podman-compose requires every referenced network declared, incl. default.
+  default:
+  local-dev:
+    external: true
+
+services:
+  launch-gate:
+    mem_limit: 128m
+    security_opt:
+      - label=disable
+    networks:
+      - default
+      - local-dev
