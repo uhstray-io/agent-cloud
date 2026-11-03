@@ -89,14 +89,6 @@ pub const ACCESS: PageMeta = PageMeta {
     authority: "Authentik",
 };
 
-pub const SECRETS: PageMeta = PageMeta {
-    id: "secrets",
-    title: "Secrets",
-    icon: "key-round",
-    purpose: "Secret paths, field counts and rotation age. Values never appear here.",
-    authority: "OpenBao",
-};
-
 pub const POLICY: PageMeta = PageMeta {
     id: "policy",
     title: "Policy",
@@ -186,11 +178,6 @@ pub fn Access() -> Element {
 }
 
 #[component]
-pub fn Secrets() -> Element {
-    rsx! { EmptyPage { page: SECRETS } }
-}
-
-#[component]
 pub fn Policy() -> Element {
     rsx! { EmptyPage { page: POLICY } }
 }
@@ -273,7 +260,6 @@ mod tests {
             COMPUTE,
             TELEMETRY,
             ACCESS,
-            SECRETS,
             POLICY,
             AI_GATEWAY,
             LLM_ACCESS,

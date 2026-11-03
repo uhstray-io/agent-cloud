@@ -98,7 +98,7 @@ Decisions D26–D28. This replaces Phase 1 task 5.3, which never ran.
 
 Decision D28. These are platform-wide views, so they answer `platform-admins` only (D25).
 
-- [ ] 8.1 The Secrets page: OpenBao metadata only (path, versions, timestamps). A canary test proves no value ever leaves the API.
+- [x] 8.1 The Secrets page: OpenBao metadata only (path, versions, timestamps). A canary test proves no value ever leaves the API.
 - [ ] 8.2 The Access page: Authentik users and groups through a view-only token declared by blueprint, and the role map.
 - [ ] 8.3 The AI Gateway and LLM access pages: `agw_clients` rendered at deploy into `config/gateway.json`, and usage through Grafana (D26). Role pages list only that role's work.
 - [ ] 8.4 The Policy page lists the policy files through the GitHub API. The Tenant and Organization settings pages read business-domain tags as NetBox tags. Request a service shows the catalog.
