@@ -13,7 +13,7 @@
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
 **Date:** 2026-04-07
-**Status:** Production DEPLOYED 2026-10-29 (own VM, step-ca server TLS, firewall-admitted callers); read-only bundle and decisions-and-health-only authorization since 2026-11-01; skynet's call path proven (Deploy skynet task 11156); current with `dev` policy as of 2026-11-03 (task 11933). See "Production deployment" below.
+**Status:** Production DEPLOYED 2026-10-29 (own VM, step-ca server TLS, firewall-admitted callers); read-only bundle since 2026-10-31; decisions-and-health-only authorization since 2026-11-01 (task 11154); skynet's call path proven (Deploy skynet task 11156); current with `dev` policy as of 2026-11-03 (task 11933). See "Production deployment" below.
 Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
 local pattern (`platform/services/opa/deployment/`, `deploy-opa.yml`, `opa_svc`
 inventory group, "Deploy OPA (Local)" Semaphore template). Unauthenticated
@@ -906,7 +906,7 @@ D29) waits on both OPA and skynet.
 - `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback), `opa_tls`, and an `https://` `opa_internal_url`.
 - With `opa_tls` set, it checks the leaf's declaration in `internal_leaves`: server profile, this host, `<deploy>/certs/<leaf>`, reload `none`, the server name in its SANs.
 - It issues the leaf if none is current (`tasks/mint-internal-cert.yml`, key made on the OPA host), places the CA bundle (`tasks/distribute-ca-root.yml`), and starts OPA with `compose.tls.yml`. That overlay adds userns keep-id for the image's uid 1000, the `./certs` directory mount, and the TLS flags.
-- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, that a policy write (`PUT /v1/data/agentcloud_write_probe`, a path no rule reads) is refused with exactly 400, and `opa test --bundle /policies`.
+- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, that a policy write (`PUT /v1/data/agentcloud_write_probe`, a path no rule reads), a data read (`GET /v1/data`) and a decision with `?explain=full` are each refused with exactly 401 `unauthorized` (the authorization policy, which answers before the bundle's 400), and `opa test --bundle /policies`.
 - `renew-internal-certs.yml` admits the leaf as class `opa-server` and proves it by a TLS connection verified by name, comparing the served serial with `current`.
 
 ### Production checklist
@@ -927,7 +927,7 @@ Each step runs through Semaphore, check mode first.
 12. [x] skynet: its group is already admitted (site-config #127; applied by task 10337). skynet points at `https://opa.<dns_site>.<dns_zone>:8281`, mapping the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe: `Deploy skynet (Dev)` task 10711 (2026-10-31) got OPA's default deny through skynet's own client, and task 11156 (2026-11-01, after the authorization policy) repeated it and also had skynet's write to OPA refused with 401.
 
 13. [x] Redeploy with bundle mode (P6, #805): `Deploy OPA (Dev)` check mode (task 11117), then real (task 11119). The TLS write probe passed: production OPA refused `PUT /v1/data` with 400 `invalid_parameter`. Allow and deny decisions were verified over TLS, and `opa test --bundle` passed 101/101.
-14. [x] Authorization policy (#810): `Deploy OPA (Dev)` check mode (task 11153), then real (task 11154), at `7f671690`. Over TLS, allow and deny decisions verified; a policy write, a data read and a decision with `?explain=full` each refused with 401; `opa test --bundle` 117/117.
+14. [x] Authorization policy (#810): `Deploy OPA (Dev)` check mode (task 11153), then real (task 11154, 2026-11-01), at `7f671690`. Over TLS, allow and deny decisions verified; a policy write, a data read and a decision with `?explain=full` each refused with 401; `opa test --bundle` 117/117.
 15. [x] Launch-input bounds (#829): `Deploy OPA (Dev)` check mode (task 11931), then real (task 11933), at `03ea6c6f`, so production runs the current `dev` policy. The same TLS checks passed as in step 14; `opa test --bundle` 160/160. The new deny rules apply only to a `semaphore` `run_task` request carrying `settings` (`agent_actions.rego`, the three `deny_reasons` rules after the bare-name comment); skynet's client has no `settings` field in its input contract (skynet `src/skynet/policy/opa.py`, `main` at `9168d6c`), so its decisions are unchanged.
 
 **Known gaps:**
