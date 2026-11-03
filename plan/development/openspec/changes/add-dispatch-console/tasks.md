@@ -92,7 +92,7 @@ Decisions D26–D28. This replaces Phase 1 task 5.3, which never ran.
 - [x] 8.0a Grafana Viewer service-account token `secret/services/o11y:console_grafana_token`, minted through the Grafana admin API by `provision-console-grafana-token.yml` (D32: 90-day lifetime, renewed under 30 days). `deploy-console.yml` shared-reads it when `console_grafana_api_enabled` is true.
 - [ ] 8.0b `platform/lib/github_app_token.py` accepts a downscoping `permissions` body, with tests.
   - `refresh-console-github-token.yml`, scheduled every 45 minutes, writes a read-only installation token to `secret/services/console/github:token`.
-- [ ] 8.0c The console server logs in to OpenBao with its AppRole at run time and again on demand, reading `CONSOLE_OPENBAO_*`. `platform/services/console/deployment/templates/env.j2:55-63` renders those variables and says the server reads them from Phase 5, so they stay unread until this task lands. Needed by 8.1 and the GitHub token read.
+- [x] 8.0c The console server logs in to OpenBao with its AppRole at run time and again on demand, reading `CONSOLE_OPENBAO_*`. `platform/services/console/deployment/templates/env.j2:55-63` renders those variables and says the server reads them from Phase 5, so they stay unread until this task lands. Needed by 8.1 and the GitHub token read. Done: `server/openbao.rs`; first consumer is 8.1.
 
 ## Phase 5 checklist: governance pages
 
