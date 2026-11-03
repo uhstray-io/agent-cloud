@@ -25,8 +25,10 @@
 # For each candidate pair, inside one transaction (nothing is written before the whole plan is known):
 #   origin    bare: its only create entry in the changelog is by workflow-vm-recorder. Discovery: created by another
 #             account. Anything else, including a pruned changelog, is unverified_origin and untouched.
-#   refusal   a bare record holding an interface or a primary IP is refused and untouched. The other pairs of the run
-#             proceed, and the play fails after printing the plan.
+#   refusal   a bare record holding an interface, a virtual disk or a primary IP is refused and untouched. The counter
+#             caches decide the plan; the locked re-read asks the real relations (interfaces, virtualdisks), so a stale
+#             counter cannot let a record with children through. The other pairs of the run proceed, and the play fails
+#             after printing the plan.
 #   fields    ac_workflow_status, ac_failed_steps and ac_last_run move as ONE unit, and only when the bare record's
 #             ac_last_run is set and newer than discovery's (or discovery has none). No field is taken from one run
 #             and another field from a different run.
@@ -37,9 +39,21 @@
 # Limits, stated and not hidden:
 #   - NetBox prunes changelog entries after CHANGELOG_RETENTION days (default 90, netbox/netbox/config/parameters.py).
 #     A pair whose creation entry was pruned reads unverified_origin and is never reconciled.
-#   - Changes made by this script leave NO changelog entry: netbox/core/signals.py handle_changed_object returns when
-#     there is no current request, and the Django shell has none. The Semaphore task output is the only record of a run.
-#   - The origin check trusts the user_name NetBox stores on each changelog entry.
+#   - Changes are recorded in NetBox's changelog under the account workflow-vm-reconciler. The account is created on
+#     the first real run that writes: no grant, no API token, an unusable password. NetBox records a change only inside
+#     a request (netbox/core/signals.py handle_changed_object returns when there is none), so the writes run inside
+#     netbox/netbox/context_managers.py event_tracking with a NetBoxFakeRequest (utilities/request.py) that carries the
+#     account and a uuid4 request id, the request shape NetBox's jobs carry (netbox/netbox/jobs.py).
+#   - Configured event rules and webhooks FIRE on these writes, as they would for any change made in a request:
+#     event_tracking queues each change, and flushes the queue when the context exits (netbox/extras/events.py
+#     flush_events, process_event_queue). The flush happens inside the transaction, and flush_events catches only
+#     ImportError, so any other failure there rolls the writes back.
+#   - The account has no grant (no groups, no ObjectPermission, not superuser or staff) and no usable password. A
+#     pre-existing account holding any of those stops the run before a write.
+#   - Each discovery update and each bare delete is gated on its own changelog row by workflow-vm-reconciler, inside the
+#     transaction: a missing row stops the run and rolls back.
+#   - The origin check filters changelog rows to action=create, so the account's update and delete rows cannot change
+#     a pair's origin. It trusts the user_name NetBox stores on each create entry.
 #
 # Inputs (Semaphore survey, or -e):
 #   reconcile_names  optional JSON list of VM names, e.g. ["dns"]; blank = every verified pair
@@ -64,14 +78,20 @@
     # No Jinja markers in it: Ansible templates variable values, so a brace pair here would be evaluated.
     _reconcile_body: |
       import json
+      import uuid
       from datetime import datetime, timezone
 
       from core.models import ObjectChange
+      from django.contrib.auth import get_user_model
       from django.db import transaction
+      from netbox.context_managers import event_tracking
+      from users.models import ObjectPermission
+      from utilities.request import NetBoxFakeRequest
       from virtualization.models import VirtualMachine
 
       MARKER = "Declared by the service deployment workflow (validate-address)"
       RECORDER = "workflow-vm-recorder"
+      RECONCILER = "workflow-vm-reconciler"
       FIELDS = ["ac_workflow_status", "ac_failed_steps", "ac_last_run"]
       PREFIX = "RECONCILE_RESULT "
 
@@ -103,6 +123,7 @@
               "vcpus": vm.vcpus,
               "comments": vm.comments or "",
               "interface_count": vm.interface_count,
+              "virtual_disk_count": vm.virtual_disk_count,
               "primary_ip4_id": vm.primary_ip4_id,
               "primary_ip6_id": vm.primary_ip6_id,
               "fields": dict(vm.custom_field_data or {}),
@@ -123,6 +144,8 @@
               reasons.append("interface count unknown")
           elif row["interface_count"] > 0:
               reasons.append("has interfaces")
+          if row["virtual_disk_count"] > 0:
+              reasons.append("has virtual disks")
           if row["primary_ip4_id"] is not None or row["primary_ip6_id"] is not None:
               reasons.append("has a primary IP")
           return reasons
@@ -218,28 +241,75 @@
               if not missing and not dry_run:
                   writes = [e for e in plan if e["action"] == "merged"]
               for e in writes:
-                  # Re-read both records under a row lock and re-check the shape and the refusal before any write.
+                  # Re-read both records under a row lock. A changed shape aborts the run before any write.
                   e["bare_obj"] = VirtualMachine.objects.select_for_update().get(pk=e["bare"]["id"])
                   e["disc_obj"] = VirtualMachine.objects.select_for_update().get(pk=e["disc"]["id"])
-                  if not (is_bare(row_of(e["bare_obj"])) and is_disc(row_of(e["disc_obj"]))
-                          and not blockers(row_of(e["bare_obj"]))):
+                  if not (is_bare(row_of(e["bare_obj"])) and is_disc(row_of(e["disc_obj"]))):
                       raise RuntimeError("a pair changed between the read and the write; nothing was committed")
-              for e in writes:
-                  if e["values"] is not None:
-                      disc_obj = e["disc_obj"]
-                      disc_obj.custom_field_data = {**(disc_obj.custom_field_data or {}), **e["values"]}
-                      disc_obj.save()
-                      disc_obj.refresh_from_db()
-                      held = disc_obj.custom_field_data or {}
-                      if any(held.get(f) != e["values"][f] for f in FIELDS):
-                          raise RuntimeError("a discovery record did not hold the moved fields; nothing was committed")
-              for e in writes:
-                  e["bare_obj"].delete()
-              for e in writes:
-                  if VirtualMachine.objects.filter(pk=e["bare"]["id"]).exists():
-                      raise RuntimeError("a bare record still exists after its delete; nothing was committed")
+                  # The refusal is read from the real relations, not the counter caches: a stale counter must not let a
+                  # record with children through. A pair found holding children is refused; the other pairs proceed.
+                  held_by = blockers(row_of(e["bare_obj"]))
+                  if e["bare_obj"].interfaces.exists() and "has interfaces" not in held_by:
+                      held_by.append("has interfaces")
+                  if e["bare_obj"].virtualdisks.exists() and "has virtual disks" not in held_by:
+                      held_by.append("has virtual disks")
+                  if held_by:
+                      e["action"] = "refused:" + ", ".join(held_by)
+                      ok = False
+                      errors.append("refused, not written: %s in cluster %s (%s)" % (
+                          e["bare"]["name"], e["bare"]["cluster"], ", ".join(held_by)))
+              writes = [e for e in writes if e["action"] == "merged"]
               if not writes:
                   transaction.set_rollback(True)
+              else:
+                  # The account is created here and only here: a dry run, or a real run with nothing to merge, leaves no
+                  # trace. It has no grant and no usable password; it exists to attribute the changelog rows below.
+                  reconciler, created = get_user_model().objects.get_or_create(
+                      username=RECONCILER, defaults={"is_active": True})
+                  if created:
+                      reconciler.set_unusable_password()
+                      reconciler.save()
+                  # The account must hold no grant and no usable password, whether this run created it or found it.
+                  if (reconciler.is_superuser or getattr(reconciler, "is_staff", False) or reconciler.groups.exists()
+                          or ObjectPermission.objects.filter(users=reconciler).exists()
+                          or reconciler.has_usable_password()):
+                      raise RuntimeError("the workflow-vm-reconciler account holds a grant or a usable password; "
+                                         "nothing was committed")
+                  # NetBox records a change only inside a request. This is the request shape NetBox's jobs carry.
+                  request = NetBoxFakeRequest({
+                      "user": reconciler, "id": uuid.uuid4(), "META": {}, "COOKIES": {}, "POST": {}, "GET": {},
+                      "FILES": {}, "method": "SHELL", "path": "",
+                  })
+                  # The event queue flushes when this context exits, still inside the transaction, so a failed flush
+                  # rolls the writes back.
+                  with event_tracking(request):
+                      for e in writes:
+                          if e["values"] is not None:
+                              disc_obj = e["disc_obj"]
+                              before = dict(disc_obj.custom_field_data or {})
+                              disc_obj.custom_field_data = {**before, **e["values"]}
+                              disc_obj.save()
+                              disc_obj.refresh_from_db()
+                              held = disc_obj.custom_field_data or {}
+                              if any(held.get(f) != e["values"][f] for f in FIELDS):
+                                  raise RuntimeError("a discovery record did not hold the moved fields; nothing was committed")
+                              # A changed record is changelogged by this account, inside this transaction.
+                              if held != before and not ObjectChange.objects.filter(
+                                      changed_object_type__app_label="virtualization",
+                                      changed_object_type__model="virtualmachine",
+                                      changed_object_id=e["disc"]["id"], action="update", user_name=RECONCILER).exists():
+                                  raise RuntimeError("no changelog row for a discovery record's update; nothing was committed")
+                      for e in writes:
+                          e["bare_obj"].delete()
+                      for e in writes:
+                          if VirtualMachine.objects.filter(pk=e["bare"]["id"]).exists():
+                              raise RuntimeError("a bare record still exists after its delete; nothing was committed")
+                          # The delete must have its own changelog row, by this account, inside this transaction.
+                          if not ObjectChange.objects.filter(
+                                  changed_object_type__app_label="virtualization",
+                                  changed_object_type__model="virtualmachine",
+                                  changed_object_id=e["bare"]["id"], action="delete", user_name=RECONCILER).exists():
+                              raise RuntimeError("no changelog row for a bare record's delete; nothing was committed")
 
           # The commit is done: read the committed state back from the database.
           for e in writes:

@@ -189,14 +189,65 @@ def test_the_changelog_is_read_for_creates_of_virtual_machines_only():
         assert needle in BODY, needle
 
 
-def test_the_header_states_why_there_is_no_token_and_what_the_shell_leaves_behind():
+def test_the_writes_run_inside_the_change_logging_context_with_a_request_that_carries_the_account():
+    with_line = BODY.index("with event_tracking(request):")
+    assert BODY.index("request = NetBoxFakeRequest(") < with_line
+    for needle in ('"user": reconciler', '"id": uuid.uuid4()', "disc_obj.save()", 'e["bare_obj"].delete()'):
+        assert needle in BODY, needle
+    assert with_line < BODY.index("disc_obj.save()") < BODY.index('e["bare_obj"].delete()')
+
+
+def test_the_account_is_created_only_on_a_real_run_with_writes():
+    gate = BODY.index("if not missing and not dry_run:")
+    account = BODY.index("get_or_create(\n")
+    assert gate < account < BODY.index("with event_tracking(request):")
+    assert BODY.index("if not writes:") < account
+
+
+def test_the_account_is_given_no_grant_and_its_state_is_checked():
+    for grant in (
+        "groups.add",
+        "user_permissions",
+        "is_superuser=True",
+        "is_staff=True",
+        "ObjectPermission.objects.create",
+        "ObjectPermission(",
+    ):
+        assert grant not in BODY, grant
+    for check in (
+        "reconciler.is_superuser",
+        "reconciler.groups.exists()",
+        "ObjectPermission.objects.filter(users=reconciler).exists()",
+        "reconciler.has_usable_password()",
+    ):
+        assert check in BODY, check
+    assert "reconciler.set_unusable_password()" in BODY
+
+
+def test_each_discovery_update_and_bare_delete_is_gated_on_its_own_changelog_row():
+    assert 'action="update", user_name=RECONCILER' in BODY
+    assert 'action="delete", user_name=RECONCILER' in BODY
+
+
+def test_the_relations_not_the_counter_caches_decide_the_locked_refusal():
+    lock = BODY.index('e["bare_obj"] = VirtualMachine.objects.select_for_update()')
+    assert BODY.index('e["bare_obj"].interfaces.exists()', lock) > lock
+    assert BODY.index('e["bare_obj"].virtualdisks.exists()', lock) > lock
+
+
+def test_the_header_states_why_there_is_no_token_and_how_the_writes_are_recorded():
     header = "\n".join(line for line in PLAYBOOK.read_text().splitlines() if line.startswith("#"))
     for phrase in (
         "no API token",
         "Webhook.secret",
         "restrict()",
         "CHANGELOG_RETENTION",
-        "NO changelog entry",
+        "workflow-vm-reconciler",
+        "event_tracking",
+        "NetBoxFakeRequest",
+        "event rules",
+        "action=create",
+        "virtual disk",
         "one transaction",
     ):
         assert phrase in header, phrase
@@ -238,12 +289,14 @@ import atexit
 import copy
 import json
 import os
+from contextlib import contextmanager
 
 _PATH = os.environ["FAKE_NETBOX_STATE"]
 with open(_PATH) as fh:
     STATE = json.load(fh)
 _SNAPSHOTS = []
 _ROLLBACK = []
+CURRENT = {"request": None}
 _VM_FIELDS = ("id", "name", "cluster_id", "description", "vcpus", "comments", "interface_count",
               "primary_ip4_id", "primary_ip6_id", "custom_field_data")
 
@@ -254,6 +307,17 @@ def _persist():
 
 
 atexit.register(_persist)
+
+
+def _record(action, vm_id):
+    # NetBox records a change only inside a request (netbox/core/signals.py), so with no request set here, none is kept.
+    request = CURRENT["request"]
+    if request is None or os.environ.get("FAKE_NO_CHANGELOG"):
+        return
+    if action == "delete" and os.environ.get("FAKE_NO_DELETE_ROW"):
+        return
+    STATE["changes"].append({"changed_object_id": vm_id, "app_label": "virtualization", "model": "virtualmachine",
+                             "action": action, "user_name": request.user.username, "request_id": str(request.id)})
 
 
 def _only_pk(lookups):
@@ -280,6 +344,12 @@ class VirtualMachine:
             return None if data["tenant_name"] is None else _Named(data["tenant_name"])
         if key == "created":
             return data["created"]
+        if key == "interfaces":
+            return _Rows(data.get("real_interfaces", 0))
+        if key == "virtualdisks":
+            return _Rows(data.get("real_virtualdisks", 0))
+        if key == "virtual_disk_count":
+            return data.get("virtual_disk_count", 0)
         if key in _VM_FIELDS:
             return data[key]
         raise AttributeError(key)
@@ -296,6 +366,7 @@ class VirtualMachine:
                 if os.environ.get("FAKE_DROP_SAVE"):
                     new["custom_field_data"] = copy.deepcopy(row["custom_field_data"])
                 STATE["vms"][index] = new
+                _record("update", new["id"])
                 return
         raise RuntimeError("save of a missing VM")
 
@@ -310,6 +381,7 @@ class VirtualMachine:
         kept = [row for row in STATE["vms"] if row["id"] != self._data["id"]]
         if len(kept) == len(STATE["vms"]):
             raise RuntimeError("delete of a missing VM")
+        _record("delete", self._data["id"])
         STATE["vms"] = kept
 
 
@@ -333,6 +405,12 @@ class _VMQuery:
             for row in STATE["vms"]:
                 if row["id"] == pk:
                     row["interface_count"] = 1
+                    row["real_interfaces"] = 1
+        if self._lock and os.environ.get("FAKE_RACE_SHAPE") == str(pk):
+            # A concurrent change that makes the bare record stop matching the bare shape.
+            for row in STATE["vms"]:
+                if row["id"] == pk:
+                    row["description"] = ""
         found = [row for row in STATE["vms"] if row["id"] == pk]
         return VirtualMachine(copy.deepcopy(found[0]))
 
@@ -361,12 +439,23 @@ class _Change:
         self.user_name = row["user_name"]
 
 
+class _ChangeQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __iter__(self):
+        return iter([_Change(row) for row in self._rows])
+
+    def exists(self):
+        return bool(self._rows)
+
+
 class ObjectChange:
     class objects:
         @staticmethod
         def filter(**lookups):
             allowed = {"changed_object_type__app_label", "changed_object_type__model",
-                       "changed_object_id__in", "action"}
+                       "changed_object_id__in", "changed_object_id", "action", "user_name"}
             unknown = set(lookups) - allowed
             if unknown:
                 raise AssertionError("unsupported changelog lookup: %s" % sorted(unknown))
@@ -374,8 +463,10 @@ class ObjectChange:
                     if row["app_label"] == lookups.get("changed_object_type__app_label", row["app_label"])
                     and row["model"] == lookups.get("changed_object_type__model", row["model"])
                     and row["action"] == lookups.get("action", row["action"])
+                    and row["user_name"] == lookups.get("user_name", row["user_name"])
+                    and row["changed_object_id"] == lookups.get("changed_object_id", row["changed_object_id"])
                     and row["changed_object_id"] in lookups.get("changed_object_id__in", [row["changed_object_id"]])]
-            return [_Change(row) for row in rows]
+            return _ChangeQuery(rows)
 
 
 class _Atomic:
@@ -402,6 +493,88 @@ class _Transaction:
 
 
 transaction = _Transaction()
+
+
+class _NoRows:
+    # The stub holds no grants and no group memberships, so these queries are empty.
+    def exists(self):
+        return False
+
+
+class _Rows:
+    def __init__(self, count):
+        self._count = count
+
+    def exists(self):
+        return self._count > 0
+
+
+class ObjectPermission:
+    class objects:
+        @staticmethod
+        def filter(**lookups):
+            # FAKE_ACCOUNT_GRANTS stands in for an account that holds an object permission.
+            return _Rows(1 if os.environ.get("FAKE_ACCOUNT_GRANTS") else 0)
+
+
+class NetBoxFakeRequest:
+    def __init__(self, _dict):
+        self.__dict__ = _dict
+
+
+@contextmanager
+def event_tracking(request):
+    # As in netbox/netbox/context_managers.py: no try/finally, so an exception leaves the request set.
+    CURRENT["request"] = request
+    yield
+    CURRENT["request"] = None
+
+
+class _User:
+    def __init__(self, data):
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, key):
+        data = object.__getattribute__(self, "_data")
+        if key in ("username", "is_active", "usable_password", "is_superuser"):
+            return data.get(key, False)
+        if key == "groups":
+            return _Rows(1 if os.environ.get("FAKE_ACCOUNT_GRANTS") else 0)
+        raise AttributeError(key)
+
+    def has_usable_password(self):
+        return self._data["usable_password"]
+
+    def set_unusable_password(self):
+        self._data["usable_password"] = False
+
+    def save(self):
+        users = STATE.setdefault("users", [])
+        for index, row in enumerate(users):
+            if row["username"] == self._data["username"]:
+                users[index] = copy.deepcopy(self._data)
+                return
+        users.append(copy.deepcopy(self._data))
+
+
+class _UserManager:
+    def get_or_create(self, username, defaults=None):
+        users = STATE.setdefault("users", [])
+        for row in users:
+            if row["username"] == username:
+                return _User(copy.deepcopy(row)), False
+        data = {"username": username, "is_active": True, "is_superuser": False, "usable_password": True}
+        data.update(defaults or {})
+        users.append(copy.deepcopy(data))
+        return _User(data), True
+
+
+class _UserModel:
+    objects = _UserManager()
+
+
+def get_user_model():
+    return _UserModel
 """
 
 SHIM = """
@@ -427,12 +600,40 @@ def _stub(tmp_path):
         (root / "core/models.py").write_text("from _fake_orm import ObjectChange\n")
         (root / "virtualization/__init__.py").write_text("")
         (root / "virtualization/models.py").write_text("from _fake_orm import VirtualMachine\n")
+        (root / "netbox").mkdir()
+        (root / "utilities").mkdir()
+        (root / "users").mkdir()
+        (root / "django/contrib/auth").mkdir(parents=True)
+        (root / "django/contrib/__init__.py").write_text("")
+        (root / "django/contrib/auth/__init__.py").write_text("from _fake_orm import get_user_model\n")
+        (root / "netbox/__init__.py").write_text("")
+        (root / "netbox/context_managers.py").write_text("from _fake_orm import event_tracking\n")
+        (root / "utilities/__init__.py").write_text("")
+        (root / "utilities/request.py").write_text("from _fake_orm import NetBoxFakeRequest\n")
+        (root / "users/__init__.py").write_text("")
+        (root / "users/models.py").write_text("from _fake_orm import ObjectPermission\n")
         (root / "_fake_orm.py").write_text(FAKE_ORM)
         (root / "manage.py").write_text(SHIM)
     return root
 
 
-def _vm(vm_id, name, *, bare, cluster=1, cf=None, interfaces=0, ip4=None, ip6=None, tenant="uhstray"):
+def _vm(
+    vm_id,
+    name,
+    *,
+    bare,
+    cluster=1,
+    cf=None,
+    interfaces=0,
+    ip4=None,
+    ip6=None,
+    tenant="uhstray",
+    vdisks=0,
+    real_interfaces=0,
+    real_vdisks=0,
+):
+    # interfaces and vdisks are the counter caches the plan reads; real_interfaces and real_vdisks are the rows the
+    # relations return under the lock. A stale counter is a counter that differs from its rows.
     row = {
         "id": vm_id,
         "name": name,
@@ -441,6 +642,9 @@ def _vm(vm_id, name, *, bare, cluster=1, cf=None, interfaces=0, ip4=None, ip6=No
         "tenant_name": tenant,
         "created": "2026-11-01 10:00:00+00:00",
         "interface_count": interfaces,
+        "virtual_disk_count": vdisks,
+        "real_interfaces": real_interfaces,
+        "real_virtualdisks": real_vdisks,
         "primary_ip4_id": ip4,
         "primary_ip6_id": ip6,
         "custom_field_data": dict(cf or {}),
@@ -488,6 +692,9 @@ def _pair(
                 interfaces=bare_kw["interfaces"],
                 ip4=bare_kw.get("ip4"),
                 ip6=bare_kw.get("ip6"),
+                vdisks=bare_kw.get("vdisks", 0),
+                real_interfaces=bare_kw.get("real_interfaces", 0),
+                real_vdisks=bare_kw.get("real_vdisks", 0),
             ),
             _vm(disc_id, name, bare=False, cf=disc_cf, **(disc_kw or {})),
         ],
@@ -565,8 +772,9 @@ def test_a_dry_run_reports_the_same_pair_and_writes_nothing(tmp_path):
         ({"interfaces": 2}, "has interfaces"),
         ({"ip4": 7}, "has a primary IP"),
         ({"ip6": 9}, "has a primary IP"),
+        ({"vdisks": 1}, "has virtual disks"),
     ],
-    ids=["interfaces", "primary-ipv4", "primary-ipv6"],
+    ids=["interfaces", "primary-ipv4", "primary-ipv6", "virtual-disk"],
 )
 def test_a_bare_record_with_an_interface_or_an_address_is_refused_and_left_alone(tmp_path, bare_kw, reason):
     before = _pair(bare_kw=bare_kw)
@@ -712,13 +920,145 @@ def test_a_requested_name_whose_origin_is_unverified_stops_the_whole_run(tmp_pat
     assert after == before
 
 
-def test_a_pair_that_changes_after_the_read_is_not_written(tmp_path):
-    # The locked re-read finds an interface on the bare record: the run stops and the transaction rolls back.
+def test_a_bare_record_that_gains_an_interface_after_the_read_is_refused_at_the_lock(tmp_path):
+    # The plan saw no interface; the locked re-read does. Only that pair is refused, and the other pair still merges.
     before = _merge(_pair(name="dns", bare_id=10, disc_id=11), _pair(name="vault", bare_id=20, disc_id=21))
     proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_RACE_PK": "10"})
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert {p["name"]: p["action"] for p in result["pairs"]} == {"dns": "refused:has interfaces", "vault": "merged"}
+    assert sorted(row["id"] for row in after["vms"]) == [10, 11, 21]
+
+
+def test_a_pair_whose_bare_record_stops_matching_mid_run_stops_the_whole_run(tmp_path):
+    before = _merge(_pair(name="dns", bare_id=10, disc_id=11), _pair(name="vault", bare_id=20, disc_id=21))
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_RACE_SHAPE": "10"})
     assert proc.returncode != 0, proc.stdout
     assert "a pair changed between the read and the write" in proc.stderr
     assert after == before
+
+
+def test_a_stale_interface_counter_does_not_let_a_record_with_interfaces_through(tmp_path):
+    # The counter reads 0 and the plan merges the pair; the relation holds an interface row, so the lock refuses it.
+    before = _pair(bare_kw={"real_interfaces": 1})
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert [p["action"] for p in result["pairs"]] == ["refused:has interfaces"]
+    assert after == before
+
+
+def test_a_virtual_disk_row_with_a_stale_counter_is_refused_at_the_lock(tmp_path):
+    before = _pair(bare_kw={"real_vdisks": 1})
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert [p["action"] for p in result["pairs"]] == ["refused:has virtual disks"]
+    assert after == before
+
+
+def test_a_dry_run_creates_no_reconciler_account(tmp_path):
+    proc, result, after = _run_body(tmp_path, _pair(), dry_run=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "users" not in after and "changes" in after
+    assert [p["action"] for p in result["pairs"]] == ["would_merge"]
+
+
+def test_a_real_run_with_nothing_to_merge_creates_no_reconciler_account(tmp_path):
+    proc, result, after = _run_body(tmp_path, _pair(), dry_run=False, names=["nope"])
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert "users" not in after
+
+
+def test_the_reconciler_account_is_unusable_and_its_writes_are_changelogged_under_it(tmp_path):
+    proc, result, after = _run_body(tmp_path, _merge(_pair(name="dns", bare_id=10, disc_id=11)), dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert after["users"] == [
+        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": False}
+    ]
+    rows = [row for row in after["changes"] if row.get("user_name") == "workflow-vm-reconciler"]
+    assert sorted((row["action"], row["changed_object_id"]) for row in rows) == [("delete", 10), ("update", 11)]
+    assert len({row["request_id"] for row in rows}) == 1, "the writes of one run must share one request"
+
+
+def test_a_run_whose_changelog_rows_are_missing_rolls_back(tmp_path):
+    before = _pair()
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_NO_CHANGELOG": "1"})
+    assert proc.returncode != 0, proc.stdout
+    assert "no changelog row for a discovery record's update" in proc.stderr
+    assert after == before
+
+
+def test_a_pre_existing_account_holding_a_usable_password_stops_the_run(tmp_path):
+    before = _pair()
+    before["users"] = [
+        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": True}
+    ]
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode != 0, proc.stdout
+    assert "holds a grant or a usable password" in proc.stderr
+    assert after == before
+
+
+def test_a_pre_existing_account_with_no_usable_password_is_used_as_it_is(tmp_path):
+    before = _pair()
+    before["users"] = [
+        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": False}
+    ]
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["pairs"][0]["action"] == "merged"
+    assert after["users"] == before["users"]
+
+
+def test_a_pre_existing_superuser_account_stops_the_run(tmp_path):
+    before = _pair()
+    before["users"] = [
+        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": True, "usable_password": False}
+    ]
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode != 0, proc.stdout
+    assert "holds a grant or a usable password" in proc.stderr
+    assert after == before
+
+
+def test_a_pre_existing_account_holding_an_object_permission_or_a_group_stops_the_run(tmp_path):
+    before = _pair()
+    before["users"] = [
+        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": False}
+    ]
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_ACCOUNT_GRANTS": "1"})
+    assert proc.returncode != 0, proc.stdout
+    assert "holds a grant or a usable password" in proc.stderr
+    assert after == before
+
+
+def test_a_run_whose_bare_delete_has_no_changelog_row_rolls_back(tmp_path):
+    before = _pair()
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_NO_DELETE_ROW": "1"})
+    assert proc.returncode != 0, proc.stdout
+    assert "no changelog row for a bare record's delete" in proc.stderr
+    assert after == before
+
+
+def test_the_reconciler_rows_cannot_change_the_origin_of_a_pair(tmp_path):
+    # The origin check reads create rows only: the account's update rows on both records do not make a pair unverified.
+    before = _pair()
+    for vm_id in (10, 11):
+        before["changes"].append(
+            {
+                "changed_object_id": vm_id,
+                "app_label": "virtualization",
+                "model": "virtualmachine",
+                "action": "update",
+                "user_name": "workflow-vm-reconciler",
+                "request_id": "earlier",
+            }
+        )
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert [p["action"] for p in result["pairs"]] == ["merged"]
 
 
 def test_a_discovery_write_that_does_not_read_back_deletes_nothing(tmp_path):
