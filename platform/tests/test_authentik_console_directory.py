@@ -283,7 +283,7 @@ def _handler(sc: dict):
                 if who == "directory" and sc["write_status"] == 201:
                     return self._reply(201, {"pk": PROBE_PK, "name": "console-directory-write-probe"})
                 return self._reply(sc["write_status"], {"detail": "You do not have permission"})
-            if method == "DELETE" and url.path == "/api/v3/core/groups/%s/" % PROBE_PK:
+            if method == "DELETE" and url.path == f"/api/v3/core/groups/{PROBE_PK}/":
                 if who != "bootstrap":
                     return self._reply(403, {"detail": "You do not have permission"})
                 sc["deleted"].append(url.path)
@@ -364,7 +364,7 @@ def test_a_token_that_can_write_fails_the_deploy_and_its_probe_group_is_removed(
     assert "must be 403: the token is not read-only" in done.stdout
     assert "VERIFY FAILED" in done.stdout
     # The probe group the token created is removed with the bootstrap token before the failure.
-    assert sc["deleted"] == ["/api/v3/core/groups/%s/" % PROBE_PK]
+    assert sc["deleted"] == [f"/api/v3/core/groups/{PROBE_PK}/"]
 
 
 def test_a_directory_read_the_token_cannot_make_fails_the_deploy(tmp_path, rendered_console, fake_api):
