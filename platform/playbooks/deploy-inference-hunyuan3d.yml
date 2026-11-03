@@ -23,6 +23,18 @@
     # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
     preflight_group_expected: inference_hunyuan3d_svc
 
+# smoke is a survey value that reaches a shell command in Phase 3. Refused here, before Phase 1
+# changes anything, unless it is one of its two declared values.
+- name: "Pre-flight: smoke is 0 or 1"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Refuse a smoke value other than 0 or 1"
+      ansible.builtin.assert:
+        that:
+          - (smoke | default('0') | string) in ['0', '1']
+        fail_msg: "smoke must be 0 or 1"
+
 # ── Phase 1: Prereqs + secrets + env ────────────────────────────────────────
 - name: "Phase 1: Clone + GPU toolkit + weights check + secrets"
   hosts: inference_hunyuan3d_svc
@@ -135,14 +147,8 @@
     _service_url: "{{ service_url | default('http://localhost:8001') }}"
 
   tasks:
-    # smoke is a survey value that reaches the shell command below. Refuse anything but its two
-    # declared values, and quote what is passed so the command cannot read it as shell syntax.
-    - name: "Refuse a smoke value other than 0 or 1"
-      ansible.builtin.assert:
-        that:
-          - (smoke | default('0') | string) in ['0', '1']
-        fail_msg: "smoke must be 0 or 1"
-
+    # smoke reaches the shell below; it is refused before any change (pre-flight above) and quoted
+    # here, so the command cannot read it as shell syntax even if that check is bypassed.
     - name: "Run post-deploy.sh (smoke optional)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
