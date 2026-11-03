@@ -17,13 +17,13 @@ The platform SHALL maintain a reviewable coverage declaration for every deployed
 
 ### Requirement: Operator inventory synchronization preserves stdin isolation and the canonical lifecycle
 
-The operator inventory-sync frontend SHALL read credentials only from stdin and pass them to the canonical inventory-sync play only through child stdin. It SHALL NOT place credential values in argv, environment, files, or visible output. The existing parsed-inventory and transport checks SHALL run for every authentication route. Existing callers SHALL retain their declared environment/AppRole behavior.
+The operator inventory-sync frontend SHALL read credentials only from stdin and pass them to the canonical inventory-sync play only through a named pipe in a private (0700) temporary directory that is removed when the run ends. It SHALL NOT place credential values in argv, environment, files, or visible output. The existing parsed-inventory and transport checks SHALL run for every authentication route. Existing callers SHALL retain their declared environment/AppRole behavior.
 
 Proposal intent remains unchanged. Production deployment, template/repository mutation, retention expansion, VM growth, PBS operations and backup/restore acceptance are outside these additions.
 
 #### Scenario: Stdin credential reaches only the canonical child input
 - **WHEN** a synthetic operator credential is supplied to the frontend
-- **THEN** the actual canonical child input receives it through stdin, and inspected arguments, environment, files and visible output do not contain it
+- **THEN** the actual canonical child input receives it through that named pipe, and inspected arguments, environment, files and visible output do not contain it
 - **AND** invalid input refuses before any API write.
 
 #### Scenario: Validated synchronization is idempotent and preserves metadata
