@@ -37,6 +37,7 @@ d="$FAKE_DIR"
 case "$1" in
   ps) cat "$d/names" ;;
   inspect)
+    if [ -f "$d/fail_inspect" ]; then echo "Error: marker-xyz no such container" >&2; exit 125; fi
     n=$(cat "$d/inspects" 2>/dev/null || echo 0)
     n=$((n + 1))
     echo "$n" > "$d/inspects"
@@ -141,7 +142,7 @@ def test_every_problem_is_reported_in_read_order(tmp_path):
     }
 
 
-def engine_run(tmp_path, *, names, pass1, pass2, check=False):
+def engine_run(tmp_path, *, names, pass1, pass2, check=False, inspect_fails=False):
     """Run the whole task against the fake engine; return the process and the engine's directory."""
     fake = tmp_path / "engine"
     fake.mkdir()
@@ -151,6 +152,8 @@ def engine_run(tmp_path, *, names, pass1, pass2, check=False):
     # An empty list writes an empty file, so the engine prints nothing, as a real one does.
     for name, lines in (("names", names), ("pass1", pass1), ("pass2", pass2)):
         (fake / name).write_text("".join(line + "\n" for line in lines))
+    if inspect_fails:
+        (fake / "fail_inspect").write_text("")
     play = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": {"container_engine": str(engine), "monorepo_deploy_path": "services/plane/deployment",
@@ -181,6 +184,15 @@ def test_a_crash_loop_fails_the_run_and_names_the_container(tmp_path, check):
     out, _ = engine_run(tmp_path, names=PLANE_NAMES[:2], pass1=pass1, pass2=pass2, check=check)
     assert out.returncode != 0
     assert "plane_runner_1: restarted 3 times in 1s" in out.stdout + out.stderr
+
+
+@needs_ansible
+def test_a_failed_inspect_is_refused_without_echoing_the_engines_stderr(tmp_path):
+    out, _ = engine_run(tmp_path, names=PLANE_NAMES, pass1=RUNNING, pass2=RUNNING, inspect_fails=True)
+    text = out.stdout + out.stderr
+    assert "marker-xyz" not in text, "the engine's stderr was printed into the run's output"
+    assert out.returncode != 0
+    assert "Inspecting the service's containers failed" in text
 
 
 @needs_ansible

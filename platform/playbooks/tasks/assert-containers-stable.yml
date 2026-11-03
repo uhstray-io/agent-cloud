@@ -46,6 +46,7 @@
       become: "{{ podman_rootful | default(false) | bool }}"
       register: _acs_first
       changed_when: false
+      failed_when: false
       check_mode: false
 
     - name: "Containers: settle window"
@@ -58,7 +59,17 @@
       become: "{{ podman_rootful | default(false) | bool }}"
       register: _acs_second
       changed_when: false
+      failed_when: false
       check_mode: false
+
+    # failed_when is off on both inspects so an engine's stderr is never printed (see the header's Reads
+    # rule): a non-zero exit is refused here, with a fixed message.
+    - name: "Containers: both passes exited 0"
+      ansible.builtin.assert:
+        that:
+          - _acs_first.rc == 0
+          - _acs_second.rc == 0
+        fail_msg: "Inspecting the service's containers failed (first rc={{ _acs_first.rc }}, second rc={{ _acs_second.rc }})."
 
 - name: "Containers: find stopped, failed or restarting ones"
   # The one place the rule lives. Empty when every container is stable; otherwise the problems,

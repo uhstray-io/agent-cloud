@@ -2280,7 +2280,7 @@ at the end of the window is the other half.
 **Enforced by.** Test: `platform/tests/test_assert_containers_stable.py` runs the shared task
 `platform/playbooks/tasks/assert-containers-stable.yml` against synthetic readings and against a fake engine, and checks
 that Deploy Plane's Phase 4 runs it after the API probe and before Report. Mutation-checked on the restart, status,
-one-shot, first-pass, listing and gate guards and on the wiring. Wired into Deploy Plane only; other services stay
+one-shot, first-pass, listing, gate and failed-inspect guards and on the wiring. Wired into Deploy Plane only; other services stay
 `Convention` until they include the task.
 
 ## 3. Acting on live state
