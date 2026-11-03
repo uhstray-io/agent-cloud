@@ -107,3 +107,7 @@ Locally Caddy reaches `plane-mcp:8211` on `local-dev`. Production needs, in site
 `plane_mcp_public_url` and a `plane_mcp_bind` the central Caddy can reach (the default `127.0.0.1` is local only), a firewall
 allow on the published port from Caddy, a `caddy_managed_sites` route, the Cloudflare DNS record, and a decision on the
 Cloudflare challenge for non-browser MCP clients (the `/v1/*` precedent is `inference-api-bypass-challenge` in `waf.tf`).
+
+**Deferred to task 5.3 (2026-11-03):** the zone challenges every `plane-mcp.uhstray.io` path today
+(`/http/mcp` and `/http/api-key/mcp` answer 403 `cf-mitigated: challenge`). A skip rule for the MCP
+paths widens the edge, so it is decided with the harness client entry, not with the DNS records.
