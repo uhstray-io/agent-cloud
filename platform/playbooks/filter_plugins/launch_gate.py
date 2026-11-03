@@ -2,7 +2,13 @@
 
 The gate may launch only the templates that the agent identities its callers act as are allowed, plus
 their (Dev) variants. OPA's data file stays the one source: this list only narrows what reaches OPA, and it
-never names a template OPA does not. Two kinds of template never reach the gate's config:
+never names a template OPA does not. It is the union over every agent the callers act as, and it keeps the
+base name beside each (Dev) variant, so it admits names OPA still refuses for a given agent or branch (another
+agent's template; a base name whose workflow step is unreviewed and so may not run from main). That is by
+design: per-agent and per-branch permission is OPA's decision, made on every launch; the allowlist only keeps
+everything outside the catalog, and every destructive template, away from OPA.
+
+Two kinds of template never reach the gate's config:
 
   * a name in catalog.semaphore.destructive_templates, and
   * any name that starts with "Clean Deploy" (the destructive family, whether or not it is listed).

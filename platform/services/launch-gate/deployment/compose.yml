@@ -26,9 +26,6 @@ services:
       - "${LAUNCH_GATE_BIND:-127.0.0.1}:${LAUNCH_GATE_PORT:-8443}:8443"
     env_file:
       - .env
-    environment:
-      # Never write bytecode: /app is read-only, and a .pyc would be a second copy of the code.
-      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       # The gate's source, read-only. A changed file changes the app digest, so the change-aware
       # start recreates the container (deploy.sh).
@@ -42,7 +39,10 @@ services:
       - ./certs:/certs:ro
     command:
       - python
+      # -I isolates the interpreter: no PYTHON* variable, user site directory or script directory on
+      # sys.path. -I also ignores the environment's bytecode switch, so -B is what keeps .pyc files out of /app.
       - -I
+      - -B
       - /app/launch_gate.py
       - /etc/launch-gate/config.json
     # Hardening. The root filesystem is read-only: the gate writes no file (its logs go to stdout and stderr). It

@@ -16,8 +16,9 @@ This directory holds the container files. It does not deploy anything by itself.
 - the server leaf issuance and the renewal proof,
 - the host firewall rules that admit the callers.
 
-These are the later tasks of the `skynet-launch-containment` change (tasks 3.2 and 3.3). Until they land,
-nothing here runs in any environment.
+These are the later tasks of the `skynet-launch-containment` change: the playbooks and templates (3.2-3.4),
+the renewal proof (3.5), skynet's side (3.6), and the production host, firewall and Semaphore member
+(5.1). Until they land, nothing here runs in any environment.
 
 ## Files
 
@@ -33,7 +34,10 @@ nothing here runs in any environment.
 | `AGENTS.md` | Symlink to this file. |
 
 The allowlist filter lives outside this directory: `platform/playbooks/filter_plugins/launch_gate.py`
-(`launch_gate_allowlist`).
+(`launch_gate_allowlist`). The list is the union over every agent the callers act as, base names beside their
+(Dev) variants, so it can admit a name OPA then refuses for that agent or branch. That is deliberate:
+per-agent and per-branch permission is OPA's decision on every launch; the allowlist keeps anything outside
+the catalog, and every destructive template, from reaching OPA at all.
 
 ## Image
 

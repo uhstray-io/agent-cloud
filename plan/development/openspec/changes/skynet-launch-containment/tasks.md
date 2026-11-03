@@ -17,7 +17,7 @@
 
 ## 3. Deployment as code (agent-cloud)
 
-- [x] 3.1 Compose (digest-pinned Python image, source read-only, certs mount, published on the declared LAN bind), deploy.sh (lifecycle only), env template
+- [ ] 3.1 Compose (digest-pinned Python image, source read-only, certs mount, published on the declared LAN bind), deploy.sh (lifecycle only), env template
 - [ ] 3.2 `deploy-launch-gate.yml`: input refusals, place repo, secrets (`caller_<name>_token` generated, `semaphore_api_token` existing), allowlist rendered from OPA's catalog excluding destructive templates, leaf issuance, deploy, verify (TLS health, 401 without token, 400 for an undeclared key, 403 for a non-allowlisted template, plain HTTP refused)
 - [ ] 3.3 `clean-deploy-launch-gate.yml`, `provision-launch-gate-semaphore-access.yml` (shared identity task, `task_runner`, launch probe 404)
 - [ ] 3.4 Templates (base with Dev variant, Local) in `templates.yml` / `templates-local.yml`; local-dev inventory and bootstrap entries

@@ -47,7 +47,9 @@ setup() {
 }
 
 @test "launch-gate: the process never writes bytecode into the read-only source" {
-  assert_grep -qxF '      PYTHONDONTWRITEBYTECODE: "1"' "$DEPLOY_DIR/compose.yml"
+  # -B, not PYTHONDONTWRITEBYTECODE: the -I the command also passes ignores every PYTHON* variable.
+  assert_grep -qxF '      - -B' "$DEPLOY_DIR/compose.yml"
+  refute_grep -q 'PYTHONDONTWRITEBYTECODE' "$DEPLOY_DIR/compose.yml"
 }
 
 @test "launch-gate: the base command runs the app isolated, from /app, on the mounted config" {
