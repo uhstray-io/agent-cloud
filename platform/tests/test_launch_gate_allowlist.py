@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ansible.errors import AnsibleFilterError
 
 REPO = Path(__file__).resolve().parents[2]
 CATALOG = REPO / "platform/services/opa/deployment/policies/agentcloud/data.json"
@@ -89,53 +90,53 @@ def test_clean_deploy_is_refused_even_when_the_catalog_does_not_list_it_as_destr
 
 
 def test_an_agent_not_in_the_catalog_is_refused():
-    with pytest.raises(ValueError, match="nobody"):
+    with pytest.raises(AnsibleFilterError, match="nobody"):
         filt.launch_gate_allowlist(catalog(), templates(), ["nobody"])
 
 
 def test_an_agent_with_no_allowed_templates_list_is_refused_by_name():
     doc = catalog(skynet={"allowed_actions": {"semaphore": ["run_task"]}})
-    with pytest.raises(ValueError, match="skynet"):
+    with pytest.raises(AnsibleFilterError, match="skynet"):
         filt.launch_gate_allowlist(doc, templates(), ["skynet"])
 
 
 def test_a_name_the_templates_file_does_not_declare_is_refused_as_drift():
     doc = catalog(**{"agent-one": {"allowed_templates": ["Gone"]}})
-    with pytest.raises(ValueError, match="Gone"):
+    with pytest.raises(AnsibleFilterError, match="Gone"):
         filt.launch_gate_allowlist(doc, templates(("A", False)), ["agent-one"])
 
 
 def test_an_empty_agent_list_is_refused():
-    with pytest.raises(ValueError, match="at least one"):
+    with pytest.raises(AnsibleFilterError, match="at least one"):
         filt.launch_gate_allowlist(catalog(), templates(), [])
 
 
 def test_agents_given_as_one_string_are_refused():
     doc = catalog(**{"agent-one": {"allowed_templates": ["A"]}})
-    with pytest.raises(ValueError, match="agents must be a list"):
+    with pytest.raises(AnsibleFilterError, match="agents must be a list"):
         filt.launch_gate_allowlist(doc, templates(("A", False)), "agent-one")
 
 
 def test_a_document_without_the_catalog_section_is_refused():
-    with pytest.raises(ValueError, match="catalog"):
+    with pytest.raises(AnsibleFilterError, match="catalog"):
         filt.launch_gate_allowlist({"templates": []}, templates(), ["agent-one"])
 
 
 def test_a_catalog_without_its_destructive_list_is_refused():
     doc = {"catalog": {"agent-one": {"allowed_templates": ["A"]}}}
-    with pytest.raises(ValueError, match="semaphore"):
+    with pytest.raises(AnsibleFilterError, match="semaphore"):
         filt.launch_gate_allowlist(doc, templates(("A", False)), ["agent-one"])
 
 
 def test_a_templates_document_without_its_list_is_refused():
     doc = catalog(**{"agent-one": {"allowed_templates": ["A"]}})
-    with pytest.raises(ValueError, match="templates"):
+    with pytest.raises(AnsibleFilterError, match="templates"):
         filt.launch_gate_allowlist(doc, {"other": []}, ["agent-one"])
 
 
 def test_a_template_name_declared_twice_is_refused():
     doc = catalog(**{"agent-one": {"allowed_templates": ["A"]}})
-    with pytest.raises(ValueError, match="twice"):
+    with pytest.raises(AnsibleFilterError, match="twice"):
         filt.launch_gate_allowlist(doc, templates(("A", False), ("A", True)), ["agent-one"])
 
 
@@ -167,7 +168,7 @@ def test_every_repository_allowlist_name_is_declared_and_dev_only_where_template
 def test_the_repository_skynet_agent_is_refused_because_it_names_no_templates():
     # skynet launches through the gate; it is not a template holder. A caller maps to the role agents.
     cat, tpl = real_documents()
-    with pytest.raises(ValueError, match="skynet"):
+    with pytest.raises(AnsibleFilterError, match="skynet"):
         filt.launch_gate_allowlist(cat, tpl, ["skynet"])
 
 
@@ -306,9 +307,11 @@ def test_config_template_holds_exactly_the_keys_load_config_accepts():
 
 
 def test_the_templates_draw_only_on_underscore_or_secrets_variables():
-    # test_credential_leaks.bats scans *.j2 for approved namespaces, but its regex does not match `{{ name`
-    # written with a space (the macOS grep does not match it either), so it passes a bare variable written
-    # that way. Jinja's own parser lists the free variables of the parsed template instead.
+    # test_credential_leaks.bats scans *.j2 for approved namespaces, but its regex `\{\{[\s]*` does not match
+    # `{{ name` written with a space: in a POSIX bracket `[\s]` is a backslash or an `s`, not whitespace. CI's
+    # GNU grep agrees: run 38731550214 (head 66c18f5b, Bash Tests) reports `ok 200 credential leak: Jinja2
+    # templates use approved variable namespaces` while n8n.env.j2 at that head carries `{{ n8n_bind |`. So a
+    # bare variable written with a space passes that scan. Jinja's own parser lists the free variables instead.
     meta = pytest.importorskip("jinja2.meta")
     env = _jinja_env()
     for name in ("env.j2", "config.json.j2"):

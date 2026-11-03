@@ -91,7 +91,7 @@ caller, in sorted order, from `secrets['caller_<name>_token']`.
 3. For each remaining name, it adds `<name> (Dev)` when `platform/semaphore/templates.yml` sets
    `dev_variant: true` for it.
 
-It fails closed: it raises `ValueError` on an empty agent list, an agent not in the catalog, an agent with no
+It fails closed: it raises `AnsibleFilterError` on an empty agent list, an agent not in the catalog, an agent with no
 `allowed_templates` list, a remaining name that `templates.yml` does not declare (catalog drift), or a template
 name declared twice. The playbook that calls it is a later change and must not catch the error.
 
@@ -99,8 +99,9 @@ name declared twice. The playbook that calls it is a later change and must not c
 
 - Do not put a token in `config.json`, in a template outside the `secrets` namespace, or in any committed file.
   Templates use `secrets.*` and `_`-prefixed variables only. `test_credential_leaks.bats` is meant to check
-  that, but its regex does not match `{{ name` written with a space, so `test_launch_gate_allowlist.py` checks
-  the parsed templates instead.
+  that, but its regex does not match `{{ name` written with a space. CI's GNU grep shows the same miss: run
+  38731550214 (head 66c18f5b) passes that test while `n8n.env.j2` at that head has `{{ n8n_bind |`.
+  `test_launch_gate_allowlist.py` therefore checks the parsed templates instead.
 - Do not add a template to the gate by hand. The list comes from OPA's catalog, and a template the catalog
   does not name never reaches the gate.
 - Do not mount a leaf file, or any single file under `certs/` that renewal replaces.

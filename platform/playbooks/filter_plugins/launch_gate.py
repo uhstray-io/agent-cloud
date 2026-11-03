@@ -9,13 +9,13 @@ never names a template OPA does not. Two kinds of template never reach the gate'
 
 Fail closed. An empty agent list, an agent that is not in the catalog, an agent with no allowed_templates
 list, a name that templates.yml does not declare (catalog drift), or a template name declared twice raises
-ValueError. The caller must not catch it: a shorter or stale list must never be rendered.
-
-Pure Python with no Ansible import, so the rules are tested directly
-(platform/tests/test_launch_gate_allowlist.py).
+AnsibleFilterError, which fails the render. The caller must not catch it: a shorter or stale list must never
+be rendered. Tested directly in platform/tests/test_launch_gate_allowlist.py.
 """
 
 from collections.abc import Mapping
+
+from ansible.errors import AnsibleFilterError
 
 CLEAN_DEPLOY_PREFIX = "Clean Deploy"
 DEV_SUFFIX = " (Dev)"
@@ -32,7 +32,7 @@ def launch_gate_allowlist(catalog_doc, templates_doc, agents):
     dev_variants = _dev_variants(templates_doc)
     agent_names = _strings(agents, "agents")
     if not agent_names:
-        raise ValueError("agents must name at least one agent identity")
+        raise AnsibleFilterError("agents must name at least one agent identity")
 
     destructive = set(
         _strings(
@@ -45,9 +45,9 @@ def launch_gate_allowlist(catalog_doc, templates_doc, agents):
     for agent in agent_names:
         spec = catalog.get(agent)
         if not isinstance(spec, Mapping):
-            raise ValueError(f"agent {agent!r} is not in the OPA catalog")
+            raise AnsibleFilterError(f"agent {agent!r} is not in the OPA catalog")
         if not isinstance(spec.get("allowed_templates"), list):
-            raise ValueError(f"agent {agent!r} has no allowed_templates list in the OPA catalog")
+            raise AnsibleFilterError(f"agent {agent!r} has no allowed_templates list in the OPA catalog")
         named += _strings(spec["allowed_templates"], f"catalog.{agent}.allowed_templates")
         named += _strings(spec.get("service_deploy_templates", []), f"catalog.{agent}.service_deploy_templates")
 
@@ -55,7 +55,7 @@ def launch_gate_allowlist(catalog_doc, templates_doc, agents):
 
     undeclared = sorted(name for name in kept if name not in dev_variants)
     if undeclared:
-        raise ValueError(
+        raise AnsibleFilterError(
             "the OPA catalog names template(s) that templates.yml does not declare: " + ", ".join(undeclared)
         )
 
@@ -66,13 +66,13 @@ def launch_gate_allowlist(catalog_doc, templates_doc, agents):
 
 def _section(doc, key, what):
     if not isinstance(doc, Mapping) or not isinstance(doc.get(key), Mapping):
-        raise ValueError(f"{what} has no {key!r} mapping")
+        raise AnsibleFilterError(f"{what} has no {key!r} mapping")
     return doc[key]
 
 
 def _strings(value, what):
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise ValueError(f"{what} must be a list of non-empty strings")
+        raise AnsibleFilterError(f"{what} must be a list of non-empty strings")
     return value
 
 
@@ -80,14 +80,14 @@ def _dev_variants(templates_doc):
     """Template name -> whether templates.yml generates a (Dev) variant for it. A duplicate name is refused."""
     templates = templates_doc.get("templates") if isinstance(templates_doc, Mapping) else None
     if not isinstance(templates, list):
-        raise ValueError("templates_doc has no templates list (is it templates.yml?)")
+        raise AnsibleFilterError("templates_doc has no templates list (is it templates.yml?)")
     out = {}
     for entry in templates:
         if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str) or not entry["name"]:
-            raise ValueError("every templates.yml entry needs a name")
+            raise AnsibleFilterError("every templates.yml entry needs a name")
         name = entry["name"]
         if name in out:
-            raise ValueError(f"template name {name!r} is declared twice in templates.yml")
+            raise AnsibleFilterError(f"template name {name!r} is declared twice in templates.yml")
         out[name] = bool(entry.get("dev_variant", False))
     return out
 
