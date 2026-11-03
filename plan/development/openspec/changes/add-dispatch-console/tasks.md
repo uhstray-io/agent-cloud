@@ -55,7 +55,7 @@ Every step runs through the Semaphore template. Nothing is deployed by hand over
 Decisions D22–D25. Every source is all-or-none in the environment. A source that isn't configured answers `"source":"unconfigured"`, the same contract as Phase 2.
 
 - [x] 6.1 Credentials:
-  - Add a view-only `console` profile to `_profiles` in `provision-netbox-automation-token.yml` and to the closed survey list in `templates.yml`. It views dcim sites and devices, virtualization clusters and virtual machines, ipam prefixes and IP addresses, and extras tags, and stores `secret/services/netbox:console_api_token`.
+  - Add a view-only `console` profile to `_profiles` in `provision-netbox-automation-token.yml` and to the closed survey list in `templates.yml`. It views dcim sites and devices, virtualization clusters and virtual machines, ipam prefixes, and extras tags, with `token_write_enabled: false` (`platform/playbooks/provision-netbox-automation-token.yml:69-76`). It has no IP address or interface access (D24), and it stores `secret/services/netbox:console_api_token`.
   - Write `provision-console-proxmox-token.yml`. With the existing Proxmox admin credential, it grants `PVEAuditor` on `/` to `console@pve` and to its privilege-separated token `console`, and stores `secret/services/proxmox:console_token_id` and `console_token`.
   - That playbook never rotates. It refuses a token that exists in Proxmox but is not stored, unless a replace flag is set. Its template uses `dev_variant`.
 - [x] 6.2 Deploy wiring:
@@ -71,7 +71,7 @@ Decisions D22–D25. Every source is all-or-none in the environment. A source th
   - Unit tests against mock authorities, including the unconfigured, unreachable, stale and partial cases.
 - [x] 6.5 UI:
   - The Topology page: sites → clusters → nodes → VMs, with click and shift-click selection and red/amber/green status from Proxmox state and the workflow fields.
-  - The network view (prefixes and addresses) and the admin-only data-flows view.
+  - The network view (prefixes) and the admin-only data-flows view.
   - Compute levels, the Services table, service detail, the resource panel and business-domain tiles.
   - Every status shows an icon and a label. Every per-asset view links to Grafana and draws no chart.
 - [ ] 6.6 Validation gate: on local-dev and in production, every host, VM and service shown exists in NetBox or Proxmox, and computer-use browser tests pass (D30).
@@ -86,12 +86,13 @@ Waits for OPA and skynet in production (D29).
 
 Decisions D26–D28. This replaces Phase 1 task 5.3, which never ran.
 
-- [x] 8.0 Console AppRole via `manage-approle.yml`, with the D27 policy file under `platform/services/openbao/deployment/config/policies/`.
-  - The console logs in at run time and again on demand. Its credentials go in `secret/services/approles/console`.
-  - A scheduled playbook rotates the secret ID before its 90-day expiry and redeploys the console.
+- [x] 8.0 Console AppRole and its D27 policy, provisioned by `provision-console-approle.yml` (template `Provision Console AppRole`), which includes `tasks/manage-approle.yml` with `platform/services/openbao/deployment/config/policies/console.hcl`.
+  - Its credentials are stored at `secret/services/approles/console`.
+  - `Rotate Console Credentials (Dev)` rotates the secret ID monthly, well inside its 90-day TTL, and redeploys the console.
 - [x] 8.0a Grafana Viewer service-account token `secret/services/o11y:console_grafana_token`, minted through the Grafana admin API by `provision-console-grafana-token.yml` (D32: 90-day lifetime, renewed under 30 days). `deploy-console.yml` shared-reads it when `console_grafana_api_enabled` is true.
 - [ ] 8.0b `platform/lib/github_app_token.py` accepts a downscoping `permissions` body, with tests.
   - `refresh-console-github-token.yml`, scheduled every 45 minutes, writes a read-only installation token to `secret/services/console/github:token`.
+- [ ] 8.0c The console server logs in to OpenBao with its AppRole at run time and again on demand, reading `CONSOLE_OPENBAO_*`. `platform/services/console/deployment/templates/env.j2:55-63` renders those variables and says the server reads them from Phase 5, so they stay unread until this task lands. Needed by 8.1 and the GitHub token read.
 
 ## Phase 5 checklist: governance pages
 
