@@ -59,6 +59,7 @@ and why.
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) | Unverified claim | 2 | Convention |
+| 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1202,6 +1203,31 @@ admitted `localhost` (the controller) and parent groups; the second review caugh
 landed names the bare-name templates in the catalog and requires a `_svc` group everywhere else. Why
 the rule did not fire: it was applied to the one playbook in view and not to the others the claim
 covered; the brief described what all of them do after reading one.
+
+### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
+
+**Occurrences: 1** — 2026-11-03
+
+**What happened.** Diagnosing PR #815's `Python core` failure, I reproduced the Linux side in a
+container: `/dev/stdin` resolves through `/proc/self/fd/0` to an unopenable `pipe:[N]`
+(`os.path.realpath` returned `/proc/4/fd/pipe:[47067142]`). For the other side I wrote, without
+checking, that on macOS `/dev/stdin` "is a device node, not a symlink". I told the operator, put
+it in two worker briefs and in a PR comment. A doc-writer given the claim ran `ls -l /dev/stdin`
+on the workstation: `/dev/stdin -> fd/0`, a symlink, and `realpath` stops at `/dev/fd/0`, which
+opens. The first worker had already caught it and written the correct form into 2.31's
+occurrence note. The fix was unaffected; the explanation I gave was not.
+
+**Root cause.** Half of a two-platform comparison was measured and the other half came from
+recall, and the measured half made the whole explanation feel checked. Each side was one command
+on a machine already in reach. 1.29's rule covers claims about what code does; this was a claim
+about how an operating system behaves.
+
+**The rule.** A comparison across platforms, versions or hosts states each side from its own
+check in the same session. A side that was not checked is written `unverified:`. This widens 1.29
+from code behaviour to platform and tool behaviour.
+
+**Enforced by.** Convention. The DEVIATION RULE caught it again: a worker re-checked a fact from
+its brief and reported the contradiction. Related: 1.29, 2.31.
 
 ## 2. Tests that would have passed for the wrong reason
 
