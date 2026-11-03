@@ -48,7 +48,7 @@ pub struct GatewayBody {
 pub struct GatewayClient {
     pub name: String,
     pub tier: Option<String>,
-    pub tokens_per_hour: i64,
+    pub tokens_per_hour: u64,
     pub budget_source: BudgetSource,
     pub allowed_models: Vec<String>,
 }
@@ -73,9 +73,9 @@ pub fn not_ok_message(state: GatewayState) -> Option<String> {
     }
 }
 
-/// A token budget with thousands separators, the sign kept: `250000000` reads `250,000,000`.
-pub fn budget_text(tokens: i64) -> String {
-    let digits = tokens.unsigned_abs().to_string();
+/// A token budget with thousands separators: `250000000` reads `250,000,000`.
+pub fn budget_text(tokens: u64) -> String {
+    let digits = tokens.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
         if index > 0 && (digits.len() - index).is_multiple_of(3) {
@@ -83,11 +83,7 @@ pub fn budget_text(tokens: i64) -> String {
         }
         grouped.push(digit);
     }
-    if tokens < 0 {
-        format!("-{grouped}")
-    } else {
-        grouped
-    }
+    grouped
 }
 
 /// The small label beside a budget. `None` for a source the console does not know.
@@ -204,14 +200,27 @@ mod tests {
     }
 
     #[test]
-    fn budgets_group_by_thousands_and_keep_the_sign() {
+    fn budgets_group_by_thousands() {
         assert_eq!(budget_text(0), "0");
         assert_eq!(budget_text(999), "999");
         assert_eq!(budget_text(1000), "1,000");
         assert_eq!(budget_text(12345), "12,345");
         assert_eq!(budget_text(250_000_000), "250,000,000");
-        assert_eq!(budget_text(-1234), "-1,234");
-        assert_eq!(budget_text(i64::MIN), "-9,223,372,036,854,775,808");
+        assert_eq!(budget_text(u64::MAX), "18,446,744,073,709,551,615");
+    }
+
+    #[test]
+    fn a_budget_at_the_u64_ceiling_decodes_as_the_server_sends_it() {
+        let value = serde_json::json!({
+            "name": "ceiling",
+            "tokens_per_hour": 18446744073709551615u64
+        });
+        let client: GatewayClient = serde_json::from_value(value).expect("client");
+        assert_eq!(client.tokens_per_hour, u64::MAX);
+        assert_eq!(
+            budget_text(client.tokens_per_hour),
+            "18,446,744,073,709,551,615"
+        );
     }
 
     #[test]

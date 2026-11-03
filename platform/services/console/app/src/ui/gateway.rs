@@ -29,16 +29,15 @@ pub const LLM_ACCESS: PageMeta = PageMeta {
     id: "llm",
     title: "LLM access",
     icon: "message-square-lock",
-    purpose: "Who may call the inference gateway, which models, and the hourly token budget each client is held to. Keys are never shown.",
+    purpose: "The gateway's clients, the models each may call, and the hourly token budget each is held to. Keys are never shown.",
     authority: "agentgateway",
 };
 
 /// Why the Rotate and Revoke buttons are off: key changes arrive with proposals (Phase 4).
 const KEY_TITLE: &str = "Key changes arrive with proposals (Phase 4)";
 
-/// Shown beneath the model table: the admin identities are derived at deploy, not read here.
-const ADMIN_NOTE: &str =
-    "Admin identities are not listed here; they are derived at gateway deploy.";
+/// Shown beneath both tables: the reason some platform admins are absent from them.
+const ADMIN_NOTE: &str = "Platform admins with a personal gateway identity that is not also a listed client are not shown; the gateway enrols them at deploy with the admin tier.";
 
 /// Which of the two tables a page shows.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -119,6 +118,7 @@ fn GatewayBodyView(body: GatewayBody, panel: Panel, reason: String) -> Element {
             Panel::Models => rsx! { ModelTable { clients: body.clients, models: body.models } },
             Panel::Access => rsx! { AccessTable { clients: body.clients } },
         }
+        p { class: "hint", "{ADMIN_NOTE}" }
     }
 }
 
@@ -156,7 +156,6 @@ fn ModelTable(clients: Vec<GatewayClient>, models: Vec<String>) -> Element {
                 p { class: "empty", "The gateway serves no models." }
             }
         }
-        p { class: "hint", "{ADMIN_NOTE}" }
     }
 }
 
