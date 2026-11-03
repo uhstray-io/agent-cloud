@@ -45,7 +45,9 @@ MIN_TOKEN = 32
 _CALLER = re.compile(r"[a-z][a-z0-9-]{0,31}")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SURVEY_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
-_INTEGER = re.compile(r"-?[0-9]+")
+# The operator launcher's rule (scripts/semaphore-launch.py, typed_survey_values): no leading zeros, no "+",
+# no "-0". test_launch_gate.py asserts both accept and refuse the same values.
+_INTEGER = re.compile(r"(?:0|[1-9][0-9]*|-[1-9][0-9]*)")
 _TEMPLATE_MARKERS = ("{{", "{%", "{#")
 _REQUEST_KEYS = frozenset({"template", "survey", "agent", "workflow_id", "step", "dry_run", "proposal", "context"})
 _REQUIRED_CONFIG = frozenset(
@@ -734,9 +736,15 @@ class Gate:
         self._semaphore = semaphore
         self._opa = opa
         self._log = log if log is not None else _stdout_log
-        # The dedup read and the create run under one lock. Without it, two requests for one template can both
-        # read it idle and both create. The gate is the only launcher, so a process lock closes that window.
-        self._launch_lock = threading.Lock()
+        # The dedup read and the create run under one lock per template. Without it, two requests for one template
+        # can both read it idle and both create. The dedup compares one template_id only, so launches of different
+        # templates need no shared lock. The dict is bounded by the allowlist: a launch names an allowlisted template.
+        self._launch_locks: dict[int, threading.Lock] = {}
+        self._launch_locks_guard = threading.Lock()
+
+    def _template_lock(self, template_id: int) -> threading.Lock:
+        with self._launch_locks_guard:
+            return self._launch_locks.setdefault(template_id, threading.Lock())
 
     def handle(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
         if method == "GET" and path == "/healthz":
@@ -794,7 +802,7 @@ class Gate:
         template_id = template["id"]
         message = task_message(caller, req.workflow_id, req.step)
         body = task_body(template_id, self._config.semaphore_project, values, dry_run=req.dry_run, message=message)
-        with self._launch_lock:
+        with self._template_lock(template_id):
             busy = self._semaphore.running(template_id)
             if busy:
                 ids = ", ".join(str(task) for task in busy)
@@ -846,6 +854,10 @@ REQUEST_DEADLINE = 30.0
 # headers and body. Longer than REQUEST_DEADLINE so a body read still answers 408 before the cut.
 CONNECTION_DEADLINE = 45.0
 _READ_CHUNK = 64 * 1024
+# Bytes of an over-MAX_BODY body read and discarded before its 413, so a client that sent the body reads the
+# reply instead of a reset. Never buffered. Past the cap the reply goes out and the connection closes, so a
+# client still sending may see a reset.
+DRAIN_CAP = 1024 * 1024
 
 
 class _Watch:
@@ -1081,7 +1093,8 @@ class GateHandler(BaseHTTPRequestHandler):
                 self._reply(400, {"error": "bad_request", "detail": "Content-Length required"})
                 return
             if length > MAX_BODY:
-                # Refused unread: an oversize body is never buffered, and the gate never sees it.
+                # Never buffered, and the gate never sees it. The declared body is drained first, up to DRAIN_CAP.
+                self._drain_body(length)
                 self._reply(413, {"error": "too_large"})
                 return
             body = self._read_body(length)
@@ -1125,6 +1138,27 @@ class GateHandler(BaseHTTPRequestHandler):
             # The reply that follows writes on this socket, so the handshake-time bound is restored.
             self.request.settimeout(CONNECTION_TIMEOUT)
         return b"".join(chunks)
+
+    def _drain_body(self, length: int) -> None:
+        """Read and discard the declared body, up to DRAIN_CAP, ahead of a refusal. Each chunk is dropped as it
+        arrives. The read ends early at end of stream, at a timeout or on an OS error, and the caller's reply
+        goes out either way."""
+        remaining = min(length, DRAIN_CAP)
+        try:
+            while remaining > 0:
+                left = self._deadline - time.monotonic()
+                if left <= 0:
+                    return
+                self.request.settimeout(min(CONNECTION_TIMEOUT, left))
+                chunk = self.rfile.read1(min(remaining, _READ_CHUNK))
+                if not chunk:
+                    return
+                remaining -= len(chunk)
+        except OSError:
+            return
+        finally:
+            # The 413 that follows writes on this socket, so the handshake-time bound is restored.
+            self.request.settimeout(CONNECTION_TIMEOUT)
 
     def _reply(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")

@@ -36,8 +36,11 @@ lg = _load_gate()
 PROJECT = 2
 TEMPLATE = "Deploy agentgateway (Dev)"
 TEMPLATE_ID = 12
+OTHER_TEMPLATE = "Check o11y Liveness (Dev)"
+OTHER_TEMPLATE_ID = 13
 REPO_ID = 5
 TASK_ID = 77
+OTHER_TASK_ID = 88
 VERIFIED = "v2.19.11"
 SEMA_BASE = f"/api/project/{PROJECT}"
 TASKS = f"{SEMA_BASE}/tasks"
@@ -161,7 +164,7 @@ def _config(tmp_path, opa_url, semaphore_url):
         "semaphore_url": semaphore_url,
         "semaphore_project": PROJECT,
         "opa_url": opa_url,
-        "allowlist": [TEMPLATE],
+        "allowlist": [TEMPLATE, OTHER_TEMPLATE],
         "callers": {"skynet": ["infra-agent"], "console": []},
         "listen_host": "127.0.0.1",
         "listen_port": 8443,
@@ -628,9 +631,9 @@ def test_template_with_its_own_different_branch_is_502_and_asks_opa_nothing(worl
 
 
 def test_two_concurrent_launches_of_one_template_create_exactly_one_task(world):
-    # Both launches must read the template's tasks before either creates one. With the launch lock the second
-    # read waits for the first create, so the wait below times out and the create proceeds; without the lock the
-    # two reads both see the template idle and both creates go through.
+    # Both launches must read the template's tasks before either creates one. With the per-template lock the
+    # second read waits for the first create, so the wait below times out and the create proceeds; without the
+    # lock the two reads both see the template idle and both creates go through.
     reads = []
     created = []
     both_read = threading.Event()
@@ -663,6 +666,42 @@ def test_two_concurrent_launches_of_one_template_create_exactly_one_task(world):
     assert sorted(status for status, _ in results) == [201, 409]
     assert [payload["error"] for status, payload in results if status == 409] == ["already_running"]
     assert len(_posts(world)) == 1
+
+
+def test_launches_of_different_templates_do_not_wait_on_each_other(world):
+    # Template A's create blocks until template B has posted. B needs no lock A holds, so it posts while A is
+    # in flight. Under one lock for every template, B waits behind A, never posts during A's wait, and
+    # overlapped records False.
+    world.semaphore.routes[("GET", f"{SEMA_BASE}/templates/{OTHER_TEMPLATE_ID}")] = (
+        200,
+        {"id": OTHER_TEMPLATE_ID, "name": OTHER_TEMPLATE, "repository_id": REPO_ID, "survey_vars": []},
+        {},
+    )
+    a_posting = threading.Event()
+    b_posted = threading.Event()
+    overlapped = []
+
+    def create_task(record):
+        if record["body"]["template_id"] == TEMPLATE_ID:
+            a_posting.set()
+            overlapped.append(b_posted.wait(timeout=5))
+            return 201, {"id": TASK_ID}, {}
+        b_posted.set()
+        return 201, {"id": OTHER_TASK_ID}, {}
+
+    world.semaphore.hooks[("POST", TASKS)] = create_task
+    results = []
+    first = threading.Thread(target=lambda: results.append(world.launch(_request())))
+    first.start()
+    assert a_posting.wait(timeout=10)
+    second = threading.Thread(target=lambda: results.append(world.launch(_request(template=OTHER_TEMPLATE, survey={}))))
+    second.start()
+    for thread in (first, second):
+        thread.join(timeout=30)
+
+    assert overlapped == [True]
+    assert sorted(status for status, _ in results) == [201, 201]
+    assert sorted(record["body"]["template_id"] for record in _posts(world)) == [TEMPLATE_ID, OTHER_TEMPLATE_ID]
 
 
 # ---------- the log ----------

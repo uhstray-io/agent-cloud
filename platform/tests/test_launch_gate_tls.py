@@ -172,7 +172,7 @@ def _served_serial(port, context):
 
 
 def _send_and_read(port, context, head):
-    """Send raw request bytes over TLS, sending no body, and read the reply by its Content-Length."""
+    """Send the given request bytes over TLS in one write, and read the reply by its Content-Length."""
     tcp = socket.create_connection(("127.0.0.1", port), timeout=5)
     sock = context.wrap_socket(tcp, server_hostname="localhost")
     response = http.client.HTTPResponse(sock)
@@ -300,10 +300,43 @@ def test_body_at_the_cap_is_read_and_is_not_refused(listener):
     assert len(listener.gate.calls[0][3]) == lg.MAX_BODY
 
 
-def test_oversize_body_is_refused_before_it_is_read(listener):
-    # Headers only: the server must answer without reading, or this read times out and the test fails.
+def test_oversize_body_is_drained_and_refused_before_the_gate(listener):
+    # The 413 waits for the declared body: with all but its last byte sent, the server is still reading and
+    # has replied nothing. Sending the last byte then brings the 413, so no reset can stand in for it.
+    body = b"x" * (lg.MAX_BODY + 1)
+    head = f"POST /v1/launch HTTP/1.1\r\nHost: localhost\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+    tcp = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
+    sock = listener.client_context().wrap_socket(tcp, server_hostname="localhost")
+    try:
+        sock.sendall(head + body[:-1])
+        sock.settimeout(0.5)
+        with pytest.raises(TimeoutError):
+            sock.recv(4096)
+        sock.settimeout(5)
+        sock.sendall(body[-1:])
+        response = http.client.HTTPResponse(sock)
+        response.begin()
+        assert (response.status, json.loads(response.read())) == (413, {"error": "too_large"})
+        response.close()
+    finally:
+        sock.close()
+    assert listener.gate.calls == []
+
+
+def test_oversize_body_never_sent_is_refused_once_the_drain_gives_up(listener, monkeypatch):
+    # No body arrives at all: the drain stops at its first read timeout, and the 413 still goes out.
+    monkeypatch.setattr(lg, "CONNECTION_TIMEOUT", 0.5)
     head = f"POST /v1/launch HTTP/1.1\r\nHost: localhost\r\nContent-Length: {lg.MAX_BODY + 1}\r\n\r\n".encode()
     status, body = _send_and_read(listener.port, listener.client_context(), head)
+    assert (status, json.loads(body)) == (413, {"error": "too_large"})
+    assert listener.gate.calls == []
+
+
+def test_oversize_body_is_read_only_up_to_the_drain_cap(listener):
+    # The declared body is one byte past the cap and the client sends exactly the cap. A drain that read past it
+    # would wait for that byte, and the reply would miss the client's timeout.
+    head = f"POST /v1/launch HTTP/1.1\r\nHost: localhost\r\nContent-Length: {lg.DRAIN_CAP + 1}\r\n\r\n".encode()
+    status, body = _send_and_read(listener.port, listener.client_context(), head + b"x" * lg.DRAIN_CAP)
     assert (status, json.loads(body)) == (413, {"error": "too_large"})
     assert listener.gate.calls == []
 

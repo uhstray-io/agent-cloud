@@ -703,15 +703,31 @@ def test_merge_survey_unreadable_survey_fields_refused(survey_vars):
 
 
 @pytest.mark.parametrize("kind", ["int", "integer"])
-@pytest.mark.parametrize("value", ["5", "0", "-7", "007", "123456789012345678901234567890"])
-def test_integer_field_accepts_plain_digits_with_an_optional_minus(kind, value):
+@pytest.mark.parametrize("value", ["5", "0", "7", "-7", "123456789012345678901234567890"])
+def test_integer_field_accepts_canonical_integers(kind, value):
     assert lg.merge_survey(_tpl([{"name": "n", "type": kind}]), {"n": value}) == {"n": value}
 
 
 @pytest.mark.parametrize("kind", ["int", "integer"])
 @pytest.mark.parametrize(
     "value",
-    ["1.5", "x", "+1", "", "-", "--1", " 5", "5 ", "5\n", "1_0", "١٢"],  # last: Arabic-Indic digits
+    [
+        "1.5",
+        "x",
+        "+1",
+        "",
+        "-",
+        "--1",
+        " 5",
+        "5 ",
+        "5\n",
+        "1_0",
+        "١٢",  # Arabic-Indic digits
+        "007",  # leading zeros: the launcher's rule is canonical integers only
+        "01",
+        "-0",
+        "-007",
+    ],
 )
 def test_integer_field_refuses_anything_else_and_names_only_the_field(kind, value):
     with pytest.raises(lg.Refusal) as info:

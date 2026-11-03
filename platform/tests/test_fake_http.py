@@ -18,12 +18,11 @@ STANDALONE_HANDLERS = {
     "scripts/fake-inference-upstream.py": "standalone local-dev upstream; do_POST reads the body first",
 }
 
-# Production servers, not fakes: they cannot import a test helper, and they may refuse a body unread on
-# purpose (a size cap must not buffer what it refuses). Each must still read the body on its accepting path
-# (checked below: the class reads `rfile`).
+# Production servers, not fakes: they cannot import a test helper. Each must read the request body itself
+# (checked below), and a refusal may drain a body only up to a cap, never buffer it.
 PRODUCTION_HANDLERS = {
     "platform/services/launch-gate/deployment/app/launch_gate.py": (
-        "the launch gate; reads a POST body in _read_body, refuses one over MAX_BODY unread (413) and closes"
+        "the launch gate; reads a POST body in _read_body, drains an over-MAX_BODY body up to DRAIN_CAP before its 413"
     ),
 }
 
@@ -112,12 +111,16 @@ def _used_after_close(func):
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             made.add(node.targets[0].id)
             # A port, or a string built around one; a call's result (a process run) is not a port.
-            for sub in ([] if isinstance(node.value, ast.Call) else ast.walk(node.value)):
+            for sub in [] if isinstance(node.value, ast.Call) else ast.walk(node.value):
                 if isinstance(sub, ast.Attribute) and sub.attr in PORT_READS and isinstance(sub.value, ast.Name):
                     # Every assignment counts: a name set in two branches has two origins.
                     derived.setdefault(node.targets[0].id, []).append((node.lineno, sub.value.id))
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr in CLOSE_CALLS and isinstance(node.func.value, ast.Name)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in CLOSE_CALLS
+            and isinstance(node.func.value, ast.Name)
+        ):
             closes.append((node.lineno, node.func.value.id))
             receivers.add(id(node.func.value))
         if isinstance(node, ast.Attribute) and node.attr in PORT_READS and isinstance(node.value, ast.Name):
@@ -156,15 +159,17 @@ def test_the_guard_flags_each_freed_port_shape():
     shapes = {
         "server stopped, then passed on": "def t(g):\n    s = g()\n    s.stop()\n    run(s)\n",
         "port read, then server closed": (
-            "def t(g):\n    s = g()\n    port = s.server_port\n    s.shutdown()\n    s.server_close()\n"
-            "    run(port)\n"),
+            "def t(g):\n    s = g()\n    port = s.server_port\n    s.shutdown()\n    s.server_close()\n    run(port)\n"
+        ),
         "one name set in two branches, one from a closed socket": (
             "def t(open_):\n    l = socket.socket()\n    if open_:\n        port = l.getsockname()[1]\n"
             "    else:\n        c = socket.socket()\n        port = c.getsockname()[1]\n        c.close()\n"
-            "    run(port)\n"),
+            "    run(port)\n"
+        ),
         "socket closed, port returned": (
             "def t():\n    c = socket.socket()\n    c.bind(('127.0.0.1', 0))\n    port = c.getsockname()[1]\n"
-            "    c.close()\n    return port\n"),
+            "    c.close()\n    return port\n"
+        ),
     }
     for label, source in shapes.items():
         func = ast.parse(source).body[0]
@@ -175,10 +180,12 @@ def test_the_guard_flags_each_freed_port_shape():
         "a module function, not a socket": "def t():\n    fd = os.open('x', 0)\n    os.close(fd)\n    os.stat('x')\n",
         "a result read after the server stopped": (
             "def t(g):\n    s = g()\n    proc = run(f'http://127.0.0.1:{s.server_port}')\n    s.stop()\n"
-            "    assert proc.returncode\n"),
+            "    assert proc.returncode\n"
+        ),
         "a server thread that closes its own listener": (
             "def t():\n    l = socket.socket()\n    port = l.getsockname()[1]\n"
-            "    def serve():\n        l.close()\n    yield port\n"),
+            "    def serve():\n        l.close()\n    yield port\n"
+        ),
     }
     for label, source in allowed.items():
         assert not _used_after_close(ast.parse(source).body[0]), label
@@ -198,8 +205,7 @@ def test_refused_port_refuses_at_once_and_is_never_handed_out():
             handed.add(s.getsockname()[1])
     assert REFUSED_PORT not in handed and min(handed) > 1023
     # Tests name `localhost` as well as 127.0.0.1: every address it resolves to must refuse.
-    for family, _type, _proto, _name, address in socket.getaddrinfo("localhost", REFUSED_PORT,
-                                                                     type=socket.SOCK_STREAM):
+    for family, _type, _proto, _name, address in socket.getaddrinfo("localhost", REFUSED_PORT, type=socket.SOCK_STREAM):
         with socket.socket(family) as probe:
             probe.settimeout(2)
             try:
@@ -207,8 +213,11 @@ def test_refused_port_refuses_at_once_and_is_never_handed_out():
             except ConnectionRefusedError:
                 continue
             except OSError as error:  # no usable IPv6 loopback: nothing can listen there either
-                if family == socket.AF_INET6 and error.errno in (errno.EADDRNOTAVAIL, errno.ENETUNREACH,
-                                                                errno.EAFNOSUPPORT):
+                if family == socket.AF_INET6 and error.errno in (
+                    errno.EADDRNOTAVAIL,
+                    errno.ENETUNREACH,
+                    errno.EAFNOSUPPORT,
+                ):
                     continue
                 raise
             raise AssertionError(f"localhost address {address} accepted a connection on port {REFUSED_PORT}")
