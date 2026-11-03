@@ -39,10 +39,13 @@ pub struct PveGuest {
 pub struct ProxmoxData {
     pub nodes: Vec<PveNode>,
     pub guests: Vec<PveGuest>,
-    /// The cluster's name as `GET /api2/json/cluster/status` gives it. `None` when that read
-    /// failed, or the API names no cluster (a standalone node). The inventory matches it to a
-    /// NetBox cluster's name to decide which nodes that cluster lists.
+    /// The cluster's name as `GET /api2/json/cluster/status` gives it. `None` when the API names
+    /// no cluster (a standalone node), or when that read failed (see `cluster_name_error`). The
+    /// inventory matches it to a NetBox cluster's name to decide which nodes that cluster lists.
     pub cluster_name: Option<String>,
+    /// Why the name read failed. The source is still `ok`; this reaches platform admins only.
+    /// `FetchError` names the failure and its HTTP code, never a URL or a body.
+    pub cluster_name_error: Option<FetchError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +86,10 @@ pub async fn fetch(
         .await
         .map_err(transport_error)?;
     let mut data = parse_resources(&body)?;
-    data.cluster_name = cluster_name(http, config).await;
+    match cluster_name(http, config).await {
+        Ok(name) => data.cluster_name = name,
+        Err(err) => data.cluster_name_error = Some(err),
+    }
     Ok(data)
 }
 
@@ -110,10 +116,16 @@ async fn get(
     Ok(response)
 }
 
-/// The cluster's name from `cluster/status`, or `None` when that read fails.
-async fn cluster_name(http: &reqwest::Client, config: &ProxmoxConfig) -> Option<String> {
-    let response = get(http, config, "/api2/json/cluster/status").await.ok()?;
-    let body = response.bytes().await.ok()?;
+/// The cluster's name from `cluster/status`. `Ok(None)` when the API names no cluster.
+async fn cluster_name(
+    http: &reqwest::Client,
+    config: &ProxmoxConfig,
+) -> Result<Option<String>, FetchError> {
+    let body = get(http, config, "/api2/json/cluster/status")
+        .await?
+        .bytes()
+        .await
+        .map_err(transport_error)?;
     parse_cluster_name(&body)
 }
 
@@ -153,15 +165,15 @@ pub fn parse_resources(body: &[u8]) -> Result<ProxmoxData, FetchError> {
     Ok(data)
 }
 
-/// The name of the cluster entry in a `cluster/status` answer. `None` when the body does not
-/// decode, or has no cluster entry: a standalone node reports none.
-pub fn parse_cluster_name(body: &[u8]) -> Option<String> {
-    let envelope: StatusEnvelope = serde_json::from_slice(body).ok()?;
-    envelope
+/// The name of the cluster entry in a `cluster/status` answer. `Ok(None)` when the answer has no
+/// cluster entry, as a standalone node's does. `Err(Decode)` when the body does not decode.
+pub fn parse_cluster_name(body: &[u8]) -> Result<Option<String>, FetchError> {
+    let envelope: StatusEnvelope = serde_json::from_slice(body).map_err(|_| FetchError::Decode)?;
+    Ok(envelope
         .data
         .into_iter()
-        .find(|entry| entry.kind.as_deref() == Some("cluster"))?
-        .name
+        .find(|entry| entry.kind.as_deref() == Some("cluster"))
+        .and_then(|entry| entry.name))
 }
 
 /// reqwest's own Display names the request URL, so it is classified, not shown.
@@ -408,14 +420,19 @@ mod tests {
             {"type":"node","name":"pve-01","online":1},
             {"type":"cluster","name":"uhstray-cluster","nodes":11,"quorate":1}
         ]}"#;
-        assert_eq!(parse_cluster_name(body).as_deref(), Some("uhstray-cluster"));
+        assert_eq!(
+            parse_cluster_name(body),
+            Ok(Some("uhstray-cluster".to_string()))
+        );
     }
 
     #[test]
-    fn a_standalone_node_or_an_undecodable_body_names_no_cluster() {
+    fn a_standalone_node_names_no_cluster_and_an_undecodable_body_is_a_decode_error() {
         let standalone = br#"{"data":[{"type":"node","name":"pve-01","online":1}]}"#;
-        assert_eq!(parse_cluster_name(standalone), None);
-        assert_eq!(parse_cluster_name(b"{\"data\": not json"), None);
+        assert_eq!(parse_cluster_name(standalone), Ok(None));
+        let err = parse_cluster_name(b"{\"data\": not json secret=leaked").expect_err("decode");
+        assert_eq!(err, FetchError::Decode);
+        assert!(!err.to_string().contains("leaked"));
     }
 
     #[tokio::test]
@@ -427,10 +444,11 @@ mod tests {
         assert_eq!(data.nodes.len(), 3);
         assert_eq!(data.guests.len(), 4);
         assert_eq!(data.cluster_name.as_deref(), Some(CLUSTER));
+        assert_eq!(data.cluster_name_error, None);
     }
 
     #[tokio::test]
-    async fn a_failed_cluster_name_read_leaves_the_name_unknown_and_the_resources_read() {
+    async fn a_failed_cluster_name_read_leaves_the_name_unknown_and_names_only_the_status() {
         let mock = Mock::default();
         mock.fail_status
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -439,6 +457,11 @@ mod tests {
             .await
             .expect("the resources read still succeeds");
         assert_eq!(data.cluster_name, None);
+        assert_eq!(data.cluster_name_error, Some(FetchError::Status(500)));
+        assert_eq!(
+            data.cluster_name_error.as_ref().map(ToString::to_string),
+            Some("Proxmox answered HTTP 500".to_string())
+        );
         assert_eq!(data.nodes.len(), 3);
         assert_eq!(data.guests.len(), 4);
     }
