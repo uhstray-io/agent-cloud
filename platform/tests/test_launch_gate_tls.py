@@ -536,6 +536,22 @@ def test_a_cut_that_starts_after_the_disarm_does_nothing(listener, monkeypatch):
         right.close()
 
 
+def test_a_cut_that_ran_first_is_reported_by_the_disarm(listener, monkeypatch):
+    # The other order: the watchdog cut before the handler disarmed. disarm() must say so, or _dispatch would
+    # hand a request read up to the cut (http.server takes end-of-stream as the end of the headers) to the gate.
+    left, right = socket.socketpair()
+    watch = lg._Watch()
+    listener.server._watch.timer = None
+    listener.server._watch.state = watch
+    monkeypatch.setattr(lg.socket.socket, "shutdown", lambda sock, how: None)
+    try:
+        lg._cut(left, watch)
+        assert listener.server.disarm() is True
+    finally:
+        left.close()
+        right.close()
+
+
 def test_a_read_that_runs_out_the_request_deadline_is_answered_408(listener, monkeypatch):
     monkeypatch.setattr(lg, "REQUEST_DEADLINE", 1.0)
     # The headers and the first body byte arrive, then silence: the server's read of the rest is bounded by the
