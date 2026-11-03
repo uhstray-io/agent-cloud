@@ -53,6 +53,13 @@ See proposal.md (Why). Facts that shape the approach:
    *Alternative:* a hand-maintained list: drifts from policy.
 4. **Survey declarations read live from Semaphore** (`GET /api/project/{p}/templates`), the published
    catalog being the authority on what a template declares, exactly as skynet's client does today.
+   The template's branch comes from the same place: the gate lists `GET /api/project/{p}/repositories`
+   and takes `git_branch` from the record whose id is the template's `repository_id`. Both are GET
+   routes, which Semaphore v2.19.11 serves to any project member (`api/projects/project.go:97`,
+   `GetMustCanMiddleware` refuses only non-GET methods), so `task_runner` can read them.
+   Check order, cheapest refusal first: bearer token, request shape and literal-value rules, agent
+   binding, allowlist; then the template read, declared and required fields, the repository read, the
+   check-mode version check, OPA, the running-task check, and the POST.
 5. **Value rules:** strings only, at most 4096 characters, no `{{`, `{%` or `{#` anywhere. The task body
    is built by the gate from scratch: `template_id`, `environment` (the validated survey JSON),
    `message`, and `params` (`dry_run`, `diff`) only; no `arguments`, `limit`, `inventory_id`, tags.
@@ -89,6 +96,14 @@ See proposal.md (Why). Facts that shape the approach:
   leaves OpenBao and the gate's `.env`.
 - [A literal survey value used unsafely inside an allowlisted playbook] → The allowlist is the OPA
   catalog, every addition is reviewed; OPA receives the exact values and can bound them.
+- [`context` is caller-supplied and some rules read it (the firewall rules compare proposals against
+  `context.controller_cidr`, the access rules against `context.groups`)] → The gate forwards it
+  unchanged, so a caller can shape the facts those rules judge. Acceptable while skynet is the only
+  caller and its context comes from snapshots it read; a follow-up should have the gate, or OPA's own
+  data, supply those facts instead.
+- [OPA input fields the caller could forge] → The gate builds the input from scratch: `service`,
+  `action` and `human_approved: false` are fixed, `agent` comes from the token map, and only
+  `proposal` and `context` are taken from the request. A caller cannot set `human_approved`.
 - [Single point of failure for agent launches] → Fails closed (no launch); skynet records `fail` and
   stops; health and service checks cover the gate like any service.
 - [OPA still writable until the prerequisite lands] → Deploying the gate to production waits for OPA
