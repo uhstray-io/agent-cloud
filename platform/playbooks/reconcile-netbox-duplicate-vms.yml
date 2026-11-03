@@ -40,7 +40,20 @@
 # names; the ac_* values and the custom_fields dicts live only in no_log facts.
 #
 # Token: secret/services/netbox:vm_reconciler_api_token, minted by Provision NetBox Automation
-# Token with Token profile = vm-reconciler (view and change and delete virtual machines).
+# Token with Token profile = vm-reconciler. Its grants are split (provision-netbox-automation-token.yml):
+# view on virtual machines and their interfaces, clusters and tenants; change only a discovery record
+# (comments start with VMID:, vcpus set); delete only a bare record (marker description, no vcpus, no
+# comments). A run converges the token's user to exactly those permissions.
+#
+# Trade-off (accepted): the changelog view is UNCONSTRAINED. NetBox v4.5.0's ObjectChangeViewSet is a plain
+# DRF viewset that never calls restrict(), and has_perm ignores constraints (netbox/core/api/views.py,
+# netbox/netbox/authentication/__init__.py), so a constraint there would restrict nothing. The token can therefore
+# read every changelog entry, not only the virtual machines' create entries. The provenance gate proves origin
+# from the entries it reads; it does not limit what the token reads. Revisit when NetBox restricts that endpoint.
+#
+# Retention: NetBox keeps changelog entries CHANGELOG_RETENTION days (default 90, netbox/netbox/config/parameters.py)
+# and prunes older ones. A pair whose creation entry was pruned is reported `unverified origin` and is never
+# reconciled, so the first real run should confirm the production value.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
