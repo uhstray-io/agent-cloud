@@ -10,6 +10,7 @@ pub mod openbao;
 pub mod prefs;
 pub mod proxmox;
 pub mod scope;
+pub mod secrets;
 pub mod semaphore;
 pub mod sessions;
 pub mod work;
@@ -54,9 +55,10 @@ pub struct AppState {
     pub flows: inventory::FlowSet,
     /// OpenBao client for run-time reads (plan 17 D27). Logs in on first use, never at boot.
     /// `None` when `CONSOLE_OPENBAO_*` is unset.
-    // Consumed by the 8.1 Secrets page.
-    #[allow(dead_code)]
     pub openbao: Option<openbao::Openbao>,
+    /// The OpenBao metadata walk for the Secrets page (plan 17 D35). The refresh task writes it;
+    /// `/v1/secrets` only reads it.
+    pub secrets: tokio::sync::RwLock<secrets::SecretsCache>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -106,6 +108,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         ),
         None => None,
     };
+    let secrets_cache = secrets::SecretsCache::new(openbao.is_some());
     let inventory_cache =
         inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
@@ -126,6 +129,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         proxmox_http,
         flows,
         openbao,
+        secrets: tokio::sync::RwLock::new(secrets_cache),
     }))
 }
 
@@ -231,6 +235,7 @@ pub fn api_router(state: SharedState) -> Router {
         )
         .route("/v1/network", get(inventory::get_network))
         .route("/v1/flows", get(inventory::get_flows))
+        .route("/v1/secrets", get(secrets::get_secrets))
         .route("/v1/{*rest}", any(api::v1_unmatched))
         .with_state(state)
 }
@@ -303,6 +308,7 @@ mod tests {
             proxmox_http: reqwest::Client::new(),
             flows: inventory::FlowSet::unconfigured(),
             openbao: None,
+            secrets: tokio::sync::RwLock::new(secrets::SecretsCache::new(false)),
         })
     }
 
@@ -434,6 +440,7 @@ mod tests {
             "/v1/tenants/acme/services/tududi",
             "/v1/network",
             "/v1/flows",
+            "/v1/secrets",
             "/v1/nope",
         ] {
             let reply = call(addr, "GET", path, None, "").await;
@@ -892,6 +899,7 @@ mod tests {
             ("auth.rs", include_str!("auth.rs")),
             ("work.rs", include_str!("work.rs")),
             ("openbao.rs", include_str!("openbao.rs")),
+            ("secrets.rs", include_str!("secrets.rs")),
         ] {
             assert!(!text.contains(needle), "{file} turns verification off");
         }

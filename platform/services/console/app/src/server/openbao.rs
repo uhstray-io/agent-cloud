@@ -113,16 +113,19 @@ impl Openbao {
         })
     }
 
-    /// The keys under `secret/metadata/<path>`. OpenBao answers 404 for a LIST with no keys, which
-    /// is an empty list here. Every other status is an error.
-    // Consumed by the 8.1 Secrets page.
-    #[allow(dead_code)]
+    /// The keys under `secret/metadata/<path>`. An empty `path` lists the KV root,
+    /// `secret/metadata/`, the one place an empty path is allowed. OpenBao answers 404 for a LIST
+    /// with no keys, which is an empty list here. Every other status is an error.
     pub async fn list_metadata(
         &self,
         http: &reqwest::Client,
         path: &str,
     ) -> Result<Vec<String>, OpenbaoError> {
-        let mut url = self.url(&["v1", "secret", "metadata"], path)?;
+        let mut url = if path.is_empty() {
+            self.build(&["v1", "secret", "metadata"], &[""])?
+        } else {
+            self.url(&["v1", "secret", "metadata"], path)?
+        };
         url.query_pairs_mut().append_pair("list", "true");
         let body = match self.read(http, url).await {
             Ok(body) => body,
@@ -139,8 +142,6 @@ impl Openbao {
     }
 
     /// The `data` object of `GET secret/metadata/<path>`: versions and timestamps, never values.
-    // Consumed by the 8.1 Secrets page.
-    #[allow(dead_code)]
     pub async fn read_metadata(
         &self,
         http: &reqwest::Client,
@@ -152,7 +153,7 @@ impl Openbao {
     }
 
     /// The `data.data` object at `secret/data/services/console/<name>`: the secret values.
-    // Consumed by the 8.1 Secrets page.
+    // Consumed by the GitHub token read (Phase 6).
     #[allow(dead_code)]
     pub async fn read_console_secret(
         &self,
@@ -254,6 +255,12 @@ impl Openbao {
         if segments.iter().any(|segment| is_unsafe_segment(segment)) {
             return Err(OpenbaoError::BadPath);
         }
+        self.build(prefix, &segments)
+    }
+
+    /// `prefix` followed by `segments`, as given. Only `url` and the KV root LIST build URLs, and
+    /// each checks its own segments first.
+    fn build(&self, prefix: &[&str], segments: &[&str]) -> Result<reqwest::Url, OpenbaoError> {
         let mut url = self.base.clone();
         url.path_segments_mut()
             .map_err(|()| OpenbaoError::Url)?
@@ -398,6 +405,10 @@ mod tests {
         let path = uri.path();
         let listing = uri.query() == Some("list=true");
         let (status, body) = match (listing, path) {
+            (true, "/v1/secret/metadata/") => (
+                StatusCode::OK,
+                json!({"data": {"keys": ["services/", "top"]}}),
+            ),
             (true, "/v1/secret/metadata/services/console") => (
                 StatusCode::OK,
                 json!({"data": {"keys": ["alpha", "beta/"]}}),
@@ -608,6 +619,7 @@ mod tests {
             "/v1/secret/metadata/services/a%3Fx%23y%25z"
         );
 
+        // A read of the KV root is refused: only LIST may name the root.
         for bad in [
             "",
             "services//x",
@@ -621,8 +633,8 @@ mod tests {
             let err = bao
                 .read_metadata(&http, bad)
                 .await
-                .expect_err("bad path must fail");
-            assert_eq!(err, OpenbaoError::BadPath, "{bad:?}");
+                .expect_err("bad read path must fail");
+            assert_eq!(err, OpenbaoError::BadPath, "read {bad:?}");
         }
         let err = bao
             .read_console_secret(&http, "..")
@@ -630,8 +642,33 @@ mod tests {
             .expect_err("dot segment must fail");
         assert_eq!(err, OpenbaoError::BadPath);
 
-        // Only the one valid read reached the server, and the bad paths logged in never.
-        assert_eq!(count(&fake.reads), 1);
+        // The one empty path that is allowed: LIST of the KV root, with its trailing slash.
+        let keys = bao
+            .list_metadata(&http, "")
+            .await
+            .expect("root list is allowed");
+        assert_eq!(keys, ["services/", "top"]);
+        assert_eq!(last_path(&fake), "/v1/secret/metadata/?list=true");
+
+        // Every other bad path is still refused by LIST, before any request.
+        for bad in [
+            "services//x",
+            "services/../x",
+            "./x",
+            "services/.",
+            "services/%2e%2e/x",
+            "services/.%2E",
+            "%2E/x",
+        ] {
+            let err = bao
+                .list_metadata(&http, bad)
+                .await
+                .expect_err("bad list path must fail");
+            assert_eq!(err, OpenbaoError::BadPath, "list {bad:?}");
+        }
+
+        // Only the valid read and the root LIST reached the server, and the bad paths logged in never.
+        assert_eq!(count(&fake.reads), 2);
         assert_eq!(count(&fake.logins), 1);
     }
 
