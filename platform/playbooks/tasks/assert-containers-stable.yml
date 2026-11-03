@@ -85,7 +85,9 @@
         {%- set f = line.split('|') -%}
         {%- set prev = before.get(f[0]) -%}
         {%- if f[4] == 'true' -%}
-          {%- if f[2] != '0' -%}
+          {%- if f[1] != 'exited' -%}
+            {%- set _ = ns.out.append(f[0] ~ ': one-shot not finished (' ~ f[1] ~ ')') -%}
+          {%- elif f[2] != '0' -%}
             {%- set _ = ns.out.append(f[0] ~ ': one-shot exited ' ~ f[2]) -%}
           {%- endif -%}
         {%- elif f[1] != 'running' -%}

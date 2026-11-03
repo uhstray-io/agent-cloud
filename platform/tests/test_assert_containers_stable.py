@@ -125,6 +125,15 @@ def test_a_declared_one_shot_that_exited_nonzero_fails(tmp_path):
 
 
 @needs_ansible
+@pytest.mark.parametrize("status", ["running", "created"])
+def test_a_declared_one_shot_that_has_not_finished_fails(tmp_path, status):
+    # Exit code 0 is the engine's value before a container has ever exited (PR 841 review).
+    same = [f"plane-migrator|{status}|0|0|true"]
+    assert decide(tmp_path, same, same) == {"problems": f"plane-migrator: one-shot not finished ({status})",
+                                            "ok": False}
+
+
+@needs_ansible
 def test_a_container_missing_from_the_first_pass_fails(tmp_path):
     first = ["plane-api|running|0|0|"]
     second = ["plane-api|running|0|0|", "plane-web|running|0|0|"]

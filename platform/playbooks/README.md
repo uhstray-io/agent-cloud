@@ -381,6 +381,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/deploy-orb-agent.yml` | Implemented | Start privileged orb-agent with vault-integrated agent.yaml config |
 | `tasks/clean-service.yml` | Implemented | Destroy containers, volumes, runtime dir, and clone for full rebuild. Refuses first unless `-e confirm_reset=<host>` names the play's host(s) (`tasks/assert-reset-confirmed.yml`) |
 | `tasks/assert-reset-confirmed.yml` | Implemented | Destructive-reset confirmation: `confirm_reset` must equal the play's host list from `ansible_play_hosts_all` (sorted, comma-joined), never `inventory_hostname`, which an extra var can set |
+| `tasks/assert-containers-stable.yml` | Implemented | Deploy verify: every container of the service is running (a declared one-shot exited 0) and no restart count climbs across a settle window (`_acs_settle_seconds`, default 30). A read, so it runs under `--check`. Wired into Deploy Plane (`docs/MISTAKES.md` 2.34) |
 | `tasks/clone-and-deploy.yml` | Legacy | Clone monorepo, symlink, run deploy.sh, health check (used by legacy services) |
 | `tasks/apply-openbao-policy.yml` | Implemented | Apply a single OpenBao policy from an .hcl file |
 | `tasks/seed-discovery-credential.yml` | Implemented | Copy/update one credential set at a discovery/* vault path |
