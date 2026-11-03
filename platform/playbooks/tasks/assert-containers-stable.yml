@@ -1,0 +1,101 @@
+---
+# assert-containers-stable.yml — every container one service's compose project created is running
+# (a declared one-shot may have exited 0), and none is crash-looping.
+#
+# Why (MISTAKES 2.34): Deploy Plane's verify probed only the API through the proxy. On Semaphore task
+# 11958 a container (plane_runner_1, restart policy always) exited 127 and restarted 453 times while
+# the step result read `pass` and "plane healthy". Under `always` a crash loop shows as Up between
+# restarts, so one healthy endpoint proves one path, not the stack.
+#
+# Caller passes:  _acs_settle_seconds  seconds between the two reads (default 30). The restart count
+#                                      is compared across that window. A loop whose restart falls
+#                                      outside it is still caught when the second read finds the
+#                                      container not running; a container that reads running both
+#                                      times with no restart in the window is not.
+# Refuses:        an empty or failed container listing; a failed inspect; any container that is not
+#                 running at the second read (a declared one-shot excepted, when it exited 0); a restart
+#                 count that grew across the window; a container with no reading from the first pass.
+# Reads:          name, state, exit code, restart count and the one-shot label. No environment, no logs,
+#                 no engine error text: Semaphore stores task output durably with no redaction. The same
+#                 rule as inspect-service-runtime.yml.
+# Changes:        nothing. Both reads run in check mode too (check_mode: false).
+# Engine:         as list-service-containers.yml (container_engine; podman_rootful means become).
+
+- name: "Containers: list every container of this service, stopped ones included"
+  ansible.builtin.include_tasks: list-service-containers.yml
+  vars:
+    _lsc_fields: [Names]
+    _lsc_all: true
+
+- name: "Containers: require a successful, nonempty listing"
+  ansible.builtin.assert:
+    that:
+      - _lsc.rc == 0
+      - _lsc.stdout_lines | length > 0
+    fail_msg: "Service container listing failed or was empty (rc={{ _lsc.rc }})."
+
+- name: "Containers: read each one twice, with the settle window between"
+  vars:
+    # One inspect for every container: name|status|exit code|restart count|one-shot label.
+    _acs_format: >-
+      {{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.State.Status{{ '}}' }}|{{ '{{' }}.State.ExitCode{{ '}}' }}|{{ '{{' }}.RestartCount{{ '}}' }}|{{ '{{' }}index .Config.Labels "agent-cloud.one-shot"{{ '}}' }}
+  block:
+    - name: "Containers: state, exit code and restart count (first pass)"
+      ansible.builtin.command:
+        argv: "{{ [_engine, 'inspect', '--format', _acs_format] + _lsc.stdout_lines }}"
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _acs_first
+      changed_when: false
+      check_mode: false
+
+    - name: "Containers: settle window"
+      ansible.builtin.pause:
+        seconds: "{{ _acs_settle_seconds | default(30) | int }}"
+
+    - name: "Containers: state, exit code and restart count (second pass)"
+      ansible.builtin.command:
+        argv: "{{ [_engine, 'inspect', '--format', _acs_format] + _lsc.stdout_lines }}"
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _acs_second
+      changed_when: false
+      check_mode: false
+
+- name: "Containers: find stopped, failed or restarting ones"
+  # The one place the rule lives. Empty when every container is stable; otherwise the problems,
+  # joined by "; ". Pure Jinja over the two readings, so a test can run it on synthetic input.
+  ansible.builtin.set_fact:
+    _acs_problems: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- set before = {} -%}
+      {%- for line in _acs_first.stdout_lines -%}
+        {%- set _ = before.update({line.split('|')[0]: line.split('|')}) -%}
+      {%- endfor -%}
+      {%- for line in _acs_second.stdout_lines -%}
+        {%- set f = line.split('|') -%}
+        {%- set prev = before.get(f[0]) -%}
+        {%- if f[4] == 'true' -%}
+          {%- if f[2] != '0' -%}
+            {%- set _ = ns.out.append(f[0] ~ ': one-shot exited ' ~ f[2]) -%}
+          {%- endif -%}
+        {%- elif f[1] != 'running' -%}
+          {%- set _ = ns.out.append(f[0] ~ ': ' ~ f[1] ~ ' (exit ' ~ f[2] ~ ')') -%}
+        {%- elif prev is none -%}
+          {%- set _ = ns.out.append(f[0] ~ ': not read in the first pass') -%}
+        {%- elif (f[3] | int) > (prev[3] | int) -%}
+          {%- set _ = ns.out.append(f[0] ~ ': restarted ' ~ ((f[3] | int) - (prev[3] | int)) ~ ' times in ' ~ (_acs_settle_seconds | default(30) | int) ~ 's') -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out | join('; ') }}
+
+- name: "Containers: every container is running and none is crash-looping"
+  ansible.builtin.assert:
+    that:
+      - _acs_problems | trim | length == 0
+    fail_msg: >-
+      Containers not stable over the settle window: {{ _acs_problems | trim }}.
+      An API probe cannot see a container that restarts under its policy (MISTAKES 2.34).
+      Diagnose with the Inspect Service Runtime template: state, exit code and restart count, no environment or logs.
+
+- name: "Containers: stable"
+  ansible.builtin.debug:
+    msg: "{{ _acs_second.stdout_lines | length }} containers stable over {{ _acs_settle_seconds | default(30) }}s"

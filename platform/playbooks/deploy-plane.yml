@@ -425,6 +425,12 @@
       until: _plane_verify.rc == 0
       check_mode: false
 
+    # MISTAKES 2.34: the probe above reaches one path. This proves every container the plane's compose
+    # project created is running (a declared one-shot may have exited 0) and none is restarting under
+    # its policy, since a crash loop shows as Up between restarts. Not gated: the verify always runs.
+    - name: "Every container is running and stable (no crash loop)"
+      ansible.builtin.include_tasks: tasks/assert-containers-stable.yml
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-

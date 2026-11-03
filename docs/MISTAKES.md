@@ -92,6 +92,7 @@ and why.
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 1 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
 | 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
+| 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -2258,6 +2259,29 @@ objects the function assigns itself: a fixture parameter that is stopped and the
 `with socket.socket() as s:` and used after the block, is not caught (no such site exists today). Also not
 covered: `test_nemoclaw_policy.py::_candidate_port()` and `test_agw_stream_usage.py::_free_port()` hand a freed
 port to a process that binds it, a different race (the first says so in its docstring).
+
+### 2.34 A deploy verify reported healthy over a crash-looping container
+
+**What happened.** Semaphore task 11958 (Deploy Plane (Dev), 2026-11-03) recorded the service-deploy step as `pass`
+and the Report line as "plane healthy". In that run, container `plane_runner_1` (image
+`makeplane/node-runner-commercial:v3.3.3`, restart policy `always`) had a RestartCount of 453. Each start exited 127
+with "Fatal glibc error: CPU does not support x86-64-v3". The runner image needs x86-64-v3, and the VM's CPU model
+is qemu64. The verify (`deploy-plane.yml`, Phase 4) probed only `/api/instances/` through the proxy, and that answered.
+
+**Root cause.** The verify proved one path, the API through the proxy, and treated that as proof of the whole plane.
+Under restart policy `always` a crash-looping container reads as `Up` between restarts, so a single status read
+cannot show it, and no Phase 4 step read the state of any container the probe did not reach.
+
+**The rule.** A deploy verify asserts that every container its compose project created is running, and that no
+restart count grows across a settle window, before it records a pass. A container declared one-shot
+(`agent-cloud.one-shot`) counts as finished on exit 0 only. The restart count alone is not enough: the status read
+at the end of the window is the other half.
+
+**Enforced by.** Test: `platform/tests/test_assert_containers_stable.py` runs the shared task
+`platform/playbooks/tasks/assert-containers-stable.yml` against synthetic readings and against a fake engine, and checks
+that Deploy Plane's Phase 4 runs it after the API probe and before Report. Mutation-checked on the restart, status,
+one-shot, first-pass, listing and gate guards and on the wiring. Wired into Deploy Plane only; other services stay
+`Convention` until they include the task.
 
 ## 3. Acting on live state
 
