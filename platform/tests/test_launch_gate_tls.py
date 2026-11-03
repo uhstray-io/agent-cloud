@@ -464,19 +464,37 @@ def test_a_connection_the_watchdog_cut_never_reaches_the_gate(listener, monkeypa
 def test_the_watchdog_marks_the_connection_before_it_shuts_it(monkeypatch):
     # The order is the property: a handler woken by the shutdown must already see the mark.
     left, right = socket.socketpair()
-    fired = threading.Event()
+    watch = lg._Watch()
     seen = []
     real = socket.socket.shutdown
 
     def shutdown(sock, how):
-        seen.append(fired.is_set())
+        seen.append(watch.fired.is_set())
         real(sock, how)
 
     monkeypatch.setattr(lg.socket.socket, "shutdown", shutdown)
     try:
-        lg._cut(left, fired)
+        lg._cut(left, watch)
         assert seen == [True]
         assert right.recv(1) == b""
+    finally:
+        left.close()
+        right.close()
+
+
+def test_a_cut_that_starts_after_the_disarm_does_nothing(monkeypatch):
+    # CodeRabbit on PR 818: Timer.cancel() cannot stop a callback already running, so the cut checks the
+    # disarm under the same lock. Once disarmed, the connection is neither marked nor shut.
+    left, right = socket.socketpair()
+    watch = lg._Watch()
+    calls = []
+    monkeypatch.setattr(lg.socket.socket, "shutdown", lambda sock, how: calls.append(how))
+    try:
+        with watch.lock:
+            watch.disarmed = True
+        lg._cut(left, watch)
+        assert calls == []
+        assert not watch.fired.is_set()
     finally:
         left.close()
         right.close()

@@ -848,16 +848,30 @@ CONNECTION_DEADLINE = 45.0
 _READ_CHUNK = 64 * 1024
 
 
-def _cut(sock: Any, fired: threading.Event) -> None:
-    # Marked first: http.server reads end-of-stream as the end of the headers, so a request cut mid-headers
-    # would otherwise be dispatched with what had arrived. The handler checks the mark before the gate.
-    fired.set()
-    # The plain socket's shutdown, not SSLSocket.shutdown: that one also clears the TLS state the handler
-    # thread may be reading through. Shutting the descriptor makes the blocked read return.
-    try:
-        socket.socket.shutdown(sock, socket.SHUT_RDWR)
-    except OSError:
-        pass
+class _Watch:
+    """One connection's watchdog state. The lock makes the cut and the disarm mutually exclusive: once the
+    handler has disarmed, a timer callback already under way does nothing (review of PR 818)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.disarmed = False
+        self.fired = threading.Event()
+
+
+def _cut(sock: Any, watch: _Watch) -> None:
+    with watch.lock:
+        if watch.disarmed:
+            return
+        # Marked first: http.server reads end-of-stream as the end of the headers, so a request cut
+        # mid-headers would otherwise be dispatched with what had arrived. The handler checks the mark
+        # before the gate.
+        watch.fired.set()
+        # The plain socket's shutdown, not SSLSocket.shutdown: that one also clears the TLS state the
+        # handler thread may be reading through. Shutting the descriptor makes the blocked read return.
+        try:
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)
+        except OSError:
+            pass
 
 
 class TLSLoadError(Exception):
@@ -934,11 +948,11 @@ class GateServer(ThreadingHTTPServer):
         # socket, which ends whatever read the handler is blocked in. The handler disarms it once the request
         # is read (disarm()), so it never cuts a launch in progress: a task may exist by then, and its id
         # must reach the caller. The gate's own calls are bounded by their client timeouts.
-        fired = threading.Event()
-        watchdog = threading.Timer(CONNECTION_DEADLINE, _cut, args=(request, fired))
+        state = _Watch()
+        watchdog = threading.Timer(CONNECTION_DEADLINE, _cut, args=(request, state))
         watchdog.daemon = True
         self._watch.timer = watchdog
-        self._watch.fired = fired
+        self._watch.state = state
         watchdog.start()
         try:
             super().process_request_thread(request, client_address)
@@ -953,8 +967,12 @@ class GateServer(ThreadingHTTPServer):
         if timer is not None:
             timer.cancel()
             self._watch.timer = None
-        fired = getattr(self._watch, "fired", None)
-        return fired is not None and fired.is_set()
+        state = getattr(self._watch, "state", None)
+        if state is None:
+            return False
+        with state.lock:
+            state.disarmed = True
+            return state.fired.is_set()
 
     def _current_context(self) -> ssl.SSLContext:
         """The context for the files as they stand now. A failed reload keeps the last good context serving
