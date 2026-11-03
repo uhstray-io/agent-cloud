@@ -11,6 +11,7 @@ keep calling self.rfile.read(...) exactly as before.
 It also holds `refused_port()`, the one port a test aims at when it needs "nothing listens here".
 """
 
+import errno
 import io
 import socket
 from http.server import BaseHTTPRequestHandler
@@ -29,15 +30,26 @@ def refused_port():
     it (docs/MISTAKES.md 2.33). Holding the port bound without listening does not work either:
     macOS then leaves the connect to time out instead of refusing it.
     """
-    with socket.socket() as probe:
-        probe.settimeout(2)
+    # Both loopbacks: a test that names `localhost` may reach either. A machine with no IPv6
+    # loopback cannot resolve `localhost` to ::1, so that address is skipped there.
+    for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
         try:
-            probe.connect(("127.0.0.1", REFUSED_PORT))
-        except ConnectionRefusedError:
-            return REFUSED_PORT
-        except OSError as error:
-            raise RuntimeError(f"127.0.0.1:{REFUSED_PORT} did not refuse a connection: {error}") from error
-    raise RuntimeError(f"something listens on 127.0.0.1:{REFUSED_PORT}; refused_port() needs it closed")
+            probe = socket.socket(family)
+        except OSError:
+            continue
+        with probe:
+            probe.settimeout(2)
+            try:
+                probe.connect((address, REFUSED_PORT))
+            except ConnectionRefusedError:
+                continue
+            except OSError as error:
+                if family == socket.AF_INET6 and error.errno in (errno.EADDRNOTAVAIL, errno.ENETUNREACH,
+                                                                errno.EAFNOSUPPORT):
+                    continue
+                raise RuntimeError(f"[{address}]:{REFUSED_PORT} did not refuse a connection: {error}") from error
+        raise RuntimeError(f"something listens on [{address}]:{REFUSED_PORT}; refused_port() needs it closed")
+    return REFUSED_PORT
 
 
 class DrainingHandler(BaseHTTPRequestHandler):

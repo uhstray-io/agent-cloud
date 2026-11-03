@@ -171,6 +171,7 @@ def test_the_guard_flags_each_freed_port_shape():
 
 
 def test_refused_port_refuses_at_once_and_is_never_handed_out():
+    import errno
     import socket
 
     from fake_http import REFUSED_PORT, refused_port
@@ -182,3 +183,18 @@ def test_refused_port_refuses_at_once_and_is_never_handed_out():
             s.bind(("127.0.0.1", 0))
             handed.add(s.getsockname()[1])
     assert REFUSED_PORT not in handed and min(handed) > 1023
+    # Tests name `localhost` as well as 127.0.0.1: every address it resolves to must refuse.
+    for family, _type, _proto, _name, address in socket.getaddrinfo("localhost", REFUSED_PORT,
+                                                                     type=socket.SOCK_STREAM):
+        with socket.socket(family) as probe:
+            probe.settimeout(2)
+            try:
+                probe.connect(address)
+            except ConnectionRefusedError:
+                continue
+            except OSError as error:  # no usable IPv6 loopback: nothing can listen there either
+                if family == socket.AF_INET6 and error.errno in (errno.EADDRNOTAVAIL, errno.ENETUNREACH,
+                                                                errno.EAFNOSUPPORT):
+                    continue
+                raise
+            raise AssertionError(f"localhost address {address} accepted a connection on port {REFUSED_PORT}")
