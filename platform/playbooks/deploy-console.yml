@@ -119,6 +119,7 @@
     # carries what the gateway enforces. Only these named vars are read: no key, no client_<name> field, no address,
     # no port. No agentgateway_svc host means an empty list or the gateway's own default, and gateway.json.j2 renders
     # empty lists. _console_gw_host is '' then, so the hostvars lookups are never evaluated.
+    # The console reads the FIRST agentgateway_svc host (single-gateway topology; prod has one host).
     _console_gw_host: "{{ groups['agentgateway_svc'][0] if (groups['agentgateway_svc'] | default([]) | length > 0) else '' }}"
     _console_gw_clients: "{{ hostvars[_console_gw_host].agw_clients | default([]) if (_console_gw_host | length > 0) else [] }}"
     _console_gw_policies: "{{ hostvars[_console_gw_host].agw_client_policies | default({}) if (_console_gw_host | length > 0) else {} }}"

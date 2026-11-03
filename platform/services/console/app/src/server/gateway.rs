@@ -17,7 +17,7 @@ use dioxus::server::axum::Json;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use super::work::{self, Source};
+use super::work;
 use super::SharedState;
 
 /// The file as deploy-console.yml renders it. The field names are the wire contract with `gateway.json.j2`:
@@ -51,10 +51,19 @@ pub enum BudgetSource {
     Default,
 }
 
+/// Whether a gateway file was configured. Its own enum, not the work or flows `Source`: those carry an `error`
+/// word this endpoint never answers, and the response is the wire contract with the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GatewayState {
+    Ok,
+    Unconfigured,
+}
+
 /// What `GET /v1/gateway` answers. `unconfigured` with empty lists when no file is set.
 #[derive(Debug, Serialize)]
 pub struct GatewaySet {
-    pub state: Source,
+    pub state: GatewayState,
     pub clients: Vec<GatewayClient>,
     pub models: Vec<String>,
 }
@@ -62,7 +71,7 @@ pub struct GatewaySet {
 impl GatewaySet {
     pub fn unconfigured() -> Self {
         GatewaySet {
-            state: Source::Unconfigured,
+            state: GatewayState::Unconfigured,
             clients: Vec::new(),
             models: Vec::new(),
         }
@@ -70,7 +79,7 @@ impl GatewaySet {
 
     pub fn configured(file: GatewayFile) -> Self {
         GatewaySet {
-            state: Source::Ok,
+            state: GatewayState::Ok,
             clients: file.clients,
             models: file.models,
         }
@@ -176,6 +185,18 @@ mod tests {
             1,
         );
         assert!(load_gateway(&gateway_file("source", &text)).is_err());
+    }
+
+    #[test]
+    fn gateway_state_serializes_to_the_two_wire_words() {
+        assert_eq!(
+            serde_json::to_string(&GatewayState::Ok).expect("json"),
+            r#""ok""#
+        );
+        assert_eq!(
+            serde_json::to_string(&GatewayState::Unconfigured).expect("json"),
+            r#""unconfigured""#
+        );
     }
 
     #[test]
