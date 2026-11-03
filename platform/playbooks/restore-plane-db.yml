@@ -210,6 +210,8 @@
           environment:
             CONTAINER_ENGINE: "{{ _engine }}"
             LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+            # First-run migrations can outlast deploy.sh's default wait (3600s); empty = that default.
+            PLANE_API_HEALTH_TIMEOUT: "{{ plane_api_health_timeout | default('') }}"
             COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
             FORCE_RECREATE: "true"
           register: _restart

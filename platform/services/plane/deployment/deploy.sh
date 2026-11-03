@@ -113,7 +113,8 @@ step_start() {
 
 # A first run on a fresh database migrates before the API is healthy: about 36 minutes on the
 # 4-vCPU production VM (Semaphore task 11696, which failed at the old 600s). The wait returns
-# as soon as the API is healthy, so a later deploy is not slowed. Override with the env var.
+# as soon as the API is healthy, so a later deploy is not slowed. The playbooks pass the
+# inventory's plane_api_health_timeout as PLANE_API_HEALTH_TIMEOUT; empty means this default.
 API_HEALTH_TIMEOUT="${PLANE_API_HEALTH_TIMEOUT:-3600}"
 
 step_wait_healthy() {

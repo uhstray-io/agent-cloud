@@ -59,3 +59,5 @@ def test_the_token_probe_says_a_token_comes():
     task = next(t for t in phase3()["tasks"] if t["name"].startswith("The token endpoint lists"))
     argv = task["ansible.builtin.command"]["argv"]
     assert "-i" in argv and argv[-1] == "token"
+    # Without stdin Ansible opens no pipe, the exec inherits the SSH stdin and readline() hangs.
+    assert task["ansible.builtin.command"].get("stdin")
