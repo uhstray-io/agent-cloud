@@ -134,6 +134,11 @@ case "$1" in
   inspect)
     case "$*" in
       *PortBindings*) printf '%s' "$STUB_PORTS" ;;
+      *Source*)
+        case "$*" in
+          *agent-cloud-deploy*) printf '%s' "$STUB_SHARE_SRC" ;;
+          *) printf '%s' "$STUB_REPO_SRC" ;;
+        esac ;;
       *Mounts*) printf '%s' '/run/podman/podman.sock /workspace/agent-cloud /var/lib/agent-cloud-deploy ' ;;
       *SecurityOpt*) printf '%s' '[label=disable]' ;;
       *Config.Env*) printf '%s' '["SSL_CERT_FILE=/x"]' ;;
@@ -157,10 +162,12 @@ def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000, ima
     podman.write_text(STUB)
     podman.chmod(0o755)
     task = next(t for t in _play()["tasks"] if str(t.get("name", "")).startswith("Recreate Semaphore if"))
+    checkout = tmp_path / "checkout"
     play = tmp_path / "recreate.yml"
     play.write_text(json.dumps([{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
-        "vars": {**_play()["vars"], "_oidc_ready": False, "local_semaphore_port": want},
+        "vars": {**_play()["vars"], "_oidc_ready": False, "local_semaphore_port": want,
+                 "_repo_host_dir": str(checkout)},
         "tasks": [task, {"ansible.builtin.debug": {"msg": "RESULT=[{{ _sem_recreate.stdout | trim }}]"}}],
     }]))
     log = tmp_path / "rm.log"
@@ -168,6 +175,7 @@ def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000, ima
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
                PATH=f"{bindir}:{os.environ['PATH']}", STUB_EXISTS="yes" if exists else "no", STUB_PORTS=ports,
                STUB_LOG=str(log), STUB_IMAGE_HAVE=image_have, STUB_IMAGE_WANT=image_want,
+               STUB_REPO_SRC=str(checkout), STUB_SHARE_SRC="/var/lib/agent-cloud-deploy",
                STUB_IMAGE_LOCAL="yes" if image_local else "no", STUB_PULL="ok" if pull_ok else "fail",
                STUB_PULLED=str(tmp_path / "pulled"), STUB_PULL_LOG=str(tmp_path / "pull.log"))
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play)], cwd=REPO, env=env, text=True,

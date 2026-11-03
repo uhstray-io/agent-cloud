@@ -739,17 +739,55 @@
     # input in its database. A container created before SEMAPHORE_CONFIG_PATH kept it in the
     # container layer, and the recreate below removes that layer. The copy onto the data volume
     # must therefore happen BEFORE the recreate. Output is a status word; the key is never printed.
+    #
+    # The data volume decides FIRST, and nothing before that decision starts the container. An older
+    # container's bind-mount source can be gone (its checkout was deleted): then `podman start` fails
+    # with "crun: cannot stat" before the key is read, and that failure stopped the bootstrap here
+    # (2026-11-02 live failure). The probe is a read-only throwaway container from the container's
+    # own image: already local, so --pull=never fetches nothing, and it never starts the Semaphore
+    # container. A probe error fails the task; it never falls through to a start. The container is
+    # started only when the volume has no key. If it cannot start, its key, if any, is in the stopped
+    # container's layer (podman cp reads a stopped container). That copy reaches the volume through
+    # stdin of a throwaway container, never through a bind mount of a temp file, and the temp dir is
+    # removed on every exit. No key anywhere is "none", which fails the task. See docs/MISTAKES.md 3.16.
     - name: "Carry an existing Semaphore encryption key onto the data volume"
       ansible.builtin.shell: |
-        if ! podman container exists {{ _sem_name }}; then
+        ctr={{ _sem_name }}
+        if ! podman container exists "$ctr"; then
           echo absent
           exit 0
         fi
-        if [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _sem_name }})" != "running" ]; then
-          podman start {{ _sem_name }} >/dev/null
+        vol=$(podman inspect "$ctr" \
+          --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}if eq .Destination "/var/lib/semaphore"{{ "}}" }}{{ "{{" }}.Name{{ "}}" }}{{ "{{" }}end{{ "}}" }}{{ "{{" }}end{{ "}}" }}') \
+          || { echo "cannot inspect $ctr" >&2; exit 1; }
+        image=$(podman inspect "$ctr" --format '{{ "{{" }}.Image{{ "}}" }}') \
+          || { echo "cannot inspect $ctr" >&2; exit 1; }
+        if [ -n "$vol" ]; then
+          podman run --rm --pull=never --entrypoint sh -v "$vol:/var/lib/semaphore:ro" "$image" \
+            -c 'test -f /var/lib/semaphore/config/config.json'
+          rc=$?
+          if [ "$rc" -eq 0 ]; then echo present; exit 0; fi
+          if [ "$rc" -ne 1 ]; then echo "cannot probe volume $vol (rc $rc); $ctr not started" >&2; exit 1; fi
+        fi
+        if [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' "$ctr")" != "running" ]; then
+          if ! podman start "$ctr" >/dev/null; then
+            [ -n "$vol" ] || { echo "$ctr cannot start and has no named data volume" >&2; exit 1; }
+            mkdir -p "{{ _state_dir }}" || exit 1
+            dir=$(mktemp -d "{{ _state_dir }}/carry.XXXXXX") || exit 1
+            trap 'rm -f "$dir/config.json"; rmdir "$dir"' EXIT
+            if ! podman cp "$ctr:/etc/semaphore/config.json" "$dir/config.json"; then
+              echo none
+              exit 0
+            fi
+            podman run --rm -i --pull=never --entrypoint sh -v "$vol:/var/lib/semaphore" "$image" \
+              -c 'mkdir -p /var/lib/semaphore/config && cp /dev/stdin /var/lib/semaphore/config/config.json && chmod 600 /var/lib/semaphore/config/config.json' \
+              < "$dir/config.json" || exit 1
+            echo carried
+            exit 0
+          fi
           echo started
         fi
-        podman exec {{ _sem_name }} sh -c '
+        podman exec "$ctr" sh -c '
           t=/var/lib/semaphore/config/config.json
           if [ -f "$t" ]; then echo present
           elif [ -f /etc/semaphore/config.json ]; then
@@ -778,6 +816,10 @@
           SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
           ENV=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .Config.Env{{ "}}" }}')
           PORTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .HostConfig.PortBindings{{ "}}" }}')
+          REPO_SRC=$(podman inspect {{ _sem_name }} \
+            --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}if eq .Destination "{{ _repo_mount }}"{{ "}}" }}{{ "{{" }}.Source{{ "}}" }}{{ "{{" }}end{{ "}}" }}{{ "{{" }}end{{ "}}" }}')
+          SHARE_SRC=$(podman inspect {{ _sem_name }} \
+            --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}if eq .Destination "{{ _deploy_share }}"{{ "}}" }}{{ "{{" }}.Source{{ "}}" }}{{ "{{" }}end{{ "}}" }}{{ "{{" }}end{{ "}}" }}')
           # The host publish is fixed at container creation, so a changed
           # local_semaphore_port only takes effect on a recreated container.
           if ! echo "$PORTS" | grep -q '"HostPort":"{{ _sem_port }}"'; then
@@ -803,6 +845,15 @@
              ! echo "$MOUNTS" | grep -q '{{ _repo_mount }}' || \
              ! echo "$MOUNTS" | grep -q '{{ _deploy_share }}' || \
              ! echo "$SECOPT" | grep -q 'label=disable'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
+          # A bind mount keeps the SOURCE it was created with. The destination check above reads
+          # only where a mount is, so a container whose checkout was deleted or moved passes it and
+          # then cannot start (2026-11-02: crun could not stat the old source). Recreate when either
+          # source differs from the one this run mounts. The data volume is kept: rm without -v.
+          if [ "$REPO_SRC" != "{{ _repo_host_dir }}" ] || [ "$SHARE_SRC" != "{{ _deploy_share }}" ]; then
             podman rm -f {{ _sem_name }}
             echo recreated
             exit 0
