@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import playbook_yaml
@@ -763,20 +764,25 @@ def test_flows_and_ca_are_rendered_into_config():
     templates = {t["dest"]: t["src"] for t in _deploy_vars()["_env_templates"]}
     assert templates["config/flows.json"] == "flows.json.j2"
     assert templates["config/proxmox-ca.pem"] == "proxmox-ca.pem.j2"
+    assert templates["config/gateway.json"] == "gateway.json.j2"
 
 
 def test_compose_binds_flows_and_the_ca_read_only_like_scope_and_workflow():
     text = (CONSOLE / "compose.yml").read_text()
     assert "      - ./config/flows.json:/etc/console/flows.json:ro" in text
     assert "      - ./config/proxmox-ca.pem:/etc/console/proxmox-ca.pem:ro" in text
+    assert "      - ./config/gateway.json:/etc/console/gateway.json:ro" in text
 
 
 def test_deploy_sh_checks_and_hashes_flows_and_the_ca():
     text = (CONSOLE / "deploy.sh").read_text()
     assert "config/flows.json not found" in text
     assert "config/proxmox-ca.pem not found" in text
-    # Both up branches recreate on a change to either file.
-    assert text.count("config/flows.json config/proxmox-ca.pem") == 2
+    assert "config/gateway.json not found" in text
+    # Both up branches recreate on a change to any of the four files (task 8.3a adds gateway.json last).
+    assert text.count("config/flows.json config/proxmox-ca.pem config/gateway.json") == 2
+    # Each compose_up_if_changed line passes the file exactly once: the digest covers it on both branches.
+    assert [ln.count("config/gateway.json") for ln in text.splitlines() if "compose_up_if_changed config/" in ln] == [1, 1]
 
 
 _NO_KEY = object()  # a site that does not declare netbox_site at all (not "declares it empty")
@@ -1078,3 +1084,302 @@ def test_rendered_flows_match_the_servers_flow_type(tmp_path):
     for flow in flows:
         assert sorted(flow) == sorted(fields), flow
         assert all(isinstance(flow[k], str) and flow[k] for k in fields), flow
+
+
+# --- gateway.json (task 8.3a): the agentgateway clients, budgets and models ------------------------------------
+# The file is rendered through the deploy's own _console_gw_* expressions, against an inventory that gives the
+# agentgateway host vars. The gateway's own admin derivation (the secret-declarations file, evaluated on that same
+# host) runs beside it, so a test can compare the console's view with the gateway's on identical inputs.
+
+AGW_SECRET_DECL = REPO / "platform/playbooks/vars/secret-declarations/agentgateway.yml"
+GW_SENTINEL = "SENTINEL-DO-NOT-LEAK"
+GW_MODELS = [{"name": "m1", "upstream_model": "vendor/one"}, {"name": "m2", "upstream_model": "vendor/two"}]
+GW_ADMIN = {
+    "agw_admin_identities_enabled": True,
+    "platform_admins": [
+        {"key": "ops", "username": "ops-user", "name": "Ops", "email": "ops@agent-cloud.test"},
+        {"key": "svc", "username": "svc-automation", "agw_identity": "svc-ident", "type": "service_account"},
+    ],
+}
+
+
+def _gw_play_vars() -> dict:
+    play = next(p for p in playbook_yaml.plays(DEPLOY) if "_secret_definitions" in (p.get("vars") or {}))
+    return {k: v for k, v in play["vars"].items() if k.startswith("_console_gw_")}
+
+
+def _gw_render(tmp_path: Path, gateway: dict | None) -> tuple[str, list[str]]:
+    """The rendered gateway.json text, and the admin identity names the gateway derives on the same host.
+
+    `gateway` is the agentgateway host's vars, or None for an inventory with no agentgateway_svc host.
+    """
+    case = Path(tempfile.mkdtemp(dir=tmp_path))
+    inventory = {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}
+    plays = []
+    admins_out = case / "admins.json"
+    if gateway is not None:
+        inventory["all"]["children"] = {"agentgateway_svc": {"hosts": {
+            "gw-test": {"ansible_connection": "local", **gateway}}}}
+        plays.append({"name": "the gateway's own admin derivation", "hosts": "gw-test", "gather_facts": False,
+                      "tasks": [{"ansible.builtin.include_vars": {"file": str(AGW_SECRET_DECL)}},
+                                {"ansible.builtin.copy": {"dest": str(admins_out),
+                                                          "content": "{{ _agw_admin_identities | to_json }}"}}]})
+    out = case / "gateway.json"
+    plays.append({"name": "the console's gateway file", "hosts": "localhost", "connection": "local",
+                  "gather_facts": False, "vars": _gw_play_vars(),
+                  "tasks": [{"ansible.builtin.template": {"src": str(CONSOLE / "templates/gateway.json.j2"),
+                                                          "dest": str(out), "mode": "0644"}}]})
+    inv = case / "inventory.yml"
+    inv.write_text(yaml.safe_dump(inventory))
+    path = case / "plays.yml"
+    path.write_text(yaml.safe_dump(plays))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    proc = subprocess.run(["ansible-playbook", "-i", str(inv), str(path)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    admins = [a["name"] for a in json.loads(admins_out.read_text())] if gateway is not None else []
+    return out.read_text(), admins
+
+
+def _gw_body(tmp_path: Path, gateway: dict | None) -> dict:
+    text, _ = _gw_render(tmp_path, gateway)
+    return json.loads(text)
+
+
+def _gw_client(body: dict, name: str) -> dict:
+    return next(c for c in body["clients"] if c["name"] == name)
+
+
+@NEEDS_ANSIBLE
+def test_gateway_file_is_empty_lists_with_no_agentgateway_host(tmp_path):
+    text, admins = _gw_render(tmp_path, None)
+    assert json.loads(text) == {"clients": [], "models": []}
+    assert admins == []
+
+
+@NEEDS_ANSIBLE
+def test_client_figure_is_its_own_policy_before_its_tier(tmp_path):
+    gw = {"agw_clients": ["alpha"], "agw_models": GW_MODELS, "agw_rate_tokens_per_hour": 123,
+          "agw_tier_tokens_per_hour": {"developer": 300000},
+          "agw_client_policies": {"alpha": {"tokens_per_hour": 5000, "tier": "developer", "allowed_models": ["m1"]}}}
+    body = _gw_body(tmp_path, gw)
+    assert body["clients"] == [{"name": "alpha", "tier": "developer", "tokens_per_hour": 5000,
+                                "budget_source": "client", "allowed_models": ["m1"]}]
+    assert body["models"] == ["m1", "m2"]
+
+
+@NEEDS_ANSIBLE
+def test_client_figure_falls_back_to_its_tier(tmp_path):
+    gw = {"agw_clients": ["alpha"], "agw_models": GW_MODELS, "agw_rate_tokens_per_hour": 123,
+          "agw_tier_tokens_per_hour": {"developer": 300000},
+          "agw_client_policies": {"alpha": {"tier": "developer"}}}
+    alpha = _gw_client(_gw_body(tmp_path, gw), "alpha")
+    assert (alpha["tokens_per_hour"], alpha["budget_source"], alpha["tier"]) == (300000, "tier", "developer")
+
+
+@NEEDS_ANSIBLE
+def test_client_figure_falls_back_to_the_default_rate_and_an_unknown_tier_falls_through(tmp_path):
+    gw = {"agw_clients": ["alpha", "beta"], "agw_models": GW_MODELS, "agw_rate_tokens_per_hour": 123456,
+          "agw_tier_tokens_per_hour": {"developer": 300000},
+          "agw_client_policies": {"beta": {"tier": "ghost"}}}
+    body = _gw_body(tmp_path, gw)
+    alpha = _gw_client(body, "alpha")
+    assert (alpha["tokens_per_hour"], alpha["budget_source"], alpha["tier"]) == (123456, "default", None)
+    beta = _gw_client(body, "beta")
+    assert (beta["tokens_per_hour"], beta["budget_source"], beta["tier"]) == (123456, "default", "ghost")
+
+
+@NEEDS_ANSIBLE
+def test_default_figure_is_2000000_when_the_rate_is_unset(tmp_path):
+    alpha = _gw_client(_gw_body(tmp_path, {"agw_clients": ["alpha"], "agw_models": GW_MODELS}), "alpha")
+    assert (alpha["tokens_per_hour"], alpha["budget_source"]) == (2000000, "default")
+
+
+@NEEDS_ANSIBLE
+def test_an_admin_overlap_takes_the_admin_tier_and_its_figure(tmp_path):
+    gw = {**GW_ADMIN, "agw_clients": ["alpha", "ops-user", "svc-ident", "svc-automation"], "agw_models": GW_MODELS,
+          "agw_tier_tokens_per_hour": {"admin": 900000, "developer": 300000},
+          "agw_client_policies": {"svc-ident": {"tokens_per_hour": 42}}}
+    text, admins = _gw_render(tmp_path, gw)
+    body = json.loads(text)
+    # The gateway derives the admin names from agw_identity, else username.
+    assert admins == ["ops-user", "svc-ident"]
+    ops = _gw_client(body, "ops-user")
+    assert (ops["tier"], ops["tokens_per_hour"], ops["budget_source"]) == ("admin", 900000, "tier")
+    svc = _gw_client(body, "svc-ident")
+    assert (svc["tier"], svc["tokens_per_hour"], svc["budget_source"]) == ("admin", 42, "client")
+    # A username that is not the derived name is a plain client, never tier admin.
+    plain = _gw_client(body, "svc-automation")
+    assert (plain["tier"], plain["budget_source"]) == (None, "default")
+    assert _gw_client(body, "alpha")["tier"] is None
+
+
+@NEEDS_ANSIBLE
+def test_an_admin_overlap_with_no_admin_figure_falls_through_like_the_gateway(tmp_path):
+    gw = {**GW_ADMIN, "agw_clients": ["ops-user"], "agw_models": GW_MODELS,
+          "agw_tier_tokens_per_hour": {"developer": 300000}, "agw_rate_tokens_per_hour": 77}
+    ops = _gw_client(_gw_body(tmp_path, gw), "ops-user")
+    assert (ops["tier"], ops["tokens_per_hour"], ops["budget_source"]) == ("admin", 77, "default")
+
+
+@NEEDS_ANSIBLE
+def test_the_admin_tier_needs_the_gate_and_the_gateway_derives_no_admin_without_it(tmp_path):
+    gw = {**GW_ADMIN, "agw_admin_identities_enabled": False, "agw_clients": ["ops-user"], "agw_models": GW_MODELS,
+          "agw_tier_tokens_per_hour": {"admin": 900000}}
+    text, admins = _gw_render(tmp_path, gw)
+    assert admins == []
+    ops = _gw_client(json.loads(text), "ops-user")
+    assert (ops["tier"], ops["tokens_per_hour"], ops["budget_source"]) == (None, 2000000, "default")
+
+
+@NEEDS_ANSIBLE
+def test_internal_identities_are_not_listed(tmp_path):
+    # mcp-self, legacy-shared and the pool identity are internal (config.yaml.j2 _internal_ids); only alpha is a client.
+    gw = {"agw_clients": ["mcp-self", "legacy-shared", "pool-id", "alpha"],
+          "agw_models": [{"name": "m1", "upstream_model": "vendor/one", "pool_identity": "pool-id"},
+                         {"name": "m2", "upstream_model": "vendor/two"}],
+          "agw_client_policies": {"pool-id": {"tokens_per_hour": 9000}}}
+    text = _gw_render(tmp_path, gw)[0]
+    body = json.loads(text)
+    assert [c["name"] for c in body["clients"]] == ["alpha"]
+    assert body["clients"][0]["allowed_models"] == ["m1", "m2"]
+    assert "pool/" not in text and "mcp-self" not in text and "legacy-shared" not in text and "pool-id" not in text
+
+
+@NEEDS_ANSIBLE
+def test_allowed_models_follow_openrouter_and_pool_rules_and_an_absent_key_means_every_model(tmp_path):
+    gw = {"agw_clients": ["alpha", "beta", "gamma", "or-user", "pool-id"],
+          "agw_models": [{"name": "m1", "upstream_model": "vendor/one"},
+                         {"name": "or1", "provider": "openrouter", "upstream_model": "vendor/x"},
+                         {"name": "pooled", "upstream_model": "vendor/p", "pool_identity": "pool-id"}],
+          "agw_openrouter_identities": ["or-user"],
+          "agw_client_policies": {"alpha": {"allowed_models": ["or1", "m1", "pool/pooled"]},
+                                  "beta": {"allowed_models": []}, "or-user": {}}}
+    body = _gw_body(tmp_path, gw)
+    assert _gw_client(body, "alpha")["allowed_models"] == ["m1"]      # OpenRouter removed, pool/ removed
+    assert _gw_client(body, "beta")["allowed_models"] == []           # explicit empty is empty
+    assert _gw_client(body, "gamma")["allowed_models"] == ["m1", "pooled"]  # absent: every model minus OpenRouter
+    assert _gw_client(body, "or-user")["allowed_models"] == ["m1", "or1", "pooled"]  # an OpenRouter identity keeps them
+    assert body["models"] == ["m1", "or1", "pooled"]
+
+
+@NEEDS_ANSIBLE
+def test_openrouter_admins_extends_the_openrouter_identities_to_the_admin_overlap(tmp_path):
+    base = {**GW_ADMIN, "agw_clients": ["ops-user"], "agw_models": [
+        {"name": "m1", "upstream_model": "vendor/one"},
+        {"name": "or1", "provider": "openrouter", "upstream_model": "vendor/x"}]}
+    assert _gw_client(_gw_body(tmp_path, {**base, "agw_openrouter_admins": True}), "ops-user")[
+        "allowed_models"] == ["m1", "or1"]
+    assert _gw_client(_gw_body(tmp_path, {**base, "agw_openrouter_admins": False}), "ops-user")[
+        "allowed_models"] == ["m1"]
+
+
+@NEEDS_ANSIBLE
+def test_no_key_client_field_address_or_port_reaches_the_file(tmp_path):
+    gw = {"agw_clients": ["alpha"], "agw_models": GW_MODELS,
+          "agw_plaintext_keys": True, "client_alpha": GW_SENTINEL, "vllm_api_key": GW_SENTINEL,
+          "agw_upstream_base_url": "http://198.51.100.9:8000/v1", "agw_loopback_port": 4002,
+          "agw_client_policies": {"alpha": {"tokens_per_hour": 5000}}}
+    text = _gw_render(tmp_path, gw)[0]
+    assert GW_SENTINEL not in text and "198.51.100" not in text and "4002" not in text
+    assert IPV4.search(text) is None, text
+    body = json.loads(text)
+    assert set(body) == {"clients", "models"}
+    assert set(body["clients"][0]) == {"name", "tier", "tokens_per_hour", "budget_source", "allowed_models"}
+
+
+def test_the_gateway_play_vars_read_no_key_field_or_secret():
+    for name, expr in _gw_play_vars().items():
+        text = str(expr)
+        assert re.search(r"(?<![A-Za-z_])client_", text) is None, name
+        assert "vllm_api_key" not in text and "secrets" not in text and "agw_plaintext_keys" not in text, name
+
+
+def _gw_struct(name: str) -> str:
+    src = (CONSOLE.parent / "app/src/server/gateway.rs").read_text()
+    body = re.search(rf"pub struct {name} \{{(.*?)\n\}}", src, re.S)
+    assert body, f"{name} not found in gateway.rs"
+    return body.group(1)
+
+
+@NEEDS_ANSIBLE
+def test_rendered_gateway_json_matches_the_servers_structs(tmp_path):
+    # Same contract check as the flows file: a field the server does not declare, or a budget_source word the
+    # server's enum does not name, would fail the console's startup. The server refuses unknown fields.
+    src = (CONSOLE.parent / "app/src/server/gateway.rs").read_text()
+    assert src.count("#[serde(deny_unknown_fields)]") >= 2
+    file_fields = re.findall(r"pub (\w+):", _gw_struct("GatewayFile"))
+    client_fields = re.findall(r"pub (\w+):", _gw_struct("GatewayClient"))
+    assert file_fields == ["clients", "models"], file_fields
+    assert client_fields == ["name", "tier", "tokens_per_hour", "budget_source", "allowed_models"], client_fields
+    variants = [v.lower() for v in re.findall(r"^\s+([A-Z]\w*),", re.search(r"pub enum BudgetSource \{(.*?)\n\}", src,
+                                                                          re.S).group(1), re.M)]
+    assert '#[serde(rename_all = "lowercase")]' in src
+    gw = {**GW_ADMIN, "agw_clients": ["alpha", "ops-user"], "agw_models": GW_MODELS,
+          "agw_tier_tokens_per_hour": {"admin": 900000},
+          "agw_client_policies": {"alpha": {"tokens_per_hour": 5000}}}
+    body = _gw_body(tmp_path, gw)
+    assert sorted(body) == sorted(file_fields)
+    for client in body["clients"]:
+        assert sorted(client) == sorted(client_fields), client
+        assert client["budget_source"] in variants, client
+        assert isinstance(client["tokens_per_hour"], int), client
+
+
+
+AGW_CONFIG = REPO / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
+
+
+@NEEDS_ANSIBLE
+def test_the_console_file_agrees_with_the_gateways_own_render(tmp_path):
+    # Differential: the gateway's real config.yaml.j2, rendered on the same host with the same secret declarations,
+    # against the console's gateway.json from the same vars. Every budget and every allow-list must match, and the
+    # key loop must enrol exactly the listed clients plus the internal and admin-only identities the console leaves out.
+    gw = {**GW_ADMIN,
+          "agw_upstream_base_url": "http://127.0.0.1:8000/v1",
+          "agw_clients": ["alpha", "beta", "ops-user", "mcp-self", "pool-id", "or-user"],
+          "agw_models": [{"name": "m1", "upstream_model": "vendor/one"},
+                         {"name": "or1", "provider": "openrouter", "upstream_model": "vendor/x"},
+                         {"name": "pooled", "upstream_model": "vendor/p", "pool_identity": "pool-id"}],
+          "agw_openrouter_identities": ["or-user"], "agw_openrouter_admins": False,
+          "agw_tier_tokens_per_hour": {"admin": 900000, "developer": 300000},
+          "agw_rate_tokens_per_hour": 77777,
+          "agw_client_policies": {
+              "alpha": {"tokens_per_hour": 5000, "allowed_models": ["m1", "or1", "pool/pooled"]},
+              "beta": {"tier": "developer", "allowed_models": []},
+              "or-user": {"tier": "developer"},
+              "mcp-self": {"tokens_per_hour": 1000},
+              "pool-id": {"tokens_per_hour": 9000}}}
+    console_body = _gw_body(tmp_path, gw)
+
+    case = Path(tempfile.mkdtemp(dir=tmp_path))
+    # The key loop reads every identity's secret, the admin-derived one included.
+    secrets = {f"client_{name}": f"fixture-{name}" for name in [*gw["agw_clients"], "svc-ident"]}
+    secrets["vllm_api_key"] = GW_SENTINEL
+    inventory = {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}, "children": {
+        "agentgateway_svc": {"hosts": {"gw-test": {"ansible_connection": "local", **gw, "secrets": secrets}}}}}}
+    out = case / "config.yaml"
+    play = {"name": "the gateway's own render", "hosts": "gw-test", "gather_facts": False,
+            "tasks": [{"ansible.builtin.include_vars": {"file": str(AGW_SECRET_DECL)}},
+                      {"ansible.builtin.template": {"src": str(AGW_CONFIG), "dest": str(out), "mode": "0644"}}]}
+    inv = case / "inventory.yml"
+    inv.write_text(yaml.safe_dump(inventory))
+    path = case / "plays.yml"
+    path.write_text(yaml.safe_dump([play]))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    proc = subprocess.run(["ansible-playbook", "-i", str(inv), str(path)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    keys = {k["metadata"]["name"]: k for k in yaml.safe_load(out.read_text())["llm"]["policies"]["apiKey"]["keys"]}
+
+    # The key loop enrols every identity; the console lists the clients, not the internal or admin-only ones.
+    assert set(keys) == {"alpha", "beta", "ops-user", "mcp-self", "pool-id", "or-user", "svc-ident"}
+    assert sorted(c["name"] for c in console_body["clients"]) == ["alpha", "beta", "ops-user", "or-user"]
+    all_models = sorted(m["name"] for m in gw["agw_models"])
+    for client in console_body["clients"]:
+        key = keys[client["name"]]
+        assert key["budgets"][0]["limit"]["amount"] == client["tokens_per_hour"], client
+        assert sorted(key.get("allowedModels", all_models)) == client["allowed_models"], client
+    assert console_body["models"] == all_models
