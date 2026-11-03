@@ -782,7 +782,8 @@ def test_deploy_sh_checks_and_hashes_flows_and_the_ca():
     # Both up branches recreate on a change to any of the four files (task 8.3a adds gateway.json last).
     assert text.count("config/flows.json config/proxmox-ca.pem config/gateway.json") == 2
     # Each compose_up_if_changed line passes the file exactly once: the digest covers it on both branches.
-    assert [ln.count("config/gateway.json") for ln in text.splitlines() if "compose_up_if_changed config/" in ln] == [1, 1]
+    up_lines = [ln for ln in text.splitlines() if "compose_up_if_changed config/" in ln]
+    assert [ln.count("config/gateway.json") for ln in up_lines] == [1, 1]
 
 
 _NO_KEY = object()  # a site that does not declare netbox_site at all (not "declares it empty")
