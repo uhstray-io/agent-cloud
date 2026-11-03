@@ -525,6 +525,8 @@ mod tests {
                 openbao: None,
                 flows_file: None,
                 grafana_url: None,
+                authentik: None,
+                role_map_file: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -537,6 +539,8 @@ mod tests {
             flows: FlowSet::unconfigured(),
             openbao,
             secrets: tokio::sync::RwLock::new(SecretsCache::new(configured)),
+            access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
+            role_map: crate::server::access::RoleMap::empty(),
         })
     }
 

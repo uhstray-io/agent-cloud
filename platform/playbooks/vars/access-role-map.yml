@@ -1,0 +1,47 @@
+# The Access Level -> per-service role map the Dispatch Console's Access page shows (GET /v1/access).
+#
+# Authoritative source: plan/architecture/04-credentials-access.md, table "Access Level -> Per-Service
+# Role Mapping". Every cell here is that table's text with markdown removed (** and backticks), words kept.
+# platform/tests/test_console_access_role_map.py parses the table and fails when a cell, a level or a
+# system differs. Edit the table and this file together; the pin is the only thing that keeps them equal.
+#
+# deploy-console.yml renders this file to config/role-map.json (templates/role-map.json.j2). The server
+# reads it with CONSOLE_ROLE_MAP_FILE (app/src/server/access.rs; serde field names are pinned by the test).
+#
+# status: "built" = the provisioning for that level and system exists today.
+#         "target" = the design target only. plan/architecture/04-credentials-access.md ("As-Built")
+#         records the Admin row as built for Semaphore (issue #604) and the other rows as target.
+systems:
+  - Semaphore
+  - NetBox
+  - OpenBao
+  - Project visibility
+levels:
+  - level: Admin
+    status: built
+    roles:
+      Semaphore: admin flag on user (global admin)
+      NetBox: superuser / Full Access on all object types
+      OpenBao: "read across the tenant's {{ vault_secret_prefix }}/* (via orchestrator, not direct)"
+      Project visibility: ALL projects, automatically
+  - level: Maintainer
+    status: target
+    roles:
+      Semaphore: Project Owner
+      NetBox: staff + change perms on assigned object types
+      OpenBao: read scoped to assigned services
+      Project visibility: assigned projects
+  - level: Developer
+    status: target
+    roles:
+      Semaphore: Project Manager
+      NetBox: change perms on assigned object types (no delete)
+      OpenBao: read scoped to assigned services
+      Project visibility: assigned projects
+  - level: User
+    status: target
+    roles:
+      Semaphore: task_runner (run pre-defined templates) / guest (read-only)
+      NetBox: view-only on assigned object types
+      OpenBao: none (no direct secret access)
+      Project visibility: assigned projects, read-only

@@ -59,6 +59,16 @@ pub struct ProxmoxConfig {
     pub ca_file: Option<PathBuf>,
 }
 
+/// Authentik as the Access page's directory source (plan 17, 8.2b). Present only when both
+/// `CONSOLE_AUTHENTIK_URL` and `CONSOLE_AUTHENTIK_TOKEN` are set (see `authentik_from`). The token is a
+/// view-only service account's, read only by the refresh task in `access.rs`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthentikConfig {
+    /// Server-side API origin, no trailing slash.
+    pub api_url: String,
+    pub token: Secret,
+}
+
 /// OpenBao as the console's secret store (plan 17 D27). Present only when all three
 /// `CONSOLE_OPENBAO_*` variables are set (see `openbao_from`). The AppRole pair is read only by
 /// the client in `openbao.rs`, which logs in on first use, never at boot.
@@ -98,6 +108,10 @@ pub struct Config {
     pub flows_file: Option<PathBuf>,
     /// Grafana origin for deep links, no trailing slash. `None` leaves every link null.
     pub grafana_url: Option<String>,
+    /// Authentik directory for the Access page. `None` leaves `/v1/access` answering `unconfigured`.
+    pub authentik: Option<AuthentikConfig>,
+    /// Role map JSON rendered from `vars/access-role-map.yml`. `None` serves an empty role map.
+    pub role_map_file: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -162,6 +176,11 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(|value| infrastructure_origin("CONSOLE_GRAFANA_URL", &value))
             .transpose()?;
+        let authentik = authentik_from(&get)?;
+        let role_map_file = get("CONSOLE_ROLE_MAP_FILE")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
 
         Ok(Config {
             base_url,
@@ -178,8 +197,33 @@ impl Config {
             openbao,
             flows_file,
             grafana_url,
+            authentik,
+            role_map_file,
         })
     }
+}
+
+/// The two `CONSOLE_AUTHENTIK_*` variables are all-or-none, as the NetBox group is. The origin follows the
+/// infrastructure rule: https anywhere, cleartext only to a loopback or RFC1918 host. Values never reach an error.
+fn authentik_from(
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<Option<AuthentikConfig>, ConfigError> {
+    let read = |name: &'static str| {
+        get(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let url = read("CONSOLE_AUTHENTIK_URL");
+    let token = read("CONSOLE_AUTHENTIK_TOKEN");
+    if url.is_none() && token.is_none() {
+        return Ok(None);
+    }
+    let url = url.ok_or(ConfigError::Missing("CONSOLE_AUTHENTIK_URL"))?;
+    let token = token.ok_or(ConfigError::Missing("CONSOLE_AUTHENTIK_TOKEN"))?;
+    Ok(Some(AuthentikConfig {
+        api_url: infrastructure_origin("CONSOLE_AUTHENTIK_URL", &url)?,
+        token: Secret::new(token),
+    }))
 }
 
 /// The two `CONSOLE_NETBOX_*` variables are all-or-none, as the Semaphore group is.
@@ -604,6 +648,90 @@ mod tests {
         env.insert("CONSOLE_PROXMOX_CA_FILE", "/etc/console/pve-ca.pem");
         let err = Config::from_lookup(lookup(env)).err().expect("must fail");
         assert_eq!(err, ConfigError::Missing("CONSOLE_PROXMOX_URL"));
+    }
+
+    fn authentik_env() -> HashMap<&'static str, &'static str> {
+        let mut env = full_env();
+        env.insert("CONSOLE_AUTHENTIK_URL", "https://auth.example.test:8443/");
+        env.insert(
+            "CONSOLE_AUTHENTIK_TOKEN",
+            "svc-console-directory-token-value",
+        );
+        env
+    }
+
+    #[test]
+    fn authentik_and_the_role_map_are_unconfigured_when_unset() {
+        let config = Config::from_lookup(lookup(full_env())).expect("valid config");
+        assert!(config.authentik.is_none());
+        assert!(config.role_map_file.is_none());
+    }
+
+    #[test]
+    fn authentik_parses_trims_and_keeps_the_token_out_of_debug() {
+        let config = Config::from_lookup(lookup(authentik_env())).expect("valid config");
+        let authentik = config.authentik.expect("configured");
+        assert_eq!(authentik.api_url, "https://auth.example.test:8443");
+        assert_eq!(
+            authentik.token.expose(),
+            "svc-console-directory-token-value"
+        );
+        let debug = format!("{authentik:?}");
+        assert!(
+            !debug.contains("svc-console-directory-token-value"),
+            "{debug}"
+        );
+    }
+
+    #[test]
+    fn partial_authentik_group_names_the_missing_variable() {
+        let mut env = authentik_env();
+        env.remove("CONSOLE_AUTHENTIK_TOKEN");
+        // `Config` has no Debug (it holds secrets), so the Ok side is not formatted: `.err()`, not `expect_err`.
+        let err = Config::from_lookup(lookup(env))
+            .err()
+            .expect("token missing");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_AUTHENTIK_TOKEN"));
+
+        let mut env = authentik_env();
+        env.remove("CONSOLE_AUTHENTIK_URL");
+        let err = Config::from_lookup(lookup(env)).err().expect("url missing");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_AUTHENTIK_URL"));
+    }
+
+    #[test]
+    fn authentik_cleartext_follows_the_infrastructure_rule_and_names_the_setting() {
+        let mut env = authentik_env();
+        env.insert("CONSOLE_AUTHENTIK_URL", "http://auth.example.test:8443");
+        let err = Config::from_lookup(lookup(env))
+            .err()
+            .expect("cleartext to a public name");
+        assert_eq!(
+            err,
+            ConfigError::Invalid {
+                name: "CONSOLE_AUTHENTIK_URL",
+                reason:
+                    "cleartext http:// is allowed only to a loopback or RFC1918 host; use https://",
+            }
+        );
+        let mut env = authentik_env();
+        env.insert("CONSOLE_AUTHENTIK_URL", "http://127.0.0.1:8080");
+        let config = Config::from_lookup(lookup(env)).expect("RFC1918 cleartext is allowed");
+        assert_eq!(
+            config.authentik.expect("configured").api_url,
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn role_map_file_is_optional_trimmed_and_read_from_its_own_variable() {
+        let mut env = full_env();
+        env.insert("CONSOLE_ROLE_MAP_FILE", "  /etc/console/role-map.json ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert_eq!(
+            config.role_map_file,
+            Some(PathBuf::from("/etc/console/role-map.json"))
+        );
     }
 
     fn openbao_env() -> HashMap<&'static str, &'static str> {

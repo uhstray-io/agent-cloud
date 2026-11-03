@@ -11,7 +11,8 @@ Semaphore "Deploy console" (or "Deploy console (Local)")
   └─ platform/playbooks/deploy-console.yml
      ├─ Phase 1  transport guard → place-monorepo → mkdir config/ → manage-secrets
      │           (env.j2 → .env, scope.json.j2 → config/scope.json,
-     │            workflow.json.j2 → config/workflow.json from the service-onboarding registry)
+     │            workflow.json.j2 → config/workflow.json from the service-onboarding registry,
+     │            role-map.json.j2 → config/role-map.json from vars/access-role-map.yml)
      │           → distribute-ca-root (local only) → ~/console symlink
      ├─ Phase 2  deploy.sh: build the image on this host (skipped when it matches its inputs)
      │           → compose_up_if_changed → wait for the exec probe (step 4)
@@ -52,6 +53,8 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_PROXMOX_CA_FILE=/etc/console/proxmox-ca.pem` | set only when `console_proxmox_ca_pem` is set; the file is always mounted (empty when unset) |
 | `CONSOLE_GRAFANA_URL` | `console_grafana_url`, the base for Grafana deep links. Not a credential; rendered only when set. The URL alone reads no token |
 | `CONSOLE_GRAFANA_TOKEN` | `secrets.console_grafana_token`, a shared read of `secret/services/o11y`. Rendered only when `console_grafana_api_enabled` is true AND `console_grafana_url` is set |
+| `CONSOLE_AUTHENTIK_URL`, `CONSOLE_AUTHENTIK_TOKEN` | `console_authentik_api_url`; the token is `secrets.console_directory_token`, a shared read of `secret/services/authentik`. All-or-none, rendered only when the URL is set (Access page, see below) |
+| `CONSOLE_ROLE_MAP_FILE=/etc/console/role-map.json` | fixed path; the file is `config/role-map.json`, always rendered |
 
 `config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
@@ -161,6 +164,7 @@ Routes and scoping:
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |
 | `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
+| `GET /v1/access` | `platform-admins` only; 401 signed out, 403 otherwise | Authentik users and groups from a background read, plus the Access Level -> per-service `role_map` (8.2b). See "Access" below |
 
 A tenant the caller may not see answers `404 unknown_tenant`, byte-identical to an unknown one. Prefixes never appear in a tenant answer: a prefix with no site names no tenant (D16). Devices are site-scoped, so they do.
 
@@ -176,6 +180,14 @@ A VM takes live state only when its name is unique across every declared NetBox 
 RAG (`inventory::rag`), first match wins: `red` when a workflow step failed, or Proxmox says `stopped` while NetBox says `active`; `amber` when the data is stale, NetBox says `planned` or `staged`, a step is pending or unknown, or the live state is neither running nor stopped-while-active; `grey` when there is no live state; `green` when the VM is running and nothing above applies.
 
 Deep links: each VM and service row carries `grafana_url`, the Service Overview dashboard with `var-service` and `var-log_service` set to the VM name. `links.grafana_conformance` is the conformance dashboard. Both use the dashboard uids in `platform/services/o11y/deployment/config/grafana/dashboards/`.
+
+## Access (Authentik directory and role map, plan 17 8.2b)
+
+`GET /v1/access` answers `{state, users, groups, role_map, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_AUTHENTIK_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/access.rs`; the response contract is the module header and the serde types, not this section.
+
+- **Directory.** One background task reads `/api/v3/core/users/` and `/api/v3/core/groups/` every 5 minutes with the view-only token `svc-console-directory` holds (`view_user` and `view_group` only). It follows `pagination.next` up to 20 pages of 100 per list. A list longer than 2000 entries is cut, and `ok` carries `error: "directory larger than 2000 entries; first 2000 shown"`. A failed read keeps the last good users and groups and sets `error`. No URL, response body or token reaches an error or a log line. `service_account` is `type == "service_account"` only, so `internal_service_account` is not counted.
+- **Role map.** `config/role-map.json` is rendered from `platform/playbooks/vars/access-role-map.yml`, which mirrors the table "Access Level -> Per-Service Role Mapping" in `plan/architecture/04-credentials-access.md`. `platform/tests/test_console_access_role_map.py` pins every cell against that table and the serde names against the rendered JSON. Edit the table and the vars file together. The vars file is a D31 pinned input, so a rotation refuses while the controller's copy differs from the deployed commit.
+- **Gate.** `work::admin_only`, the same gate as `/v1/network` and `/v1/secrets`.
 
 ## Shared credentials (plan 17, D26-D27)
 
