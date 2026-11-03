@@ -99,6 +99,15 @@ def test_the_group_is_not_superuser_and_carries_only_the_reader_role():
     assert grp["attrs"]["roles"] == [{"!KeyOf": "console-directory-reader-role"}]
 
 
+def test_the_group_declares_parent_null_so_a_hand_set_parent_is_reset_on_apply():
+    # A re-apply writes only the declared attributes. Without `parent: null` a parent set by hand
+    # in the UI survives, and is_superuser resolves over every ancestor, so a superuser parent
+    # would make the reader a superuser. The key must be PRESENT and null, not merely absent.
+    grp = _entry("authentik_core.group", name="console-directory-readers")
+    assert "parent" in grp["attrs"], grp["attrs"]
+    assert grp["attrs"]["parent"] is None, grp["attrs"]["parent"]
+
+
 def test_the_account_is_a_service_account_whose_only_group_is_the_reader_group():
     user = _entry("authentik_core.user", username="svc-console-directory")
     assert user["id"] == "console-directory-user"
@@ -380,6 +389,8 @@ def test_a_superuser_directory_account_fails_the_deploy(tmp_path, rendered_conso
     done = _run(tmp_path, rendered_console, fake_api(_scenario(users=users)))
     assert done.returncode == 2, done.stdout + done.stderr
     assert "is_superuser is not false; the directory reader must not be a superuser" in done.stdout
+    # The OK line says superuser=false; a run that refused the account must not print it.
+    assert "OK   user" not in done.stdout, done.stdout
 
 
 def test_a_directory_account_in_platform_admins_fails_the_deploy(tmp_path, rendered_console, fake_api):
@@ -388,6 +399,7 @@ def test_a_directory_account_in_platform_admins_fails_the_deploy(tmp_path, rende
     done = _run(tmp_path, rendered_console, fake_api(_scenario(users=users)))
     assert done.returncode == 2, done.stdout + done.stderr
     assert "must not hold the admin tier" in done.stdout
+    assert "OK   user" not in done.stdout, done.stdout
 
 
 def test_a_missing_directory_token_in_the_server_env_fails_the_deploy(tmp_path, rendered_console, fake_api):

@@ -69,6 +69,11 @@ entries:
       name: console-directory-readers
     attrs:
       is_superuser: false
+      # parent: null is declared on purpose. A re-apply writes each declared attribute, so this
+      # resets a parent set by hand in the UI. is_superuser is resolved over every ancestor group
+      # (User.all_groups, authentik/core/models.py), so a superuser parent would make the reader a
+      # superuser. An attribute left undeclared is not reset, which is why the null has to be here.
+      parent: null
       roles:
         - !KeyOf console-directory-reader-role
   - model: authentik_core.user
