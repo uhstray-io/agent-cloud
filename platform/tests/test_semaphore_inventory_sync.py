@@ -203,7 +203,7 @@ def _deadline_driver(tmp_path, child_source, options, timeout=0.25):
 
 
 @contextmanager
-def _run_deadline_driver(tmp_path, driver, env):
+def _run_deadline_driver(tmp_path, driver, env, limit=4):
     process = subprocess.Popen(
         [sys.executable, str(driver)],
         stdin=subprocess.DEVNULL,
@@ -215,7 +215,7 @@ def _run_deadline_driver(tmp_path, driver, env):
         start_new_session=True,
     )
     try:
-        yield process.communicate(timeout=4), process.returncode
+        yield process.communicate(timeout=limit), process.returncode
     finally:
         # Kill the owned session even if its leader already exited but a descendant remains.
         try:
@@ -268,15 +268,13 @@ def test_child_deadline_returns_fixed_safe_preview_or_uncertain_apply(
 def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
     child_pidfile = tmp_path / "owned-child.pid"
     grandchild_pidfile = tmp_path / "owned-grandchild.pid"
-    late_marker = tmp_path / "grandchild-survived-deadline"
     grandchild = (
         "import os,time\n"
         f"open({str(grandchild_pidfile)!r}, 'w').write(str(os.getpid()))\n"
         f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
-        "time.sleep(1)\n"
-        f"open({str(late_marker)!r}, 'w').write('survived')\n"
         "time.sleep(60)\n"
     )
+    # Five seconds covers two interpreter startups under load; the harness bound must outlast it.
     driver, env = _deadline_driver(
         tmp_path,
         "#!/usr/bin/env python3\n"
@@ -285,15 +283,17 @@ def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
         f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
         "time.sleep(60)\n",
         ["--apply"],
+        timeout=5.0,
     )
-    with _run_deadline_driver(tmp_path, driver, env) as ((stdout, stderr), returncode):
+    with _run_deadline_driver(tmp_path, driver, env, limit=20) as ((stdout, stderr), returncode):
         assert returncode == 1
         assert "write outcome is uncertain" in stderr
         assert stdout == ""
         assert TOKEN not in stdout + stderr and PRIVATE not in stdout + stderr
         assert child_pidfile.exists() and grandchild_pidfile.exists()
-        time.sleep(1.2)
-        assert not late_marker.exists()
+        # Both must be gone once the script returns; the harness kills owned sessions only after this block.
+        assert _gone_within(_wait_for_pid(child_pidfile)), "the sync child survived its deadline"
+        assert _gone_within(_wait_for_pid(grandchild_pidfile)), "the grandchild survived its deadline"
 
 
 def _wait_for_pid(pidfile, limit=10):
