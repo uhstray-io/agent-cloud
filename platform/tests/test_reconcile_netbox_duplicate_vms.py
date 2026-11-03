@@ -5,8 +5,9 @@ The reconciliation is a Django-shell script, not an API client, so the tests run
 - static, from the parsed playbook: the extra-var guard is the first play; the play is hosts netbox_svc and
   reads no credential and makes no request; both shell tasks use the provision playbook's exec pattern; the dry
   task is read-only by construction (check_mode false, dry_run true, changed_when false) and the real task runs
-  only under `not ansible_check_mode`; the body carries no Jinja markers; the recorder username is the one
-  provision-netbox-automation-token.yml gives vm-recorder; the template is a dev variant with one optional string.
+  only under `not ansible_check_mode`; the body carries no Jinja markers; the body writes no workflow field and
+  saves no VM; the recorder username is the one provision-netbox-automation-token.yml gives vm-recorder; the
+  template is a dev variant with one optional string.
 - through the real playbook under ansible-playbook: a fake container engine stands in for `docker exec`, and a fake
   manage.py runs the script against stub Django modules whose state is a JSON file.
 - decisions, through the body alone (a subprocess, no Ansible): one case per guard, with the state read back before
@@ -42,8 +43,9 @@ BODY = PLAY["vars"]["_reconcile_body"]
 DRY = "Dry run: plan the reconciliation in the NetBox Django shell (nothing is written)"
 REAL = "Reconcile in the NetBox Django shell (one transaction; refused pairs are left untouched)"
 MARKER = "Declared by the service deployment workflow (validate-address)"
-FIELDS = ["ac_workflow_status", "ac_failed_steps", "ac_last_run"]
+RECONCILER = "workflow-vm-reconciler"
 DISCOVERY = "orb-agent"
+# The workflow fields the bare and discovery records hold. The reconciler must leave both records' fields as they are.
 RUN_NEW = {"ac_workflow_status": {"deploy": "pass"}, "ac_failed_steps": "", "ac_last_run": "2026-11-02T10:00:00Z"}
 RUN_OLD = {"ac_workflow_status": {"deploy": "fail"}, "ac_failed_steps": "deploy", "ac_last_run": "2026-10-01T10:00:00Z"}
 TASK_KEYWORDS = {
@@ -115,18 +117,10 @@ def test_the_extra_var_guard_is_the_first_play():
 def test_the_play_reads_no_credential_and_makes_no_request():
     assert not [t for t in _tasks() if _module(t) == "uri"]
     dumped = (json.dumps(PLAY["tasks"]) + BODY).lower()
-    for word in (
-        "x-vault-token",
-        "secret/",
-        "approle",
-        "api_token",
-        "authorization",
-        "/v1/",
-        "vm_reconciler",
-        "token",
-        "http",
-    ):
+    for word in ("x-vault-token", "secret/", "approle", "api_token", "authorization", "/v1/", "vm_reconciler", "http"):
         assert word not in dumped, word
+    # The only use of the token model is the account guard, which reads the account's state and never a credential.
+    assert BODY.count("Token.objects.filter(user=reconciler).exists()") == 1
 
 
 def test_both_shells_use_the_provision_exec_pattern():
@@ -189,19 +183,28 @@ def test_the_changelog_is_read_for_creates_of_virtual_machines_only():
         assert needle in BODY, needle
 
 
+def test_the_body_writes_no_workflow_field_and_saves_no_virtual_machine():
+    # Only the collector writes workflow status (spec "Only the collector writes status"). The reconciler deletes the
+    # bare record and saves only its own account.
+    assert "custom_field_data" not in BODY
+    assert BODY.count(".save()") == 1, "only the reconciler account is saved"
+    assert "refresh_from_db" not in BODY
+
+
 def test_the_writes_run_inside_the_change_logging_context_with_a_request_that_carries_the_account():
     with_line = BODY.index("with event_tracking(request):")
     assert BODY.index("request = NetBoxFakeRequest(") < with_line
-    for needle in ('"user": reconciler', '"id": uuid.uuid4()', "disc_obj.save()", 'e["bare_obj"].delete()'):
+    for needle in ('"user": reconciler', '"id": uuid.uuid4()', 'e["bare_obj"].delete()'):
         assert needle in BODY, needle
-    assert with_line < BODY.index("disc_obj.save()") < BODY.index('e["bare_obj"].delete()')
+    assert with_line < BODY.index('e["bare_obj"].delete()')
 
 
-def test_the_account_is_created_only_on_a_real_run_with_writes():
+def test_the_account_is_created_only_on_a_real_run_with_writes_and_created_inactive():
     gate = BODY.index("if not missing and not dry_run:")
     account = BODY.index("get_or_create(\n")
     assert gate < account < BODY.index("with event_tracking(request):")
     assert BODY.index("if not writes:") < account
+    assert 'defaults={"is_active": False}' in BODY
 
 
 def test_the_account_is_given_no_grant_and_its_state_is_checked():
@@ -210,23 +213,26 @@ def test_the_account_is_given_no_grant_and_its_state_is_checked():
         "user_permissions",
         "is_superuser=True",
         "is_staff=True",
+        "is_active=True",
         "ObjectPermission.objects.create",
         "ObjectPermission(",
     ):
         assert grant not in BODY, grant
     for check in (
+        "reconciler.is_active",
         "reconciler.is_superuser",
         "reconciler.groups.exists()",
         "ObjectPermission.objects.filter(users=reconciler).exists()",
         "reconciler.has_usable_password()",
+        "Token.objects.filter(user=reconciler).exists()",
     ):
         assert check in BODY, check
     assert "reconciler.set_unusable_password()" in BODY
 
 
-def test_each_discovery_update_and_bare_delete_is_gated_on_its_own_changelog_row():
-    assert 'action="update", user_name=RECONCILER' in BODY
+def test_each_bare_delete_is_gated_on_its_own_changelog_row_under_this_request():
     assert 'action="delete", user_name=RECONCILER' in BODY
+    assert "request_id=request.id" in BODY
 
 
 def test_the_relations_not_the_counter_caches_decide_the_locked_refusal():
@@ -235,7 +241,7 @@ def test_the_relations_not_the_counter_caches_decide_the_locked_refusal():
     assert BODY.index('e["bare_obj"].virtualdisks.exists()', lock) > lock
 
 
-def test_the_header_states_why_there_is_no_token_and_how_the_writes_are_recorded():
+def test_the_header_states_why_there_is_no_token_how_the_writes_are_recorded_and_what_is_lost():
     header = "\n".join(line for line in PLAYBOOK.read_text().splitlines() if line.startswith("#"))
     for phrase in (
         "no API token",
@@ -245,12 +251,17 @@ def test_the_header_states_why_there_is_no_token_and_how_the_writes_are_recorded
         "workflow-vm-reconciler",
         "event_tracking",
         "NetBoxFakeRequest",
+        "copy_safe_request",
         "event rules",
         "action=create",
         "virtual disk",
         "one transaction",
+        "not moved",
+        "Semaphore history",
+        "accepted",
     ):
         assert phrase in header, phrase
+    assert "netbox/netbox/jobs.py" not in header, "the request shape is copy_safe_request's, not the jobs'"
 
 
 # --- static: the template and the catalog --------------------------------------------------------------------
@@ -339,7 +350,7 @@ class VirtualMachine:
     def __getattr__(self, key):
         data = object.__getattribute__(self, "_data")
         if key == "cluster":
-            return _Named(data["cluster_name"])
+            return None if data["cluster_id"] is None else _Named(data["cluster_name"])
         if key == "tenant":
             return None if data["tenant_name"] is None else _Named(data["tenant_name"])
         if key == "created":
@@ -353,29 +364,6 @@ class VirtualMachine:
         if key in _VM_FIELDS:
             return data[key]
         raise AttributeError(key)
-
-    def __setattr__(self, key, value):
-        if key != "custom_field_data":
-            raise AttributeError(key)
-        self._data["custom_field_data"] = value
-
-    def save(self):
-        for index, row in enumerate(STATE["vms"]):
-            if row["id"] == self._data["id"]:
-                new = copy.deepcopy(self._data)
-                if os.environ.get("FAKE_DROP_SAVE"):
-                    new["custom_field_data"] = copy.deepcopy(row["custom_field_data"])
-                STATE["vms"][index] = new
-                _record("update", new["id"])
-                return
-        raise RuntimeError("save of a missing VM")
-
-    def refresh_from_db(self):
-        for row in STATE["vms"]:
-            if row["id"] == self._data["id"]:
-                object.__setattr__(self, "_data", copy.deepcopy(row))
-                return
-        raise RuntimeError("refresh of a missing VM")
 
     def delete(self):
         kept = [row for row in STATE["vms"] if row["id"] != self._data["id"]]
@@ -455,12 +443,14 @@ class ObjectChange:
         @staticmethod
         def filter(**lookups):
             allowed = {"changed_object_type__app_label", "changed_object_type__model",
-                       "changed_object_id__in", "changed_object_id", "action", "user_name"}
+                       "changed_object_id__in", "changed_object_id", "action", "user_name", "request_id"}
             unknown = set(lookups) - allowed
             if unknown:
                 raise AssertionError("unsupported changelog lookup: %s" % sorted(unknown))
+            wanted_request = str(lookups["request_id"]) if "request_id" in lookups else None
             rows = [row for row in STATE["changes"]
-                    if row["app_label"] == lookups.get("changed_object_type__app_label", row["app_label"])
+                    if (wanted_request is None or row.get("request_id") == wanted_request)
+                    and row["app_label"] == lookups.get("changed_object_type__app_label", row["app_label"])
                     and row["model"] == lookups.get("changed_object_type__model", row["model"])
                     and row["action"] == lookups.get("action", row["action"])
                     and row["user_name"] == lookups.get("user_name", row["user_name"])
@@ -515,6 +505,14 @@ class ObjectPermission:
         def filter(**lookups):
             # FAKE_ACCOUNT_GRANTS stands in for an account that holds an object permission.
             return _Rows(1 if os.environ.get("FAKE_ACCOUNT_GRANTS") else 0)
+
+
+class Token:
+    class objects:
+        @staticmethod
+        def filter(**lookups):
+            # FAKE_ACCOUNT_TOKEN stands in for an account that holds an API token.
+            return _Rows(1 if os.environ.get("FAKE_ACCOUNT_TOKEN") else 0)
 
 
 class NetBoxFakeRequest:
@@ -611,7 +609,7 @@ def _stub(tmp_path):
         (root / "utilities/__init__.py").write_text("")
         (root / "utilities/request.py").write_text("from _fake_orm import NetBoxFakeRequest\n")
         (root / "users/__init__.py").write_text("")
-        (root / "users/models.py").write_text("from _fake_orm import ObjectPermission\n")
+        (root / "users/models.py").write_text("from _fake_orm import ObjectPermission, Token\n")
         (root / "_fake_orm.py").write_text(FAKE_ORM)
         (root / "manage.py").write_text(SHIM)
     return root
@@ -734,14 +732,13 @@ def _run_body(tmp_path, state, *, dry_run, names=(), env=None):
 # --- decisions: the body run against the stub ---------------------------------------------------------------
 
 
-def test_a_qualifying_pair_merges_and_its_bare_record_is_deleted(tmp_path):
+def test_a_qualifying_pair_deletes_the_bare_record_and_leaves_the_discovery_record_untouched(tmp_path):
     proc, result, after = _run_body(tmp_path, _pair(), dry_run=False)
     assert proc.returncode == 0, proc.stderr
     assert result["ok"] is True
-    assert [p["action"] for p in result["pairs"]] == ["merged"]
-    assert result["pairs"][0]["moved"] == FIELDS
+    assert [p["action"] for p in result["pairs"]] == ["deleted"]
     assert [row["id"] for row in after["vms"]] == [11]
-    assert {f: after["vms"][0]["custom_field_data"][f] for f in FIELDS} == RUN_NEW
+    assert after["vms"][0]["custom_field_data"] == RUN_OLD, "the discovery record's fields must not be written"
     assert set(result["pairs"][0]) == {
         "name",
         "cluster",
@@ -752,9 +749,14 @@ def test_a_qualifying_pair_merges_and_its_bare_record_is_deleted(tmp_path):
         "disc_tenant",
         "disc_created",
         "action",
-        "moved",
     }
     assert '"pass"' not in proc.stdout, "a workflow value reached the output"
+
+
+def test_a_discovery_record_keeps_its_own_fields_when_the_bare_record_holds_a_newer_run(tmp_path):
+    proc, result, after = _run_body(tmp_path, _pair(bare_cf=RUN_NEW, disc_cf=RUN_OLD), dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert after["vms"][0]["custom_field_data"] == RUN_OLD
 
 
 def test_a_dry_run_reports_the_same_pair_and_writes_nothing(tmp_path):
@@ -762,7 +764,7 @@ def test_a_dry_run_reports_the_same_pair_and_writes_nothing(tmp_path):
     proc, result, after = _run_body(tmp_path, before, dry_run=True)
     assert proc.returncode == 0, proc.stderr
     assert result["ok"] is True and result["dry_run"] is True
-    assert [p["action"] for p in result["pairs"]] == ["would_merge"]
+    assert [p["action"] for p in result["pairs"]] == ["would_delete"]
     assert after == before
 
 
@@ -785,7 +787,7 @@ def test_a_bare_record_with_an_interface_or_an_address_is_refused_and_left_alone
     assert after == before
 
 
-def test_a_refused_pair_is_left_alone_while_the_other_pairs_of_the_run_are_reconciled(tmp_path):
+def test_a_refused_pair_is_left_alone_while_the_other_pairs_of_the_run_are_deleted(tmp_path):
     before = _merge(
         _pair(name="dns", bare_id=10, disc_id=11, bare_kw={"interfaces": 1}),
         _pair(name="vault", bare_id=20, disc_id=21),
@@ -793,7 +795,7 @@ def test_a_refused_pair_is_left_alone_while_the_other_pairs_of_the_run_are_recon
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode == 0, proc.stderr
     assert result["ok"] is False
-    assert {p["name"]: p["action"] for p in result["pairs"]} == {"dns": "refused:has interfaces", "vault": "merged"}
+    assert {p["name"]: p["action"] for p in result["pairs"]} == {"dns": "refused:has interfaces", "vault": "deleted"}
     assert sorted(row["id"] for row in after["vms"]) == [10, 11, 21]
 
 
@@ -840,54 +842,23 @@ def test_two_bare_records_are_ambiguous_and_untouched(tmp_path):
     assert after == before
 
 
-def test_the_workflow_fields_move_as_one_unit_from_a_newer_bare_run(tmp_path):
-    # Discovery's failed-steps value is "deploy"; the newer bare run's is empty. The unit replaces all three.
-    proc, result, after = _run_body(tmp_path, _pair(bare_cf=RUN_NEW, disc_cf=RUN_OLD), dry_run=False)
+def test_a_pair_with_no_cluster_sorts_beside_a_pair_of_the_same_name_in_a_cluster(tmp_path):
+    # Same name, one group with cluster_id None and one with an int: the group sort must not compare None with an int.
+    def pair_in(cluster, bare_id, disc_id):
+        return {
+            "vms": [
+                _vm(bare_id, "dns", bare=True, cluster=cluster, cf=RUN_NEW),
+                _vm(disc_id, "dns", bare=False, cluster=cluster, cf=RUN_OLD),
+            ],
+            "changes": _creates(bare_id, ["workflow-vm-recorder"]) + _creates(disc_id, [DISCOVERY]),
+        }
+
+    before = _merge(pair_in(None, 10, 11), pair_in(1, 20, 21))
+    proc, result, after = _run_body(tmp_path, before, dry_run=True)
     assert proc.returncode == 0, proc.stderr
-    assert after["vms"][0]["custom_field_data"]["ac_failed_steps"] == ""
-
-
-def test_a_bare_run_older_than_discovery_moves_nothing(tmp_path):
-    proc, result, after = _run_body(tmp_path, _pair(bare_cf=RUN_OLD, disc_cf=RUN_NEW), dry_run=False)
-    assert proc.returncode == 0, proc.stderr
-    assert result["pairs"][0]["action"] == "merged" and result["pairs"][0]["moved"] == []
-    assert after["vms"][0]["custom_field_data"] == RUN_NEW
-
-
-def test_a_bare_run_moves_when_discovery_has_no_run_stamp(tmp_path):
-    proc, result, after = _run_body(tmp_path, _pair(bare_cf=RUN_OLD, disc_cf={}), dry_run=False)
-    assert proc.returncode == 0, proc.stderr
-    assert result["pairs"][0]["moved"] == FIELDS
-    assert after["vms"][0]["custom_field_data"] == RUN_OLD
-
-
-def test_a_bare_run_without_a_stamp_moves_nothing(tmp_path):
-    before = _pair(bare_cf={"ac_workflow_status": {"deploy": "pass"}}, disc_cf=RUN_OLD)
-    proc, result, after = _run_body(tmp_path, before, dry_run=False)
-    assert proc.returncode == 0, proc.stderr
-    assert result["pairs"][0]["moved"] == []
-    assert after["vms"][0]["custom_field_data"] == RUN_OLD
-
-
-def test_run_stamps_compare_as_instants_not_as_text(tmp_path):
-    # 10:00+02:00 is 08:00Z, earlier than 09:00Z. A text comparison would call the bare run newer.
-    before = _pair(
-        bare_cf={**RUN_NEW, "ac_last_run": "2026-11-02T10:00:00+02:00"},
-        disc_cf={**RUN_OLD, "ac_last_run": "2026-11-02T09:00:00Z"},
-    )
-    proc, result, after = _run_body(tmp_path, before, dry_run=False)
-    assert proc.returncode == 0, proc.stderr
-    assert result["pairs"][0]["moved"] == []
-    assert after["vms"][0]["custom_field_data"]["ac_last_run"] == "2026-11-02T09:00:00Z"
-
-
-def test_an_unreadable_run_stamp_is_refused_and_left_alone(tmp_path):
-    before = _pair(bare_cf={"ac_last_run": "yesterday afternoon"}, disc_cf=RUN_OLD)
-    proc, result, after = _run_body(tmp_path, before, dry_run=False)
-    assert proc.returncode == 0, proc.stderr
-    assert [p["action"] for p in result["pairs"]] == ["refused:unparseable_last_run"]
-    assert result["ok"] is False
-    assert after == before
+    assert sorted(p["bare_id"] for p in result["pairs"]) == [10, 20]
+    assert {p["action"] for p in result["pairs"]} == {"would_delete"}
+    assert {p["cluster"] for p in result["pairs"]} == {"none", "uhstray-cluster"}
 
 
 def test_a_requested_name_selects_only_its_pair_and_matches_case_insensitively(tmp_path):
@@ -921,12 +892,12 @@ def test_a_requested_name_whose_origin_is_unverified_stops_the_whole_run(tmp_pat
 
 
 def test_a_bare_record_that_gains_an_interface_after_the_read_is_refused_at_the_lock(tmp_path):
-    # The plan saw no interface; the locked re-read does. Only that pair is refused, and the other pair still merges.
+    # The plan saw no interface; the locked re-read does. Only that pair is refused, and the other pair still deletes.
     before = _merge(_pair(name="dns", bare_id=10, disc_id=11), _pair(name="vault", bare_id=20, disc_id=21))
     proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_RACE_PK": "10"})
     assert proc.returncode == 0, proc.stderr
     assert result["ok"] is False
-    assert {p["name"]: p["action"] for p in result["pairs"]} == {"dns": "refused:has interfaces", "vault": "merged"}
+    assert {p["name"]: p["action"] for p in result["pairs"]} == {"dns": "refused:has interfaces", "vault": "deleted"}
     assert sorted(row["id"] for row in after["vms"]) == [10, 11, 21]
 
 
@@ -939,7 +910,7 @@ def test_a_pair_whose_bare_record_stops_matching_mid_run_stops_the_whole_run(tmp
 
 
 def test_a_stale_interface_counter_does_not_let_a_record_with_interfaces_through(tmp_path):
-    # The counter reads 0 and the plan merges the pair; the relation holds an interface row, so the lock refuses it.
+    # The counter reads 0 and the plan deletes the pair; the relation holds an interface row, so the lock refuses it.
     before = _pair(bare_kw={"real_interfaces": 1})
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode == 0, proc.stderr
@@ -961,76 +932,104 @@ def test_a_dry_run_creates_no_reconciler_account(tmp_path):
     proc, result, after = _run_body(tmp_path, _pair(), dry_run=True)
     assert proc.returncode == 0, proc.stderr
     assert "users" not in after and "changes" in after
-    assert [p["action"] for p in result["pairs"]] == ["would_merge"]
+    assert [p["action"] for p in result["pairs"]] == ["would_delete"]
 
 
-def test_a_real_run_with_nothing_to_merge_creates_no_reconciler_account(tmp_path):
+def test_a_real_run_with_nothing_to_delete_creates_no_reconciler_account(tmp_path):
     proc, result, after = _run_body(tmp_path, _pair(), dry_run=False, names=["nope"])
     assert proc.returncode == 0, proc.stderr
     assert result["ok"] is False
     assert "users" not in after
 
 
-def test_the_reconciler_account_is_unusable_and_its_writes_are_changelogged_under_it(tmp_path):
-    proc, result, after = _run_body(tmp_path, _merge(_pair(name="dns", bare_id=10, disc_id=11)), dry_run=False)
+def test_the_reconciler_account_is_inactive_unusable_and_its_delete_is_changelogged_under_it(tmp_path):
+    proc, result, after = _run_body(tmp_path, _pair(name="dns", bare_id=10, disc_id=11), dry_run=False)
     assert proc.returncode == 0, proc.stderr
     assert after["users"] == [
-        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": False}
+        {"username": RECONCILER, "is_active": False, "is_superuser": False, "usable_password": False}
     ]
-    rows = [row for row in after["changes"] if row.get("user_name") == "workflow-vm-reconciler"]
-    assert sorted((row["action"], row["changed_object_id"]) for row in rows) == [("delete", 10), ("update", 11)]
-    assert len({row["request_id"] for row in rows}) == 1, "the writes of one run must share one request"
+    rows = [row for row in after["changes"] if row.get("user_name") == RECONCILER]
+    assert [(row["action"], row["changed_object_id"]) for row in rows] == [("delete", 10)]
 
 
 def test_a_run_whose_changelog_rows_are_missing_rolls_back(tmp_path):
     before = _pair()
     proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_NO_CHANGELOG": "1"})
     assert proc.returncode != 0, proc.stdout
-    assert "no changelog row for a discovery record's update" in proc.stderr
+    assert "no changelog row for a bare record's delete" in proc.stderr
+    assert after == before
+
+
+def test_a_delete_row_from_an_earlier_request_does_not_satisfy_this_runs_gate(tmp_path):
+    # A delete row by the same account exists, but under another request id. The gate reads this run's request only.
+    before = _pair()
+    before["changes"].append(
+        {
+            "changed_object_id": 10,
+            "app_label": "virtualization",
+            "model": "virtualmachine",
+            "action": "delete",
+            "user_name": RECONCILER,
+            "request_id": "earlier-request",
+        }
+    )
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_NO_DELETE_ROW": "1"})
+    assert proc.returncode != 0, proc.stdout
+    assert "no changelog row for a bare record's delete" in proc.stderr
     assert after == before
 
 
 def test_a_pre_existing_account_holding_a_usable_password_stops_the_run(tmp_path):
     before = _pair()
-    before["users"] = [
-        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": True}
-    ]
+    before["users"] = [{"username": RECONCILER, "is_active": False, "is_superuser": False, "usable_password": True}]
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode != 0, proc.stdout
-    assert "holds a grant or a usable password" in proc.stderr
+    assert "is active, holds a grant, a usable password or an API token" in proc.stderr
     assert after == before
 
 
-def test_a_pre_existing_account_with_no_usable_password_is_used_as_it_is(tmp_path):
+def test_a_pre_existing_inactive_account_with_no_grant_or_password_is_used_as_it_is(tmp_path):
     before = _pair()
-    before["users"] = [
-        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": False}
-    ]
+    before["users"] = [{"username": RECONCILER, "is_active": False, "is_superuser": False, "usable_password": False}]
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode == 0, proc.stderr
-    assert result["pairs"][0]["action"] == "merged"
+    assert result["pairs"][0]["action"] == "deleted"
     assert after["users"] == before["users"]
+
+
+def test_a_pre_existing_active_account_stops_the_run_even_with_no_grant_or_password(tmp_path):
+    before = _pair()
+    before["users"] = [{"username": RECONCILER, "is_active": True, "is_superuser": False, "usable_password": False}]
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode != 0, proc.stdout
+    assert "is active, holds a grant" in proc.stderr
+    assert after == before
 
 
 def test_a_pre_existing_superuser_account_stops_the_run(tmp_path):
     before = _pair()
-    before["users"] = [
-        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": True, "usable_password": False}
-    ]
+    before["users"] = [{"username": RECONCILER, "is_active": False, "is_superuser": True, "usable_password": False}]
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode != 0, proc.stdout
-    assert "holds a grant or a usable password" in proc.stderr
+    assert "holds a grant" in proc.stderr
     assert after == before
 
 
 def test_a_pre_existing_account_holding_an_object_permission_or_a_group_stops_the_run(tmp_path):
     before = _pair()
-    before["users"] = [
-        {"username": "workflow-vm-reconciler", "is_active": True, "is_superuser": False, "usable_password": False}
-    ]
+    before["users"] = [{"username": RECONCILER, "is_active": False, "is_superuser": False, "usable_password": False}]
     proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_ACCOUNT_GRANTS": "1"})
     assert proc.returncode != 0, proc.stdout
-    assert "holds a grant or a usable password" in proc.stderr
+    assert "holds a grant" in proc.stderr
+    assert after == before
+
+
+def test_a_pre_existing_account_holding_an_api_token_stops_the_run(tmp_path):
+    before = _pair()
+    before["users"] = [{"username": RECONCILER, "is_active": False, "is_superuser": False, "usable_password": False}]
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_ACCOUNT_TOKEN": "1"})
+    assert proc.returncode != 0, proc.stdout
+    assert "or an API token" in proc.stderr
     assert after == before
 
 
@@ -1043,7 +1042,7 @@ def test_a_run_whose_bare_delete_has_no_changelog_row_rolls_back(tmp_path):
 
 
 def test_the_reconciler_rows_cannot_change_the_origin_of_a_pair(tmp_path):
-    # The origin check reads create rows only: the account's update rows on both records do not make a pair unverified.
+    # The origin check reads create rows only: the account's rows on both records do not make a pair unverified.
     before = _pair()
     for vm_id in (10, 11):
         before["changes"].append(
@@ -1052,21 +1051,13 @@ def test_the_reconciler_rows_cannot_change_the_origin_of_a_pair(tmp_path):
                 "app_label": "virtualization",
                 "model": "virtualmachine",
                 "action": "update",
-                "user_name": "workflow-vm-reconciler",
+                "user_name": RECONCILER,
                 "request_id": "earlier",
             }
         )
     proc, result, after = _run_body(tmp_path, before, dry_run=False)
     assert proc.returncode == 0, proc.stderr
-    assert [p["action"] for p in result["pairs"]] == ["merged"]
-
-
-def test_a_discovery_write_that_does_not_read_back_deletes_nothing(tmp_path):
-    before = _pair()
-    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_DROP_SAVE": "1"})
-    assert proc.returncode != 0, proc.stdout
-    assert "did not hold the moved fields" in proc.stderr
-    assert after == before
+    assert [p["action"] for p in result["pairs"]] == ["deleted"]
 
 
 # --- through the real playbook: ansible-playbook, a fake container engine, the same stub ---------------------
@@ -1102,11 +1093,11 @@ def _ansible(tmp_path, state, *, check=False, extra=None):
 
 
 @NEEDS_ANSIBLE
-def test_the_playbook_reconciles_a_qualifying_pair_through_the_shell(tmp_path):
+def test_the_playbook_deletes_a_qualifying_bare_record_through_the_shell(tmp_path):
     proc, out, after = _ansible(tmp_path, _pair())
     assert proc.returncode == 0, out
     assert [row["id"] for row in after["vms"]] == [11]
-    assert '"action": "merged"' in out
+    assert '"action": "deleted"' in out
 
 
 @NEEDS_ANSIBLE
@@ -1117,7 +1108,7 @@ def test_check_mode_plans_through_the_shell_with_dry_run_and_changes_nothing(tmp
     assert after == before
     received = (_stub(tmp_path) / "received.log").read_text()
     assert 'dry_run\\": true' in received and 'dry_run\\": false' not in received
-    assert '"action": "would_merge"' in out
+    assert '"action": "would_delete"' in out
 
 
 @NEEDS_ANSIBLE
