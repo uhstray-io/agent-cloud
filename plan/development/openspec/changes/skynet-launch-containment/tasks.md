@@ -21,7 +21,7 @@
 - [ ] 3.2 `deploy-launch-gate.yml`: input refusals, place repo, secrets (`caller_<name>_token` generated, `semaphore_api_token` existing), allowlist rendered from OPA's catalog excluding destructive templates, leaf issuance, deploy, verify (TLS health, 401 without token, 400 for an undeclared key, 403 for a non-allowlisted template, plain HTTP refused)
 - [ ] 3.3 `clean-deploy-launch-gate.yml`, `provision-launch-gate-semaphore-access.yml` (shared identity task, `task_runner`, launch probe 404)
 - [ ] 3.4 Templates (base with Dev variant, Local) in `templates.yml` / `templates-local.yml`; local-dev inventory and bootstrap entries
-- [ ] 3.5 Renew Internal Certs: generalise the OPA server-leaf proof into a declared-listener proof and admit `launch-gate-server`; tests for both leaves
+- [x] 3.5 Renew Internal Certs: generalise the OPA server-leaf proof into a declared-listener proof and admit `launch-gate-server`; tests for both leaves
 - [ ] 3.6 deploy-skynet: shared-read `caller_skynet_token`, render `SKYNET_LAUNCH_GATE_URL` and the gate's name mapping in `compose.prod.yml`, verify skynet's container reaches the gate (401 without token)
 - [ ] 3.7 Docs: service CLAUDE.md, AGENTS.md rows (secrets layout, workflows, sub-directory docs), playbooks README
 - [ ] 3.8 Validation gate: scenarios "Missing token" and "Caller claims another identity" pass against the locally deployed gate
