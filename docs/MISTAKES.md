@@ -72,7 +72,7 @@ and why.
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | 1 | Test + **repo-wide normalisation outstanding** |
-| 2.15 | Matched a substring/token instead of the anchored construct, twice — a commented guard passed | **x2** False green | 2 | Test (anchored + active-construct) |
+| 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red) | **x3** False green | 3 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
@@ -122,7 +122,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`) | Process | 6 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards) | Process | 7 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -1586,7 +1586,7 @@ localhost-defaulting variant, which is the dangerous one — is a separate chang
 recorded here so it is not mistaken for done.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
-**Occurrences: 2** — 2026-08-25, 2026-08-25
+**Occurrences: 3** — 2026-08-25, 2026-08-25, 2026-11-02
 
 **What happened.** 2.12 records replacing a blacklist of forbidden write verbs
 with an invariant: within the validation step, every mention of the live
@@ -1624,6 +1624,20 @@ mention the same environment variable. Both bypasses were reproduced before
 fixing. The guard check now matches an active `include_tasks:` line, and the
 address check compares the whole normalised expression rather than a token within
 it.
+
+**Occurrence 3 — 2026-11-02.** The same unanchored match, this time failing red instead of
+passing green. The 2.33 fix made the "nothing listens here" port a constant, `REFUSED_PORT = 1`
+(`platform/tests/fake_http.py`). `test_reboot_and_probe.py` then asserted
+`f"{closed} was" not in r.stdout`, which is `"1 was"`, and that text also occurs inside the open
+port's own line whenever its number ends in 1 (`59171 was open, expected closed`), so the test
+failed about one run in ten. PR 818's CI hit it; `c5b1a5e9` matches the port as a whole number
+(`(?<!\d){closed} was`). Why the rule did not fire: it is written about allow-lists and guard
+lines, and a needle built from a number did not read as a substring claim, although it is one,
+about every number that ends in the same digits. **Proposed guard** (the count is now 3, so
+Convention is not enough): an AST ratchet in `platform/tests`, modelled on the
+`test_assertions_are_real.bats` ratchet, that flags any `in` / `not in` comparison whose needle is an f-string beginning
+with an interpolated value and whose haystack is captured output, held in a known-list like
+`known_inert_assertions.txt`, so a new one fails CI and existing ones are visible.
 
 ### 2.16 A test whose population was selected by the presence of the fix
 
@@ -3338,6 +3352,19 @@ merge; `ebdcef76` and `1fb408b7` fixed them. Why the rule did not fire: the hook
 it was bypassed whole to get past an unrelated, known-red set. Proposed guard: the pre-push hook
 runs pytest under a Python 3.12 when one is installed, or deselects only the named 3.14 failures,
 so `SKIP_TESTS=1` is never the way past them.
+
+**Occurrence 2026-11-02 (a new service pushed with the hook switched off).** Pushed PR 818's
+launch gate under `SKIP_TESTS=1` because the pre-push hook had run past an hour on this
+workstation, and ran only the gate's own three test files before each push. CI's Python core
+then failed on two repo-wide guards those files do not include: `test_tls_contexts_pinned.py`
+(the Semaphore and OPA client contexts set no minimum TLS version) and `test_fake_http.py` (the
+gate's production handler does not derive from the test base). Both run in seconds and would
+have failed locally. Fixed in `63ec30b8` before merge. Why the rule did not fire: with the
+full suite too slow to run, "the tests for what I changed" replaced "the suite", and the
+repo-wide scans are exactly the tests that cover files they do not name. **Proposed guard**,
+narrowing the 2026-10-30 proposal: `SKIP_TESTS=1` skips only the slow playbook-run tests; the
+pre-push hook always runs the fast repo-wide scans (the AST and text guards under
+`platform/tests` that read every file), so they cannot be bypassed with the rest.
 
 ### 5.3 Merging while the review was rate-limited
 
