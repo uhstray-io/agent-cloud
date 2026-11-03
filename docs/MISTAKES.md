@@ -822,18 +822,20 @@ saved task output (12/13 semantic, 0/13 shape).
 **Occurrence 3 — 2026-11-02.** PR #817's body stated, under Evidence, "The guard failed on all
 eight sites before they were changed." No command had run the guard against the pre-fix files:
 the eight sites were the ones fixed, and the guard passed afterwards, so the coverage was
-assumed from both ends. The review ran it against the `origin/dev` copies of the seven touched
-files and it flagged seven: a port name set in two branches (`pve_port` in
-`test_probe_console_sources.py`) kept only its last origin. The guard was fixed
-(`233ef50b`), the run repeated and recorded (eight distinct sites), and the body corrected
-before merge. Why the rule did not fire: the claim was coverage ("all eight"), not a count of
+assumed from both ends. Run against the pre-fix copies (the original guard,
+`f9f47603:platform/tests/test_fake_http.py::_used_after_close`, over every function node of the seven
+touched files at `6afa8f1c`, deduplicated to file and function), it flags 7 distinct sites: a port
+name set in two branches (`pve_port` in `test_probe_console_sources.py::run`) kept only its last
+origin. The guard was fixed (`233ef50b`); the same run with the fixed guard flags 8 distinct sites,
+and the body was corrected before merge. Why the rule did not fire: the claim was coverage ("all eight"), not a count of
 files, and it sat in a PR body, which the rule does not name; it was also written while
 summarising work just finished, when results feel in hand. The rule covers it: a number or an
 "all" in written evidence is the output of a command run over the whole set at the time of
 writing.
 
-**Proposed mechanical check (count of 3).** `scripts/merge-when-green.py` reads the PR body
-already. It would refuse a body whose Evidence section states a count or an "all"/"every"
+**Proposed mechanical check (count of 3).** `scripts/merge-when-green.py` fetches the PR
+(`get_pr`), whose response carries the body, but does not inspect it today (the only body it reads
+is each conversation comment's). The check would refuse a body whose Evidence section states a count or an "all"/"every"
 claim on a bullet that names no command in backticks, so every such claim carries the command
 that produced it. Not built: it would refuse prose that states counts honestly in other ways,
 and its wording needs the operator's decision before it gates merges.
