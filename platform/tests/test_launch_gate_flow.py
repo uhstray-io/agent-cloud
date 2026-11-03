@@ -1,21 +1,21 @@
 """Client and flow tests for the launch gate, against fake Semaphore and OPA servers on loopback.
 
-Each test gets its own fakes, config file and dead OPA socket, so nothing is shared and the file runs
-under pytest-xdist. The fakes derive from DrainingHandler (platform/tests/fake_http.py), the base every
-fake HTTP server in the suites uses, so no reply leaves an unread request body. Gate.handle is called
-directly; the TLS listener is tested where the server lives.
+Each test gets its own fakes and config file, so nothing is shared and the file runs under pytest-xdist.
+The unreachable-OPA case aims at fake_http.refused_port(), a port that refuses at once. The fakes derive
+from DrainingHandler (platform/tests/fake_http.py), the base every fake HTTP server in the suites uses, so
+no reply leaves an unread request body. Gate.handle is called directly; the TLS listener is tested where
+the server lives.
 """
 
 import importlib.util
 import json
-import socket
 import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "platform/services/launch-gate/deployment/app/launch_gate.py"
@@ -36,8 +36,11 @@ lg = _load_gate()
 PROJECT = 2
 TEMPLATE = "Deploy agentgateway (Dev)"
 TEMPLATE_ID = 12
+OTHER_TEMPLATE = "Check o11y Liveness (Dev)"
+OTHER_TEMPLATE_ID = 13
 REPO_ID = 5
 TASK_ID = 77
+OTHER_TASK_ID = 88
 VERIFIED = "v2.19.11"
 SEMA_BASE = f"/api/project/{PROJECT}"
 TASKS = f"{SEMA_BASE}/tasks"
@@ -134,7 +137,8 @@ class Fake:
                 self._serve("POST")
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # close() waits out one poll, so the default 0.5 s would be paid by every fake of every test.
+        self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self._thread.start()
 
     @property
@@ -149,19 +153,12 @@ class Fake:
         self._server.server_close()
 
 
-def _dead_port():
-    """A loopback port that refuses connections: bound and never listen()ed, so no other process can take it."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    return sock
-
-
 def _config(tmp_path, opa_url, semaphore_url):
     doc = {
         "semaphore_url": semaphore_url,
         "semaphore_project": PROJECT,
         "opa_url": opa_url,
-        "allowlist": [TEMPLATE],
+        "allowlist": [TEMPLATE, OTHER_TEMPLATE],
         "callers": {"skynet": ["infra-agent"], "console": []},
         "listen_host": "127.0.0.1",
         "listen_port": 8443,
@@ -199,15 +196,10 @@ class World:
         self.tmp_path = tmp_path
         self.semaphore = Fake()
         self.opa = Fake()
-        self.dead = _dead_port()
         self.events = []
         self.semaphore.routes.update(_happy_semaphore())
         self.opa.routes[("POST", OPA_PATH)] = (200, {"result": {"allowed": True, "reason": OPA_REASON}}, {})
         self.gate = self.gate_for(self.opa.url)
-
-    @property
-    def dead_url(self):
-        return f"http://127.0.0.1:{self.dead.getsockname()[1]}"
 
     def gate_for(self, opa_url, opa=None):
         cfg = _config(self.tmp_path, opa_url, self.semaphore.url)
@@ -226,7 +218,6 @@ class World:
     def close(self):
         self.semaphore.close()
         self.opa.close()
-        self.dead.close()
 
 
 @pytest.fixture
@@ -388,7 +379,7 @@ def test_opa_deny_is_403_with_its_reason_and_no_task(world):
 
 
 def test_opa_unreachable_is_503_and_no_task(world):
-    gate = world.gate_for(world.dead_url)
+    gate = world.gate_for(f"http://127.0.0.1:{refused_port()}")
     status, payload = world.launch(gate=gate)
     assert (status, payload["error"]) == (503, "opa_unavailable")
     assert _posts(world) == []
@@ -628,9 +619,9 @@ def test_template_with_its_own_different_branch_is_502_and_asks_opa_nothing(worl
 
 
 def test_two_concurrent_launches_of_one_template_create_exactly_one_task(world):
-    # Both launches must read the template's tasks before either creates one. With the launch lock the second
-    # read waits for the first create, so the wait below times out and the create proceeds; without the lock the
-    # two reads both see the template idle and both creates go through.
+    # Both launches must read the template's tasks before either creates one. With the per-template lock the
+    # second read waits for the first create, so the wait below times out and the create proceeds; without the
+    # lock the two reads both see the template idle and both creates go through.
     reads = []
     created = []
     both_read = threading.Event()
@@ -663,6 +654,42 @@ def test_two_concurrent_launches_of_one_template_create_exactly_one_task(world):
     assert sorted(status for status, _ in results) == [201, 409]
     assert [payload["error"] for status, payload in results if status == 409] == ["already_running"]
     assert len(_posts(world)) == 1
+
+
+def test_launches_of_different_templates_do_not_wait_on_each_other(world):
+    # Template A's create blocks until template B has posted. B needs no lock A holds, so it posts while A is
+    # in flight. Under one lock for every template, B waits behind A, never posts during A's wait, and
+    # overlapped records False.
+    world.semaphore.routes[("GET", f"{SEMA_BASE}/templates/{OTHER_TEMPLATE_ID}")] = (
+        200,
+        {"id": OTHER_TEMPLATE_ID, "name": OTHER_TEMPLATE, "repository_id": REPO_ID, "survey_vars": []},
+        {},
+    )
+    a_posting = threading.Event()
+    b_posted = threading.Event()
+    overlapped = []
+
+    def create_task(record):
+        if record["body"]["template_id"] == TEMPLATE_ID:
+            a_posting.set()
+            overlapped.append(b_posted.wait(timeout=5))
+            return 201, {"id": TASK_ID}, {}
+        b_posted.set()
+        return 201, {"id": OTHER_TASK_ID}, {}
+
+    world.semaphore.hooks[("POST", TASKS)] = create_task
+    results = []
+    first = threading.Thread(target=lambda: results.append(world.launch(_request())))
+    first.start()
+    assert a_posting.wait(timeout=10)
+    second = threading.Thread(target=lambda: results.append(world.launch(_request(template=OTHER_TEMPLATE, survey={}))))
+    second.start()
+    for thread in (first, second):
+        thread.join(timeout=30)
+
+    assert overlapped == [True]
+    assert sorted(status for status, _ in results) == [201, 201]
+    assert sorted(record["body"]["template_id"] for record in _posts(world)) == [TEMPLATE_ID, OTHER_TEMPLATE_ID]
 
 
 # ---------- the log ----------

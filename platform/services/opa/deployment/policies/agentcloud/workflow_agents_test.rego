@@ -69,7 +69,8 @@ test_generated_dev_suffix_matches_base_name if {
 }
 
 # The launch gate adds `settings`, the exact survey values it will launch (change
-# skynet-launch-containment, design decision 6); no rule reads it yet, so it changes no verdict.
+# skynet-launch-containment, design decision 6). Only target_service is read (agent_actions.rego,
+# "Agent launches"); the other keys change no verdict.
 test_launch_gate_settings_field_keeps_an_allow if {
 	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": "x_svc"}})
 }
@@ -77,6 +78,264 @@ test_launch_gate_settings_field_keeps_an_allow if {
 test_launch_gate_settings_field_keeps_a_deny if {
 	d := agentcloud.decision with input as object.union(_run("o11y-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": "x_svc"}})
 	not d.allowed
+}
+
+# target_service names one <name>_svc group for a hosts: pattern (Harden SSH), or one bare service
+# name for the templates that append _svc themselves (Provision VM and the others). Each bad value is its own
+# test, so a failure names the value that got through; the non-string values guard the type check.
+_target_reason := "target_service must name one service group, or one service for the templates that take a bare name"
+
+_gate_input(target) := object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": target}})
+
+test_launch_gate_target_service_one_group_keeps_an_allow if {
+	agentcloud.allow with input as _gate_input("harden_svc")
+}
+
+test_launch_gate_target_service_all_is_denied if {
+	d := agentcloud.decision with input as _gate_input("all")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_star_is_denied if {
+	d := agentcloud.decision with input as _gate_input("*")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_ungrouped_is_denied if {
+	d := agentcloud.decision with input as _gate_input("ungrouped")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_colon_pattern_is_denied if {
+	d := agentcloud.decision with input as _gate_input("harden_svc:other_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_negation_is_denied if {
+	d := agentcloud.decision with input as _gate_input("!x_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_comma_list_is_denied if {
+	d := agentcloud.decision with input as _gate_input("harden_svc,other_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_glob_is_denied if {
+	d := agentcloud.decision with input as _gate_input("web*_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_uppercase_is_denied if {
+	d := agentcloud.decision with input as _gate_input("HARDEN_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_empty_is_denied if {
+	d := agentcloud.decision with input as _gate_input("")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_null_is_denied if {
+	d := agentcloud.decision with input as _gate_input(null)
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_number_is_denied if {
+	d := agentcloud.decision with input as _gate_input(1)
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_array_is_denied if {
+	d := agentcloud.decision with input as _gate_input(["harden_svc"])
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_false_is_denied if {
+	d := agentcloud.decision with input as _gate_input(false)
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+# A `settings` block without the key is outside the rule: the other survey values change nothing.
+# The controller and a parent group above the service groups are plain identifiers too, and each
+# widens a hosts: pattern; a bare service name is not a group at all.
+test_launch_gate_target_service_localhost_is_denied if {
+	d := agentcloud.decision with input as _gate_input("localhost")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_parent_group_is_denied if {
+	d := agentcloud.decision with input as _gate_input("servers")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_bare_name_is_denied_for_a_hosts_pattern if {
+	d := agentcloud.decision with input as _gate_input("postiz")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_settings_without_target_service_keeps_an_allow if {
+	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"smoke": "1"}})
+}
+
+# Bare service names: these templates look the declaration up with groups[target_service ~ '_svc'],
+# so the value they take carries no suffix. Each is allowed (the gate must not refuse them).
+_vm_run(template, step, settings) := object.union(_run("infra-agent", template, step), {"settings": settings})
+
+test_provision_vm_bare_service_name_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "postiz"})
+}
+
+test_provision_vm_pbs_special_value_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "pbs"})
+}
+
+test_provision_vm_target_service_localhost_is_denied if {
+	d := agentcloud.decision with input as _vm_run("Provision VM", "provision-vm", {"target_service": "localhost"})
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_provision_vm_dev_variant_keeps_the_bare_name_rule if {
+	agentcloud.allow with input as _vm_run("Provision VM (Dev)", "provision-vm", {"target_service": "postiz"})
+}
+
+test_provision_vm_bare_name_with_target_host_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "postiz", "target_host": "postiz-01"})
+}
+
+test_provision_vm_local_host_name_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "postiz", "target_host": "opa-local"})
+}
+
+test_resize_vm_bare_service_name_keeps_an_allow if {
+	agentcloud.allow with input as object.union(_vm_run("Resize VM", "vm-rightsize", {"target_service": "postiz"}), {
+		"proposal": {"vm_spec": {"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "deploy_template": "Deploy tududi", "verdict": {"decision": "converge", "findings": []}},
+		"context": _ctx,
+	})
+}
+
+test_lookup_service_inventory_bare_service_name_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Lookup Service Inventory", "lookup-inventory", {"target_service": "postiz"})
+}
+
+test_validate_address_free_bare_service_name_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Validate Address Free", "validate-address", {"target_service": "postiz"})
+}
+
+# An underscore is not Ansible pattern syntax, and inventories hold host names that use it.
+test_provision_vm_target_host_with_underscore_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "postiz", "target_host": "postiz_01"})
+}
+
+test_target_host_localhost_is_denied if {
+	d := agentcloud.decision with input as _host_input("localhost")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+test_target_host_negation_is_denied if {
+	d := agentcloud.decision with input as _host_input("!postiz-01")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+# target_host (Provision VM selects one declared host with it) is one plain host name.
+_host_reason := "target_host must be one plain host name"
+
+_host_input(host) := _vm_run("Provision VM", "provision-vm", {"target_service": "postiz", "target_host": host})
+
+test_target_host_all_is_denied if {
+	d := agentcloud.decision with input as _host_input("all")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+test_target_host_ungrouped_is_denied if {
+	d := agentcloud.decision with input as _host_input("ungrouped")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+test_target_host_glob_is_denied if {
+	d := agentcloud.decision with input as _host_input("web*")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+test_target_host_comma_list_is_denied if {
+	d := agentcloud.decision with input as _host_input("a,b")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+test_target_host_empty_is_denied if {
+	d := agentcloud.decision with input as _host_input("")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+test_target_host_uppercase_is_denied if {
+	d := agentcloud.decision with input as _host_input("Postiz-01")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
+# settings must be an object when present: a caller that sends another shape is refused, not skipped.
+_settings_reason := "settings must be an object"
+
+test_settings_string_is_denied if {
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": "target_service=harden_svc"})
+	not d.allowed
+	contains(d.reason, _settings_reason)
+}
+
+test_settings_array_is_denied if {
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": ["harden_svc"]})
+	not d.allowed
+	contains(d.reason, _settings_reason)
+}
+
+test_settings_null_is_denied if {
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": null})
+	not d.allowed
+	contains(d.reason, _settings_reason)
+}
+
+# The rules above bind only an agent run_task: another action with odd settings gets none of their reasons.
+test_settings_rules_are_silent_outside_an_agent_run if {
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {
+		"service": "openbao",
+		"action": "read_secret",
+		"settings": "not-an-object",
+	})
+	not contains(d.reason, _settings_reason)
+}
+
+test_host_and_service_bounds_are_silent_outside_an_agent_run if {
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {
+		"service": "openbao",
+		"action": "read_secret",
+		"settings": {"target_service": "all", "target_host": "all"},
+	})
+	not contains(d.reason, _target_reason)
+	not contains(d.reason, _host_reason)
 }
 
 test_service_deploy_list_covers_a_listed_service if {
