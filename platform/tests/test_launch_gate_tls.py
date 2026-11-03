@@ -407,6 +407,50 @@ def test_a_body_trickled_past_the_request_deadline_is_refused_and_never_complete
     assert listener.gate.calls == []
 
 
+def test_a_read_that_runs_out_the_request_deadline_is_answered_408(listener, monkeypatch):
+    monkeypatch.setattr(lg, "REQUEST_DEADLINE", 1.0)
+    # The headers and the first body byte arrive, then silence: the server's read of the rest is bounded by the
+    # deadline itself, so it times out at the deadline and must answer 408 rather than drop the connection.
+    head = b"POST /v1/launch HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n\r\nx"
+    tcp = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
+    sock = listener.client_context().wrap_socket(tcp, server_hostname="localhost")
+    reply = b""
+    try:
+        sock.sendall(head)
+        time.sleep(2.0)
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+    finally:
+        sock.close()
+    assert re.match(rb"HTTP/1\.[01] 408 ", reply), reply[:60]
+    assert listener.gate.calls == []
+
+
+def test_a_body_stalled_within_the_deadline_closes_without_a_reply(listener, monkeypatch):
+    # The per-read bound is the smaller one here, so a stall is an idle client, not an expired deadline: the
+    # connection ends with no reply, as before the deadline existed.
+    monkeypatch.setattr(lg, "CONNECTION_TIMEOUT", 0.5)
+    monkeypatch.setattr(lg, "REQUEST_DEADLINE", 5.0)
+    head = b"POST /v1/launch HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n\r\nx"
+    tcp = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
+    sock = listener.client_context().wrap_socket(tcp, server_hostname="localhost")
+    reply = b""
+    try:
+        sock.sendall(head)
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+    finally:
+        sock.close()
+    assert reply == b""
+    assert listener.gate.calls == []
+
+
 # ---------- the gate's log write can fail without losing the response ----------
 
 

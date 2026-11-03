@@ -1034,8 +1034,16 @@ class GateHandler(BaseHTTPRequestHandler):
                 left = self._deadline - time.monotonic()
                 if left <= 0:
                     return None
-                self.request.settimeout(min(CONNECTION_TIMEOUT, left))
-                chunk = self.rfile.read1(min(remaining, _READ_CHUNK))
+                budget = min(CONNECTION_TIMEOUT, left)
+                self.request.settimeout(budget)
+                try:
+                    chunk = self.rfile.read1(min(remaining, _READ_CHUNK))
+                except TimeoutError:
+                    if left > CONNECTION_TIMEOUT:
+                        # A stalled client, bounded by CONNECTION_TIMEOUT as before: the connection just ends.
+                        raise
+                    # The read ran out the request's deadline, which was the smaller bound: answered 408.
+                    return None
                 if not chunk:
                     break
                 chunks.append(chunk)
