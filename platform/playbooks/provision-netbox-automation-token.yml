@@ -62,6 +62,19 @@
         view_object_types: [virtualization.cluster]
         field: vm_recorder_api_token
         description: service deployment workflow VM record (validate-address)
+      # Duplicate-VM reconciliation (reconcile-netbox-duplicate-vms.yml): view every VM, change one (the
+      # custom-field PATCH), delete one (the bare record). The read-only views are the interfaces it refuses
+      # on, the cluster and the tenant names it reports. Nothing here can add a VM.
+      vm-reconciler:
+        user: workflow-vm-reconciler
+        permission: workflow-vm-reconcile
+        actions: [view, change, delete]
+        object_types: [virtualization.virtualmachine]
+        view_object_types: [virtualization.vminterface, virtualization.cluster, tenancy.tenant]
+        view_permission: workflow-vm-reconcile-view
+        token_write_enabled: true
+        field: vm_reconciler_api_token
+        description: service deployment workflow duplicate VM reconciliation
       # Dispatch Console (plan 17, D22-D24): view only, on the six types the v1 console reads. D24 v1 reads
       # prefixes only: no IP addresses and no interfaces. No add, change or delete anywhere. token_write_enabled
       # is false on the token itself as well: NetBox's Token model declares write_enabled = BooleanField(default=True)

@@ -1,0 +1,545 @@
+---
+# reconcile-netbox-duplicate-vms.yml — remove the duplicate VM records one service left in NetBox.
+#
+# Two records exist per VM when the workflow's validate-address step created a bare record before
+# Proxmox discovery could reconcile by name (validate-address-free.yml, "Declared by the service
+# deployment workflow (validate-address)", no vcpus). Discovery's record is the one that stays; it
+# is recreated from Proxmox on every sync. A same-name pair qualifies ONLY when the group holds
+# exactly two records, exactly one bare (description marker AND vcpus null) and exactly one
+# discovery record (comments start with "VMID:", proxmox_discovery/__init__.py). Any other group
+# of more than one record is reported as ambiguous and never touched.
+#
+# For each selected pair, in order:
+#   plan    names only: the pair, its cluster, both ids, tenant names, created stamps, the
+#           workflow fields that would move, and every reason the bare record is blocked.
+#   refuse  the run stops before ANY write if a selected bare record holds an interface or a
+#           primary IP (deleting a VM removes its interfaces; an IP would be lost with it).
+#   write   PATCH the discovery record with the workflow custom fields it lacks (or the bare
+#           record's newer run), read it back and compare, THEN delete the bare record and read
+#           back a 404. Every PATCH of the run finishes before the first DELETE.
+#
+# Field movement: ac_workflow_status, ac_failed_steps and ac_last_run (netbox-custom-fields.yml).
+# A bare field moves when the bare value is non-empty and the discovery value is empty; when the
+# bare run is newer (its ac_last_run, compared to the second, is later than discovery's, or
+# discovery has none) every non-empty bare field moves. The PATCH carries discovery's whole
+# custom_fields dict with the moved values merged in, so no merge semantics of NetBox are relied on.
+#
+# NetBox reads are paged with limit=1000&offset=N, offsets computed from the count of the first
+# page. A next-page URL is never followed: it is a URL taken from a response, and the token must
+# not be sent to a host the transport guard never checked. The listing is refused unless the
+# unique ids collected equal the count, so an unexpected page size cannot hide a duplicate.
+#
+# Inputs (Semaphore survey, or -e):
+#   reconcile_names  optional JSON list of VM names, e.g. ["dns"]; blank = every qualifying pair
+#
+# Check mode (--check): every read runs, the plan is printed, nothing is written. The refusal still
+# applies in check mode, so a dry run exits non-zero exactly when the real run would refuse.
+#
+# Secrets: the OpenBao login, the secret read and every NetBox request carry tokens; they are
+# no_log and their results are never printed. Visible facts hold names, ids, booleans and tenant
+# names; the ac_* values and the custom_fields dicts live only in no_log facts.
+#
+# Token: secret/services/netbox:vm_reconciler_api_token, minted by Provision NetBox Automation
+# Token with Token profile = vm-reconciler (view and change and delete virtual machines).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Reconcile duplicate NetBox VM records (workflow bare record, discovery record kept)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _bare_marker: "Declared by the service deployment workflow (validate-address)"
+    _ac_fields: [ac_workflow_status, ac_failed_steps, ac_last_run]
+    # A value Ansible would print as empty for any of the three workflow fields.
+    _empty_text: ["", "{}", "[]", "None"]
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '', true) }}"
+
+  tasks:
+    - name: "Require the OpenBao and NetBox endpoints"
+      ansible.builtin.assert:
+        that:
+          - _bao_url | length > 0
+          - _netbox_url | length > 0
+        fail_msg: "Set the NetBox endpoint (the netbox_svc service_url) and OPENBAO_ADDR before reconciling."
+        quiet: true
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Refuse a cleartext NetBox endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _netbox_url }}"
+        _assert_url_label: "NetBox"
+
+    # ── credentials ─────────────────────────────────────────────────────────────────────
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+          secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+        status_code: [200]
+        follow_redirects: none
+        timeout: 60
+      register: _bao_auth
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Require the OpenBao login to answer"
+      ansible.builtin.assert:
+        that: _bao_auth.status | default(0) == 200
+        fail_msg: "OpenBao answered {{ _bao_auth.status | default('no response') }} to the AppRole login (expected 200)."
+        quiet: true
+
+    - name: "Read the NetBox secret"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token | default('') }}"
+        unredirected_headers: [X-Vault-Token]
+        follow_redirects: none
+        timeout: 60
+        status_code: [200]
+      register: _nb_secret
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Require the NetBox secret read to answer"
+      ansible.builtin.assert:
+        that: _nb_secret.status | default(0) == 200
+        fail_msg: "OpenBao answered {{ _nb_secret.status | default('no response') }} to the NetBox secret read (expected 200)."
+        quiet: true
+
+    - name: "Hold the reconciler token (no_log: it is a credential)"
+      ansible.builtin.set_fact:
+        _nb_token: "{{ ((_nb_secret.json | default({})).get('data') or {}).get('data', {}).get('vm_reconciler_api_token', '') }}"
+      no_log: true
+
+    - name: "Hold the token's presence"
+      ansible.builtin.set_fact:
+        _nb_token_present: "{{ (_nb_token | default('') | length) > 0 }}"
+      no_log: true
+
+    - name: "Require the vm-reconciler token"
+      ansible.builtin.assert:
+        that: _nb_token_present | bool
+        fail_msg: >-
+          secret/services/netbox has no vm_reconciler_api_token. Mint it once with Provision NetBox
+          Automation Token, Token profile = vm-reconciler.
+        quiet: true
+
+    - name: "Build the NetBox API headers"
+      ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+
+    # ── the selection the operator asked for ────────────────────────────────────────────
+    # The Semaphore survey passes a JSON string; `-e reconcile_names='["dns"]'` arrives as a list.
+    # Both are accepted; a blank survey value means every qualifying pair.
+    - name: "Hold the requested VM names (a JSON list)"
+      ansible.builtin.set_fact:
+        _only_names: >-
+          {{ reconcile_names if (reconcile_names is defined and reconcile_names is sequence and reconcile_names is not string)
+             else (((reconcile_names | default('')) | string | trim | from_json)
+                   if ((reconcile_names | default('')) | string | trim | length) > 0 else []) }}
+
+    - name: "Refuse a reconcile_names value that is not a JSON list of strings"
+      ansible.builtin.assert:
+        that: >-
+          _only_names is sequence and _only_names is not string
+          and (_only_names | select('string') | list | length) == (_only_names | length)
+        fail_msg: 'reconcile_names must be a JSON list of VM names, for example ["dns"], or blank for every pair.'
+        quiet: true
+
+    # ── the NetBox listing ──────────────────────────────────────────────────────────────
+    - name: "NetBox: read the first page of virtual machines"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?limit=1000&offset=0"
+        headers: "{{ _nb_headers }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [200]
+      register: _vm_page0
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Require the first VM page to answer"
+      ansible.builtin.assert:
+        that: _vm_page0.status | default(0) == 200
+        fail_msg: "NetBox answered {{ _vm_page0.status | default('no response') }} to the VM listing (expected 200)."
+        quiet: true
+
+    - name: "Hold the VM count"
+      ansible.builtin.set_fact:
+        _vm_count: "{{ (_vm_page0.json | default({})).get('count') | int(-1) }}"
+      no_log: true
+
+    - name: "NetBox: read the remaining VM pages"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/?limit=1000&offset={{ item }}"
+        headers: "{{ _nb_headers }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [200]
+      loop: "{{ range(1000, _vm_count | int, 1000) | list }}"
+      register: _vm_pages
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Require every VM page to answer"
+      ansible.builtin.assert:
+        that: (_vm_pages.results | default([]) | map(attribute='status', default=0) | list | difference([200]) | length) == 0
+        fail_msg: "NetBox did not answer 200 to every VM page; nothing was judged or changed."
+        quiet: true
+
+    # Bounded rows: ids, names, booleans and tenant names. The custom_fields dict is kept (no_log)
+    # because the write needs it; the description and comments are reduced to booleans here.
+    - name: "Hold the bounded VM rows (no_log: they carry workflow values)"
+      ansible.builtin.set_fact:
+        _vm_rows: >-
+          {%- set out = [] -%}
+          {%- for page in [_vm_page0] + (_vm_pages.results | default([])) -%}
+            {%- for vm in (page.json | default({})).get('results', []) -%}
+              {%- set cluster = vm.get('cluster') or {} -%}
+              {%- set tenant = vm.get('tenant') or {} -%}
+              {%- set is_bare = (vm.get('description') == _bare_marker) and (vm.get('vcpus') is none) -%}
+              {%- set comments = (vm.get('comments') or '') | string -%}
+              {# A nested IP object is not a boolean: the bool filter reads a dict as False. Test the presence. #}
+              {%- set has_ip = (vm.get('primary_ip4') is not none) or (vm.get('primary_ip6') is not none) -%}
+              {%- set row = {
+                    'id': vm.get('id'),
+                    'name': vm.get('name'),
+                    'key': (vm.get('name') | string | lower) ~ '|' ~ (cluster.get('id') | string),
+                    'cluster_name': cluster.get('name') or 'none',
+                    'tenant_name': tenant.get('name') or 'none',
+                    'created': (vm.get('created') or 'unknown') | string,
+                    'is_bare': is_bare,
+                    'is_disc': comments.startswith('VMID:') and not is_bare,
+                    'has_ip': has_ip,
+                    'custom_fields': vm.get('custom_fields') or {}
+                  } -%}
+              {%- set _ignored = out.append(row) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    - name: "Require the listing to be complete"
+      ansible.builtin.assert:
+        that:
+          - _vm_count | int >= 0
+          - (_vm_rows | map(attribute='id') | unique | list | length) == (_vm_count | int)
+        fail_msg: "The VM listing does not hold the {{ _vm_count }} records NetBox counted; nothing was judged or changed."
+        quiet: true
+
+    # ── duplicates ──────────────────────────────────────────────────────────────────────
+    - name: "Group the VM records and find the qualifying pairs and the ambiguous groups"
+      ansible.builtin.set_fact:
+        _pairs: >-
+          {%- set out = [] -%}
+          {%- for k in _vm_rows | map(attribute='key') | unique | list -%}
+            {%- set grp = _vm_rows | selectattr('key', 'equalto', k) | list -%}
+            {%- set bare = grp | selectattr('is_bare') | list -%}
+            {%- set disc = grp | selectattr('is_disc') | list -%}
+            {%- if (grp | length) == 2 and (bare | length) == 1 and (disc | length) == 1 -%}
+              {%- set _ignored = out.append({'name': bare[0].name, 'cluster_name': bare[0].cluster_name,
+                                             'bare': bare[0], 'disc': disc[0]}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        _ambiguous: >-
+          {%- set out = [] -%}
+          {%- for k in _vm_rows | map(attribute='key') | unique | list -%}
+            {%- set grp = _vm_rows | selectattr('key', 'equalto', k) | list -%}
+            {%- set bare = grp | selectattr('is_bare') | list -%}
+            {%- set disc = grp | selectattr('is_disc') | list -%}
+            {%- if (grp | length) > 1 and not ((grp | length) == 2 and (bare | length) == 1 and (disc | length) == 1) -%}
+              {%- set _ignored = out.append({'name': grp[0].name, 'cluster_name': grp[0].cluster_name,
+                                             'count': grp | length}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    - name: "Hold the selected pairs (every pair when reconcile_names is blank)"
+      ansible.builtin.set_fact:
+        _selected_pairs: >-
+          {%- set out = [] -%}
+          {%- set wanted = _only_names | map('lower') | list -%}
+          {%- for p in _pairs -%}
+            {%- if (wanted | length) == 0 or (p.name | lower) in wanted -%}
+              {%- set _ignored = out.append(p) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    - name: "Hold the requested names that match no qualifying pair"
+      ansible.builtin.set_fact:
+        _unmatched: "{{ _only_names | map('lower') | list | difference(_pairs | map(attribute='name') | map('lower') | list) }}"
+
+    - name: "Require every requested name to be a qualifying duplicate pair"
+      ansible.builtin.assert:
+        that: _unmatched | length == 0
+        fail_msg: "reconcile_names names no qualifying duplicate pair: {{ _unmatched | join(', ') }}."
+        quiet: true
+
+    # ── the refusal inputs: interfaces (read in check mode too, so a dry run shows the refusal) ──
+    - name: "NetBox: count the interfaces of each selected bare record"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/interfaces/?virtual_machine_id={{ item.bare.id }}&limit=1"
+        headers: "{{ _nb_headers }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [200]
+      loop: "{{ _selected_pairs }}"
+      register: _iface_reads
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Require the interface reads to answer"
+      ansible.builtin.assert:
+        that: (_iface_reads.results | default([]) | map(attribute='status', default=0) | list | difference([200]) | length) == 0
+        fail_msg: "NetBox did not answer 200 to every interface read; nothing was changed."
+        quiet: true
+
+    - name: "Hold the interface counts (no_log: the lookup is a NetBox response)"
+      ansible.builtin.set_fact:
+        _iface_counts: >-
+          {%- set out = [] -%}
+          {%- for r in _iface_reads.results | default([]) -%}
+            {%- set _ignored = out.append({'id': r.item.bare.id,
+                                           'count': (r.json | default({})).get('count') | int(-1)}) -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    # ── the plan: names, ids, tenants, stamps and the refusal reasons. No values leave this fact. ──
+    - name: "Hold the reconciliation plan (no_log: it carries the workflow values to write)"
+      ansible.builtin.set_fact:
+        _plan: >-
+          {%- set out = [] -%}
+          {%- for p in _selected_pairs -%}
+            {%- set bcf = p.bare.custom_fields or {} -%}
+            {%- set dcf = p.disc.custom_fields or {} -%}
+            {%- set b_run = (bcf.get('ac_last_run') | string) not in _empty_text -%}
+            {%- set newer = b_run and (((dcf.get('ac_last_run') | string) in _empty_text)
+                  or ((bcf.get('ac_last_run') | string)[:19] > (dcf.get('ac_last_run') | string)[:19])) -%}
+            {%- set mv = namespace(moves=[], vals={}) -%}
+            {%- for f in _ac_fields -%}
+              {%- set bv = bcf.get(f) -%}
+              {%- set dv = dcf.get(f) -%}
+              {%- if ((bv | string) not in _empty_text) and (newer or ((dv | string) in _empty_text)) -%}
+                {%- set mv.moves = mv.moves + [f] -%}
+                {%- set mv.vals = mv.vals | combine({f: bv}) -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set cnt = namespace(n=-1) -%}
+            {%- for c in _iface_counts -%}
+              {%- if c.id == p.bare.id -%}{%- set cnt.n = c.count -%}{%- endif -%}
+            {%- endfor -%}
+            {%- set reasons = [] -%}
+            {%- if cnt.n != 0 -%}
+              {%- set reasons = reasons + ['has interfaces' if cnt.n > 0 else 'interface count unknown'] -%}
+            {%- endif -%}
+            {%- if p.bare.has_ip -%}{%- set reasons = reasons + ['has a primary IP'] -%}{%- endif -%}
+            {%- set _ignored = out.append({
+                  'name': p.name,
+                  'cluster_name': p.cluster_name,
+                  'bare_id': p.bare.id,
+                  'bare_tenant': p.bare.tenant_name,
+                  'bare_created': p.bare.created,
+                  'disc_id': p.disc.id,
+                  'disc_tenant': p.disc.tenant_name,
+                  'disc_created': p.disc.created,
+                  'moves': mv.moves,
+                  'move_values': mv.vals,
+                  'patch_fields': dcf | combine(mv.vals),
+                  'blocked': reasons
+                }) -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    - name: "Show the plan (names only)"
+      ansible.builtin.set_fact:
+        _plan_lines: >-
+          {%- set out = ['reconcile-netbox-duplicate-vms: ' ~ (_vm_rows | length) ~ ' VM records, '
+                         ~ (_pairs | length) ~ ' qualifying pair(s), ' ~ (_plan | length) ~ ' selected, '
+                         ~ (_ambiguous | length) ~ ' ambiguous group(s)'] -%}
+          {%- for p in _plan -%}
+            {%- set _ignored = out.append('pair ' ~ p.name ~ ' in cluster ' ~ p.cluster_name
+                  ~ ': bare ' ~ (p.bare_id | string) ~ ' (tenant ' ~ p.bare_tenant ~ ', created ' ~ (p.bare_created | string)
+                  ~ '); discovery ' ~ (p.disc_id | string) ~ ' (tenant ' ~ p.disc_tenant ~ ', created ' ~ (p.disc_created | string)
+                  ~ '); move ' ~ (p.moves | join(', ') if p.moves else 'nothing')
+                  ~ '; blocked ' ~ (p.blocked | join(', ') if p.blocked else 'no')) -%}
+          {%- endfor -%}
+          {%- for a in _ambiguous -%}
+            {%- set _ignored = out.append('ambiguous, not touched: ' ~ a.name ~ ' in cluster ' ~ a.cluster_name
+                  ~ ' (' ~ (a.count | string) ~ ' records)') -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Print the plan"
+      ansible.builtin.debug:
+        var: _plan_lines
+
+    - name: "Hold the blocked pairs (names only)"
+      ansible.builtin.set_fact:
+        _blocked_names: "{{ _plan | selectattr('blocked') | map(attribute='name') | list }}"
+
+    # Before ANY write, in check mode too: a dry run exits non-zero exactly when the real run would refuse.
+    - name: "Refuse the run when a selected bare record holds an interface or a primary IP"
+      ansible.builtin.assert:
+        that: _blocked_names | length == 0
+        fail_msg: >-
+          {{ _blocked_names | length }} selected pair(s) cannot be reconciled: the bare record holds an
+          interface or a primary IP (named in the plan). Nothing was changed. Clear it in NetBox, or
+          limit the run with reconcile_names.
+        quiet: true
+
+    # ── writes: every PATCH first, then every DELETE ────────────────────────────────────
+    - name: "NetBox: write the workflow fields onto each discovery record"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.disc_id }}/"
+        method: PATCH
+        headers: "{{ _nb_headers }}"
+        body_format: json
+        body:
+          custom_fields: "{{ item.patch_fields }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [200]
+      loop: "{{ _plan | selectattr('moves') | list }}"
+      register: _patch
+      failed_when: false
+      changed_when: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Require every discovery PATCH to answer 200"
+      ansible.builtin.assert:
+        that: (_patch.results | default([]) | map(attribute='status', default=0) | list | difference([200]) | length) == 0
+        fail_msg: "NetBox did not answer 200 to every discovery PATCH. The bare records were NOT deleted."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "NetBox: read back each discovery record"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.disc_id }}/"
+        headers: "{{ _nb_headers }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [200]
+      loop: "{{ _plan | selectattr('moves') | list }}"
+      register: _readback
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    # The datetime is compared to the second (its first 19 characters): NetBox's rendering of the
+    # zone suffix is not verified here, and both sides come from the same store.
+    - name: "Compare the read-back with what was written"
+      ansible.builtin.set_fact:
+        _readback_mismatch: >-
+          {%- set out = [] -%}
+          {%- for r in _readback.results | default([]) -%}
+            {%- set cf = (r.json | default({})).get('custom_fields') or {} -%}
+            {%- set bad = namespace(hit=false) -%}
+            {%- for f in r.item.moves -%}
+              {%- set got = cf.get(f) -%}
+              {%- set want = r.item.move_values[f] -%}
+              {%- if f == 'ac_last_run' -%}
+                {%- if (got | string)[:19] != (want | string)[:19] -%}{%- set bad.hit = true -%}{%- endif -%}
+              {%- elif got != want -%}
+                {%- set bad.hit = true -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if bad.hit -%}{%- set _ignored = out.append(r.item.name) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Require the discovery records to hold the moved fields"
+      ansible.builtin.assert:
+        that: _readback_mismatch | length == 0
+        fail_msg: >-
+          The discovery record did not hold the moved fields after the PATCH for
+          {{ _readback_mismatch | join(', ') }}. Their bare records were NOT deleted.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "NetBox: delete each bare record"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.bare.id }}/"
+        method: DELETE
+        headers: "{{ _nb_headers }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [200, 204]
+      loop: "{{ _selected_pairs }}"
+      register: _delete
+      failed_when: false
+      changed_when: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Require every bare-record DELETE to answer"
+      ansible.builtin.assert:
+        that: (_delete.results | default([]) | map(attribute='status', default=0) | list | difference([200, 204]) | length) == 0
+        fail_msg: "NetBox did not answer success to every bare-record DELETE; the read-back below is authoritative."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "NetBox: read back each deleted bare record (expect 404)"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/virtualization/virtual-machines/{{ item.bare.id }}/"
+        headers: "{{ _nb_headers }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [404]
+      loop: "{{ _selected_pairs }}"
+      register: _gone
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Require every bare record to be gone"
+      ansible.builtin.assert:
+        that: (_gone.results | default([]) | map(attribute='status', default=0) | list | difference([404]) | length) == 0
+        fail_msg: "A bare record still answers after its DELETE. Check NetBox before rerunning."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Summarise the run (names only)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'check mode: nothing changed; ' if ansible_check_mode else 'reconciled: ' }}{{ _selected_pairs | length }}
+          selected pair(s); {{ _plan | selectattr('moves') | list | length }} discovery record(s)
+          {{ 'would be' if ansible_check_mode else 'were' }} written first, then the bare records
+          {{ 'would be' if ansible_check_mode else 'were' }} deleted.
