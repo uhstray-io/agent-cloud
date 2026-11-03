@@ -1593,3 +1593,25 @@ def test_a_server_leaf_on_a_host_in_no_listener_group_keeps_the_gateway_refusal(
                         host_over={"unlisted_svc": {"stray": {}}})
     _refused(world, out, rc,
              "a server leaf can be proven only as the gateway's own (agentgateway_svc, agw_server_leaf)")
+
+
+# ── The listener table's fallbacks match each service's own compose default ──
+# A row's default_port is what the proof connects to when the host declares no port. If it drifted from
+# the port the service publishes, a host relying on the default would fail its proof every day, and the
+# behaviour tests (which all set the port) would not notice. Review of PR 842.
+_LISTENER_COMPOSE = {
+    "opa-server": ("platform/services/opa/deployment/compose.yml", "OPA_PORT"),
+    "launch-gate-server": ("platform/services/launch-gate/deployment/compose.yml", "LAUNCH_GATE_PORT"),
+}
+
+
+def test_each_listener_row_defaults_to_its_services_published_port():
+    table = yaml.safe_load((playbook_yaml.REPO / "platform/playbooks/vars/renew-listener-servers.yml").read_text())
+    rows = {row["class"]: row for row in table["_renew_listener_servers"]}
+    assert sorted(rows) == sorted(_LISTENER_COMPOSE)
+    for cls, (compose_path, var) in _LISTENER_COMPOSE.items():
+        compose = (playbook_yaml.REPO / compose_path).read_text()
+        marker = "${" + var + ":-"
+        start = compose.index(marker) + len(marker)
+        published = compose[start:compose.index("}", start)]
+        assert rows[cls]["default_port"] == published, (cls, rows[cls]["default_port"], published)
