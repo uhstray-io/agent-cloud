@@ -8,7 +8,7 @@ use super::empty::PageMeta;
 use super::icons::icon;
 use super::inventory::{admin_next, end_session, keeps_polling_admin, Admin, POLL_MS};
 use super::inventory_api;
-use super::secrets_api::{changed_text, not_ok_message, SecretsBody, SECRETS_PATH};
+use super::secrets_api::{age_label, not_ok_message, SecretsBody, SECRETS_PATH};
 use super::shell::Ctx;
 use super::status::Notice;
 
@@ -107,7 +107,7 @@ fn SecretsBodyView(body: SecretsBody, reason: String, now_ms: Option<i64>) -> El
     let stale = body.error.as_ref().map(|error| {
         let when = body.refreshed_at.as_deref().map_or_else(
             || "an earlier walk".to_string(),
-            |stamp| changed_text(now_ms, stamp),
+            |stamp| age_label(now_ms, stamp),
         );
         format!("The newest walk failed: {error}. The paths below are from {when}.")
     });
@@ -131,6 +131,7 @@ fn SecretsBodyView(body: SecretsBody, reason: String, now_ms: Option<i64>) -> El
                             th { "Path" }
                             th { class: "num", "Version" }
                             th { class: "num", "Versions kept" }
+                            th { "Created" }
                             th { "Last changed" }
                             th { "Rotation" }
                         }
@@ -141,7 +142,8 @@ fn SecretsBodyView(body: SecretsBody, reason: String, now_ms: Option<i64>) -> El
                                 td { class: "mono", "{row.path}" }
                                 td { class: "num", "{row.current_version}" }
                                 td { class: "num", "{row.versions}" }
-                                td { title: "{row.updated_time}", {changed_text(now_ms, &row.updated_time)} }
+                                td { title: "{row.created_time}", {age_label(now_ms, &row.created_time)} }
+                                td { title: "{row.updated_time}", {age_label(now_ms, &row.updated_time)} }
                                 td {
                                     button { class: "btn", disabled: true, title: "{ROTATE_TITLE}", "Rotate" }
                                 }

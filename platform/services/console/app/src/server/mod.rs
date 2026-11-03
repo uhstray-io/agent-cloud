@@ -243,9 +243,6 @@ pub fn api_router(state: SharedState) -> Router {
 /// Everything the process serves: the Dioxus app, the API, and the session
 /// layer over both. The layer is applied last so every route sees it.
 pub fn router(state: SharedState) -> Router {
-    // Spawned here, not beside the inventory refresh in main.rs, which this change does not own.
-    // It is a no-op unless OpenBao is configured, and main.rs builds the router inside the runtime.
-    secrets::spawn_refresh(state.clone());
     let sessions = session_layer(state.prefs.session_store());
     dioxus::server::router(ui::app)
         .merge(api_router(state))

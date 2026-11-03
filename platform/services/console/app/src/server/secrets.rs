@@ -39,7 +39,7 @@ pub struct SecretPath {
     /// `secret/` followed by the key, such as `secret/services/tududi`.
     pub path: String,
     pub current_version: u64,
-    /// How many versions the metadata still keeps.
+    /// How many versions the metadata keeps and has not destroyed.
     pub versions: u64,
     pub created_time: String,
     pub updated_time: String,
@@ -134,10 +134,16 @@ fn secret_path(path: &str, data: &Value) -> Result<SecretPath, OpenbaoError> {
         .get("versions")
         .and_then(Value::as_object)
         .ok_or(OpenbaoError::Decode)?;
+    // A destroyed version keeps its entry, with its data gone, so the console cannot roll back to
+    // it. It is not counted. An entry with no `destroyed` flag is not destroyed.
+    let kept = versions
+        .values()
+        .filter(|entry| entry.get("destroyed").and_then(Value::as_bool) != Some(true))
+        .count();
     Ok(SecretPath {
         path: format!("secret/{path}"),
         current_version: number("current_version")?,
-        versions: u64::try_from(versions.len()).unwrap_or(u64::MAX),
+        versions: u64::try_from(kept).unwrap_or(u64::MAX),
         created_time: text("created_time")?,
         updated_time: text("updated_time")?,
     })
@@ -419,7 +425,17 @@ mod tests {
                 metadata(1, 7, "2026-05-01T00:00:00Z", json!({"owner": "console"}))
             }
             "services/console/openbao-approle" => metadata(1, 1, "2026-06-01T00:00:00Z", json!({})),
-            "services/tududi" => metadata(2, 4, "2026-07-01T00:00:00Z", json!({})),
+            "services/tududi" => {
+                let mut data = metadata(2, 4, "2026-07-01T00:00:00Z", json!({}));
+                // Version 3 is destroyed: its entry stays, its data is gone. Version 2 has no
+                // `destroyed` key at all, which is not destroyed. Two of the three are kept.
+                data["versions"]["3"]["destroyed"] = json!(true);
+                data["versions"]["2"]
+                    .as_object_mut()
+                    .expect("version entry")
+                    .remove("destroyed");
+                data
+            }
             _ => return None,
         })
     }
@@ -453,7 +469,7 @@ mod tests {
                 1,
                 "2026-06-01T00:00:00Z",
             ),
-            row("secret/services/tududi", 4, 3, "2026-07-01T00:00:00Z"),
+            row("secret/services/tududi", 4, 2, "2026-07-01T00:00:00Z"),
             row("secret/zeta", 1, 1, "2026-03-01T00:00:00Z"),
         ]
     }
@@ -577,6 +593,26 @@ mod tests {
         let reply = request.send().await.expect("send");
         let status = reply.status().as_u16();
         (status, reply.text().await.expect("body"))
+    }
+
+    #[test]
+    fn a_destroyed_version_is_not_counted_and_a_missing_flag_is_not_destroyed() {
+        let data = json!({
+            "current_version": 3,
+            "created_time": "2026-01-01T00:00:00Z",
+            "updated_time": "2026-02-01T00:00:00Z",
+            "versions": {
+                "1": {"destroyed": true},
+                "2": {"destroyed": false},
+                "3": {},
+            },
+        });
+        let row = secret_path("x", &data).expect("row");
+        assert_eq!(
+            row.versions, 2,
+            "versions 2 and 3 are kept; version 1 is destroyed"
+        );
+        assert_eq!(row.current_version, 3);
     }
 
     #[test]

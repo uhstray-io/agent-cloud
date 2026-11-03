@@ -69,10 +69,10 @@ pub fn not_ok_message(state: SecretsState, error: Option<&str>) -> Option<String
     }
 }
 
-/// The "last changed" cell: the age of `updated` on the client clock, or the stamp itself when
-/// the clock or the stamp cannot be read.
-pub fn changed_text(now_ms: Option<i64>, updated: &str) -> String {
-    age_text(now_ms, updated).unwrap_or_else(|| updated.to_string())
+/// A time cell (`Created`, `Last changed`): the age of `stamp` on the client clock, or the stamp
+/// itself when the clock or the stamp cannot be read.
+pub fn age_label(now_ms: Option<i64>, stamp: &str) -> String {
+    age_text(now_ms, stamp).unwrap_or_else(|| stamp.to_string())
 }
 
 #[cfg(test)]
@@ -147,11 +147,11 @@ mod tests {
     }
 
     #[test]
-    fn changed_text_falls_back_to_the_stamp_without_a_clock() {
+    fn age_label_falls_back_to_the_stamp_without_a_clock() {
         assert_eq!(
-            changed_text(None, "2026-07-01T00:00:00Z"),
+            age_label(None, "2026-07-01T00:00:00Z"),
             "2026-07-01T00:00:00Z"
         );
-        assert_eq!(changed_text(Some(0), "not a time"), "not a time");
+        assert_eq!(age_label(Some(0), "not a time"), "not a time");
     }
 }
