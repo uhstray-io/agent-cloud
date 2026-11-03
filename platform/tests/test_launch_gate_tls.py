@@ -482,16 +482,18 @@ def test_the_watchdog_marks_the_connection_before_it_shuts_it(monkeypatch):
         right.close()
 
 
-def test_a_cut_that_starts_after_the_disarm_does_nothing(monkeypatch):
+def test_a_cut_that_starts_after_the_disarm_does_nothing(listener, monkeypatch):
     # CodeRabbit on PR 818: Timer.cancel() cannot stop a callback already running, so the cut checks the
-    # disarm under the same lock. Once disarmed, the connection is neither marked nor shut.
+    # disarm under the same lock. Once the server has disarmed, the connection is neither marked nor shut.
+    # Driven through GateServer.disarm() on this thread, as the handler thread would call it.
     left, right = socket.socketpair()
     watch = lg._Watch()
+    listener.server._watch.timer = None
+    listener.server._watch.state = watch
     calls = []
     monkeypatch.setattr(lg.socket.socket, "shutdown", lambda sock, how: calls.append(how))
     try:
-        with watch.lock:
-            watch.disarmed = True
+        assert listener.server.disarm() is False
         lg._cut(left, watch)
         assert calls == []
         assert not watch.fired.is_set()
