@@ -12,9 +12,19 @@
 #          then the address is the service's own and the step is `skip` (already
 #          provisioned), never a false refusal on a backfill
 #   write  the NetBox VM record when absent: status planned, in the Proxmox cluster the
-#          discovery worker maintains (so discovery later reconciles the same object, by
-#          name, instead of creating a second one). Token: the vm-recorder profile
-#          (view/add virtual machines, view clusters) from provision-netbox-automation-token.
+#          discovery worker maintains, under the SAME tenant and site discovery writes (its
+#          inventory vars discovery_tenant_name and discovery_site_name, read from the netbox_svc
+#          host). NetBox's uniqueness on a VM name is per tenant, so a record without that tenant
+#          can sit beside discovery's tenanted record of the same name instead of being the same
+#          object: the duplicate pattern seen on production. A declared tenant or site that NetBox
+#          does not hold exactly once refuses the step; it is never omitted. Site is derived from
+#          the cluster on save, and NetBox rejects a site that is not the cluster's
+#          (netbox virtualization VirtualMachine.clean()), so a 400 on the create means the cluster
+#          and discovery disagree on site. Token: the vm-recorder profile (view/add virtual
+#          machines; view clusters, tenants and sites) from provision-netbox-automation-token. A
+#          token whose permissions predate the tenant and site view grants needs a re-run of that
+#          playbook with the vm-recorder profile: its permission step converges even when the
+#          token already exists.
 #
 # Dry run (--check): every read runs and the verdict is recorded; the record is not created.
 #
@@ -44,6 +54,11 @@
     # Resolved lazily, once _pve is read; only ever used inside no_log requests.
     _pve_headers:
       Authorization: "PVEAPIToken={{ _pve.token_id }}={{ _pve.api_token }}"
+    # The tenant and site discovery writes VMs under (agent.yaml.j2 renders both from these two
+    # inventory vars). They are agent_cloud group vars in site-config, so the netbox_svc host
+    # carries them. Empty when unset: the record is then placed without them, as before.
+    _discovery_tenant_name: "{{ hostvars[groups['netbox_svc'][0]].discovery_tenant_name | default('', true) if (groups['netbox_svc'] | default([])) else '' }}"
+    _discovery_site_name: "{{ hostvars[groups['netbox_svc'][0]].discovery_site_name | default('', true) if (groups['netbox_svc'] | default([])) else '' }}"
 
   tasks:
     - name: "Require a target service that resolves to one declaring host with an address"
@@ -199,6 +214,70 @@
         # The type the Proxmox discovery worker creates (CLUSTER_TYPE = "Proxmox VE").
         _clusters: "{{ _nb.results[1].json.results | selectattr('type.name', 'equalto', 'Proxmox VE') | list }}"
 
+    # The tenant and site discovery gives the VM, looked up by name. Read only when this run
+    # would create the record: an existing record is adopted as it stands.
+    - name: "NetBox: find the tenant discovery places the VM under"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/tenancy/tenants/?name={{ _discovery_tenant_name | urlencode }}"
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _nb_tenant
+      # The request carries the vm-recorder token: no_log, and the status is checked visibly below.
+      failed_when: false
+      no_log: true
+      check_mode: false
+      when:
+        - _vm_records | length == 0
+        - _discovery_tenant_name | length > 0
+
+    - name: "NetBox: find the site discovery places the VM at"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/dcim/sites/?name={{ _discovery_site_name | urlencode }}"
+        headers: "{{ _nb_headers }}"
+        status_code: [200]
+      register: _nb_site
+      failed_when: false
+      no_log: true
+      check_mode: false
+      when:
+        - _vm_records | length == 0
+        - _discovery_site_name | length > 0
+
+    - name: "Require the tenant and site reads to answer"
+      ansible.builtin.assert:
+        that:
+          - _nb_tenant is skipped or _nb_tenant.status | default(-1) == 200
+          - _nb_site is skipped or _nb_site.status | default(-1) == 200
+        fail_msg: >-
+          NetBox answered {{ _nb_tenant.status | default('skipped') }} to the tenant read and
+          {{ _nb_site.status | default('skipped') }} to the site read (expected 200 for each read that ran).
+
+    - name: "Decide: the tenant and site the record is placed under"
+      ansible.builtin.set_fact:
+        _tenant_found: "{{ _nb_tenant.json.results | default([]) if (_nb_tenant is not skipped) else [] }}"
+        _site_found: "{{ _nb_site.json.results | default([]) if (_nb_site is not skipped) else [] }}"
+
+    # A declared tenant or site must resolve to exactly one object, or the step refuses. Omitting
+    # it instead would create the very record this placement exists to avoid.
+    - name: "Decide: the record body, and whether the declared tenant and site resolve"
+      ansible.builtin.set_fact:
+        _placement_errors: >-
+          {{ ([] if (_vm_records | length > 0) or (_discovery_tenant_name | length == 0) or (_tenant_found | length == 1)
+               else ['cannot place the NetBox VM record: ' ~ (_tenant_found | length) ~ ' NetBox tenants are named '
+                     ~ _discovery_tenant_name ~ ' (expected 1). Discovery seeds the tenant, so either NetBox does not hold it, '
+                     ~ 'or the vm-recorder token cannot view it: re-run Provision NetBox Automation Token with Token profile = vm-recorder'])
+             + ([] if (_vm_records | length > 0) or (_discovery_site_name | length == 0) or (_site_found | length == 1)
+                else ['cannot place the NetBox VM record: ' ~ (_site_found | length) ~ ' NetBox sites are named '
+                      ~ _discovery_site_name ~ ' (expected 1). Discovery seeds the site, so either NetBox does not hold it, '
+                      ~ 'or the vm-recorder token cannot view it: re-run Provision NetBox Automation Token with Token profile = vm-recorder']) }}
+        # The POST body: discovery's tenant and site when declared, and nothing more.
+        _vm_body: >-
+          {{ {'name': _name, 'status': 'planned',
+              'cluster': (_clusters | map(attribute='id') | first) | default(none),
+              'description': 'Declared by the service deployment workflow (validate-address)'}
+             | combine({'tenant': _tenant_found[0].id} if (_tenant_found | length == 1) else {})
+             | combine({'site': _site_found[0].id} if (_site_found | length == 1) else {}) }}
+
     # A second task: a set_fact cannot read a fact it is assigning in the same call, and the
     # judgement below needs _clusters (PR 195 Codex review).
     #
@@ -223,7 +302,8 @@
                  ~ (' (' ~ netbox_vm_cluster ~ ')' if netbox_vm_cluster is defined else '')]
                 if (_vm_records | length == 1)
                    and ((_vm_records[0].cluster.id | default(none)) not in (_clusters | map(attribute='id') | list))
-                else []) }}
+                else [])
+             + _placement_errors }}
 
     - name: "NetBox: create the VM record (planned, in the Proxmox cluster)"
       ansible.builtin.uri:
@@ -231,11 +311,7 @@
         method: POST
         headers: "{{ _nb_headers }}"
         body_format: json
-        body:
-          name: "{{ _name }}"
-          status: planned
-          cluster: "{{ _clusters[0].id }}"
-          description: "Declared by the service deployment workflow (validate-address)"
+        body: "{{ _vm_body }}"
         status_code: [201]
       register: _created
       changed_when: true

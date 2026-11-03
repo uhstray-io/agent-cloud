@@ -63,7 +63,9 @@ PY
 @test "validate-address: the one write is skipped under --check, and the reads run" {
   blk=$(sed -n '/name: "NetBox: create the VM record/,/_vm_record | length == 0/p' "$VALIDATE")
   assert_grep -qF 'not ansible_check_mode' <<<"$blk"
-  [ "$(grep -c 'check_mode: false' "$VALIDATE")" -eq 4 ]
+  # Four reads (pfSense ARP, Proxmox VM list, the VM config, the NetBox record and cluster lookup)
+  # and the two tenant and site lookups that place the record: each a GET that must run under --check.
+  [ "$(grep -c 'check_mode: false' "$VALIDATE")" -eq 6 ]
 }
 
 @test "lookup-inventory: read-only, and the address must be reserved or active in NetBox" {
