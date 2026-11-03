@@ -461,12 +461,21 @@ def test_a_connection_the_watchdog_cut_never_reaches_the_gate(listener, monkeypa
     assert listener.gate.calls == []
 
 
-def test_the_watchdog_marks_the_connection_before_it_shuts_it():
+def test_the_watchdog_marks_the_connection_before_it_shuts_it(monkeypatch):
+    # The order is the property: a handler woken by the shutdown must already see the mark.
     left, right = socket.socketpair()
     fired = threading.Event()
+    seen = []
+    real = socket.socket.shutdown
+
+    def shutdown(sock, how):
+        seen.append(fired.is_set())
+        real(sock, how)
+
+    monkeypatch.setattr(lg.socket.socket, "shutdown", shutdown)
     try:
         lg._cut(left, fired)
-        assert fired.is_set()
+        assert seen == [True]
         assert right.recv(1) == b""
     finally:
         left.close()
