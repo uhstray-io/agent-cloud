@@ -25,9 +25,7 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "access" | "secrets" | "policy" | "agents" | "llm" | "tenantsettings" | "orgsettings" => {
-            Some(5)
-        }
+        "access" | "policy" | "agents" | "llm" | "tenantsettings" | "orgsettings" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }

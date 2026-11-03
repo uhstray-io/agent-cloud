@@ -28,6 +28,9 @@ pub const REFRESH_INTERVAL: Duration = Duration::from_secs(600);
 pub const MAX_DEPTH: usize = 6;
 /// Secret paths the walk reads before it stops.
 pub const MAX_LEAVES: usize = 1000;
+/// OpenBao requests one walk may make: every LIST and every metadata read. The login that
+/// precedes them is not counted.
+pub const MAX_REQUESTS: usize = 1500;
 
 /// One secret's metadata, as the page shows it. Every other field of the metadata read is dropped
 /// when it is built, so this struct is the only shape a secret takes on its way out.
@@ -50,34 +53,50 @@ pub struct Walk {
 }
 
 /// Walks the metadata tree from the KV root. The root is listed with an empty path; each folder
-/// is listed without its trailing slash. A folder nested deeper than `max_depth` levels, or a
-/// path beyond `max_leaves`, stops the walk and sets `truncated`.
+/// is listed without its trailing slash. Each bound that cuts the walk short sets `truncated`:
+/// a folder nested deeper than `max_depth` levels is skipped with its subtree, and its siblings
+/// are still read; a path beyond `max_leaves` stops the walk; and a LIST or read beyond
+/// `max_requests` stops it. A leaf that answers 404 was deleted during the walk, so it is
+/// skipped and does not truncate anything. Any other error fails the walk.
 pub async fn walk(
     bao: &Openbao,
     http: &reqwest::Client,
     max_depth: usize,
     max_leaves: usize,
+    max_requests: usize,
 ) -> Result<Walk, OpenbaoError> {
     let mut found: Vec<SecretPath> = Vec::new();
     let mut truncated = false;
+    let mut requests = 0usize;
     // Folders still to list, as (path under secret/metadata/, levels below the root).
     let mut folders: Vec<(String, usize)> = vec![(String::new(), 0)];
-    'folders: while let Some((folder, depth)) = folders.pop() {
+    'walk: while let Some((folder, depth)) = folders.pop() {
+        if requests == max_requests {
+            truncated = true;
+            break;
+        }
+        requests += 1;
         for key in bao.list_metadata(http, &folder).await? {
             let path = join(&folder, &key);
             if let Some(child) = path.strip_suffix('/') {
                 if depth + 1 > max_depth {
+                    // Too deep: this folder and its subtree are not read. Its siblings are.
                     truncated = true;
-                    break 'folders;
+                    continue;
                 }
                 folders.push((child.to_string(), depth + 1));
             } else {
-                if found.len() >= max_leaves {
+                if found.len() >= max_leaves || requests == max_requests {
                     truncated = true;
-                    break 'folders;
+                    break 'walk;
                 }
-                let data = bao.read_metadata(http, &path).await?;
-                found.push(secret_path(&path, &data)?);
+                requests += 1;
+                match bao.read_metadata(http, &path).await {
+                    Ok(data) => found.push(secret_path(&path, &data)?),
+                    // Deleted between the LIST and this read: it is no longer a secret.
+                    Err(OpenbaoError::Status(404)) => {}
+                    Err(err) => return Err(err),
+                }
             }
         }
     }
@@ -218,7 +237,7 @@ pub async fn refresh(app: &AppState) {
     let Some(bao) = app.openbao.as_ref() else {
         return;
     };
-    let result = walk(bao, &app.http, MAX_DEPTH, MAX_LEAVES).await;
+    let result = walk(bao, &app.http, MAX_DEPTH, MAX_LEAVES, MAX_REQUESTS).await;
     let mut cache = app.secrets.write().await;
     match result {
         Ok(found) => cache.record_ok(found, rfc3339_now()),
@@ -287,6 +306,8 @@ mod tests {
         data_hits: AtomicUsize,
         /// Path and query of every request that reached a handler.
         seen: Mutex<Vec<String>>,
+        /// One leaf and the status its metadata read answers with.
+        fail_leaf: Mutex<Option<(String, u16)>>,
     }
 
     impl Fake {
@@ -295,7 +316,12 @@ mod tests {
                 fail_with: AtomicU16::new(0),
                 data_hits: AtomicUsize::new(0),
                 seen: Mutex::new(Vec::new()),
+                fail_leaf: Mutex::new(None),
             }
+        }
+
+        fn fail_leaf(&self, key: &str, status: u16) {
+            *self.fail_leaf.lock().expect("fail_leaf") = Some((key.to_string(), status));
         }
 
         fn seen_paths(&self) -> Vec<String> {
@@ -339,12 +365,20 @@ mod tests {
         let key = key.trim_end_matches('/');
         if uri.query() == Some("list=true") {
             let keys = match key {
-                "" => json!(["services/", "zeta", "alpha"]),
+                // `gone` is listed but has no metadata: a secret deleted after the LIST.
+                "" => json!(["services/", "zeta", "alpha", "gone"]),
                 "services" => json!(["console/", "tududi", "authentik-oidc"]),
                 "services/console" => json!(["github", "openbao-approle"]),
                 _ => return not_found,
             };
             return (StatusCode::OK, Json(json!({"data": {"keys": keys}})));
+        }
+        let failing = fake.fail_leaf.lock().expect("fail_leaf").clone();
+        if let Some((name, status)) = failing {
+            if name == key {
+                let status = StatusCode::from_u16(status).expect("status");
+                return (status, Json(json!({"errors": ["denied"]})));
+            }
         }
         match leaf(key) {
             Some(data) => (StatusCode::OK, Json(json!({"data": data}))),
@@ -574,17 +608,26 @@ mod tests {
         );
     }
 
+    /// The fake tree is ten OpenBao requests from the root: three LISTs, and seven metadata reads
+    /// (`gone` among them, which is read and answers 404).
+    const FULL_WALK_REQUESTS: usize = 10;
+
     #[tokio::test]
     async fn walk_reads_every_leaf_recursively_sorted_and_counts_versions() {
         let (fake, addr) = fake_bao().await;
         let bao = client_for(addr);
         let http = reqwest::Client::new();
 
-        let found = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES)
+        let found = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES, MAX_REQUESTS)
             .await
             .expect("walk");
         assert_eq!(found.paths, expected_paths());
         assert!(!found.truncated);
+        assert_eq!(
+            fake.seen_paths().len(),
+            FULL_WALK_REQUESTS,
+            "each LIST and each read is one request"
+        );
 
         // The walk reads metadata and nothing else: no data path, no other prefix.
         assert_eq!(fake.data_hits.load(Ordering::SeqCst), 0);
@@ -596,24 +639,130 @@ mod tests {
         }
     }
 
+    fn names(found: &Walk) -> Vec<&str> {
+        found.paths.iter().map(|path| path.path.as_str()).collect()
+    }
+
     #[tokio::test]
-    async fn walk_stops_at_a_depth_or_leaf_bound_and_says_so() {
+    async fn a_folder_past_the_depth_bound_is_skipped_and_its_siblings_are_read() {
         let (_fake, addr) = fake_bao().await;
         let bao = client_for(addr);
         let http = reqwest::Client::new();
 
-        // services/console sits two levels down: a depth bound of one stops the walk there.
-        let shallow = walk(&bao, &http, 1, MAX_LEAVES).await.expect("walk");
-        assert!(shallow.truncated, "a folder past the depth bound");
+        // services/console is two levels down. A depth bound of one skips it with its subtree,
+        // and the siblings beside it (services/tududi, services/authentik-oidc, the root's own
+        // leaves) are still read.
+        let shallow = walk(&bao, &http, 1, MAX_LEAVES, MAX_REQUESTS)
+            .await
+            .expect("walk");
+        assert_eq!(
+            names(&shallow),
+            [
+                "secret/alpha",
+                "secret/services/authentik-oidc",
+                "secret/services/tududi",
+                "secret/zeta",
+            ]
+        );
+        assert!(
+            shallow.truncated,
+            "a skipped subtree makes the answer partial"
+        );
 
-        let few = walk(&bao, &http, MAX_DEPTH, 2).await.expect("walk");
-        assert_eq!(few.paths.len(), 2, "the leaf bound caps the reads");
+        // At depth zero every folder is past the bound: only the root's own leaves are read.
+        let root_only = walk(&bao, &http, 0, MAX_LEAVES, MAX_REQUESTS)
+            .await
+            .expect("walk");
+        assert_eq!(names(&root_only), ["secret/alpha", "secret/zeta"]);
+        assert!(root_only.truncated);
+    }
+
+    #[tokio::test]
+    async fn a_path_past_the_leaf_bound_stops_the_walk() {
+        let (_fake, addr) = fake_bao().await;
+        let bao = client_for(addr);
+        let http = reqwest::Client::new();
+
+        let few = walk(&bao, &http, MAX_DEPTH, 2, MAX_REQUESTS)
+            .await
+            .expect("walk");
+        assert_eq!(few.paths.len(), 2, "the leaf bound caps the secrets read");
         assert!(few.truncated, "a path past the leaf bound");
 
         // Exactly as many leaves as the bound is the whole tree, not a truncated one.
-        let exact = walk(&bao, &http, MAX_DEPTH, 6).await.expect("walk");
+        let exact = walk(&bao, &http, MAX_DEPTH, 6, MAX_REQUESTS)
+            .await
+            .expect("walk");
         assert_eq!(exact.paths, expected_paths());
         assert!(!exact.truncated);
+    }
+
+    #[tokio::test]
+    async fn the_request_cap_stops_the_walk_before_the_request_past_it() {
+        let (fake, addr) = fake_bao().await;
+        let bao = client_for(addr);
+        let http = reqwest::Client::new();
+
+        // The cap counts LISTs and reads together, so the whole tree fits in exactly its requests.
+        let whole = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES, FULL_WALK_REQUESTS)
+            .await
+            .expect("walk");
+        assert_eq!(whole.paths, expected_paths());
+        assert!(!whole.truncated);
+
+        // One fewer stops the walk on the request it cannot make. Exactly the cap is sent.
+        let before = fake.seen_paths().len();
+        let capped = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES, FULL_WALK_REQUESTS - 1)
+            .await
+            .expect("walk");
+        assert!(capped.truncated, "the cap cut the walk short");
+        assert_eq!(
+            fake.seen_paths().len() - before,
+            FULL_WALK_REQUESTS - 1,
+            "no request past the cap"
+        );
+
+        // A cap of zero sends nothing and says the answer is partial.
+        let before = fake.seen_paths().len();
+        let none = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES, 0)
+            .await
+            .expect("walk");
+        assert!(none.paths.is_empty() && none.truncated);
+        assert_eq!(fake.seen_paths().len(), before);
+    }
+
+    #[tokio::test]
+    async fn a_leaf_deleted_during_the_walk_is_skipped_and_truncates_nothing() {
+        let (_fake, addr) = fake_bao().await;
+        let bao = client_for(addr);
+        let http = reqwest::Client::new();
+
+        // `gone` is listed and then answers 404. It is left out, and the walk is otherwise whole.
+        let found = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES, MAX_REQUESTS)
+            .await
+            .expect("walk");
+        assert_eq!(found.paths, expected_paths());
+        assert!(!found.truncated);
+    }
+
+    #[tokio::test]
+    async fn any_other_leaf_error_fails_the_walk() {
+        let (fake, addr) = fake_bao().await;
+        let bao = client_for(addr);
+        let http = reqwest::Client::new();
+
+        fake.fail_leaf("zeta", 500);
+        let err = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES, MAX_REQUESTS)
+            .await
+            .expect_err("a 500 on a leaf fails the walk");
+        assert_eq!(err, OpenbaoError::Status(500));
+
+        // A 403 is an error too, after the one re-login the client makes.
+        fake.fail_leaf("zeta", 403);
+        let err = walk(&bao, &http, MAX_DEPTH, MAX_LEAVES, MAX_REQUESTS)
+            .await
+            .expect_err("a 403 on a leaf fails the walk");
+        assert_eq!(err, OpenbaoError::Status(403));
     }
 
     #[test]

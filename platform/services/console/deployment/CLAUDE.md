@@ -160,6 +160,7 @@ Routes and scoping:
 | `GET /v1/tenants/{t}/services`, `/services/{name}` | members of `t` | VMs that carry workflow fields; one VM |
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |
+| `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
 
 A tenant the caller may not see answers `404 unknown_tenant`, byte-identical to an unknown one. Prefixes never appear in a tenant answer: a prefix with no site names no tenant (D16). Devices are site-scoped, so they do.
 
