@@ -321,6 +321,62 @@ deny_reasons contains "a shared orchestrator object not declared as code needs h
 # test_mutation_missing_declarations_fail_closed, OPA 1.0.0, 2026-10-02).
 _declared_as_code(kind) if object.get(input, "target", "") in data.agentcloud.catalog.semaphore.declared_objects[kind]
 
+# --- Agent launches: survey input bounds ------------------------------------------------
+
+# The launch gate sends its exact survey values as `settings` (launch_gate.py opa_input). Like the
+# branch rule, these bound only an agent launch: run_task on semaphore. A playbook reads target_service
+# two ways. Most put it in a `hosts:` pattern (Harden SSH), where it must name one `<name>_svc` group:
+# Ansible pattern syntax (* : , ! & ~ [), the built-in groups all and ungrouped, `localhost` (the
+# controller itself) and any parent group above the service groups would each widen the run. The
+# templates in catalog.semaphore.bare_service_name_templates instead take a bare service name and look
+# up groups[target_service ~ '_svc'] themselves (playbooks/vars/declared-vm.yml), so for them the value
+# is a bare identifier. target_host (Provision VM selects a declaration with it) is one plain host name,
+# never the controller. A caller that sends no `settings`, or none with the key, is unaffected: the bound
+# value stays undefined and the rule is silent. A `settings` that is present but not an object is refused.
+deny_reasons contains "target_service must name one service group, or one service for the templates that take a bare name" if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	target := input.settings.target_service
+	not _plain_service_name(target)
+}
+
+deny_reasons contains "target_host must be one plain host name" if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	host := input.settings.target_host
+	not _plain_host_name(host)
+}
+
+deny_reasons contains "settings must be an object" if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	"settings" in object.keys(input)
+	not is_object(input.settings)
+}
+
+# is_string first: regex.match on a non-string is an error, and a call that fails inside `not`
+# fails open, so each check is a helper that is negated as a whole (see _launch_branch_allowed).
+_bare_name_template if _base_template in data.agentcloud.catalog.semaphore.bare_service_name_templates
+
+_plain_service_name(name) if {
+	is_string(name)
+	not _bare_name_template
+	regex.match("^[a-z][a-z0-9_]*_svc$", name)
+}
+
+_plain_service_name(name) if {
+	is_string(name)
+	_bare_name_template
+	regex.match("^[a-z][a-z0-9_]*$", name)
+	not name in {"all", "ungrouped", "localhost"}
+}
+
+_plain_host_name(host) if {
+	is_string(host)
+	regex.match("^[a-z0-9][a-z0-9._-]*$", host)
+	not host in {"all", "ungrouped", "localhost"}
+}
+
 # --- Allow ------------------------------------------------------------------------------
 
 # Allow when the agent's per-service action list (data.json) permits the action.
