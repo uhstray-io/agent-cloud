@@ -498,6 +498,23 @@ templates:
           - { name: "vm-recorder", value: "vm-recorder" }
           - { name: "console", value: "console" }
 
+  # Duplicate VM records: the workflow's bare record and Proxmox discovery's record for one VM. Deletes the verified
+  # bare record and writes no workflow field; the discovery record is left as it is. Runs in the NetBox container
+  # through the Django shell with no API token (the playbook header says why). Check mode prints the plan, which holds
+  # VM ids, pair names, cluster and tenant names, created times and the action for each pair, and per-record
+  # classification flags for ambiguous groups; it changes nothing.
+  # reconcile_names is a JSON list of VM names; blank means every verified duplicate.
+  - name: Reconcile NetBox Duplicate VMs
+    playbook: platform/playbooks/reconcile-netbox-duplicate-vms.yml
+    dev_variant: true
+    survey_vars:
+      - name: reconcile_names
+        title: VM names to reconcile
+        description: "A JSON list of VM names, for example [\"dns\"]. Blank = every qualifying duplicate pair."
+        type: string
+        required: false
+        default_value: ""
+
   - name: Ensure NetBox Prefix
     playbook: platform/playbooks/ensure-netbox-prefix.yml
     dev_variant: true

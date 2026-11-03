@@ -27,7 +27,9 @@ locals {
     "mixpost",
     "n8n",
     "netbox",
-    "o11y", # Grafana
+    "o11y",      # Grafana
+    "plane",     # Plane work tracker (NEW record; native Authentik OIDC in-app)
+    "plane-mcp", # Plane MCP server (NEW record; authenticates every call itself)
     "postiz",
     "pve", # Proxmox
     "semaphore",

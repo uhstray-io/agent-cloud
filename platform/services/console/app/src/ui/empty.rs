@@ -25,9 +25,7 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "access" | "secrets" | "policy" | "agents" | "llm" | "tenantsettings" | "orgsettings" => {
-            Some(5)
-        }
+        "access" | "policy" | "agents" | "llm" | "tenantsettings" | "orgsettings" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }
@@ -87,14 +85,6 @@ pub const ACCESS: PageMeta = PageMeta {
     icon: "users",
     purpose: "People, groups and scoped roles, with additions proposed as blueprints.",
     authority: "Authentik",
-};
-
-pub const SECRETS: PageMeta = PageMeta {
-    id: "secrets",
-    title: "Secrets",
-    icon: "key-round",
-    purpose: "Secret paths, field counts and rotation age. Values never appear here.",
-    authority: "OpenBao",
 };
 
 pub const POLICY: PageMeta = PageMeta {
@@ -186,11 +176,6 @@ pub fn Access() -> Element {
 }
 
 #[component]
-pub fn Secrets() -> Element {
-    rsx! { EmptyPage { page: SECRETS } }
-}
-
-#[component]
 pub fn Policy() -> Element {
     rsx! { EmptyPage { page: POLICY } }
 }
@@ -273,7 +258,6 @@ mod tests {
             COMPUTE,
             TELEMETRY,
             ACCESS,
-            SECRETS,
             POLICY,
             AI_GATEWAY,
             LLM_ACCESS,

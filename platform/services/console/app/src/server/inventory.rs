@@ -1108,6 +1108,7 @@ mod tests {
             proxmox_http: reqwest::Client::new(),
             flows,
             openbao: None,
+            secrets: tokio::sync::RwLock::new(crate::server::secrets::SecretsCache::new(false)),
         })
     }
 

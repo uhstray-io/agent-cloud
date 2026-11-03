@@ -246,11 +246,14 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
-    # One MCP JSON-RPC call to the token endpoint, from inside the container. The token, when
-    # given, arrives on stdin, never in argv. Prints only the HTTP status and the tool count.
+    # One MCP JSON-RPC call to the token endpoint, from inside the container. argv[2] says whether
+    # a token comes: only then is stdin read (the token, never in argv). The anonymous call reads
+    # no stdin at all: over SSH an `exec -i` with empty stdin never sees end-of-file, and a
+    # readline() then hangs the deploy (production Semaphore task 11731). Prints only the HTTP
+    # status and the tool count.
     _probe: |
       import json, sys, urllib.request, urllib.error
-      token = sys.stdin.readline().strip()
+      token = sys.stdin.readline().strip() if sys.argv[2:3] == ["token"] else ""
       body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
       headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
       if token:
@@ -286,8 +289,7 @@
 
     - name: "An anonymous call is refused"
       ansible.builtin.command:
-        argv: ["{{ _engine }}", exec, -i, plane-mcp, python, -c, "{{ _probe }}", "{{ plane_workspace_slug }}"]
-        stdin: ""
+        argv: ["{{ _engine }}", exec, plane-mcp, python, -c, "{{ _probe }}", "{{ plane_workspace_slug }}", anonymous]
       register: _mcp_anon
       changed_when: false
       retries: 10
@@ -315,7 +317,7 @@
 
     - name: "The token endpoint lists Plane's tools (service token on stdin)"
       ansible.builtin.command:
-        argv: ["{{ _engine }}", exec, -i, plane-mcp, python, -c, "{{ _probe }}", "{{ plane_workspace_slug }}"]
+        argv: ["{{ _engine }}", exec, -i, plane-mcp, python, -c, "{{ _probe }}", "{{ plane_workspace_slug }}", token]
         stdin: "{{ _plane_secret_verify.json.data.data.plane_service_token }}"
       register: _mcp_tools_run
       changed_when: false
