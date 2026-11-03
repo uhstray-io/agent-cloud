@@ -488,8 +488,7 @@ templates:
       # list of the playbook's profiles.
       - name: netbox_token_profile
         title: Token profile
-        description: "device-writer (skynet device create), workflow-collector (the conformance collector),
-          vm-recorder (validate-address), vm-reconciler (Reconcile NetBox Duplicate VMs), or console (Dispatch Console read-only inventory)."
+        description: "device-writer (skynet device create), workflow-collector (the conformance collector), vm-recorder (validate-address), or console (Dispatch Console read-only inventory)."
         type: enum
         required: false
         default_value: device-writer
@@ -497,11 +496,11 @@ templates:
           - { name: "device-writer", value: "device-writer" }
           - { name: "workflow-collector", value: "workflow-collector" }
           - { name: "vm-recorder", value: "vm-recorder" }
-          - { name: "vm-reconciler", value: "vm-reconciler" }
           - { name: "console", value: "console" }
 
   # Duplicate VM records: the workflow's bare record and Proxmox discovery's record for one VM. Moves the
-  # workflow custom fields onto the discovery record, then deletes the bare one. Check mode reports the plan
+  # workflow custom fields onto the discovery record, then deletes the bare one. Runs in the NetBox container
+  # through the Django shell with no API token (the playbook header says why). Check mode reports the plan
   # (names only) and changes nothing. reconcile_names is a JSON list of VM names; blank means every duplicate.
   - name: Reconcile NetBox Duplicate VMs
     playbook: platform/playbooks/reconcile-netbox-duplicate-vms.yml

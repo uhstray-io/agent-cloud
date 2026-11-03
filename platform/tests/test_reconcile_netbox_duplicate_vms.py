@@ -1,37 +1,34 @@
 """Duplicate VM reconciliation (reconcile-netbox-duplicate-vms.yml, Semaphore "Reconcile NetBox Duplicate VMs").
 
-Structure, read from the parsed playbook and the template catalog:
-- the extra-var guard is the run's first play;
-- every write (PATCH, DELETE) is skipped under check mode and comes AFTER the refusal that stops a run
-  whose bare record holds an interface or a primary IP; every PATCH precedes every DELETE;
-- every NetBox and OpenBao request is no_log; every visible task avoids the token, the request headers,
-  a response body and the custom_fields dicts; the only visible debug prints the plan and the summary;
-- the template is a dev_variant with one string survey field, reconcile_names;
-- the vm-reconciler token profile may view, change and delete virtual machines and nothing else.
+The reconciliation is a Django-shell script, not an API client, so the tests run its real body:
 
-Behaviour, through the real ansible-playbook against one loopback fake (OpenBao and NetBox on the same
-port). The fake NetBox replaces custom_fields on PATCH (the stricter reading of a PATCH), so the playbook
-must send the whole dict. Secrets, the request headers, addresses and comments must not reach the output
-at default verbosity or at -vvv. The interface and primary-IP reads use the paths the playbook names;
-the NetBox documentation does not state them, so these tests prove the playbook's logic, not NetBox's
-routes (see the PR body).
+- static, from the parsed playbook: the extra-var guard is the first play; the play is hosts netbox_svc and
+  reads no credential and makes no request; both shell tasks use the provision playbook's exec pattern; the dry
+  task is read-only by construction (check_mode false, dry_run true, changed_when false) and the real task runs
+  only under `not ansible_check_mode`; the body carries no Jinja markers; the recorder username is the one
+  provision-netbox-automation-token.yml gives vm-recorder; the template is a dev variant with one optional string.
+- through the real playbook under ansible-playbook: a fake container engine stands in for `docker exec`, and a fake
+  manage.py runs the script against stub Django modules whose state is a JSON file.
+- decisions, through the body alone (a subprocess, no Ansible): one case per guard, with the state read back before
+  and after each run.
+
+The stub is test-only. It implements the ORM calls the body makes and fails on any other lookup, so a body that
+starts using a new call fails here instead of passing on a silent default. That NetBox v4.5.0 behaves so is read
+from its source (see the playbook header), not proven by these tests.
 """
 
-import ast
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
-import threading
-from http.server import ThreadingHTTPServer
+import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/reconcile-netbox-duplicate-vms.yml"
@@ -39,24 +36,42 @@ PROVISION = REPO / "platform/playbooks/provision-netbox-automation-token.yml"
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
 NEEDS_ANSIBLE = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
-TEXT = PLAYBOOK.read_text()
-DOC = yaml.safe_load(TEXT)
+DOC = yaml.safe_load(PLAYBOOK.read_text())
 PLAY = DOC[1]
+BODY = PLAY["vars"]["_reconcile_body"]
+DRY = "Dry run: plan the reconciliation in the NetBox Django shell (nothing is written)"
+REAL = "Reconcile in the NetBox Django shell (one transaction; refused pairs are left untouched)"
+MARKER = "Declared by the service deployment workflow (validate-address)"
+FIELDS = ["ac_workflow_status", "ac_failed_steps", "ac_last_run"]
+DISCOVERY = "orb-agent"
+RUN_NEW = {"ac_workflow_status": {"deploy": "pass"}, "ac_failed_steps": "", "ac_last_run": "2026-11-02T10:00:00Z"}
+RUN_OLD = {"ac_workflow_status": {"deploy": "fail"}, "ac_failed_steps": "deploy", "ac_last_run": "2026-10-01T10:00:00Z"}
 TASK_KEYWORDS = {
-    "name", "register", "when", "no_log", "vars", "delegate_to", "loop", "loop_control", "tags",
-    "check_mode", "changed_when", "failed_when", "become", "ignore_errors", "timeout", "args",
-    "block", "rescue", "always", "connection", "diff", "notify", "environment",
+    "name",
+    "register",
+    "when",
+    "no_log",
+    "vars",
+    "delegate_to",
+    "loop",
+    "loop_control",
+    "tags",
+    "check_mode",
+    "changed_when",
+    "failed_when",
+    "become",
+    "ignore_errors",
+    "timeout",
+    "args",
+    "block",
+    "rescue",
+    "always",
+    "connection",
+    "diff",
+    "notify",
+    "environment",
 }
 PREFIX = "ansible.builtin."
-MARKER = "Declared by the service deployment workflow (validate-address)"
-SENT = "SENTINEL-VM-RECONCILER-TOKEN-4d1f"
-CLIENT = "fake-approle-client-token"
-ADDR = "192.0.2.77"
-# The writes, and the visible tasks that must never name a secret, a header, a response body or a
-# custom_fields dict. `_plan` and `_pairs` are no_log facts a visible task may read for names and ids only.
-FORBIDDEN_VISIBLE = re.compile(
-    r"\.json\b|_nb_token\b|_nb_headers|X-Vault-Token|Authorization|patch_fields|move_values|custom_fields|client_token"
-)
 
 
 def _tasks():
@@ -75,887 +90,721 @@ def _tasks():
 
 def _module(task):
     key = next(k for k in task if k not in TASK_KEYWORDS)
-    return key[len(PREFIX):] if key.startswith(PREFIX) else key
+    return key[len(PREFIX) :] if key.startswith(PREFIX) else key
 
 
 def _args(task):
     key = next(k for k in task if k not in TASK_KEYWORDS)
-    return task[key] if isinstance(task[key], dict) else {}
-
-
-def _is_write(task):
-    return _module(task) == "uri" and str(_args(task).get("method", "GET")).upper() in {"PATCH", "DELETE"}
-
-
-def _is_get(task):
-    return _module(task) == "uri" and str(_args(task).get("method", "GET")).upper() == "GET"
-
-
-def _skips_in_check_mode(task):
-    when = task.get("when")
-    items = when if isinstance(when, list) else [when]
-    return any(str(i).strip() == "not ansible_check_mode" for i in items)
+    return task[key]
 
 
 def _named(name):
     return next(t for t in _tasks() if t.get("name") == name)
 
 
-# --- the play, its guards and its order -----------------------------------------------------------------
+# --- static: the guard, the play, the two shell tasks ----------------------------------------------------------
 
 
-def test_playbook_imports_the_extra_var_guard_as_its_first_play():
-    assert DOC[0].get("ansible.builtin.import_playbook", DOC[0].get("import_playbook")) == \
-        "refuse-internal-extra-vars.yml"
-    assert PLAY["hosts"] == "localhost" and PLAY["gather_facts"] is False and PLAY["become"] is False
+def test_the_extra_var_guard_is_the_first_play():
+    assert (
+        DOC[0].get("ansible.builtin.import_playbook", DOC[0].get("import_playbook")) == "refuse-internal-extra-vars.yml"
+    )
+    assert PLAY["hosts"] == "netbox_svc" and PLAY["gather_facts"] is False and PLAY["become"] is False
 
 
-def test_both_transport_guards_come_before_the_first_credential_read():
-    tasks = _tasks()
-    guards = [i for i, t in enumerate(tasks) if str(t.get("include_tasks", t.get("ansible.builtin.include_tasks", "")))
-              .endswith("assert-bao-transport.yml")]
-    assert len(guards) == 2, guards
-    first_credential = min(i for i, t in enumerate(tasks)
-                           if _module(t) == "uri" and ("/v1/" in str(_args(t).get("url", ""))))
-    assert max(guards) < first_credential
+def test_the_play_reads_no_credential_and_makes_no_request():
+    assert not [t for t in _tasks() if _module(t) == "uri"]
+    dumped = (json.dumps(PLAY["tasks"]) + BODY).lower()
+    for word in (
+        "x-vault-token",
+        "secret/",
+        "approle",
+        "api_token",
+        "authorization",
+        "/v1/",
+        "vm_reconciler",
+        "token",
+        "http",
+    ):
+        assert word not in dumped, word
 
 
-def test_every_write_is_skipped_under_check_mode():
-    writes = [t for t in _tasks() if _is_write(t)]
-    assert {str(_args(t)["method"]) for t in writes} == {"PATCH", "DELETE"}
-    for t in writes:
-        assert _skips_in_check_mode(t), t.get("name")
+def test_both_shells_use_the_provision_exec_pattern():
+    assert PLAY["vars"]["_manage"] == playbook_yaml.plays(PROVISION)[0]["vars"]["_manage"]
+    for name in (DRY, REAL):
+        assert _args(_named(name)).startswith("{{ _manage }} << 'PYSCRIPT'\n"), name
 
 
-def test_every_read_runs_under_check_mode():
-    for t in _tasks():
-        if _is_get(t) or (_module(t) == "uri" and str(_args(t).get("method", "")).upper() == "POST"):
-            assert t.get("check_mode") is False, t.get("name")
+def test_the_dry_run_is_check_mode_only_and_read_only_by_construction():
+    dry = _named(DRY)
+    assert dry["when"] == "ansible_check_mode"
+    assert dry["check_mode"] is False and dry["changed_when"] is False
+    assert dry["register"] == "_reconcile_dry"
+    assert "'dry_run': true" in _args(dry)
 
 
-def test_every_request_that_sends_a_header_is_no_log():
-    for t in _tasks():
-        if _module(t) == "uri" and "headers" in _args(t):
-            assert t.get("no_log") is True, t.get("name")
+def test_the_real_run_is_skipped_under_check_mode():
+    real = _named(REAL)
+    assert real["when"] == "not ansible_check_mode"
+    assert real["changed_when"] is True and real.get("check_mode") is None
+    assert real["register"] == "_reconcile_real"
+    assert "'dry_run': false" in _args(real)
 
 
-def test_the_refusal_comes_before_the_first_write():
-    tasks = _tasks()
-    refusal = next(i for i, t in enumerate(tasks)
-                   if t.get("name") == "Refuse the run when a selected bare record holds an interface or a primary IP")
-    first_write = min(i for i, t in enumerate(tasks) if _is_write(t))
-    assert refusal < first_write
-    assert _module(tasks[refusal]) == "assert"
-    assert "_blocked_names | length == 0" in str(_args(tasks[refusal])["that"])
+def test_the_two_shell_tasks_never_share_a_register_name():
+    # A skipped task stores its result under its register name, so a shared name lets the skipped one erase the
+    # other's stdout (the dry run's result line was lost that way).
+    assert _named(DRY)["register"] != _named(REAL)["register"]
 
 
-def test_every_patch_precedes_every_delete():
-    tasks = _tasks()
-    patches = [i for i, t in enumerate(tasks) if _is_write(t) and _args(t)["method"] == "PATCH"]
-    deletes = [i for i, t in enumerate(tasks) if _is_write(t) and _args(t)["method"] == "DELETE"]
-    assert patches and deletes and max(patches) < min(deletes)
-
-
-def test_the_discovery_readback_is_checked_before_the_first_delete():
-    tasks = _tasks()
-    compare = next(i for i, t in enumerate(tasks) if t.get("name") == "Compare the read-back with what was written")
-    assert compare < min(i for i, t in enumerate(tasks) if _is_write(t) and _args(t)["method"] == "DELETE")
-
-
-def test_the_discovery_patch_sends_the_whole_custom_fields_dict():
-    # The fake and NetBox's own merge semantics are not both known; the playbook must not depend on either.
-    patch = _named("NetBox: write the workflow fields onto each discovery record")
-    assert patch["ansible.builtin.uri"]["body"]["custom_fields"] == "{{ item.patch_fields }}"
-    assert "'patch_fields': dcf | combine(mv.vals)" in TEXT
-
-
-# --- visible output ------------------------------------------------------------------------------------
-
-
-def test_a_visible_task_never_names_a_secret_a_header_a_body_or_a_custom_field():
-    for t in _tasks():
-        if t.get("no_log") is True or _module(t) == "include_tasks" or "include_tasks" in t \
-                or "ansible.builtin.include_tasks" in t:
-            continue
-        refs = json.dumps({k: v for k, v in t.items() if k != "name"}, sort_keys=True)
-        assert FORBIDDEN_VISIBLE.search(refs) is None, (t.get("name"), FORBIDDEN_VISIBLE.search(refs).group(0))
-
-
-def test_the_only_visible_debug_prints_the_plan_and_the_summary():
+def test_the_visible_output_is_the_names_only_result():
     debugs = [t for t in _tasks() if _module(t) == "debug"]
     assert len(debugs) == 2, [t.get("name") for t in debugs]
-    assert _args(_named("Print the plan")) == {"var": "_plan_lines"}
-    assert set(_args(_named("Summarise the run (names only)"))) == {"msg"}
-
-
-def test_the_plan_line_is_built_from_names_ids_tenants_stamps_and_reasons_only():
-    text = json.dumps(_named("Show the plan (names only)"), sort_keys=True)
-    for forbidden in ("primary_ip", "comments", "description", "patch_fields", "move_values", "custom_fields"):
-        assert forbidden not in text, forbidden
-
-
-def test_no_loop_iterates_a_protected_result():
+    assert _args(debugs[0]) == {"var": "_result"}
     for t in _tasks():
-        loop = str(t.get("loop", ""))
-        if re.search(r"\b_(vm_page0|vm_pages|iface_reads|patch|readback|delete|gone|bao_auth|nb_secret)\b", loop):
-            assert t.get("no_log") is True, t.get("name")
+        if t.get("no_log") is True:
+            continue
+        text = json.dumps({k: v for k, v in t.items() if k != "name"})
+        for word in ("custom_field", "vcpus", "comments", "primary_ip", ".json"):
+            assert word not in text, (t.get("name"), word)
 
 
-# --- the template and the token profile ------------------------------------------------------------------
+def test_the_body_has_no_jinja_markers_and_compiles_with_its_prelude():
+    for marker in ("{{", "{%", "{#", "PYSCRIPT"):
+        assert marker not in BODY, marker
+    compile("import json\nPARAMS = {'dry_run': True, 'names': []}\n" + BODY, "reconcile-body", "exec")
+
+
+def test_the_recorder_is_the_user_the_provision_playbook_gives_vm_recorder():
+    recorder = playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]["vm-recorder"]["user"]
+    assert re.findall(r'^RECORDER = "([^"]+)"$', BODY, re.M) == [recorder]
+
+
+def test_the_changelog_is_read_for_creates_of_virtual_machines_only():
+    for needle in (
+        'changed_object_type__app_label="virtualization"',
+        'changed_object_type__model="virtualmachine"',
+        'action="create"',
+    ):
+        assert needle in BODY, needle
+
+
+def test_the_header_states_why_there_is_no_token_and_what_the_shell_leaves_behind():
+    header = "\n".join(line for line in PLAYBOOK.read_text().splitlines() if line.startswith("#"))
+    for phrase in (
+        "no API token",
+        "Webhook.secret",
+        "restrict()",
+        "CHANGELOG_RETENTION",
+        "NO changelog entry",
+        "one transaction",
+    ):
+        assert phrase in header, phrase
+
+
+# --- static: the template and the catalog --------------------------------------------------------------------
 
 
 def test_the_template_is_a_dev_variant_with_one_optional_string_survey_field():
-    entries = [e for e in yaml.safe_load(TEMPLATES.read_text())["templates"]
-               if e.get("name") == "Reconcile NetBox Duplicate VMs"]
-    assert len(entries) == 1
+    entries = [
+        e
+        for e in yaml.safe_load(TEMPLATES.read_text())["templates"]
+        if e.get("name") == "Reconcile NetBox Duplicate VMs"
+    ]
+    assert len(entries) == 1, entries
     entry = entries[0]
     assert entry["playbook"] == "platform/playbooks/reconcile-netbox-duplicate-vms.yml"
     assert entry["dev_variant"] is True
-    assert entry["survey_vars"] == [{"name": "reconcile_names", "title": "VM names to reconcile",
-                                     "description": entry["survey_vars"][0]["description"], "type": "string",
-                                     "required": False, "default_value": ""}]
-
-
-def _reconciler_profile():
-    return playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]["vm-reconciler"]
-
-
-def test_the_vm_reconciler_profile_grants_view_and_change_and_delete_only_where_declared():
-    profile = _reconciler_profile()
-    assert profile["field"] == "vm_reconciler_api_token"
-    assert profile["token_write_enabled"] is True
-    assert profile["actions"] == ["view"]
-    assert profile["object_types"] == ["virtualization.virtualmachine"]
-    assert sorted(profile["view_object_types"]) == [
-        "tenancy.tenant", "virtualization.cluster", "virtualization.vminterface"]
-    extra = {scope["permission"]: scope for scope in profile["extra_scopes"]}
-    assert set(extra) == {"workflow-vm-reconcile-changelog-view", "workflow-vm-reconcile-change",
-                          "workflow-vm-reconcile-delete"}
-    # NetBox does not apply object constraints to the changelog endpoint (ObjectChangeViewSet is not restricted),
-    # so the changelog scope carries none: a constraint there would look like a restriction and restrict nothing.
-    assert extra["workflow-vm-reconcile-changelog-view"] == {
-        "permission": "workflow-vm-reconcile-changelog-view", "actions": ["view"],
-        "object_types": ["core.objectchange"]}
-    change = extra["workflow-vm-reconcile-change"]
-    delete = extra["workflow-vm-reconcile-delete"]
-    assert change["actions"] == ["change"] and delete["actions"] == ["delete"]
-    for scope in (change, delete):
-        assert scope["object_types"] == ["virtualization.virtualmachine"], scope
-        # NetBox: a null or empty constraint is unconstrained access, so a constrained scope is a non-empty dict.
-        assert isinstance(scope["constraints"], dict) and scope["constraints"], scope
-    assert change["constraints"] == {"comments__startswith": "VMID:", "vcpus__isnull": False}
-    assert delete["constraints"] == {
-        "description": "Declared by the service deployment workflow (validate-address)",
-        "vcpus__isnull": True, "comments": ""}
-    names = [profile["permission"], profile["view_permission"], *(s["permission"] for s in profile["extra_scopes"])]
-    assert len(set(names)) == 5, names
-    assert "add" not in {a for s in profile["extra_scopes"] for a in s["actions"]} | set(profile["actions"])
-
-
-def _matches(constraints, record):
-    """The subset of NetBox's Q(**constraint) this profile uses: exact, __startswith and __isnull, ANDed."""
-    for key, want in constraints.items():
-        if key.endswith("__startswith"):
-            ok = str(record.get(key[:-len("__startswith")]) or "").startswith(want)
-        elif key.endswith("__isnull"):
-            ok = (record.get(key[:-len("__isnull")]) is None) == want
-        else:
-            ok = record.get(key) == want
-        if not ok:
-            return False
-    return True
-
-
-def test_the_change_and_delete_constraints_cannot_both_match_one_record():
-    extra = {s["permission"]: s for s in _reconciler_profile()["extra_scopes"]}
-    change = extra["workflow-vm-reconcile-change"]["constraints"]
-    delete = extra["workflow-vm-reconcile-delete"]["constraints"]
-    # Structural: one needs comments that start with VMID: (so never empty), the other needs empty comments.
-    assert change["comments__startswith"].startswith("VMID:") and delete["comments"] == ""
-    assert change["vcpus__isnull"] is False and delete["vcpus__isnull"] is True
-    # And over the shapes that exist, including the ones that differ in one field only.
-    marker = "Declared by the service deployment workflow (validate-address)"
-    shapes = [
-        {"description": marker, "vcpus": None, "comments": ""},            # the bare record
-        {"description": "Proxmox notes", "vcpus": 2.0, "comments": "VMID: 101. Host: pve1."},  # discovery
-        {"description": marker, "vcpus": None, "comments": "VMID: 9."},    # marker, no vcpus, VMID comment
-        {"description": marker, "vcpus": 2.0, "comments": ""},             # marker, vcpus set, no comments
-        {"description": "", "vcpus": None, "comments": ""},
-        {"description": "", "vcpus": 2.0, "comments": "VMID: 1."},
+    assert entry["survey_vars"] == [
+        {
+            "name": "reconcile_names",
+            "title": "VM names to reconcile",
+            "description": 'A JSON list of VM names, for example ["dns"]. Blank = every qualifying duplicate pair.',
+            "type": "string",
+            "required": False,
+            "default_value": "",
+        }
     ]
-    for record in shapes:
-        assert not (_matches(change, record) and _matches(delete, record)), record
-    assert _matches(change, shapes[1]) and _matches(delete, shapes[0])
-    assert not _matches(delete, shapes[1]) and not _matches(change, shapes[0])
 
 
-def test_the_classifier_uses_the_same_predicates_as_the_constraints():
-    # A record the playbook calls bare must be one the delete scope can remove, and a discovery one one the change
-    # scope can patch. The two predicates are pinned to the constraints by their text.
-    assert "(vm.get('vcpus') is none) and (comments == '') -%}" in TEXT
-    assert "'is_disc': comments.startswith('VMID:') and (vm.get('vcpus') is not none)," in TEXT
+def test_the_template_catalog_offers_no_token_profile_for_the_reconciler():
+    assert "vm-reconciler" not in TEMPLATES.read_text()
 
 
-def test_the_reconciler_account_name_matches_the_vm_recorder_profile_user_the_creator_check_pins():
-    profiles = playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]
-    assert profiles["vm-recorder"]["user"] == "workflow-vm-recorder"
-    assert PLAY["vars"]["_recorder_user"] == profiles["vm-recorder"]["user"]
+# --- the stub: a small stand-in for the Django ORM calls the body makes -----------------------------------------
 
+FAKE_ORM = """
+import atexit
+import copy
+import json
+import os
 
-# --- behaviour: the real ansible-playbook against the loopback fake --------------------------------------
+_PATH = os.environ["FAKE_NETBOX_STATE"]
+with open(_PATH) as fh:
+    STATE = json.load(fh)
+_SNAPSHOTS = []
+_ROLLBACK = []
+_VM_FIELDS = ("id", "name", "cluster_id", "description", "vcpus", "comments", "interface_count",
+              "primary_ip4_id", "primary_ip6_id", "custom_field_data")
 
 
-def _cf(**values):
-    base = {"ac_workflow_status": {}, "ac_failed_steps": None, "ac_last_run": None}
-    base.update(values)
-    return base
+def _persist():
+    with open(_PATH, "w") as fh:
+        json.dump(STATE, fh, sort_keys=True)
 
 
-BARE_CF = {"ac_workflow_status": {"step-a": "pass"}, "ac_failed_steps": "step-b",
-           "ac_last_run": "2026-11-01T10:00:00Z"}
+atexit.register(_persist)
 
 
-def _bare(vm_id, name, cluster=1, cf=None, ip=None, cluster_name="uhstray-cluster"):
-    return {"id": vm_id, "name": name, "cluster": {"id": cluster, "name": cluster_name}, "tenant": None,
-            "created": "2026-11-01T09:00:00Z", "description": MARKER, "vcpus": None, "comments": "",
-            "primary_ip4": ip, "primary_ip6": None, "custom_fields": dict(BARE_CF if cf is None else cf)}
+def _only_pk(lookups):
+    unknown = set(lookups) - {"pk"}
+    if unknown:
+        raise AssertionError("unsupported VM lookup: %s" % sorted(unknown))
+    return lookups["pk"]
 
 
-def _disc(vm_id, name, cluster=1, cf=None, cluster_name="uhstray-cluster"):
-    return {"id": vm_id, "name": name, "cluster": {"id": cluster, "name": cluster_name},
-            "tenant": {"id": 2, "name": "uhstray"}, "created": "2026-10-01T09:00:00Z",
-            "description": "Proxmox notes", "vcpus": 2.0,
-            "comments": "VMID: 101. Host: pve1. Discovered via Proxmox API.",
-            "primary_ip4": None, "primary_ip6": None, "custom_fields": dict(_cf() if cf is None else cf)}
-
-
-RECORDER = "workflow-vm-recorder"
-DISCOVERY = "proxmox-discovery"
-
-
-class FakeNetBox:
-    """One OpenBao and one NetBox on a single loopback port. PATCH replaces custom_fields.
-
-    Each VM has creation records in the fake changelog: a bare record is created by the recorder account, a
-    discovery record by another account, unless `origins` overrides the creators of an id (an empty list means no
-    creation record at all)."""
-
-    def __init__(self, vms, interfaces, origins=None):
-        self.vms = {vm["id"]: vm for vm in vms}
-        self.interfaces = dict(interfaces)
-        self.origins = {}
-        for vm in vms:
-            bare = vm["description"] == MARKER and vm["vcpus"] is None
-            self.origins[vm["id"]] = [RECORDER] if bare else [DISCOVERY]
-        self.origins.update(origins or {})
-        self.log = []
-
-    def writes(self):
-        return [entry for entry in self.log if entry[0] in ("PATCH", "DELETE")]
-
-    def answer(self, method, path, headers, body):
-        url = urlsplit(path)
-        query = parse_qs(url.query)
-        if url.path == "/v1/auth/approle/login" and method == "POST":
-            return 200, {"auth": {"client_token": CLIENT}}
-        if url.path.startswith("/v1/"):
-            if headers.get("X-Vault-Token") != CLIENT:
-                return 403, {"errors": ["permission denied"]}
-            if url.path == "/v1/secret/data/services/netbox":
-                return 200, {"data": {"data": {"vm_reconciler_api_token": SENT}}}
-            return 404, {"errors": []}
-        if headers.get("Authorization") != "Token " + SENT:
-            return 403, {"detail": "Authentication credentials were not provided."}
-        self.log.append((method, url.path))
-        if url.path == "/api/virtualization/virtual-machines/" and method == "GET":
-            limit = int(query.get("limit", ["50"])[0])
-            offset = int(query.get("offset", ["0"])[0])
-            ids = sorted(self.vms)
-            page = [self.vms[i] for i in ids[offset:offset + limit]]
-            return 200, {"count": len(ids), "next": None, "previous": None, "results": page}
-        if url.path == "/api/core/object-changes/" and method == "GET":
-            # The filter names the playbook must send: NetBox's ObjectChangeFilterSet (v4.5.0) takes them as given.
-            wanted = {"changed_object_type": ["virtualization.virtualmachine"], "action": ["create"]}
-            if any(query.get(key) != value for key, value in wanted.items()):
-                return 400, {"detail": "unexpected filter"}
-            vm_id = int(query["changed_object_id"][0])
-            rows = [{"id": n, "action": "create", "changed_object_id": vm_id, "user_name": who}
-                    for n, who in enumerate(self.origins.get(vm_id, []))]
-            return 200, {"count": len(rows), "next": None, "previous": None, "results": rows}
-        if url.path == "/api/virtualization/interfaces/" and method == "GET":
-            count = self.interfaces.get(int(query["virtual_machine_id"][0]), 0)
-            return 200, {"count": count, "next": None, "previous": None, "results": []}
-        match = re.fullmatch(r"/api/virtualization/virtual-machines/(\d+)/", url.path)
-        if match:
-            vm_id = int(match.group(1))
-            if vm_id not in self.vms:
-                return 404, {"detail": "Not found."}
-            if method == "GET":
-                return 200, self.vms[vm_id]
-            if method == "PATCH":
-                self.vms[vm_id]["custom_fields"] = json.loads(body)["custom_fields"]
-                return 200, self.vms[vm_id]
-            if method == "DELETE":
-                del self.vms[vm_id]
-                return 204, None
-        return 404, {"detail": "Not found."}
-
-
-def _serve(state):
-    class Handler(DrainingHandler):
-        def do_GET(self):
-            self._dispatch("GET")
-
-        def do_PATCH(self):
-            self._dispatch("PATCH")
-
-        def do_DELETE(self):
-            self._dispatch("DELETE")
-
-        def do_POST(self):
-            self._dispatch("POST")
-
-        def _dispatch(self, method):
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length).decode() if length else ""
-            status, payload = state.answer(method, self.path, self.headers, body)
-            data = b"" if payload is None else json.dumps(payload).encode()
-            self.send_response(status)
-            if data:
-                self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def log_message(self, *args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
-
-
-@pytest.fixture
-def reconcile(tmp_path):
-    servers = []
-
-    def run(vms, interfaces=None, check=False, extra=None, verbosity=None, origins=None):
-        state = FakeNetBox(vms, interfaces or {}, origins)
-        server = _serve(state)
-        servers.append(server)
-        url = f"http://127.0.0.1:{server.server_address[1]}"
-        inventory = {"all": {"hosts": {"localhost": {
-            "ansible_connection": "local",
-            "openbao_addr": url,
-            "netbox_url": url,
-            "bao_role_id": "fake-role-id",
-            "bao_secret_id": "fake-secret-id",
-        }}}}
-        inv = tmp_path / "inventory.yml"
-        inv.write_text(yaml.safe_dump(inventory))
-        cmd = ["ansible-playbook", "-i", str(inv), str(PLAYBOOK)]
-        if check:
-            cmd.append("--check")
-        if verbosity:
-            cmd.append(verbosity)
-        if extra is not None:
-            cmd += ["--extra-vars", json.dumps(extra)]
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        proc = subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=300)
-        out = proc.stdout + proc.stderr
-        return proc, out, state
-
-    yield run
-    for server in servers:
-        server.shutdown()
-        server.server_close()
-
-
-def _three_pairs():
-    """dns: the discovery record is empty, so every bare field moves.
-    step-ca: the bare run is newer than the discovery run, so every bare field moves, overwriting.
-    vault: the discovery run is newer, so only the fields the discovery record lacks move."""
-    newer_disc = {"ac_workflow_status": {"step-a": "fail"}, "ac_failed_steps": "step-a",
-                  "ac_last_run": "2026-10-01T00:00:00Z"}
-    vault_bare = {"ac_workflow_status": {"x": "pass"}, "ac_failed_steps": "f",
-                  "ac_last_run": "2026-10-01T00:00:00Z"}
-    vault_disc = {"ac_workflow_status": {"y": "fail"}, "ac_failed_steps": None,
-                  "ac_last_run": "2026-11-01T00:00:00Z"}
-    return [_bare(10, "dns"), _disc(11, "dns"),
-            _bare(20, "step-ca", cf=BARE_CF), _disc(21, "step-ca", cf=newer_disc),
-            _bare(30, "vault", cf=vault_bare), _disc(31, "vault", cf=vault_disc)]
-
-
-@NEEDS_ANSIBLE
-def test_a_qualifying_pair_gets_its_fields_then_its_bare_record_is_deleted(reconcile):
-    proc, out, state = reconcile(_three_pairs())
-    assert proc.returncode == 0, out
-    assert "pair dns in cluster uhstray-cluster: bare 10" in out, out
-    assert "move ac_workflow_status, ac_failed_steps, ac_last_run" in out, out
-    assert 10 not in state.vms and 20 not in state.vms and 30 not in state.vms
-    assert state.vms[11]["custom_fields"] == BARE_CF
-    assert state.vms[21]["custom_fields"] == BARE_CF, "a newer bare run must overwrite the discovery run"
-    assert state.vms[31]["custom_fields"] == {"ac_workflow_status": {"y": "fail"}, "ac_failed_steps": "f",
-                                              "ac_last_run": "2026-11-01T00:00:00Z"}, \
-        "a newer discovery run keeps its own fields and takes only the ones it lacks"
-    writes = state.writes()
-    assert writes.index(("PATCH", "/api/virtualization/virtual-machines/11/")) < writes.index(
-        ("DELETE", "/api/virtualization/virtual-machines/10/")), writes
-    for secret in (SENT, CLIENT, ADDR, "VMID", "127.0.0.1"):
-        assert secret not in out, secret
-
-
-@NEEDS_ANSIBLE
-def test_check_mode_reports_the_plan_and_writes_nothing(reconcile):
-    proc, out, state = reconcile(_three_pairs(), check=True)
-    assert proc.returncode == 0, out
-    assert "pair dns in cluster uhstray-cluster: bare 10" in out, out
-    assert "check mode: nothing changed" in out, out
-    assert state.writes() == [], state.writes()
-    assert 10 in state.vms and 11 in state.vms and state.vms[11]["custom_fields"] == _cf()
-    assert SENT not in out and CLIENT not in out
-
-
-@NEEDS_ANSIBLE
-def test_a_bare_record_with_an_interface_is_refused_before_any_write(reconcile):
-    vms = [_bare(40, "openbao"), _disc(41, "openbao")]
-    proc, out, state = reconcile(vms, interfaces={40: 1})
-    assert proc.returncode != 0, out
-    assert "cannot be reconciled" in out, out
-    assert "blocked has interfaces" in out, out
-    assert state.writes() == [], state.writes()
-    assert 40 in state.vms and 41 in state.vms
-
-
-@NEEDS_ANSIBLE
-def test_a_check_mode_run_refuses_the_same_pair_so_it_fails_where_the_real_run_would(reconcile):
-    vms = [_bare(40, "openbao"), _disc(41, "openbao")]
-    proc, out, state = reconcile(vms, interfaces={40: 1}, check=True)
-    assert proc.returncode != 0, out
-    assert state.writes() == []
-
-
-@NEEDS_ANSIBLE
-def test_a_bare_record_with_a_primary_ip_is_refused_and_the_address_is_not_printed(reconcile):
-    ip = {"id": 9, "address": ADDR + "/24"}
-    vms = [_bare(50, "gh-runner-01", ip=ip), _disc(51, "gh-runner-01")]
-    proc, out, state = reconcile(vms)
-    assert proc.returncode != 0, out
-    assert "blocked has a primary IP" in out, out
-    assert ADDR not in out
-    assert state.writes() == [] and 50 in state.vms
-
-
-@NEEDS_ANSIBLE
-def test_a_group_that_is_not_one_bare_and_one_discovery_record_is_ambiguous_and_untouched(reconcile):
-    vms = [_bare(60, "agentgateway"), _bare(61, "agentgateway"),
-           _bare(70, "o11y"), _disc(71, "o11y"), _disc(72, "o11y")]
-    proc, out, state = reconcile(vms)
-    assert proc.returncode == 0, out
-    assert "ambiguous, not touched: agentgateway in cluster uhstray-cluster (2 records)" in out, out
-    assert "ambiguous, not touched: o11y in cluster uhstray-cluster (3 records)" in out, out
-    assert state.writes() == []
-    assert set(state.vms) == {60, 61, 70, 71, 72}
-
-
-@NEEDS_ANSIBLE
-@pytest.mark.parametrize("extra", [{"reconcile_names": ["step-ca"]}, {"reconcile_names": '["step-ca"]'}],
-                         ids=["list", "survey-string"])
-def test_reconcile_names_limits_the_run_to_the_named_pair(reconcile, extra):
-    proc, out, state = reconcile(_three_pairs(), extra=extra)
-    assert proc.returncode == 0, out
-    assert 20 not in state.vms and 21 in state.vms, "the named pair was not reconciled"
-    assert 10 in state.vms and 11 in state.vms and 30 in state.vms and 31 in state.vms, "an unnamed pair was touched"
-
-
-@NEEDS_ANSIBLE
-def test_a_name_that_matches_no_duplicate_pair_refuses_before_any_write(reconcile):
-    proc, out, state = reconcile(_three_pairs(), extra={"reconcile_names": '["nope"]'})
-    assert proc.returncode != 0, out
-    assert "names no verified duplicate pair" in out and "nope" in out, out
-    assert state.writes() == []
-
-
-@NEEDS_ANSIBLE
-def test_no_token_or_address_reaches_the_output_at_maximum_verbosity(reconcile):
-    proc, out, state = reconcile(_three_pairs(), verbosity="-vvv")
-    assert proc.returncode == 0, out
-    assert SENT not in out and CLIENT not in out and ADDR not in out
-    assert "pair dns in cluster uhstray-cluster" in out, "the -vvv run did not reach the plan"
-
-
-# --- provenance: the changelog says who created each record -------------------------------------------------
-
-
-def test_the_creation_records_are_read_before_any_pair_is_selected_or_written():
-    tasks = _tasks()
-    origin = next(i for i, t in enumerate(tasks)
-                  if t.get("name") == "NetBox: read the creation record of each candidate VM")
-    judged = next(i for i, t in enumerate(tasks) if t.get("name") == "Judge the origin of each candidate pair")
-    selected = next(i for i, t in enumerate(tasks)
-                    if t.get("name") == "Hold the selected pairs (every verified pair when reconcile_names is blank)")
-    first_write = min(i for i, t in enumerate(tasks) if _is_write(t))
-    assert origin < judged < selected < first_write
-
-
-def test_the_creation_record_read_queries_the_changelog_for_creates_of_virtual_machines():
-    url = str(_args(_named("NetBox: read the creation record of each candidate VM"))["url"])
-    assert "/api/core/object-changes/?changed_object_type=virtualization.virtualmachine" in url
-    assert "changed_object_id={{ item }}" in url and "action=create" in url
-
-
-def test_selection_and_the_unmatched_check_read_only_the_verified_pairs():
-    selection = str(_named(
-        "Hold the selected pairs (every verified pair when reconcile_names is blank)")["ansible.builtin.set_fact"])
-    assert "for p in _verified_pairs" in selection and "for p in _pairs" not in selection
-    unmatched = str(_named(
-        "Hold the requested names that match no verified duplicate pair")["ansible.builtin.set_fact"])
-    assert "_verified_pairs" in unmatched and re.search(r"(?<![A-Za-z_])_pairs\b", unmatched) is None
-
-
-def test_the_bare_record_is_judged_by_its_creator_and_the_discovery_record_is_not():
-    judge = str(_named("Judge the origin of each candidate pair")["ansible.builtin.set_fact"])
-    assert "bare_o[0]['creators'] == [_recorder_user]" in judge
-    assert "(_recorder_user not in disc_o[0]['creators'])" in judge
-
-
-@NEEDS_ANSIBLE
-@pytest.mark.parametrize("origins", [
-    {10: ["console"]},          # the bare record was created by another account
-    {11: [RECORDER]},           # the discovery record was created by the recorder account
-    {10: []},                   # the bare record has no creation record
-    {11: []},                   # the discovery record has no creation record
-], ids=["bare-by-other", "discovery-by-recorder", "bare-missing", "discovery-missing"])
-def test_an_unconfirmed_origin_is_reported_and_never_touched(reconcile, origins):
-    vms = [_bare(10, "dns"), _disc(11, "dns")]
-    proc, out, state = reconcile(vms, origins=origins)
-    assert proc.returncode == 0, out
-    assert "unverified origin, not touched: dns in cluster uhstray-cluster" in out, out
-    assert state.writes() == [], state.writes()
-    assert 10 in state.vms and 11 in state.vms
-    assert state.vms[11]["custom_fields"] == _cf(), "the workflow fields moved before the origin was confirmed"
-
-
-@NEEDS_ANSIBLE
-def test_an_unverified_pair_does_not_stop_the_verified_pairs(reconcile):
-    pairs = _three_pairs()
-    proc, out, state = reconcile(pairs, origins={30: ["console"]})
-    assert proc.returncode == 0, out
-    assert "unverified origin, not touched: vault in cluster uhstray-cluster" in out, out
-    assert 10 not in state.vms and 20 not in state.vms
-    assert 30 in state.vms and 31 in state.vms
-
-
-@NEEDS_ANSIBLE
-def test_a_requested_name_whose_origin_is_unverified_refuses_before_any_write(reconcile):
-    proc, out, state = reconcile([_bare(10, "dns"), _disc(11, "dns")], origins={10: ["console"]},
-                                 extra={"reconcile_names": '["dns"]'})
-    assert proc.returncode != 0, out
-    assert "names no verified duplicate pair" in out and "dns" in out, out
-    assert state.writes() == []
-
-
-@NEEDS_ANSIBLE
-def test_check_mode_reports_an_unverified_origin_too(reconcile):
-    proc, out, state = reconcile([_bare(10, "dns"), _disc(11, "dns")], origins={11: [RECORDER]}, check=True)
-    assert proc.returncode == 0, out
-    assert "unverified origin, not touched: dns" in out, out
-    assert state.writes() == []
-
-
-# --- constraints: rendered into the permission definitions the playbook creates ---------------------------
-
-
-@NEEDS_ANSIBLE
-def test_the_permission_script_renders_each_scope_with_its_constraint(tmp_path):
-    profiles = playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]
-    profile = profiles["vm-reconciler"]
-    task = next(t for t in playbook_yaml.plays(PROVISION)[0]["tasks"]
-                if t.get("name") == "Ensure NetBox automation user and scoped permissions")
-    rendered = tmp_path / "permissions.py"
-    harness = tmp_path / "harness.yml"
-    harness.write_text(yaml.safe_dump([{
-        "hosts": "localhost", "connection": "local", "gather_facts": False,
-        "vars": {"_profiles": profiles, "_profile_name": "vm-reconciler", "_profile": profile,
-                 "_user": profile["user"], "_manage": f"cat > {rendered}"},
-        "tasks": [task],
-    }]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False, timeout=300)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    text = rendered.read_text()
-    compile(text, "rendered-permission-script", "exec")
-    literal = re.search(r"json\.loads\((\".*\")\)", text)
-    assert literal, text
-    assert json.loads(ast.literal_eval(literal.group(1))) == profile["extra_scopes"]
-    # The constraint is read with .get: the changelog scope has none, so it is rendered as None (unconstrained).
-    assert 's.get("constraints")' in text
-
-
-# --- convergence: the dedicated user ends with exactly the declared permissions -----------------------------
-#
-# The rendered permission snippet runs against a small in-memory stand-in for the NetBox ORM calls it makes
-# (get_user_model, ObjectPermission, ObjectType). The stand-in is test-only and keeps its state in a JSON file, so
-# the real snippet's detach logic, its idempotence and its check-mode silence are exercised. The stand-in is not
-# NetBox: that the M2M detach and the JSON constraints behave so in NetBox v4.5.0 is read from its source.
-
-FAKE_ORM = '''
-import atexit, json, os
-_STATE = os.environ["FAKE_NETBOX_STATE"]
-if os.path.exists(_STATE):
-    with open(_STATE) as fh:
-        _S = json.load(fh)
-else:
-    _S = {"users": {}, "perms": {}, "types": {}}
-
-
-def _save():
-    with open(_STATE, "w") as fh:
-        json.dump(_S, fh, sort_keys=True)
-
-
-atexit.register(_save)
-
-
-class _User:
+class _Named:
     def __init__(self, name):
-        self.username = name
-        self.pk = _S["users"][name]["id"]
+        self.name = name
 
 
-class _UserQS:
-    def __init__(self, names):
-        self._names = names
-
-    def first(self):
-        return _User(self._names[0]) if self._names else None
-
-
-class _UserManager:
-    def get_or_create(self, username, defaults=None):
-        if username in _S["users"]:
-            return _User(username), False
-        _S["users"][username] = {"id": len(_S["users"]) + 1}
-        return _User(username), True
-
-    def filter(self, username=None):
-        return _UserQS([username] if username in _S["users"] else [])
-
-
-def get_user_model():
-    class User:
-        objects = _UserManager()
-    return User
-
-
-class _Type:
-    def __init__(self, key):
-        self.pk = _S["types"].setdefault(key, len(_S["types"]) + 1)
-
-
-class _TypeManager:
-    def get_by_natural_key(self, app_label, model):
-        return _Type(app_label + "." + model)
-
-
-class ObjectType:
-    objects = _TypeManager()
-
-
-class _Exists:
-    def __init__(self, found):
-        self._found = found
-
-    def exists(self):
-        return self._found
-
-
-class _Related:
-    def __init__(self, perm, field):
-        self._perm, self._field = perm, field
-
-    def _ids(self):
-        return _S["perms"][self._perm][self._field]
-
-    def values_list(self, field, flat=False):
-        return list(self._ids())
-
-    def set(self, ids):
-        _S["perms"][self._perm][self._field] = list(ids)
-
-    def filter(self, pk=None):
-        return _Exists(pk in self._ids())
-
-    def add(self, user):
-        if user.pk not in self._ids():
-            self._ids().append(user.pk)
-
-    def remove(self, user):
-        if user.pk in self._ids():
-            self._ids().remove(user.pk)
-
-
-class _Perm:
-    _FIELDS = ("enabled", "actions", "constraints")
-
-    def __init__(self, name):
-        object.__setattr__(self, "name", name)
+class VirtualMachine:
+    def __init__(self, data):
+        object.__setattr__(self, "_data", data)
 
     def __getattr__(self, key):
-        if key in _Perm._FIELDS:
-            return _S["perms"][self.name][key]
-        if key in ("object_types", "users"):
-            return _Related(self.name, key)
+        data = object.__getattribute__(self, "_data")
+        if key == "cluster":
+            return _Named(data["cluster_name"])
+        if key == "tenant":
+            return None if data["tenant_name"] is None else _Named(data["tenant_name"])
+        if key == "created":
+            return data["created"]
+        if key in _VM_FIELDS:
+            return data[key]
         raise AttributeError(key)
 
     def __setattr__(self, key, value):
-        if key not in _Perm._FIELDS:
+        if key != "custom_field_data":
             raise AttributeError(key)
-        _S["perms"][self.name][key] = value
+        self._data["custom_field_data"] = value
 
-    def save(self, update_fields=None):
-        pass
+    def save(self):
+        for index, row in enumerate(STATE["vms"]):
+            if row["id"] == self._data["id"]:
+                new = copy.deepcopy(self._data)
+                if os.environ.get("FAKE_DROP_SAVE"):
+                    new["custom_field_data"] = copy.deepcopy(row["custom_field_data"])
+                STATE["vms"][index] = new
+                return
+        raise RuntimeError("save of a missing VM")
+
+    def refresh_from_db(self):
+        for row in STATE["vms"]:
+            if row["id"] == self._data["id"]:
+                object.__setattr__(self, "_data", copy.deepcopy(row))
+                return
+        raise RuntimeError("refresh of a missing VM")
+
+    def delete(self):
+        kept = [row for row in STATE["vms"] if row["id"] != self._data["id"]]
+        if len(kept) == len(STATE["vms"]):
+            raise RuntimeError("delete of a missing VM")
+        STATE["vms"] = kept
 
 
-class _PermQS:
-    def __init__(self, names):
-        self._names = list(names)
-
-    def filter(self, users=None):
-        return _PermQS([n for n in self._names if users.pk in _S["perms"][n]["users"]])
-
-    def exclude(self, name__in=()):
-        return _PermQS([n for n in self._names if n not in name__in])
-
-    def order_by(self, *fields):
-        return _PermQS(sorted(self._names))
-
-    def values_list(self, field, flat=False):
-        return list(self._names)
+class _VMQuery:
+    def __init__(self, rows, lock=False):
+        self._rows = rows
+        self._lock = lock
 
     def __iter__(self):
-        return iter([_Perm(n) for n in self._names])
+        return iter([VirtualMachine(copy.deepcopy(row)) for row in self._rows])
+
+    def exists(self):
+        return bool(self._rows)
+
+    def get(self, **lookups):
+        pk = _only_pk(lookups)
+        if len([row for row in self._rows if row["id"] == pk]) != 1:
+            raise RuntimeError("get expected one VM")
+        if self._lock and os.environ.get("FAKE_RACE_PK") == str(pk):
+            # A concurrent change between the read and the locked re-read: the bare record gains an interface.
+            for row in STATE["vms"]:
+                if row["id"] == pk:
+                    row["interface_count"] = 1
+        found = [row for row in STATE["vms"] if row["id"] == pk]
+        return VirtualMachine(copy.deepcopy(found[0]))
 
 
-class _PermManager:
-    def get_or_create(self, name, defaults=None):
-        if name in _S["perms"]:
-            return _Perm(name), False
-        record = {"enabled": True, "actions": [], "constraints": None, "object_types": [], "users": []}
-        record.update(defaults or {})
-        _S["perms"][name] = record
-        return _Perm(name), True
+class _VMManager:
+    def select_related(self, *names):
+        return _VMQuery(list(STATE["vms"]))
 
-    def filter(self, users=None):
-        return _PermQS(list(_S["perms"])).filter(users=users)
+    def select_for_update(self):
+        return _VMQuery(list(STATE["vms"]), lock=True)
 
+    def filter(self, **lookups):
+        pk = _only_pk(lookups)
+        return _VMQuery([row for row in STATE["vms"] if row["id"] == pk])
 
-class ObjectPermission:
-    objects = _PermManager()
-'''
-
-SHIM = {
-    "django/__init__.py": "",
-    "django/contrib/__init__.py": "",
-    "django/contrib/auth/__init__.py": "from _fake_orm import get_user_model\n",
-    "users/__init__.py": "",
-    "users/models.py": "from _fake_orm import ObjectPermission\n",
-    "core/__init__.py": "",
-    "core/models.py": "from _fake_orm import ObjectType\n",
-    "manage.py": "import sys\nexec(compile(sys.stdin.read(), '<shell>', 'exec'), {'__name__': '__main__'})\n",
-}
-
-DECLARED = {"workflow-vm-reconcile-vm-view", "workflow-vm-reconcile-view", "workflow-vm-reconcile-changelog-view",
-            "workflow-vm-reconcile-change", "workflow-vm-reconcile-delete"}
+    def get(self, **lookups):
+        return _VMQuery(list(STATE["vms"])).get(**lookups)
 
 
-def _seed_state():
-    def perm(users, actions=("view",)):
-        return {"enabled": True, "actions": list(actions), "constraints": None, "object_types": [], "users": users}
-    return {"users": {"workflow-vm-reconciler": {"id": 1}, "someone": {"id": 2}}, "types": {}, "perms": {
-        "workflow-vm-reconcile": perm([1], ("view", "change", "delete")),   # the earlier broad grant: undeclared
-        "manual-grant": perm([1]),                                          # granted by hand: undeclared
-        "workflow-vm-reconcile-vm-view": perm([1]),                         # declared, already attached
-        "other-user-perm": perm([2]),                                       # another account: not ours to touch
-    }}
+VirtualMachine.objects = _VMManager()
 
 
-def _attached(state, user_id):
-    return {name for name, rec in state["perms"].items() if user_id in rec["users"]}
+class _Change:
+    def __init__(self, row):
+        self.changed_object_id = row["changed_object_id"]
+        self.user_name = row["user_name"]
 
 
-@pytest.fixture
-def converge(tmp_path):
-    for rel, text in SHIM.items():
-        path = tmp_path / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    (tmp_path / "_fake_orm.py").write_text(FAKE_ORM)
-    state = tmp_path / "state.json"
+class ObjectChange:
+    class objects:
+        @staticmethod
+        def filter(**lookups):
+            allowed = {"changed_object_type__app_label", "changed_object_type__model",
+                       "changed_object_id__in", "action"}
+            unknown = set(lookups) - allowed
+            if unknown:
+                raise AssertionError("unsupported changelog lookup: %s" % sorted(unknown))
+            rows = [row for row in STATE["changes"]
+                    if row["app_label"] == lookups.get("changed_object_type__app_label", row["app_label"])
+                    and row["model"] == lookups.get("changed_object_type__model", row["model"])
+                    and row["action"] == lookups.get("action", row["action"])
+                    and row["changed_object_id"] in lookups.get("changed_object_id__in", [row["changed_object_id"]])]
+            return [_Change(row) for row in rows]
 
-    def run(check=False, seed=None):
-        if seed is not None:
-            state.write_text(json.dumps(seed, sort_keys=True))
-        manage = (f"FAKE_NETBOX_STATE={state} PYTHONPATH={tmp_path} python3 {tmp_path}/manage.py shell")
-        play = playbook_yaml.plays(PROVISION)[0]
-        names = {"Ensure NetBox automation user and scoped permissions",
-                 "Show the permissions removed from the dedicated user",
-                 "Dry run: report the permissions the dedicated user would lose",
-                 "Dry run: show the permissions that would be removed"}
-        tasks = [t for t in play["tasks"] if t.get("name") in names]
-        assert len(tasks) == 4, [t.get("name") for t in tasks]
-        harness = tmp_path / "harness.yml"
-        harness.write_text(yaml.safe_dump([{
-            "hosts": "localhost", "connection": "local", "gather_facts": False,
-            "vars": {**play["vars"], "_manage": manage, "netbox_token_profile": "vm-reconciler"},
-            "tasks": tasks,
-        }]))
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        cmd = ["ansible-playbook", "-i", "localhost,", str(harness)] + (["--check"] if check else [])
-        proc = subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=300)
-        return proc, proc.stdout + proc.stderr, json.loads(state.read_text())
 
-    return run
+class _Atomic:
+    def __enter__(self):
+        _SNAPSHOTS.append(copy.deepcopy(STATE))
+        _ROLLBACK.append(False)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        snapshot = _SNAPSHOTS.pop()
+        rollback = _ROLLBACK.pop()
+        if exc_type is not None or rollback:
+            STATE.clear()
+            STATE.update(snapshot)
+        return False
+
+
+class _Transaction:
+    def atomic(self):
+        return _Atomic()
+
+    def set_rollback(self, flag):
+        _ROLLBACK[-1] = bool(flag)
+
+
+transaction = _Transaction()
+"""
+
+SHIM = """
+import os
+import sys
+
+_script = sys.stdin.read()
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "received.log"), "a") as fh:
+    fh.write(_script + "\\n<<END>>\\n")
+exec(compile(_script, "<shell>", "exec"), {"__name__": "__main__"})
+"""
+
+
+def _stub(tmp_path):
+    root = tmp_path / "stub"
+    if not root.exists():
+        (root / "django/db").mkdir(parents=True)
+        (root / "core").mkdir()
+        (root / "virtualization").mkdir()
+        (root / "django/__init__.py").write_text("")
+        (root / "django/db/__init__.py").write_text("from _fake_orm import transaction\n")
+        (root / "core/__init__.py").write_text("")
+        (root / "core/models.py").write_text("from _fake_orm import ObjectChange\n")
+        (root / "virtualization/__init__.py").write_text("")
+        (root / "virtualization/models.py").write_text("from _fake_orm import VirtualMachine\n")
+        (root / "_fake_orm.py").write_text(FAKE_ORM)
+        (root / "manage.py").write_text(SHIM)
+    return root
+
+
+def _vm(vm_id, name, *, bare, cluster=1, cf=None, interfaces=0, ip4=None, ip6=None, tenant="uhstray"):
+    row = {
+        "id": vm_id,
+        "name": name,
+        "cluster_id": cluster,
+        "cluster_name": "uhstray-cluster",
+        "tenant_name": tenant,
+        "created": "2026-11-01 10:00:00+00:00",
+        "interface_count": interfaces,
+        "primary_ip4_id": ip4,
+        "primary_ip6_id": ip6,
+        "custom_field_data": dict(cf or {}),
+    }
+    if bare:
+        row.update(description=MARKER, vcpus=None, comments="")
+    else:
+        row.update(description="", vcpus="2.00", comments="VMID: 105")
+    return row
+
+
+def _creates(vm_id, users):
+    return [
+        {
+            "changed_object_id": vm_id,
+            "app_label": "virtualization",
+            "model": "virtualmachine",
+            "action": "create",
+            "user_name": user,
+        }
+        for user in users
+    ]
+
+
+def _pair(
+    name="dns",
+    bare_id=10,
+    disc_id=11,
+    *,
+    bare_creators=("workflow-vm-recorder",),
+    disc_creators=(DISCOVERY,),
+    bare_cf=RUN_NEW,
+    disc_cf=RUN_OLD,
+    bare_kw=None,
+    disc_kw=None,
+):
+    bare_kw = {"interfaces": 0, **(bare_kw or {})}
+    return {
+        "vms": [
+            _vm(
+                bare_id,
+                name,
+                bare=True,
+                cf=bare_cf,
+                interfaces=bare_kw["interfaces"],
+                ip4=bare_kw.get("ip4"),
+                ip6=bare_kw.get("ip6"),
+            ),
+            _vm(disc_id, name, bare=False, cf=disc_cf, **(disc_kw or {})),
+        ],
+        "changes": _creates(bare_id, bare_creators) + _creates(disc_id, disc_creators),
+    }
+
+
+def _merge(*states):
+    return {"vms": [vm for s in states for vm in s["vms"]], "changes": [c for s in states for c in s["changes"]]}
+
+
+def _body_script(dry_run, names=()):
+    params = json.dumps(json.dumps({"dry_run": dry_run, "names": list(names)}))
+    return f"import json\nPARAMS = json.loads({params})\n{BODY}"
+
+
+def _run_body(tmp_path, state, *, dry_run, names=(), env=None):
+    root = _stub(tmp_path)
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps(state, sort_keys=True))
+    run_env = {"PATH": os.environ.get("PATH", ""), "FAKE_NETBOX_STATE": str(state_file), **(env or {})}
+    proc = subprocess.run(
+        [sys.executable, str(root / "manage.py")],
+        input=_body_script(dry_run, names),
+        cwd=tmp_path,
+        env=run_env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("RECONCILE_RESULT ")]
+    result = json.loads(lines[0][len("RECONCILE_RESULT ") :]) if len(lines) == 1 else None
+    return proc, result, json.loads(state_file.read_text())
+
+
+# --- decisions: the body run against the stub ---------------------------------------------------------------
+
+
+def test_a_qualifying_pair_merges_and_its_bare_record_is_deleted(tmp_path):
+    proc, result, after = _run_body(tmp_path, _pair(), dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is True
+    assert [p["action"] for p in result["pairs"]] == ["merged"]
+    assert result["pairs"][0]["moved"] == FIELDS
+    assert [row["id"] for row in after["vms"]] == [11]
+    assert {f: after["vms"][0]["custom_field_data"][f] for f in FIELDS} == RUN_NEW
+    assert set(result["pairs"][0]) == {
+        "name",
+        "cluster",
+        "bare_id",
+        "bare_tenant",
+        "bare_created",
+        "disc_id",
+        "disc_tenant",
+        "disc_created",
+        "action",
+        "moved",
+    }
+    assert '"pass"' not in proc.stdout, "a workflow value reached the output"
+
+
+def test_a_dry_run_reports_the_same_pair_and_writes_nothing(tmp_path):
+    before = _pair()
+    proc, result, after = _run_body(tmp_path, before, dry_run=True)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is True and result["dry_run"] is True
+    assert [p["action"] for p in result["pairs"]] == ["would_merge"]
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "bare_kw, reason",
+    [
+        ({"interfaces": 2}, "has interfaces"),
+        ({"ip4": 7}, "has a primary IP"),
+        ({"ip6": 9}, "has a primary IP"),
+    ],
+    ids=["interfaces", "primary-ipv4", "primary-ipv6"],
+)
+def test_a_bare_record_with_an_interface_or_an_address_is_refused_and_left_alone(tmp_path, bare_kw, reason):
+    before = _pair(bare_kw=bare_kw)
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert [p["action"] for p in result["pairs"]] == ["refused:" + reason]
+    assert after == before
+
+
+def test_a_refused_pair_is_left_alone_while_the_other_pairs_of_the_run_are_reconciled(tmp_path):
+    before = _merge(
+        _pair(name="dns", bare_id=10, disc_id=11, bare_kw={"interfaces": 1}),
+        _pair(name="vault", bare_id=20, disc_id=21),
+    )
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert {p["name"]: p["action"] for p in result["pairs"]} == {"dns": "refused:has interfaces", "vault": "merged"}
+    assert sorted(row["id"] for row in after["vms"]) == [10, 11, 21]
+
+
+@pytest.mark.parametrize(
+    "bare_creators, disc_creators",
+    [
+        (["console"], [DISCOVERY]),
+        (["workflow-vm-recorder", "workflow-vm-recorder"], [DISCOVERY]),
+        ([], [DISCOVERY]),
+        (["workflow-vm-recorder"], ["workflow-vm-recorder"]),
+        (["workflow-vm-recorder"], []),
+    ],
+    ids=[
+        "bare-by-another-account",
+        "bare-with-two-creates",
+        "bare-creation-entry-pruned",
+        "discovery-by-recorder",
+        "discovery-creation-entry-pruned",
+    ],
+)
+def test_an_unconfirmed_origin_is_reported_and_never_touched(tmp_path, bare_creators, disc_creators):
+    before = _pair(bare_creators=bare_creators, disc_creators=disc_creators)
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is True
+    assert [p["action"] for p in result["pairs"]] == ["unverified_origin"]
+    assert after == before
+
+
+def test_a_group_of_three_records_is_ambiguous_and_untouched(tmp_path):
+    before = _merge(_pair(), {"vms": [_vm(12, "dns", bare=False)], "changes": _creates(12, [DISCOVERY])})
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is True and result["pairs"] == []
+    assert result["ambiguous"] == [{"name": "dns", "cluster": "uhstray-cluster", "count": 3}]
+    assert after == before
+
+
+def test_two_bare_records_are_ambiguous_and_untouched(tmp_path):
+    before = {"vms": [_vm(10, "dns", bare=True), _vm(11, "dns", bare=True)], "changes": []}
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["ambiguous"] == [{"name": "dns", "cluster": "uhstray-cluster", "count": 2}]
+    assert after == before
+
+
+def test_the_workflow_fields_move_as_one_unit_from_a_newer_bare_run(tmp_path):
+    # Discovery's failed-steps value is "deploy"; the newer bare run's is empty. The unit replaces all three.
+    proc, result, after = _run_body(tmp_path, _pair(bare_cf=RUN_NEW, disc_cf=RUN_OLD), dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert after["vms"][0]["custom_field_data"]["ac_failed_steps"] == ""
+
+
+def test_a_bare_run_older_than_discovery_moves_nothing(tmp_path):
+    proc, result, after = _run_body(tmp_path, _pair(bare_cf=RUN_OLD, disc_cf=RUN_NEW), dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["pairs"][0]["action"] == "merged" and result["pairs"][0]["moved"] == []
+    assert after["vms"][0]["custom_field_data"] == RUN_NEW
+
+
+def test_a_bare_run_moves_when_discovery_has_no_run_stamp(tmp_path):
+    proc, result, after = _run_body(tmp_path, _pair(bare_cf=RUN_OLD, disc_cf={}), dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["pairs"][0]["moved"] == FIELDS
+    assert after["vms"][0]["custom_field_data"] == RUN_OLD
+
+
+def test_a_bare_run_without_a_stamp_moves_nothing(tmp_path):
+    before = _pair(bare_cf={"ac_workflow_status": {"deploy": "pass"}}, disc_cf=RUN_OLD)
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["pairs"][0]["moved"] == []
+    assert after["vms"][0]["custom_field_data"] == RUN_OLD
+
+
+def test_run_stamps_compare_as_instants_not_as_text(tmp_path):
+    # 10:00+02:00 is 08:00Z, earlier than 09:00Z. A text comparison would call the bare run newer.
+    before = _pair(
+        bare_cf={**RUN_NEW, "ac_last_run": "2026-11-02T10:00:00+02:00"},
+        disc_cf={**RUN_OLD, "ac_last_run": "2026-11-02T09:00:00Z"},
+    )
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert result["pairs"][0]["moved"] == []
+    assert after["vms"][0]["custom_field_data"]["ac_last_run"] == "2026-11-02T09:00:00Z"
+
+
+def test_an_unreadable_run_stamp_is_refused_and_left_alone(tmp_path):
+    before = _pair(bare_cf={"ac_last_run": "yesterday afternoon"}, disc_cf=RUN_OLD)
+    proc, result, after = _run_body(tmp_path, before, dry_run=False)
+    assert proc.returncode == 0, proc.stderr
+    assert [p["action"] for p in result["pairs"]] == ["refused:unparseable_last_run"]
+    assert result["ok"] is False
+    assert after == before
+
+
+def test_a_requested_name_selects_only_its_pair_and_matches_case_insensitively(tmp_path):
+    before = _merge(_pair(name="dns", bare_id=10, disc_id=11), _pair(name="vault", bare_id=20, disc_id=21))
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, names=["DNS"])
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is True
+    assert [p["name"] for p in result["pairs"]] == ["dns"]
+    assert sorted(row["id"] for row in after["vms"]) == [11, 20, 21]
+
+
+def test_a_requested_name_with_no_verified_pair_stops_the_run_before_any_write(tmp_path):
+    before = _pair()
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, names=["nope"])
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert result["errors"] == ["names no verified duplicate pair: nope"]
+    assert after == before
+
+
+def test_a_requested_name_whose_origin_is_unverified_stops_the_whole_run(tmp_path):
+    before = _merge(
+        _pair(name="dns", bare_id=10, disc_id=11, bare_creators=["console"]),
+        _pair(name="vault", bare_id=20, disc_id=21),
+    )
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, names=["dns", "vault"])
+    assert proc.returncode == 0, proc.stderr
+    assert result["ok"] is False
+    assert result["errors"] == ["names no verified duplicate pair: dns"]
+    assert after == before
+
+
+def test_a_pair_that_changes_after_the_read_is_not_written(tmp_path):
+    # The locked re-read finds an interface on the bare record: the run stops and the transaction rolls back.
+    before = _merge(_pair(name="dns", bare_id=10, disc_id=11), _pair(name="vault", bare_id=20, disc_id=21))
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_RACE_PK": "10"})
+    assert proc.returncode != 0, proc.stdout
+    assert "a pair changed between the read and the write" in proc.stderr
+    assert after == before
+
+
+def test_a_discovery_write_that_does_not_read_back_deletes_nothing(tmp_path):
+    before = _pair()
+    proc, result, after = _run_body(tmp_path, before, dry_run=False, env={"FAKE_DROP_SAVE": "1"})
+    assert proc.returncode != 0, proc.stdout
+    assert "did not hold the moved fields" in proc.stderr
+    assert after == before
+
+
+# --- through the real playbook: ansible-playbook, a fake container engine, the same stub ---------------------
+
+
+def _ansible(tmp_path, state, *, check=False, extra=None):
+    root = _stub(tmp_path)
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps(state, sort_keys=True))
+    engine = tmp_path / "fake-engine"
+    engine.write_text(
+        f'#!/bin/sh\n[ "$1" = exec ] || exit 2\n'
+        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(root))}/manage.py shell\n"
+    )
+    engine.chmod(0o755)
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text("[netbox_svc]\nnb ansible_connection=local\n")
+    cmd = [
+        "ansible-playbook",
+        "-i",
+        str(inventory),
+        str(PLAYBOOK),
+        "-e",
+        json.dumps({"container_engine": str(engine), **(extra or {})}),
+    ]
+    if check:
+        cmd.append("--check")
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    env["FAKE_NETBOX_STATE"] = str(state_file)
+    proc = subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=300)
+    return proc, proc.stdout + proc.stderr, json.loads(state_file.read_text())
 
 
 @NEEDS_ANSIBLE
-def test_the_dedicated_user_ends_with_exactly_the_declared_permissions(converge):
-    proc, out, state = converge(seed=_seed_state())
+def test_the_playbook_reconciles_a_qualifying_pair_through_the_shell(tmp_path):
+    proc, out, after = _ansible(tmp_path, _pair())
     assert proc.returncode == 0, out
-    assert "removed: manual-grant" in out and "removed: workflow-vm-reconcile" in out, out
-    assert _attached(state, 1) == DECLARED, _attached(state, 1)
-    # Detach only: the stale grants still exist, and another account's grant is untouched.
-    assert "workflow-vm-reconcile" in state["perms"] and "manual-grant" in state["perms"]
-    assert _attached(state, 2) == {"other-user-perm"}
+    assert [row["id"] for row in after["vms"]] == [11]
+    assert '"action": "merged"' in out
 
 
 @NEEDS_ANSIBLE
-def test_a_second_run_changes_nothing(converge):
-    converge(seed=_seed_state())
-    proc, out, state = converge()
+def test_check_mode_plans_through_the_shell_with_dry_run_and_changes_nothing(tmp_path):
+    before = _pair()
+    proc, out, after = _ansible(tmp_path, before, check=True)
     assert proc.returncode == 0, out
-    assert "removed: " not in out, out
-    assert _attached(state, 1) == DECLARED
-    recap = re.search(r"changed=(\d+)", out.split("PLAY RECAP")[1])
-    assert recap and recap.group(1) == "0", out
+    assert after == before
+    received = (_stub(tmp_path) / "received.log").read_text()
+    assert 'dry_run\\": true' in received and 'dry_run\\": false' not in received
+    assert '"action": "would_merge"' in out
 
 
 @NEEDS_ANSIBLE
-def test_check_mode_reports_the_removals_and_changes_nothing(converge):
-    seed = _seed_state()
-    proc, out, state = converge(check=True, seed=seed)
-    assert proc.returncode == 0, out
-    assert "would remove: manual-grant" in out and "would remove: workflow-vm-reconcile" in out, out
-    assert state == seed, "a dry run wrote to the store"
-    assert _attached(state, 1) == {"workflow-vm-reconcile", "manual-grant", "workflow-vm-reconcile-vm-view"}
+def test_a_refused_pair_fails_the_real_run_and_changes_nothing(tmp_path):
+    before = _pair(bare_kw={"interfaces": 1})
+    proc, out, after = _ansible(tmp_path, before)
+    assert proc.returncode != 0, out
+    assert "not every selected pair was reconciled" in out and "has interfaces" in out
+    assert after == before
 
 
 @NEEDS_ANSIBLE
-def test_the_removal_names_are_printed_and_no_token_is_in_the_output(converge):
-    proc, out, _ = converge(seed=_seed_state())
+@pytest.mark.parametrize(
+    "extra", [{"reconcile_names": ["dns"]}, {"reconcile_names": '["dns"]'}], ids=["list", "survey-string"]
+)
+def test_reconcile_names_limits_the_real_run(tmp_path, extra):
+    before = _merge(_pair(name="dns", bare_id=10, disc_id=11), _pair(name="vault", bare_id=20, disc_id=21))
+    proc, out, after = _ansible(tmp_path, before, extra=extra)
     assert proc.returncode == 0, out
-    assert SENT not in out and CLIENT not in out
+    assert sorted(row["id"] for row in after["vms"]) == [11, 20, 21]
+
+
+@NEEDS_ANSIBLE
+def test_a_names_value_that_is_not_a_list_stops_before_the_shell_runs(tmp_path):
+    before = _pair()
+    proc, out, after = _ansible(tmp_path, before, extra={"reconcile_names": '"dns"'})
+    assert proc.returncode != 0, out
+    assert "reconcile_names must be a JSON list" in out
+    assert not (_stub(tmp_path) / "received.log").exists()
+    assert after == before
