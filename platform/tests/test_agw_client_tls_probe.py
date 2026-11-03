@@ -52,7 +52,11 @@ def _leaf(directory: Path, ca: str, name: str, san: str, usage: str, dest: Path)
     """A leaf at <dest>/current/{cert,key}.pem, signed by `ca`."""
     _openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
              "-keyout", f"{name}.key", "-out", f"{name}.csr", "-subj", f"/CN={name}", cwd=directory)
-    (directory / f"{name}.ext").write_text(f"subjectAltName={san}\nextendedKeyUsage={usage}\n")
+    # Python 3.13+ verifies with VERIFY_X509_STRICT, which requires an Authority Key Identifier.
+    (directory / f"{name}.ext").write_text(
+        f"subjectAltName={san}\nextendedKeyUsage={usage}\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n"
+    )
     _openssl("x509", "-req", "-in", f"{name}.csr", "-CA", f"{ca}.crt", "-CAkey", f"{ca}.key", "-CAcreateserial",
              "-days", "2", "-out", f"{name}.crt", "-extfile", f"{name}.ext", cwd=directory)
     (dest / "current").mkdir(parents=True)
