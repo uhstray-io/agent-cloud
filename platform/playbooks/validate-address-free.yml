@@ -248,9 +248,14 @@
         that:
           - _nb_tenant is skipped or _nb_tenant.status | default(-1) == 200
           - _nb_site is skipped or _nb_site.status | default(-1) == 200
+        # A 403 is the NetBox answer to a token without view on the model (TokenPermissions needs
+        # view_<model>), so the remediation is named here, where the status is seen.
         fail_msg: >-
           NetBox answered {{ _nb_tenant.status | default('skipped') }} to the tenant read and
           {{ _nb_site.status | default('skipped') }} to the site read (expected 200 for each read that ran).
+          A 403 means the vm-recorder token cannot view tenancy.tenant or dcim.site: a token minted before
+          those view grants. Re-run Provision NetBox Automation Token with netbox_token_profile=vm-recorder
+          (it converges the permissions even when the token exists), then run this step again.
 
     - name: "Decide: the tenant and site the record is placed under"
       ansible.builtin.set_fact:
@@ -264,12 +269,10 @@
         _placement_errors: >-
           {{ ([] if (_vm_records | length > 0) or (_discovery_tenant_name | length == 0) or (_tenant_found | length == 1)
                else ['cannot place the NetBox VM record: ' ~ (_tenant_found | length) ~ ' NetBox tenants are named '
-                     ~ _discovery_tenant_name ~ ' (expected 1). Discovery seeds the tenant, so either NetBox does not hold it, '
-                     ~ 'or the vm-recorder token cannot view it: re-run Provision NetBox Automation Token with Token profile = vm-recorder'])
+                     ~ _discovery_tenant_name ~ ' (expected 1). Discovery seeds the tenant, so NetBox does not hold it under that name'])
              + ([] if (_vm_records | length > 0) or (_discovery_site_name | length == 0) or (_site_found | length == 1)
                 else ['cannot place the NetBox VM record: ' ~ (_site_found | length) ~ ' NetBox sites are named '
-                      ~ _discovery_site_name ~ ' (expected 1). Discovery seeds the site, so either NetBox does not hold it, '
-                      ~ 'or the vm-recorder token cannot view it: re-run Provision NetBox Automation Token with Token profile = vm-recorder']) }}
+                      ~ _discovery_site_name ~ ' (expected 1). Discovery seeds the site, so NetBox does not hold it under that name']) }}
         # The POST body: discovery's tenant and site when declared, and nothing more.
         _vm_body: >-
           {{ {'name': _name, 'status': 'planned',

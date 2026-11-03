@@ -57,6 +57,19 @@ def _run(tmp_path, tasks, variables, expression):
     return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("PROBE ", 1)[1])
 
 
+def _run_allow_failure(tmp_path, tasks, variables):
+    """Run the playbook's own tasks; return (returncode, output) so a failing assert can be read."""
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
+                "tasks": tasks}]
+    path = tmp_path / "require.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False)
+    return done.returncode, done.stdout + done.stderr
+
+
 def _base(**overrides) -> dict:
     variables = {"_name": "svc-vm", "_vm_records": [], "_clusters": [CLUSTER],
                  "_discovery_tenant_name": "tenant-a", "_discovery_site_name": "site-a",
@@ -101,12 +114,16 @@ def test_a_declared_tenant_or_site_that_does_not_resolve_refuses_and_is_never_om
                "{'body': _vm_body, 'errors': _address_errors}")
     refusals = [e for e in got["errors"] if e.startswith("cannot place the NetBox VM record")]
     assert refusals and named in refusals[0], got
+    # Zero results from a permitted token mean the object is absent; a token without view is a 403,
+    # refused by the read assert, so this message must not send the operator to the token.
+    assert "token" not in refusals[0].lower(), refusals[0]
     assert absent_key not in got["body"], got
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 def test_an_existing_record_is_adopted_without_placement_reads(tmp_path):
-    # No POST will run, so the tenant and site are not read and cannot refuse the adoption.
+    # No POST will run, so the tenant and site are not read and cannot refuse the adoption. The read
+    # gate itself is asserted structurally in test_the_tenant_and_site_reads_run_only_when_a_record_would_be_created.
     skipped = {"skipped": True}
     existing = [{"id": 7, "cluster": {"id": 3, "name": "pve"}}]
     got = _run(tmp_path, PLACEMENT_TASKS,
@@ -155,3 +172,38 @@ def test_every_netbox_model_validate_address_reads_is_granted_to_the_vm_recorder
     profile = _profiles()["vm-recorder"]
     granted = set(profile["view_object_types"]) | set(profile["object_types"])
     assert {model_of[path] for path in read} <= granted, read
+
+
+REQUIRE_READS = "Require the tenant and site reads to answer"
+REMEDIATION = "Re-run Provision NetBox Automation Token with netbox_token_profile=vm-recorder"
+
+
+def test_the_tenant_and_site_reads_run_only_when_a_record_would_be_created():
+    # Structure, not behaviour: the other tests inject skipped reads themselves, so only this
+    # proves the gate. Without it an existing record would still send one token-bearing GET per model.
+    for name, declared in (("NetBox: find the tenant discovery places the VM under", "_discovery_tenant_name"),
+                           ("NetBox: find the site discovery places the VM at", "_discovery_site_name")):
+        when = _named(VALIDATE, name)["when"]
+        assert "_vm_records | length == 0" in when, (name, when)
+        assert f"{declared} | length > 0" in when, (name, when)
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("tenant,site,fails", [
+    (OK_TENANT, OK_SITE, False),
+    ({"skipped": True}, {"skipped": True}, False),
+    ({"status": 403}, {"skipped": True}, True),
+    (OK_TENANT, {"status": 500}, True),
+])
+def test_a_read_that_does_not_answer_200_fails_with_the_remediation(tmp_path, tenant, site, fails):
+    # NetBox answers 403 to a token without view on the model (TokenPermissions needs view_<model>),
+    # so the remediation belongs in the message that names the status, not only in the refusal text.
+    rc, out = _run_allow_failure(tmp_path, [_named(VALIDATE, REQUIRE_READS)],
+                                 {"_nb_tenant": tenant, "_nb_site": site})
+    if not fails:
+        assert rc == 0, out
+        return
+    assert rc != 0, out
+    assert "expected 200 for each read that ran" in out, out
+    assert "A 403 means the vm-recorder token cannot view tenancy.tenant or dcim.site" in out, out
+    assert REMEDIATION in out, out

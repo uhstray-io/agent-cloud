@@ -315,9 +315,10 @@
     - name: "Record the aggregate for the report and the dashboard"
       ansible.builtin.set_stats:
         data:
-          # The NetBox VM names that match more than one record. Neither record is written, and the
-          # run does not fail (a scheduled run would go red until someone reconciles). The names and
-          # their count are recorded here, in the RUN line the run keeps, not only in the debug report.
+          # The services (the names in _vm_ambiguous, not the VM names they were looked up by) whose
+          # NetBox VM lookup matched more than one record. Neither record is written, and the run does
+          # not fail (a scheduled run would go red until someone reconciles). The service names and their
+          # count are recorded here, in the RUN line the run keeps, not only in the debug report.
           conformance: >-
             {{ (_agg | dict2items | rejectattr('key', 'in', ['loki_streams', 'otlp_payload']) | items2dict)
                | combine({'netbox_ambiguous_vm': {'count': _vm_ambiguous | length, 'services': _vm_ambiguous}}) }}
