@@ -29,6 +29,8 @@ locals {
     "netbox",
     "o11y", # Grafana
     "postiz",
+    "plane",     # Plane work tracker (NEW record; native Authentik OIDC in-app)
+    "plane-mcp", # Plane MCP server (NEW record; authenticates every call itself)
     "pve", # Proxmox
     "semaphore",
     "todo", # tududi
