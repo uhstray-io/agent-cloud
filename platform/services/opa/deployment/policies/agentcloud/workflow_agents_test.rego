@@ -209,6 +209,17 @@ test_validate_address_free_bare_service_name_keeps_an_allow if {
 	agentcloud.allow with input as _vm_run("Validate Address Free", "validate-address", {"target_service": "postiz"})
 }
 
+# An underscore is not Ansible pattern syntax, and inventories hold host names that use it.
+test_provision_vm_target_host_with_underscore_keeps_an_allow if {
+	agentcloud.allow with input as _vm_run("Provision VM", "provision-vm", {"target_service": "postiz", "target_host": "postiz_01"})
+}
+
+test_target_host_negation_is_denied if {
+	d := agentcloud.decision with input as _host_input("!postiz-01")
+	not d.allowed
+	contains(d.reason, _host_reason)
+}
+
 # target_host (Provision VM selects one declared host with it) is one plain host name.
 _host_reason := "target_host must be one plain host name"
 

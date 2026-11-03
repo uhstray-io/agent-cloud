@@ -363,7 +363,7 @@ _plain_service_name(name) if {
 
 _plain_host_name(host) if {
 	is_string(host)
-	regex.match("^[a-z0-9][a-z0-9.-]*$", host)
+	regex.match("^[a-z0-9][a-z0-9._-]*$", host)
 	not host in {"all", "ungrouped"}
 }
 
