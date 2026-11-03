@@ -5,6 +5,8 @@
 mod api;
 mod compute;
 mod empty;
+mod gateway;
+mod gateway_api;
 mod icons;
 mod inventory;
 mod inventory_api;
@@ -22,10 +24,8 @@ mod work_detail;
 use dioxus::prelude::*;
 
 use compute::Compute;
-use empty::{
-    Access, AiGateway, CiCd, Dashboard, LlmAccess, NotFound, OrgSettings, Policy, Telemetry,
-    TenantSettings,
-};
+use empty::{Access, CiCd, Dashboard, NotFound, OrgSettings, Policy, Telemetry, TenantSettings};
+use gateway::{AiGateway, LlmAccess};
 use profile::Profile;
 use secrets::Secrets;
 use services::{ServiceDetail, Services};
