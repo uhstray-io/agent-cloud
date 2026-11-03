@@ -26,6 +26,21 @@ PRODUCTION_HANDLERS = {
     ),
 }
 
+REQUEST_BODY_READS = frozenset({"read", "read1", "readinto"})
+
+
+def _reads_request_body(node):
+    """True when the node calls a read method on an ``rfile`` attribute. The call is what counts: a docstring or
+    comment that names ``rfile.read`` does not."""
+    return any(
+        isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr in REQUEST_BODY_READS
+        and isinstance(sub.func.value, ast.Attribute)
+        and sub.func.value.attr == "rfile"
+        for sub in ast.walk(node)
+    )
+
 
 def test_every_fake_server_derives_from_the_draining_base():
     """A handler on BaseHTTPRequestHandler directly can reply with the body unread -> RST."""
@@ -45,17 +60,32 @@ def test_every_fake_server_derives_from_the_draining_base():
                 else:
                     offenders.append(f"{rel}:{node.lineno} {node.name}")
     assert offenders == [], f"derive these from fake_http.DrainingHandler: {offenders}"
-    # The allowlist only shrinks, and each entry must still read the body before replying.
+    # Each allowlist entry must be found, and each handler found must be listed: the two sets are equal.
     assert sorted(standalone) == sorted(STANDALONE_HANDLERS), sorted(standalone)
     assert sorted(production) == sorted(PRODUCTION_HANDLERS), sorted(production)
     for rel, node in production.items():
-        assert "rfile.read" in ast.unparse(node), f"{rel}: {node.name} never reads a request body"
+        assert _reads_request_body(node), f"{rel}: {node.name} never reads a request body"
     for rel, node in standalone.items():
         writers = [
             m for m in node.body if isinstance(m, ast.FunctionDef) and m.name in ("do_POST", "do_PUT", "do_PATCH")
         ]
         for method in writers:
-            assert "rfile.read" in ast.unparse(method), f"{rel}: {method.name} must read the body before replying"
+            assert _reads_request_body(method), f"{rel}: {method.name} must read the body before replying"
+
+
+def test_the_body_read_check_needs_a_real_call_not_a_mention():
+    # The old check was a substring test on the unparsed class, so this docstring-only class passed it.
+    mention = ast.parse(
+        'class H(BaseHTTPRequestHandler):\n    """Reads self.rfile.read(n) in the docs only."""\n'
+        "    def do_POST(self):\n        pass\n"
+    ).body[0]
+    assert "rfile.read" in ast.unparse(mention)
+    assert not _reads_request_body(mention)
+    for call in ("self.rfile.read(5)", "self.rfile.read1(5)", "self.rfile.readinto(buf)"):
+        real = ast.parse(f"class H(BaseHTTPRequestHandler):\n    def do_POST(self):\n        {call}\n").body[0]
+        assert _reads_request_body(real), call
+    other = ast.parse("class H(BaseHTTPRequestHandler):\n    def do_POST(self):\n        self.wfile.read(5)\n").body[0]
+    assert not _reads_request_body(other)
 
 
 class _Refuses(DrainingHandler):

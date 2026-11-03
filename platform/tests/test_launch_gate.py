@@ -111,6 +111,36 @@ def test_constants_match_the_reviewed_values():
     assert expected_limits == (lg.MAX_VALUE, lg.MAX_BODY)
 
 
+def _gate_accepts_integer(value):
+    try:
+        lg.merge_survey(_tpl([{"name": "n", "type": "int"}]), {"n": value})
+    except lg.Refusal:
+        return False
+    return True
+
+
+def _launcher_accepts_integer(launcher, value):
+    try:
+        launcher.typed_survey_values({"survey_vars": [{"name": "n", "type": "int"}]}, {"n": value})
+    except Exception:  # the launcher's own refusal class; only whether it refused matters here
+        return False
+    return True
+
+
+def test_versions_and_integer_rule_match_the_operator_launcher():
+    # scripts/semaphore-launch.py is the operator launcher. The gate must verify the same Semaphore versions
+    # and accept and refuse the same integer survey values, or the two disagree about one request.
+    spec = importlib.util.spec_from_file_location("semaphore_launch", ROOT / "scripts/semaphore-launch.py")
+    assert spec is not None and spec.loader is not None
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    assert set(launcher.VERIFIED_DRY_RUN_VERSIONS) == lg.VERIFIED_DRY_RUN_VERSIONS
+    samples = ["0", "7", "-7", "007", "01", "-0", "-007", "+1", "1.5", "1_0", "", "-", " 5"]
+    gate = [_gate_accepts_integer(value) for value in samples]
+    assert gate == [_launcher_accepts_integer(launcher, value) for value in samples]
+    assert any(gate) and not all(gate)
+
+
 def test_refusal_carries_status_code_and_detail():
     exc = lg.Refusal(409, "duplicate", "task 7 still running")
     assert (exc.status, exc.code, exc.detail) == (409, "duplicate", "task 7 still running")

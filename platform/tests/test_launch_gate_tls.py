@@ -104,7 +104,8 @@ class Listener:
             ("127.0.0.1", 0), self.gate, str(self.current / "cert.pem"), str(self.current / "key.pem")
         )
         self.port = self.server.server_address[1]
-        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # shutdown() waits out one poll; a shorter poll keeps each test's teardown quick.
+        self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self._thread.start()
 
     @property
@@ -545,8 +546,8 @@ def test_a_read_that_runs_out_the_request_deadline_is_answered_408(listener, mon
     reply = b""
     try:
         sock.sendall(head)
-        time.sleep(2.0)
         while True:
+            # recv blocks until the 408 arrives (about REQUEST_DEADLINE) and then until the server closes.
             chunk = sock.recv(4096)
             if not chunk:
                 break

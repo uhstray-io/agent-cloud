@@ -1,21 +1,21 @@
 """Client and flow tests for the launch gate, against fake Semaphore and OPA servers on loopback.
 
-Each test gets its own fakes, config file and dead OPA socket, so nothing is shared and the file runs
-under pytest-xdist. The fakes derive from DrainingHandler (platform/tests/fake_http.py), the base every
-fake HTTP server in the suites uses, so no reply leaves an unread request body. Gate.handle is called
-directly; the TLS listener is tested where the server lives.
+Each test gets its own fakes and config file, so nothing is shared and the file runs under pytest-xdist.
+The unreachable-OPA case aims at fake_http.refused_port(), a port that refuses at once. The fakes derive
+from DrainingHandler (platform/tests/fake_http.py), the base every fake HTTP server in the suites uses, so
+no reply leaves an unread request body. Gate.handle is called directly; the TLS listener is tested where
+the server lives.
 """
 
 import importlib.util
 import json
-import socket
 import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "platform/services/launch-gate/deployment/app/launch_gate.py"
@@ -137,7 +137,8 @@ class Fake:
                 self._serve("POST")
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # close() waits out one poll, so the default 0.5 s would be paid by every fake of every test.
+        self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self._thread.start()
 
     @property
@@ -150,13 +151,6 @@ class Fake:
     def close(self):
         self._server.shutdown()
         self._server.server_close()
-
-
-def _dead_port():
-    """A loopback port that refuses connections: bound and never listen()ed, so no other process can take it."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    return sock
 
 
 def _config(tmp_path, opa_url, semaphore_url):
@@ -202,15 +196,10 @@ class World:
         self.tmp_path = tmp_path
         self.semaphore = Fake()
         self.opa = Fake()
-        self.dead = _dead_port()
         self.events = []
         self.semaphore.routes.update(_happy_semaphore())
         self.opa.routes[("POST", OPA_PATH)] = (200, {"result": {"allowed": True, "reason": OPA_REASON}}, {})
         self.gate = self.gate_for(self.opa.url)
-
-    @property
-    def dead_url(self):
-        return f"http://127.0.0.1:{self.dead.getsockname()[1]}"
 
     def gate_for(self, opa_url, opa=None):
         cfg = _config(self.tmp_path, opa_url, self.semaphore.url)
@@ -229,7 +218,6 @@ class World:
     def close(self):
         self.semaphore.close()
         self.opa.close()
-        self.dead.close()
 
 
 @pytest.fixture
@@ -391,7 +379,7 @@ def test_opa_deny_is_403_with_its_reason_and_no_task(world):
 
 
 def test_opa_unreachable_is_503_and_no_task(world):
-    gate = world.gate_for(world.dead_url)
+    gate = world.gate_for(f"http://127.0.0.1:{refused_port()}")
     status, payload = world.launch(gate=gate)
     assert (status, payload["error"]) == (503, "opa_unavailable")
     assert _posts(world) == []
