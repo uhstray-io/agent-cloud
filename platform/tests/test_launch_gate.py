@@ -111,6 +111,36 @@ def test_constants_match_the_reviewed_values():
     assert expected_limits == (lg.MAX_VALUE, lg.MAX_BODY)
 
 
+def _gate_accepts_integer(value):
+    try:
+        lg.merge_survey(_tpl([{"name": "n", "type": "int"}]), {"n": value})
+    except lg.Refusal:
+        return False
+    return True
+
+
+def _launcher_accepts_integer(launcher, value):
+    try:
+        launcher.typed_survey_values({"survey_vars": [{"name": "n", "type": "int"}]}, {"n": value})
+    except Exception:  # the launcher's own refusal class; only whether it refused matters here
+        return False
+    return True
+
+
+def test_versions_and_integer_rule_match_the_operator_launcher():
+    # scripts/semaphore-launch.py is the operator launcher. The gate must verify the same Semaphore versions
+    # and accept and refuse the same integer survey values, or the two disagree about one request.
+    spec = importlib.util.spec_from_file_location("semaphore_launch", ROOT / "scripts/semaphore-launch.py")
+    assert spec is not None and spec.loader is not None
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    assert set(launcher.VERIFIED_DRY_RUN_VERSIONS) == lg.VERIFIED_DRY_RUN_VERSIONS
+    samples = ["0", "7", "-7", "007", "01", "-0", "-007", "+1", "1.5", "1_0", "", "-", " 5"]
+    gate = [_gate_accepts_integer(value) for value in samples]
+    assert gate == [_launcher_accepts_integer(launcher, value) for value in samples]
+    assert any(gate) and not all(gate)
+
+
 def test_refusal_carries_status_code_and_detail():
     exc = lg.Refusal(409, "duplicate", "task 7 still running")
     assert (exc.status, exc.code, exc.detail) == (409, "duplicate", "task 7 still running")
@@ -703,15 +733,31 @@ def test_merge_survey_unreadable_survey_fields_refused(survey_vars):
 
 
 @pytest.mark.parametrize("kind", ["int", "integer"])
-@pytest.mark.parametrize("value", ["5", "0", "-7", "007", "123456789012345678901234567890"])
-def test_integer_field_accepts_plain_digits_with_an_optional_minus(kind, value):
+@pytest.mark.parametrize("value", ["5", "0", "7", "-7", "123456789012345678901234567890"])
+def test_integer_field_accepts_canonical_integers(kind, value):
     assert lg.merge_survey(_tpl([{"name": "n", "type": kind}]), {"n": value}) == {"n": value}
 
 
 @pytest.mark.parametrize("kind", ["int", "integer"])
 @pytest.mark.parametrize(
     "value",
-    ["1.5", "x", "+1", "", "-", "--1", " 5", "5 ", "5\n", "1_0", "١٢"],  # last: Arabic-Indic digits
+    [
+        "1.5",
+        "x",
+        "+1",
+        "",
+        "-",
+        "--1",
+        " 5",
+        "5 ",
+        "5\n",
+        "1_0",
+        "١٢",  # Arabic-Indic digits
+        "007",  # leading zeros: the launcher's rule is canonical integers only
+        "01",
+        "-0",
+        "-007",
+    ],
 )
 def test_integer_field_refuses_anything_else_and_names_only_the_field(kind, value):
     with pytest.raises(lg.Refusal) as info:
@@ -796,26 +842,26 @@ def test_fields_without_a_value_are_not_checked_against_their_type():
 BRANCH_VARS = [{"name": "service_branch", "type": "string", "default_value": "main"}]
 
 
-def test_pin_branch_without_a_branch_field_returns_the_record_branch_and_values_unchanged():
-    assert lg.pin_branch(_tpl([]), {}, {"x": "1"}, "dev") == ("dev", {"x": "1"})
+def test_pin_branch_without_a_branch_field_returns_the_values_unchanged():
+    assert lg.pin_branch(_tpl([]), {}, {"x": "1"}, "dev") == {"x": "1"}
 
 
 def test_pin_branch_overrides_a_declared_default_with_the_record_branch():
     template = _tpl(BRANCH_VARS)
     values = lg.merge_survey(template, {})
     assert values == {"service_branch": "main"}
-    assert lg.pin_branch(template, {}, values, "dev") == ("dev", {"service_branch": "dev"})
+    assert lg.pin_branch(template, {}, values, "dev") == {"service_branch": "dev"}
 
 
 def test_pin_branch_fills_a_declared_field_that_has_no_default():
-    assert lg.pin_branch(_tpl([{"name": "service_branch"}]), {}, {}, "dev") == ("dev", {"service_branch": "dev"})
+    assert lg.pin_branch(_tpl([{"name": "service_branch"}]), {}, {}, "dev") == {"service_branch": "dev"}
 
 
 def test_pin_branch_accepts_a_caller_value_equal_to_the_record_branch():
     template = _tpl(BRANCH_VARS)
     survey = {"service_branch": "dev"}
     values = lg.merge_survey(template, survey)
-    assert lg.pin_branch(template, survey, values, "dev") == ("dev", {"service_branch": "dev"})
+    assert lg.pin_branch(template, survey, values, "dev") == {"service_branch": "dev"}
 
 
 @pytest.mark.parametrize("value", ["feature-x", "main", "", "dev "])
@@ -832,7 +878,7 @@ def test_pin_branch_refuses_a_caller_value_other_than_the_record_branch(value):
 @pytest.mark.parametrize("extra", [{}, {"git_branch": None}, {"git_branch": ""}, {"git_branch": "dev"}])
 def test_pin_branch_accepts_a_template_with_no_branch_of_its_own_or_the_record_branch(extra):
     template = {"name": TEMPLATE, "id": 12, "survey_vars": [], **extra}
-    assert lg.pin_branch(template, {}, {}, "dev") == ("dev", {})
+    assert lg.pin_branch(template, {}, {}, "dev") == {}
 
 
 def test_pin_branch_refuses_a_template_branch_that_differs_from_the_record():
