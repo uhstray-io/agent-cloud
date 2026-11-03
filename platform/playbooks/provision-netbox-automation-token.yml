@@ -65,13 +65,30 @@
       # Duplicate-VM reconciliation (reconcile-netbox-duplicate-vms.yml): view every VM, change one (the
       # custom-field PATCH), delete one (the bare record). The read-only views are the interfaces it refuses
       # on, the cluster and the tenant names it reports. Nothing here can add a VM.
+      # Least privilege, one ObjectPermission per grant. NetBox ORs a user's permissions, so an unconstrained
+      # change or delete on virtual machines would widen the two constrained ones: none is declared here.
+      # constraints is a Django filter (qs_filter_from_constraints: Q(**constraint)) and a null or empty one
+      # grants unconstrained access, so every constrained scope below has a non-empty dict (netbox v4.5.0,
+      # netbox/utilities/permissions.py and netbox/users/models/permissions.py).
       vm-reconciler:
         user: workflow-vm-reconciler
-        permission: workflow-vm-reconcile
-        actions: [view, change, delete]
+        permission: workflow-vm-reconcile-vm-view
+        actions: [view]
         object_types: [virtualization.virtualmachine]
-        view_object_types: [virtualization.vminterface, virtualization.cluster, tenancy.tenant]
+        view_object_types: [virtualization.vminterface, virtualization.cluster, tenancy.tenant, core.objectchange]
         view_permission: workflow-vm-reconcile-view
+        constrained_scopes:
+          # The PATCH targets a discovery record only (its comments start with the VMID the discovery worker writes).
+          - permission: workflow-vm-reconcile-change
+            actions: [change]
+            object_types: [virtualization.virtualmachine]
+            constraints: {comments__startswith: "VMID:"}
+          # The DELETE targets a bare record only: the marker description and no vcpus, the exact shape
+          # validate-address-free.yml creates.
+          - permission: workflow-vm-reconcile-delete
+            actions: [delete]
+            object_types: [virtualization.virtualmachine]
+            constraints: {description: "Declared by the service deployment workflow (validate-address)", vcpus__isnull: true}
         token_write_enabled: true
         field: vm_reconciler_api_token
         description: service deployment workflow duplicate VM reconciliation
@@ -172,24 +189,29 @@
         from django.contrib.auth import get_user_model
         from users.models import ObjectPermission
         from core.models import ObjectType
+        import json
 
         user, changed = get_user_model().objects.get_or_create(
             username="{{ _user }}",
             defaults={"is_active": True},
         )
-        scopes = [("{{ _profile.permission }}", {{ _profile.actions | to_json }}, {{ _profile.object_types | to_json }})]
+        # (name, actions, object types, constraints): None is unconstrained. Constrained scopes arrive as JSON, so
+        # true/null in a constraint stay valid Python.
+        scopes = [("{{ _profile.permission }}", {{ _profile.actions | to_json }}, {{ _profile.object_types | to_json }}, None)]
         if {{ _profile.view_object_types | default([]) | to_json }}:
             scopes.append(("{{ _profile.view_permission | default(_profile.permission ~ '-view') }}", ["view"],
-                           {{ _profile.view_object_types | default([]) | to_json }}))
-        for name, actions, types in scopes:
+                           {{ _profile.view_object_types | default([]) | to_json }}, None))
+        scopes += [(s["permission"], s["actions"], s["object_types"], s["constraints"]) for s in
+                   json.loads({{ (_profile.constrained_scopes | default([])) | to_json | to_json }})]
+        for name, actions, types, constraints in scopes:
             wanted = {ObjectType.objects.get_by_natural_key(*t.split(".")).pk for t in types}
             perm, created = ObjectPermission.objects.get_or_create(
-                name=name, defaults={"enabled": True, "actions": actions},
+                name=name, defaults={"enabled": True, "actions": actions, "constraints": constraints},
             )
             changed |= created
-            if not perm.enabled or perm.actions != actions:
-                perm.enabled, perm.actions = True, actions
-                perm.save(update_fields=["enabled", "actions"])
+            if not perm.enabled or perm.actions != actions or perm.constraints != constraints:
+                perm.enabled, perm.actions, perm.constraints = True, actions, constraints
+                perm.save(update_fields=["enabled", "actions", "constraints"])
                 changed = True
             if set(perm.object_types.values_list("pk", flat=True)) != wanted:
                 perm.object_types.set(list(wanted))

@@ -57,6 +57,9 @@
     _ac_fields: [ac_workflow_status, ac_failed_steps, ac_last_run]
     # A value Ansible would print as empty for any of the three workflow fields.
     _empty_text: ["", "{}", "[]", "None"]
+    # The only account that creates a bare record: provision-netbox-automation-token.yml's vm-recorder profile
+    # (test_reconcile_netbox_duplicate_vms.py pins the two together).
+    _recorder_user: "workflow-vm-recorder"
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '', true) }}"
 
@@ -277,12 +280,94 @@
           {{ out }}
       no_log: true
 
-    - name: "Hold the selected pairs (every pair when reconcile_names is blank)"
+    # ── provenance ──────────────────────────────────────────────────────────────────────
+    # The classification above reads the SHAPE of a record (marker description, null vcpus, VMID comment), and any
+    # token that can write VMs can produce that shape. NetBox's changelog records who created each record: only
+    # a bare record created by the vm-recorder account, paired with a discovery record created by any other
+    # account, may be acted on. Missing history is unverified, never assumed. The changelog keeps 90 days by
+    # default (CHANGELOG_RETENTION, netbox v4.5.0 config/parameters.py), so an older pair reads as unverified.
+    - name: "Hold the candidate record ids"
+      ansible.builtin.set_fact:
+        _candidate_ids: >-
+          {{ (_pairs | map(attribute='bare') | map(attribute='id') | list)
+             + (_pairs | map(attribute='disc') | map(attribute='id') | list) }}
+      no_log: true
+
+    - name: "NetBox: read the creation record of each candidate VM"
+      ansible.builtin.uri:
+        url: "{{ _netbox_url }}/api/core/object-changes/?changed_object_type=virtualization.virtualmachine&changed_object_id={{ item }}&action=create&limit=50"
+        headers: "{{ _nb_headers }}"
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        timeout: 60
+        status_code: [200]
+      loop: "{{ _candidate_ids }}"
+      register: _origin_reads
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Require every creation-record read to answer"
+      ansible.builtin.assert:
+        that: (_origin_reads.results | default([]) | map(attribute='status', default=0) | list | difference([200]) | length) == 0
+        fail_msg: "NetBox did not answer 200 to every creation-record read; nothing was changed."
+        quiet: true
+
+    # Bounded: the record id, how many create entries there are, and the creators' account names.
+    - name: "Hold the creators of each candidate record"
+      ansible.builtin.set_fact:
+        _origins: >-
+          {%- set out = [] -%}
+          {%- for r in _origin_reads.results | default([]) -%}
+            {%- set body = r.json | default({}) -%}
+            {%- set _ignored = out.append({'id': r.item,
+                                           'count': body.get('count') | int(-1),
+                                           'creators': (body.get('results') or []) | map(attribute='user_name') | list}) -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    - name: "Judge the origin of each candidate pair"
+      ansible.builtin.set_fact:
+        _origin_checks: >-
+          {%- set out = [] -%}
+          {%- for p in _pairs -%}
+            {%- set bare_o = _origins | selectattr('id', 'equalto', p.bare.id) | list -%}
+            {%- set disc_o = _origins | selectattr('id', 'equalto', p.disc.id) | list -%}
+            {%- set bare_ok = (bare_o | length) == 1 and bare_o[0]['count'] == 1
+                  and bare_o[0]['creators'] == [_recorder_user] -%}
+            {%- set disc_ok = (disc_o | length) == 1 and disc_o[0]['count'] >= 1
+                  and (disc_o[0]['creators'] | length) > 0 and (_recorder_user not in disc_o[0]['creators']) -%}
+            {%- set _ignored = out.append({'pair': p, 'bare_ok': bare_ok, 'disc_ok': disc_ok}) -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    - name: "Hold the verified pairs and the unverified ones (names only in the plan)"
+      ansible.builtin.set_fact:
+        _verified_pairs: >-
+          {%- set out = [] -%}
+          {%- for c in _origin_checks -%}
+            {%- if c.bare_ok and c.disc_ok -%}{%- set _ignored = out.append(c.pair) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        _unverified: >-
+          {%- set out = [] -%}
+          {%- for c in _origin_checks -%}
+            {%- if not (c.bare_ok and c.disc_ok) -%}
+              {%- set _ignored = out.append({'name': c.pair.name, 'cluster_name': c.pair.cluster_name,
+                                             'bare_confirmed': c.bare_ok, 'disc_confirmed': c.disc_ok}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      no_log: true
+
+    - name: "Hold the selected pairs (every verified pair when reconcile_names is blank)"
       ansible.builtin.set_fact:
         _selected_pairs: >-
           {%- set out = [] -%}
           {%- set wanted = _only_names | map('lower') | list -%}
-          {%- for p in _pairs -%}
+          {%- for p in _verified_pairs -%}
             {%- if (wanted | length) == 0 or (p.name | lower) in wanted -%}
               {%- set _ignored = out.append(p) -%}
             {%- endif -%}
@@ -290,14 +375,14 @@
           {{ out }}
       no_log: true
 
-    - name: "Hold the requested names that match no qualifying pair"
+    - name: "Hold the requested names that match no verified duplicate pair"
       ansible.builtin.set_fact:
-        _unmatched: "{{ _only_names | map('lower') | list | difference(_pairs | map(attribute='name') | map('lower') | list) }}"
+        _unmatched: "{{ _only_names | map('lower') | list | difference(_verified_pairs | map(attribute='name') | map('lower') | list) }}"
 
-    - name: "Require every requested name to be a qualifying duplicate pair"
+    - name: "Require every requested name to be a verified duplicate pair"
       ansible.builtin.assert:
         that: _unmatched | length == 0
-        fail_msg: "reconcile_names names no qualifying duplicate pair: {{ _unmatched | join(', ') }}."
+        fail_msg: "reconcile_names names no verified duplicate pair (no pair, or its origin is unverified): {{ _unmatched | join(', ') }}."
         quiet: true
 
     # ── the refusal inputs: interfaces (read in check mode too, so a dry run shows the refusal) ──
@@ -383,8 +468,13 @@
       ansible.builtin.set_fact:
         _plan_lines: >-
           {%- set out = ['reconcile-netbox-duplicate-vms: ' ~ (_vm_rows | length) ~ ' VM records, '
-                         ~ (_pairs | length) ~ ' qualifying pair(s), ' ~ (_plan | length) ~ ' selected, '
-                         ~ (_ambiguous | length) ~ ' ambiguous group(s)'] -%}
+                         ~ (_pairs | length) ~ ' duplicate pair(s) by shape, ' ~ (_verified_pairs | length) ~ ' verified origin, '
+                         ~ (_plan | length) ~ ' selected, ' ~ (_ambiguous | length) ~ ' ambiguous group(s)'] -%}
+          {%- for u in _unverified -%}
+            {%- set _ignored = out.append('unverified origin, not touched: ' ~ u.name ~ ' in cluster ' ~ u.cluster_name
+                  ~ ' (bare origin ' ~ ('confirmed' if u.bare_confirmed else 'not confirmed')
+                  ~ '; discovery origin ' ~ ('confirmed' if u.disc_confirmed else 'not confirmed') ~ ')') -%}
+          {%- endfor -%}
           {%- for p in _plan -%}
             {%- set _ignored = out.append('pair ' ~ p.name ~ ' in cluster ' ~ p.cluster_name
                   ~ ': bare ' ~ (p.bare_id | string) ~ ' (tenant ' ~ p.bare_tenant ~ ', created ' ~ (p.bare_created | string)

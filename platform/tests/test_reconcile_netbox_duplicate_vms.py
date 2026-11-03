@@ -17,6 +17,7 @@ the NetBox documentation does not state them, so these tests prove the playbook'
 routes (see the PR body).
 """
 
+import ast
 import json
 import os
 import re
@@ -215,15 +216,37 @@ def test_the_template_is_a_dev_variant_with_one_optional_string_survey_field():
                                      "required": False, "default_value": ""}]
 
 
-def test_the_vm_reconciler_profile_may_view_change_and_delete_virtual_machines_and_nothing_else():
-    profile = playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]["vm-reconciler"]
+def _reconciler_profile():
+    return playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]["vm-reconciler"]
+
+
+def test_the_vm_reconciler_profile_grants_view_unconstrained_and_change_and_delete_only_under_constraints():
+    profile = _reconciler_profile()
     assert profile["field"] == "vm_reconciler_api_token"
-    assert profile["actions"] == ["view", "change", "delete"]
+    assert profile["token_write_enabled"] is True
+    assert profile["actions"] == ["view"]
     assert profile["object_types"] == ["virtualization.virtualmachine"]
-    assert sorted(profile["view_object_types"]) == ["tenancy.tenant", "virtualization.cluster", "virtualization.vminterface"]
-    assert profile["view_permission"] != profile["permission"]
-    assert profile.get("token_write_enabled", True) is True
-    assert "add" not in profile["actions"]
+    assert sorted(profile["view_object_types"]) == [
+        "core.objectchange", "tenancy.tenant", "virtualization.cluster", "virtualization.vminterface"]
+    scopes = profile["constrained_scopes"]
+    assert sorted(tuple(s["actions"]) for s in scopes) == [("change",), ("delete",)]
+    for scope in scopes:
+        assert scope["object_types"] == ["virtualization.virtualmachine"], scope
+        # NetBox: a null or empty constraint is unconstrained access, so a constrained scope must be a non-empty dict.
+        assert isinstance(scope["constraints"], dict) and scope["constraints"], scope
+    by_action = {tuple(s["actions"]): s["constraints"] for s in scopes}
+    assert by_action[("change",)] == {"comments__startswith": "VMID:"}
+    assert by_action[("delete",)] == {
+        "description": "Declared by the service deployment workflow (validate-address)", "vcpus__isnull": True}
+    names = [profile["permission"], profile["view_permission"], *(s["permission"] for s in scopes)]
+    assert len(set(names)) == 4, names
+    assert "add" not in {a for s in scopes for a in s["actions"]} | set(profile["actions"])
+
+
+def test_the_reconciler_account_name_matches_the_vm_recorder_profile_user_the_creator_check_pins():
+    profiles = playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]
+    assert profiles["vm-recorder"]["user"] == "workflow-vm-recorder"
+    assert PLAY["vars"]["_recorder_user"] == profiles["vm-recorder"]["user"]
 
 
 # --- behaviour: the real ansible-playbook against the loopback fake --------------------------------------
@@ -252,12 +275,25 @@ def _disc(vm_id, name, cluster=1, cf=None, cluster_name="uhstray-cluster"):
             "primary_ip4": None, "primary_ip6": None, "custom_fields": dict(_cf() if cf is None else cf)}
 
 
-class FakeNetBox:
-    """One OpenBao and one NetBox on a single loopback port. PATCH replaces custom_fields."""
+RECORDER = "workflow-vm-recorder"
+DISCOVERY = "proxmox-discovery"
 
-    def __init__(self, vms, interfaces):
+
+class FakeNetBox:
+    """One OpenBao and one NetBox on a single loopback port. PATCH replaces custom_fields.
+
+    Each VM has creation records in the fake changelog: a bare record is created by the recorder account, a
+    discovery record by another account, unless `origins` overrides the creators of an id (an empty list means no
+    creation record at all)."""
+
+    def __init__(self, vms, interfaces, origins=None):
         self.vms = {vm["id"]: vm for vm in vms}
         self.interfaces = dict(interfaces)
+        self.origins = {}
+        for vm in vms:
+            bare = vm["description"] == MARKER and vm["vcpus"] is None
+            self.origins[vm["id"]] = [RECORDER] if bare else [DISCOVERY]
+        self.origins.update(origins or {})
         self.log = []
 
     def writes(self):
@@ -283,6 +319,14 @@ class FakeNetBox:
             ids = sorted(self.vms)
             page = [self.vms[i] for i in ids[offset:offset + limit]]
             return 200, {"count": len(ids), "next": None, "previous": None, "results": page}
+        if url.path == "/api/core/object-changes/" and method == "GET":
+            # The filter names the playbook must send: NetBox's ObjectChangeFilterSet (v4.5.0) takes them as given.
+            if query.get("changed_object_type") != ["virtualization.virtualmachine"] or query.get("action") != ["create"]:
+                return 400, {"detail": "unexpected filter"}
+            vm_id = int(query["changed_object_id"][0])
+            rows = [{"id": n, "action": "create", "changed_object_id": vm_id, "user_name": who}
+                    for n, who in enumerate(self.origins.get(vm_id, []))]
+            return 200, {"count": len(rows), "next": None, "previous": None, "results": rows}
         if url.path == "/api/virtualization/interfaces/" and method == "GET":
             count = self.interfaces.get(int(query["virtual_machine_id"][0]), 0)
             return 200, {"count": count, "next": None, "previous": None, "results": []}
@@ -340,8 +384,8 @@ def _serve(state):
 def reconcile(tmp_path):
     servers = []
 
-    def run(vms, interfaces=None, check=False, extra=None, verbosity=None):
-        state = FakeNetBox(vms, interfaces or {})
+    def run(vms, interfaces=None, check=False, extra=None, verbosity=None, origins=None):
+        state = FakeNetBox(vms, interfaces or {}, origins)
         server = _serve(state)
         servers.append(server)
         url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -474,7 +518,7 @@ def test_reconcile_names_limits_the_run_to_the_named_pair(reconcile, extra):
 def test_a_name_that_matches_no_duplicate_pair_refuses_before_any_write(reconcile):
     proc, out, state = reconcile(_three_pairs(), extra={"reconcile_names": '["nope"]'})
     assert proc.returncode != 0, out
-    assert "names no qualifying duplicate pair: nope" in out, out
+    assert "names no verified duplicate pair" in out and "nope" in out, out
     assert state.writes() == []
 
 
@@ -484,3 +528,113 @@ def test_no_token_or_address_reaches_the_output_at_maximum_verbosity(reconcile):
     assert proc.returncode == 0, out
     assert SENT not in out and CLIENT not in out and ADDR not in out
     assert "pair dns in cluster uhstray-cluster" in out, "the -vvv run did not reach the plan"
+
+
+# --- provenance: the changelog says who created each record -------------------------------------------------
+
+
+def test_the_creation_records_are_read_before_any_pair_is_selected_or_written():
+    tasks = _tasks()
+    origin = next(i for i, t in enumerate(tasks) if t.get("name") == "NetBox: read the creation record of each candidate VM")
+    judged = next(i for i, t in enumerate(tasks) if t.get("name") == "Judge the origin of each candidate pair")
+    selected = next(i for i, t in enumerate(tasks)
+                    if t.get("name") == "Hold the selected pairs (every verified pair when reconcile_names is blank)")
+    first_write = min(i for i, t in enumerate(tasks) if _is_write(t))
+    assert origin < judged < selected < first_write
+
+
+def test_the_creation_record_read_queries_the_changelog_for_creates_of_virtual_machines():
+    url = str(_args(_named("NetBox: read the creation record of each candidate VM"))["url"])
+    assert "/api/core/object-changes/?changed_object_type=virtualization.virtualmachine" in url
+    assert "changed_object_id={{ item }}" in url and "action=create" in url
+
+
+def test_selection_and_the_unmatched_check_read_only_the_verified_pairs():
+    selection = str(_named("Hold the selected pairs (every verified pair when reconcile_names is blank)")["ansible.builtin.set_fact"])
+    assert "for p in _verified_pairs" in selection and "for p in _pairs" not in selection
+    unmatched = str(_named("Hold the requested names that match no verified duplicate pair")["ansible.builtin.set_fact"])
+    assert "_verified_pairs" in unmatched and re.search(r"(?<![A-Za-z_])_pairs\b", unmatched) is None
+
+
+def test_the_bare_record_is_judged_by_its_creator_and_the_discovery_record_is_not():
+    judge = str(_named("Judge the origin of each candidate pair")["ansible.builtin.set_fact"])
+    assert "bare_o[0]['creators'] == [_recorder_user]" in judge
+    assert "(_recorder_user not in disc_o[0]['creators'])" in judge
+
+
+@NEEDS_ANSIBLE
+@pytest.mark.parametrize("origins", [
+    {10: ["console"]},          # the bare record was created by another account
+    {11: [RECORDER]},           # the discovery record was created by the recorder account
+    {10: []},                   # the bare record has no creation record
+    {11: []},                   # the discovery record has no creation record
+], ids=["bare-by-other", "discovery-by-recorder", "bare-missing", "discovery-missing"])
+def test_an_unconfirmed_origin_is_reported_and_never_touched(reconcile, origins):
+    vms = [_bare(10, "dns"), _disc(11, "dns")]
+    proc, out, state = reconcile(vms, origins=origins)
+    assert proc.returncode == 0, out
+    assert "unverified origin, not touched: dns in cluster uhstray-cluster" in out, out
+    assert state.writes() == [], state.writes()
+    assert 10 in state.vms and 11 in state.vms
+    assert state.vms[11]["custom_fields"] == _cf(), "the workflow fields moved before the origin was confirmed"
+
+
+@NEEDS_ANSIBLE
+def test_an_unverified_pair_does_not_stop_the_verified_pairs(reconcile):
+    pairs = _three_pairs()
+    proc, out, state = reconcile(pairs, origins={30: ["console"]})
+    assert proc.returncode == 0, out
+    assert "unverified origin, not touched: vault in cluster uhstray-cluster" in out, out
+    assert 10 not in state.vms and 20 not in state.vms
+    assert 30 in state.vms and 31 in state.vms
+
+
+@NEEDS_ANSIBLE
+def test_a_requested_name_whose_origin_is_unverified_refuses_before_any_write(reconcile):
+    proc, out, state = reconcile([_bare(10, "dns"), _disc(11, "dns")], origins={10: ["console"]},
+                                 extra={"reconcile_names": '["dns"]'})
+    assert proc.returncode != 0, out
+    assert "names no verified duplicate pair" in out and "dns" in out, out
+    assert state.writes() == []
+
+
+@NEEDS_ANSIBLE
+def test_check_mode_reports_an_unverified_origin_too(reconcile):
+    proc, out, state = reconcile([_bare(10, "dns"), _disc(11, "dns")], origins={11: [RECORDER]}, check=True)
+    assert proc.returncode == 0, out
+    assert "unverified origin, not touched: dns" in out, out
+    assert state.writes() == []
+
+
+# --- constraints: rendered into the permission definitions the playbook creates ---------------------------
+
+
+@NEEDS_ANSIBLE
+def test_the_permission_script_renders_each_scope_with_its_constraint(tmp_path):
+    profiles = playbook_yaml.plays(PROVISION)[0]["vars"]["_profiles"]
+    profile = profiles["vm-reconciler"]
+    task = next(t for t in playbook_yaml.plays(PROVISION)[0]["tasks"]
+                if t.get("name") == "Ensure NetBox automation user and scoped permissions")
+    rendered = tmp_path / "permissions.py"
+    harness = tmp_path / "harness.yml"
+    harness.write_text(yaml.safe_dump([{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_profiles": profiles, "_profile_name": "vm-reconciler", "_profile": profile,
+                 "_user": profile["user"], "_manage": f"cat > {rendered}"},
+        "tasks": [task],
+    }]))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness)], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False, timeout=300)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    text = rendered.read_text()
+    compile(text, "rendered-permission-script", "exec")
+    literal = re.search(r"json\.loads\((\".*\")\)", text)
+    assert literal, text
+    assert json.loads(ast.literal_eval(literal.group(1))) == profile["constrained_scopes"]
+    # The unconstrained view scope is rendered with a None constraint (its tuple ends None)); the parsed
+    # constraints above carry the exact dicts, so no raw-text match is needed (the JSON sits in a string literal).
+    assert "None)]" in text
+    delete = next(s for s in json.loads(ast.literal_eval(literal.group(1))) if s["actions"] == ["delete"])
+    assert delete["constraints"]["vcpus__isnull"] is True
