@@ -56,8 +56,9 @@ def test_catalog_names_no_unsuffixed_dev_bound_template():
     found = offenders(templates, catalog)
     assert found == [], (
         f"dev-bound templates named without a dev suffix are in the OPA catalog: {found}. The policy reads "
-        "a name with no ' (Dev)' or ' (Local)' suffix as main; name the generated variant in the catalog "
-        "or keep the template out of data.json"
+        "a name with no ' (Dev)' or ' (Local)' suffix as main. Keep the base name in data.json (the policy "
+        "strips the suffix) and either give the dev-bound template a ' (Dev)' name in templates.yml or a "
+        "dev_variant so setup-templates.yml generates one, or keep the template out of data.json"
     )
 
 
