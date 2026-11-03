@@ -1,0 +1,14 @@
+# launch-gate — production overlay. deploy.sh appends it outside LOCAL_MODE, the same way skynet's
+# deploy.sh does. compose.local.yml is the local-dev counterpart and is never loaded with it.
+#
+# userns keep-id: the image runs as uid 1000, and under rootless podman that uid cannot read the
+# deploy account's 0600 TLS key. keep-id maps the deploy account to uid 1000 inside the container, so
+# the process stays non-root and owns the key it reads. It needs podman 4.3 or later, the same
+# requirement compose.tls.yml states for OPA.
+#
+# This overlay does not declare `command`: the base command stands.
+
+services:
+  launch-gate:
+    user: "1000:1000"
+    userns_mode: "keep-id:uid=1000,gid=1000"
