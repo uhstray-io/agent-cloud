@@ -137,6 +137,9 @@ pub struct Meta {
 #[derive(Serialize)]
 pub struct Diagnostics {
     pub dropped_mismatched: u64,
+    /// Why the Proxmox cluster name is unknown, when its read failed: the failure's text and
+    /// HTTP code, never a URL or a body. The cluster view then lists only the placed nodes.
+    pub cluster_name_error: Option<String>,
 }
 
 fn diagnostics(cache: &InventoryCache) -> Diagnostics {
@@ -146,6 +149,12 @@ fn diagnostics(cache: &InventoryCache) -> Diagnostics {
             .data
             .as_ref()
             .map_or(0, |data| data.dropped_mismatched),
+        cluster_name_error: cache
+            .proxmox
+            .data
+            .as_ref()
+            .and_then(|data| data.cluster_name_error.as_ref())
+            .map(ToString::to_string),
     }
 }
 
@@ -252,8 +261,9 @@ pub struct SiteView {
 #[derive(Serialize)]
 pub struct ClusterView {
     pub name: String,
-    /// The Proxmox nodes that host this cluster's matched VMs, by name. A node with no
-    /// matched VM of the cluster is not listed.
+    /// The Proxmox nodes, sorted by name. When the Proxmox cluster has this cluster's name, that
+    /// is every node of it, hosting a VM or not. Otherwise only the nodes that host this
+    /// cluster's matched VMs are listed.
     pub nodes: Vec<NodeView>,
     pub vms: Vec<VmView>,
 }
@@ -534,14 +544,32 @@ fn cluster_view(cluster: &NbCluster, join: &Join<'_>) -> ClusterView {
             vm_view(vm, live, join)
         })
         .collect();
-    let nodes: Vec<NodeView> = placed
-        .into_iter()
-        .filter_map(|name| {
-            join.proxmox
-                .and_then(|data| data.nodes.iter().find(|node| node.name == name))
-        })
-        .map(|node| node_view(node, join.admin))
-        .collect();
+    // This cluster lists every Proxmox node only when the Proxmox cluster carries its name and
+    // no other declared NetBox cluster does. Two declared clusters of one name make that match a
+    // guess, so neither lists every node (the rule `ambiguous_vm_names` applies to VMs). Any
+    // other cluster lists only the nodes its matched VMs run on, and never another cluster's.
+    let names_this_cluster =
+        join.proxmox.and_then(|data| data.cluster_name.as_deref()) == Some(cluster.name.as_str());
+    let name_is_unique = join
+        .netbox
+        .is_some_and(|data| !data.duplicate_cluster_names.contains(&cluster.name));
+    let nodes: Vec<NodeView> = match join.proxmox {
+        Some(data) if names_this_cluster && name_is_unique => {
+            let mut all: Vec<&PveNode> = data.nodes.iter().collect();
+            all.sort_by(|a, b| a.name.cmp(&b.name));
+            all.into_iter()
+                .map(|node| node_view(node, join.admin))
+                .collect()
+        }
+        _ => placed
+            .into_iter()
+            .filter_map(|name| {
+                join.proxmox
+                    .and_then(|data| data.nodes.iter().find(|node| node.name == name))
+            })
+            .map(|node| node_view(node, join.admin))
+            .collect(),
+    };
     ClusterView {
         name: cluster.name.clone(),
         nodes,
@@ -1237,7 +1265,7 @@ mod tests {
             .iter()
             .map(|n| n["name"].as_str().expect("name"))
             .collect();
-        assert_eq!(nodes, ["pve-01", "pve-02"]);
+        assert_eq!(nodes, ["pve-01", "pve-02", "pve-03"]);
         // A member sees node name and status only; the metrics are for platform admins.
         let node_keys: Vec<&str> = cluster["nodes"][0]
             .as_object()
@@ -1358,6 +1386,204 @@ mod tests {
         assert_eq!(node["name"], "pve-01");
         assert_eq!(node["maxcpu"], 16.0);
         assert_eq!(node["uptime"], 123456);
+    }
+
+    /// The names of a cluster's nodes, in the order the answer lists them.
+    fn node_names(cluster: &serde_json::Value) -> Vec<&str> {
+        cluster["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .map(|n| n["name"].as_str().expect("name"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cluster_named_like_the_proxmox_cluster_lists_every_node() {
+        let (state, _, _) = live_state().await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let cluster = &body["sites"][0]["clusters"][0];
+        assert_eq!(cluster["name"], "pve-prod");
+        assert_eq!(node_names(cluster), ["pve-01", "pve-02", "pve-03"]);
+        // pve-03 is offline and no guest runs on it: it is listed anyway.
+        assert_eq!(cluster["nodes"][2]["status"], "offline");
+    }
+
+    #[tokio::test]
+    async fn a_cluster_with_another_proxmox_name_lists_only_the_nodes_its_vms_run_on() {
+        let (state, _, pve_mock) = live_state().await;
+        *pve_mock.cluster.lock().expect("cluster name") = "other-cluster".to_string();
+        refresh(&state).await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["source"]["proxmox"], "ok");
+        assert_eq!(
+            node_names(&body["sites"][0]["clusters"][0]),
+            ["pve-01", "pve-02"],
+            "the placed nodes only; pve-03 belongs to no cluster this NetBox holds"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_cluster_name_read_keeps_the_source_ok_and_the_placed_nodes() {
+        let (state, _, pve_mock) = live_state().await;
+        pve_mock
+            .fail_status
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        refresh(&state).await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["source"]["proxmox"], "ok", "{text}");
+        assert!(body["error"]["proxmox"].is_null(), "{text}");
+        assert_eq!(body["stale"], false, "{text}");
+        assert_eq!(
+            node_names(&body["sites"][0]["clusters"][0]),
+            ["pve-01", "pve-02"]
+        );
+    }
+
+    /// The cluster of this name in one answer's first site, by name.
+    fn cluster_named<'a>(body: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+        body["sites"][0]["clusters"]
+            .as_array()
+            .expect("clusters")
+            .iter()
+            .find(|cluster| cluster["name"] == name)
+            .unwrap_or_else(|| panic!("no cluster {name}"))
+    }
+
+    #[tokio::test]
+    async fn a_cluster_name_held_by_two_declared_clusters_lists_placed_nodes_in_both_tenants() {
+        let nb_mock = nb::Mock::default();
+        nb_mock
+            .lab_prod_cluster_duplicate
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (state, _, _) = live_state_using(nb_mock, None).await;
+        let (acme_url, acme_cookie) = signed_in(state.clone(), &["ops"]).await;
+        let (initech_url, initech_cookie) = signed_in(state, &["finance"]).await;
+
+        // Acme's dc-1 cluster is the one the VMs place on pve-01 and pve-02, not every node.
+        let (status, text) =
+            get_json(&acme_url, Some(&acme_cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let acme: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            node_names(&acme["sites"][0]["clusters"][0]),
+            ["pve-01", "pve-02"],
+            "a duplicated name gets the placed nodes, not every node: {text}"
+        );
+
+        // Initech's dc-2 holds the same name and no VM on any node: it lists no node at all.
+        let (status, text) = get_json(
+            &initech_url,
+            Some(&initech_cookie),
+            "/v1/tenants/initech/inventory",
+        )
+        .await;
+        assert_eq!(status, 200, "{text}");
+        let initech: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(
+            node_names(cluster_named(&initech, "pve-prod")).is_empty(),
+            "a second same-named cluster must not claim the prod nodes: {text}"
+        );
+        assert!(!text.contains("pve-03"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_cluster_name_held_once_lists_every_node_for_its_tenant_only() {
+        let (state, _, _) = live_state().await;
+        let (acme_url, acme_cookie) = signed_in(state.clone(), &["ops"]).await;
+        let (initech_url, initech_cookie) = signed_in(state, &["finance"]).await;
+
+        let (_, text) = get_json(&acme_url, Some(&acme_cookie), "/v1/tenants/acme/inventory").await;
+        let acme: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            node_names(&acme["sites"][0]["clusters"][0]),
+            ["pve-01", "pve-02", "pve-03"],
+            "{text}"
+        );
+
+        // Initech holds no cluster of that name, so the prod nodes never reach its answer.
+        let (_, text) = get_json(
+            &initech_url,
+            Some(&initech_cookie),
+            "/v1/tenants/initech/inventory",
+        )
+        .await;
+        let initech: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let names: Vec<&str> = initech["sites"][0]["clusters"]
+            .as_array()
+            .expect("clusters")
+            .iter()
+            .map(|cluster| cluster["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(names, ["pve-lab"]);
+        assert!(node_names(cluster_named(&initech, "pve-lab")).is_empty());
+        assert!(!text.contains("pve-03"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_cluster_name_read_is_an_admin_diagnostic_that_names_no_body() {
+        let (state, _, pve_mock) = live_state().await;
+        let (member_url, member_cookie) = signed_in(state.clone(), &["ops"]).await;
+        let (admin_url, admin_cookie) = signed_in(state.clone(), &["platform-admins"]).await;
+
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let healthy: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(
+            healthy["diagnostics"]["cluster_name_error"].is_null(),
+            "{text}"
+        );
+
+        pve_mock
+            .fail_status
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        refresh(&state).await;
+
+        let (status, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        assert_eq!(status, 200, "{text}");
+        let admin: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            admin["diagnostics"]["cluster_name_error"], "Proxmox answered HTTP 500",
+            "{text}"
+        );
+        assert_eq!(
+            admin["source"]["proxmox"], "ok",
+            "the source stays ok: {text}"
+        );
+        assert!(
+            !text.contains("boom"),
+            "the 500 body reached a reader: {text}"
+        );
+        assert!(!text.contains(pve::TOKEN), "{text}");
+
+        // The member's envelope carries no diagnostics, so the error is not visible to them.
+        let (status, text) = get_json(
+            &member_url,
+            Some(&member_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        assert_eq!(status, 200, "{text}");
+        assert!(!text.contains("diagnostics"), "{text}");
+        assert!(!text.contains("cluster_name_error"), "{text}");
     }
 
     #[tokio::test]

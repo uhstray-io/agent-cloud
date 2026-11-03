@@ -37,6 +37,10 @@ pub struct NetboxData {
     /// VM names held by more than one VM across every declared site, in any tenant. A name in
     /// this set gets no live join, because a guess could show another site's host.
     pub ambiguous_vm_names: BTreeSet<String>,
+    /// Cluster names held by more than one cluster across every declared site, in any tenant.
+    /// A Proxmox cluster lists every node under a NetBox cluster only when that name is unique
+    /// here, because two clusters of one name would both claim the same nodes.
+    pub duplicate_cluster_names: BTreeSet<String>,
     /// Rows dropped because their own scope did not match the query that returned them.
     pub dropped_mismatched: u64,
 }
@@ -167,9 +171,11 @@ pub async fn fetch_all(
         sites.insert(slug.clone(), read);
     }
     let ambiguous_vm_names = duplicate_vm_names(&sites);
+    let duplicate_cluster_names = duplicate_cluster_names(&sites);
     Ok(NetboxData {
         sites,
         ambiguous_vm_names,
+        duplicate_cluster_names,
         dropped_mismatched: dropped,
     })
 }
@@ -223,13 +229,30 @@ fn keep_matching<T>(rows: Vec<T>, matches: impl Fn(&T) -> bool) -> (Vec<T>, u64)
 
 /// Names that more than one VM carries across every site in the read.
 fn duplicate_vm_names(sites: &BTreeMap<String, NbSite>) -> BTreeSet<String> {
+    repeated_names(
+        sites
+            .values()
+            .flat_map(|site| &site.clusters)
+            .flat_map(|cluster| &cluster.vms)
+            .map(|vm| vm.name.as_str()),
+    )
+}
+
+/// Names that more than one cluster carries across every site in the read.
+fn duplicate_cluster_names(sites: &BTreeMap<String, NbSite>) -> BTreeSet<String> {
+    repeated_names(
+        sites
+            .values()
+            .flat_map(|site| &site.clusters)
+            .map(|cluster| cluster.name.as_str()),
+    )
+}
+
+/// The names that appear more than once in `names`.
+fn repeated_names<'a>(names: impl Iterator<Item = &'a str>) -> BTreeSet<String> {
     let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
-    for vm in sites
-        .values()
-        .flat_map(|site| &site.clusters)
-        .flat_map(|cluster| &cluster.vms)
-    {
-        *seen.entry(vm.name.as_str()).or_insert(0) += 1;
+    for name in names {
+        *seen.entry(name).or_insert(0) += 1;
     }
     seen.into_iter()
         .filter(|(_, count)| *count > 1)
@@ -589,6 +612,15 @@ pub mod fixtures {
                    {"id":10,"name":"pve-rack","site":{"id":6,"name":"Lab","slug":"dc-2"},
                     "scope_type":"dcim.location","scope_id":3,
                     "type":{"id":1,"name":"Proxmox"}}]}"#;
+    /// The lab site's clusters with a second `pve-prod` (id 11), for the same-name case.
+    pub const CLUSTERS_SITE6_PROD_DUP: &str = r#"{"count":3,"next":null,"previous":null,
+        "results":[{"id":8,"name":"pve-lab","site":{"id":6,"name":"Lab","slug":"dc-2"},
+                    "type":{"id":1,"name":"Proxmox"}},
+                   {"id":11,"name":"pve-prod","site":{"id":6,"name":"Lab","slug":"dc-2"},
+                    "type":{"id":1,"name":"Proxmox"}},
+                   {"id":10,"name":"pve-rack","site":{"id":6,"name":"Lab","slug":"dc-2"},
+                    "scope_type":"dcim.location","scope_id":3,
+                    "type":{"id":1,"name":"Proxmox"}}]}"#;
     pub const CLUSTERS_TRUNCATED: &str = r#"{"count":2,"next":"https://netbox.test/api/virtualization/clusters/?offset=1000","previous":null,
         "results":[{"id":9,"name":"pve-big","site":{"id":99,"name":"Big","slug":"big-site"},"type":{"id":1,"name":"Proxmox"}}]}"#;
 
@@ -657,6 +689,8 @@ pub mod fixtures {
         pub ignore_filters: Arc<AtomicBool>,
         /// Give the lab cluster a second VM named `wiki`.
         pub lab_wiki_duplicate: Arc<AtomicBool>,
+        /// Give the lab site a second cluster named `pve-prod`, the prod cluster's name.
+        pub lab_prod_cluster_duplicate: Arc<AtomicBool>,
         /// When non-zero, the prefix list is this many synthetic rows, paged by `offset`.
         pub prefix_total: Arc<AtomicUsize>,
     }
@@ -737,6 +771,9 @@ pub mod fixtures {
         }
         answer(match q.get("site_id").map(String::as_str) {
             Some("5") => CLUSTERS_SITE5,
+            Some("6") if mock.lab_prod_cluster_duplicate.load(Ordering::SeqCst) => {
+                CLUSTERS_SITE6_PROD_DUP
+            }
             Some("6") => CLUSTERS_SITE6,
             Some("99") => CLUSTERS_TRUNCATED,
             _ => EMPTY,
@@ -988,6 +1025,37 @@ mod tests {
         .expect("fetch");
         assert!(data.ambiguous_vm_names.contains("wiki"));
         assert!(!data.ambiguous_vm_names.contains("tududi"));
+    }
+
+    #[tokio::test]
+    async fn a_cluster_name_held_twice_across_declared_sites_is_a_duplicate() {
+        let mock = Mock::default();
+        mock.lab_prod_cluster_duplicate
+            .store(true, Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let data = fetch_all(
+            &reqwest::Client::new(),
+            &config_for(addr),
+            &slugs(&["dc-1", "dc-2"]),
+        )
+        .await
+        .expect("fetch");
+        assert!(data.duplicate_cluster_names.contains("pve-prod"));
+        assert!(!data.duplicate_cluster_names.contains("pve-lab"));
+        assert!(data.ambiguous_vm_names.is_empty(), "no VM name is shared");
+    }
+
+    #[tokio::test]
+    async fn a_cluster_name_held_once_is_not_a_duplicate() {
+        let addr = serve(router(Mock::default())).await;
+        let data = fetch_all(
+            &reqwest::Client::new(),
+            &config_for(addr),
+            &slugs(&["dc-1", "dc-2"]),
+        )
+        .await
+        .expect("fetch");
+        assert!(data.duplicate_cluster_names.is_empty());
     }
 
     #[tokio::test]
