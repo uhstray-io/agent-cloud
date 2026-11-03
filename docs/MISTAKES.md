@@ -45,7 +45,7 @@ and why.
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
-| 1.16 | **x2** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | 2 | Convention |
+| 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
@@ -786,7 +786,7 @@ alone are listed as plain-value limits.
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 2** — 2026-09-25, 2026-10-03
+**Occurrences: 3** — 2026-09-25, 2026-10-03, 2026-11-02
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -818,6 +818,27 @@ only then written down; the number was also derived from a report in hand, so it
 measured. The rule covers it — a count is the output of a command over the whole set, not a
 reading of its first entries. Corrected in the architecture doc and the task log from the
 saved task output (12/13 semantic, 0/13 shape).
+
+**Occurrence 3 — 2026-11-02.** PR #817's body stated, under Evidence, "The guard failed on all
+eight sites before they were changed." No command had run the guard against the pre-fix files:
+the eight sites were the ones fixed, and the guard passed afterwards, so the coverage was
+assumed from both ends. Run against the pre-fix copies (the original guard,
+`f9f47603:platform/tests/test_fake_http.py::_used_after_close`, over every function node of the seven
+touched files at `6afa8f1c`, deduplicated to file and function), it flags 7 distinct sites: a port
+name set in two branches (`pve_port` in `test_probe_console_sources.py::run`) kept only its last
+origin. The guard was fixed (`233ef50b`); the same run with the fixed guard flags 8 distinct sites,
+and the body was corrected before merge. Why the rule did not fire: the claim was coverage ("all eight"), not a count of
+files, and it sat in a PR body, which the rule does not name; it was also written while
+summarising work just finished, when results feel in hand. The rule covers it: a number or an
+"all" in written evidence is the output of a command run over the whole set at the time of
+writing.
+
+**Proposed mechanical check (count of 3).** `scripts/merge-when-green.py` fetches the PR
+(`get_pr`), whose response carries the body, but does not inspect it today (the only body it reads
+is each conversation comment's). The check would refuse a body whose Evidence section states a count or an "all"/"every"
+claim on a bullet that names no command in backticks, so every such claim carries the command
+that produced it. Not built: it would refuse prose that states counts honestly in other ways,
+and its wording needs the operator's decision before it gates merges.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
