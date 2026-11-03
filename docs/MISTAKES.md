@@ -2265,8 +2265,8 @@ port to a process that binds it, a different race (the first says so in its docs
 **What happened.** Semaphore task 11958 (Deploy Plane (Dev), 2026-11-03) recorded the service-deploy step as `pass`
 and the Report line as "plane healthy". In that run, container `plane_runner_1` (image
 `makeplane/node-runner-commercial:v3.3.3`, restart policy `always`) had a RestartCount of 453. Each start exited 127
-with "Fatal glibc error: CPU does not support x86-64-v3". The runner image needs x86-64-v3, and the VM's CPU model
-is qemu64. The verify (`deploy-plane.yml`, Phase 4) probed only `/api/instances/` through the proxy, and that answered.
+with "Fatal glibc error: CPU does not support x86-64-v3". The runner image needs x86-64-v3, and the VM's CPU, the template's
+default model, reports "QEMU Virtual CPU version 2.5+" with no AVX2, BMI or FMA flags. The verify (`deploy-plane.yml`, Phase 4) probed only `/api/instances/` through the proxy, and that answered.
 
 **Root cause.** The verify proved one path, the API through the proxy, and treated that as proof of the whole plane.
 Under restart policy `always` a crash-looping container reads as `Up` between restarts, so a single status read
@@ -2274,7 +2274,7 @@ cannot show it, and no Phase 4 step read the state of any container the probe di
 
 **The rule.** A deploy verify asserts that every container its compose project created is running, and that no
 restart count grows across a settle window, before it records a pass. A container declared one-shot
-(`agent-cloud.one-shot`) counts as finished on exit 0 only. The restart count alone is not enough: the status read
+(`agent-cloud.one-shot`) counts as finished only when its status is `exited` with exit code 0. The restart count alone is not enough: the status read
 at the end of the window is the other half.
 
 **Enforced by.** Test: `platform/tests/test_assert_containers_stable.py` runs the shared task
