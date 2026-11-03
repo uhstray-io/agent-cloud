@@ -59,6 +59,17 @@ pub struct ProxmoxConfig {
     pub ca_file: Option<PathBuf>,
 }
 
+/// OpenBao as the console's secret store (plan 17 D27). Present only when all three
+/// `CONSOLE_OPENBAO_*` variables are set (see `openbao_from`). The AppRole pair is read only by
+/// the client in `openbao.rs`, which logs in on first use, never at boot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenbaoConfig {
+    /// Server-side API origin, no trailing slash.
+    pub api_url: String,
+    pub role_id: Secret,
+    pub secret_id: Secret,
+}
+
 #[derive(Clone)]
 pub struct Config {
     /// Public origin, no trailing slash. The OIDC redirect is `<base_url>/auth/callback`.
@@ -81,6 +92,8 @@ pub struct Config {
     pub netbox: Option<NetboxConfig>,
     /// Proxmox live-state source. `None` leaves every VM's live status unknown.
     pub proxmox: Option<ProxmoxConfig>,
+    /// OpenBao login for run-time reads (plan 17 D27). `None` leaves every OpenBao read unconfigured.
+    pub openbao: Option<OpenbaoConfig>,
     /// Data-flow catalogue (JSON array) rendered from inventory declarations. `None` answers `unconfigured`.
     pub flows_file: Option<PathBuf>,
     /// Grafana origin for deep links, no trailing slash. `None` leaves every link null.
@@ -139,6 +152,7 @@ impl Config {
             .map(PathBuf::from);
         let netbox = netbox_from(&get)?;
         let proxmox = proxmox_from(&get)?;
+        let openbao = openbao_from(&get)?;
         let flows_file = get("CONSOLE_FLOWS_FILE")
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
@@ -161,6 +175,7 @@ impl Config {
             workflow_file,
             netbox,
             proxmox,
+            openbao,
             flows_file,
             grafana_url,
         })
@@ -213,6 +228,32 @@ fn proxmox_from(
         token_id,
         token: Secret::new(token),
         ca_file: ca_file.map(PathBuf::from),
+    }))
+}
+
+/// The three `CONSOLE_OPENBAO_*` variables are all-or-none, as the Proxmox group is. Values
+/// never reach an error. The address takes the transport rule of the other infrastructure APIs.
+fn openbao_from(
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<Option<OpenbaoConfig>, ConfigError> {
+    let read = |name: &'static str| {
+        get(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let url = read("CONSOLE_OPENBAO_URL");
+    let role_id = read("CONSOLE_OPENBAO_ROLE_ID");
+    let secret_id = read("CONSOLE_OPENBAO_SECRET_ID");
+    if url.is_none() && role_id.is_none() && secret_id.is_none() {
+        return Ok(None);
+    }
+    let url = url.ok_or(ConfigError::Missing("CONSOLE_OPENBAO_URL"))?;
+    let role_id = role_id.ok_or(ConfigError::Missing("CONSOLE_OPENBAO_ROLE_ID"))?;
+    let secret_id = secret_id.ok_or(ConfigError::Missing("CONSOLE_OPENBAO_SECRET_ID"))?;
+    Ok(Some(OpenbaoConfig {
+        api_url: infrastructure_origin("CONSOLE_OPENBAO_URL", &url)?,
+        role_id: Secret::new(role_id),
+        secret_id: Secret::new(secret_id),
     }))
 }
 
@@ -563,6 +604,74 @@ mod tests {
         env.insert("CONSOLE_PROXMOX_CA_FILE", "/etc/console/pve-ca.pem");
         let err = Config::from_lookup(lookup(env)).err().expect("must fail");
         assert_eq!(err, ConfigError::Missing("CONSOLE_PROXMOX_URL"));
+    }
+
+    fn openbao_env() -> HashMap<&'static str, &'static str> {
+        let mut env = full_env();
+        env.insert("CONSOLE_OPENBAO_URL", "https://openbao.example.test:8200/");
+        env.insert("CONSOLE_OPENBAO_ROLE_ID", "console-role-value");
+        env.insert("CONSOLE_OPENBAO_SECRET_ID", "console-secret-id-value");
+        env
+    }
+
+    #[test]
+    fn openbao_is_unconfigured_when_unset() {
+        let config = Config::from_lookup(lookup(full_env())).expect("valid config");
+        assert!(config.openbao.is_none());
+    }
+
+    #[test]
+    fn openbao_parses_trims_and_keeps_the_secrets_out_of_debug() {
+        let config = Config::from_lookup(lookup(openbao_env())).expect("valid config");
+        let openbao = config.openbao.expect("configured");
+        assert_eq!(openbao.api_url, "https://openbao.example.test:8200");
+        assert_eq!(openbao.role_id.expose(), "console-role-value");
+        assert_eq!(openbao.secret_id.expose(), "console-secret-id-value");
+        let debug = format!("{openbao:?}");
+        assert!(!debug.contains("console-role-value"), "{debug}");
+        assert!(!debug.contains("console-secret-id-value"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+    }
+
+    #[test]
+    fn partial_openbao_group_names_the_first_missing_variable() {
+        let mut env = openbao_env();
+        env.remove("CONSOLE_OPENBAO_URL");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_OPENBAO_URL"));
+
+        let mut env = full_env();
+        env.insert("CONSOLE_OPENBAO_URL", "https://openbao.example.test");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_OPENBAO_ROLE_ID"));
+
+        let mut env = openbao_env();
+        env.insert("CONSOLE_OPENBAO_SECRET_ID", "  ");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_OPENBAO_SECRET_ID"));
+    }
+
+    #[test]
+    fn openbao_cleartext_follows_the_infrastructure_rule_and_never_echoes_values() {
+        let mut env = openbao_env();
+        env.insert("CONSOLE_OPENBAO_URL", "http://openbao.example.test:8200");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "CONSOLE_OPENBAO_URL",
+                ..
+            }
+        ));
+        let text = err.to_string();
+        assert!(!text.contains("console-role-value"), "{text}");
+        assert!(!text.contains("console-secret-id-value"), "{text}");
+
+        let url = format!("http://{}:8200", ip([10, 20, 0, 40]));
+        let config =
+            Config::from_lookup(overlay(openbao_env(), "CONSOLE_OPENBAO_URL", url.clone()))
+                .expect("valid config");
+        assert_eq!(config.openbao.expect("configured").api_url, url);
     }
 
     #[test]

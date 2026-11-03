@@ -1089,6 +1089,7 @@ mod tests {
             }),
             flows_file: None,
             grafana_url: None,
+            openbao: None,
         }
     }
 
@@ -1106,6 +1107,7 @@ mod tests {
             inventory: tokio::sync::RwLock::new(cache),
             proxmox_http: reqwest::Client::new(),
             flows,
+            openbao: None,
         })
     }
 

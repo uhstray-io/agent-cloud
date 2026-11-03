@@ -6,6 +6,7 @@ pub mod config;
 pub mod grafana;
 pub mod inventory;
 pub mod netbox;
+pub mod openbao;
 pub mod prefs;
 pub mod proxmox;
 pub mod scope;
@@ -51,6 +52,11 @@ pub struct AppState {
     pub proxmox_http: reqwest::Client,
     /// The data-flow catalogue `GET /v1/flows` answers.
     pub flows: inventory::FlowSet,
+    /// OpenBao client for run-time reads (plan 17 D27). Logs in on first use, never at boot.
+    /// `None` when `CONSOLE_OPENBAO_*` is unset.
+    // Consumed by the 8.1 Secrets page.
+    #[allow(dead_code)]
+    pub openbao: Option<openbao::Openbao>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -93,6 +99,13 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         Some(path) => inventory::FlowSet::configured(inventory::load_flows(path)?),
         None => inventory::FlowSet::unconfigured(),
     };
+    let openbao = match &config.openbao {
+        Some(settings) => Some(
+            openbao::Openbao::new(settings.clone())
+                .map_err(|err| format!("CONSOLE_OPENBAO_URL: {err}"))?,
+        ),
+        None => None,
+    };
     let inventory_cache =
         inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
@@ -112,6 +125,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         inventory: tokio::sync::RwLock::new(inventory_cache),
         proxmox_http,
         flows,
+        openbao,
     }))
 }
 
@@ -275,6 +289,7 @@ mod tests {
                 workflow_file: None,
                 netbox: None,
                 proxmox: None,
+                openbao: None,
                 flows_file: None,
                 grafana_url: None,
             },
@@ -287,6 +302,7 @@ mod tests {
             inventory: tokio::sync::RwLock::new(inventory::InventoryCache::new(false, false)),
             proxmox_http: reqwest::Client::new(),
             flows: inventory::FlowSet::unconfigured(),
+            openbao: None,
         })
     }
 
@@ -875,6 +891,7 @@ mod tests {
             ("semaphore.rs", include_str!("semaphore.rs")),
             ("auth.rs", include_str!("auth.rs")),
             ("work.rs", include_str!("work.rs")),
+            ("openbao.rs", include_str!("openbao.rs")),
         ] {
             assert!(!text.contains(needle), "{file} turns verification off");
         }
