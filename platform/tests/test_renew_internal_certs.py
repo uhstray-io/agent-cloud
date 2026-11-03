@@ -1591,4 +1591,5 @@ def test_a_server_leaf_on_a_host_in_no_listener_group_keeps_the_gateway_refusal(
     world.place()
     rc, out = world.run(leaves=[*world.leaves.values(), stray],
                         host_over={"unlisted_svc": {"stray": {}}})
-    _refused(world, out, rc, "a server leaf can be proven only as the gateway's own (agentgateway_svc, agw_server_leaf)")
+    _refused(world, out, rc,
+             "a server leaf can be proven only as the gateway's own (agentgateway_svc, agw_server_leaf)")
