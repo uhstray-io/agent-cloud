@@ -812,26 +812,26 @@ def test_fields_without_a_value_are_not_checked_against_their_type():
 BRANCH_VARS = [{"name": "service_branch", "type": "string", "default_value": "main"}]
 
 
-def test_pin_branch_without_a_branch_field_returns_the_record_branch_and_values_unchanged():
-    assert lg.pin_branch(_tpl([]), {}, {"x": "1"}, "dev") == ("dev", {"x": "1"})
+def test_pin_branch_without_a_branch_field_returns_the_values_unchanged():
+    assert lg.pin_branch(_tpl([]), {}, {"x": "1"}, "dev") == {"x": "1"}
 
 
 def test_pin_branch_overrides_a_declared_default_with_the_record_branch():
     template = _tpl(BRANCH_VARS)
     values = lg.merge_survey(template, {})
     assert values == {"service_branch": "main"}
-    assert lg.pin_branch(template, {}, values, "dev") == ("dev", {"service_branch": "dev"})
+    assert lg.pin_branch(template, {}, values, "dev") == {"service_branch": "dev"}
 
 
 def test_pin_branch_fills_a_declared_field_that_has_no_default():
-    assert lg.pin_branch(_tpl([{"name": "service_branch"}]), {}, {}, "dev") == ("dev", {"service_branch": "dev"})
+    assert lg.pin_branch(_tpl([{"name": "service_branch"}]), {}, {}, "dev") == {"service_branch": "dev"}
 
 
 def test_pin_branch_accepts_a_caller_value_equal_to_the_record_branch():
     template = _tpl(BRANCH_VARS)
     survey = {"service_branch": "dev"}
     values = lg.merge_survey(template, survey)
-    assert lg.pin_branch(template, survey, values, "dev") == ("dev", {"service_branch": "dev"})
+    assert lg.pin_branch(template, survey, values, "dev") == {"service_branch": "dev"}
 
 
 @pytest.mark.parametrize("value", ["feature-x", "main", "", "dev "])
@@ -848,7 +848,7 @@ def test_pin_branch_refuses_a_caller_value_other_than_the_record_branch(value):
 @pytest.mark.parametrize("extra", [{}, {"git_branch": None}, {"git_branch": ""}, {"git_branch": "dev"}])
 def test_pin_branch_accepts_a_template_with_no_branch_of_its_own_or_the_record_branch(extra):
     template = {"name": TEMPLATE, "id": 12, "survey_vars": [], **extra}
-    assert lg.pin_branch(template, {}, {}, "dev") == ("dev", {})
+    assert lg.pin_branch(template, {}, {}, "dev") == {}
 
 
 def test_pin_branch_refuses_a_template_branch_that_differs_from_the_record():

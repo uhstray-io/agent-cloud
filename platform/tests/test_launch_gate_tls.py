@@ -445,7 +445,7 @@ def test_a_body_trickled_past_the_request_deadline_is_refused_and_never_complete
 def test_headers_trickled_past_the_connection_deadline_are_cut(listener, monkeypatch):
     # Each header byte arrives well inside CONNECTION_TIMEOUT, so only the whole-connection watchdog can end
     # this one; without it the connection outlives the four-second loop below. The cut must also never reach
-    # the gate: http.server reads end-of-stream as the end of the headers (CI caught it dispatching).
+    # the gate: http.server reads end-of-stream as the end of the headers.
     monkeypatch.setattr(lg, "CONNECTION_DEADLINE", 1.0)
     tcp = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
     sock = listener.client_context().wrap_socket(tcp, server_hostname="localhost")
@@ -471,7 +471,7 @@ def test_headers_trickled_past_the_connection_deadline_are_cut(listener, monkeyp
 
 def test_a_launch_slower_than_the_connection_deadline_still_answers(listener, monkeypatch):
     # The watchdog bounds the client's part only. A gate whose Semaphore and OPA calls outlast it may already
-    # have created a task, and the reply carrying the task id must still arrive (review of PR 818).
+    # have created a task, and the reply carrying the task id must still arrive.
     monkeypatch.setattr(lg, "CONNECTION_DEADLINE", 0.5)
     answer = listener.gate.handle
 
@@ -502,7 +502,7 @@ def test_the_watchdog_marks_the_connection_before_it_shuts_it(monkeypatch):
     real = socket.socket.shutdown
 
     def shutdown(sock, how):
-        seen.append(watch.fired.is_set())
+        seen.append(watch.cut)
         real(sock, how)
 
     monkeypatch.setattr(lg.socket.socket, "shutdown", shutdown)
@@ -516,7 +516,7 @@ def test_the_watchdog_marks_the_connection_before_it_shuts_it(monkeypatch):
 
 
 def test_a_cut_that_starts_after_the_disarm_does_nothing(listener, monkeypatch):
-    # CodeRabbit on PR 818: Timer.cancel() cannot stop a callback already running, so the cut checks the
+    # Timer.cancel() cannot stop a callback already running, so the cut checks the
     # disarm under the same lock. Once the server has disarmed, the connection is neither marked nor shut.
     # Driven through GateServer.disarm() on this thread, as the handler thread would call it.
     left, right = socket.socketpair()
@@ -529,7 +529,7 @@ def test_a_cut_that_starts_after_the_disarm_does_nothing(listener, monkeypatch):
         assert listener.server.disarm() is False
         lg._cut(left, watch)
         assert calls == []
-        assert not watch.fired.is_set()
+        assert not watch.cut
     finally:
         left.close()
         right.close()
@@ -559,7 +559,7 @@ def test_a_read_that_runs_out_the_request_deadline_is_answered_408(listener, mon
 
 def test_a_body_stalled_within_the_deadline_closes_without_a_reply(listener, monkeypatch):
     # The per-read bound is the smaller one here, so a stall is an idle client, not an expired deadline: the
-    # connection ends with no reply, as before the deadline existed.
+    # connection ends with no reply, the same as any idle client.
     monkeypatch.setattr(lg, "CONNECTION_TIMEOUT", 0.5)
     monkeypatch.setattr(lg, "REQUEST_DEADLINE", 5.0)
     head = b"POST /v1/launch HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n\r\nx"
