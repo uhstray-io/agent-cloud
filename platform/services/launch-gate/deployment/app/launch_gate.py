@@ -18,6 +18,7 @@ import re
 import ssl
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -43,6 +44,7 @@ MIN_TOKEN = 32
 _CALLER = re.compile(r"[a-z][a-z0-9-]{0,31}")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SURVEY_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_INTEGER = re.compile(r"-?[0-9]+")
 _TEMPLATE_MARKERS = ("{{", "{%", "{#")
 _REQUEST_KEYS = frozenset({"template", "survey", "agent", "workflow_id", "step", "dry_run", "proposal", "context"})
 _REQUIRED_CONFIG = frozenset(
@@ -364,9 +366,73 @@ def merge_survey(template: dict[str, Any], survey: dict[str, str]) -> dict[str, 
     values = {**merged, **survey}
 
     for var in declared:
+        if var["name"] in values:
+            _check_value(var, values[var["name"]], name)
+
+    for var in declared:
         if var.get("required") is True and not values.get(var["name"]):
             raise Refusal(400, "missing_required", f"required survey field {var['name']} of {name} has no value")
     return values
+
+
+_STRING_TYPES = frozenset({"", "string", "text"})
+_INTEGER_TYPES = frozenset({"int", "integer"})
+
+
+def _check_value(var: dict[str, Any], value: str, template: str) -> None:
+    """Refuse a value its field's type cannot hold. A refusal names the field, never the value.
+
+    Semaphore runs an enum or integer field as the literal it is given, so the gate checks the value
+    against the declared type. An unknown type is refused rather than passed through unchecked.
+    """
+    var_name = var["name"]
+    kind = var.get("type")
+    if kind is None:
+        kind = ""
+    if not isinstance(kind, str):
+        raise Refusal(502, "unsupported_field_type", f"survey field {var_name} of {template} has an unsupported type")
+    if kind in _STRING_TYPES:
+        return
+    if kind in _INTEGER_TYPES:
+        if not _INTEGER.fullmatch(value):
+            raise Refusal(400, "bad_value", f"survey field {var_name} must be an integer")
+        return
+    if kind == "enum":
+        options = var.get("values")
+        if not isinstance(options, list) or not all(
+            isinstance(option, dict) and isinstance(option.get("value"), str) for option in options
+        ):
+            raise Refusal(502, "semaphore_unreadable", f"survey field {var_name} of {template} has unreadable values")
+        if value not in {option["value"] for option in options}:
+            raise Refusal(400, "bad_value", f"survey field {var_name} is not one of its declared values")
+        return
+    raise Refusal(502, "unsupported_field_type", f"survey field {var_name} of {template} has an unsupported type")
+
+
+def pin_branch(
+    template: dict[str, Any], survey: dict[str, str], values: dict[str, str], repo_branch: str
+) -> tuple[str, dict[str, str]]:
+    """Pin the launch to the branch of the template's repository record, and return it with the values.
+
+    OPA is asked about that branch, so the code that runs must be that branch. A template that carries
+    its own branch is refused when the two differ, since the gate cannot tell which one a run would take.
+    A template that declares ``service_branch`` clones that branch onto the target, so the gate sets the
+    field to the record's branch (overriding any default) and refuses a caller who names another.
+    """
+    name = template.get("name")
+    own = template.get("git_branch")
+    if own is not None and not isinstance(own, str):
+        raise Refusal(502, "semaphore_unreadable", f"the branch of template {name} is unreadable")
+    if own and own != repo_branch:
+        raise Refusal(
+            502, "branch_ambiguous", f"template {name} carries its own branch, different from its repository record"
+        )
+    declared = {var.get("name") for var in template.get("survey_vars") or [] if isinstance(var, dict)}
+    if "service_branch" not in declared:
+        return repo_branch, values
+    if "service_branch" in survey and survey["service_branch"] != repo_branch:
+        raise Refusal(400, "branch_mismatch", f"service_branch must be the template's branch {repo_branch}")
+    return repo_branch, {**values, "service_branch": repo_branch}
 
 
 def opa_input(req: LaunchRequest, git_branch: str, values: dict[str, str]) -> dict[str, Any]:
@@ -661,6 +727,9 @@ class Gate:
         self._semaphore = semaphore
         self._opa = opa
         self._log = log if log is not None else _stdout_log
+        # The dedup read and the create run under one lock. Without it, two requests for one template can both
+        # read it idle and both create. The gate is the only launcher, so a process lock closes that window.
+        self._launch_lock = threading.Lock()
 
     def handle(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
         if method == "GET" and path == "/healthz":
@@ -707,7 +776,8 @@ class Gate:
         authorize_local(caller, req, self._config)
         template = self._semaphore.template(req.template)
         values = merge_survey(template, req.survey)
-        branch = self._semaphore.branch(template.get("repository_id"))
+        repo_branch = self._semaphore.branch(template.get("repository_id"))
+        branch, values = pin_branch(template, req.survey, values, repo_branch)
         if req.dry_run:
             version = self._semaphore.version()
             if version.split("-")[0] not in VERIFIED_DRY_RUN_VERSIONS:
@@ -715,14 +785,14 @@ class Gate:
         reason = self._opa.decide(opa_input(req, branch, values))
         event["reason"] = reason
         template_id = template["id"]
-        busy = self._semaphore.running(template_id)
-        if busy:
-            ids = ", ".join(str(task) for task in busy)
-            raise Refusal(409, "already_running", f"template {req.template} already has a running task: {ids}")
         message = task_message(caller, req.workflow_id, req.step)
-        task_id = self._semaphore.create(
-            task_body(template_id, self._config.semaphore_project, values, dry_run=req.dry_run, message=message)
-        )
+        body = task_body(template_id, self._config.semaphore_project, values, dry_run=req.dry_run, message=message)
+        with self._launch_lock:
+            busy = self._semaphore.running(template_id)
+            if busy:
+                ids = ", ".join(str(task) for task in busy)
+                raise Refusal(409, "already_running", f"template {req.template} already has a running task: {ids}")
+            task_id = self._semaphore.create(body)
         event["task_id"] = task_id
         if req.dry_run:
             self._check_mode_recorded(task_id)
@@ -759,6 +829,13 @@ class Gate:
 DEFAULT_CONFIG = "/etc/launch-gate/config.json"
 # Bounds the TLS handshake and every read or write on a connection, so a silent client ends.
 CONNECTION_TIMEOUT = 10.0
+# Connections served at once. Each holds a thread until its handshake and request end, so silent clients
+# could otherwise exhaust threads. A connection past the cap is dropped before any thread starts.
+MAX_CONNECTIONS = 16
+# Wall-clock budget for one request's body, from the end of the handshake. CONNECTION_TIMEOUT bounds each
+# read, not the request, so a client that trickles bytes could otherwise hold the connection open.
+REQUEST_DEADLINE = 30.0
+_READ_CHUNK = 64 * 1024
 
 
 class TLSLoadError(Exception):
@@ -795,6 +872,7 @@ class GateServer(ThreadingHTTPServer):
         self._cert_path = cert_path
         self._key_path = key_path
         self._lock = threading.Lock()
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         try:
             self._fingerprint = _fingerprint(cert_path, key_path)
             self._ssl_context = _server_context(cert_path, key_path)
@@ -812,6 +890,23 @@ class GateServer(ThreadingHTTPServer):
             sock.close()
             raise
         return tls, addr
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        # Refused before a thread exists. The client gets no reply and the gate writes no line for it.
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
     def _current_context(self) -> ssl.SSLContext:
         """The context for the files as they stand now. A failed reload keeps the last good context serving
@@ -869,6 +964,7 @@ class GateHandler(BaseHTTPRequestHandler):
     server_version = "launch-gate"
     sys_version = ""
     _tls_failed = False
+    _deadline = 0.0
 
     def setup(self) -> None:
         self.request.settimeout(CONNECTION_TIMEOUT)
@@ -878,6 +974,7 @@ class GateHandler(BaseHTTPRequestHandler):
             # Plain HTTP, a client that stalls, or one that closes early: no reply and no request read.
             self._tls_failed = True
             return
+        self._deadline = time.monotonic() + REQUEST_DEADLINE
         super().setup()
 
     def handle(self) -> None:
@@ -918,10 +1015,35 @@ class GateHandler(BaseHTTPRequestHandler):
                 # Refused unread: an oversize body is never buffered, and the gate never sees it.
                 self._reply(413, {"error": "too_large"})
                 return
-            body = self.rfile.read(length)
+            body = self._read_body(length)
+            if body is None:
+                self._reply(408, {"error": "timeout"})
+                return
         path = self.path.split("?", 1)[0]
         status, payload = self.server.gate.handle(method, path, _headers(self.headers), body)
         self._reply(status, payload)
+
+    def _read_body(self, length: int) -> bytes | None:
+        """Read the declared body, or return None once the request's deadline has passed. Each read waits no
+        longer than what is left of the deadline, and the deadline is checked between reads, so a client that
+        trickles bytes cannot hold the connection past it. A short body at EOF is returned as it is, as before."""
+        chunks: list[bytes] = []
+        remaining = length
+        try:
+            while remaining > 0:
+                left = self._deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self.request.settimeout(min(CONNECTION_TIMEOUT, left))
+                chunk = self.rfile.read1(min(remaining, _READ_CHUNK))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            # The reply that follows writes on this socket, so the handshake-time bound is restored.
+            self.request.settimeout(CONNECTION_TIMEOUT)
+        return b"".join(chunks)
 
     def _reply(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")

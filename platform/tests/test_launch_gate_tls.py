@@ -337,6 +337,76 @@ def test_one_authorization_header_is_passed_through(listener):
     assert listener.gate.calls[0][2]["Authorization"] == token
 
 
+# ---------- connection cap and request deadline ----------
+
+
+def test_a_connection_past_the_cap_is_dropped_and_capacity_returns(listener):
+    held = []
+    try:
+        for _ in range(lg.MAX_CONNECTIONS):
+            held.append(socket.create_connection(("127.0.0.1", listener.port)))
+            time.sleep(0.02)
+        # Let the accept loop take a slot for every held connection before the probe queues behind them.
+        time.sleep(0.2)
+        started = time.monotonic()
+        try:
+            status, _ = _https(listener.port, listener.client_context(), "GET", "/healthz")
+        except (OSError, http.client.HTTPException):
+            status = None
+        elapsed = time.monotonic() - started
+        # Refused at once: the server closes the probe during its handshake instead of holding a thread for it.
+        assert status is None and elapsed < 3
+        assert listener.gate.calls == []
+    finally:
+        # Closing the held sockets ends their handshakes, so their slots come back.
+        for sock in held:
+            sock.close()
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            status, _ = _https(listener.port, listener.client_context(), "GET", "/healthz")
+            break
+        except (OSError, http.client.HTTPException):
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)
+    assert status == 200
+
+
+def test_a_body_trickled_past_the_request_deadline_is_refused_and_never_completed(listener, monkeypatch):
+    monkeypatch.setattr(lg, "REQUEST_DEADLINE", 1.0)
+    # Declares 1000 bytes and sends one a tenth of a second: finishing would take about 100 seconds.
+    head = b"POST /v1/launch HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n\r\n"
+    tcp = socket.create_connection(("127.0.0.1", listener.port), timeout=5)
+    sock = listener.client_context().wrap_socket(tcp, server_hostname="localhost")
+    reply = b""
+    ended = False
+    try:
+        sock.sendall(head)
+        sock.settimeout(0.1)
+        started = time.monotonic()
+        while not ended and time.monotonic() - started < 4:
+            try:
+                sock.sendall(b"x")
+                chunk = sock.recv(4096)
+            except TimeoutError:
+                time.sleep(0.1)
+                continue
+            except OSError:
+                ended = True
+                break
+            if not chunk:
+                ended = True
+            reply += chunk
+            time.sleep(0.1)
+    finally:
+        sock.close()
+    # The server answers 408 or closes the connection; it never reads the body to its end.
+    assert ended
+    assert not reply or re.match(rb"HTTP/1\.[01] 408 ", reply)
+    assert listener.gate.calls == []
+
+
 # ---------- the gate's log write can fail without losing the response ----------
 
 
@@ -416,10 +486,12 @@ def _must_not_serve(self):
     pytest.fail("serve_forever was reached")
 
 
-def _free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+class _EphemeralGateServer(lg.GateServer):
+    """GateServer that binds port 0 whatever the config names. A probe socket closed before main() binds
+    could hand its port to another process, so the test lets the kernel choose and reads the port back."""
+
+    def __init__(self, address, gate, cert_path, key_path):
+        super().__init__((address[0], 0), gate, cert_path, key_path)
 
 
 def test_main_refuses_a_missing_config_file(capsys):
@@ -436,12 +508,8 @@ def test_main_reads_the_config_path_from_the_environment(monkeypatch, capsys):
 
 def test_main_refuses_an_unreadable_certificate_before_listening(tmp_path, monkeypatch, capsys):
     _set_tokens(monkeypatch)
-    path = _write_config(
-        tmp_path,
-        port=_free_port(),
-        tls_cert=tmp_path / "missing" / "cert.pem",
-        tls_key=tmp_path / "missing" / "key.pem",
-    )
+    # The certificate fails before the socket is bound, so the configured port is never taken.
+    path = _write_config(tmp_path, tls_cert=tmp_path / "missing" / "cert.pem", tls_key=tmp_path / "missing" / "key.pem")
     monkeypatch.setattr(lg.GateServer, "serve_forever", _must_not_serve)
     assert lg.main([str(path)]) == 2
     assert capsys.readouterr().err == "launch-gate: TLS certificate or key unreadable (FileNotFoundError)\n"
@@ -453,8 +521,17 @@ def test_main_starts_the_listener_and_reports_it(tmp_path, monkeypatch, capsys):
     cert_path, key_path = tmp_path / "cert.pem", tmp_path / "key.pem"
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     key_path.write_bytes(_key_pem(key))
-    port = _free_port()
-    path = _write_config(tmp_path, port=port, tls_cert=cert_path, tls_key=key_path)
-    monkeypatch.setattr(lg.GateServer, "serve_forever", lambda self: None)
+    path = _write_config(tmp_path, port=8443, tls_cert=cert_path, tls_key=key_path)
+    bound = []
+
+    class _Recording(_EphemeralGateServer):
+        def __init__(self, *args):
+            super().__init__(*args)
+            bound.append(self.server_address[1])
+
+    monkeypatch.setattr(lg, "GateServer", _Recording)
+    monkeypatch.setattr(_Recording, "serve_forever", lambda self: None)
     assert lg.main([str(path)]) == 0
-    assert json.loads(capsys.readouterr().out) == {"event": "listening", "host": "127.0.0.1", "port": port}
+    assert bound and bound[0] != 0
+    # The event names the configured port; the listener itself is the ephemeral one bound above.
+    assert json.loads(capsys.readouterr().out) == {"event": "listening", "host": "127.0.0.1", "port": 8443}

@@ -699,6 +699,157 @@ def test_merge_survey_unreadable_survey_fields_refused(survey_vars):
     assert (info.value.status, info.value.code) == (502, "semaphore_unreadable")
 
 
+# ---------- survey value types ----------
+
+
+@pytest.mark.parametrize("kind", ["int", "integer"])
+@pytest.mark.parametrize("value", ["5", "0", "-7", "007", "123456789012345678901234567890"])
+def test_integer_field_accepts_plain_digits_with_an_optional_minus(kind, value):
+    assert lg.merge_survey(_tpl([{"name": "n", "type": kind}]), {"n": value}) == {"n": value}
+
+
+@pytest.mark.parametrize("kind", ["int", "integer"])
+@pytest.mark.parametrize(
+    "value",
+    ["1.5", "x", "+1", "", "-", "--1", " 5", "5 ", "5\n", "1_0", "١٢"],  # last: Arabic-Indic digits
+)
+def test_integer_field_refuses_anything_else_and_names_only_the_field(kind, value):
+    with pytest.raises(lg.Refusal) as info:
+        lg.merge_survey(_tpl([{"name": "n", "type": kind}]), {"n": value})
+    assert (info.value.status, info.value.code) == (400, "bad_value")
+    assert info.value.detail == "survey field n must be an integer"
+
+
+def test_integer_default_is_checked_when_filled():
+    assert lg.merge_survey(_tpl([{"name": "n", "type": "int", "default_value": "3"}]), {}) == {"n": "3"}
+    with pytest.raises(lg.Refusal, match="must be an integer"):
+        lg.merge_survey(_tpl([{"name": "n", "type": "int", "default_value": "three"}]), {})
+
+
+ENUM_VARS = [
+    {
+        "name": "mode",
+        "type": "enum",
+        "default_value": "logs",
+        "values": [{"name": "Logs", "value": "logs"}, {"name": "Metrics", "value": "metrics"}],
+    }
+]
+
+
+def test_enum_field_accepts_one_of_its_declared_values():
+    assert lg.merge_survey(_tpl(ENUM_VARS), {"mode": "metrics"}) == {"mode": "metrics"}
+
+
+def test_enum_field_fills_its_declared_default():
+    assert lg.merge_survey(_tpl(ENUM_VARS), {}) == {"mode": "logs"}
+
+
+@pytest.mark.parametrize("value", ["Logs", "logs ", "", "traces", "METRICS"])
+def test_enum_field_refuses_a_value_outside_its_declared_values(value):
+    with pytest.raises(lg.Refusal) as info:
+        lg.merge_survey(_tpl(ENUM_VARS), {"mode": value})
+    assert (info.value.status, info.value.code) == (400, "bad_value")
+    assert info.value.detail == "survey field mode is not one of its declared values"
+
+
+def test_enum_field_with_no_declared_values_refuses_every_value():
+    with pytest.raises(lg.Refusal, match="not one of its declared values"):
+        lg.merge_survey(_tpl([{"name": "mode", "type": "enum", "values": []}]), {"mode": "logs"})
+
+
+@pytest.mark.parametrize(
+    "options",
+    [None, "logs", [{"name": "Logs"}], ["logs"], [{"value": 3}], [{"value": None}]],
+)
+def test_enum_field_with_unreadable_values_is_502(options):
+    with pytest.raises(lg.Refusal) as info:
+        lg.merge_survey(_tpl([{"name": "mode", "type": "enum", "values": options}]), {"mode": "logs"})
+    assert (info.value.status, info.value.code) == (502, "semaphore_unreadable")
+
+
+@pytest.mark.parametrize("kind", ["secret", ["int"], 3, {"x": 1}])
+def test_unknown_or_unreadable_field_type_is_502_when_a_value_is_present(kind):
+    with pytest.raises(lg.Refusal) as info:
+        lg.merge_survey(_tpl([{"name": "n", "type": kind}]), {"n": "x"})
+    assert (info.value.status, info.value.code) == (502, "unsupported_field_type")
+    assert info.value.detail == f"survey field n of {TEMPLATE} has an unsupported type"
+
+
+def test_unknown_field_type_is_not_read_when_no_value_is_present():
+    assert lg.merge_survey(_tpl([{"name": "n", "type": "secret"}]), {}) == {}
+
+
+@pytest.mark.parametrize("kind", ["string", "text", "", None])
+def test_string_fields_take_any_string_untouched(kind):
+    field = {"name": "n"} if kind is None else {"name": "n", "type": kind}
+    for value in ("1.5", "x", "", "a b\nc"):
+        assert lg.merge_survey(_tpl([field]), {"n": value}) == {"n": value}
+
+
+def test_fields_without_a_value_are_not_checked_against_their_type():
+    survey_vars = [{"name": "n", "type": "int"}, {"name": "m", "type": "enum", "values": None}]
+    assert lg.merge_survey(_tpl(survey_vars), {}) == {}
+
+
+# ---------- pin_branch ----------
+
+BRANCH_VARS = [{"name": "service_branch", "type": "string", "default_value": "main"}]
+
+
+def test_pin_branch_without_a_branch_field_returns_the_record_branch_and_values_unchanged():
+    assert lg.pin_branch(_tpl([]), {}, {"x": "1"}, "dev") == ("dev", {"x": "1"})
+
+
+def test_pin_branch_overrides_a_declared_default_with_the_record_branch():
+    template = _tpl(BRANCH_VARS)
+    values = lg.merge_survey(template, {})
+    assert values == {"service_branch": "main"}
+    assert lg.pin_branch(template, {}, values, "dev") == ("dev", {"service_branch": "dev"})
+
+
+def test_pin_branch_fills_a_declared_field_that_has_no_default():
+    assert lg.pin_branch(_tpl([{"name": "service_branch"}]), {}, {}, "dev") == ("dev", {"service_branch": "dev"})
+
+
+def test_pin_branch_accepts_a_caller_value_equal_to_the_record_branch():
+    template = _tpl(BRANCH_VARS)
+    survey = {"service_branch": "dev"}
+    values = lg.merge_survey(template, survey)
+    assert lg.pin_branch(template, survey, values, "dev") == ("dev", {"service_branch": "dev"})
+
+
+@pytest.mark.parametrize("value", ["feature-x", "main", "", "dev "])
+def test_pin_branch_refuses_a_caller_value_other_than_the_record_branch(value):
+    template = _tpl(BRANCH_VARS)
+    survey = {"service_branch": value}
+    values = lg.merge_survey(template, survey)
+    with pytest.raises(lg.Refusal) as info:
+        lg.pin_branch(template, survey, values, "dev")
+    assert (info.value.status, info.value.code) == (400, "branch_mismatch")
+    assert info.value.detail == "service_branch must be the template's branch dev"
+
+
+@pytest.mark.parametrize("extra", [{}, {"git_branch": None}, {"git_branch": ""}, {"git_branch": "dev"}])
+def test_pin_branch_accepts_a_template_with_no_branch_of_its_own_or_the_record_branch(extra):
+    template = {"name": TEMPLATE, "id": 12, "survey_vars": [], **extra}
+    assert lg.pin_branch(template, {}, {}, "dev") == ("dev", {})
+
+
+def test_pin_branch_refuses_a_template_branch_that_differs_from_the_record():
+    template = {"name": TEMPLATE, "id": 12, "git_branch": "other", "survey_vars": []}
+    with pytest.raises(lg.Refusal) as info:
+        lg.pin_branch(template, {}, {}, "dev")
+    assert (info.value.status, info.value.code) == (502, "branch_ambiguous")
+
+
+@pytest.mark.parametrize("own", [3, True, ["dev"]])
+def test_pin_branch_refuses_an_unreadable_template_branch(own):
+    template = {"name": TEMPLATE, "id": 12, "git_branch": own, "survey_vars": []}
+    with pytest.raises(lg.Refusal) as info:
+        lg.pin_branch(template, {}, {}, "dev")
+    assert (info.value.status, info.value.code) == (502, "semaphore_unreadable")
+
+
 # ---------- opa_input ----------
 
 

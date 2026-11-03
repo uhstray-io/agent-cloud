@@ -95,6 +95,9 @@ class Fake:
     def __init__(self):
         self.requests = []
         self.routes = {}
+        # (method, path) -> callable(record) returning (status, payload, headers). Lets a test block one call
+        # or make a read depend on an earlier write; it takes precedence over ``routes``.
+        self.hooks = {}
         fake = self
 
         class Handler(DrainingHandler):
@@ -104,15 +107,17 @@ class Fake:
             def _serve(self, method):
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b""
-                fake.requests.append(
-                    {
-                        "method": method,
-                        "path": self.path,
-                        "headers": {name.lower(): value for name, value in self.headers.items()},
-                        "body": json.loads(raw) if raw else None,
-                    }
-                )
-                status, payload, extra = fake.routes.get((method, self.path), (404, {"error": "unscripted"}, {}))
+                record = {
+                    "method": method,
+                    "path": self.path,
+                    "headers": {name.lower(): value for name, value in self.headers.items()},
+                    "body": json.loads(raw) if raw else None,
+                }
+                fake.requests.append(record)
+                if (method, self.path) in fake.hooks:
+                    status, payload, extra = fake.hooks[(method, self.path)](record)
+                else:
+                    status, payload, extra = fake.routes.get((method, self.path), (404, {"error": "unscripted"}, {}))
                 data = b"" if payload is None else json.dumps(payload).encode("utf-8")
                 self.send_response(status)
                 for name, value in extra.items():
@@ -562,6 +567,101 @@ def test_redirect_on_the_task_post_is_uncertain_and_never_followed(world):
     status, payload = world.launch()
     assert (status, payload["error"]) == (502, "outcome_uncertain")
     assert ("POST", f"{SEMA_BASE}/elsewhere-tasks") not in world.semaphore.calls()
+    assert len(_posts(world)) == 1
+
+
+# ---------- the branch the launch runs from ----------
+
+
+def _serve_template(world, **changes):
+    """A template that declares service_branch, with a default that the record's branch must override."""
+    detail = {
+        "id": TEMPLATE_ID,
+        "name": TEMPLATE,
+        "repository_id": REPO_ID,
+        "survey_vars": [
+            {"name": "service_name", "required": True},
+            {"name": "service_branch", "type": "string", "default_value": "main"},
+        ],
+    }
+    detail.update(changes)
+    world.semaphore.routes[("GET", f"{SEMA_BASE}/templates/{TEMPLATE_ID}")] = (200, detail, {})
+
+
+def test_caller_branch_other_than_the_record_is_400_and_asks_opa_nothing(world):
+    _serve_template(world)
+    status, payload = world.launch(_request(survey={"service_name": SURVEY_VALUE, "service_branch": "feature-x"}))
+    assert (status, payload["error"]) == (400, "branch_mismatch")
+    assert payload["detail"] == "service_branch must be the template's branch dev"
+    assert world.opa.requests == [] and _posts(world) == []
+    assert "feature-x" not in json.dumps(world.events)
+
+
+def test_omitted_service_branch_is_the_record_branch_in_the_task_and_in_opa(world):
+    _serve_template(world)
+    status, _ = world.launch()
+    assert status == 201
+    assert json.loads(_posts(world)[0]["body"]["environment"]) == {
+        "service_branch": "dev",
+        "service_name": SURVEY_VALUE,
+    }
+    opa_input = world.opa.requests[0]["body"]["input"]
+    assert opa_input["git_branch"] == "dev"
+    assert opa_input["settings"] == {"service_branch": "dev", "service_name": SURVEY_VALUE}
+
+
+def test_caller_branch_equal_to_the_record_launches(world):
+    _serve_template(world)
+    status, _ = world.launch(_request(survey={"service_name": SURVEY_VALUE, "service_branch": "dev"}))
+    assert status == 201
+    assert json.loads(_posts(world)[0]["body"]["environment"])["service_branch"] == "dev"
+
+
+def test_template_with_its_own_different_branch_is_502_and_asks_opa_nothing(world):
+    _serve_template(world, git_branch="other")
+    status, payload = world.launch()
+    assert (status, payload["error"]) == (502, "branch_ambiguous")
+    assert world.opa.requests == [] and _posts(world) == []
+
+
+# ---------- one launch at a time ----------
+
+
+def test_two_concurrent_launches_of_one_template_create_exactly_one_task(world):
+    # Both launches must read the template's tasks before either creates one. With the launch lock the second
+    # read waits for the first create, so the wait below times out and the create proceeds; without the lock the
+    # two reads both see the template idle and both creates go through.
+    reads = []
+    created = []
+    both_read = threading.Event()
+    state = threading.Lock()
+
+    def list_tasks(_record):
+        with state:
+            reads.append(1)
+            if len(reads) == 2:
+                both_read.set()
+            busy = [{"id": TASK_ID, "template_id": TEMPLATE_ID, "status": "waiting"}] if created else []
+        return 200, busy, {}
+
+    def create_task(_record):
+        both_read.wait(timeout=1.0)
+        with state:
+            created.append(TASK_ID)
+        return 201, {"id": TASK_ID}, {}
+
+    world.semaphore.hooks[("GET", f"{SEMA_BASE}/tasks/last")] = list_tasks
+    world.semaphore.hooks[("POST", TASKS)] = create_task
+
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(world.launch())) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert sorted(status for status, _ in results) == [201, 409]
+    assert [payload["error"] for status, payload in results if status == 409] == ["already_running"]
     assert len(_posts(world)) == 1
 
 

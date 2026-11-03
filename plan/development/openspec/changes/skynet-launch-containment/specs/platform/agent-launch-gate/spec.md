@@ -62,6 +62,23 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 - **THEN** the task's recorded environment holds exactly the validated survey values plus declared
   defaults, and nothing else
 
+### Requirement: The code that runs is the branch OPA judged
+The launch gate SHALL take the branch from the template's repository record and MUST refuse a template
+that carries its own different branch. When the template declares a `service_branch` survey field (the
+branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
+whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
+values and integer fields plain digits.
+
+#### Scenario: Caller names another branch
+- **WHEN** a request for `Deploy agentgateway (Dev)` sets `service_branch` to a branch other than the
+  template's repository branch
+- **THEN** the launch gate answers 400, asks OPA nothing and creates no task
+
+#### Scenario: Branch filled from the record
+- **WHEN** a request omits `service_branch` for a template that declares it
+- **THEN** the created task's environment sets `service_branch` to the repository record's branch, the
+  same branch OPA was asked about
+
 ### Requirement: OPA decides server-side before every launch
 For every request that passes validation, the launch gate SHALL query OPA's decision endpoint itself,
 with the caller's agent identity, action `run_task`, the template name, the step, the Git branch the

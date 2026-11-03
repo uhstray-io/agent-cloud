@@ -10,7 +10,7 @@
 - [x] 2.1 Request handling: bearer auth per caller (hmac compare), caller→agent map, JSON body limit, 401/403/400 refusals before any outbound call
 - [x] 2.2 Validation: allowlist from rendered config, survey declarations read from Semaphore, literal-string rule (no `{{`, `{%`, `{#`; 4096-character cap), declared defaults filled, required fields enforced
 - [x] 2.3 OPA call: skynet's decision input shape plus `settings`, launch only on `allowed: true`; deny → 403 with reason, error/unreachable/no `allowed` → 503
-- [x] 2.4 Launch: task body built from scratch (`template_id`, `environment`, `message`, `params`), dedup against a running task for the same step (409), task tag `<caller> <workflow_id> <step_id>`, check mode refused outside the verified Semaphore versions
+- [x] 2.4 Launch: task body built from scratch (`template_id`, `environment`, `message`, `params`), dedup against any running task of the template (409, check and create under one lock), task tag `<caller> <workflow_id> <step_id>`, check mode refused outside the verified Semaphore versions
 - [x] 2.5 HTTPS listener that reloads its certificate when the file changes; structured decision/launch log lines without secrets
 - [x] 2.6 Unit tests covering every refusal, the OPA verdict paths, the exact task body, dedup and certificate reload, with fake OPA and Semaphore servers
 - [x] 2.7 Validation gate: scenarios "Undeclared key is refused", "Templated value is refused", "Template off the allowlist", "OPA denies", "OPA unreachable", "The created task holds only validated values" and "Task message for skynet" pass in the gate's unit tests
