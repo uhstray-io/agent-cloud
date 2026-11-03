@@ -43,7 +43,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/renew-internal-certs.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
@@ -1158,12 +1158,8 @@ def test_o11y_tls_proof_reports_connect_failure_without_exception_details(tmp_pa
     journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
     _place(ca, server_leaf, FRESH)
     _place(ca, journal_leaf, FRESH)
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    port = listener.getsockname()[1]
-    listener.close()
     result = subprocess.run(
-        [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+        [sys.executable, "-c", script, "127.0.0.1", str(refused_port()), "o11y.internal.test",
          str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
          str(Path(journal_leaf["dir"]) / "current/cert.pem"),
          str(Path(journal_leaf["dir"]) / "current/key.pem")],

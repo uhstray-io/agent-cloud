@@ -90,6 +90,7 @@ and why.
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 1 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
 | 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
+| 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -2149,6 +2150,41 @@ carried list wins; an omitted one is filled from `environment_id`), and the prov
 The provisioner fix that landed is PR #797's (merged 2026-10-31), which reached the same cause
 independently and also added an `effective_environment_ids` readback; PR #798 added this fake and
 its test.
+
+### 2.33 A test aimed at a port it had just freed, and a parallel test was handed it
+
+**What happened.** On docs-only PR #807, `test_agw_conformance.py::test_the_playbook_runs_reports_and_removes_its_directory`
+failed in the `Python Agentgateway` job (run 41261060265, 2026-11-01): the playbook reported `PASS, 15/15`, but
+the stubs' request counts did not add up, and the upstream stub's first recorded request was
+`{"messages": [{"role": "user", "content": "ok"}], "max_tokens": 16}`. No conformance case sends that; only
+`probe-agentgateway-isolation.yml` does. On another xdist worker,
+`test_agw_isolation_probe.py::test_a_gateway_that_is_not_listening_fails_with_no_http_answer` had started its stub,
+stopped it, and run the probe against the freed port, expecting no answer (gw2, 01:26:35 to 01:26:42 UTC). The
+conformance test started on gw1 at 01:26:41 and bound its stubs to port 0. Inferred from that overlap and the
+stray body: one of them was handed the freed port, and the isolation probe's request landed on it. The test passed on rerun and in twelve isolated runs.
+
+**Root cause.** Freeing a port does not reserve it. The next bind to port 0 anywhere on the machine can be given it,
+and under pytest-xdist that bind is often another test's server. Eight sites used the shape: the three
+"not listening" gateway probe tests (isolation, client-TLS, gate), `_closed_port()` and an inline copy in
+`test_probe_console_sources.py`, the unreachable-API test in `test_read_proxmox_root_ca.py`, the `ports` fixture in
+`test_reboot_and_probe.py`, and the connect-failure test in `test_renew_internal_certs.py`. Keeping the port bound
+without listening is not a fix either: on macOS a connect to it times out instead of being refused (checked
+2026-11-02; Linux refuses).
+
+**The rule.** A test that needs "nothing listens here" aims at `fake_http.refused_port()`: port 1, below every
+ephemeral range, so no bind to port 0 is ever handed it, and a connection to it is refused at once (measured on
+macOS and on Linux, where port-0 binds drew only from 32768-60999). Never stop a server or close a socket and
+then aim at its port.
+
+**Enforced by.** Test: `platform/tests/test_fake_http.py::test_a_test_never_aims_at_a_port_it_has_just_freed` walks every
+function in `platform/tests/` and fails on a port value, port read or call argument from a server or socket used
+after that function stopped or closed it; `test_the_guard_flags_each_freed_port_shape` mutation-checks it on the
+shapes found (one name set in two branches included; run against the pre-fix files it flags all eight sites),
+and `test_refused_port_refuses_at_once_and_is_never_handed_out` checks the port itself. The guard sees only
+objects the function assigns itself: a fixture parameter that is stopped and then aimed at, or a port read inside
+`with socket.socket() as s:` and used after the block, is not caught (no such site exists today). Also not
+covered: `test_nemoclaw_policy.py::_candidate_port()` and `test_agw_stream_usage.py::_free_port()` hand a freed
+port to a process that binds it, a different race (the first says so in its docstring).
 
 ## 3. Acting on live state
 
