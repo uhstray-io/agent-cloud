@@ -7,6 +7,8 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +67,26 @@ def stop_child_group(child: subprocess.Popen[bytes]) -> None:
             pass
 
 
+def write_payload(fifo_path: str, payload: bytes) -> None:
+    """Hand the sync payload to the child through its FIFO; a failed write is never printed."""
+    try:
+        with open(fifo_path, "wb") as pipe:
+            pipe.write(payload)
+    except OSError:
+        pass
+
+
+def release_payload_writer(fifo_path: str, writer: threading.Thread) -> None:
+    """Unblock a writer whose FIFO no child opened, then reap it within a bound."""
+    if writer.is_alive():
+        try:
+            fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+            os.close(fd)
+        except OSError:
+            pass
+    writer.join(timeout=CHILD_CLEANUP_TIMEOUT_SECONDS)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True, help="Semaphore HTTPS or loopback HTTP origin")
@@ -105,82 +127,113 @@ def main() -> int:
         "inventory_name": args.name,
         "inventory_source": str(Path(args.inventory).expanduser().resolve()),
     }
-    argv = ["ansible-playbook", "-i", "localhost,", str(PLAYBOOK), "--extra-vars", "@/dev/stdin"]
-    if not args.apply:
-        argv.append("--check")
-    child_env = ansible_child_environment()
+    fifo_dir = None
+    fifo_path = None
+    writer = None
     try:
-        child = subprocess.Popen(
-            argv,
-            cwd=ROOT,
-            env=child_env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-    except OSError:
-        print("Unable to start the inventory synchronization play; it did not start.", file=sys.stderr)
-        return 1
+        try:
+            fifo_dir = tempfile.mkdtemp(prefix="semaphore-sync-inventory-")
+            # ansible-core resolves symlinks in `--extra-vars @path`, and Linux's /dev/stdin is a
+            # symlink to an unopenable pipe. A FIFO in this 0700 directory keeps the token off argv,
+            # the environment and disk.
+            fifo_path = os.path.join(fifo_dir, "extra-vars.json")
+            os.mkfifo(fifo_path, 0o600)
+        except OSError:
+            print("Unable to start the inventory synchronization play; it did not start.", file=sys.stderr)
+            return 1
 
-    try:
-        stdout, _stderr = child.communicate(
-            input=json.dumps(payload).encode(), timeout=CHILD_TIMEOUT_SECONDS
-        )
-    except subprocess.TimeoutExpired:
-        stop_child_group(child)
+        argv = ["ansible-playbook", "-i", "localhost,", str(PLAYBOOK), "--extra-vars", "@" + fifo_path]
         if not args.apply:
-            print("Inventory check exceeded its fixed deadline; no write was requested.", file=sys.stderr)
-        else:
-            print(
-                "Inventory synchronization exceeded its fixed deadline. The write outcome is uncertain; "
-                "reconcile the existing record with read-only access before any retry.",
-                file=sys.stderr,
+            argv.append("--check")
+        child_env = ansible_child_environment()
+        try:
+            child = subprocess.Popen(
+                argv,
+                cwd=ROOT,
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
             )
-        return 1
-    except OSError:
-        stop_child_group(child)
-        if not args.apply:
-            print("Inventory check failed; no write was requested.", file=sys.stderr)
-        else:
+        except OSError:
+            print("Unable to start the inventory synchronization play; it did not start.", file=sys.stderr)
+            return 1
+        writer = threading.Thread(
+            target=write_payload, args=(fifo_path, json.dumps(payload).encode()), daemon=True
+        )
+        writer.start()
+
+        try:
+            stdout, _stderr = child.communicate(timeout=CHILD_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            stop_child_group(child)
+            if not args.apply:
+                print("Inventory check exceeded its fixed deadline; no write was requested.", file=sys.stderr)
+            else:
+                print(
+                    "Inventory synchronization exceeded its fixed deadline. The write outcome is uncertain; "
+                    "reconcile the existing record with read-only access before any retry.",
+                    file=sys.stderr,
+                )
+            return 1
+        except OSError:
+            stop_child_group(child)
+            if not args.apply:
+                print("Inventory check failed; no write was requested.", file=sys.stderr)
+            else:
+                print(
+                    "Inventory synchronization did not complete. The write outcome is uncertain; "
+                    "reconcile the existing record with read-only access before any retry.",
+                    file=sys.stderr,
+                )
+            return 1
+
+        if child.returncode != 0:
+            if not args.apply:
+                print("Inventory check failed; no write was requested.", file=sys.stderr)
+                return 1
             print(
                 "Inventory synchronization did not complete. The write outcome is uncertain; "
                 "reconcile the existing record with read-only access before any retry.",
                 file=sys.stderr,
             )
-        return 1
-
-    if child.returncode != 0:
-        if not args.apply:
-            print("Inventory check failed; no write was requested.", file=sys.stderr)
             return 1
-        print(
-            "Inventory synchronization did not complete. The write outcome is uncertain; "
-            "reconcile the existing record with read-only access before any retry.",
-            file=sys.stderr,
-        )
-        return 1
 
-    if DIFF_SUMMARY.encode() in stdout:
-        outcome = (
-            "Inventory check completed; the existing record differs."
-            if not args.apply
-            else "Inventory synchronization completed; updated content was verified."
-        )
-    elif MATCH_SUMMARY.encode() in stdout:
-        outcome = (
-            "Inventory check completed; the existing record already matches."
-            if not args.apply
-            else "Inventory synchronization completed; the existing record already matched."
-        )
-    else:
-        print(
-            "Inventory synchronization returned no safe summary; reconcile read-only before retrying.",
-            file=sys.stderr,
-        )
-        return 1
-    print(outcome)
-    return 0
+        if DIFF_SUMMARY.encode() in stdout:
+            outcome = (
+                "Inventory check completed; the existing record differs."
+                if not args.apply
+                else "Inventory synchronization completed; updated content was verified."
+            )
+        elif MATCH_SUMMARY.encode() in stdout:
+            outcome = (
+                "Inventory check completed; the existing record already matches."
+                if not args.apply
+                else "Inventory synchronization completed; the existing record already matched."
+            )
+        else:
+            print(
+                "Inventory synchronization returned no safe summary; reconcile read-only before retrying.",
+                file=sys.stderr,
+            )
+            return 1
+        print(outcome)
+        return 0
+    finally:
+        # Release the writer before unlinking: a writer still waiting to open must be unblocked by path.
+        if writer is not None:
+            release_payload_writer(fifo_path, writer)
+        if fifo_path is not None:
+            try:
+                os.unlink(fifo_path)
+            except FileNotFoundError:
+                pass
+        if fifo_dir is not None:
+            try:
+                os.rmdir(fifo_dir)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

@@ -87,7 +87,7 @@ and why.
 | 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
-| 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 1 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
+| 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
 | 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
@@ -2067,7 +2067,7 @@ var through the play's vars across every playbook.
 
 ### 2.31 Production host configuration was assumed from the local proof (widens 2.24)
 
-**Occurrences: 1** — 2026-10-29 (the class also covers 2.24's three)
+**Occurrences: 2** — 2026-10-29, 2026-11-02 (the class also covers 2.24's three)
 
 **What happened.** See 2.24, occurrence 3. The first production `Deploy OPA (Dev)` (Semaphore
 task 10339) created no container. The OPA compose default named the image by its short name, the
@@ -2091,6 +2091,8 @@ Proposal, for the class: a CI job on the production base image (Ubuntu 24.04, po
 Ubuntu's packages, `unqualified-search-registries = []`) that runs `podman-compose config` and
 `podman pull` for every compose file's default images, so a host-configuration difference fails
 in CI instead of on the first production deploy.
+
+**Occurrence 2 — 2026-11-02.** PR #815's inventory-sync script handed the operator token to its Ansible child as `--extra-vars @/dev/stdin`. Every proof ran on macOS: the child worktree's scoped gates, the pre-push hook and the local test file (32 passed under ansible-core 2.21.0 and 2.20.8). CI's Ubuntu runner failed `Python core` on the first real-playbook test, and `-x` hid the other six: ansible-core parses `-e @path` with `maybe_unfrack_path` (`ansible/cli/arguments/option_helpers.py:503`), which resolves symlinks, and on Linux `/dev/stdin` is a symlink through `/proc/self/fd/0` to an unopenable `pipe:[N]` (on macOS it resolves to `/dev/fd/0`, which opens). Reproduced in `python:3.12.15-slim-bookworm`: 7 of 32 failed. Why the rule did not fire: it is worded about the deploy target host, while this was an operator-side script run on CI's Linux runner; a workstation-only proof was again read as proof for every platform. Fixed by passing the payload through a named pipe in a 0700 temporary directory. Enforced by CI's Ubuntu `Python core` job, which caught it before merge; the macOS pre-push hook cannot.
 
 ### 2.32 A fixture modelled the provider's reads, not how it applies a write (widens 2.22)
 

@@ -158,6 +158,9 @@ def run_sync(tmp_path, url, inventory, *options, token=TOKEN, path=None, env_ove
     env["SEMAPHORE_TOKEN"] = ENV_TOKEN
     env["ANSIBLE_LOCAL_TEMP"] = str(local_tmp)
     env["ANSIBLE_REMOTE_TEMP"] = str(remote_tmp)
+    sync_tmp = tmp_path / "sync-tmp"
+    sync_tmp.mkdir(exist_ok=True)
+    env["TMPDIR"] = str(sync_tmp)
     env["PATH"] = f"{path or Path(ansible_bin('ansible-playbook')).parent}:{env.get('PATH', '')}"
     env.update(env_overrides or {})
     return subprocess.run(
@@ -193,6 +196,8 @@ def _deadline_driver(tmp_path, child_source, options):
     env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "deadline-remote")
     Path(env["ANSIBLE_LOCAL_TEMP"]).mkdir()
     Path(env["ANSIBLE_REMOTE_TEMP"]).mkdir()
+    env["TMPDIR"] = str(tmp_path / "sync-tmp")
+    Path(env["TMPDIR"]).mkdir(exist_ok=True)
     return driver, env
 
 
@@ -255,6 +260,8 @@ def test_child_deadline_returns_fixed_safe_preview_or_uncertain_apply(
         assert stdout == ""
         assert expected in stderr
         assert TOKEN not in stdout + stderr and PRIVATE not in stdout + stderr
+        # The child never opened the FIFO, so the sync-owned temporary directory must be gone.
+        assert list((tmp_path / "sync-tmp").iterdir()) == []
 
 
 def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
@@ -294,15 +301,25 @@ def assert_clean(result):
     assert ENV_TOKEN not in result.stdout + result.stderr
 
 
-def test_actual_child_stdin_is_only_token_channel_and_path_is_json(tmp_path, fake_api):
+def test_actual_child_fifo_is_only_token_channel_and_path_is_json(tmp_path, fake_api):
     url, _state = fake_api
     bindir = tmp_path / "fake-bin"
     bindir.mkdir()
     child = bindir / "ansible-playbook"
+    recorded = tmp_path / "fifo-path.txt"
     token_digest = hashlib.sha256(TOKEN.encode()).hexdigest()
     child.write_text(
-        "#!/usr/bin/env python3\nimport hashlib,json,os,sys\n"
-        "data=json.load(sys.stdin)\n"
+        "#!/usr/bin/env python3\nimport hashlib,json,os,stat,sys\n"
+        "args=sys.argv\n"
+        "index=args.index('--extra-vars')\n"
+        "assert args[index+1].startswith('@')\n"
+        "fifo=args[index+1][1:]\n"
+        "assert stat.S_ISFIFO(os.stat(fifo).st_mode)\n"
+        "assert os.stat(fifo).st_mode & 0o777 == 0o600\n"
+        "assert os.stat(os.path.dirname(fifo)).st_mode & 0o777 == 0o700\n"
+        "data=json.load(open(fifo))\n"
+        "assert sys.stdin.read()==''\n"
+        f"open({str(recorded)!r},'w').write(fifo)\n"
         f"assert hashlib.sha256(data['sync_inventory_token'].encode()).hexdigest()=={token_digest!r}\n"
         "assert 'SEMAPHORE_TOKEN' not in os.environ\n"
         "assert os.environ['ANSIBLE_CONFIG'].endswith('/ansible.cfg')\n"
@@ -313,7 +330,6 @@ def test_actual_child_stdin_is_only_token_channel_and_path_is_json(tmp_path, fak
         "assert os.environ['ANSIBLE_CALLBACK_PLUGINS'].endswith('/callback_plugins')\n"
         f"assert all(hashlib.sha256(value.encode()).hexdigest()!={token_digest!r} for value in os.environ.values())\n"
         "assert data['inventory_source'].endswith('inventory with spaces.yml')\n"
-        "assert '--extra-vars' in sys.argv and '@/dev/stdin' in sys.argv\n"
         "assert '--check' in sys.argv and '--apply' not in sys.argv\n"
         f"assert all(hashlib.sha256(arg.encode()).hexdigest()!={token_digest!r} for arg in sys.argv)\n"
         "print('Validated inventory already matches; no write is needed.')\n"
@@ -323,6 +339,7 @@ def test_actual_child_stdin_is_only_token_channel_and_path_is_json(tmp_path, fak
     assert result.returncode == 0
     assert result.stdout == "Inventory check completed; the existing record already matches.\n"
     assert_clean(result)
+    assert not os.path.exists(os.path.dirname(recorded.read_text()))
     assert all(TOKEN.encode() not in path.read_bytes() for path in tmp_path.rglob("*") if path.is_file())
 
 

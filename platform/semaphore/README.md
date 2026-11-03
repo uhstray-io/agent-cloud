@@ -223,7 +223,10 @@ access by reading the controller's own token out of OpenBao from a workstation.
 Use `scripts/semaphore-sync-inventory.py` to preview the canonical inventory-sync
 play with your own Semaphore API token. Preview is the default; `--apply` is
 required to update a differing record. The token is read from stdin and passed
-to Ansible as JSON on child stdin. The sync child disables privilege escalation
+to Ansible as JSON through a named pipe in a private (0700) temporary directory, so
+it never reaches the child's argv, environment or a file on disk. ansible-core resolves
+symlinks in `--extra-vars @path`, so Linux's `/dev/stdin` cannot carry it. The sync child
+disables privilege escalation
 and debug logging, removes inherited log destinations and callback overrides,
 pins the repository config and redacting callback, enables supported module
 pipelining, and disables kept remote files. The local Ansible child has a fixed
