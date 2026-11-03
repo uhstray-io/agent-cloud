@@ -858,7 +858,13 @@
           # source differs from the one this run mounts. The data volume is kept: rm without -v.
           # The checkout of the last bootstrap wins: bootstrapping from another worktree recreates Semaphore
           # once (the data volume and its key are kept), and a Semaphore task in flight is killed.
-          if [ "$REPO_SRC" != "{{ _repo_host_dir }}" ] || [ "$SHARE_SRC" != "{{ _deploy_share }}" ]; then
+          # Compare canonical paths: a symlink to the same checkout is not a change, and a repo source that
+          # no longer exists resolves to nothing and counts as stale. The share is a path on the VM, which
+          # this controller cannot stat, so it is compared as written.
+          canon() { if [ -d "$1" ]; then (cd -P "$1" && pwd -P); fi; }
+          REPO_CANON=$(canon "$REPO_SRC")
+          HOST_CANON=$(canon "{{ _repo_host_dir }}")
+          if [ -z "$REPO_CANON" ] || [ "$REPO_CANON" != "$HOST_CANON" ] || [ "$SHARE_SRC" != "{{ _deploy_share }}" ]; then
             podman rm -f {{ _sem_name }}
             echo recreated
             exit 0

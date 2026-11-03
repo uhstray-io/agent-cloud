@@ -163,6 +163,7 @@ def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000, ima
     podman.chmod(0o755)
     task = next(t for t in _play()["tasks"] if str(t.get("name", "")).startswith("Recreate Semaphore if"))
     checkout = tmp_path / "checkout"
+    checkout.mkdir(exist_ok=True)
     play = tmp_path / "recreate.yml"
     play.write_text(json.dumps([{
         "hosts": "localhost", "connection": "local", "gather_facts": False,

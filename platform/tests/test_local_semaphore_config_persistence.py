@@ -99,9 +99,11 @@ def test_the_status_words_are_unchanged():
 def test_the_recreate_compares_bind_mount_sources_after_the_destination_check():
     shell = _task(RECREATE)["ansible.builtin.shell"]
     assert ".Source" in shell
-    assert "[ \"$REPO_SRC\" != \"{{ _repo_host_dir }}\" ]" in shell
+    assert "canon() { if [ -d \"$1\" ]; then (cd -P \"$1\" && pwd -P); fi; }" in shell
+    assert "REPO_CANON=$(canon \"$REPO_SRC\")" in shell
+    assert "HOST_CANON=$(canon \"{{ _repo_host_dir }}\")" in shell
     assert "[ \"$SHARE_SRC\" != \"{{ _deploy_share }}\" ]" in shell
-    assert shell.index("grep -q '{{ _deploy_share }}'") < shell.index("\"$REPO_SRC\"")
+    assert shell.index("grep -q '{{ _deploy_share }}'") < shell.index("REPO_CANON=$(canon")
 
 
 STUB = """#!/bin/sh
@@ -196,10 +198,13 @@ class Run(NamedTuple):
 def _run(tmp_path: Path, tasks: list, *, exists: bool = True, state: str = "running",
          volume_config: str | None = None, etc_config: str | None = None, mount: str = VOLUME_NAME,
          start_fails: bool = False, run_fails: bool = False, stdin_run_fails: bool = False,
-         empty_archive: bool = False, repo_src: str | None = None, share_src: str = DEPLOY_SHARE) -> Run:
+         empty_archive: bool = False, repo_src: str | None = None, share_src: str = DEPLOY_SHARE,
+         host_dir: Path | None = None) -> Run:
     """Run the named tasks, then the debug task, against the stub. The checkout the playbook is
-    run from is tmp_path/checkout, so a matching bind source is the default."""
-    checkout = tmp_path / "checkout"
+    run from is host_dir, by default tmp_path/checkout, which exists; a matching bind source is the
+    default."""
+    checkout = host_dir or (tmp_path / "checkout")
+    checkout.mkdir(parents=True, exist_ok=True)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     podman = bindir / "podman"
@@ -378,6 +383,28 @@ def test_the_recreate_replaces_a_container_whose_checkout_source_is_gone(tmp_pat
     assert run.out.returncode == 0, run.out.stdout + run.out.stderr
     assert "RECREATE=[recreated]" in run.out.stdout
     assert run.lines == ["rm -f local-semaphore"], "rm without -v: the data volume is kept"
+
+
+@needs_ansible
+def test_a_symlink_to_the_same_checkout_is_not_a_change(tmp_path):
+    real = tmp_path / "real-checkout"
+    real.mkdir()
+    link = tmp_path / "linked-checkout"
+    link.symlink_to(real, target_is_directory=True)
+    run = _run(tmp_path, [RECREATE], host_dir=real, repo_src=str(link))
+    assert run.out.returncode == 0, run.out.stdout + run.out.stderr
+    assert "RECREATE=[ok]" in run.out.stdout
+    assert run.lines == []
+
+
+@needs_ansible
+def test_a_different_real_directory_recreates(tmp_path):
+    other = tmp_path / "other-checkout"
+    other.mkdir()
+    run = _run(tmp_path, [RECREATE], repo_src=str(other))
+    assert run.out.returncode == 0, run.out.stdout + run.out.stderr
+    assert "RECREATE=[recreated]" in run.out.stdout
+    assert run.lines == ["rm -f local-semaphore"]
 
 
 @needs_ansible
