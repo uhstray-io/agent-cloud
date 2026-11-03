@@ -17,6 +17,7 @@ DIFF_SUMMARY = "Validated inventory differs; the existing record will be updated
 MATCH_SUMMARY = "Validated inventory already matches; no write is needed."
 CHILD_TIMEOUT_SECONDS = 300
 CHILD_CLEANUP_TIMEOUT_SECONDS = 5
+UNCERTAIN = "The write outcome is uncertain; reconcile the existing record with read-only access before any retry."
 
 
 def ansible_child_environment() -> dict[str, str]:
@@ -48,7 +49,7 @@ def stop_child_group(child: subprocess.Popen[bytes]) -> None:
             pass
 
     # Descendants may inherit these pipes. Closing our ends avoids an unbounded drain.
-    for stream in (child.stdin, child.stdout, child.stderr):
+    for stream in (child.stdout, child.stderr):
         if stream is not None:
             try:
                 stream.close()
@@ -70,7 +71,9 @@ def stop_child_group(child: subprocess.Popen[bytes]) -> None:
 def write_payload(fifo_path: str, payload: bytes) -> None:
     """Hand the sync payload to the child through its FIFO; a failed write is never printed."""
     try:
-        with open(fifo_path, "wb") as pipe:
+        # O_WRONLY without O_CREAT: if the FIFO was already unlinked, nothing is created to hold the token.
+        fd = os.open(fifo_path, os.O_WRONLY)
+        with os.fdopen(fd, "wb") as pipe:
             pipe.write(payload)
     except OSError:
         pass
@@ -85,6 +88,12 @@ def release_payload_writer(fifo_path: str, writer: threading.Thread) -> None:
         except OSError:
             pass
     writer.join(timeout=CHILD_CLEANUP_TIMEOUT_SECONDS)
+
+
+def fail(apply: bool, check_text: str, apply_lead: str, code: int = 1) -> int:
+    """Print the one fixed failure message for this mode and return its exit code."""
+    print(check_text if not apply else f"{apply_lead} {UNCERTAIN}", file=sys.stderr)
+    return code
 
 
 def main() -> int:
@@ -153,52 +162,52 @@ def main() -> int:
                 env=child_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
         except OSError:
             print("Unable to start the inventory synchronization play; it did not start.", file=sys.stderr)
             return 1
-        writer = threading.Thread(
-            target=write_payload, args=(fifo_path, json.dumps(payload).encode()), daemon=True
-        )
-        writer.start()
 
         try:
-            stdout, _stderr = child.communicate(timeout=CHILD_TIMEOUT_SECONDS)
+            writer = threading.Thread(
+                target=write_payload, args=(fifo_path, json.dumps(payload).encode()), daemon=True
+            )
+            writer.start()
+            stdout, _ = child.communicate(timeout=CHILD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             stop_child_group(child)
-            if not args.apply:
-                print("Inventory check exceeded its fixed deadline; no write was requested.", file=sys.stderr)
-            else:
-                print(
-                    "Inventory synchronization exceeded its fixed deadline. The write outcome is uncertain; "
-                    "reconcile the existing record with read-only access before any retry.",
-                    file=sys.stderr,
-                )
-            return 1
+            return fail(
+                args.apply,
+                "Inventory check exceeded its fixed deadline; no write was requested.",
+                "Inventory synchronization exceeded its fixed deadline.",
+            )
         except OSError:
             stop_child_group(child)
-            if not args.apply:
-                print("Inventory check failed; no write was requested.", file=sys.stderr)
-            else:
-                print(
-                    "Inventory synchronization did not complete. The write outcome is uncertain; "
-                    "reconcile the existing record with read-only access before any retry.",
-                    file=sys.stderr,
-                )
-            return 1
+            return fail(
+                args.apply,
+                "Inventory check failed; no write was requested.",
+                "Inventory synchronization did not complete.",
+            )
+        except KeyboardInterrupt:
+            # The child has its own session, so the terminal's SIGINT never reaches it. Stop it here.
+            stop_child_group(child)
+            return fail(
+                args.apply,
+                "Inventory check was interrupted; no write was requested.",
+                "Inventory synchronization was interrupted.",
+                130,
+            )
+        except BaseException:
+            stop_child_group(child)
+            raise
 
         if child.returncode != 0:
-            if not args.apply:
-                print("Inventory check failed; no write was requested.", file=sys.stderr)
-                return 1
-            print(
-                "Inventory synchronization did not complete. The write outcome is uncertain; "
-                "reconcile the existing record with read-only access before any retry.",
-                file=sys.stderr,
+            return fail(
+                args.apply,
+                "Inventory check failed; no write was requested.",
+                "Inventory synchronization did not complete.",
             )
-            return 1
 
         if DIFF_SUMMARY.encode() in stdout:
             outcome = (

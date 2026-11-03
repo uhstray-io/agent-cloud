@@ -113,7 +113,8 @@ def fake_api():
         "request_held": threading.Event(), "release_request": threading.Event(),
     }
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeSemaphore)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # A short poll keeps shutdown from waiting out the default half-second select interval.
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}", FakeSemaphore.state
@@ -147,21 +148,27 @@ def ansible_bin(name):
     pytest.fail(f"{name} is required for the inventory-sync integration tests")
 
 
+def _sync_env(tmp_path, path_prefix, temp_prefix):
+    """Environment for one sync run: private Ansible temp dirs and a sync-owned TMPDIR under tmp_path."""
+    local_tmp = tmp_path / f"{temp_prefix}-local"
+    remote_tmp = tmp_path / f"{temp_prefix}-remote"
+    local_tmp.mkdir(exist_ok=True)
+    remote_tmp.mkdir(exist_ok=True)
+    sync_tmp = tmp_path / "sync-tmp"
+    sync_tmp.mkdir(exist_ok=True)
+    env = os.environ.copy()
+    env["ANSIBLE_LOCAL_TEMP"] = str(local_tmp)
+    env["ANSIBLE_REMOTE_TEMP"] = str(remote_tmp)
+    env["TMPDIR"] = str(sync_tmp)
+    env["PATH"] = f"{path_prefix}:{env.get('PATH', '')}"
+    return env
+
+
 def run_sync(tmp_path, url, inventory, *options, token=TOKEN, path=None, env_overrides=None):
     source = tmp_path / "inventory with spaces.yml"
     source.write_text(inventory)
-    local_tmp = tmp_path / "ansible-local"
-    remote_tmp = tmp_path / "ansible-remote"
-    local_tmp.mkdir(exist_ok=True)
-    remote_tmp.mkdir(exist_ok=True)
-    env = os.environ.copy()
+    env = _sync_env(tmp_path, path or Path(ansible_bin("ansible-playbook")).parent, "ansible")
     env["SEMAPHORE_TOKEN"] = ENV_TOKEN
-    env["ANSIBLE_LOCAL_TEMP"] = str(local_tmp)
-    env["ANSIBLE_REMOTE_TEMP"] = str(remote_tmp)
-    sync_tmp = tmp_path / "sync-tmp"
-    sync_tmp.mkdir(exist_ok=True)
-    env["TMPDIR"] = str(sync_tmp)
-    env["PATH"] = f"{path or Path(ansible_bin('ansible-playbook')).parent}:{env.get('PATH', '')}"
     env.update(env_overrides or {})
     return subprocess.run(
         [str(SCRIPT), "--url", url, "--inventory", str(source), "--name", "production",
@@ -170,7 +177,7 @@ def run_sync(tmp_path, url, inventory, *options, token=TOKEN, path=None, env_ove
     )
 
 
-def _deadline_driver(tmp_path, child_source, options):
+def _deadline_driver(tmp_path, child_source, options, timeout=0.25):
     bindir = tmp_path / "deadline-bin"
     bindir.mkdir()
     child = bindir / "ansible-playbook"
@@ -180,25 +187,19 @@ def _deadline_driver(tmp_path, child_source, options):
     source.write_text(VALID)
     driver = tmp_path / "deadline-driver.py"
     driver.write_text(
-        "import importlib.util, io, sys\n"
+        "import importlib.util, io, signal, sys\n"
+        # An inherited SIG_IGN would swallow a test's SIGINT before Python's KeyboardInterrupt handler exists.
+        "signal.signal(signal.SIGINT, signal.default_int_handler)\n"
         f"script = {str(SCRIPT)!r}\n"
         "spec = importlib.util.spec_from_file_location('sync_inventory_deadline', script)\n"
         "module = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(module)\n"
-        "module.CHILD_TIMEOUT_SECONDS = 0.25\n"
+        f"module.CHILD_TIMEOUT_SECONDS = {timeout!r}\n"
         f"sys.argv = [script, '--url', 'http://127.0.0.1:9', '--inventory', {str(source)!r}, *{options!r}]\n"
         f"sys.stdin = io.StringIO({(TOKEN + chr(10))!r})\n"
         "raise SystemExit(module.main())\n"
     )
-    env = os.environ.copy()
-    env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
-    env["ANSIBLE_LOCAL_TEMP"] = str(tmp_path / "deadline-local")
-    env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "deadline-remote")
-    Path(env["ANSIBLE_LOCAL_TEMP"]).mkdir()
-    Path(env["ANSIBLE_REMOTE_TEMP"]).mkdir()
-    env["TMPDIR"] = str(tmp_path / "sync-tmp")
-    Path(env["TMPDIR"]).mkdir(exist_ok=True)
-    return driver, env
+    return driver, _sync_env(tmp_path, bindir, "deadline")
 
 
 @contextmanager
@@ -293,6 +294,100 @@ def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
         assert child_pidfile.exists() and grandchild_pidfile.exists()
         time.sleep(1.2)
         assert not late_marker.exists()
+
+
+def _wait_for_pid(pidfile, limit=10):
+    """Return the pid a fake child recorded, once the file holds the complete number."""
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        try:
+            text = pidfile.read_text().strip()
+        except OSError:
+            text = ""
+        if text.isdigit():
+            return int(text)
+        time.sleep(0.05)
+    pytest.fail(f"{pidfile.name} never recorded a complete pid")
+
+
+def _gone_within(pid, limit=3):
+    """True once the pid no longer exists; a zombie still counts as present."""
+    deadline = time.monotonic() + limit
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [([], "no write was requested"), (["--apply"], "write outcome is uncertain")],
+)
+def test_interrupt_stops_child_and_reports_fixed_outcome(tmp_path, options, expected):
+    pidfile = tmp_path / "owned-child.pid"
+    driver, env = _deadline_driver(
+        tmp_path,
+        "#!/usr/bin/env python3\n"
+        "import os,sys,time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
+        f"print({(PRIVATE + ' ' + TOKEN)!r}, file=sys.stderr, flush=True)\n"
+        "time.sleep(60)\n",
+        options,
+        timeout=30,
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(driver)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=ROOT,
+        start_new_session=True,
+    )
+    try:
+        child_pid = _wait_for_pid(pidfile)
+        # The child is in its own session, so only the driver receives this signal, as a terminal Ctrl-C would.
+        os.kill(process.pid, signal.SIGINT)
+        stdout, stderr = process.communicate(timeout=10)
+        child_gone = _gone_within(child_pid)
+    finally:
+        # Kill the owned sessions even if the driver already exited while a descendant survived.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=3)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        for owned in tmp_path.glob("owned-*.pid"):
+            try:
+                os.killpg(int(owned.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError):
+                pass
+
+    assert child_gone, "the sync child survived the interrupt"
+    assert process.returncode == 130
+    assert stdout == ""
+    assert "interrupted" in stderr and expected in stderr
+    assert TOKEN not in stdout + stderr and PRIVATE not in stdout + stderr
+    assert list((tmp_path / "sync-tmp").iterdir()) == []
+
+
+def test_payload_writer_never_creates_a_file(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("sync_inventory_writer", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    # A FIFO already unlinked by cleanup must not come back as a regular file holding the token.
+    missing = tmp_path / "missing"
+    module.write_payload(str(missing), TOKEN.encode())
+    assert not missing.exists()
 
 
 def assert_clean(result):
