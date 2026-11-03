@@ -69,7 +69,8 @@ test_generated_dev_suffix_matches_base_name if {
 }
 
 # The launch gate adds `settings`, the exact survey values it will launch (change
-# skynet-launch-containment, design decision 6); no rule reads it yet, so it changes no verdict.
+# skynet-launch-containment, design decision 6). Only target_service is read (agent_actions.rego,
+# "Agent launches"); the other keys change no verdict.
 test_launch_gate_settings_field_keeps_an_allow if {
 	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": "x_svc"}})
 }
@@ -77,6 +78,99 @@ test_launch_gate_settings_field_keeps_an_allow if {
 test_launch_gate_settings_field_keeps_a_deny if {
 	d := agentcloud.decision with input as object.union(_run("o11y-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": "x_svc"}})
 	not d.allowed
+}
+
+# target_service becomes a Playbook hosts: pattern. Each bad value is its own test, so a failure
+# names the value that got through; the non-string values guard the type check the rule relies on.
+_target_reason := "target_service must name exactly one service group"
+
+_gate_input(target) := object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"target_service": target}})
+
+test_launch_gate_target_service_one_group_keeps_an_allow if {
+	agentcloud.allow with input as _gate_input("harden_svc")
+}
+
+test_launch_gate_target_service_all_is_denied if {
+	d := agentcloud.decision with input as _gate_input("all")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_star_is_denied if {
+	d := agentcloud.decision with input as _gate_input("*")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_ungrouped_is_denied if {
+	d := agentcloud.decision with input as _gate_input("ungrouped")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_colon_pattern_is_denied if {
+	d := agentcloud.decision with input as _gate_input("harden_svc:other_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_negation_is_denied if {
+	d := agentcloud.decision with input as _gate_input("!x_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_comma_list_is_denied if {
+	d := agentcloud.decision with input as _gate_input("harden_svc,other_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_glob_is_denied if {
+	d := agentcloud.decision with input as _gate_input("web*_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_uppercase_is_denied if {
+	d := agentcloud.decision with input as _gate_input("HARDEN_svc")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_empty_is_denied if {
+	d := agentcloud.decision with input as _gate_input("")
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_null_is_denied if {
+	d := agentcloud.decision with input as _gate_input(null)
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_number_is_denied if {
+	d := agentcloud.decision with input as _gate_input(1)
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_array_is_denied if {
+	d := agentcloud.decision with input as _gate_input(["harden_svc"])
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+test_launch_gate_target_service_false_is_denied if {
+	d := agentcloud.decision with input as _gate_input(false)
+	not d.allowed
+	contains(d.reason, _target_reason)
+}
+
+# A `settings` block without the key is outside the rule: the other survey values change nothing.
+test_launch_gate_settings_without_target_service_keeps_an_allow if {
+	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"smoke": "1"}})
 }
 
 test_service_deploy_list_covers_a_listed_service if {

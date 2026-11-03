@@ -321,6 +321,24 @@ deny_reasons contains "a shared orchestrator object not declared as code needs h
 # test_mutation_missing_declarations_fail_closed, OPA 1.0.0, 2026-10-02).
 _declared_as_code(kind) if object.get(input, "target", "") in data.agentcloud.catalog.semaphore.declared_objects[kind]
 
+# --- Agent launches: survey input bounds ------------------------------------------------
+
+# The launch gate sends its exact survey values as `settings` (launch_gate.py opa_input). A playbook
+# puts target_service into a `hosts:` pattern, where `all`, `*`, `a:b` and `!x` widen one run to many
+# hosts, so an agent launch may name exactly one <name>_svc inventory group. A caller that sends no
+# `settings`, or none with this key, is unaffected: `target` stays undefined and the rule is silent.
+deny_reasons contains "target_service must name exactly one service group" if {
+	target := input.settings.target_service
+	not _one_service_group(target)
+}
+
+# is_string first: regex.match on a non-string is an error, and a call that fails inside `not`
+# fails open, so the check is a helper that is negated as a whole (see _launch_branch_allowed).
+_one_service_group(target) if {
+	is_string(target)
+	regex.match("^[a-z][a-z0-9_]*_svc$", target)
+}
+
 # --- Allow ------------------------------------------------------------------------------
 
 # Allow when the agent's per-service action list (data.json) permits the action.

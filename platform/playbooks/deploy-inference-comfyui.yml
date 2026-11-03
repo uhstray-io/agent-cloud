@@ -118,10 +118,18 @@
     _service_url: "{{ service_url | default('http://localhost:8189') }}"
 
   tasks:
+    # smoke is a survey value that reaches the shell command below. Refuse anything but its two
+    # declared values, and quote what is passed so the command cannot read it as shell syntax.
+    - name: "Refuse a smoke value other than 0 or 1"
+      ansible.builtin.assert:
+        that:
+          - (smoke | default('0') | string) in ['0', '1']
+        fail_msg: "smoke must be 0 or 1"
+
     - name: "Run post-deploy.sh (smoke optional)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
-        SERVICE_URL={{ _service_url }} SMOKE={{ smoke | default('0') }} bash post-deploy.sh
+        SERVICE_URL={{ _service_url }} SMOKE={{ (smoke | default('0')) | string | quote }} bash post-deploy.sh
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
       register: _post

@@ -1267,9 +1267,12 @@ templates:
       - name: smoke
         title: "Smoke generation"
         description: "Set to 1 to run a smoke image generation in post-deploy (uses GPU; ~5s)"
-        type: string
+        type: enum
         required: false
         default_value: "0"
+        values:
+          - { name: "Off", value: "0" }
+          - { name: "Run smoke generation", value: "1" }
 
   - name: Deploy Hunyuan3D Sidecar
     playbook: platform/playbooks/deploy-inference-hunyuan3d.yml
@@ -1283,9 +1286,12 @@ templates:
       - name: smoke
         title: "Smoke generation"
         description: "Set to 1 to run a smoke 3D generation in post-deploy (uses GPU; ~30s)"
-        type: string
+        type: enum
         required: false
         default_value: "0"
+        values:
+          - { name: "Off", value: "0" }
+          - { name: "Run smoke generation", value: "1" }
 
   - name: Clean Deploy UhhCraft
     playbook: platform/playbooks/clean-deploy-uhhcraft.yml
