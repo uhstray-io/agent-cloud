@@ -452,13 +452,16 @@
             _rescue_status: "{{ _rescue_rec.status | default('unknown') }}"
             _rescue_locked: "{{ (_rescue_rec.lock | default('')) | length > 0 }}"
 
-        # Start only what this run found running, now stopped, unlocked, still named as declared,
-        # and still on the node it started from.
+        # Start only what this run found running, now stopped, unlocked, still named as declared, and
+        # on one of the two nodes this run owns: the one it started from (the move failed) or the
+        # declared one (the move landed and the start after it failed). Anywhere else is not ours to
+        # start. Leaving a moved guest stopped would make a re-run pass on "already on the declared
+        # node" with the service still down.
         - name: "Recovery: decide whether a start is safe"
           ansible.builtin.set_fact:
             _rescue_start_ok: >-
               {{ (_was_running | bool)
-                 and (_rescue_node == _from_node)
+                 and (_rescue_node in [_from_node, _dest_node])
                  and (_rescue_status == 'stopped')
                  and (not (_rescue_locked | bool))
                  and ((_rescue_rec.name | default('')) == _name) }}
@@ -475,9 +478,9 @@
           when: _rescue_start_ok | bool
 
         # Its own task, so a refused start is recorded and the report below still runs.
-        - name: "Recovery: start the guest again on its original node"
+        - name: "Recovery: start the guest again where it is"
           ansible.builtin.uri:
-            url: "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/qemu/{{ _vmid }}/status/start"
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _rescue_node }}/qemu/{{ _vmid }}/status/start"
             method: POST
             status_code: [200]
           register: _rescue_start
@@ -490,10 +493,10 @@
         - name: "Recovery: say what was done and what is left to check"
           ansible.builtin.set_fact:
             _start_note: >-
-              {% if (_rescue_start_ok | bool) and not (_rescue_start is failed) %}It was stopped on {{ _from_node }} and this run started it there again; the move did not happen.
-              {% elif _rescue_start is failed %}Starting it on {{ _from_node }} FAILED ({{ _rescue_start.msg | default('no detail') }}): start it by hand.
+              {% if (_rescue_start_ok | bool) and not (_rescue_start is failed) %}It was stopped on {{ _rescue_node }} and this run started it there again; {{ 'the move did not happen.' if _rescue_node == _from_node else 'the move itself completed.' }}
+              {% elif _rescue_start is failed %}Starting it on {{ _rescue_node }} FAILED ({{ _rescue_start.msg | default('no detail') }}): start it by hand.
               {% elif not (_was_running | bool) %}It was not running before this run, so nothing was started.
-              {% elif _rescue_node != _from_node %}It is on {{ _rescue_node }}, not its original {{ _from_node }}: nothing was started. Check it by hand.
+              {% elif _rescue_node not in [_from_node, _dest_node] %}It is on {{ _rescue_node }}, neither {{ _from_node }} nor {{ _dest_node }}: nothing was started. Check it by hand.
               {% elif _rescue_status != 'stopped' %}It is {{ _rescue_status }}, not stopped, so no start was issued.
               {% elif _rescue_locked | bool %}It is still locked, so no start was issued.
               {% else %}Nothing was started.{% endif %}

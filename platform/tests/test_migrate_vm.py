@@ -32,7 +32,7 @@ WRITE_NAMES = (
     "Shut the guest down cleanly (a move takes a stopped guest only)",
     "Migrate the VM offline to the declared node (target and targetstorage only)",
     "Start the guest again on its declared node (it was running before the move)",
-    "Recovery: start the guest again on its original node",
+    "Recovery: start the guest again where it is",
 )
 DENIED_HEADER = "PVEAPIToken=fixture-id=fixture-secret-value"
 PRE_DENIED = {
@@ -194,11 +194,11 @@ def test_the_write_sequence_is_a_block_whose_rescue_recovers_before_it_fails():
         "Fail with the reason, after recovering")
 
 
-def test_the_rescue_start_is_gated_on_the_safe_decision_and_uses_the_original_node():
+def test_the_rescue_start_is_gated_on_the_safe_decision_and_goes_to_the_node_the_guest_is_on():
     start = find_task(WRITE_NAMES[3])
     assert "_rescue_start_ok | bool" in start["when"]
     assert start["ansible.builtin.uri"]["url"] == (
-        "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/qemu/{{ _vmid }}/status/start")
+        "{{ _pve_host }}/api2/json/nodes/{{ _rescue_node }}/qemu/{{ _vmid }}/status/start")
 
 
 def test_the_post_move_start_uses_only_the_verified_declared_node():
@@ -402,7 +402,7 @@ def test_the_dry_run_reports_the_plan_and_changes_nothing(tmp_path):
     assert "WRITE REACHED" not in out
 
 
-# ── the rescue: starts only what this run found running, stopped on its original node ───────────
+# ── the rescue: starts only what this run found running, stopped on a node this run owns ─────────
 
 RESCUE_DECIDE = ("Recovery: work out where the VM is", "Recovery: read its node, state and lock",
                  "Recovery: decide whether a start is safe")
@@ -419,14 +419,16 @@ def _record(**fields):
     (_record(node="ariel", status="stopped", lock=""), True, True),
     (_record(node="ariel", status="stopped"), False, False),
     (_record(node="ariel", status="running"), True, False),
-    (_record(node="apollo", status="stopped"), True, False),
+    # The move landed and the start after it failed: started on the declared node, never left down.
+    (_record(node="apollo", status="stopped"), True, True),
+    (_record(node="titan", status="stopped"), True, False),
     (_record(node="ariel", status="stopped", lock="migrate"), True, False),
     (_record(node="ariel", status="stopped", name="other"), True, False),
     (_record(node="ariel"), True, False),
     ({}, True, False),
 ], ids=["started-back", "lock-empty", "not-running-before", "still-running", "on-destination",
-        "locked", "name-changed", "status-unknown", "unreadable"])
-def test_the_rescue_starts_a_guest_only_when_this_run_found_it_running_and_it_is_stopped_on_its_source(
+        "on-another-node", "locked", "name-changed", "status-unknown", "unreadable"])
+def test_the_rescue_starts_a_guest_only_when_this_run_found_it_running_and_it_is_stopped_on_its_nodes(
         tmp_path, live, was_running, expect_start):
     tasks = [find_task(n) for n in RESCUE_DECIDE]
     tasks.append({"ansible.builtin.debug": {"msg": "RESULT={{ _rescue_start_ok | bool }}"}})
@@ -438,20 +440,22 @@ def test_the_rescue_starts_a_guest_only_when_this_run_found_it_running_and_it_is
 
 @needs_ansible
 @pytest.mark.parametrize("start, start_ok, was_running, node, status, locked, expected", [
-    ({}, True, True, "ariel", "stopped", False, "this run started it there again"),
+    ({}, True, True, "ariel", "stopped", False, "this run started it there again; the move did not happen"),
+    ({}, True, True, "apollo", "stopped", False, "started it there again; the move itself completed"),
     ({"failed": True, "msg": "boom"}, True, True, "ariel", "stopped", False, "Starting it on ariel FAILED (boom)"),
     ({"skipped": True}, False, False, "ariel", "stopped", False, "It was not running before this run"),
-    ({"skipped": True}, False, True, "apollo", "stopped", False, "It is on apollo, not its original ariel"),
+    ({"skipped": True}, False, True, "titan", "stopped", False, "It is on titan, neither ariel nor apollo"),
     ({"skipped": True}, False, True, "ariel", "running", False, "It is running, not stopped, so no start"),
     ({"skipped": True}, False, True, "ariel", "stopped", True, "It is still locked, so no start"),
-], ids=["started", "start-failed", "not-running", "on-other-node", "still-running", "locked"])
+], ids=["started", "started-on-destination", "start-failed", "not-running", "on-other-node", "still-running",
+        "locked"])
 def test_the_failure_note_says_where_the_guest_is_and_whether_it_was_started(
         tmp_path, start, start_ok, was_running, node, status, locked, expected):
     tasks = [find_task("Recovery: say what was done and what is left to check"),
              {"ansible.builtin.debug": {"msg": "RESULT={{ _start_note }}"}}]
     rc, out = run_play(tmp_path, {"_rescue_start_ok": start_ok, "_rescue_start": start,
                                   "_was_running": was_running, "_rescue_node": node, "_from_node": "ariel",
-                                  "_rescue_status": status, "_rescue_locked": locked}, tasks)
+                                  "_dest_node": "apollo", "_rescue_status": status, "_rescue_locked": locked}, tasks)
     assert rc == 0, out
     assert expected in out, out
 
