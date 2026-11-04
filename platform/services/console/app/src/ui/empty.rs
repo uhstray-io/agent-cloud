@@ -25,7 +25,7 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "policy" | "tenantsettings" | "orgsettings" => Some(5),
+        "tenantsettings" | "orgsettings" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }
@@ -77,14 +77,6 @@ pub const TELEMETRY: PageMeta = PageMeta {
     icon: "activity",
     purpose: "Rollups by tenant, org, site and cluster. Per-asset charts stay in Grafana.",
     authority: "Prometheus, Loki, Grafana",
-};
-
-pub const POLICY: PageMeta = PageMeta {
-    id: "policy",
-    title: "Policy",
-    icon: "scale",
-    purpose: "Policy packages and decisions. A change is proposed as a plan, then a pull request.",
-    authority: "OPA (Rego in Git)",
 };
 
 pub const CICD: PageMeta = PageMeta {
@@ -144,11 +136,6 @@ pub fn Dashboard() -> Element {
 #[component]
 pub fn Telemetry() -> Element {
     rsx! { EmptyPage { page: TELEMETRY } }
-}
-
-#[component]
-pub fn Policy() -> Element {
-    rsx! { EmptyPage { page: POLICY } }
 }
 
 #[component]
@@ -215,7 +202,6 @@ mod tests {
             SERVICES,
             COMPUTE,
             TELEMETRY,
-            POLICY,
             CICD,
             TENANT_SETTINGS,
             ORG_SETTINGS,

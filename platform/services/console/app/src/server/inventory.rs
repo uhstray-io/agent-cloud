@@ -1093,6 +1093,7 @@ mod tests {
             openbao: None,
             authentik: None,
             role_map_file: None,
+            github: None,
         }
     }
 
@@ -1115,6 +1116,7 @@ mod tests {
             secrets: tokio::sync::RwLock::new(crate::server::secrets::SecretsCache::new(false)),
             access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
             role_map: crate::server::access::RoleMap::empty(),
+            policies: tokio::sync::RwLock::new(crate::server::policies::PoliciesCache::new(false)),
         })
     }
 
