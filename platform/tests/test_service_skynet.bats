@@ -583,6 +583,11 @@ PY
   [ "$status" -ne 0 ]
   run accepted skynet_launch_gate_url '"launch-gate.example.test:8443"'
   [ "$status" -ne 0 ]
+  # No host: urlsplit renders an empty name, deploy.sh would skip the mapping, and the verify would fail late.
+  run accepted skynet_launch_gate_url '"https://"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_launch_gate_url '"https:///v1"'
+  [ "$status" -ne 0 ]
   run accepted skynet_launch_gate_url '"https://launch-gate.example.test:8443"'
   [ "$status" -eq 0 ]
 }

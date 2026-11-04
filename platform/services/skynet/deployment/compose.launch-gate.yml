@@ -5,8 +5,8 @@
 #
 # skynet calls the launch gate over https. The container maps the gate's name to the address the
 # inventory declares (skynet_launch_gate_ip), the same mechanism compose.prod.yml uses for OPA. The
-# mapping lives in its own overlay because compose.prod.yml's variables are required (:?): loading them
-# for every production deploy would stop an undeclared skynet from starting.
+# mapping lives in its own overlay because its variables are required (:?): in compose.prod.yml, which
+# every production deploy loads, they would stop a skynet that declares no gate from starting.
 #
 # Both variables are required (:?), so compose refuses to start without them rather than starting with
 # no mapping.

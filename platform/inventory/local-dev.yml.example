@@ -511,6 +511,10 @@ all:
           # id of the agent-cloud project in local Semaphore
           skynet_semaphore_project: 1
           skynet_semaphore_catalog: local
+          # The launch gate (skynet-launch-containment task 3.6): its TLS name is a network alias on the
+          # local-dev network, so skynet reaches the container port 8443 by name. Deploy the gate first:
+          # skynet's deploy reads its caller token from the gate's OpenBao path.
+          skynet_launch_gate_url: https://launch-gate.local.agent-cloud.test:8443
 
     # postiz — social-media scheduling and publishing. Five containers: the app
     # (the only one publishing), its own Postgres + Redis, and the Temporal
