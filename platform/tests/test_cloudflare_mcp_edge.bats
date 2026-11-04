@@ -40,9 +40,9 @@ _rule() {
   assert_grep -qE '^[[:space:]]*action[[:space:]]+= "skip"$' "$BATS_TEST_TMPDIR/skip.tf"
   assert_grep -qE '^[[:space:]]*expression[[:space:]]+= local\.mcp_endpoint$' "$BATS_TEST_TMPDIR/skip.tf"
   assert_grep -qF 'phases   = ["http_request_sbfm"]' "$BATS_TEST_TMPDIR/skip.tf"
-  # Last in the ruleset, so no existing rule moves (a list reorder is a plan diff).
-  # Only rules added after it (the Plane MCP skip) may follow it.
-  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 2 | cut -d'"' -f2 | paste -sd' ' -)" = "mcp-api-bypass-challenge plane-mcp-bypass-challenge" ]
+  # Appended after every earlier rule, so none of them moved (a list reorder is a plan diff): the
+  # only rule after it is the Plane MCP skip, which was appended later still.
+  [ "$(awk -F'"' '/^      ref +=/ { if (prev == "mcp-api-bypass-challenge") print $2; prev = $2 }' "$CF/waf.tf")" = "plane-mcp-bypass-challenge" ]
 }
 
 @test "cloudflare mcp: the Plane MCP skip names its host and exact machine paths only, appended last" {
@@ -53,13 +53,15 @@ _rule() {
   local e
   e=$(grep -E '^[[:space:]]*expression[[:space:]]+=' "$BATS_TEST_TMPDIR/plane.tf")
   assert_contains "$e" 'http.host eq \"plane-mcp.uhstray.io\" and ('
-  # The machine paths, exact: both MCP endpoints, the token and registration endpoints, the
-  # authorization-server document; the protected-resource documents by prefix.
-  assert_contains "$e" 'http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\" \"/.well-known/oauth-authorization-server\"}'
+  # The machine paths, exact: both MCP endpoints and the token and registration endpoints; the
+  # protected-resource and authorization-server documents by prefix, so the SDK's path-inserted
+  # lookups reach the origin (PR 866 review).
+  assert_contains "$e" 'http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\"}'
   assert_contains "$e" 'starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\")'
+  assert_contains "$e" 'starts_with(http.request.uri.path, \"/.well-known/oauth-authorization-server\")'
   # The browser step stays challenged, and no broader prefix opens the host.
   refute_contains "$e" '/authorize'
-  [ "$(grep -o 'starts_with' <<<"$e" | wc -l | tr -d ' ')" -eq 1 ]
+  [ "$(grep -o 'starts_with' <<<"$e" | wc -l | tr -d ' ')" -eq 2 ]
   refute_contains "$e" 'contains('
   # Last in the ruleset, so no existing rule moves.
   [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 1 | cut -d'"' -f2)" = "plane-mcp-bypass-challenge" ]
