@@ -202,7 +202,7 @@ assert "Install Podman" in refuse["ansible.builtin.assert"]["fail_msg"], refuse
 for t in (look, refuse):
     assert t["when"] == "not _launch_gate_local_mode", t["when"]
 # Refused before anything is placed or started on the host.
-assert names.index("Refuse a production host without catatonit (the gate runs with init: true)") < names.index("Issue the server leaf (key here, signed on the CA host)")
+assert names.index("Refuse a production host without catatonit (the gate runs with init: true)") < names.index("Place the monorepo + ensure podman/compose")
 PY
 }
 
