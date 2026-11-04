@@ -1088,8 +1088,11 @@ mod tests {
                 ca_file: None,
             }),
             flows_file: None,
+            gateway_file: None,
             grafana_url: None,
             openbao: None,
+            authentik: None,
+            role_map_file: None,
         }
     }
 
@@ -1107,8 +1110,11 @@ mod tests {
             inventory: tokio::sync::RwLock::new(cache),
             proxmox_http: reqwest::Client::new(),
             flows,
+            gateway: crate::server::gateway::GatewaySet::unconfigured(),
             openbao: None,
             secrets: tokio::sync::RwLock::new(crate::server::secrets::SecretsCache::new(false)),
+            access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
+            role_map: crate::server::access::RoleMap::empty(),
         })
     }
 
@@ -1223,6 +1229,7 @@ mod tests {
             "/v1/tenants/acme/services/tududi",
             "/v1/network",
             "/v1/flows",
+            "/v1/gateway",
         ] {
             let (status, body) = get_json(&base, None, path).await;
             assert_eq!(status, 401, "{path}");

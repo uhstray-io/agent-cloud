@@ -25,7 +25,7 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "access" | "policy" | "tenantsettings" | "orgsettings" => Some(5),
+        "policy" | "tenantsettings" | "orgsettings" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }
@@ -77,14 +77,6 @@ pub const TELEMETRY: PageMeta = PageMeta {
     icon: "activity",
     purpose: "Rollups by tenant, org, site and cluster. Per-asset charts stay in Grafana.",
     authority: "Prometheus, Loki, Grafana",
-};
-
-pub const ACCESS: PageMeta = PageMeta {
-    id: "access",
-    title: "Access",
-    icon: "users",
-    purpose: "People, groups and scoped roles, with additions proposed as blueprints.",
-    authority: "Authentik",
 };
 
 pub const POLICY: PageMeta = PageMeta {
@@ -155,11 +147,6 @@ pub fn Telemetry() -> Element {
 }
 
 #[component]
-pub fn Access() -> Element {
-    rsx! { EmptyPage { page: ACCESS } }
-}
-
-#[component]
 pub fn Policy() -> Element {
     rsx! { EmptyPage { page: POLICY } }
 }
@@ -208,7 +195,6 @@ mod tests {
         assert_eq!(phase_for("services"), Some(3));
         assert_eq!(phase_for("compute"), Some(3));
         assert_eq!(phase_for("dashboard"), Some(4));
-        assert_eq!(phase_for("access"), Some(5));
         assert_eq!(phase_for("tenantsettings"), Some(5));
         assert_eq!(phase_for("cicd"), Some(6));
         assert_eq!(phase_for("telemetry"), Some(6));
@@ -229,7 +215,6 @@ mod tests {
             SERVICES,
             COMPUTE,
             TELEMETRY,
-            ACCESS,
             POLICY,
             CICD,
             TENANT_SETTINGS,

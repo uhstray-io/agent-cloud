@@ -35,12 +35,14 @@ def decide(tmp_path, *, agent=None, pending=(), running=True, want_agent=True):
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": {"_want_cores": "", "_want_memory": "", "_want_disk_gb": "", "_want_agent": want_agent,
+                 "_want_cpu": "",
                  "_cfg": {"json": {"data": cfg}},
                  "_state": {"json": {"data": {"status": "running" if running else "stopped",
                                               "maxmem": 4096 * 1048576, "cpus": 2}}},
                  "_pending": {"json": {"data": [dict(p) for p in pending]}},
                  # The playbook's own lazy definitions, not copies.
-                 **{k: play["vars"][k] for k in ("_agent_items", "_agent_awaits_restart")}},
+                 **{k: play["vars"][k] for k in ("_agent_items", "_agent_awaits_restart",
+                                                 "_cpu_items", "_cpu_awaits_restart")}},
         "tasks": [tasks[n] for n in TASKS] + [{"ansible.builtin.debug": {
             "msg": "RESULT={{ {'changes': _cfg_changes, 'restart': _needs_restart | bool} | to_json }}"}}],
     }]

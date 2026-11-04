@@ -17,6 +17,12 @@
 # tududi, honcho and n8n answered -1). Such a host sets health_probe_on_host: true with a loopback
 # health_url, and the probe runs ON the host, where the container's own healthcheck also looks.
 #
+# Internal CA at a pinned address: production OPA serves TLS only, under a certificate name
+# (opa.<site>.<zone>) that is not in production DNS. Such a host declares health_ca_path (the CA
+# bundle, on the probing host) and health_resolve_address (the address the URL's host:port is
+# pinned to). The probe then runs curl with --cacert and --resolve, as deploy-opa.yml does for OPA,
+# and the certificate is still verified against the URL's own name. Neither var set keeps the uri probe.
+#
 # Usage (Semaphore): -e target_service=tududi_svc
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
@@ -51,6 +57,13 @@
       {{ health_url | default('', true)
          or ((service_url | default('') ~ health_path | default(''))
              if (service_url | default('') | length > 0 and health_path | default('') | length > 0) else '') }}
+    # A CA bundle or a pinned address switches the probe to curl. The uri probe runs only without them.
+    _health_curl_wanted: "{{ (health_ca_path | default('', true) | length > 0) or (health_resolve_address | default('', true) | length > 0) }}"
+    _url_scheme: "{{ _url | urlsplit('scheme') }}"
+    _url_host: "{{ _url | urlsplit('hostname') | default('', true) }}"
+    _url_port: "{{ _url | urlsplit('port') | default(('443' if _url_scheme == 'https' else '80'), true) }}"
+    # A pinned address needs a URL that names a host over http or https; anything else is a declared error.
+    _health_pin_invalid: "{{ (health_resolve_address | default('', true) | length > 0) and not (_url_host | length > 0 and _url_scheme in ['http', 'https']) }}"
 
   tasks:
     - name: "Probe the declared health path"
@@ -63,15 +76,42 @@
       failed_when: false
       check_mode: false
       delegate_to: "{{ inventory_hostname if (health_probe_on_host | default(false) | bool) else 'localhost' }}"
-      when: _url | length > 0
+      when: _url | length > 0 and not (_health_curl_wanted | bool)
+
+    # curl, not uri, when a CA bundle or a pinned address is declared: uri cannot pin a name to an
+    # address. argv, never a shell string; the URL goes after --url, so one that starts with '-' is
+    # never read as an option. No --fail: a 503 must reach the verdict as 503.
+    - name: "Probe the declared health path through curl (CA bundle or pinned address)"
+      ansible.builtin.command:
+        argv: "{{ ['curl', '--silent', '--show-error', '--output', '/dev/null', '--write-out', '%{http_code}', '--max-time', '10']
+                  + (['--cacert', health_ca_path | string] if (health_ca_path | default('', true) | length > 0) else [])
+                  + (['--resolve', _url_host ~ ':' ~ _url_port ~ ':' ~ (health_resolve_address | string)] if (health_resolve_address | default('', true) | length > 0) else [])
+                  + ['--url', _url] }}"
+      register: _health_curl
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      delegate_to: "{{ inventory_hostname if (health_probe_on_host | default(false) | bool) else 'localhost' }}"
+      when: _url | length > 0 and (_health_curl_wanted | bool) and not (_health_pin_invalid | bool)
+
+    # One status and one detail for both probes, so the verdict and the evidence read the same facts.
+    # curl prints 000 when no response came, so its status counts only when it exited 0. uri reports
+    # -1 when it got no response; that is no response here too.
+    - name: "Normalise the probe result"
+      ansible.builtin.set_fact:
+        _health_status: "{{ (_health_curl.stdout | default('') | int(none)) if (_health_curl.rc | default(-1) == 0) else (none if (_health.status | default(-1) == -1) else _health.status) }}"
+        _health_detail: "{{ (_health_curl.stderr_lines | default([]) | first | default('', true)) if (_health_curl.rc | default(0) != 0) else '' }}"
 
     - name: "Decide"
       ansible.builtin.set_fact:
         _health_errors: >-
           {{ (['no declared health_url or service_url + health_path for ' ~ inventory_hostname]
-              if _health is skipped else [])
-             + ([_url ~ ' answered ' ~ (_health.status | default('no response')) ~ ', expected one of '
-                 ~ (_codes | join(', '))] if (_health is not skipped and (_health.status | default(none)) not in _codes) else []) }}
+              if (_url | length == 0) else [])
+             + (['health_resolve_address needs an http or https health URL with a host, not ' ~ _url]
+                if (_health_pin_invalid | bool and _url | length > 0) else [])
+             + ([_url ~ ' answered ' ~ (_health_status | default('no response', true)) ~ ', expected one of '
+                 ~ (_codes | join(', ')) ~ ('; ' ~ _health_detail if _health_detail | length > 0 else '')]
+                if (_url | length > 0 and not (_health_pin_invalid | bool) and _health_status not in _codes) else []) }}
 
     # emit-step-result records ONE result per play (run_once), so the recorded verdict covers the
     # whole target group: every host's errors, and a host that failed before its verdict counts as
@@ -91,7 +131,7 @@
         step_result_step: service-validate
         step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
         step_result_evidence:
-          health_status: "{{ _health.status | default(none) }}"
+          health_status: "{{ _health_status | default(none) }}"
         step_result_error: "{{ _group_errors | join('; ') }}"
 
     - name: "Fail when the service is not healthy on its declared path"

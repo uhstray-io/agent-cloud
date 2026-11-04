@@ -8,6 +8,7 @@ criterion is 200 and must not inherit that (PR 203 Codex review). Requires ansib
 import http.server
 import os
 import shutil
+import ssl
 import subprocess
 import threading
 from pathlib import Path
@@ -19,6 +20,31 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/verify-service-health.yml"
 
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+
+# The internal-CA shape the probe must verify: a CA, and a serverAuth leaf it signs for the name
+# health.test and for 127.0.0.1. Generated per test in tmp_path; no key material is committed.
+CA_CNF = """[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = Test internal CA
+[ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+"""
+LEAF_CNF = """[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = health.test
+[leaf]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:health.test,IP:127.0.0.1
+"""
+needs_tls = pytest.mark.skipif(shutil.which("openssl") is None or shutil.which("curl") is None,
+                               reason="needs openssl and curl")
 
 
 def _serve(status: int):
@@ -139,3 +165,129 @@ def test_one_failing_host_fails_the_recorded_result(tmp_path):
     assert done.returncode != 0
     recorded = done.stdout.split("CUSTOM STATS", 1)[-1]
     assert '"status": "fail"' in recorded and "answered 503" in recorded, recorded[-1500:]
+
+
+def _tls_material(directory: Path):
+    """A throwaway internal CA and the serverAuth leaf it signs, written into directory."""
+    openssl = shutil.which("openssl")
+    (directory / "ca.cnf").write_text(CA_CNF)
+    (directory / "leaf.cnf").write_text(LEAF_CNF)
+
+    def run(*args):
+        subprocess.run([openssl, *args], cwd=directory, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+
+    run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2",
+        "-config", "ca.cnf", "-extensions", "ca")
+    run("req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", "leaf.key", "-out", "leaf.csr",
+        "-config", "leaf.cnf")
+    run("x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "2",
+        "-out", "leaf.pem", "-extfile", "leaf.cnf", "-extensions", "leaf")
+
+
+def _serve_tls(status: int, directory: Path):
+    class Handler(DrainingHandler):
+        def do_GET(self):  # noqa: N802 - the stdlib's name
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(directory / "leaf.pem", directory / "leaf.key")
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _run_tls(tmp_path, status: int, host_vars: str = "", *, trust: bool = True, pin: bool = True,
+             url_host: str = "health.test"):
+    """Run the playbook against a local HTTPS server. Returns (completed process, health URL)."""
+    if not (tmp_path / "leaf.pem").exists():
+        _tls_material(tmp_path)
+    server = _serve_tls(status, tmp_path)
+    try:
+        url = f"https://{url_host}:{server.server_port}/health"
+        declared = [f"health_url={url}"]
+        if trust:
+            declared.append(f"health_ca_path={tmp_path / 'ca.pem'}")
+        if pin:
+            declared.append("health_resolve_address=127.0.0.1")
+        inventory = tmp_path / "inventory.ini"
+        inventory.write_text(
+            f"[demo_svc]\ndemo ansible_connection=local {host_vars}\n\n[demo_svc:vars]\n"
+            f"service_name=demo\n" + "\n".join(declared) + "\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+        env["ANSIBLE_NOCOLOR"] = "1"
+        done = subprocess.run(
+            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
+            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+        )
+        return done, url
+    finally:
+        server.shutdown()
+
+
+@needs_tls
+def test_https_under_the_internal_ca_at_a_pinned_address_passes(tmp_path):
+    done, _ = _run_tls(tmp_path, 200)
+    assert done.returncode == 0, done.stdout[-2000:]
+    # The evidence carries the integer status from the normalised probe, not a string.
+    assert '"health_status": 200' in done.stdout.split("CUSTOM STATS", 1)[-1], done.stdout[-1500:]
+
+
+@needs_tls
+def test_https_without_the_internal_ca_fails_and_names_the_url(tmp_path):
+    done, url = _run_tls(tmp_path, 200, trust=False)
+    assert done.returncode != 0
+    assert f"{url} answered no response" in done.stdout, done.stdout[-2000:]
+    # curl's first stderr line rides along: exit 60 is the certificate-verification failure.
+    assert "curl: (60)" in done.stdout, done.stdout[-2000:]
+
+
+@needs_tls
+def test_503_over_the_internal_ca_fails_as_503(tmp_path):
+    done, url = _run_tls(tmp_path, 503)
+    assert done.returncode != 0
+    assert f"{url} answered 503, expected one of 200" in done.stdout, done.stdout[-2000:]
+
+
+@needs_tls
+def test_a_ca_alone_verifies_the_urls_own_name(tmp_path):
+    # No pinned address: curl --cacert without --resolve, the URL's own IP is the certificate's SAN.
+    done, _ = _run_tls(tmp_path, 200, pin=False, url_host="127.0.0.1")
+    assert done.returncode == 0, done.stdout[-2000:]
+
+
+@needs_tls
+def test_curl_probe_on_host_runs_on_the_target(tmp_path):
+    # Same proof as the uri test: delegated to the executor, a probe passes with a broken target
+    # python; run on the target, it cannot.
+    broken = "ansible_python_interpreter=/nonexistent/python"
+    assert _run_tls(tmp_path, 200, host_vars=broken)[0].returncode == 0
+    on_host, _ = _run_tls(tmp_path, 200, host_vars=broken + " health_probe_on_host=true")
+    assert on_host.returncode != 0
+    assert "answered no response" in on_host.stdout, on_host.stdout[-2000:]
+    assert _run_tls(tmp_path, 200, host_vars="health_probe_on_host=true")[0].returncode == 0
+
+
+def test_a_pinned_address_needs_an_http_url_with_a_host(tmp_path):
+    # Declared-contract error: recorded as a failure with the reason, never silently skipped.
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text(
+        "[demo_svc]\ndemo ansible_connection=local\n\n[demo_svc:vars]\nservice_name=demo\n"
+        "health_url=/health\nhealth_resolve_address=127.0.0.1\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    done = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
+        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+    )
+    assert done.returncode != 0
+    assert "health_resolve_address needs an http or https health URL with a host, not /health" in done.stdout
+    # The contract error is the whole verdict: no probe ran, so there is no "answered" line.
+    assert "answered" not in done.stdout

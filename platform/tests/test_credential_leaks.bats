@@ -490,8 +490,12 @@ PY
   # The write path is now tasks/bao-merge-keys.yml; the property this test owns
   # is that the RESOLVED value (_bao_value — env-first) is what reaches it, and
   # that change detection happens against that same dict inside the shared task.
-  grep -qE '_bm_data: "\{\{ \{bao_key: _bao_value\} \}\}"' "$f"
+  grep -qE '_bm_data: "\{\{ \{bao_key: _bao_value_stored\} \}\}"' "$f"
   refute_grep -qE '_bm_data: "\{\{ \{bao_key: bao_value\} \}\}"' "$f"
+  # The merged text is the decoded form of the env-first value: _bao_value_stored is
+  # derived from _bao_value, never from the bare extra var.
+  grep -qE '^\s+_bao_value_stored: "\{\{ _bao_value \| b64decode ' "$f"
+  refute_grep -qE '_bao_value_stored:.*[^_]bao_value' "$f"
   # (_bm_set IS the caller's _bm_data; the shared task also accepts a _bm_remove list.)
   local bm="$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
   grep -qF '_bm_set: "{{ _bm_data | default({}) }}"' "$bm"
