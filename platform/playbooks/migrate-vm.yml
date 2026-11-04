@@ -129,8 +129,9 @@
 
     # Seconds the guest gets to shut down cleanly before the run gives up on the move.
     _shutdown_timeout: "{{ migrate_shutdown_timeout | default(180) | int }}"
-    # Whether a stopped guest ends running on vm_node (default true; see OPTIONS above).
-    _start_after: "{{ (start_after | default('true')) | bool }}"
+    # start_after as text, trimmed and case-folded. It is refused unless it is true or false, and only
+    # then read as a boolean (a task below), so a value such as "yes" is never silently taken as false.
+    _start_after_text: "{{ (start_after | default('true')) | string | trim | lower }}"
     # The migrate task is polled every 10 s for migrate_wait_minutes (default 60).
     _migrate_wait_retries: "{{ (migrate_wait_minutes | default(60) | int) * 6 }}"
     # Started guests are polled every 5 s for start_wait_retries (default 24).
@@ -212,6 +213,18 @@
           vm_cpu '{{ _cpu }}' is not a bare Proxmox CPU model name (letters, digits, '.', '_',
           '-'; for example x86-64-v3). Nothing was moved.
 
+    # start_after decides whether a guest is started, so anything but true or false is refused by name.
+    - name: "Refuse a start_after that is not true or false"
+      ansible.builtin.assert:
+        that: _start_after_text in ['true', 'false']
+        fail_msg: >-
+          start_after must be true or false (case and surrounding spaces ignored); it was
+          '{{ _start_after_text }}'. Nothing was moved.
+
+    - name: "Read start_after as a boolean, now that it has been validated"
+      ansible.builtin.set_fact:
+        _start_after: "{{ _start_after_text == 'true' }}"
+
     - name: "Guard declared VMID before any migration side effect"
       ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
       vars:
@@ -246,6 +259,16 @@
           '{{ _live.node | default('?') }}', not '{{ _name }}' (qemu). Refusing: this is somebody
           else's VM.
 
+    # Before the already-on-node path and before any start: an HA-managed guest is neither moved (its
+    # migrate would be an ha-manager migrate, which ignores targetstorage) nor started here (HA owns it).
+    - name: "Refuse a VM Proxmox manages with HA, before any move or start"
+      ansible.builtin.assert:
+        that:
+          - (_live.hastate | default('')) | length == 0
+        fail_msg: >-
+          vmid {{ _vmid }} ('{{ _name }}') is HA-managed (hastate '{{ _live.hastate | default('none') }}').
+          Nothing was moved or started. Remove it from HA first, then re-run.
+
     # ── Already on the declared node: no move. Under start_after a stopped guest is started there. ──
     - name: "Record the source node, whether the guest is running, and whether it is already on the declared node"
       ansible.builtin.set_fact:
@@ -275,10 +298,10 @@
     - name: "Already on the declared node: report what is left to do"
       ansible.builtin.debug:
         msg: >-
-          '{{ _name }}' (vmid {{ _vmid }}) already runs on {{ _dest_node }}; its state there is {{ _dest_state }}.
-          {% if _converge | bool and ansible_check_mode %}Check mode: it would be started (start_after is true).
-          {% elif _converge | bool %}It is started, so it ends running there (start_after is true).
-          {% elif _dest_state == 'stopped' %}Nothing to move; start_after is false, so the stopped guest stays stopped.
+          '{{ _name }}' (vmid {{ _vmid }}) is on {{ _dest_node }}; its state there is {{ _dest_state }}.
+          {% if _converge | bool and ansible_check_mode %}Check mode: it would be started there (start_after is true).
+          {% elif _converge | bool %}It is stopped on {{ _dest_node }}; it will be started there (start_after is true).
+          {% elif _dest_state == 'stopped' %}Nothing to move; start_after is false, so it stays stopped on {{ _dest_node }}.
           {% else %}Nothing to move (idempotent no-op).{% endif %}
       when: _already_there | bool
 
@@ -329,6 +352,13 @@
         - not ansible_check_mode
         - _converge | bool
 
+    - name: "Confirm the started guest is running on the declared node"
+      ansible.builtin.debug:
+        msg: "'{{ _name }}' (vmid {{ _vmid }}) is running on {{ _dest_node }}: it was started and the wait confirmed it."
+      when:
+        - not ansible_check_mode
+        - _converge | bool
+
     - name: "End play when the VM is already on the declared node"
       ansible.builtin.meta: end_play
       when: _already_there | bool
@@ -353,14 +383,13 @@
           {{ (((_pre.json.data.not_allowed_nodes | default({}))[_dest_node] | default({})).unavailable_storages | default([])) }}
 
     # The precondition is HA-aware: it reports dependent-ha-resources only for an HA-managed VM (Qemu.pm).
-    # An HA-managed VM's migrate is `ha-manager migrate`, which never receives targetstorage.
-    - name: "Refuse when the VM is HA-managed (its migrate is an HA migrate that ignores targetstorage)"
+    # The cluster listing's hastate is checked earlier, before any start; this is the precondition's own signal.
+    - name: "Refuse when the migrate precondition reports the VM as HA-managed"
       ansible.builtin.assert:
         that:
-          - (_live.hastate | default('')) | length == 0
           - _pre.json.data['dependent-ha-resources'] is not defined
         fail_msg: >-
-          vmid {{ _vmid }} ('{{ _name }}') is HA-managed (hastate '{{ _live.hastate | default('none') }}').
+          vmid {{ _vmid }} ('{{ _name }}') is HA-managed (the migrate precondition reports HA resources).
           Its move would be an ha-manager migrate, which ignores targetstorage, so nothing was moved.
           Remove it from HA first, then re-run.
 
@@ -394,7 +423,9 @@
           Refusing before any shutdown: '{{ _name }}' (vmid {{ _vmid }}) has
           {{ ('local device(s) ' ~ (_blocking_resources | join(', ')) ~ ' ') if (_blocking_resources | length > 0) else '' }}{{
              ('CD drive(s) other than cloud-init ' ~ (_blocking_cdroms | join(', '))) if (_blocking_cdroms | length > 0) else '' }}
-          that the move would carry. Remove or detach them, then re-run. Nothing was shut down or moved.
+          that the move would carry. Remove or detach them, then re-run. A running guest is checked for
+          live-migration resources; shut it down cleanly and re-run if those are offline-movable.
+          Nothing was shut down or moved.
 
     # The CPU model the guest is CONFIGURED with on its source node: the move keeps it, so the
     # destination must be able to run it as well as the declared model (both are checked below).
@@ -557,6 +588,13 @@
               start or report a VM this run did not move.
           when: not ansible_check_mode
 
+        - name: "Say the moved guest will be started on its declared node"
+          ansible.builtin.debug:
+            msg: "'{{ _name }}' (vmid {{ _vmid }}) is stopped on {{ _dest_node }} after the move; it will be started there (it was running, or start_after is true)."
+          when:
+            - not ansible_check_mode
+            - _start_now | bool
+
         - name: "Refresh reserved-target guard before the start after the move"
           ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
           vars:
@@ -629,9 +667,20 @@
           ansible.builtin.set_fact:
             _rescue_status: "{{ ((_rescue_cur.json | default({})).data | default({})).status | default('unknown') }}"
 
+        # A shutdown was delivered only when the request succeeded and PVE returned its task (a UPID). A
+        # refused request answers with an error body whose data is null (e.g. "VM is paused"), which is not.
         - name: "Recovery: record whether this run delivered a shutdown request"
           ansible.builtin.set_fact:
-            _shutdown_sent: "{{ (_shutdown is defined) and ((_shutdown.json | default({})).data is defined) }}"
+            _shutdown_sent: >-
+              {{ (_shutdown is defined) and (_shutdown is succeeded)
+                 and ((((_shutdown.json | default({})).data | default('')) | string) is match('^UPID:')) }}
+
+        # The same test for the start after the move: an accepted start returns its UPID.
+        - name: "Recovery: record whether this run's start after the move was accepted"
+          ansible.builtin.set_fact:
+            _start_sent: >-
+              {{ (_start is defined) and (_start is succeeded)
+                 and ((((_start.json | default({})).data | default('')) | string) is match('^UPID:')) }}
 
         # Start only what this run found running, now stopped, unlocked, still named as declared, and on
         # one of the two nodes this run owns: the one it started from (the move failed) or the declared
@@ -697,9 +746,12 @@
               {% elif (_rescue_start_ok | bool) and (_rescue_wait_state == 'running') %}It was stopped on {{ _rescue_node }}; this run started it there again and it is running. {{
                  'The move did not happen.' if _rescue_node == _from_node else 'The move itself completed; only the start after it had failed.' }}
               {% elif _rescue_start_ok | bool %}The start was sent to {{ _rescue_node }}, but the guest reports '{{ _rescue_wait_state }}' and is not running yet: check it by hand.
+              {% elif (_start_sent | bool) and (_rescue_status == 'running') %}The start after the move was sent to {{ _rescue_node }} and the guest reports running.
+              {% elif _start_sent | bool %}The start after the move was sent to {{ _rescue_node }}, but the guest is not confirmed running (it reports '{{ _rescue_status }}'): check it by hand.
               {% elif not (_was_running | bool) %}It was not running before this run, so nothing was started.
               {% elif _rescue_node not in [_from_node, _dest_node] %}It is on {{ _rescue_node }}, neither {{ _from_node }} nor {{ _dest_node }}: nothing was started. Check it by hand.
-              {% elif (_rescue_status == 'running') and (_shutdown_sent | bool) %}A shutdown request was delivered and may still be acted on by the guest; check its state on {{ _rescue_node }}.
+              {% elif (_rescue_status == 'running') and (_shutdown_sent | bool) and (_rescue_node == _from_node) %}A shutdown request was delivered and may still be acted on by the guest;
+              check its state on {{ _rescue_node }}.
               {% elif _rescue_status != 'stopped' %}It is {{ _rescue_status }}, not stopped, so no start was issued.
               {% elif _rescue_locked | bool %}It is still locked, so no start was issued.
               {% else %}Nothing was started.{% endif %}

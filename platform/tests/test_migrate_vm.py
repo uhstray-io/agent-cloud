@@ -180,11 +180,40 @@ def test_the_template_is_a_dev_variant_with_its_own_environment_and_no_default_c
     assert survey["start_after"]["default_value"] == "true"
 
 
-def test_the_play_defines_the_start_after_and_the_bounded_waits():
+def test_the_play_defines_the_start_after_text_and_the_bounded_waits():
     play_vars = yaml.safe_load(PLAYBOOK.read_text())[3]["vars"]
-    assert play_vars["_start_after"] == "{{ (start_after | default('true')) | bool }}"
+    assert play_vars["_start_after_text"] == "{{ (start_after | default('true')) | string | trim | lower }}"
+    assert "_start_after" not in play_vars, "start_after is read as a boolean only after it is validated"
     assert play_vars["_migrate_wait_retries"] == "{{ (migrate_wait_minutes | default(60) | int) * 6 }}"
     assert play_vars["_start_wait_retries"] == "{{ start_wait_retries | default(24) | int }}"
+
+
+START_AFTER_TEXT = yaml.safe_load(PLAYBOOK.read_text())[3]["vars"]["_start_after_text"]
+START_AFTER_TASKS = (
+    "Refuse a start_after that is not true or false",
+    "Read start_after as a boolean, now that it has been validated",
+)
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "value, expect",
+    [("true", True), ("false", False), ("  TRUE ", True), ("False", False), ("\tfalse\n", False)],
+)
+def test_a_start_after_of_true_or_false_is_read_as_that_boolean(tmp_path, value, expect):
+    tasks = [find_task(n) for n in START_AFTER_TASKS] + [_echo("_start_after | bool")]
+    rc, out = run_play(tmp_path, {"start_after": value, "_start_after_text": START_AFTER_TEXT}, tasks)
+    assert rc == 0, out
+    assert _result(out) == str(expect), out
+
+
+@needs_ansible
+@pytest.mark.parametrize("value", ["yes", "no", "1", "", "on", "truee", "t"])
+def test_any_other_start_after_is_refused_by_name_before_it_is_read(tmp_path, value):
+    tasks = [find_task(n) for n in START_AFTER_TASKS] + [_sentinel()]
+    rc, out = run_play(tmp_path, {"start_after": value, "_start_after_text": START_AFTER_TEXT}, tasks)
+    assert rc != 0 and "start_after must be true or false" in out, out
+    assert "WRITE REACHED" not in out
 
 
 def test_every_write_has_a_fresh_guard_after_the_last_proxmox_touch_before_it():
@@ -211,11 +240,12 @@ def test_the_checks_all_run_before_the_first_write_in_this_order():
     names = [t.get("name") for t in _flat()]
     order = [
         "Refuse to migrate a VM that is not the declared guest",
+        "Refuse a VM Proxmox manages with HA, before any move or start",
         "Record the source node, whether the guest is running, and whether it is already on the declared node",
         "Work out whether a start is due on the declared node, and whether one is due after the move",
         "End play when the VM is already on the declared node",
         "Read Proxmox's migration precondition for the declared destination",
-        "Refuse when the VM is HA-managed (its migrate is an HA migrate that ignores targetstorage)",
+        "Refuse when the migrate precondition reports the VM as HA-managed",
         "Refuse a destination Proxmox does not allow",
         "Refuse a move that carries a local device or a CD drive other than cloud-init",
         "Read the guest's configuration on its source node (its CPU model)",
@@ -388,13 +418,13 @@ def test_an_absent_vmid_is_refused_and_is_not_read_as_a_done_move(tmp_path):
     "node, status, start_after, converge, text",
     [
         ("apollo", "running", True, False, "Nothing to move (idempotent no-op)."),
-        ("apollo", "stopped", True, True, "It is started, so it ends running there (start_after is true)."),
+        ("apollo", "stopped", True, True, "It is stopped on apollo; it will be started there (start_after is true)."),
         (
             "apollo",
             "stopped",
             False,
             False,
-            "Nothing to move; start_after is false, so the stopped guest stays stopped.",
+            "Nothing to move; start_after is false, so it stays stopped on apollo.",
         ),
         ("apollo", "running", False, False, "Nothing to move (idempotent no-op)."),
     ],
@@ -515,27 +545,74 @@ def test_a_destination_missing_from_both_lists_is_refused_as_not_allowed(tmp_pat
 
 @needs_ansible
 @pytest.mark.parametrize(
-    "live, pre, ok",
+    "live, ok",
     [
-        ({"name": "plane", "hastate": "started"}, PRE_CLEAN, False),
-        (
-            {"name": "plane", "hastate": ""},
-            {"json": {"data": {"allowed_nodes": ["apollo"], "dependent-ha-resources": []}}},
-            False,
-        ),
-        ({"name": "plane", "hastate": ""}, PRE_CLEAN, True),
+        ({"name": "plane", "hastate": "started"}, False),
+        ({"name": "plane", "hastate": ""}, True),
     ],
-    ids=["hastate-set", "precondition-reports-ha", "not-ha"],
+    ids=["hastate-set", "not-ha"],
 )
-def test_an_ha_managed_vm_is_refused_before_any_shutdown(tmp_path, live, pre, ok):
+def test_a_cluster_listing_that_shows_ha_is_refused_before_any_move_or_start(tmp_path, live, ok):
     rc, out = run_play(
         tmp_path,
-        {"_live": live, "_pre": pre},
-        [find_task("Refuse when the VM is HA-managed (its migrate is an HA migrate that ignores targetstorage)")],
+        {"_live": live},
+        [find_task("Refuse a VM Proxmox manages with HA, before any move or start")],
     )
     assert (rc == 0) is ok, out
     if not ok:
-        assert "Remove it from HA first" in out, out
+        assert "Remove it from HA first" in out and "Nothing was moved or started" in out, out
+
+
+@needs_ansible
+def test_an_ha_vm_already_on_the_declared_node_is_refused_before_the_start_path_runs(tmp_path):
+    # Order, as run: the HA refusal comes before the already-there report and its start.
+    tasks = [
+        find_task("Refuse a VM Proxmox manages with HA, before any move or start"),
+        find_task(
+            "Record the source node, whether the guest is running, and whether it is already on the declared node"
+        ),
+        find_task("Record the state the guest has on the declared node"),
+        find_task("Work out whether a start is due on the declared node, and whether one is due after the move"),
+        find_task("Already on the declared node: report what is left to do"),
+        _sentinel(),
+    ]
+    rc, out = run_play(
+        tmp_path,
+        {
+            "_live": {"node": "apollo", "name": "plane", "type": "qemu", "status": "stopped", "hastate": "started"},
+            "_at_dest": {"json": {"data": {"status": "stopped", "lock": ""}}},
+        },
+        tasks,
+    )
+    assert rc != 0 and "Remove it from HA first" in out, out
+    assert "it will be started there" not in out and "WRITE REACHED" not in out, out
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "pre",
+    [
+        {"json": {"data": {"allowed_nodes": ["apollo"], "dependent-ha-resources": []}}},
+    ],
+    ids=["precondition-reports-ha"],
+)
+def test_a_precondition_that_reports_ha_resources_is_refused_before_any_shutdown(tmp_path, pre):
+    rc, out = run_play(
+        tmp_path,
+        {"_pre": pre},
+        [find_task("Refuse when the migrate precondition reports the VM as HA-managed")],
+    )
+    assert rc != 0 and "Remove it from HA first" in out, out
+
+
+@needs_ansible
+def test_a_precondition_without_ha_resources_passes_the_ha_check(tmp_path):
+    rc, out = run_play(
+        tmp_path,
+        {"_pre": PRE_CLEAN},
+        [find_task("Refuse when the migrate precondition reports the VM as HA-managed"), _sentinel()],
+    )
+    assert rc == 0 and "WRITE REACHED" in out, out
 
 
 @needs_ansible
@@ -570,6 +647,7 @@ def test_a_local_device_or_a_non_cloud_init_cd_drive_is_refused_before_shutdown(
         assert "WRITE REACHED" in out, out
     else:
         assert named in out and "Nothing was shut down or moved" in out, out
+        assert "shut it down cleanly and re-run if those are offline-movable" in out, out
 
 
 @needs_ansible
@@ -886,6 +964,7 @@ def test_the_failure_note_says_where_the_guest_is_and_what_was_done(
             "_rescue_status": status,
             "_rescue_locked": locked,
             "_shutdown_sent": shutdown,
+            "_start_sent": False,
             "_from_node": "ariel",
             "_dest_node": "apollo",
         },
@@ -944,14 +1023,33 @@ def test_a_start_after_the_move_is_due_when_it_was_running_or_start_after_is_set
     assert _result(out) == str(start_now), out
 
 
+PVE_PAUSED = {"failed": True, "status": 500, "json": {"data": None, "message": "VM is paused - cannot shutdown"}}
+PVE_FORBIDDEN = {"failed": True, "status": 403, "json": {"data": None, "message": "Permission check failed"}}
+
+
 @needs_ansible
 @pytest.mark.parametrize(
     "shutdown, expect",
     [
-        ({"json": {"data": "UPID:ariel:0001:shutdown"}}, True),
+        ({"changed": True, "json": {"data": "UPID:ariel:0001:shutdown"}}, True),
         ({"skipped": True}, False),
+        (PVE_PAUSED, False),
+        (PVE_FORBIDDEN, False),
         ({"failed": True, "msg": "refused"}, False),
+        # Each guard on its own: a succeeded answer with no task id, and a failed answer that names one.
+        ({"changed": True, "json": {"data": None}}, False),
+        ({"failed": True, "json": {"data": "UPID:ariel:0003:shutdown"}}, False),
         (None, False),
+    ],
+    ids=[
+        "accepted-upid",
+        "skipped",
+        "pve-500-paused",
+        "pve-403",
+        "failed-no-body",
+        "succeeded-without-upid",
+        "failed-with-upid",
+        "not-run",
     ],
 )
 def test_a_shutdown_counts_as_sent_only_when_the_request_was_accepted(tmp_path, shutdown, expect):
@@ -963,6 +1061,80 @@ def test_a_shutdown_counts_as_sent_only_when_the_request_was_accepted(tmp_path, 
     rc, out = run_play(tmp_path, play_vars, tasks)
     assert rc == 0, out
     assert _result(out) == str(expect), out
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "start, status, locked, text",
+    [
+        (
+            {"json": {"data": "UPID:ariel:0002:start"}, "changed": True},
+            "running",
+            False,
+            "The start after the move was sent to ariel and the guest reports running.",
+        ),
+        (
+            {"json": {"data": "UPID:ariel:0002:start"}, "changed": True},
+            "stopped",
+            True,
+            "The start after the move was sent to ariel, but the guest is not confirmed running (it reports 'stopped')",
+        ),
+        (PVE_PAUSED, "stopped", False, "Nothing was started."),
+    ],
+    ids=["start-sent-running", "start-sent-not-confirmed", "start-refused"],
+)
+def test_a_start_the_move_sent_is_reported_as_sent_not_as_nothing_started(tmp_path, start, status, locked, text):
+    tasks = [
+        find_task("Recovery: record whether this run's start after the move was accepted"),
+        find_task("Recovery: say what was done and what is left to check"),
+        _echo("_start_note"),
+    ]
+    rc, out = run_play(
+        tmp_path,
+        {
+            "_start": start,
+            "_rescue_start_ok": False,
+            "_rescue_start": {"skipped": True},
+            "_rescue_wait_state": "not read",
+            "_was_running": True,
+            "_rescue_node": "ariel",
+            "_rescue_status": status,
+            "_rescue_locked": locked,
+            "_shutdown_sent": False,
+            "_start_sent": False,
+            "_from_node": "ariel",
+            "_dest_node": "apollo",
+        },
+        tasks,
+    )
+    assert rc == 0, out
+    assert text in out, out
+
+
+@needs_ansible
+def test_a_shutdown_note_names_the_source_node_only(tmp_path):
+    # N2: a delivered shutdown is named as possibly still acting only where the guest is on its source.
+    tasks = [find_task("Recovery: say what was done and what is left to check"), _echo("_start_note")]
+    rc, out = run_play(
+        tmp_path,
+        {
+            "_rescue_start_ok": False,
+            "_rescue_start": {"skipped": True},
+            "_rescue_wait_state": "not read",
+            "_was_running": True,
+            "_rescue_node": "apollo",
+            "_rescue_status": "running",
+            "_rescue_locked": False,
+            "_shutdown_sent": True,
+            "_start_sent": False,
+            "_from_node": "ariel",
+            "_dest_node": "apollo",
+        },
+        tasks,
+    )
+    assert rc == 0, out
+    assert "may still be acted on" not in out, out
+    assert "It is running, not stopped, so no start was issued." in out, out
 
 
 @needs_ansible
