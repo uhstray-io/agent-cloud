@@ -260,6 +260,8 @@ task_with() {
   tls="$BATS_TEST_TMPDIR/tls.yml"
   task_with "$pb" 'Authorization refusals over TLS' > "$tls"
   assert_grep -qF '{{ _opa_tls_probe_args' "$tls"
+  # The probe args are the TLS args without --fail, so the expected 401 exits 0.
+  assert_grep -qxF "    _opa_tls_probe_args: \"{{ _opa_tls_args | reject('equalto', '--fail') | list }}\"" "$pb"
   refute_grep -qF '_opa_tls_args' "$tls"
   refute_grep -qF -- '--fail' "$tls"
   assert_grep -qF "'--request', item.method" "$tls"
