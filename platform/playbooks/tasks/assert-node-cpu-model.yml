@@ -1,30 +1,45 @@
 ---
 # assert-node-cpu-model.yml — refuse a named Proxmox CPU model the node cannot provide, before
-# anything writes the VM's config. Included by resize-vm.yml and provision-vm.yml, which pass:
+# anything writes the VM's config. Included by resize-vm.yml (before its config write) and by
+# provision-vm.yml (before the clone, so the refusal precedes every write). The caller passes:
 #   _ncm_node       the Proxmox node the VM is configured on (provision: the declared node)
 #   _ncm_want_cpu   the bare model name about to be written (the caller format-checks it)
 #
-# WHY. A named model such as x86-64-v3 tells the guest that the host has the instruction set of
-# that level. A VM the node cannot back with those flags gets a CPU it does not have, and
-# software built for the level refuses to start (glibc halts with "CPU does not support
-# x86-64-v3", sysdeps/x86/dl-get-cpu-features.c). The node's own /proc/cpuinfo flags are the only
-# evidence available here, so a model whose flags cannot be read is refused, never assumed.
+# THE AUTHORITY is Proxmox's own model definition: the flags x86-64-v3 and x86-64-v4 ask QEMU
+# for, in qemu-server's src/PVE/QemuServer/CPUConfig.pm (the x86-64-v3 and x86-64-v4 entries,
+# lines 75-83). For a non-host x86_64 KVM guest Proxmox also forces `enforce`
+# (CPUConfig.pm:928-931): QEMU then refuses to start the VM when the host lacks one of those
+# flags. That failure comes at the next start, after the config was written, so this check runs
+# before the write. The /proc names below are the kernel's (arch/x86/include/asm/cpufeatures.h).
 #
 # SCOPE. Only x86-64-v3* and x86-64-v4* are checked. Every other model (host, kvm64,
-# x86-64-v2-AES, ...) passes without reading a flag, so a node that reports no flags still
-# takes those models.
+# x86-64-v2-AES, ...) passes without a node read.
 #
-# THE FLAG SETS are the glibc ISA-level feature lists (sysdeps/x86/isa-level.h), in /proc/cpuinfo
-# names: abm is LZCNT in the kernel's naming (arch/x86/include/asm/cpufeatures.h). Level 3
-# includes level 2; level 4 includes level 3. The level-3 set also lists xsave, which glibc's
-# compile-time check does not; a node that has AVX reports it, so it does not refuse one that
-# qualifies.
+# FLAG NAMES. Proxmox writes QEMU spellings (sse4.1, sse4.2); the node reports /proc/cpuinfo
+# spellings (sse4_1, sse4_2). The list below is Proxmox's, in /proc spelling: aes, popcnt, pni
+# (SSE3), sse4_1, sse4_2, ssse3, avx, avx2, bmi1, bmi2, f16c, fma, abm (LZCNT), movbe, xsave.
+# Level 4 adds avx512f, avx512bw, avx512cd, avx512dq, avx512vl.
 #
-# READ ONLY. One GET of /nodes/{node}/status, which needs Sys.Audit on /nodes/{node}
-# (PVE/API2/Nodes.pm). check_mode is false because it is a read. A failed read fails the run.
+# READ ONLY, AND ONLY FOR v3/v4. One GET of /nodes/{node}/status, which needs Sys.Audit on
+# /nodes/{node} (PVE/API2/Nodes.pm:357-358). Whether the production Semaphore token holds that
+# privilege is UNVERIFIED. A refused read fails the run closed. check_mode is false because it
+# is a read.
+#
+# FLAGS MISSING OR EMPTY fail closed: the node's own flags are the only evidence there is.
 #
 # The uri result carries the request headers, so the two facts used below are copied out at
 # once. The debug, the assert and its messages reference those facts only, never the result.
+
+- name: "Work out the level the named model requires"
+  ansible.builtin.set_fact:
+    _ncm_level: >-
+      {{ 4 if ((_ncm_want_cpu | string) is match('^x86-64-v4'))
+         else (3 if ((_ncm_want_cpu | string) is match('^x86-64-v3')) else 0) }}
+
+- name: "Default the node facts for a model outside the check"
+  ansible.builtin.set_fact:
+    _ncm_node_model: "not read"
+    _ncm_node_flags: []
 
 - name: "Read the node's CPU model and flags"
   ansible.builtin.uri:
@@ -33,6 +48,7 @@
   register: _ncm_status
   check_mode: false
   changed_when: false
+  when: (_ncm_level | int) > 0
 
 - name: "Copy the node CPU facts out of the response"
   ansible.builtin.set_fact:
@@ -40,19 +56,13 @@
     # Whitespace-separated, compared by exact membership below. A substring match would let
     # 'fma4' satisfy 'fma' and 'avx' satisfy 'avx2'. Empty means unavailable.
     _ncm_node_flags: "{{ (_ncm_status.json.data.cpuinfo.flags | default('', true) | string).split() }}"
-
-- name: "Work out the level the named model requires"
-  ansible.builtin.set_fact:
-    _ncm_level: >-
-      {{ 4 if ((_ncm_want_cpu | string) is match('^x86-64-v4'))
-         else (3 if ((_ncm_want_cpu | string) is match('^x86-64-v3')) else 0) }}
+  when: (_ncm_level | int) > 0
 
 - name: "List the flags the node must report for that level"
   ansible.builtin.set_fact:
     _ncm_required_flags: >-
-      {{ (['cx16', 'lahf_lm', 'popcnt', 'pni', 'sse4_1', 'sse4_2', 'ssse3']
-           if (_ncm_level | int) >= 3 else [])
-         + (['avx', 'avx2', 'bmi1', 'bmi2', 'f16c', 'fma', 'abm', 'movbe', 'xsave']
+      {{ (['aes', 'popcnt', 'pni', 'sse4_1', 'sse4_2', 'ssse3', 'avx', 'avx2', 'bmi1', 'bmi2',
+           'f16c', 'fma', 'abm', 'movbe', 'xsave']
            if (_ncm_level | int) >= 3 else [])
          + (['avx512f', 'avx512bw', 'avx512cd', 'avx512dq', 'avx512vl']
            if (_ncm_level | int) >= 4 else []) }}
@@ -63,6 +73,7 @@
       Node {{ _ncm_node }} reports CPU model '{{ _ncm_node_model }}'
       (flags {{ 'reported' if (_ncm_node_flags | length) > 0 else 'NOT reported' }});
       the VM's CPU model is '{{ _ncm_want_cpu }}'.
+  when: (_ncm_level | int) > 0
 
 - name: "Refuse a named CPU model the node cannot provide"
   ansible.builtin.assert:
