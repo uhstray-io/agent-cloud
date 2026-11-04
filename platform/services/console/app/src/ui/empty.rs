@@ -25,7 +25,7 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "policy" | "tenantsettings" | "orgsettings" => Some(5),
+        "policy" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }
@@ -95,22 +95,6 @@ pub const CICD: PageMeta = PageMeta {
     authority: "GitHub",
 };
 
-pub const TENANT_SETTINGS: PageMeta = PageMeta {
-    id: "tenantsettings",
-    title: "Tenant settings",
-    icon: "building",
-    purpose: "Tenant defaults. A change is proposed, never written directly.",
-    authority: "site-config inventory, Authentik, NetBox tags",
-};
-
-pub const ORG_SETTINGS: PageMeta = PageMeta {
-    id: "orgsettings",
-    title: "Organization settings",
-    icon: "settings-2",
-    purpose: "Organizations, sites, approvers and business-domain tags. A change is proposed.",
-    authority: "site-config inventory, Authentik, NetBox tags",
-};
-
 /// The empty state every placeholder page renders.
 #[component]
 pub fn EmptyPage(page: PageMeta) -> Element {
@@ -156,16 +140,6 @@ pub fn CiCd() -> Element {
     rsx! { EmptyPage { page: CICD } }
 }
 
-#[component]
-pub fn TenantSettings() -> Element {
-    rsx! { EmptyPage { page: TENANT_SETTINGS } }
-}
-
-#[component]
-pub fn OrgSettings() -> Element {
-    rsx! { EmptyPage { page: ORG_SETTINGS } }
-}
-
 /// Any path the router does not know. It renders outside the shell, so it
 /// shows no account or tenant data.
 #[component]
@@ -195,7 +169,7 @@ mod tests {
         assert_eq!(phase_for("services"), Some(3));
         assert_eq!(phase_for("compute"), Some(3));
         assert_eq!(phase_for("dashboard"), Some(4));
-        assert_eq!(phase_for("tenantsettings"), Some(5));
+        assert_eq!(phase_for("policy"), Some(5));
         assert_eq!(phase_for("cicd"), Some(6));
         assert_eq!(phase_for("telemetry"), Some(6));
     }
@@ -217,8 +191,6 @@ mod tests {
             TELEMETRY,
             POLICY,
             CICD,
-            TENANT_SETTINGS,
-            ORG_SETTINGS,
         ];
         for page in pages {
             assert!(phase_for(page.id).is_some(), "{} has no phase", page.id);

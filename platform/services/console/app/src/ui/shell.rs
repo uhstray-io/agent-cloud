@@ -267,12 +267,13 @@ fn Sidebar(account: Account) -> Element {
                     RoleLinks {}
                 }
             }
-            if admin {
-                nav { class: "nav", aria_label: "Settings",
-                    div { class: "grp", "Settings" }
-                    NavItem { to: Route::TenantSettings {}, icon_name: "building", label: "Tenant settings" }
-                    NavItem { to: Route::OrgSettings {}, icon_name: "settings-2", label: "Organization settings" }
-                }
+            // Both settings pages show to every signed-in user. Each page reads only what the
+            // caller may see (the tenant tree, the tenant's inventory), and says why a control is
+            // disabled. Nothing in this group is admin-only.
+            nav { class: "nav", aria_label: "Settings",
+                div { class: "grp", "Settings" }
+                NavItem { to: Route::TenantSettings {}, icon_name: "building", label: "Tenant settings" }
+                NavItem { to: Route::OrgSettings {}, icon_name: "settings-2", label: "Organization settings" }
             }
             div { class: "side-foot",
                 Link {
@@ -450,8 +451,8 @@ pub fn initials(name: &str) -> String {
     letters.to_uppercase()
 }
 
-/// Settings entries show only for members of `platform-admins`. The UI hides
-/// them as a convenience; the API and OPA are the controls.
+/// The Agent roles nav and the role pages show only for members of `platform-admins` (D40). The UI
+/// hides them as a convenience; the server's admin gate on `/v1/roles` and `/v1/work` is the control.
 pub fn is_platform_admin(claims: &Claims) -> bool {
     claims.groups.iter().any(|group| group == "platform-admins")
 }
@@ -474,6 +475,26 @@ mod tests {
             email: email.map(str::to_string),
             groups: groups.iter().map(|g| g.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn only_an_exact_platform_admins_member_sees_the_agent_roles() {
+        assert!(is_platform_admin(&claims(
+            "a",
+            None,
+            None,
+            None,
+            &["ops", "platform-admins"]
+        )));
+        assert!(!is_platform_admin(&claims(
+            "b",
+            None,
+            None,
+            None,
+            &["platform-admins-old"]
+        )));
+        assert!(!is_platform_admin(&claims("c", None, None, None, &["ops"])));
+        assert!(!is_platform_admin(&claims("d", None, None, None, &[])));
     }
 
     #[test]
@@ -522,25 +543,6 @@ mod tests {
         // Not yet loaded, or failed: that is not the same as "no access".
         assert!(!has_no_tenant_access(&Loaded::Loading));
         assert!(!has_no_tenant_access(&Loaded::Failed));
-    }
-
-    #[test]
-    fn only_platform_admins_see_settings() {
-        assert!(is_platform_admin(&claims(
-            "s",
-            None,
-            None,
-            None,
-            &["users", "platform-admins"]
-        )));
-        assert!(!is_platform_admin(&claims(
-            "s",
-            None,
-            None,
-            None,
-            &["platform-admins-old"]
-        )));
-        assert!(!is_platform_admin(&claims("s", None, None, None, &[])));
     }
 
     fn two_org_tree() -> Tree {
