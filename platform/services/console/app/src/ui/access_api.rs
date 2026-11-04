@@ -36,8 +36,10 @@ pub struct AccessBody {
     pub role_map: RoleMap,
     /// When the newest directory read finished.
     pub refreshed_at: Option<String>,
-    /// Why the newest directory read failed, when it did. With state `ok`, the users and groups
-    /// are then the last good read.
+    /// The directory note the server wrote, as a complete sentence. With state `ok` it is shown
+    /// as sent: a failed refresh (the users and groups are then the last good read), or a
+    /// directory cut short by the server's bound. With any other state it is the reason no
+    /// directory was read.
     pub error: Option<String>,
 }
 
@@ -111,12 +113,11 @@ pub fn not_ok_message(state: AccessState, error: Option<&str>) -> Option<String>
     }
 }
 
-/// The banner for an `ok` body whose newest read failed. `None` when the newest read worked.
-pub fn stale_line(state: AccessState, error: Option<&str>) -> Option<String> {
+/// The notice line for an `ok` body that carries a directory note. The server writes the whole
+/// sentence, so the console adds no prefix or suffix. `None` when there is no note.
+pub fn directory_note(state: AccessState, error: Option<&str>) -> Option<String> {
     match (state, error) {
-        (AccessState::Ok, Some(error)) => Some(format!(
-            "The newest directory read failed: {error}. Showing the last good read."
-        )),
+        (AccessState::Ok, Some(note)) => Some(note.to_string()),
         _ => None,
     }
 }
@@ -328,15 +329,22 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_newest_read_is_a_stale_banner_only_on_an_ok_body() {
-        assert_eq!(
-            stale_line(AccessState::Ok, Some("Authentik answered HTTP 500")).as_deref(),
-            Some(
-                "The newest directory read failed: Authentik answered HTTP 500. Showing the last good read."
-            )
-        );
-        assert_eq!(stale_line(AccessState::Ok, None), None);
-        assert_eq!(stale_line(AccessState::Error, Some("x")), None);
+    fn an_ok_body_shows_its_directory_note_exactly_as_sent() {
+        // The three sentences the server sends: a failed refresh, a truncated directory, and a
+        // failed read. None is wrapped, so a truncation is never called a failed read.
+        let sent = [
+            "The newest directory read failed: Authentik answered HTTP 500. Showing the last good read.",
+            "Authentik holds more than 2000 users or groups; the first 2000 are shown.",
+            "The directory read failed: Authentik answered HTTP 500.",
+        ];
+        for note in sent {
+            assert_eq!(
+                directory_note(AccessState::Ok, Some(note)).as_deref(),
+                Some(note)
+            );
+        }
+        assert_eq!(directory_note(AccessState::Ok, None), None);
+        assert_eq!(directory_note(AccessState::Error, Some("x")), None);
     }
 
     #[test]

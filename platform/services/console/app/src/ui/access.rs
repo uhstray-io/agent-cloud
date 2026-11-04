@@ -4,7 +4,7 @@
 use dioxus::prelude::*;
 
 use super::access_api::{
-    not_ok_message, role_rows, sorted_people, stale_line, status_label, AccessBody, ACCESS_PATH,
+    directory_note, not_ok_message, role_rows, sorted_people, status_label, AccessBody, ACCESS_PATH,
 };
 use super::empty::PageMeta;
 use super::icons::icon;
@@ -79,7 +79,7 @@ fn AccessView(state: Admin<AccessBody>) -> Element {
 #[component]
 fn AccessBodyView(body: AccessBody, reason: String) -> Element {
     let error = body.error.as_deref();
-    let stale = stale_line(body.state, error);
+    let note = directory_note(body.state, error);
     let directory = not_ok_message(body.state, error);
     let people = sorted_people(&body.users);
     let roles = role_rows(&body.role_map);
@@ -87,7 +87,7 @@ fn AccessBodyView(body: AccessBody, reason: String) -> Element {
         if !reason.is_empty() {
             p { class: "stale", role: "status", "The last read failed: {reason}." }
         }
-        if let Some(line) = stale {
+        if let Some(line) = note {
             p { class: "stale", role: "status", "{line}" }
         }
         section { class: "card",
