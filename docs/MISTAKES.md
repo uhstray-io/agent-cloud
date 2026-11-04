@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x5** | Unverified claim | 5 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x6** | Unverified claim | 6 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -246,7 +246,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 5** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07
+**Occurrences: 6** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -307,6 +307,15 @@ phrase ("because", "built by", "predates", "empty since") with no `path:line`, c
 task id in the same sentence, and asks for the source before the reply is sent. It will be
 noisy; start it as a warning. Until it exists, a cause for a failure is reported as "cause not
 established" unless the code, the commit history or the query is cited.
+
+**Occurrence 6 — 2026-11-03 (a gap read from a truncated line).** A grounding checkpoint reported that
+plan 03's OPA production checklist skipped the access and boot-persistence runs, and PR #849 added a
+step listing them. Steps 6 and 9 already recorded them. The checklist had been read with
+`grep ... | cut -c1-220`, which cut both steps before the task numbers, and the missing text was
+read as missing runs. The pr-reviewer caught the duplicate before merge; the step was dropped.
+Why the rule did not fire: the file was the right one, so the "right artifact" check passed, but
+the read itself was partial. A gap claim needs the full text of the lines it says are missing, not
+a display-truncated view of them.
 
 ### 1.3 A masked exit code reported as success
 
