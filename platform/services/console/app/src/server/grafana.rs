@@ -57,6 +57,13 @@ impl fmt::Display for ReadError {
             ReadError::Refused => {
                 f.write_str("the Grafana origin is not one the console may send its token to")
             }
+            // The two refusals that have a cause the operator can act on. Any other status keeps the bare code.
+            ReadError::Status(401) => f.write_str(
+                "Grafana refused the console token (HTTP 401): it is expired or invalid. Check Provision Console Grafana Token.",
+            ),
+            ReadError::Status(403) => f.write_str(
+                "Grafana refused the console token (HTTP 403): the Viewer service account may not query the Prometheus data source.",
+            ),
             ReadError::Status(code) => write!(f, "Grafana answered HTTP {code}"),
             ReadError::Timeout => f.write_str("Grafana did not answer in time"),
             ReadError::Connect => f.write_str("cannot connect to Grafana"),
@@ -244,13 +251,14 @@ impl UsageCache {
     /// The sentence the page shows, or none. A failed read names its reason, and says whether the last good
     /// figures are still shown.
     fn error_sentence(&self) -> Option<String> {
-        match (&self.failure, &self.good) {
-            (Some(reason), Some(_)) => Some(format!(
-                "The newest usage read failed: {reason}. Showing the last good read."
-            )),
-            (Some(reason), None) => Some(format!("The usage read failed: {reason}.")),
-            (None, _) => None,
-        }
+        // A reason that already ends in a full stop, as the 401 and 403 sentences do, gets no second one.
+        let reason = self.failure.as_deref()?.trim_end_matches('.');
+        Some(match &self.good {
+            Some(_) => {
+                format!("The newest usage read failed: {reason}. Showing the last good read.")
+            }
+            None => format!("The usage read failed: {reason}."),
+        })
     }
 
     /// The last good read's token count for `identity`: `None` when no read has finished or the identity is
@@ -397,6 +405,7 @@ mod usage_tests {
     use std::net::Ipv4Addr;
     use std::sync::{Arc, Mutex};
 
+    use crate::server::client_with_roots;
     use dioxus::server::axum::extract::{Query, State};
     use dioxus::server::axum::http::{header, HeaderMap, StatusCode};
     use dioxus::server::axum::routing::get;
@@ -603,11 +612,8 @@ mod usage_tests {
         }
     }
 
-    /// Serves the fake on loopback and returns its origin, which passes the transport rule.
-    async fn serve(fake: Arc<Fake>) -> String {
-        let app = Router::new()
-            .route(USAGE_PATH, get(fake_query))
-            .with_state(fake);
+    /// Serves `app` on loopback and returns its origin, which passes the transport rule.
+    async fn serve_app(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -620,6 +626,54 @@ mod usage_tests {
         format!("http://127.0.0.1:{port}")
     }
 
+    /// Serves the fake Grafana proxy and returns its origin.
+    async fn serve(fake: Arc<Fake>) -> String {
+        serve_app(
+            Router::new()
+                .route(USAGE_PATH, get(fake_query))
+                .with_state(fake),
+        )
+        .await
+    }
+
+    /// The client the console really uses for the usage read: `server::client_with_roots`, the builder
+    /// `server::load` calls, with its no-redirect policy and its timeout. A test on a different client
+    /// would not test the production policy.
+    fn production_client() -> reqwest::Client {
+        client_with_roots(None, "CONSOLE_EXTRA_CA_FILE").expect("the production client")
+    }
+
+    /// A second fake Grafana. It records the Authorization of each request it gets, and answers a good read,
+    /// so a redirect the console followed would both reach it and succeed.
+    #[derive(Default)]
+    struct Recorder {
+        seen: Mutex<Vec<Option<String>>>,
+    }
+
+    async fn record_query(
+        State(recorder): State<Arc<Recorder>>,
+        headers: HeaderMap,
+    ) -> (StatusCode, String) {
+        let bearer = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        recorder.seen.lock().expect("seen").push(bearer);
+        (StatusCode::OK, GOOD.to_string())
+    }
+
+    /// A fake that answers 302 to `target`, the way a proxy or a moved origin would.
+    async fn redirect_to(
+        State(target): State<String>,
+    ) -> (StatusCode, [(header::HeaderName, String); 1]) {
+        (StatusCode::FOUND, [(header::LOCATION, target)])
+    }
+
+    /// The reply body that echoes the token, for the refusal tests: a body must never reach an error.
+    fn refusal_body() -> String {
+        format!("Grafana rejected the bearer {TOKEN}")
+    }
+
     #[tokio::test]
     async fn a_read_sends_the_token_as_a_bearer_and_maps_the_answer() {
         let fake = Arc::new(Fake::default());
@@ -628,7 +682,7 @@ mod usage_tests {
             .expect("replies")
             .push_back((200, GOOD.to_string()));
         let base = serve(fake.clone()).await;
-        let tokens = fetch_usage(&reqwest::Client::new(), &base, &Secret::new(TOKEN))
+        let tokens = fetch_usage(&production_client(), &base, &Secret::new(TOKEN))
             .await
             .expect("read");
         assert_eq!(tokens.get("alpha"), Some(&1234));
@@ -651,7 +705,7 @@ mod usage_tests {
             .push_back((200, GOOD.to_string()));
         // Nothing is queued after the first answer, so the second read gets the 500 echo.
         let base = serve(fake.clone()).await;
-        let http = reqwest::Client::new();
+        let http = production_client();
         let token = Secret::new(TOKEN);
         let mut cache = UsageCache::new(true);
         let first = fetch_usage(&http, &base, &token).await.expect("first read");
@@ -679,7 +733,7 @@ mod usage_tests {
     #[tokio::test]
     async fn a_cleartext_public_origin_is_refused_before_any_request() {
         let err = fetch_usage(
-            &reqwest::Client::new(),
+            &production_client(),
             "http://grafana.example.test",
             &Secret::new(TOKEN),
         )
@@ -687,5 +741,73 @@ mod usage_tests {
         .expect_err("refused");
         assert_eq!(err, ReadError::Refused);
         assert!(!err.to_string().contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_refused_token_names_its_cause_and_never_the_token() {
+        let cases = [
+            (
+                401,
+                "Grafana refused the console token (HTTP 401): it is expired or invalid. Check Provision Console Grafana Token.",
+            ),
+            (
+                403,
+                "Grafana refused the console token (HTTP 403): the Viewer service account may not query the Prometheus data source.",
+            ),
+        ];
+        for (status, cause) in cases {
+            let fake = Arc::new(Fake::default());
+            fake.replies
+                .lock()
+                .expect("replies")
+                .push_back((status, refusal_body()));
+            let base = serve(fake.clone()).await;
+            let err = fetch_usage(&production_client(), &base, &Secret::new(TOKEN))
+                .await
+                .expect_err("a refused token is a failed read");
+            assert_eq!(err, ReadError::Status(status));
+            let text = err.to_string();
+            assert_eq!(text, cause);
+            assert!(!text.contains(TOKEN), "{text}");
+
+            // The cause reaches the page without a doubled full stop.
+            let mut cache = UsageCache::new(true);
+            cache.record_ok(HashMap::from([("alpha".to_string(), 7)]), "t1".into());
+            cache.record_error(text);
+            let sentence = cache.view().error.expect("sentence");
+            assert_eq!(
+                sentence,
+                format!("The newest usage read failed: {cause} Showing the last good read.")
+            );
+            assert!(!sentence.contains(TOKEN), "{sentence}");
+            assert!(!sentence.contains(".."), "{sentence}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_not_followed_so_the_token_never_reaches_another_origin() {
+        // The first origin answers 302 to a second fake, which records any request it gets.
+        let recorder = Arc::new(Recorder::default());
+        let elsewhere = serve_app(
+            Router::new()
+                .route(USAGE_PATH, get(record_query))
+                .with_state(recorder.clone()),
+        )
+        .await;
+        let source = serve_app(
+            Router::new()
+                .route(USAGE_PATH, get(redirect_to))
+                .with_state(format!("{elsewhere}{USAGE_PATH}")),
+        )
+        .await;
+
+        let err = fetch_usage(&production_client(), &source, &Secret::new(TOKEN))
+            .await
+            .expect_err("a 302 is not a usage read");
+        assert_eq!(err, ReadError::Status(302));
+        assert!(
+            recorder.seen.lock().expect("seen").is_empty(),
+            "the redirect target received a request"
+        );
     }
 }

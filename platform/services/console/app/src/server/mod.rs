@@ -162,7 +162,10 @@ pub fn load(config: Config) -> Result<SharedState, String> {
 /// The client every upstream call shares: no redirects, a 20 s timeout, and the roots of a
 /// PEM bundle when `extra_ca` is set. Verification stays on in every case. `var` names the
 /// setting in an error.
-fn client_with_roots(extra_ca: Option<&Path>, var: &str) -> Result<reqwest::Client, String> {
+pub(crate) fn client_with_roots(
+    extra_ca: Option<&Path>,
+    var: &str,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(20));

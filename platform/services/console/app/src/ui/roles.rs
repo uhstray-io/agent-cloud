@@ -6,12 +6,13 @@
 use dioxus::prelude::*;
 
 use super::api::{self, Me};
+use super::gateway::poll_gateway;
 use super::gateway_api::{
     budget_source_text, budget_text, last_hour_text, not_ok_message, usage_notice, usage_percent,
-    GatewayBody, GatewayClient, Usage, APPROXIMATE, GATEWAY_PATH,
+    usage_read_text, GatewayBody, GatewayClient, Usage, APPROXIMATE,
 };
 use super::icons::icon;
-use super::inventory::{poll_admin, Admin};
+use super::inventory::Admin;
 use super::roles_api::{role_named, RoleList, ROLES_PATH};
 use super::shell::{is_platform_admin, Ctx, Loaded};
 use super::status::{Meter, Notice};
@@ -50,11 +51,13 @@ pub fn RoleDetail(role: String) -> Element {
     let admin =
         matches!(&*ctx.me.read(), Me::SignedIn(account) if is_platform_admin(&account.claims));
     let gateway = use_signal(|| Admin::<GatewayBody>::Loading);
+    let now = use_signal(|| None::<i64>);
     use_hook(move || {
         if admin {
-            spawn(poll_admin(GATEWAY_PATH.to_string(), gateway, ctx.me));
+            spawn(poll_gateway(gateway, now, ctx.me));
         }
     });
+    let now_ms = *now.read();
     rsx! {
         div { class: "view role",
             header { class: "view-h",
@@ -65,7 +68,7 @@ pub fn RoleDetail(role: String) -> Element {
             if admin {
                 StepsCard { role: role.clone() }
                 WorkCard { role: role.clone() }
-                GatewayCard { role, gateway }
+                GatewayCard { role, gateway, now_ms }
             } else {
                 Notice { message: "Agent roles are limited to platform administrators.".to_string() }
             }
@@ -194,7 +197,7 @@ fn LaneCell(lane: Lane) -> Element {
 
 /// The role's gateway client, from the one poll of `GET /v1/gateway` the page starts.
 #[component]
-fn GatewayCard(role: String, gateway: Signal<Admin<GatewayBody>>) -> Element {
+fn GatewayCard(role: String, gateway: Signal<Admin<GatewayBody>>, now_ms: Option<i64>) -> Element {
     let shown = gateway.read().clone();
     let body = match shown {
         Admin::Loading => rsx! { p { class: "empty", "Loading the gateway\u{2026}" } },
@@ -210,7 +213,7 @@ fn GatewayCard(role: String, gateway: Signal<Admin<GatewayBody>>) -> Element {
             Some(message) => rsx! { p { class: "empty", "{message}" } },
             None => match client_named(&body.clients, &role) {
                 Some(client) => rsx! {
-                    ClientFacts { client: client.clone(), usage: body.usage.clone() }
+                    ClientFacts { client: client.clone(), usage: body.usage.clone(), now_ms }
                 },
                 None => rsx! { p { class: "empty", "No gateway client named {role}." } },
             },
@@ -227,8 +230,9 @@ fn GatewayCard(role: String, gateway: Signal<Admin<GatewayBody>>) -> Element {
 /// A gateway client's budget, tier, last-hour use and allowed models, with the usage notice when the read is
 /// not current.
 #[component]
-fn ClientFacts(client: GatewayClient, usage: Usage) -> Element {
-    let notice = usage_notice(&usage);
+fn ClientFacts(client: GatewayClient, usage: Usage, now_ms: Option<i64>) -> Element {
+    let notice = usage_notice(&usage, now_ms);
+    let usage_read = usage_read_text(now_ms, &usage);
     rsx! {
         div { class: "card-b",
             if let Some(line) = notice {
@@ -255,6 +259,9 @@ fn ClientFacts(client: GatewayClient, usage: Usage) -> Element {
                     span { "{last_hour_text(client.tokens_last_hour)}" }
                     if let Some(pct) = usage_percent(client.tokens_last_hour, client.tokens_per_hour) {
                         Meter { label: format!("{} last hour, share of its budget", client.name), pct }
+                    }
+                    if let Some(text) = usage_read {
+                        span { class: "hint", " {text}" }
                     }
                 }
             }

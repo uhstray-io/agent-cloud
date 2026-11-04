@@ -5,6 +5,8 @@
 
 use serde::Deserialize;
 
+use super::secrets_api::age_label;
+
 /// The platform-admin gateway answer.
 pub const GATEWAY_PATH: &str = "/v1/gateway";
 
@@ -141,11 +143,24 @@ pub fn usage_percent(tokens: Option<u64>, budget: u64) -> Option<f64> {
     Some((tokens as f64 * 100.0 / budget as f64).min(100.0))
 }
 
+/// The age of the shown figures, for the header and the client card: `usage read 3m ago`. `None` before any
+/// good read. Without a clock the stamp itself shows, as the Secrets page shows an unreadable time.
+pub fn usage_read_text(now_ms: Option<i64>, usage: &Usage) -> Option<String> {
+    usage
+        .refreshed_at
+        .as_deref()
+        .map(|stamp| format!("usage read {}", age_label(now_ms, stamp)))
+}
+
 /// The line that says the usage figures are not current, or `None` when they are. The server's sentence wins
-/// whenever it is present, since a failed read with a last good figure is `error` and still shows figures.
-pub fn usage_notice(usage: &Usage) -> Option<String> {
+/// whenever it is present, since a failed read with a last good figure is `error` and still shows figures. When
+/// that failed read has a last good figure, the line also says how old the figure is.
+pub fn usage_notice(usage: &Usage, now_ms: Option<i64>) -> Option<String> {
     if let Some(error) = usage.error.as_deref() {
-        return Some(error.to_string());
+        return Some(match usage.refreshed_at.as_deref() {
+            Some(stamp) => format!("{error} Figures read {}.", age_label(now_ms, stamp)),
+            None => error.to_string(),
+        });
     }
     match usage.state {
         UsageState::Ok => None,
@@ -347,7 +362,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({"state": "ok"})).expect("body");
         assert_eq!(body.usage.state, UsageState::Unknown);
         assert!(
-            usage_notice(&body.usage).is_some(),
+            usage_notice(&body.usage, None).is_some(),
             "an unknown state is a notice"
         );
         let odd: Usage =
@@ -383,28 +398,70 @@ mod tests {
             refreshed_at: None,
             error: error.map(str::to_string),
         };
-        assert_eq!(usage_notice(&usage(UsageState::Ok, None)), None);
+        assert_eq!(usage_notice(&usage(UsageState::Ok, None), None), None);
         assert_eq!(
-            usage_notice(&usage(UsageState::Unconfigured, None)).as_deref(),
+            usage_notice(&usage(UsageState::Unconfigured, None), None).as_deref(),
             Some("Token usage is not configured for this console.")
         );
-        assert!(usage_notice(&usage(UsageState::Loading, None))
+        assert!(usage_notice(&usage(UsageState::Loading, None), None)
             .expect("loading")
             .contains("loading"));
         assert_eq!(
-            usage_notice(&usage(UsageState::Error, None)).as_deref(),
+            usage_notice(&usage(UsageState::Error, None), None).as_deref(),
             Some("The newest usage read failed.")
         );
         assert_eq!(
-            usage_notice(&usage(
-                UsageState::Error,
-                Some("The newest usage read failed: boom. Showing the last good read.")
-            ))
+            usage_notice(
+                &usage(
+                    UsageState::Error,
+                    Some("The newest usage read failed: boom. Showing the last good read.")
+                ),
+                None
+            )
             .as_deref(),
             Some("The newest usage read failed: boom. Showing the last good read.")
         );
-        assert!(usage_notice(&usage(UsageState::Unknown, None))
+        assert!(usage_notice(&usage(UsageState::Unknown, None), None)
             .expect("unknown")
             .contains("does not know"));
+    }
+
+    #[test]
+    fn a_failed_read_with_a_last_good_one_says_how_old_the_figures_are() {
+        use super::super::work::parse_rfc3339_ms;
+        let now = parse_rfc3339_ms("2026-11-04T10:03:00Z");
+        let failed = Usage {
+            state: UsageState::Error,
+            refreshed_at: Some("2026-11-04T10:00:00Z".into()),
+            error: Some(
+                "The newest usage read failed: Grafana did not answer in time. Showing the last good read."
+                    .into(),
+            ),
+        };
+        assert_eq!(
+            usage_notice(&failed, now).as_deref(),
+            Some("The newest usage read failed: Grafana did not answer in time. Showing the last good read. Figures read 3m ago.")
+        );
+        assert_eq!(
+            usage_read_text(now, &failed).as_deref(),
+            Some("usage read 3m ago")
+        );
+        assert_eq!(
+            usage_read_text(None, &failed).as_deref(),
+            Some("usage read 2026-11-04T10:00:00Z"),
+            "no clock: the stamp itself"
+        );
+
+        let no_good = Usage {
+            state: UsageState::Error,
+            refreshed_at: None,
+            error: Some("The usage read failed: boom.".into()),
+        };
+        assert_eq!(
+            usage_notice(&no_good, now).as_deref(),
+            Some("The usage read failed: boom."),
+            "no earlier figures, so no age"
+        );
+        assert_eq!(usage_read_text(now, &no_good), None);
     }
 }
