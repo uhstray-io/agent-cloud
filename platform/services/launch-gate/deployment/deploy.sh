@@ -3,7 +3,7 @@
 #
 # The deploy playbook renders .env (the image and bind, the Semaphore token and the caller tokens) and
 # config.json, and places the step-ca trust bundle and the server leaf under certs/, BEFORE this runs.
-# That playbook is a later change; until it lands nothing deploys this stack. This script does NOT
+# That playbook is platform/playbooks/deploy-launch-gate.yml (Deploy launch-gate). This script does NOT
 # generate secrets: it pulls the image, starts the gate, and confirms the container is running.
 #
 # Usage: ./deploy.sh [--no-pull]

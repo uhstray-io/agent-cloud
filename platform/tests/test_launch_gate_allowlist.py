@@ -217,6 +217,7 @@ def test_env_template_renders_the_fixed_keys_and_one_token_per_caller():
         _launch_gate_image=IMAGE,
         _launch_gate_bind="127.0.0.1",
         _launch_gate_port=8443,
+        _launch_gate_tls_name="launch-gate.local.agent-cloud.test",
         _launch_gate_callers={"skynet": ["security-agent"], "security-agent": ["security-agent"]},
         secrets=secrets,
     )
@@ -224,6 +225,7 @@ def test_env_template_renders_the_fixed_keys_and_one_token_per_caller():
         "LAUNCH_GATE_IMAGE": IMAGE,
         "LAUNCH_GATE_BIND": "127.0.0.1",
         "LAUNCH_GATE_PORT": "8443",
+        "LAUNCH_GATE_TLS_NAME": "launch-gate.local.agent-cloud.test",
         "LAUNCH_GATE_SEMAPHORE_TOKEN": SEMAPHORE_TOKEN,
         "LAUNCH_GATE_CALLER_TOKEN_SKYNET": "A" * 48,
         "LAUNCH_GATE_CALLER_TOKEN_SECURITY_AGENT": "B" * 48,
@@ -237,6 +239,7 @@ def test_env_template_with_no_callers_renders_only_the_fixed_keys():
         _launch_gate_image=IMAGE,
         _launch_gate_bind="127.0.0.1",
         _launch_gate_port=8443,
+        _launch_gate_tls_name="launch-gate.local.agent-cloud.test",
         _launch_gate_callers={},
         secrets={"semaphore_api_token": SEMAPHORE_TOKEN},
     )
@@ -245,6 +248,7 @@ def test_env_template_with_no_callers_renders_only_the_fixed_keys():
         "LAUNCH_GATE_IMAGE",
         "LAUNCH_GATE_PORT",
         "LAUNCH_GATE_SEMAPHORE_TOKEN",
+        "LAUNCH_GATE_TLS_NAME",
     ]
 
 
