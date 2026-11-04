@@ -176,7 +176,9 @@ assert one["ansible.builtin.assert"]["that"] == ["groups.get('step_ca_svc', []) 
 cond = "groups['step_ca_svc'] | first if not _launch_gate_local_mode else inventory_hostname"
 mint = next(t for t in play["tasks"] if t.get("name") == "Issue the server leaf (key here, signed on the CA host)")
 assert mint["vars"]["_mint_ca_host"] == "{{ " + cond + " }}", mint["vars"]
-assert mint["vars"]["_mint_reissue"] is False and mint["vars"]["_mint_name"] == "{{ _launch_gate_server_leaf }}", mint["vars"]
+# Production keeps an issued leaf (renewal is Renew Internal Certs'); local-dev re-issues one with under 7 days left.
+assert mint["vars"]["_mint_reissue"] == "{{ _launch_gate_local_mode and (_launch_gate_leaf_fresh.rc | default(0)) != 0 }}", mint["vars"]
+assert mint["vars"]["_mint_name"] == "{{ _launch_gate_server_leaf }}", mint["vars"]
 dist = next(t for t in play["tasks"] if t.get("name") == "Distribute the step-ca trust bundle into ./certs")
 assert dist["vars"]["_ca_host"] == "{{ " + cond + " }}", dist["vars"]
 assert dist["vars"]["_ca_root_dest_dir"] == "{{ _deploy_dir }}", dist["vars"]
@@ -233,14 +235,17 @@ play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts
 v = play["vars"]
 args = " ".join(str(a) for a in v["_tls_args"])
 assert "--cacert {{ _deploy_dir }}/certs/step-ca-bundle.crt" in args, args
-assert "--resolve {{ _launch_gate_tls_name }}:{{ _launch_gate_port }}:{{ _launch_gate_bind }}" in args, args
+# The --resolve pair is production only: it lives in _tls_resolve, which is empty under local_mode (behaviour pinned in
+# test_launch_gate_local_dev.bats, which renders it).
+assert "--resolve" not in args, args
+assert v["_tls_resolve"] == "{{ [] if _launch_gate_local_mode else ['--resolve', _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ ':' ~ _launch_gate_bind] }}", v["_tls_resolve"]
 assert "%{http_code}" in args, args
 tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
 health = tasks["Health over TLS from this host (GET /healthz -> 200, against the step-ca bundle)"]
-assert health["ansible.builtin.command"]["argv"] == "{{ _tls_args + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ '/healthz'] }}", health
+assert health["ansible.builtin.command"]["argv"] == "{{ _tls_args + _tls_resolve + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_probe_port ~ '/healthz'] }}", health
 assert health["check_mode"] is False, health
 plain = tasks["Plain HTTP to the TLS listener must not answer 200"]
-assert plain["ansible.builtin.command"]["argv"][-1] == "http://{{ _launch_gate_bind }}:{{ _launch_gate_port }}/healthz", plain
+assert plain["ansible.builtin.command"]["argv"][-1] == "http://{{ _launch_gate_plain_host }}:{{ _launch_gate_probe_port }}/healthz", plain
 assert tasks["Refuse a plain-HTTP 200 from the TLS listener"]["ansible.builtin.assert"]["that"] == ["_launch_gate_plain_http.stdout | trim != '200'"]
 PY
 }

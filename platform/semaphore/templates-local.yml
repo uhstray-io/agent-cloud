@@ -273,8 +273,8 @@ templates:
   - name: "Provision launch-gate Semaphore Access (Local)"
     playbook: platform/playbooks/provision-launch-gate-semaphore-access.yml
 
-  # The launch gate, local-dev. Its deploy refuses until local-dev declares the launch_gate_svc group and the server
-  # leaf (skynet-launch-containment task 3.4, the local inventory and bootstrap entries, still open).
+  # The launch gate, local-dev. bootstrap-local-dev.yml declares the launch_gate_svc group (launch-gate-local) and
+  # its server leaf; the deploy issues the leaf from the local CA and re-issues it when under 7 days remain.
   - name: "Deploy launch-gate (Local)"
     playbook: platform/playbooks/deploy-launch-gate.yml
 
