@@ -39,6 +39,9 @@ services:
       - ./config/gateway.json:/etc/console/gateway.json:ro
       # The Access page's role map (CONSOLE_ROLE_MAP_FILE, 8.2b): the authoritative table as data; read-only.
       - ./config/role-map.json:/etc/console/role-map.json:ro
+      # The Request a service page's list (CONSOLE_CATALOG_FILE, task 8.4, D38): names and host counts only, rendered
+      # from the deploy templates; read-only.
+      - ./config/catalog.json:/etc/console/catalog.json:ro
     # No healthcheck, on purpose. podman-compose 1.0.6 (tag v1.0.6, podman_compose.py) turns a
     # `test: ["CMD", ...]` list into `--healthcheck-command "/bin/sh -c ..."`, and this image is
     # distroless: it has no /bin/sh, so the check could never pass (Semaphore task 9892 on prod: the container

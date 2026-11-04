@@ -109,6 +109,9 @@ pub struct Config {
     /// agentgateway clients, budgets and models (JSON object) rendered from the agentgateway host's vars (task 8.3a).
     /// `None` answers `/v1/gateway` as `unconfigured`.
     pub gateway_file: Option<PathBuf>,
+    /// Deployable services (JSON object) rendered from the deploy templates (task 8.4, D38). `None` answers
+    /// `/v1/catalog` as `unconfigured`.
+    pub catalog_file: Option<PathBuf>,
     /// Grafana origin for deep links, no trailing slash. `None` leaves every link null.
     pub grafana_url: Option<String>,
     /// Authentik directory for the Access page. `None` leaves `/v1/access` answering `unconfigured`.
@@ -178,6 +181,10 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        let catalog_file = get("CONSOLE_CATALOG_FILE")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
         let grafana_url = get("CONSOLE_GRAFANA_URL")
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
@@ -204,6 +211,7 @@ impl Config {
             openbao,
             flows_file,
             gateway_file,
+            catalog_file,
             grafana_url,
             authentik,
             role_map_file,
@@ -580,6 +588,7 @@ mod tests {
         assert!(config.proxmox.is_none());
         assert!(config.flows_file.is_none());
         assert!(config.gateway_file.is_none());
+        assert!(config.catalog_file.is_none());
     }
 
     #[test]
@@ -825,6 +834,22 @@ mod tests {
         env.insert("CONSOLE_GATEWAY_FILE", "   ");
         let config = Config::from_lookup(lookup(env)).expect("valid config");
         assert!(config.gateway_file.is_none());
+    }
+
+    #[test]
+    fn catalog_file_is_optional_and_trimmed() {
+        let mut env = full_env();
+        env.insert("CONSOLE_CATALOG_FILE", "  /etc/console/catalog.json  ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert_eq!(
+            config.catalog_file,
+            Some(PathBuf::from("/etc/console/catalog.json"))
+        );
+
+        let mut env = full_env();
+        env.insert("CONSOLE_CATALOG_FILE", "   ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert!(config.catalog_file.is_none());
     }
 
     #[test]

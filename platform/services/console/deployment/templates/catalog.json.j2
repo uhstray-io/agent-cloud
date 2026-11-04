@@ -1,0 +1,26 @@
+{#- catalog.json: the services the Request a service page lists (plan 17, task 8.4, D38). Rendered by deploy-console.yml
+    to config/catalog.json, ALWAYS: an empty list when no deploy template qualifies. NAMES AND COUNTS ONLY. The input is
+    the deploy templates (_console_catalog_templates, read from platform/semaphore/templates.yml on the controller), and
+    this template reads only a template's name, its playbook path and the inventory group names. No key, address, port
+    or other field of a template or host is read.
+
+    A template qualifies when:
+    - its name is `Deploy <name>`. A trailing " (Dev)" is dropped before the match, so the Dev twin names the same service;
+    - it is not `Deploy All Services` (it deploys every service, so it is not one of them);
+    - its playbook basename is `deploy-<service>.yml`.
+    The entry's name is the display name (the part after "Deploy ", no " (Dev)"), its template is the full template name,
+    and its deployed_hosts is the number of hosts in the group `<service with - as _>_svc`, 0 when that group does not
+    exist. The list sorts by name with Jinja's default case-insensitive sort. Do NOT edit by hand: re-run deploy-console.yml. -#}
+{%- set _entries = [] -%}
+{%- for t in _console_catalog_templates | default([]) -%}
+{%- set _template = t.name | default('', true) | string -%}
+{%- set _base = _template | regex_replace(' [(]Dev[)]$', '') -%}
+{%- set _pb = t.playbook | default('', true) | string | basename -%}
+{#- Slices, not regex_search with a group: that filter returns a one-item list once it is given a backreference. -#}
+{%- if (_base is match('^Deploy .+$')) and (_pb is match('^deploy-.+[.]yml$')) and (_base != 'Deploy All Services') -%}
+{%- set _service = _pb[7:-4] -%}
+{%- set _group = (_service | replace('-', '_')) ~ '_svc' -%}
+{%- set _ = _entries.append({'service': _service, 'name': _base[7:], 'template': _template, 'deployed_hosts': (groups[_group] | default([])) | length}) -%}
+{%- endif -%}
+{%- endfor -%}
+{{ {'services': _entries | sort(attribute='name')} | to_nice_json }}

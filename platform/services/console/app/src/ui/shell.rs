@@ -241,6 +241,7 @@ fn Sidebar(account: Account) -> Element {
                 div { class: "grp", "Infrastructure" }
                 NavItem { to: Route::Topology {}, icon_name: "waypoints", label: "Topology" }
                 NavItem { to: Route::Services {}, icon_name: "boxes", label: "Services" }
+                NavItem { to: Route::RequestService {}, icon_name: "user-round", label: "Request a service" }
                 NavItem { to: Route::Compute {}, icon_name: "server", label: "Compute" }
                 NavItem { to: Route::Telemetry {}, icon_name: "activity", label: "Telemetry" }
                 div { class: "grp", "Governance" }

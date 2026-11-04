@@ -48,6 +48,7 @@ CONSOLE_INPUTS = [
     "platform/workflows/service-onboarding/registry.yml",
     "platform/services/authentik/deployment/app-catalog.yml",
     "platform/playbooks/vars/access-role-map.yml",
+    "platform/semaphore/templates.yml",
 ]
 
 # A credential-bearing task: its text names a secret_id, role_id, token header or a registered credential result.
