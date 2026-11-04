@@ -52,7 +52,8 @@ def _leaf(directory: Path, ca: str, name: str, san: str, usage: str, dest: Path)
     """A leaf at <dest>/current/{cert,key}.pem, signed by `ca`."""
     _openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
              "-keyout", f"{name}.key", "-out", f"{name}.csr", "-subj", f"/CN={name}", cwd=directory)
-    # Python 3.13+ verifies with VERIFY_X509_STRICT, which requires an Authority Key Identifier.
+    # On Python 3.13+, ssl.create_default_context() (the probe client via urllib) sets
+    # VERIFY_X509_STRICT, which requires an Authority Key Identifier on the leaf.
     (directory / f"{name}.ext").write_text(
         f"subjectAltName={san}\nextendedKeyUsage={usage}\n"
         "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n"
