@@ -1091,6 +1091,8 @@ mod tests {
             gateway_file: None,
             grafana_url: None,
             openbao: None,
+            authentik: None,
+            role_map_file: None,
         }
     }
 
@@ -1111,6 +1113,8 @@ mod tests {
             gateway: crate::server::gateway::GatewaySet::unconfigured(),
             openbao: None,
             secrets: tokio::sync::RwLock::new(crate::server::secrets::SecretsCache::new(false)),
+            access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
+            role_map: crate::server::access::RoleMap::empty(),
         })
     }
 

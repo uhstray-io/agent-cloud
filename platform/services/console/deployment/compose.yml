@@ -37,6 +37,8 @@ services:
       # The agentgateway clients, budgets and models (CONSOLE_GATEWAY_FILE, task 8.3a): names and figures only,
       # rendered from the inventory; read-only.
       - ./config/gateway.json:/etc/console/gateway.json:ro
+      # The Access page's role map (CONSOLE_ROLE_MAP_FILE, 8.2b): the authoritative table as data; read-only.
+      - ./config/role-map.json:/etc/console/role-map.json:ro
     # No healthcheck, on purpose. podman-compose 1.0.6 (tag v1.0.6, podman_compose.py) turns a
     # `test: ["CMD", ...]` list into `--healthcheck-command "/bin/sh -c ..."`, and this image is
     # distroless: it has no /bin/sh, so the check could never pass (Semaphore task 9892 on prod: the container

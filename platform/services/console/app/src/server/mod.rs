@@ -1,5 +1,6 @@
 //! Server core: state, session layer, router and the background OIDC discovery.
 
+pub mod access;
 pub mod api;
 pub mod auth;
 pub mod config;
@@ -62,6 +63,11 @@ pub struct AppState {
     /// The OpenBao metadata walk for the Secrets page (plan 17 D35). The refresh task writes it;
     /// `/v1/secrets` only reads it.
     pub secrets: tokio::sync::RwLock<secrets::SecretsCache>,
+    /// The Authentik directory for the Access page (plan 17, 8.2b). The refresh task writes it;
+    /// `/v1/access` only reads it.
+    pub access: tokio::sync::RwLock<access::AccessCache>,
+    /// The Access Level -> per-service role map, read once at startup. Empty when `CONSOLE_ROLE_MAP_FILE` is unset.
+    pub role_map: access::RoleMap,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -116,6 +122,11 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         None => None,
     };
     let secrets_cache = secrets::SecretsCache::new(openbao.is_some());
+    let access_cache = access::AccessCache::new(config.authentik.is_some());
+    let role_map = match &config.role_map_file {
+        Some(path) => access::load_role_map(path)?,
+        None => access::RoleMap::empty(),
+    };
     let inventory_cache =
         inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
@@ -138,6 +149,8 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         gateway,
         openbao,
         secrets: tokio::sync::RwLock::new(secrets_cache),
+        access: tokio::sync::RwLock::new(access_cache),
+        role_map,
     }))
 }
 
@@ -245,6 +258,7 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/flows", get(inventory::get_flows))
         .route("/v1/gateway", get(gateway::get_gateway))
         .route("/v1/secrets", get(secrets::get_secrets))
+        .route("/v1/access", get(access::get_access))
         .route("/v1/{*rest}", any(api::v1_unmatched))
         .with_state(state)
 }
@@ -317,6 +331,8 @@ mod tests {
                 flows_file: None,
                 gateway_file: None,
                 grafana_url: None,
+                authentik: None,
+                role_map_file: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -330,6 +346,8 @@ mod tests {
             gateway: gateway_set,
             openbao: None,
             secrets: tokio::sync::RwLock::new(secrets::SecretsCache::new(false)),
+            access: tokio::sync::RwLock::new(access::AccessCache::new(false)),
+            role_map: access::RoleMap::empty(),
         })
     }
 

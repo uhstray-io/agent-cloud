@@ -47,6 +47,7 @@ CONSOLE_INPUTS = [
     "platform/playbooks/tasks/manage-secrets.yml",
     "platform/workflows/service-onboarding/registry.yml",
     "platform/services/authentik/deployment/app-catalog.yml",
+    "platform/playbooks/vars/access-role-map.yml",
 ]
 
 # A credential-bearing task: its text names a secret_id, role_id, token header or a registered credential result.
