@@ -69,6 +69,7 @@ The envelope is per authority, not single, so the UI can say which source is dow
 ```json
 {
   "source": {...}, "error": {...}, "stale": false, "updated_at": {...},
+  "domains": [{"name": "IT", "slug": "domain-it", "color": "4caf50"}],
   "sites": [
     {
       "id": "dc1", "name": "DC 1", "org": "ops",
@@ -85,7 +86,8 @@ The envelope is per authority, not single, so the UI can say which source is dow
               "name": "tududi", "vmid": 101,
               "status": "active", "live_status": "running",
               "vcpus": 2.0, "memory_mb": 4096, "disk_mb": 40960,
-              "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync"],
+              "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync", "IT"],
+              "domains": ["domain-it"],
               "workflow": {"steps": {"step-a": "pass", "step-b": "fail"},
                            "failed": ["step-b"], "last_run": "2026-10-26T12:00:00Z"},
               "rag": "red",
@@ -107,6 +109,16 @@ The envelope is per authority, not single, so the UI can say which source is dow
 
 - `sites` are the tenant's sites in scope-file order, flattened across orgs. `org` is the owning
   org id.
+- `domains` are the business domains NetBox holds (D37): the NetBox tags whose slug starts with
+  `domain-`, each as `{name, slug, color}`, sorted by name. `color` is the colour the tag holds, or `""`;
+  the browser draws a swatch only for six hex digits. NetBox tags are global, so the list is platform-wide and every
+  tenant gets the same one. It is `[]` before the first NetBox read, and when NetBox holds no
+  `domain-` tag. The tag read (`GET /api/extras/tags/`) sends no lookup filter: it pages with
+  `offset` at 1000 a page, up to 10 pages, and a list longer than that fails the NetBox read as
+  truncated, so a partial domain list is never shown. It does not follow the `next` link.
+  A tag whose slug does not start with `domain-` (`domainx`, `domain`, `not-domain-x`) is no domain.
+  The tag read is part of the NetBox site read: when it fails, the whole NetBox read fails as any
+  failed read does. `source.netbox` is `error`, and the last good data is kept, domains included.
 - `mapped` is `false` when the site declares no `netbox_site`, or NetBox holds no site with that
   slug, or NetBox is unconfigured or has no data. An unmapped site has `clusters: []` and
   `devices: []`.
@@ -130,6 +142,9 @@ The envelope is per authority, not single, so the UI can say which source is dow
   rule applies; the Proxmox source stays `ok`. Every caller gets `name` and `status`. Platform admins also get
   `cpu`, `maxcpu`, `mem`, `maxmem` and `uptime`; for anyone else those keys are absent. Units are
   Proxmox's: `cpu` is a fraction of `maxcpu`, `mem`/`maxmem` are bytes, `uptime` is seconds.
+- VM `tags` are the tag names, as before. VM `domains` are the slugs of the declared domains among
+  the VM's tags, in `domains` order. The match is on the tag's slug, never its name. A `domain-` tag
+  the domain list does not hold gives no entry, so it counts for no domain.
 - VM `status` is the NetBox status. `live_status` is the Proxmox status, or `null` when no live
   state is joined. A VM is joined only when its name is unique across every declared NetBox site,
   in any tenant, and unique among the Proxmox guests. A name held twice on either side gets `null`,
@@ -149,13 +164,15 @@ The envelope is per authority, not single, so the UI can say which source is dow
 { "source": {...}, "error": {...}, "stale": false, "updated_at": {...},
   "services": [
     {"name": "tududi", "site": "dc1", "cluster": "pve-prod", "live_status": "running",
-     "rag": "red", "failed_steps": ["step-b"], "last_run": "2026-10-26T12:00:00Z", "tags": ["tududi-sync"]}
+     "rag": "red", "failed_steps": ["step-b"], "last_run": "2026-10-26T12:00:00Z",
+     "tags": ["tududi-sync", "IT"], "domains": ["domain-it"]}
   ] }
 ```
 
 Rows are the tenant's VMs with `workflow` set, in site and cluster order, then NetBox list order.
 `site` is the scope site id. `failed_steps` is the sorted union of `ac_failed_steps` and every step
-whose status is `fail`.
+whose status is `fail`. `domains` is the VM's `domains`: the slugs of the declared domains it carries.
+`tags` stays the tag names.
 
 ## `GET /v1/tenants/{t}/services/{name}`
 
@@ -292,6 +309,10 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
   (`docs/release-notes/version-4.1.md:8`, v4.1.0). The 4.5 release notes (`version-4.5.md` at v4.5.10)
   record no change to the stored unit. Their only VM-resource entry is v4.5.7's #21095 (line 75),
   which adopts IEC display labels such as GiB, a label change. The stored value is read unchanged.
+- The NetBox tag fields `name`, `slug` and `color` on `GET /api/extras/tags/`, the `slug` on a VM's
+  nested tag, and the colour format are unverified against a live NetBox. No NetBox source or response
+  was read for them. The fixtures in `src/server/netbox.rs` are written to that shape, so a mismatch
+  would show as no domains, not as a wrong one.
 - The NetBox VM fields `vcpus`, `memory`, `disk`, `primary_ip`, `tags` and the `custom_fields` shape
   are taken from the brief and the model. `custom_fields` on a VM is confirmed by
   `platform/playbooks/collect-service-conformance.yml`; the other names are unverified against a live
@@ -308,7 +329,3 @@ Not built in Phase 3. Recorded so the next change to the contract and the UI kno
   server sends none. The server should send one per level when `CONSOLE_GRAFANA_URL` is set. The
   UI would then render it in the resource panel. Node usage is already per-asset, so the link
   goes to Grafana rather than a chart in the console.
-- **Domain tiles move to NetBox tags in Phase 5.** The five business-domain tiles on the Services
-  page count a service's NetBox tags by name or slug, against a fixed list in the UI
-  (`DOMAIN_TAGS` in `services.rs`). The org settings page owns the domain tags (plan 17, O5). When
-  Phase 5 stores them as NetBox tags, the list should come from the answer, not from the UI.

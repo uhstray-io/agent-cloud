@@ -136,11 +136,11 @@ The window is Semaphore's newest 200 tasks of the project (`tasks/last`). A run 
 
 ## Inventory (NetBox and Proxmox, read-only, Phase 3)
 
-The server reads NetBox (sites, clusters, VMs, devices, prefixes) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
+The server reads NetBox (sites, clusters, VMs, devices, prefixes, tags) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The tags read keeps the business domains: NetBox tags whose slug starts with `domain-` (D37). NetBox tags are global, so the domains are platform-wide and every tenant gets the same list. The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
 
 | Source | Credential | Read |
 |--------|------------|------|
-| NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to |
+| NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to; every tag, keeping the `domain-` slugs. The `console` profile grants `extras.tag` view (`platform/playbooks/provision-netbox-automation-token.yml:74`); that the grant covers `/api/extras/tags/` is unverified against a live NetBox |
 | Proxmox | `CONSOLE_PROXMOX_TOKEN_ID` and `CONSOLE_PROXMOX_TOKEN`, a PVEAuditor token | `cluster/resources`: nodes and guests, joined to a VM by name |
 
 Environment, read by `app/src/server/config.rs`. The deploy does not set these yet (see Open items):
@@ -160,7 +160,7 @@ Routes and scoping:
 
 | Route | Who | Carries |
 |-------|-----|---------|
-| `GET /v1/tenants/{t}/inventory` | members of `t` | sites, with clusters, nodes, VMs (with RAG) and devices. Node CPU, memory and uptime only for platform admins |
+| `GET /v1/tenants/{t}/inventory` | members of `t` | the business `domains` (platform-wide), sites, with clusters, nodes, VMs (with RAG, and the domain slugs each VM carries) and devices. Node CPU, memory and uptime only for platform admins |
 | `GET /v1/tenants/{t}/services`, `/services/{name}` | members of `t` | VMs that carry workflow fields; one VM |
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |

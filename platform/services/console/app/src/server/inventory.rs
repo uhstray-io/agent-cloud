@@ -24,7 +24,9 @@ use tower_sessions::Session;
 use super::api::{error, unauthenticated};
 use super::auth;
 use super::grafana;
-use super::netbox::{self, NbCluster, NbDevice, NbPrefix, NbVm, NetboxData, PrefixData, Workflow};
+use super::netbox::{
+    self, Domain, NbCluster, NbDevice, NbPrefix, NbVm, NetboxData, PrefixData, Workflow,
+};
 use super::proxmox::{self, ProxmoxData, PveGuest, PveNode};
 use super::scope::{is_platform_admin, Site, Tenant};
 use super::work::{self, rfc3339_now, Source};
@@ -241,7 +243,21 @@ fn network_meta(cache: &InventoryCache, grafana_base: Option<&str>) -> Meta {
 pub struct InventoryBody {
     #[serde(flatten)]
     pub meta: Meta,
+    /// The business-domain tags NetBox holds, sorted by name. Platform-wide: NetBox tags are
+    /// global, so every tenant gets the same list. Empty before the first NetBox read, and when
+    /// NetBox holds no `domain-` tag.
+    pub domains: Vec<Domain>,
     pub sites: Vec<SiteView>,
+}
+
+/// The business domains the last good NetBox read holds.
+fn domains_of(cache: &InventoryCache) -> Vec<Domain> {
+    cache
+        .netbox
+        .data
+        .as_ref()
+        .map(|data| data.domains.clone())
+        .unwrap_or_default()
 }
 
 /// One scope site, joined. `mapped` is false when the site has no `netbox_site` or NetBox
@@ -312,7 +328,11 @@ pub struct VmView {
     pub disk_mb: Option<u64>,
     /// The primary address NetBox holds, prefix length included.
     pub primary_ip: Option<String>,
+    /// The tag names, as NetBox holds them.
     pub tags: Vec<String>,
+    /// The slugs of the business domains this VM carries, in the order of the answer's
+    /// `domains`. A `domain-` tag the domain list does not hold is no domain, so it is absent.
+    pub domains: Vec<String>,
     /// `null` when the VM carries no workflow fields.
     pub workflow: Option<Workflow>,
     pub rag: &'static str,
@@ -336,6 +356,8 @@ pub struct ServiceRow {
     pub failed_steps: Vec<String>,
     pub last_run: Option<String>,
     pub tags: Vec<String>,
+    /// The slugs of the business domains the VM carries (see `VmView::domains`).
+    pub domains: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -577,6 +599,18 @@ fn cluster_view(cluster: &NbCluster, join: &Join<'_>) -> ClusterView {
     }
 }
 
+/// The declared business domains this VM carries, by slug, in the order NetBox lists them. The
+/// match is on the tag's slug. A VM tagged with a domain the list does not hold gets none for it.
+fn vm_domains(vm: &NbVm, join: &Join<'_>) -> Vec<String> {
+    join.netbox.map_or_else(Vec::new, |data| {
+        data.domains
+            .iter()
+            .filter(|domain| vm.tag_slugs.contains(&domain.slug))
+            .map(|domain| domain.slug.clone())
+            .collect()
+    })
+}
+
 fn vm_view(vm: &NbVm, live: Option<&PveGuest>, join: &Join<'_>) -> VmView {
     let live_status = live.and_then(|guest| guest.status.clone());
     let (failed, pending) = match &vm.workflow {
@@ -596,6 +630,7 @@ fn vm_view(vm: &NbVm, live: Option<&PveGuest>, join: &Join<'_>) -> VmView {
         disk_mb: vm.disk_mb,
         primary_ip: vm.primary_ip.clone(),
         tags: vm.tags.clone(),
+        domains: vm_domains(vm, join),
         workflow: vm.workflow.clone(),
         rag: rag(&RagInput {
             netbox_status: vm.status.as_str(),
@@ -626,6 +661,7 @@ fn services_of(sites: &[SiteView]) -> Vec<(ServiceRow, VmView)> {
                     failed_steps: vm.workflow.as_ref().map(failed_steps).unwrap_or_default(),
                     last_run: vm.workflow.as_ref().and_then(|w| w.last_run.clone()),
                     tags: vm.tags.clone(),
+                    domains: vm.domains.clone(),
                 };
                 services.push((row, vm.clone()));
             }
@@ -668,6 +704,7 @@ pub async fn get_inventory(
     );
     Json(InventoryBody {
         meta: meta(&cache, app.config.grafana_url.as_deref(), admin),
+        domains: domains_of(&cache),
         sites,
     })
     .into_response()
@@ -1833,6 +1870,123 @@ mod tests {
             get_json(&base, Some(&cookie), "/v1/tenants/acme/services/gateway").await;
         assert_eq!(status, 404);
         assert_eq!(text, r#"{"error":"unknown_service"}"#);
+    }
+
+    #[tokio::test]
+    async fn the_business_domains_are_platform_wide_sorted_and_matched_by_slug() {
+        let (state, _, _) = live_state().await;
+        let (base, cookie) = signed_in(state, &["platform-admins"]).await;
+        let (status, acme_text) =
+            get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{acme_text}");
+        let (status, initech_text) =
+            get_json(&base, Some(&cookie), "/v1/tenants/initech/inventory").await;
+        assert_eq!(status, 200, "{initech_text}");
+        let acme: serde_json::Value = serde_json::from_str(&acme_text).expect("json");
+        let initech: serde_json::Value = serde_json::from_str(&initech_text).expect("json");
+
+        let expected = serde_json::json!([
+            {"name": "IT", "slug": "domain-it", "color": "4caf50"},
+            {"name": "Products", "slug": "domain-products", "color": "2196f3"},
+            {"name": "Professional Services", "slug": "domain-professional-services", "color": "ff9800"}
+        ]);
+        assert_eq!(acme["domains"], expected, "only domain- slugs, by name");
+        assert_eq!(
+            initech["domains"], expected,
+            "NetBox tags are platform-wide"
+        );
+
+        assert_eq!(
+            vm_named(&acme, "wiki")["domains"],
+            serde_json::json!(["domain-products", "domain-professional-services"]),
+            "in the order of the domain list"
+        );
+        assert_eq!(
+            vm_named(&acme, "tududi")["domains"],
+            serde_json::json!(["domain-it"])
+        );
+        assert_eq!(vm_named(&acme, "gateway")["domains"], serde_json::json!([]));
+        assert_eq!(
+            vm_named(&acme, "planned-vm")["domains"],
+            serde_json::json!([]),
+            "a domain- tag the list does not hold is no domain"
+        );
+        assert_eq!(
+            vm_named(&acme, "planned-vm")["tags"],
+            serde_json::json!(["Ghost"]),
+            "the tag itself still shows as a tag"
+        );
+    }
+
+    #[tokio::test]
+    async fn services_carry_the_slugs_of_their_declared_domains() {
+        let (state, _, _) = live_state().await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/services").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let service = |name: &str| {
+            body["services"]
+                .as_array()
+                .expect("services")
+                .iter()
+                .find(|s| s["name"] == name)
+                .unwrap_or_else(|| panic!("no service {name}"))
+        };
+        assert_eq!(
+            service("tududi")["domains"],
+            serde_json::json!(["domain-it"])
+        );
+        assert_eq!(service("planned-vm")["domains"], serde_json::json!([]));
+        assert_eq!(
+            service("tududi")["tags"],
+            serde_json::json!(["tududi-sync", "IT"]),
+            "tags stay names"
+        );
+
+        let (status, text) =
+            get_json(&base, Some(&cookie), "/v1/tenants/acme/services/tududi").await;
+        assert_eq!(status, 200, "{text}");
+        let one: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(one["service"]["domains"], serde_json::json!(["domain-it"]));
+        assert_eq!(one["vm"]["domains"], serde_json::json!(["domain-it"]));
+    }
+
+    #[tokio::test]
+    async fn no_domain_tags_is_an_empty_domain_list_and_every_site_still_joins() {
+        let mock = nb::Mock::default();
+        mock.tags_empty
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (state, _, _) = live_state_using(mock, None).await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["domains"], serde_json::json!([]));
+        assert_eq!(
+            body["source"]["netbox"], "ok",
+            "no domain is not a failed read"
+        );
+        assert_eq!(body["sites"].as_array().expect("sites").len(), 3);
+        assert_eq!(vm_named(&body, "tududi")["domains"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_failed_tag_read_marks_netbox_failed_and_names_no_body() {
+        let mock = nb::Mock::default();
+        mock.fail_tags
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (state, _, _) = live_state_using(mock, None).await;
+        let (base, cookie) = signed_in(state, &["ops"]).await;
+        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        assert_eq!(status, 200, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["source"]["netbox"], "error");
+        assert_eq!(body["error"]["netbox"], "NetBox answered HTTP 500");
+        assert_eq!(body["stale"], true);
+        assert_eq!(body["domains"], serde_json::json!([]));
+        assert!(!text.contains("tag boom"), "{text}");
+        assert!(!text.contains(nb::TOKEN), "{text}");
     }
 
     #[tokio::test]
