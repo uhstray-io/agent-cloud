@@ -557,16 +557,24 @@
               changed_when: false
               when: not ansible_check_mode
 
-            # THE CPU MODEL. This run may have written a new `cpu` before the restart, and a start on a
-            # model the guest then cannot run would leave it down. So when this run changed the model and
-            # the guest is stopped, the value from before the run goes back before any start: the raw
-            # value, or no key at all when there was none.
+            # THE CPU MODEL. The restart may be booting a `cpu` this run wrote, or one an earlier run
+            # wrote and left pending (the config read returns pending values, so that run's model is
+            # not in _cfg_changes). Either way a start on a model the guest cannot run would leave it
+            # down, so when a model change awaited this restart and the guest is stopped, the value the
+            # guest last RAN goes back before any start: the pending entry's current `value` (PVE API
+            # GET .../pending, "Current value."), else the config as read before this run's write; no
+            # key at all when there was none.
             - name: "Recovery: work out whether the CPU model must be restored before a start"
+              vars:
+                _cpu_pending_items: "{{ _pending.json.data | default([]) | selectattr('key', 'equalto', 'cpu') | selectattr('pending', 'defined') | list }}"
+                _cpu_ran: >-
+                  {{ ((_cpu_pending_items | first).value | default('')) if (_cpu_pending_items | length > 0)
+                     else (_cfg.json.data.cpu | default('')) }}
               ansible.builtin.set_fact:
-                _cpu_restore_needed: "{{ ('cpu' in _cfg_changes) and ((_rescue_state.json.data.status | default('')) == 'stopped') }}"
+                _cpu_restore_needed: "{{ (_cpu_awaits_restart | bool) and ((_rescue_state.json.data.status | default('')) == 'stopped') }}"
                 _cpu_restore_body: >-
-                  {{ {'delete': 'cpu'} if ((_cfg.json.data.cpu | default('') | string) | length == 0)
-                     else {'cpu': _cfg.json.data.cpu | string} }}
+                  {{ {'delete': 'cpu'} if ((_cpu_ran | string | trim) | length == 0)
+                     else {'cpu': _cpu_ran | string | trim} }}
 
             - name: "Recovery: guard target VMID before the CPU model restore"
               ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
@@ -619,14 +627,14 @@
                            if (_rescue_state.json.data.status | default('')) == 'stopped'
                            else 'It was NOT stopped, so no start was issued (sending start to a guest mid-shutdown can wedge it) — check it by hand.') }}
                 _cpu_note: >-
-                  {{ '' if ('cpu' not in _cfg_changes) else
-                     ('The CPU model change to ' ~ (_cfg_changes.cpu | string) ~ ' is in the config, and restoring the previous model FAILED ('
+                  {{ '' if not (_cpu_awaits_restart | bool) else
+                     ('The CPU model change to ' ~ (_want_cpu | string) ~ ' is in the config, and restoring the previous model FAILED ('
                       ~ (_cpu_restore.msg | default('no detail') | string) ~ '), so the guest was NOT started: starting it would boot the new model.'
                       if (_cpu_restore is failed) else
-                      ('The CPU model was restored to its previous value (or removed, when there was none) before the start; the change to '
-                       ~ (_cfg_changes.cpu | string) ~ ' did not apply.'
+                      ('The CPU model was restored to the value the guest last ran (or removed, when there was none) before the start; the change to '
+                       ~ (_want_cpu | string) ~ ' did not apply.'
                        if (_cpu_restore_needed | bool) else
-                       ('The CPU model change to ' ~ (_cfg_changes.cpu | string) ~ ' is in the config, but the guest was not stopped, so it was not restored; it applies on the next boot.'))) }}
+                       ('The CPU model change to ' ~ (_want_cpu | string) ~ ' is in the config, but the guest was not stopped, so it was not restored; it applies on the next boot.'))) }}
               ansible.builtin.fail:
                 msg: >-
                   Restart sequence failed for vmid {{ _vmid }} on {{ _node }}. Guest

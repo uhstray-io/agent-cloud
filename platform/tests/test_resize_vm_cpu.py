@@ -229,20 +229,28 @@ def test_provision_keeps_the_flags_an_adopted_vm_already_carries(tmp_path, cur, 
 RESTORE_TASK = "Recovery: work out whether the CPU model must be restored before a start"
 
 
-@pytest.mark.parametrize("cfg_cpu, changes, status, needed, body", [
-    ("x86-64-v2-AES,flags=+aes", {"cpu": "x86-64-v3,flags=+aes"}, "stopped", True,
-     {"cpu": "x86-64-v2-AES,flags=+aes"}),
-    (None, {"cpu": "x86-64-v3"}, "stopped", True, {"delete": "cpu"}),
-    ("x86-64-v2-AES", {"cpu": "x86-64-v3"}, "running", False, {"cpu": "x86-64-v2-AES"}),
-    ("x86-64-v2-AES", {}, "stopped", False, {"cpu": "x86-64-v2-AES"}),
+@pytest.mark.parametrize("cfg_cpu, pending, awaits, status, needed, body", [
+    # This run wrote the model: the config read before the write is what the guest ran.
+    ("x86-64-v2-AES,flags=+aes", [], True, "stopped", True, {"cpu": "x86-64-v2-AES,flags=+aes"}),
+    (None, [], True, "stopped", True, {"delete": "cpu"}),
+    ("x86-64-v2-AES", [], True, "running", False, {"cpu": "x86-64-v2-AES"}),
+    ("x86-64-v2-AES", [], False, "stopped", False, {"cpu": "x86-64-v2-AES"}),
+    # An earlier run wrote it and left it pending: the config read already shows the new model, so
+    # what the guest ran is the pending entry's current value (PR 843 integration review).
+    ("x86-64-v3", [{"key": "cpu", "value": "kvm64", "pending": "x86-64-v3"}], True, "stopped", True,
+     {"cpu": "kvm64"}),
+    ("x86-64-v3", [{"key": "cpu", "pending": "x86-64-v3"}], True, "stopped", True, {"delete": "cpu"}),
+    ("x86-64-v3", [{"key": "memory", "value": "4096", "pending": "8192"}], True, "stopped", True,
+     {"cpu": "x86-64-v3"}),
 ])
-def test_a_stopped_guest_gets_the_cpu_model_it_had_before_the_run(tmp_path, cfg_cpu, changes, status,
-                                                                 needed, body):
+def test_a_stopped_guest_gets_the_cpu_model_it_last_ran(tmp_path, cfg_cpu, pending, awaits, status,
+                                                        needed, body):
     cfg = {} if cfg_cpu is None else {"cpu": cfg_cpu}
     tasks = [find_task(RESIZE, RESTORE_TASK),
              {"ansible.builtin.debug": {"msg": "RESULT={{ {'needed': _cpu_restore_needed | bool, "
                                                "'body': _cpu_restore_body} | to_json }}"}}]
-    rc, out = run_play(tmp_path, {"_cfg": {"json": {"data": cfg}}, "_cfg_changes": changes,
+    rc, out = run_play(tmp_path, {"_cfg": {"json": {"data": cfg}}, "_pending": {"json": {"data": pending}},
+                                  "_cpu_awaits_restart": awaits,
                                   "_rescue_state": {"json": {"data": {"status": status}}}}, tasks)
     assert rc == 0, out
     assert result_line(out) == {"needed": needed, "body": body}
