@@ -204,6 +204,20 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+  # Ledger citations (docs/MISTAKES.md 5.2): the citation test (8.2) runs when the ledger is
+  # staged. The pre-push hook is the only other place it runs, and SKIP_TESTS=1 bypasses that
+  # whole hook, so a ledger edit once committed a dead citation (2026-11-04). The test takes
+  # about 0.4s, so it can gate the commit itself. Needs pytest on python3, like the pre-push run.
+  - repo: local
+    hooks:
+      - id: ledger-citations
+        name: ledger citations resolve (docs/MISTAKES.md 5.2)
+        language: system
+        entry: python3 -m pytest -q -p no:cacheprovider platform/tests/test_ledger_test_citations.py
+        files: ^docs/MISTAKES\.md$
+        pass_filenames: false
+        stages: [pre-commit]
+
   # Standard pre-commit hooks for general hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
