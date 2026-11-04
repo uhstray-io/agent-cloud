@@ -89,11 +89,16 @@
       # start fails with "command required for rootless mode with multiple IDs:
       # exec: "newuidmap": executable file not found in $PATH". Measured on both
       # GitHub runners (2026-10-10): every job that declared a container failed so.
+      #
+      # catatonit is the init podman runs for a container with init: true (--init), bind-mounted from
+      # the host; podman only RECOMMENDS it too. The launch gate's compose file uses init: true, and its
+      # deploy refuses a host without catatonit.
       ansible.builtin.apt:
         name:
           - podman
           - podman-compose
           - uidmap
+          - catatonit
         state: present
         update_cache: true
 

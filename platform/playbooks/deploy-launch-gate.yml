@@ -199,6 +199,27 @@
         quiet: true
       when: not _launch_gate_local_mode
 
+    # compose.yml sets init: true, and podman's --init bind-mounts catatonit from the host. On Ubuntu catatonit is
+    # only a Recommends of podman, and tasks/install-podman-compose.yml installs nothing on a host that already has
+    # podman, so a host can lack it; the container would then fail at creation. Read-only check, refused here.
+    - name: "Look for podman's init binary (catatonit) on a production host"
+      ansible.builtin.shell: "command -v catatonit >/dev/null 2>&1 || test -x /usr/libexec/podman/catatonit"
+      register: _launch_gate_init_bin
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not _launch_gate_local_mode
+
+    - name: "Refuse a production host without catatonit (the gate runs with init: true)"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_init_bin.rc == 0
+        fail_msg: >-
+          podman's init binary (catatonit) is missing on this host, and the gate's container runs with init: true.
+          Run Install Podman, which installs it, then re-run this deploy.
+        quiet: true
+      when: not _launch_gate_local_mode
+
     # The server leaf is declared once, for this host, in site-config's internal_leaves. The mint and the
     # distribution below read that declaration, so the directory and the SAN are fixed here, before anything is
     # issued. Every check is a refusal before anything changes.

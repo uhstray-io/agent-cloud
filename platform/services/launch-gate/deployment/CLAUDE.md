@@ -22,11 +22,11 @@ deploy it are in `platform/playbooks/`, and their Semaphore templates are declar
 
 The playbook headers hold the behaviour, the refusals and the order of the steps.
 
-No environment runs the gate yet. The open tasks of the `skynet-launch-containment` change
+Local-dev ran the gate on 2026-11-04: bootstrapped from dev, deployed and validated (local Semaphore tasks 11594
+and 11596; the 3.8 scenarios passed against the live gate), then stopped again with its volumes kept. Production
+does not run it yet. The open tasks of the `skynet-launch-containment` change
 (`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) are:
 
-- the local-dev wiring (3.4) is done: local-dev was bootstrapped from dev and the gate deployed and validated there
-  on 2026-11-04 (local Semaphore tasks 11594 and 11596; the 3.8 scenarios passed against the live gate),
 - skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),
 - the production host, firewall rules, the `svc-launch-gate` team member, and the rollout (5.1-5.5).
 
@@ -34,7 +34,7 @@ No environment runs the gate yet. The open tasks of the `skynet-launch-containme
 
 | File | Role |
 |------|------|
-| `compose.yml` | The base: one container, `restart: always`, the HTTPS port on `${LAUNCH_GATE_BIND:-127.0.0.1}:${LAUNCH_GATE_PORT:-8443}`, read-only mounts of `./app`, `./config.json` and `./certs`, `read_only`, `cap_drop: ALL`, `no-new-privileges`. |
+| `compose.yml` | The base: one container, `restart: always`, the HTTPS port on `${LAUNCH_GATE_BIND:-127.0.0.1}:${LAUNCH_GATE_PORT:-8443}`, read-only mounts of `./app`, `./config.json` and `./certs`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, and `init: true` (an init process as PID 1, so a stop delivers SIGTERM; production hosts need catatonit, which the deploy checks). |
 | `compose.prod.yml` | Production overlay, loaded by `deploy.sh` outside `LOCAL_MODE`: `user: "1000:1000"` and `userns_mode: keep-id:uid=1000,gid=1000`, so the non-root process reads the 0600 TLS key. |
 | `compose.local.yml` | Local-dev overlay (`LOCAL_MODE=true`, appended by `platform/lib/common.sh`): memory cap, `label=disable`, the `local-dev` network. It does not republish ports. |
 | `deploy.sh` | Container lifecycle only. Checks the inputs exist, pulls, starts with `compose_up_if_changed app config.json certs/step-ca-bundle.crt`, waits for the container to be running. It generates no secret. |

@@ -185,6 +185,27 @@ assert dist["vars"]["_ca_root_dest_dir"] == "{{ _deploy_dir }}", dist["vars"]
 PY
 }
 
+@test "launch-gate deploy: production refuses a host without catatonit, the init the compose file's init: true needs" {
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+tasks = play["tasks"]
+names = [t.get("name", "") for t in tasks]
+look = tasks[names.index("Look for podman's init binary (catatonit) on a production host")]
+refuse = tasks[names.index("Refuse a production host without catatonit (the gate runs with init: true)")]
+assert look["ansible.builtin.shell"] == "command -v catatonit >/dev/null 2>&1 || test -x /usr/libexec/podman/catatonit", look
+# Read-only probe: it must run under --check (or the refusal reads an undefined rc) and never fail by itself.
+assert look["check_mode"] is False and look["changed_when"] is False and look["failed_when"] is False, look
+assert look["register"] == "_launch_gate_init_bin", look
+assert refuse["ansible.builtin.assert"]["that"] == ["_launch_gate_init_bin.rc == 0"], refuse
+assert "Install Podman" in refuse["ansible.builtin.assert"]["fail_msg"], refuse
+for t in (look, refuse):
+    assert t["when"] == "not _launch_gate_local_mode", t["when"]
+# Refused before anything is placed or started on the host.
+assert names.index("Refuse a production host without catatonit (the gate runs with init: true)") < names.index("Issue the server leaf (key here, signed on the CA host)")
+PY
+}
+
 @test "launch-gate deploy: the leaf and bundle are stat-checked after issuance, and the refusal is skipped only under --check" {
   python3 - "$DEPLOY" <<'PY'
 import sys, yaml
