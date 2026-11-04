@@ -10,8 +10,8 @@ refused and left untouched.
 
 pi support, checked against the installed pi-mcp-adapter 5.1.0: a URL-only HTTP server gets OAuth
 automatically (docs/auth.md:43-49), manual sign-in is the default flow (docs/auth.md:118-126), and the
-file it reads is ~/.pi/agent/mcp.json (README.md:81). Pi's built-in MCP also signs in to OAuth servers
-(docs/auth.md:139), so the URL-only entry does not depend on the adapter alone.
+file it reads is ~/.pi/agent/mcp.json (README.md:81). On Pi 0.99+ the adapter handles the servers in that
+file in place of Pi's built-in MCP (README.md:81).
 
 Author: Joseph A. Wisneski IV
 """
