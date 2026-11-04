@@ -107,7 +107,7 @@ Decision D28. These are platform-wide views, so they answer `platform-admins` on
   - Page (#845 server, #840 UI): read over the LAN (site-config #145 declares the console as an allowed source on the Authentik host); deploy 12036; signed in, the page lists Authentik people, service accounts and groups, and the role map pinned to `plan/architecture/04-credentials-access.md`.
 - [ ] 8.3 The AI Gateway and LLM access pages: `agw_clients` rendered at deploy into `config/gateway.json`, and usage through Grafana (D26). Role pages list only that role's work.
   - 8.3a done 2026-11-04: `config/gateway.json` (#838) and both pages (#837), deploy 12024; signed in, LLM access lists the gateway's clients with tier, hourly budget and allowed models, and AI Gateway lists the models with the clients allowed on each. Open: usage through Grafana (D26) and the role pages.
-- [ ] 8.4 The Policy page lists the policy files through the GitHub API. The Tenant and Organization settings pages read business-domain tags as NetBox tags. Request a service shows the catalog.
+- [ ] 8.4 The Policy page lists the policy files through the GitHub API (D36). Organization settings reads business-domain tags as NetBox tags, and Tenant settings shows the tenant's structure (D37). Request a service shows the catalog derived from the deploy templates (D38).
 - [ ] 8.5 Change controls are disabled, with the reason shown, until Phase 4. Validation gate: the canary test and computer-use tests pass.
 
 ## Phase 6 checklist: delivery and telemetry
