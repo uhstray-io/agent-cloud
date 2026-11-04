@@ -640,6 +640,9 @@
             import os
             import urllib.error
             import urllib.request
+            if not os.environ.get('SKYNET_LAUNCH_GATE_URL'):
+                print('env-missing')
+                raise SystemExit(0)
             request = urllib.request.Request(
                 os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
                 data=b'{}',
@@ -667,6 +670,7 @@
         that:
           - _skynet_gate_anon.rc == 0
           - (_skynet_gate_anon.stdout_lines | last | default('')) == '401 unauthorized'
+            or (ansible_check_mode and (_skynet_gate_anon.stdout_lines | last | default('')) == 'env-missing')
         fail_msg: >-
           skynet's POST to the launch gate /v1/launch with no token answered
           '{{ _skynet_gate_anon.stdout_lines | last | default('') }}' (rc {{ _skynet_gate_anon.rc }}; error tail:
@@ -674,6 +678,7 @@
           means the container's trust bundle does not carry the gate's CA; a name resolution failure means the
           compose.launch-gate.yml mapping is missing or wrong; a refused or timed-out connection means the gate's
           firewall does not admit skynet_svc; 200 means the gate admits a request with no token.
+          env-missing means the running container predates the gate declaration; a dry run does not recreate it, so only a real run proves the gate.
       when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
     # The same request with skynet's caller token must pass authentication and fail on the empty body
@@ -691,6 +696,9 @@
             import os
             import urllib.error
             import urllib.request
+            if not os.environ.get('SKYNET_LAUNCH_GATE_URL') or not os.environ.get('SKYNET_LAUNCH_GATE_TOKEN'):
+                print('env-missing')
+                raise SystemExit(0)
             request = urllib.request.Request(
                 os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
                 data=b'{}',
@@ -718,12 +726,14 @@
         that:
           - _skynet_gate_authed.rc == 0
           - (_skynet_gate_authed.stdout_lines | last | default('')) == '400 bad_request'
+            or (ansible_check_mode and (_skynet_gate_authed.stdout_lines | last | default('')) == 'env-missing')
         fail_msg: >-
           skynet's caller token against the launch gate answered
           '{{ _skynet_gate_authed.stdout_lines | last | default('') }}' (rc {{ _skynet_gate_authed.rc }}; error tail:
           {{ (_skynet_gate_authed.stderr_lines | default([]))[-3:] | join(' | ') }}). 401 means the token in
           skynet's .env differs from the gate's caller token, so redeploy the gate or skynet from the same
           secret; any other status means the gate is broken or its route moved.
+          env-missing means the running container predates the gate declaration; a dry run does not recreate it, so only a real run proves the gate.
       when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
     - name: "Report"

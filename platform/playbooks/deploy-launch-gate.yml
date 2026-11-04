@@ -29,8 +29,9 @@
 # CLAUDE.md, "Local-dev".)
 #
 # Deploy order on a host: provision-launch-gate-semaphore-access.yml (once, writes the token this deploy reads) ->
-# Deploy launch-gate -> skynet's route to the gate (a later change). The caller tokens are generated here and
-# handed to each caller out of band (Back Up Credentials to site-config).
+# Deploy launch-gate -> Deploy skynet with skynet_launch_gate_url set (deploy-skynet.yml shared-reads
+# caller_skynet_token from this service's OpenBao path). Back Up Credentials to site-config keeps a copy of the
+# caller tokens.
 #
 # Plan: openspec change skynet-launch-containment, tasks 3.2 and 3.3 (plan/development/openspec/changes/
 # skynet-launch-containment/tasks.md).

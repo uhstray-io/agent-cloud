@@ -22,7 +22,7 @@
 - [x] 3.3 `clean-deploy-launch-gate.yml`, `provision-launch-gate-semaphore-access.yml` (shared identity task, `task_runner`, launch probe 404). No live run has been made
 - [ ] 3.4 Templates (base with Dev variant, Local) in `templates.yml` / `templates-local.yml`; local-dev inventory and bootstrap entries (the templates have landed; the local-dev inventory and bootstrap entries are still open)
 - [x] 3.5 Renew Internal Certs: generalise the OPA server-leaf proof into a declared-listener proof and admit `launch-gate-server`; tests for both leaves
-- [ ] 3.6 deploy-skynet: shared-read `caller_skynet_token`, render `SKYNET_LAUNCH_GATE_URL` and the gate's name mapping in `compose.prod.yml`, verify skynet's container reaches the gate (401 without token)
+- [ ] 3.6 deploy-skynet: shared-read `caller_skynet_token`, render `SKYNET_LAUNCH_GATE_URL` and the gate's name mapping (its own overlay, `compose.launch-gate.yml`, loaded only when the gate is declared: in `compose.prod.yml` its required variables would stop every production deploy without a gate), verify skynet's container reaches the gate (401 without token)
 - [x] 3.7 Docs: service CLAUDE.md, AGENTS.md rows (secrets layout, workflows, sub-directory docs), playbooks README
 - [ ] 3.8 Validation gate: scenarios "Missing token" and "Caller claims another identity" pass against the locally deployed gate
 
