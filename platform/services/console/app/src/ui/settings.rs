@@ -11,8 +11,8 @@
 use dioxus::prelude::*;
 
 use super::icons::icon;
-use super::inventory::{poll_admin, view, Admin, Snapshot, View};
-use super::inventory_api::{Domain, ServiceRow};
+use super::inventory::{meta_of, poll_admin, view, Admin, Snapshot, View};
+use super::inventory_api::{self, Domain, ServiceRow};
 use super::services::DomainSwatch;
 use super::settings_api::{tree_path, TenantTree, TreeOrg, TreeSite};
 use super::shell::Ctx;
@@ -280,10 +280,17 @@ fn OrgView(tenant: String, body: TenantTree, reason: String) -> Element {
             )
         })
         .collect();
-    let (domain_rows, domains_loaded) = match view(&snapshot, Some(tenant.as_str())) {
-        View::Ready(snap) => (org_domain_rows(&snap, &site_ids), snap.inventory.is_some()),
-        _ => (Vec::new(), false),
+    let (domain_rows, domains_loaded, domain_reason) = match view(&snapshot, Some(tenant.as_str()))
+    {
+        View::Ready(snap) => (
+            org_domain_rows(&snap, &site_ids),
+            snap.inventory.is_some(),
+            meta_of(&snap).and_then(inventory_api::domains_error),
+        ),
+        _ => (Vec::new(), false, None),
     };
+    let listed: Vec<Domain> = domain_rows.iter().map(|row| row.domain.clone()).collect();
+    let empty_line = inventory_api::no_domains_line(&listed);
     let domain_cells: Vec<(Domain, String)> = domain_rows
         .into_iter()
         .map(|row| {
@@ -340,6 +347,9 @@ fn OrgView(tenant: String, body: TenantTree, reason: String) -> Element {
                 span { class: "faint", "NetBox tags, platform-wide" }
             }
             div { class: "card-b stack",
+                if let Some(reason) = domain_reason {
+                    Notice { message: reason }
+                }
                 if domains_loaded {
                     div { class: "tbl-wrap",
                         table { class: "tbl",
@@ -364,8 +374,8 @@ fn OrgView(tenant: String, body: TenantTree, reason: String) -> Element {
                             }
                         }
                     }
-                    if domain_cells.is_empty() {
-                        p { class: "hint", "No business domains are declared in NetBox yet." }
+                    if let Some(line) = empty_line {
+                        p { class: "hint", "{line}" }
                     }
                 } else {
                     Notice { message: "The business domains are not loaded yet.".to_string() }

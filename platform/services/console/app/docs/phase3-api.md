@@ -119,7 +119,7 @@ The envelope is per authority, not single, so the UI can say which source is dow
   the browser draws a swatch only for six hex digits. NetBox tags are global, so the list is platform-wide and every
   tenant gets the same one. It is `[]` before the first good tag read, and when NetBox holds no
   `domain-` tag. The tag read (`GET /api/extras/tags/`) sends no lookup filter: it pages with
-  `offset` at 1000 a page, up to 10 pages, and a list longer than that fails the NetBox read as
+  `offset` at 1000 a page, up to 10 pages, and a list longer than that fails the tag read as
   truncated, so a partial domain list is never shown. It does not follow the `next` link.
   A tag whose slug does not start with `domain-` (`domainx`, `domain`, `not-domain-x`) is no domain.
   The tag read stands apart from the site read and from the prefix read. When it fails, `domains`
@@ -315,14 +315,22 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
   (`docs/release-notes/version-4.1.md:8`, v4.1.0). The 4.5 release notes (`version-4.5.md` at v4.5.10)
   record no change to the stored unit. Their only VM-resource entry is v4.5.7's #21095 (line 75),
   which adopts IEC display labels such as GiB, a label change. The stored value is read unchanged.
-- The NetBox tag fields `name`, `slug` and `color` on `GET /api/extras/tags/`, the `slug` on a VM's
-  nested tag, and the colour format are unverified against a live NetBox. No NetBox source or response
-  was read for them. The fixtures in `src/server/netbox.rs` are written to that shape, so a mismatch
-  would show as no domains, not as a wrong one.
-- The NetBox VM fields `vcpus`, `memory`, `disk`, `primary_ip`, `tags` and the `custom_fields` shape
-  are taken from the brief and the model. `custom_fields` on a VM is confirmed by
-  `platform/playbooks/collect-service-conformance.yml`; the other names are unverified against a live
-  NetBox.
+- The NetBox tag shapes are verified against the NetBox source at tag v4.5.0, not against a live
+  NetBox. The tags list is served at `GET /api/extras/tags/`: `netbox/netbox/urls.py:48` includes
+  `extras.api.urls`, and `netbox/extras/api/urls.py:21` registers `tags`. Its rows are
+  `TagSerializer`, whose fields are `id`, `url`, `display_url`, `display`, `name`, `slug`, `color` and
+  more (`netbox/extras/api/serializers_/tags.py:30-33`). A VM's `tags` are `NestedTagSerializer`
+  objects, with `id`, `url`, `display_url`, `display`, `name`, `slug` and `color`
+  (`netbox/netbox/api/serializers/nested.py:23-27`). They reach the VM serializer through
+  `VirtualMachineSerializer` (`netbox/virtualization/api/serializers_/virtualmachines.py:33`),
+  `PrimaryModelSerializer` (`netbox/netbox/api/serializers/models.py:13`) and `TaggableModelSerializer`
+  (`netbox/netbox/api/serializers/features.py:31`). A tag's colour is a `ColorField`
+  (`netbox/extras/models/tags.py:29`, `netbox/utilities/fields.py:24-25`), validated as six lowercase
+  hex digits by `^[0-9a-f]{6}$` (`netbox/utilities/validators.py:19-22`). No live NetBox response was read.
+- The NetBox VM field `tags` is source-verified (NetBox v4.5.0, cited above). The live console token's
+  `extras.tag` view grant is unverified. `custom_fields` on a VM is confirmed by
+  `platform/playbooks/collect-service-conformance.yml`. The VM fields `vcpus`, `memory`, `disk` and
+  `primary_ip` are taken from the brief and the model, and are unverified against a live NetBox.
 - The Proxmox `cluster/resources` field names are taken from the brief and the repository's test
   fixtures. Node `status` values are as Proxmox reports them; no live response was read.
 

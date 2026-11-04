@@ -470,16 +470,19 @@ mod tests {
         );
         meta.diagnostics = Some(Diagnostics {
             dropped_mismatched: 0,
+            domains_error: None,
         });
         assert_eq!(dropped_line(&meta), None, "a zero count is silent");
         meta.diagnostics = Some(Diagnostics {
             dropped_mismatched: 1,
+            domains_error: None,
         });
         assert!(dropped_line(&meta)
             .unwrap()
             .starts_with("NetBox returned 1 row "));
         meta.diagnostics = Some(Diagnostics {
             dropped_mismatched: 3,
+            domains_error: None,
         });
         assert!(dropped_line(&meta)
             .unwrap()

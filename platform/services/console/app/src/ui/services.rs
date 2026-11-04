@@ -133,6 +133,7 @@ fn ServicesContent(snap: Snapshot) -> Element {
                 rows,
                 recorded: body.services.len(),
                 domains: snap.inventory.as_ref().map(|inv| inv.domains.clone()),
+                domains_error: meta_of(&snap).and_then(inventory_api::domains_error),
             }
         },
     }
@@ -142,7 +143,13 @@ fn ServicesContent(snap: Snapshot) -> Element {
 /// they survive a poll that replaces the rows. `domains` is `None` when the
 /// inventory answer has not loaded, so the tiles say so rather than read zero.
 #[component]
-fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize, domains: Option<Vec<Domain>>) -> Element {
+fn ServicesPanel(
+    rows: Vec<ServiceRow>,
+    recorded: usize,
+    domains: Option<Vec<Domain>>,
+    /// The admin's reason for a failed tag read, or `None`. Members never have one.
+    domains_error: Option<String>,
+) -> Element {
     let filter = use_signal(ServiceFilter::default);
     let mut filter_w = filter;
     let current = filter.read().clone();
@@ -160,6 +167,9 @@ fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize, domains: Option<Vec<Dom
                 span { class: "faint", "{total}" }
             }
             div { class: "card-b stack",
+                if let Some(reason) = domains_error {
+                    Notice { message: reason }
+                }
                 if loaded {
                     div { class: "tiles",
                         for (domain, n) in counts.iter() {
@@ -170,8 +180,8 @@ fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize, domains: Option<Vec<Dom
                             small { "No domain" }
                         }
                     }
-                    if declared.is_empty() {
-                        p { class: "hint", "No business domains are declared in NetBox yet." }
+                    if let Some(line) = inventory_api::no_domains_line(&declared) {
+                        p { class: "hint", "{line}" }
                     }
                     p { class: "hint", "A service with two domains counts in both." }
                 } else {

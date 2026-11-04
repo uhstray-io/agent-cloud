@@ -93,7 +93,9 @@ pub struct NbVm {
     pub primary_ip: Option<String>,
     /// The tag names, as NetBox holds them.
     pub tags: Vec<String>,
-    /// The slug of each tag, in `tags` order. A business domain is matched by slug, never by name.
+    /// The slugs of the tags that have one, in NetBox's order. A tag with no slug is in `tags` but
+    /// not here, so this list is not index-aligned with `tags`. A business domain is matched by
+    /// slug, never by name.
     pub tag_slugs: Vec<String>,
     /// `None` when the VM carries none of the workflow fields, so it is not a service.
     pub workflow: Option<Workflow>,
