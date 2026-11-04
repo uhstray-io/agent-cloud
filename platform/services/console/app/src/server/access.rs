@@ -17,9 +17,10 @@
 //!   `PaginatedUserList` (schema.yml:47690) holds `pagination` and `results`.
 //! - `User` (schema.yml:55835): `username`, `name`, `email`, `is_active`, `type` (`UserTypeEnum`),
 //!   `groups_obj` (nullable list of `UserGroup`, each with `name`).
-//! - `/core/groups/` (schema.yml:4331): query `include_users` (default true).
-//!   `PaginatedGroupList` (schema.yml:46742). `Group` (schema.yml:42872): `name`, `is_superuser`,
-//!   `users` (the integer pks of the direct members).
+//! - `/core/groups/` (schema.yml:4331): query `include_users`. The reader sends `false`: `users`, the integer
+//!   pks of the direct members that the member count reads, is always serialized, and only `users_obj` depends
+//!   on the flag (authentik/core/api/groups.py:67-75, 96, 171-175 at the same tag).
+//!   `PaginatedGroupList` (schema.yml:46742). `Group` (schema.yml:42872): `name`, `is_superuser`, `users`.
 //! - `Pagination` (schema.yml:47810): `next` is the next page number, and 0 when there is none. The server
 //!   sets it that way in `authentik/api/pagination.py` at the same tag, `Pagination.get_paginated_response`.
 
@@ -49,10 +50,10 @@ pub const PAGE_SIZE: usize = 100;
 /// Pages read per list. A list longer than `PAGE_SIZE * MAX_PAGES` is cut, and the answer says so.
 pub const MAX_PAGES: usize = 20;
 
-/// Set on a successful read whose list ran past `MAX_PAGES`. The list is shown as far as it was read.
-fn truncated_note() -> String {
+/// The sentence the page shows when a list ran past `MAX_PAGES`. The list is shown as far as it was read.
+fn truncated_sentence() -> String {
     let limit = PAGE_SIZE * MAX_PAGES;
-    format!("directory larger than {limit} entries; first {limit} shown")
+    format!("Authentik holds more than {limit} users or groups; the first {limit} are shown.")
 }
 
 /// Why one directory read failed. Fixed text only: no URL, no body and no header reaches a message.
@@ -79,8 +80,8 @@ impl fmt::Display for FetchError {
     }
 }
 
-/// One user as the Access page shows it. `service_account` is `type == "service_account"`; the other
-/// `UserTypeEnum` values, `internal_service_account` included, are not counted as one.
+/// One user as the Access page shows it. `service_account` is true for `type` `service_account` or
+/// `internal_service_account` (`UserTypeEnum`, schema.yml). The other values, `internal` and `external`, are not.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct User {
     pub username: String,
@@ -205,10 +206,22 @@ pub async fn fetch(
     http: &reqwest::Client,
     config: &AuthentikConfig,
 ) -> Result<Directory, FetchError> {
-    let (groups, groups_cut) =
-        list::<GroupRow>(http, config, "/api/v3/core/groups/", "include_users").await?;
-    let (users, users_cut) =
-        list::<UserRow>(http, config, "/api/v3/core/users/", "include_groups").await?;
+    // `include_users=false` drops only the expanded `users_obj`. The pk list the member count reads is
+    // always serialized (see the module header), so the groups list needs no expanded members.
+    let (groups, groups_cut) = list::<GroupRow>(
+        http,
+        config,
+        "/api/v3/core/groups/",
+        ("include_users", "false"),
+    )
+    .await?;
+    let (users, users_cut) = list::<UserRow>(
+        http,
+        config,
+        "/api/v3/core/users/",
+        ("include_groups", "true"),
+    )
+    .await?;
     Ok(directory(users, groups, groups_cut || users_cut))
 }
 
@@ -219,13 +232,13 @@ async fn list<T: DeserializeOwned>(
     http: &reqwest::Client,
     config: &AuthentikConfig,
     path: &str,
-    include_flag: &str,
+    flag: (&str, &str),
 ) -> Result<(Vec<T>, bool), FetchError> {
     let mut rows = Vec::new();
     let mut page: i64 = 1;
     for _ in 0..MAX_PAGES {
         let query = [
-            (include_flag, "true".to_string()),
+            (flag.0, flag.1.to_string()),
             ("page", page.to_string()),
             ("page_size", PAGE_SIZE.to_string()),
         ];
@@ -305,7 +318,10 @@ fn directory(users: Vec<UserRow>, groups: Vec<GroupRow>, truncated: bool) -> Dir
                 // Authentik keeps an empty string for "no address"; the page shows null.
                 email: row.email.filter(|email| !email.is_empty()),
                 active: row.is_active,
-                service_account: row.kind.as_deref() == Some("service_account"),
+                service_account: matches!(
+                    row.kind.as_deref(),
+                    Some("service_account" | "internal_service_account")
+                ),
                 groups: names,
             }
         })
@@ -319,12 +335,12 @@ fn directory(users: Vec<UserRow>, groups: Vec<GroupRow>, truncated: bool) -> Dir
     }
 }
 
-/// What `GET /v1/access` reads. `good` is the last read that finished. `error` is why the newest read
-/// failed, or the truncation note of a read that finished cut short. A failed read leaves `good` in place.
+/// What `GET /v1/access` reads. `good` is the last read that finished. `failure` is why the newest read
+/// failed, as its reason only. A failed read leaves `good` in place, and a read that finishes clears `failure`.
 pub struct AccessCache {
     configured: bool,
     good: Option<Good>,
-    error: Option<String>,
+    failure: Option<String>,
 }
 
 /// The last read that finished, and when.
@@ -340,22 +356,37 @@ impl AccessCache {
         Self {
             configured,
             good: None,
-            error: None,
+            failure: None,
         }
     }
 
-    /// Stores a finished read. A read cut short by the page bound keeps its rows and says so in `error`.
+    /// Stores a finished read and clears the failure. A read cut short by the page bound keeps its rows, and
+    /// the body says so.
     pub fn record_ok(&mut self, directory: Directory, refreshed_at: String) {
-        self.error = directory.truncated.then(truncated_note);
+        self.failure = None;
         self.good = Some(Good {
             directory,
             refreshed_at,
         });
     }
 
-    /// Keeps the last good directory, if there is one, and stores why this read failed.
-    pub fn record_error(&mut self, error: String) {
-        self.error = Some(error);
+    /// Keeps the last good directory, if there is one, and stores the reason this read failed.
+    pub fn record_error(&mut self, reason: String) {
+        self.failure = Some(reason);
+    }
+
+    /// The sentence the page shows under the directory, or none. A failed read names its reason, and says
+    /// whether the last good read is still shown. A read cut short names the bound. A failure takes precedence
+    /// over the truncation sentence, since the failed read is the newer fact.
+    fn error_sentence(&self) -> Option<String> {
+        match (&self.failure, &self.good) {
+            (Some(reason), Some(_)) => Some(format!(
+                "The newest directory read failed: {reason}. Showing the last good read."
+            )),
+            (Some(reason), None) => Some(format!("The directory read failed: {reason}.")),
+            (None, Some(good)) if good.directory.truncated => Some(truncated_sentence()),
+            (None, _) => None,
+        }
     }
 
     /// The body `GET /v1/access` serves. `state` is `unconfigured` without the directory, `loading` before
@@ -364,7 +395,7 @@ impl AccessCache {
         let state = match (self.configured, &self.good) {
             (false, _) => "unconfigured",
             (true, Some(_)) => "ok",
-            (true, None) if self.error.is_some() => "error",
+            (true, None) if self.failure.is_some() => "error",
             (true, None) => "loading",
         };
         let (users, groups, refreshed_at) = match &self.good {
@@ -381,7 +412,7 @@ impl AccessCache {
             groups,
             role_map,
             refreshed_at,
-            error: self.error.as_deref(),
+            error: self.error_sentence(),
         }
     }
 }
@@ -394,7 +425,7 @@ pub struct AccessBody<'a> {
     pub groups: &'a [Group],
     pub role_map: &'a RoleMap,
     pub refreshed_at: Option<&'a str>,
-    pub error: Option<&'a str>,
+    pub error: Option<String>,
 }
 
 /// `GET /v1/access` (platform admins only, as `/v1/secrets`). Reads the cache, never Authentik.
@@ -418,7 +449,7 @@ pub async fn refresh(app: &AppState) {
         Ok(directory) => cache.record_ok(directory, rfc3339_now()),
         Err(err) => {
             let text = err.to_string();
-            log_failure(cache.error.as_deref(), &text);
+            log_failure(cache.failure.as_deref(), &text);
             cache.record_error(text);
         }
     }
@@ -616,7 +647,8 @@ mod tests {
                "is_superuser": superuser, "users": members})
     }
 
-    /// Three users and three groups. `carol` has no `groups_obj` at all, and no `type`.
+    /// Four users and three groups. `carol` has no `groups_obj` at all, and no `type`. `ak-outpost-example`
+    /// is an `internal_service_account`, which counts as a service account.
     fn small_directory() -> (Vec<Value>, Vec<Value>) {
         let users = vec![
             user(
@@ -634,6 +666,13 @@ mod tests {
                 false,
             ),
             json!({"pk": 3, "username": "carol", "name": "", "email": "", "is_active": true, "groups_obj": null}),
+            user(
+                4,
+                "ak-outpost-example",
+                Some("internal_service_account"),
+                None,
+                true,
+            ),
         ];
         let groups = vec![
             group("platform-admins", true, &[1, 2]),
@@ -646,6 +685,14 @@ mod tests {
     fn expected_small() -> Directory {
         Directory {
             users: vec![
+                User {
+                    username: "ak-outpost-example".into(),
+                    name: "ak-outpost-example display".into(),
+                    email: Some("ak-outpost-example@example.test".into()),
+                    active: true,
+                    service_account: true,
+                    groups: Vec::new(),
+                },
                 User {
                     username: "alice".into(),
                     name: "alice display".into(),
@@ -817,11 +864,11 @@ mod tests {
             .await
             .expect("read");
         assert_eq!(directory, expected_small());
-        // Both lists were asked for their membership: the group pks, and the user's group objects.
+        // The groups list asks without expanded members, and the users list asks for group objects.
         let queries = fake.queries.lock().expect("queries").clone();
         assert!(queries
             .iter()
-            .any(|q| q.get("include_users").map(String::as_str) == Some("true")));
+            .any(|q| q.get("include_users").map(String::as_str) == Some("false")));
         assert!(queries
             .iter()
             .any(|q| q.get("include_groups").map(String::as_str) == Some("true")));
@@ -876,7 +923,7 @@ mod tests {
         assert_eq!(body["state"], "ok");
         assert_eq!(
             body["error"],
-            "directory larger than 2000 entries; first 2000 shown"
+            "Authentik holds more than 2000 users or groups; the first 2000 are shown."
         );
     }
 
@@ -892,7 +939,7 @@ mod tests {
             serde_json::to_value(app.access.read().await.body(&app.role_map)).expect("json");
         assert_eq!(first["state"], "ok");
         assert_eq!(first["error"], Value::Null);
-        assert_eq!(first["users"].as_array().expect("users").len(), 3);
+        assert_eq!(first["users"].as_array().expect("users").len(), 4);
         let refreshed_at = first["refreshed_at"].clone();
         assert!(refreshed_at.is_string());
 
@@ -902,7 +949,10 @@ mod tests {
         let stale =
             serde_json::to_value(app.access.read().await.body(&app.role_map)).expect("json");
         assert_eq!(stale["state"], "ok", "the last good read is still served");
-        assert_eq!(stale["error"], "Authentik answered HTTP 500");
+        assert_eq!(
+            stale["error"],
+            "The newest directory read failed: Authentik answered HTTP 500. Showing the last good read."
+        );
         assert_eq!(stale["users"], first["users"]);
         assert_eq!(stale["groups"], first["groups"]);
         assert_eq!(
@@ -931,7 +981,10 @@ mod tests {
         refresh(&app).await;
         let body = serde_json::to_value(app.access.read().await.body(&app.role_map)).expect("json");
         assert_eq!(body["state"], "error");
-        assert_eq!(body["error"], "Authentik answered HTTP 503");
+        assert_eq!(
+            body["error"],
+            "The directory read failed: Authentik answered HTTP 503."
+        );
         assert_eq!(body["users"], json!([]));
         assert_eq!(body["refreshed_at"], Value::Null);
         assert!(!body.to_string().contains(TOKEN));
@@ -1055,7 +1108,7 @@ mod tests {
         assert_eq!(status, 200);
         let value: Value = serde_json::from_str(&body).expect("json");
         assert_eq!(value["state"], "ok");
-        assert_eq!(value["users"].as_array().expect("users").len(), 3);
+        assert_eq!(value["users"].as_array().expect("users").len(), 4);
         assert_eq!(value["groups"].as_array().expect("groups").len(), 3);
         assert_eq!(value["role_map"]["systems"], json!(["Semaphore", "NetBox"]));
         assert_eq!(value["error"], Value::Null);
