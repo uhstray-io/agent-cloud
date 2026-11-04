@@ -1,0 +1,518 @@
+---
+# migrate-vm.yml — move ONE declared, EXISTING Proxmox VM OFFLINE to the node its inventory
+# now declares (vm_node), as code, with the refusals that make a live move safe to offer as a
+# Semaphore template.
+#
+# Why it exists: provision-vm.yml migrates only a FRESH clone off the template's node, and it
+# refuses an existing VM that sits on another node ("Refuse to adopt a DIFFERENT VM"). Nothing
+# else moved an existing VM, so a declared node change could only be done at the console. The
+# concrete need: the Plane runner image requires the x86-64-v3 CPU model (docs/MISTAKES.md 2.34),
+# and a VM can only run that model on a node whose CPU supports it. Moving the VM is the fix,
+# and this is the reproducible way to do it.
+#
+# Inventory-first, like destroy-vm.yml: the declaration is the host in the `<target_service>_svc`
+# group. vm_vmid and vm_name identify the VM; vm_node is the DESTINATION; vm_disk_storage is the
+# destination storage the disks land on; vm_cpu is optional and is only CHECKED here, never written
+# (Resize VM converges it afterwards). The live VM must match vm_vmid AND vm_name, or nothing happens.
+# The run must name the vmid it moves:
+#   -e target_service=plane -e confirm_migrate=225
+# The survey default is "", so a template launch cannot move a VM by accident.
+#
+# Usage (via Semaphore): the "Migrate VM" template (survey: target_service, target_host, confirm_migrate).
+#
+# WHAT IT REFUSES, before any write:
+#   * a cleartext OpenBao or Proxmox endpoint, a missing stored Proxmox token id;
+#   * a target_host outside the service's own group, an incomplete declaration;
+#   * a confirm_migrate that does not equal the declared vm_vmid;
+#   * an extra var that sets a declared identity value (vm_vmid, vm_name, vm_node, vm_disk_storage,
+#     vm_cpu): an extra var outranks the inventory, so it would redirect the move;
+#   * a vmid absent from the cluster (not a no-op here: a declared move that cannot happen must be seen);
+#   * a live VM whose name is not vm_name or that is not a qemu guest;
+#   * a destination Proxmox does not list as allowed (GET .../migrate?target=, reasons printed as fields);
+#   * a vm_cpu that is an x86-64-v3/v4 model the destination node cannot back (tasks/assert-node-cpu-model.yml).
+# A VM already on vm_node passes without any write.
+#
+# WHAT IT DOES, in order: refusals above → dry run stops here under --check → guard → shut the guest
+# down if it is running (status/shutdown with the timeout) and wait until it is stopped and unlocked
+# → guard → POST .../migrate with target and targetstorage ONLY (offline; no online and no
+# with-local-disks, which is live storage migration) → wait for the task, fail unless its exit
+# status is OK → wait until unlocked → re-check the identity (name, and node = vm_node) → guard →
+# start it again only if it was running → wait until running.
+#
+# RECOVERY. The write sequence runs in a block. When it fails, the rescue reads the VM's live record
+# and starts the guest again ONLY when all of these hold: it was running before this run, it is
+# stopped, it is unlocked, it sits on its ORIGINAL node, and its name is still the declared one. It
+# never starts a guest on a node it cannot name, nor one still shutting down or locked. The failure
+# message says where the VM is, whether this run started it, and the migrate task's exit status,
+# then the play fails. A guest that was not running when the run began is never started by the rescue.
+#
+# SAFETY PROPERTIES, each deliberate:
+#   * Idempotent. Already on vm_node → pass, no write.
+#   * Refuse before shutdown. The destination is checked (allowed node, CPU model) before the guest
+#     is touched, so a refused move leaves the VM running as it was.
+#   * Offline only. A running guest is shut down cleanly; a forced stop is never sent.
+#   * Read-only dry run. Under --check it reports the planned move and stops before any write.
+#   * Every write is preceded by a fresh reserved-target guard (tasks/guard-o11y-restore-target.yml).
+#
+# Requires the Proxmox API token in OpenBao at secret/services/proxmox (url, token_id, api_token).
+# Not a workflow step: the service-onboarding registry fixes its step ids, and none of them is a move.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+- name: Preflight the fixed restore-target OpenBao destination before any credential lookup
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: "{{ target_service ~ '_svc' }}"
+    preflight_group_expected: "{{ target_service ~ '_svc' }}"
+
+- name: "Migrate a declared VM to its declared node (offline)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      # Same posture as destroy-vm.yml and resize-vm.yml: PVE serves a self-signed certificate
+      # that is not on the Semaphore runner. HTTPS itself is asserted below.
+      validate_certs: false
+      headers:
+        Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  vars:
+    _openbao_hosts: "{{ groups['openbao_svc'] | default([]) }}"
+    _openbao_host: "{{ (_openbao_hosts | first) | default('') if (_openbao_hosts | length == 1) else '' }}"
+    _bao_url: "{{ hostvars[_openbao_host].service_url | default('') if _openbao_host else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
+    _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+      'secret/data/services/proxmox',
+      url=_bao_url, auth_method='approle',
+      role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+    _pve_host: "{{ _pve_data.url | default('') }}"
+    _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+    _pve_secret: "{{ _pve_data.api_token }}"
+
+    _group_hosts: "{{ groups[target_service ~ '_svc'] | default([]) }}"
+    _decl_host: "{{ target_host | default(_group_hosts | first | default('')) }}"
+    _decl: "{{ hostvars[_decl_host] | default({}) }}"
+    # The declared identity and destination, hoisted from the target host's inventory vars.
+    _vmid: "{{ _decl.vm_vmid | default('') }}"
+    _name: "{{ _decl.vm_name | default('') }}"
+    _dest_node: "{{ _decl.vm_node | default('') }}"
+    _storage: "{{ _decl.vm_disk_storage | default('') }}"
+    _cpu: "{{ _decl.vm_cpu | default('') | string | trim }}"
+
+    # Seconds the guest gets to shut down cleanly before the run gives up on the move.
+    _shutdown_timeout: "{{ migrate_shutdown_timeout | default(180) | int }}"
+
+  tasks:
+    # The AppRole secret_id and the Proxmox token cross this connection.
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # The Proxmox token is used for writes; it must not cross public cleartext either.
+    - name: "Refuse a cleartext Proxmox endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _pve_host }}"
+        _assert_url_label: "Proxmox"
+
+    # The token id names a real Proxmox user, so it comes from the store, never a default.
+    - name: "Require the stored Proxmox token id"
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+    - name: "Require an explicit target_host when the service declares more than one"
+      ansible.builtin.assert:
+        that:
+          - (_group_hosts | length) <= 1 or (target_host | default('') | length > 0)
+          - _decl_host | length > 0
+          # target_host may only name a host OF THIS SERVICE, so a caller cannot move another
+          # service's VM by naming its host.
+          - _decl_host in _group_hosts
+        fail_msg: >-
+          {{ target_service }}_svc declares {{ _group_hosts | length }} host(s)
+          ({{ _group_hosts | join(', ') }}); pass -e target_host=<one of those names>.
+
+    # The declared identity comes from the inventory. An extra var of the same name outranks it on
+    # every host, so a launch that sets one would move a different VM or to a different node.
+    # Names only in the message, never values.
+    - name: "Refuse a launch that overrides the declared identity"
+      ansible.builtin.assert:
+        that:
+          - "['vm_vmid', 'vm_name', 'vm_node', 'vm_disk_storage', 'vm_cpu'] | intersect('' | extra_var_names) | length == 0"
+        fail_msg: >-
+          Refusing: {{ ['vm_vmid', 'vm_name', 'vm_node', 'vm_disk_storage', 'vm_cpu'] | intersect('' | extra_var_names) | sort | join(', ') }}
+          set as an extra var. The declared identity and destination come from the inventory alone.
+          Set it there instead.
+        quiet: true
+
+    - name: "Require a complete declaration (vm_vmid, vm_name, vm_node, vm_disk_storage)"
+      ansible.builtin.assert:
+        that:
+          - _vmid | string | length > 0
+          - _name | length > 0
+          - _dest_node | length > 0
+          - _storage | length > 0
+        fail_msg: >-
+          Declaration '{{ _decl_host }}' lacks vm_vmid, vm_name, vm_node or vm_disk_storage;
+          nothing to migrate safely.
+
+    - name: "Require the run to NAME the vmid it moves"
+      ansible.builtin.assert:
+        that: (confirm_migrate | default('') | string) == (_vmid | string)
+        fail_msg: >-
+          Refusing: pass -e confirm_migrate={{ _vmid }} to move '{{ _name }}' (vmid {{ _vmid }})
+          to {{ _dest_node }}. A migration template must be told which VM, in its own launch,
+          every time.
+
+    # A bare model name only. Commas and '=' would carry extra CPU property keys into a config
+    # that this playbook never writes; the check keeps the node check below honest.
+    - name: "Refuse a vm_cpu that is not a bare model name"
+      ansible.builtin.assert:
+        that:
+          - (_cpu | length) == 0 or (_cpu is match('^[A-Za-z0-9][A-Za-z0-9._-]*$'))
+        fail_msg: >-
+          vm_cpu '{{ _cpu }}' is not a bare Proxmox CPU model name (letters, digits, '.', '_',
+          '-'; for example x86-64-v3). Nothing was moved.
+
+    - name: "Guard declared VMID before any migration side effect"
+      ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+      vars:
+        _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+      tags: [always]
+
+    - name: "Find the live VM by vmid"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+      register: _all
+      check_mode: false
+
+    - name: "Resolve the live record"
+      ansible.builtin.set_fact:
+        _live: "{{ _all.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | first | default({}) }}"
+
+    - name: "Refuse when the vmid is not in the cluster (nothing to migrate)"
+      ansible.builtin.assert:
+        that: _live | length > 0
+        fail_msg: >-
+          vmid {{ _vmid }} is not in the cluster, so there is no VM to move to {{ _dest_node }}.
+          Refusing: a declared move that cannot happen must not read as success.
+
+    - name: "Refuse to migrate a VM that is not the declared guest"
+      ansible.builtin.assert:
+        that:
+          - (_live.name | default('')) == _name
+          - (_live.type | default('')) == 'qemu'
+        fail_msg: >-
+          vmid {{ _vmid }} is '{{ _live.name | default('?') }}' ({{ _live.type | default('?') }}) on
+          '{{ _live.node | default('?') }}', not '{{ _name }}' (qemu). Refusing: this is somebody
+          else's VM.
+
+    - name: "Already on the declared node: nothing to move"
+      ansible.builtin.debug:
+        msg: "'{{ _name }}' (vmid {{ _vmid }}) already runs on {{ _dest_node }}; nothing to migrate (idempotent no-op)."
+      when: (_live.node | default('')) == _dest_node
+
+    - name: "End play when the VM is already on the declared node"
+      ansible.builtin.meta: end_play
+      when: (_live.node | default('')) == _dest_node
+
+    - name: "Record the source node and whether the guest is running"
+      ansible.builtin.set_fact:
+        _from_node: "{{ _live.node | default('') }}"
+        _was_running: "{{ (_live.status | default('')) == 'running' }}"
+
+    # Proxmox's own answer on whether the destination is allowed (storage, HA, mapped devices).
+    # Read-only. Taken from the source node: the API excludes the node it is asked on.
+    - name: "Read Proxmox's migration precondition for the declared destination"
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/qemu/{{ _vmid }}/migrate?target={{ _dest_node | urlencode }}"
+        method: GET
+      register: _pre
+      check_mode: false
+
+    # Derived fields only. The result of a uri request carries its headers, so the reason is
+    # copied out as the node's own entry and nothing else is ever printed from the result.
+    - name: "Work out whether the destination is allowed, and the reason when it is not"
+      ansible.builtin.set_fact:
+        _dest_allowed: "{{ _dest_node in (_pre.json.data.allowed_nodes | default([])) }}"
+        _dest_reason: >-
+          {{ (_pre.json.data.not_allowed_nodes | default({}))[_dest_node] | default({}) | to_json }}
+
+    - name: "Refuse a destination Proxmox does not allow"
+      ansible.builtin.assert:
+        that: _dest_allowed | bool
+        fail_msg: >-
+          Refusing before any change: Proxmox does not allow '{{ _name }}' (vmid {{ _vmid }}) to
+          move from {{ _from_node }} to {{ _dest_node }}.
+          {{ ('Reasons (not_allowed_nodes): ' ~ _dest_reason) if (_dest_reason != '{}')
+             else 'The destination is not listed as allowed.' }}
+          Nothing was shut down or moved.
+
+    # A named x86-64-v3/v4 model is checked against the DESTINATION before any write, because the VM
+    # runs there after the move. Other models pass without a node read (assert-node-cpu-model.yml).
+    - name: "Refuse a named CPU model the destination node cannot provide"
+      ansible.builtin.include_tasks: tasks/assert-node-cpu-model.yml
+      vars:
+        _ncm_node: "{{ _dest_node }}"
+        _ncm_want_cpu: "{{ _cpu }}"
+      when: _cpu | length > 0
+      tags: [always]
+
+    # Dry run: report the plan and stop before the first write.
+    - name: "Dry run: report the planned move"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: '{{ _name }}' (vmid {{ _vmid }}) on {{ _from_node }} would be
+          {{ 'shut down, ' if _was_running else '' }}moved offline to {{ _dest_node }}
+          (disk storage {{ _storage }}){{ ', then started again' if _was_running else '' }}.
+          Nothing was changed.
+      when: ansible_check_mode
+
+    - name: "Dry run: stop this host"
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+
+    # The write sequence. Any failure is caught by the rescue below, which recovers the guest
+    # before the play fails, so the run never leaves a running guest powered off by this move.
+    - name: "Move the VM: shut down if running, migrate offline, start again only if it was running"
+      block:
+        - name: "Refresh reserved-target guard before shutdown"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
+        - name: "Shut the guest down cleanly (a move takes a stopped guest only)"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/qemu/{{ _vmid }}/status/shutdown"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              timeout: "{{ _shutdown_timeout }}"
+            status_code: [200]
+          register: _shutdown
+          changed_when: true
+          when:
+            - not ansible_check_mode
+            - _was_running | bool
+
+        # Waits for the stop and for the lock to clear. A guest that was already stopped needs only
+        # the unlock. Retries cover the shutdown timeout with a margin.
+        - name: "Wait for the guest to stop and the VM to unlock"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _cur
+          until: >-
+            (_cur is succeeded) and ((_cur.json.data.lock | default('')) == '') and
+            (((_cur.json.data.status | default('')) == 'stopped') or not (_was_running | bool))
+          retries: "{{ ((_shutdown_timeout | int) // 5) + 2 }}"
+          delay: 5
+          changed_when: false
+          when: not ansible_check_mode
+
+        - name: "Refresh reserved-target guard before migration"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
+        # OFFLINE. The body names the destination and its storage and nothing else: no online (the
+        # guest is stopped by now) and no with-local-disks (live storage migration).
+        - name: "Migrate the VM offline to the declared node (target and targetstorage only)"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/qemu/{{ _vmid }}/migrate"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              target: "{{ _dest_node }}"
+              targetstorage: "{{ _storage }}"
+            status_code: [200]
+          register: _migrate_result
+          changed_when: _migrate_result.json.data is defined
+          when: not ansible_check_mode
+
+        - name: "Wait for the migrate task"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/tasks/{{ _migrate_result.json.data }}/status"
+            method: GET
+          register: _migrate_task
+          until: _migrate_task.json.data.status == "stopped"
+          retries: 90
+          delay: 10
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - _migrate_result.json.data is defined
+
+        - name: "Verify the migrate task succeeded"
+          ansible.builtin.fail:
+            msg: "Migrate to {{ _dest_node }} failed: task exit status {{ _migrate_task.json.data.exitstatus | default('not reported') }}"
+          when:
+            - not ansible_check_mode
+            - (_migrate_task.json.data.exitstatus | default('')) != 'OK'
+
+        # The VM's record can still be locked after its task stops. Only an unlocked, single record is
+        # read below.
+        - name: "Wait until the VM is unlocked after the move"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+            method: GET
+          register: _placed
+          until: >-
+            (_placed is succeeded) and
+            ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length) == 1) and
+            ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='lock', default='') | first) == '')
+          retries: 30
+          delay: 10
+          changed_when: false
+          check_mode: false
+          when: not ansible_check_mode
+
+        # The wait selects by vmid alone. If the VM vanished and the vmid was reused meanwhile, the
+        # record must still carry this name on the declared node, or nothing is started.
+        - name: "Re-check the VM's identity after the move"
+          ansible.builtin.assert:
+            that:
+              - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='name') | first) == _name
+              - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) == _dest_node
+            fail_msg: >-
+              vmid {{ _vmid }} is not '{{ _name }}' on '{{ _dest_node }}' after the move. Refusing to
+              start or report a VM this run did not move.
+          when: not ansible_check_mode
+
+        - name: "Refresh reserved-target guard before start"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+          when:
+            - not ansible_check_mode
+            - _was_running | bool
+
+        - name: "Start the guest again on its declared node (it was running before the move)"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _dest_node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          register: _start
+          changed_when: true
+          when:
+            - not ansible_check_mode
+            - _was_running | bool
+
+        - name: "Wait for the guest to be running again"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _dest_node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _start_wait
+          until: (_start_wait.json.data.status | default('')) == 'running'
+          retries: 24
+          delay: 5
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - _was_running | bool
+
+      rescue:
+        # Read the real state rather than assume which step failed. The read is allowed to fail:
+        # the rescue then reports from what it knows and starts nothing.
+        - name: "Recovery: read the VM's live record"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+            method: GET
+          register: _rescue_live
+          ignore_errors: true
+          changed_when: false
+          check_mode: false
+
+        # One set_fact per dependency: Ansible templates every key of a task before it sets any, so a
+        # key cannot read another key of the same task.
+        - name: "Recovery: work out where the VM is"
+          ansible.builtin.set_fact:
+            _rescue_rec: "{{ ((_rescue_live.json | default({})).data | default([]) | selectattr('vmid', 'equalto', _vmid | int) | list | first) | default({}) }}"
+
+        - name: "Recovery: read its node, state and lock"
+          ansible.builtin.set_fact:
+            _rescue_node: "{{ _rescue_rec.node | default('unknown') }}"
+            _rescue_status: "{{ _rescue_rec.status | default('unknown') }}"
+            _rescue_locked: "{{ (_rescue_rec.lock | default('')) | length > 0 }}"
+
+        # Start only what this run found running, now stopped, unlocked, still named as declared,
+        # and still on the node it started from.
+        - name: "Recovery: decide whether a start is safe"
+          ansible.builtin.set_fact:
+            _rescue_start_ok: >-
+              {{ (_was_running | bool)
+                 and (_rescue_node == _from_node)
+                 and (_rescue_status == 'stopped')
+                 and (not (_rescue_locked | bool))
+                 and ((_rescue_rec.name | default('')) == _name) }}
+            _mig_exit: >-
+              {{ (_migrate_task.json.data.exitstatus | default('not reported'))
+                 if (_migrate_task is defined and _migrate_task.json is defined and _migrate_task.json.data is defined)
+                 else 'not reported' }}
+
+        - name: "Recovery: refresh reserved-target guard before the start"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+          when: _rescue_start_ok | bool
+
+        # Its own task, so a refused start is recorded and the report below still runs.
+        - name: "Recovery: start the guest again on its original node"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _from_node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          register: _rescue_start
+          ignore_errors: true
+          changed_when: true
+          when:
+            - not ansible_check_mode
+            - _rescue_start_ok | bool
+
+        - name: "Recovery: say what was done and what is left to check"
+          ansible.builtin.set_fact:
+            _start_note: >-
+              {% if (_rescue_start_ok | bool) and not (_rescue_start is failed) %}It was stopped on {{ _from_node }} and this run started it there again; the move did not happen.
+              {% elif _rescue_start is failed %}Starting it on {{ _from_node }} FAILED ({{ _rescue_start.msg | default('no detail') }}): start it by hand.
+              {% elif not (_was_running | bool) %}It was not running before this run, so nothing was started.
+              {% elif _rescue_node != _from_node %}It is on {{ _rescue_node }}, not its original {{ _from_node }}: nothing was started. Check it by hand.
+              {% elif _rescue_status != 'stopped' %}It is {{ _rescue_status }}, not stopped, so no start was issued.
+              {% elif _rescue_locked | bool %}It is still locked, so no start was issued.
+              {% else %}Nothing was started.{% endif %}
+
+        - name: "Fail with the reason, after recovering"
+          ansible.builtin.fail:
+            msg: >-
+              Migrate of vmid {{ _vmid }} ('{{ _name }}') from {{ _from_node }} to {{ _dest_node }} failed at
+              '{{ ansible_failed_task.name | default('a task') }}': {{ ansible_failed_result.msg | default('failed') }}.
+              Migrate task exit status: {{ _mig_exit }}. The guest is now {{ _rescue_status }} on
+              {{ _rescue_node }}{{ ' (locked)' if (_rescue_locked | bool) else '' }}.
+              {{ _start_note }}
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          Moved '{{ _name }}' (vmid {{ _vmid }}) from {{ _from_node }} to {{ _dest_node }}
+          (disk storage {{ _storage }}).
+          {{ ('It was running, so it was shut down for the move and started again on ' ~ _dest_node ~ '.')
+             if _was_running else 'It was stopped before the move and stays stopped.' }}
+          The CPU model is not changed here. Run Resize VM to converge vm_cpu
+          ({{ ('declared: ' ~ _cpu) if (_cpu | length > 0) else 'not declared' }}); it restarts the guest only with allow_reboot.

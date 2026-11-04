@@ -3454,6 +3454,35 @@ templates:
         type: string
         required: true
 
+  - name: Migrate VM
+    playbook: platform/playbooks/migrate-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Migrate VM inputs
+    # OFFLINE MOVE of ONE existing declared VM to the node its inventory declares (vm_node). A
+    # running guest is SHUT DOWN for the move and started again on its declared node; a stopped
+    # guest stays stopped. confirm_migrate must name the declared vmid. Does not change the CPU
+    # model: Resize VM converges vm_cpu afterwards.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target service"
+        description: "Service whose <name>_svc group holds the declaration (e.g. plane)"
+        type: string
+        required: true
+      - name: target_host
+        title: "Target host"
+        description: "Which declared host — REQUIRED when the group declares more than one"
+        type: string
+        required: false
+      - name: confirm_migrate
+        title: "Confirm: vmid to migrate"
+        description: "Type the declared vm_vmid. Anything else refuses. The VM is SHUT DOWN for the move when it is running. No default on purpose."
+        type: string
+        required: true
+
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
     # Isolated environment: this managed VM writer checks the o11y restore-target reservation
