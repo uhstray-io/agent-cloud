@@ -1,0 +1,39 @@
+---
+# renew-listener-servers.yml — the self-reloading TLS listeners whose server leaves
+# renew-internal-certs.yml admits and proves (production-internal-ca decision 8; openspec
+# skynet-launch-containment task 3.5). One row per listener kind. Both plays of that playbook
+# load it with vars_files, so the planning play's admission and the consumer play's proof read
+# the same table.
+#
+#   class         the proof class a leaf of this listener is given
+#   group         the inventory group whose host runs the listener; the leaf is admitted only there
+#   prefix        the host-var prefix: <prefix>_server_leaf (the leaf's name the host declares),
+#                 <prefix>_tls_server_name (the name it is verified by), <prefix>_bind and
+#                 <prefix>_port (the address the proof connects to)
+#   name_prefix   the first label of the default name: <name_prefix>.<dns_site>.<dns_zone>
+#   label         how the run's messages name the listener
+#   default_leaf  the leaf's name when the host declares none
+#   default_port  the port when the host declares none
+#   tls_var       the host var that must be on for the listener to serve TLS; '' when it always does
+#
+# Every row reloads its own leaf (reload: none). OPA re-reads `current` under
+# --tls-cert-refresh-period; the launch gate's listener reloads its TLS context on each
+# connection. Neither asks for a client certificate, so the proof presents none. A row's deploy
+# writes the leaf at <deploy>/certs/<leaf>, with step-ca-bundle.crt beside it.
+_renew_listener_servers:
+  - class: opa-server
+    group: opa_svc
+    prefix: opa
+    name_prefix: opa
+    label: OPA
+    default_leaf: opa-server
+    default_port: '8281'
+    tls_var: opa_tls
+  - class: launch-gate-server
+    group: launch_gate_svc
+    prefix: launch_gate
+    name_prefix: launch-gate
+    label: launch gate
+    default_leaf: launch-gate-server
+    default_port: '8443'
+    tls_var: ''
