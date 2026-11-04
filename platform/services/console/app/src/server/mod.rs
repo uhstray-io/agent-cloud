@@ -3,6 +3,7 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod gateway;
 pub mod grafana;
 pub mod inventory;
 pub mod netbox;
@@ -53,6 +54,8 @@ pub struct AppState {
     pub proxmox_http: reqwest::Client,
     /// The data-flow catalogue `GET /v1/flows` answers.
     pub flows: inventory::FlowSet,
+    /// The agentgateway clients, budgets and models `GET /v1/gateway` answers (task 8.3a).
+    pub gateway: gateway::GatewaySet,
     /// OpenBao client for run-time reads (plan 17 D27). Logs in on first use, never at boot.
     /// `None` when `CONSOLE_OPENBAO_*` is unset.
     pub openbao: Option<openbao::Openbao>,
@@ -101,6 +104,10 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         Some(path) => inventory::FlowSet::configured(inventory::load_flows(path)?),
         None => inventory::FlowSet::unconfigured(),
     };
+    let gateway = match &config.gateway_file {
+        Some(path) => gateway::GatewaySet::configured(gateway::load_gateway(path)?),
+        None => gateway::GatewaySet::unconfigured(),
+    };
     let openbao = match &config.openbao {
         Some(settings) => Some(
             openbao::Openbao::new(settings.clone())
@@ -128,6 +135,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         inventory: tokio::sync::RwLock::new(inventory_cache),
         proxmox_http,
         flows,
+        gateway,
         openbao,
         secrets: tokio::sync::RwLock::new(secrets_cache),
     }))
@@ -235,6 +243,7 @@ pub fn api_router(state: SharedState) -> Router {
         )
         .route("/v1/network", get(inventory::get_network))
         .route("/v1/flows", get(inventory::get_flows))
+        .route("/v1/gateway", get(gateway::get_gateway))
         .route("/v1/secrets", get(secrets::get_secrets))
         .route("/v1/{*rest}", any(api::v1_unmatched))
         .with_state(state)
@@ -277,10 +286,20 @@ mod tests {
     }
 
     fn state_with_prefs(prefs: Prefs) -> SharedState {
-        app_state(prefs, work::WorkCache::unconfigured(), Vec::new())
+        app_state(
+            prefs,
+            work::WorkCache::unconfigured(),
+            Vec::new(),
+            gateway::GatewaySet::unconfigured(),
+        )
     }
 
-    fn app_state(prefs: Prefs, work: work::WorkCache, workflow: Vec<work::Step>) -> SharedState {
+    fn app_state(
+        prefs: Prefs,
+        work: work::WorkCache,
+        workflow: Vec<work::Step>,
+        gateway_set: gateway::GatewaySet,
+    ) -> SharedState {
         Arc::new(AppState {
             config: Config {
                 base_url: "https://console.test".into(),
@@ -296,6 +315,7 @@ mod tests {
                 proxmox: None,
                 openbao: None,
                 flows_file: None,
+                gateway_file: None,
                 grafana_url: None,
             },
             http: reqwest::Client::new(),
@@ -307,6 +327,7 @@ mod tests {
             inventory: tokio::sync::RwLock::new(inventory::InventoryCache::new(false, false)),
             proxmox_http: reqwest::Client::new(),
             flows: inventory::FlowSet::unconfigured(),
+            gateway: gateway_set,
             openbao: None,
             secrets: tokio::sync::RwLock::new(secrets::SecretsCache::new(false)),
         })
@@ -440,6 +461,7 @@ mod tests {
             "/v1/tenants/acme/services/tududi",
             "/v1/network",
             "/v1/flows",
+            "/v1/gateway",
             "/v1/secrets",
             "/v1/nope",
         ] {
@@ -460,6 +482,63 @@ mod tests {
         let reply = call(addr, "GET", "/healthz", None, "").await;
         assert_eq!(reply.status, 200);
         assert_eq!(reply.body, "ok");
+    }
+
+    fn gateway_state(gateway_set: gateway::GatewaySet) -> SharedState {
+        app_state(
+            Prefs::in_memory().expect("in-memory prefs"),
+            work::WorkCache::unconfigured(),
+            Vec::new(),
+            gateway_set,
+        )
+    }
+
+    /// Signs in with `groups` on a fresh app over `state`, then asks for `/v1/gateway`.
+    async fn gateway_reply(state: SharedState, groups: &'static [&'static str]) -> Reply {
+        let app = api_router(state)
+            .merge(test_login_route("/test/login", groups))
+            .layer(session_layer(memory_sessions()));
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.clone().expect("session cookie set on login");
+        call(addr, "GET", "/v1/gateway", Some(cookie), "").await
+    }
+
+    #[tokio::test]
+    async fn gateway_answers_platform_admins_only_with_the_rendered_file() {
+        let file = gateway::GatewayFile {
+            clients: vec![gateway::GatewayClient {
+                name: "alpha".into(),
+                tier: None,
+                tokens_per_hour: 2000000,
+                budget_source: gateway::BudgetSource::Default,
+                allowed_models: vec!["m1".into()],
+            }],
+            models: vec!["m1".into()],
+        };
+        let state = gateway_state(gateway::GatewaySet::configured(file));
+
+        let member = gateway_reply(state.clone(), &["ops"]).await;
+        assert_eq!(member.status, 403);
+        assert_eq!(member.body, r#"{"error":"forbidden"}"#);
+
+        let admin = gateway_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"state":"ok","clients":[{"name":"alpha","tier":null,"tokens_per_hour":2000000,"budget_source":"default","allowed_models":["m1"]}],"models":["m1"]}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_answers_unconfigured_when_no_file_is_set() {
+        let state = gateway_state(gateway::GatewaySet::unconfigured());
+        let admin = gateway_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"state":"unconfigured","clients":[],"models":[]}"#
+        );
     }
 
     #[tokio::test]
@@ -719,7 +798,12 @@ mod tests {
             work::build_items(tasks, &steps, &config),
             "2026-10-26T12:02:05Z".into(),
         );
-        app_state(Prefs::in_memory().expect("in-memory prefs"), cache, steps)
+        app_state(
+            Prefs::in_memory().expect("in-memory prefs"),
+            cache,
+            steps,
+            gateway::GatewaySet::unconfigured(),
+        )
     }
 
     /// Serves the API over `state`, with a session for a user in `groups`.
