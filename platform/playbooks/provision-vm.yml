@@ -118,8 +118,8 @@
     _name: "{{ _decl.vm_name | default(_svc.name | default(target_service)) }}"
     _node: "{{ target_node | default(_decl.vm_node | default(_svc.node | default(''))) }}"
     _cores: "{{ _decl.vm_cores | default(_svc.cores | default('')) }}"
-    # The CPU model (Proxmox `cpu`, declared as vm_cpu). Unset leaves Proxmox's default CPU. Checked
-    # for shape and for node support before the config write.
+    # The CPU model (Proxmox `cpu`, declared as vm_cpu). Unset leaves the template's CPU. Checked
+    # for shape and for node support before any write.
     _cpu: "{{ _decl.vm_cpu | default(_svc.cpu | default('')) | string | trim }}"
     _mem: "{{ _decl.vm_memory | default(_svc.memory | default('')) }}"
     _disk: "{{ _decl.vm_disk | default(_svc.disk | default('')) }}"
@@ -632,6 +632,17 @@
             msg: "{{ 'The declared PBS VM already exists; skipping clone.' if _pbs_mode else 'VM ' ~ _vmid ~ ' (' ~ _name ~ ') already exists — skipping clone.' }}"
           when: _vm_exists | bool
 
+        # A named CPU model the declared node cannot back is refused before the clone, so no write
+        # happens for it. The clone lands on the template's node and a migration then moves the VM
+        # to the declared node, so the check is about the node the VM is meant to run on.
+        - name: "Refuse a named CPU model the node cannot provide"
+          ansible.builtin.include_tasks: tasks/assert-node-cpu-model.yml
+          vars:
+            _ncm_node: "{{ _node }}"
+            _ncm_want_cpu: "{{ _cpu }}"
+          when: _cpu | length > 0
+          tags: [always]
+
         # ── Clone template ────────────────────────────────────────────────────
         # Proxmox: "--target: Target node. Only allowed if the original VM is on shared
         # storage" (qm(1)). Template 9000's disk is on alphacentauri's LOCAL vm-lvms, so a
@@ -818,15 +829,34 @@
             _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
           tags: [always]
 
-        # A named CPU model the declared node cannot back is refused before the config write below.
-        # The node is the declared one: the write goes to it, and a migration may still move the VM.
-        - name: "Refuse a named CPU model the node cannot provide"
-          ansible.builtin.include_tasks: tasks/assert-node-cpu-model.yml
-          vars:
-            _ncm_node: "{{ _node }}"
-            _ncm_want_cpu: "{{ _cpu }}"
-          when: _cpu | length > 0
-          tags: [always]
+        # The VM's CPU as it is now, so the write keeps the flags it already carries (resize-vm.yml
+        # rebuilds its value the same way). Read on the declared node, where the write goes.
+        - name: "Read the VM's CPU before the config write"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+            method: GET
+          register: _cpu_cur
+          check_mode: false
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - _cpu | length > 0
+
+        - name: "List the VM's CPU items as they are now"
+          ansible.builtin.set_fact:
+            _cpu_cur_items: "{{ (_cpu_cur.json.data.cpu | default('') | string).split(',') | select | list }}"
+          when:
+            - not ansible_check_mode
+            - _cpu | length > 0
+
+        # Same rebuild as resize-vm.yml: the declared model first, then the key=value items the VM
+        # already had (flags=..., hidden=..., phys-bits=...), without a cputype= key.
+        - name: "Work out the CPU model to write"
+          ansible.builtin.set_fact:
+            _cpu_put: "{{ ([_cpu] + (_cpu_cur_items | select('match', '^[a-z-]+=') | reject('match', '^cputype=') | list)) | join(',') }}"
+          when:
+            - not ansible_check_mode
+            - _cpu | length > 0
 
         - name: "Configure VM resources and cloud-init"
           ansible.builtin.uri:
@@ -837,7 +867,7 @@
               cores: "{{ _cores }}"
               memory: "{{ _mem }}"
               agent: "{{ _agent }}"
-              cpu: "{{ _cpu if (_cpu | length > 0) else omit }}"
+              cpu: "{{ _cpu_put if (_cpu | length > 0) else omit }}"
               # Start with the node (Proxmox `onboot`, default 0 per qm(1)); a VM that does not
               # come back after a hypervisor reboot silently takes its service down. Workflow
               # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.
@@ -911,12 +941,16 @@
           vars:
             _cfg: "{{ _pv_cfg.json.data | default({}) }}"
             _want_disk: "{{ (_disk | string) ~ ('G' if (_disk | string) is match('^[0-9]+$') else '') }}"
+            _cpu_items: "{{ (_cfg.cpu | default('') | string).split(',') | select | list }}"
+            _cpu_model: "{{ ((_cpu_items | select('match', '^cputype=') | map('regex_replace', '^cputype=', '') | list) + (_cpu_items | reject('match', '=') | list) + [''])[0] }}"
           ansible.builtin.set_fact:
             _pv_step:
               service: "{{ target_service }}"
               vmid: "{{ _vmid | int }}"
               node: "{{ _node }}"
               onboot: "{{ _cfg.onboot | default(none) }}"
+              cpu: "{{ _cfg.cpu | default(none) }}"
+              cpu_declared: "{{ (_cpu | default('') | string | length) > 0 }}"
               # A dry run of a VM that is not cloned yet, or still awaits its migration, has
               # nothing on the declared node to prove.
               skip: "{{ ansible_check_mode and (not (_vm_exists | bool) or (_do_migrate | bool)) }}"
@@ -930,7 +964,9 @@
                    + (['disk scsi0 is not ' ~ _want_disk]
                       if not ((_cfg.scsi0 | default('')) is search('size=' ~ _want_disk ~ '([^0-9]|$)')) else [])
                    + (['onboot ' ~ (_cfg.onboot | default('unset')) ~ ', declared ' ~ _onboot]
-                      if (_cfg.onboot | default('0') | string) != _onboot else []) }}
+                      if (_cfg.onboot | default('0') | string) != _onboot else [])
+                   + (['cpu ' ~ (_cpu_model or 'default') ~ ', declared ' ~ _cpu]
+                      if (_cpu | default('') | string | length > 0) and (_cpu_model != _cpu) else []) }}
 
         # ── Start VM ──────────────────────────────────────────────────────────
         # A dry run of a VM that does not exist yet skipped the clone, so every check below would
@@ -1094,6 +1130,11 @@
   vars:
     # Undefined only when a dry run stopped before the read-back: a VM awaiting its migration.
     _pv_s: "{{ _pv_step | default({'skip': true, 'errors': [], 'vmid': none, 'node': none, 'onboot': none}) }}"
+    # The cpu key is recorded only when this run declares a model, so an undeclared VM's evidence
+    # keeps its three keys.
+    _pv_evidence: >-
+      {{ {'vmid': _pv_s.vmid, 'node': _pv_s.node, 'onboot': _pv_s.onboot}
+         | combine({'cpu': _pv_s.cpu | default(none)} if (_pv_s.cpu_declared | default(false) | bool) else {}) }}
   tasks:
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
@@ -1103,10 +1144,7 @@
         step_result_status: >-
           {{ 'skip' if (_pv_s.skip | bool)
              else ('pass' if (_pv_s.errors | length == 0) else 'fail') }}
-        step_result_evidence:
-          vmid: "{{ _pv_s.vmid }}"
-          node: "{{ _pv_s.node }}"
-          onboot: "{{ _pv_s.onboot }}"
+        step_result_evidence: "{{ _pv_evidence }}"
         step_result_error: "{{ _pv_s.errors | join('; ') }}"
         step_result_undo: Destroy VM
 

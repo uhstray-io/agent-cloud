@@ -557,6 +557,39 @@
               changed_when: false
               when: not ansible_check_mode
 
+            # THE CPU MODEL. This run may have written a new `cpu` before the restart, and a start on a
+            # model the guest then cannot run would leave it down. So when this run changed the model and
+            # the guest is stopped, the value from before the run goes back before any start: the raw
+            # value, or no key at all when there was none.
+            - name: "Recovery: work out whether the CPU model must be restored before a start"
+              ansible.builtin.set_fact:
+                _cpu_restore_needed: "{{ ('cpu' in _cfg_changes) and ((_rescue_state.json.data.status | default('')) == 'stopped') }}"
+                _cpu_restore_body: >-
+                  {{ {'delete': 'cpu'} if ((_cfg.json.data.cpu | default('') | string) | length == 0)
+                     else {'cpu': _cfg.json.data.cpu | string} }}
+
+            - name: "Recovery: guard target VMID before the CPU model restore"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            - name: "Recovery: restore the previous CPU model before any start"
+              # A failed restore is recorded, not raised here, so the start below is withheld rather
+              # than booting the new model.
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+                method: PUT
+                body_format: form-urlencoded
+                body: "{{ _cpu_restore_body }}"
+                status_code: [200]
+              register: _cpu_restore
+              ignore_errors: true
+              changed_when: true
+              when:
+                - not ansible_check_mode
+                - _cpu_restore_needed | bool
+
             - name: "Recovery: guard target VMID before start"
               ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
               vars:
@@ -573,17 +606,33 @@
               when:
                 - not ansible_check_mode
                 - (_rescue_state.json.data.status | default('')) == 'stopped'
+                - not (_cpu_restore is failed)
               changed_when: true
 
             - name: "Fail with the reason, after recovering"
+              vars:
+                _start_withheld: "{{ ((_rescue_state.json.data.status | default('')) == 'stopped') and (_cpu_restore is failed) }}"
+                _start_note: >-
+                  {{ 'It was stopped and was NOT started, because restoring the previous CPU model failed (see below).'
+                     if (_start_withheld | bool)
+                     else ('It was stopped, so a start was issued — verify it came up.'
+                           if (_rescue_state.json.data.status | default('')) == 'stopped'
+                           else 'It was NOT stopped, so no start was issued (sending start to a guest mid-shutdown can wedge it) — check it by hand.') }}
+                _cpu_note: >-
+                  {{ '' if ('cpu' not in _cfg_changes) else
+                     ('The CPU model change to ' ~ (_cfg_changes.cpu | string) ~ ' is in the config, and restoring the previous model FAILED ('
+                      ~ (_cpu_restore.msg | default('no detail') | string) ~ '), so the guest was NOT started: starting it would boot the new model.'
+                      if (_cpu_restore is failed) else
+                      ('The CPU model was restored to its previous value (or removed, when there was none) before the start; the change to '
+                       ~ (_cfg_changes.cpu | string) ~ ' did not apply.'
+                       if (_cpu_restore_needed | bool) else
+                       ('The CPU model change to ' ~ (_cfg_changes.cpu | string) ~ ' is in the config, but the guest was not stopped, so it was not restored; it applies on the next boot.'))) }}
               ansible.builtin.fail:
                 msg: >-
                   Restart sequence failed for vmid {{ _vmid }} on {{ _node }}. Guest
                   state when recovery ran: {{ _rescue_state.json.data.status | default('unknown') }}.
-                  {{ 'It was stopped, so a start was issued — verify it came up.'
-                     if (_rescue_state.json.data.status | default('')) == 'stopped'
-                     else 'It was NOT stopped, so no start was issued (sending start to a
-                           guest mid-shutdown can wedge it) — check it by hand.' }}
+                  {{ _start_note }}
+                  {{ _cpu_note }}
                   The cores/memory config WAS written and will apply on the next boot.
                   A guest that ignores ACPI shutdown, or has no qemu-guest-agent, will
                   hit this every time; raise resize_shutdown_timeout or stop it manually.
@@ -640,6 +689,9 @@
         _after: "{{ _cfg_after.json.data | default({}) if _cfg_after is defined else {} }}"
         _dev: "{{ (_disk_device | default('')) | trim }}"
         _disk_raw: "{{ _after[_dev] | default('') if (_dev | length > 0) else '' }}"
+        # The model the re-read config names, parsed as the resolve step does.
+        _rs_cpu_items: "{{ (_after.cpu | default('') | string).split(',') | select | list }}"
+        _rs_cpu_model: "{{ ((_rs_cpu_items | select('match', '^cputype=') | map('regex_replace', '^cputype=', '') | list) + (_rs_cpu_items | reject('match', '=') | list) + [''])[0] }}"
       ansible.builtin.set_fact:
         _rs_after: "{{ _after }}"
         _rs_have_disk_gb: >-
@@ -657,7 +709,9 @@
                  if (_want_disk_gb | string | length > 0)
                     and not (_disk_raw is search('size=' ~ (_want_disk_gb | int) ~ 'G([^0-9]|$)')) else [])
               + (['the guest still runs its old allocation: a restart is pending (allow_reboot not set)']
-                 if (_needs_restart | default(false) | bool) and not (_allow_reboot | bool) else [])) }}
+                 if (_needs_restart | default(false) | bool) and not (_allow_reboot | bool) else [])
+              + (['cpu ' ~ (_rs_cpu_model | default('') or 'default') ~ ', declared ' ~ (_want_cpu | string)]
+                 if (_want_cpu | default('') | string | length > 0) and (_rs_cpu_model != (_want_cpu | string)) else [])) }}
 
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
@@ -665,10 +719,12 @@
         step_result_service: "{{ target_service | default('') }}"
         step_result_step: vm-rightsize
         step_result_status: "{{ 'pass' if (_rs_errors | length == 0) else 'fail' }}"
-        step_result_evidence:
-          cores: "{{ _rs_after.cores | default(none) }}"
-          memory_mb: "{{ _rs_after.memory | default(none) }}"
-          disk_gb: "{{ _rs_have_disk_gb }}"
+        # The model is recorded only when this run declares one, so an unmanaged VM's evidence
+        # keeps its three keys.
+        step_result_evidence: >-
+          {{ {'cores': _rs_after.cores | default(none), 'memory_mb': _rs_after.memory | default(none),
+              'disk_gb': _rs_have_disk_gb}
+             | combine({'cpu': _rs_after.cpu | default(none)} if (_want_cpu | default('') | string | length > 0) else {}) }}
         step_result_error: "{{ _rs_errors | join('; ') }}"
 
     - name: "Fail when the VM does not match its declared spec"
