@@ -194,5 +194,31 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Plane's MCP server — bypass the challenge for the MCP and OAuth machine paths only
+    # (Joseph, 2026-11-04; plane change task 5.3).
+    #
+    # Why: harnesses (Claude Code, pi, weft) are non-browser clients, and the zone answered every
+    # plane-mcp path with `cf-mitigated: challenge` (HTTP 403), so none could reach the server.
+    # The server is its own OAuth authorization server: its discovery documents (read from the
+    # production container, 2026-11-04) name `/authorize`, `/token` and `/register` on this host.
+    # A harness calls the two discovery documents, `/register` and `/token` server to server, so
+    # they are skipped; `/authorize` runs in the user's browser, which passes a challenge, and
+    # stays challenged with every other path. Authentication stays at the origin: both MCP
+    # endpoints refuse an anonymous call (401, the deploy's verify probe), `/token` needs a client
+    # and a code, and Plane OAuth runs through Authentik.
+    {
+      ref         = "plane-mcp-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Plane MCP + its OAuth machine endpoints - bypass challenge for non-browser clients"
+      expression  = "(http.host eq \"plane-mcp.uhstray.io\" and (http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\" \"/.well-known/oauth-authorization-server\"} or starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\")))"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }

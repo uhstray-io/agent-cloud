@@ -41,7 +41,28 @@ _rule() {
   assert_grep -qE '^[[:space:]]*expression[[:space:]]+= local\.mcp_endpoint$' "$BATS_TEST_TMPDIR/skip.tf"
   assert_grep -qF 'phases   = ["http_request_sbfm"]' "$BATS_TEST_TMPDIR/skip.tf"
   # Last in the ruleset, so no existing rule moves (a list reorder is a plan diff).
-  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 1 | cut -d'"' -f2)" = "mcp-api-bypass-challenge" ]
+  # Only rules added after it (the Plane MCP skip) may follow it.
+  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 2 | cut -d'"' -f2 | paste -sd' ' -)" = "mcp-api-bypass-challenge plane-mcp-bypass-challenge" ]
+}
+
+@test "cloudflare mcp: the Plane MCP skip names its host and exact machine paths only, appended last" {
+  _rule "$CF/waf.tf" plane-mcp-bypass-challenge > "$BATS_TEST_TMPDIR/plane.tf"
+  [ -s "$BATS_TEST_TMPDIR/plane.tf" ]
+  assert_grep -qE '^[[:space:]]*action[[:space:]]+= "skip"$' "$BATS_TEST_TMPDIR/plane.tf"
+  assert_grep -qF 'phases   = ["http_request_sbfm"]' "$BATS_TEST_TMPDIR/plane.tf"
+  local e
+  e=$(grep -E '^[[:space:]]*expression[[:space:]]+=' "$BATS_TEST_TMPDIR/plane.tf")
+  assert_contains "$e" 'http.host eq \"plane-mcp.uhstray.io\" and ('
+  # The machine paths, exact: both MCP endpoints, the token and registration endpoints, the
+  # authorization-server document; the protected-resource documents by prefix.
+  assert_contains "$e" 'http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\" \"/.well-known/oauth-authorization-server\"}'
+  assert_contains "$e" 'starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\")'
+  # The browser step stays challenged, and no broader prefix opens the host.
+  refute_contains "$e" '/authorize'
+  [ "$(grep -o 'starts_with' <<<"$e" | wc -l | tr -d ' ')" -eq 1 ]
+  refute_contains "$e" 'contains('
+  # Last in the ruleset, so no existing rule moves.
+  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 1 | cut -d'"' -f2)" = "plane-mcp-bypass-challenge" ]
 }
 
 @test "cloudflare mcp: the inference skip rule and rate-limit rule are not widened to MCP" {
