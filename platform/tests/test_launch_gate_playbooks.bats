@@ -291,8 +291,10 @@ plays = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "host
 one, three = plays[0]["vars"], plays[2]["vars"]
 for key in ("_launch_gate_bind", "_launch_gate_port", "_launch_gate_tls_name"):
     assert one[key] == three[key], (key, one[key], three[key])
-assert one["_launch_gate_bind"] == "{{ launch_gate_bind | default('127.0.0.1', true) | string }}", one["_launch_gate_bind"]
-assert one["_launch_gate_port"] == "{{ launch_gate_port | default('8443', true) | string }}", one["_launch_gate_port"]
+# A plain default(), as renew-internal-certs.yml's listener table: '' means '' to both, and is refused.
+assert one["_launch_gate_bind"] == "{{ launch_gate_bind | default('127.0.0.1') | string }}", one["_launch_gate_bind"]
+assert one["_launch_gate_port"] == "{{ launch_gate_port | default('8443') | string }}", one["_launch_gate_port"]
+assert one["_launch_gate_server_leaf"] == "{{ launch_gate_server_leaf | default('launch-gate-server') | string }}", one["_launch_gate_server_leaf"]
 PY
 }
 

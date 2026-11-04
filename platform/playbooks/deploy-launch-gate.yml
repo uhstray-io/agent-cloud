@@ -63,14 +63,18 @@
     _engine: "{{ container_engine | default('podman') }}"
     _launch_gate_local_mode: "{{ local_mode | default(false) | bool }}"
     # The rendered values. Each `_launch_gate_*` is read by env.j2 or config.json.j2 under that name.
+    # The listener's bind, port, leaf and name use a plain default(), as renew-internal-certs.yml's
+    # listener table does: an inventory value set to '' is then the same value to the deploy and to the
+    # renewal proof, and the refusals below reject it, instead of the deploy quietly using a default
+    # the renewal does not.
     _launch_gate_image: "{{ launch_gate_image | default('', true) | string }}"
-    _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1', true) | string }}"
-    _launch_gate_port: "{{ launch_gate_port | default('8443', true) | string }}"
+    _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1') | string }}"
+    _launch_gate_port: "{{ launch_gate_port | default('8443') | string }}"
     _launch_gate_semaphore_url: "{{ launch_gate_semaphore_url | default('', true) | string }}"
     _launch_gate_semaphore_project: "{{ launch_gate_semaphore_project | default('', true) | string }}"
     _launch_gate_opa_url: "{{ launch_gate_opa_url | default('', true) | string }}"
-    _launch_gate_server_leaf: "{{ launch_gate_server_leaf | default('launch-gate-server', true) | string }}"
-    _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default('')), true) | string }}"
+    _launch_gate_server_leaf: "{{ launch_gate_server_leaf | default('launch-gate-server') | string }}"
+    _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
     # Callers and the agents each may act as. Adding a caller is an inventory change AND a change to
     # _launch_gate_token_callers below: each caller's token is a literal secret definition (check-secrets reads
     # this file as text, so a computed declaration cannot be evaluated there).
@@ -329,9 +333,9 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     # These three are the same defaults Phase 1 renders. Keep them in step with that play (test_launch_gate_playbooks.bats).
-    _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1', true) | string }}"
-    _launch_gate_port: "{{ launch_gate_port | default('8443', true) | string }}"
-    _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default('')), true) | string }}"
+    _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1') | string }}"
+    _launch_gate_port: "{{ launch_gate_port | default('8443') | string }}"
+    _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
     # curl, not uri: --resolve sends the declared name to the bind address, while the certificate is still
     # verified against that name and the step-ca bundle. The body is discarded; only the status is read.
     _tls_args:
