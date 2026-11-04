@@ -58,7 +58,8 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) | Unverified claim | 2 | Convention |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) | Unverified claim | 3 | Convention; guard proposed (count ≥ 3) |
+| 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -73,7 +74,7 @@ and why.
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | 1 | Test + **repo-wide normalisation outstanding** |
-| 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red) | **x3** False green | 3 | Test (anchored + active-construct) |
+| 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
@@ -89,7 +90,7 @@ and why.
 | 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
-| 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 1 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
+| 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
 | 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
@@ -124,7 +125,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again) | Process | 8 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard) | Process | 9 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -1180,7 +1181,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 2** — 2026-11-02, 2026-11-03
+**Occurrences: 3** — 2026-11-02, 2026-11-03, 2026-11-04
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1212,6 +1213,43 @@ admitted `localhost` (the controller) and parent groups; the second review caugh
 landed names the bare-name templates in the catalog and requires a `_svc` group everywhere else. Why
 the rule did not fire: it was applied to the one playbook in view and not to the others the claim
 covered; the brief described what all of them do after reading one.
+
+**Occurrence 3 — 2026-11-04.** Asked what work came next on the observability rollout, I told the
+operator that OpenSpec task 2.3 was "source-only work, so I can start now without production
+access". I had read the task's first line, truncated at 230 characters. Its body says the source
+slice is already checked and what remains is production work: an endpoint-availability receipt
+with a controlled unhealthy drill through the live alerts, and a fresh coverage census that needs
+an updated private receipt binding and therefore the production inventory sync first. A review
+pass caught it before any work started; the correction went to the operator in the next message.
+Why the rule did not fire: it names briefs and plans about code, and a task list read as a summary
+rather than as a body to read. **Proposed guard** (count 3): a Stop hook that, when a reply
+characterises a numbered OpenSpec task ("source-only", "needs nothing", "done"), requires a read of
+that task's whole block in `tasks.md` earlier in the turn, and otherwise prompts to read it first.
+
+### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
+
+**Occurrences: 1** — 2026-11-03
+
+**What happened.** Diagnosing PR #815's `Python core` failure, I reproduced the Linux side in a
+container: `/dev/stdin` resolves through `/proc/self/fd/0` to an unopenable `pipe:[N]`
+(`os.path.realpath` returned `/proc/4/fd/pipe:[47067142]`). For the other side I wrote, without
+checking, that on macOS `/dev/stdin` "is a device node, not a symlink". I told the operator, put
+it in two worker briefs and in a PR comment. A doc-writer given the claim ran `ls -l /dev/stdin`
+on the workstation: `/dev/stdin -> fd/0`, a symlink, and `realpath` stops at `/dev/fd/0`, which
+opens. The first worker had already caught it and written the correct form into 2.31's
+occurrence note. The fix was unaffected; the explanation I gave was not.
+
+**Root cause.** Half of a two-platform comparison was measured and the other half came from
+recall, and the measured half made the whole explanation feel checked. Each side was one command
+on a machine already in reach. 1.29's rule covers claims about what code does; this was a claim
+about how an operating system behaves.
+
+**The rule.** A comparison across platforms, versions or hosts states each side from its own
+check in the same session. A side that was not checked is written `unverified:`. This widens 1.29
+from code behaviour to platform and tool behaviour.
+
+**Enforced by.** Convention. The DEVIATION RULE caught it again: a worker re-checked a fact from
+its brief and reported the contradiction. Related: 1.29, 2.31.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1634,7 +1672,7 @@ localhost-defaulting variant, which is the dangerous one — is a separate chang
 recorded here so it is not mistaken for done.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
-**Occurrences: 3** — 2026-08-25, 2026-08-25, 2026-11-02
+**Occurrences: 4** — 2026-08-25, 2026-08-25, 2026-11-02, 2026-11-04
 
 **What happened.** 2.12 records replacing a blacklist of forbidden write verbs
 with an invariant: within the validation step, every mention of the live
@@ -1686,6 +1724,18 @@ Convention is not enough): an AST ratchet in `platform/tests`, modelled on the
 `test_assertions_are_real.bats` ratchet, that flags any `in` / `not in` comparison whose needle is an f-string beginning
 with an interpolated value and whose haystack is captured output, held in a known-list like
 `known_inert_assertions.txt`, so a new one fails CI and existing ones are visible.
+
+**Occurrence 4 — 2026-11-04.** PR #815's stdin-token route in `platform/semaphore/sync-inventory.yml`
+includes the shared transport and parsed-inventory preflight under `when: sync_inventory_token is
+defined`. The only checks on it were BATS greps (`platform/tests/test_semaphore_repositories.bats:187-188`)
+for `sync_inventory_token is defined` and `tasks/runtime-preflight.yml` anywhere in the file. The
+independent review prefixed that condition with `false and`, disabling the include: both
+greps still matched, and all 35 Python tests still passed, so a token could have gone to a cleartext
+URL with the suite green. Fixed in `d6746d3d` by a behavioural test that runs the play with the token
+against `http://example.invalid` and URLs carrying credentials, and requires the preflight's fixed
+refusal; the same mutation turns it red. Why the rule did not fire: it was applied to allow-lists and
+needles in Python, and a grep that proves a guard's text exists read as a guard test. A guard is
+tested by running it.
 
 ### 2.16 A test whose population was selected by the presence of the fix
 
@@ -2176,7 +2226,7 @@ var through the play's vars across every playbook.
 
 ### 2.31 Production host configuration was assumed from the local proof (widens 2.24)
 
-**Occurrences: 1** — 2026-10-29 (the class also covers 2.24's three)
+**Occurrences: 2** — 2026-10-29, 2026-11-02 (the class also covers 2.24's three)
 
 **What happened.** See 2.24, occurrence 3. The first production `Deploy OPA (Dev)` (Semaphore
 task 10339) created no container. The OPA compose default named the image by its short name, the
@@ -2200,6 +2250,8 @@ Proposal, for the class: a CI job on the production base image (Ubuntu 24.04, po
 Ubuntu's packages, `unqualified-search-registries = []`) that runs `podman-compose config` and
 `podman pull` for every compose file's default images, so a host-configuration difference fails
 in CI instead of on the first production deploy.
+
+**Occurrence 2 — 2026-11-02.** PR #815's inventory-sync script handed the operator token to its Ansible child as `--extra-vars @/dev/stdin`. Every proof ran on macOS: the child worktree's scoped gates, the pre-push hook and the local test file (32 passed under ansible-core 2.21.0 and 2.20.8). CI's Ubuntu runner failed `Python core` on the first real-playbook test, and `-x` hid the other six: ansible-core parses `-e @path` with `maybe_unfrack_path` (`ansible/cli/arguments/option_helpers.py:503`), which resolves symlinks, and on Linux `/dev/stdin` is a symlink through `/proc/self/fd/0` to an unopenable `pipe:[N]` (on macOS it resolves to `/dev/fd/0`, which opens). Reproduced in `python:3.12.15-slim-bookworm`: 7 of 32 failed. Why the rule did not fire: it is worded about the deploy target host, while this was an operator-side script run on CI's Linux runner; a workstation-only proof was again read as proof for every platform. Fixed by passing the payload through a named pipe in a 0700 temporary directory. Enforced by CI's Ubuntu `Python core` job, which caught it before merge; the macOS pre-push hook cannot.
 
 ### 2.32 A fixture modelled the provider's reads, not how it applies a write (widens 2.22)
 
@@ -3447,6 +3499,14 @@ like (playbook guards for a playbook change), not from what it added (a TLS cont
 the proposed guard: running every `platform/tests` file that does not launch `ansible-playbook`
 took 91 s on this workstation with `-n auto` and includes the TLS guard. That subset is the
 concrete candidate for what the hook keeps running under `SKIP_TESTS=1`.
+
+**Occurrence 2026-11-04 (a ledger edit).** PR #815's head `67d25122` added a 2.15 occurrence to this
+ledger and was pushed under `SKIP_TESTS=1` after the script's own test file passed locally. CI's
+Python core failed on `test_ledger_test_citations.py`: in a claim that cites a `.bats` file, a code
+span of five or more words is read as a BATS test name, and the new paragraph quoted a six-word
+condition. Fixed in `6e7bb33d` before merge. Why the rule did not fire: the edit was prose, and the
+tests that read this file were not treated as tests of the change. The 91-second fast subset proposed
+above includes the citation guard.
 
 ### 5.3 Merging while the review was rate-limited
 
