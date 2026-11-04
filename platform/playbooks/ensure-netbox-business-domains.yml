@@ -1,0 +1,307 @@
+---
+# ensure-netbox-business-domains.yml — converge the NetBox tags that name the business domains (plan 17, D37).
+#
+# A business domain is a NetBox tag whose slug starts with "domain-". The declared names come from the inventory,
+# netbox_business_domains (a list of display names), on the netbox_svc host and nowhere else. A run creates a missing
+# tag, sets the name and description of a declared tag that differs, and writes nothing else.
+#
+# It NEVER deletes. A domain-* tag that is not declared is reported by name and left alone. NetBox tags are global
+# labels, so removing one is an operator decision made in the inventory, not a side effect of a run.
+#
+# Slug: "domain-" + the lower-case display name, with each run of ASCII non-alphanumerics replaced by one "-" and the
+# leading and trailing "-" trimmed. Professional Services -> domain-professional-services; IT -> domain-it. A name with
+# no ASCII letter or digit is refused, and two declared names that give one slug are refused.
+#
+# Create: name, slug, description "Business domain (Dispatch Console, plan 17 D37)", color 607d8b.
+# Update: a tag found by slug whose name or description differs gets the declared name and description. Its color is
+# set on create only; a later color change is not converged. An identical tag is left alone.
+# Refused before any write: a declared name already held by a tag under another slug (NetBox names are unique); a
+# name or slug over 100 characters (NetBox's Tag max_length, django-taggit 6.1.0); a mapping, which Jinja's `sequence`
+# test accepts, so the list check alone would read it as its keys.
+#
+# Runs on the netbox_svc host through the NetBox Django shell, in the exec pattern of provision-netbox-automation-token.yml
+# and reconcile-netbox-duplicate-vms.yml. There is NO API token and no OpenBao read: the script has the shell's authority,
+# so its guards are code, and the reviewed Semaphore template is the only way in.
+#
+# The account and the changelog:
+#   - The writes run inside netbox/netbox/context_managers.py event_tracking, with a NetBoxFakeRequest (utilities/request.py)
+#     that carries the account and a uuid4 request id. NetBox records a change only inside a request.
+#   - The account is workflow-domain-tagger. It is created on the first real run that has a write, inactive and with an
+#     unusable password. A pre-existing account is used only if it is inactive, holds no grant (no groups, no
+#     ObjectPermission, not superuser or staff), has no usable password and has no API token. Any other state stops the
+#     run before a write. The guard is the same code as reconcile-netbox-duplicate-vms.yml.
+#   - Each write must have its own changelog row (extras.tag, action create or update, by this account, under this run's
+#     request id), inside the transaction. A missing row rolls the run back. Each written tag is read back by slug before
+#     commit, and its name and slug must match the declaration.
+#   - Configured event rules and webhooks fire on these changes, as for any change made in a request. event_tracking
+#     flushes the queue when its context exits, still inside the transaction.
+#
+# Check mode (--check) runs the same plan with dry_run=true, inside a transaction that is rolled back. It reports
+# would-create and would-update, writes nothing, and creates no account.
+#
+# An empty or undeclared netbox_business_domains is a visible no-op: no NetBox call is made and nothing changes.
+#
+# Limits, stated:
+#   - A declared name whose display name changes leaves the old slug undeclared. The old tag is reported, not removed.
+#   - The color of an existing tag is not converged.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Refuse an empty NetBox target group
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: netbox_svc
+    preflight_group_expected: netbox_svc
+
+- name: "Ensure the declared NetBox business-domain tags (plan 17, D37)"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+
+  vars:
+    # The same exec pattern and resolution as provision-netbox-automation-token.yml: the configured engine and container.
+    _manage: "{{ container_engine | default('docker') }} exec -i {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell"
+    # The Python the NetBox shell runs. The shell receives PARAMS (dry_run, domains) on the line above this body.
+    # No Jinja markers in it: Ansible templates variable values, so a brace pair here would be evaluated.
+    _ensure_body: |
+      import json
+      import re
+      import uuid
+
+      from core.models import ObjectChange
+      from django.contrib.auth import get_user_model
+      from django.db import transaction
+      from extras.models import Tag
+      from netbox.context_managers import event_tracking
+      from users.models import ObjectPermission, Token
+      from utilities.request import NetBoxFakeRequest
+
+      ACCOUNT = "workflow-domain-tagger"
+      SLUG_PREFIX = "domain-"
+      DESCRIPTION = "Business domain (Dispatch Console, plan 17 D37)"
+      COLOR = "607d8b"
+      MARKER = "DOMAINS_RESULT "
+
+
+      def slug_of(name):
+          # ASCII only: a letter outside a-z is a separator, because NetBox slugs are ASCII. Each run of separators
+          # is one "-", and the ends are trimmed before the prefix is added.
+          core = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+          if not core:
+              raise RuntimeError("a declared business domain has no ASCII letter or digit: %r" % name)
+          return SLUG_PREFIX + core
+
+
+      def declared_rows(names):
+          rows = []
+          by_slug = {}
+          for name in names:
+              if not isinstance(name, str) or not name.strip():
+                  raise RuntimeError("a declared business domain is blank or not a string")
+              slug = slug_of(name)
+              # NetBox's Tag name and slug are each max_length 100 (django-taggit 6.1.0, TagBase, the version NetBox
+              # v4.5.0 pins). A longer one fails at the database, so it is refused here, before any write, dry or real.
+              if len(name) > 100 or len(slug) > 100:
+                  raise RuntimeError("declared business domain %r gives a %d-character name and a %d-character slug; "
+                                     "NetBox allows 100 for each" % (name, len(name), len(slug)))
+              if slug in by_slug:
+                  raise RuntimeError("two declared business domains give one slug: %r and %r" % (by_slug[slug], name))
+              by_slug[slug] = name
+              rows.append({"name": name, "slug": slug})
+          return rows
+
+
+      def plan(rows):
+          entries = []
+          for row in rows:
+              if Tag.objects.filter(name=row["name"]).exclude(slug=row["slug"]).exists():
+                  raise RuntimeError("a tag under another slug already holds the declared name %r; nothing was committed"
+                                     % row["name"])
+              tag = Tag.objects.filter(slug=row["slug"]).first()
+              if tag is None:
+                  action = "would-create"
+              elif tag.name != row["name"] or tag.description != DESCRIPTION:
+                  action = "would-update"
+              else:
+                  action = "unchanged"
+              entries.append({"name": row["name"], "slug": row["slug"], "action": action})
+          return entries
+
+
+      def undeclared_names(rows):
+          # Reported by name only. Never deleted: see the playbook header.
+          declared = {row["slug"] for row in rows}
+          return sorted(tag.name for tag in Tag.objects.filter(slug__startswith=SLUG_PREFIX) if tag.slug not in declared)
+
+
+      def writer_account():
+          account, created = get_user_model().objects.get_or_create(username=ACCOUNT, defaults={"is_active": False})
+          if created:
+              account.set_unusable_password()
+              account.save()
+          # The account must be inactive and hold no grant, no usable password and no API token, whether this run
+          # created it or found it.
+          if (account.is_active or account.is_superuser or getattr(account, "is_staff", False)
+                  or account.groups.exists() or ObjectPermission.objects.filter(users=account).exists()
+                  or account.has_usable_password() or Token.objects.filter(user=account).exists()):
+              raise RuntimeError("the workflow-domain-tagger account is active, holds a grant, a usable password "
+                                 "or an API token; nothing was committed")
+          return account
+
+
+      def write(entries):
+          pending = [e for e in entries if e["action"] in ("would-create", "would-update")]
+          account = writer_account()
+          # NetBox records a change only inside a request. This is the request shape copy_safe_request builds.
+          request = NetBoxFakeRequest({
+              "user": account, "id": uuid.uuid4(), "META": {}, "COOKIES": {}, "POST": {}, "GET": {},
+              "FILES": {}, "method": "SHELL", "path": "",
+          })
+          with event_tracking(request):
+              for e in pending:
+                  if e["action"] == "would-create":
+                      tag = Tag(name=e["name"], slug=e["slug"], color=COLOR, description=DESCRIPTION)
+                      e["verb"] = "create"
+                  else:
+                      tag = Tag.objects.get(slug=e["slug"])
+                      # NetBox's edit view and API both snapshot before they modify, so the changelog row carries
+                      # the before-values (prechange_data). Without this the update row shows no "before".
+                      tag.snapshot()
+                      tag.name = e["name"]
+                      tag.description = DESCRIPTION
+                      e["verb"] = "update"
+                  tag.full_clean()
+                  tag.save()
+                  e["pk"] = tag.pk
+              for e in pending:
+                  stored = Tag.objects.get(slug=e["slug"])
+                  if stored.name != e["name"] or stored.slug != e["slug"]:
+                      raise RuntimeError("tag %s does not read back as declared; nothing was committed" % e["slug"])
+                  if not ObjectChange.objects.filter(
+                          changed_object_type__app_label="extras", changed_object_type__model="tag",
+                          changed_object_id=e["pk"], action=e["verb"], user_name=ACCOUNT,
+                          request_id=request.id).exists():
+                      raise RuntimeError("no changelog row for a tag's %s; nothing was committed" % e["verb"])
+                  e["action"] = "created" if e["verb"] == "create" else "updated"
+          return [e["name"] for e in pending]
+
+
+      def ensure():
+          dry_run = bool(PARAMS["dry_run"])
+          rows = declared_rows(PARAMS["domains"])
+          written = []
+          with transaction.atomic():
+              entries = plan(rows)
+              stale = undeclared_names(rows)
+              if dry_run or not any(e["action"] in ("would-create", "would-update") for e in entries):
+                  transaction.set_rollback(True)
+              else:
+                  written = write(entries)
+          result = {
+              "dry_run": dry_run,
+              "domains": [{"name": e["name"], "slug": e["slug"], "action": e["action"]} for e in entries],
+              "undeclared": stale,
+              "written": written,
+          }
+          # The marker lets the play find this line among any other output the shell prints (ansible parses it back).
+          print(MARKER + json.dumps(result, sort_keys=True))
+
+
+      ensure()
+
+  tasks:
+    # ── the declaration (inventory, on the netbox_svc host) ─────────────────────────────
+    - name: "Hold the declared business domains"
+      ansible.builtin.set_fact:
+        _domains: "{{ netbox_business_domains | default([], true) }}"
+
+    # An undeclared or empty list is a visible no-op: no NetBox call is made and nothing changes.
+    - name: "Report an empty declaration (nothing to ensure)"
+      ansible.builtin.debug:
+        msg: "netbox_business_domains is empty or undeclared on this host: no business-domain tag is ensured."
+      when: _domains | length == 0
+
+    - name: "End the play when no business domain is declared"
+      ansible.builtin.meta: end_host
+      when: _domains | length == 0
+
+    - name: "Refuse a declaration that is not a list of non-blank names"
+      ansible.builtin.assert:
+        that:
+          - _domains is sequence
+          - _domains is not string
+          - _domains is not mapping
+          - (_domains | select('string') | list | length) == (_domains | length)
+          - (_domains | map('trim') | reject('equalto', '') | list | length) == (_domains | length)
+        fail_msg: "netbox_business_domains must be a list of display names, for example [Products, IT]."
+        quiet: true
+
+    # ── the plan (check mode): the same script with dry_run true, rolled back, so nothing is written ──
+    # Read-only by construction: dry_run is hard-coded true, the transaction is rolled back, and the write path is
+    # never reached. It runs under check mode on purpose, so a dry run prints what a real run would do.
+    - name: "Dry run: plan the business-domain tags in the NetBox Django shell (nothing is written)"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        import json
+        PARAMS = json.loads({{ {'dry_run': true, 'domains': _domains} | to_json | to_json }})
+        {{ _ensure_body }}
+        PYSCRIPT
+      # Its own name: Ansible stores a skipped task's result under its register name, so a shared name would let the
+      # skipped real task overwrite this result.
+      register: _domains_dry
+      when: ansible_check_mode
+      check_mode: false
+      changed_when: false
+
+    # ── the ensure (a real run): the same script with dry_run false, in one transaction ──────
+    - name: "Ensure the business-domain tags in the NetBox Django shell (one transaction)"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        import json
+        PARAMS = json.loads({{ {'dry_run': false, 'domains': _domains} | to_json | to_json }})
+        {{ _ensure_body }}
+        PYSCRIPT
+      register: _domains_real
+      when: not ansible_check_mode
+      # Changed only when this run wrote a tag. A missing marker line reads as "no writes" here; the result check below
+      # then fails the play with its own message, so the changed flag never decides a failed run.
+      changed_when: >-
+        _domains_real.rc == 0 and
+        ((_domains_real.stdout_lines | select('match', '^DOMAINS_RESULT ') | list | last
+          | default('DOMAINS_RESULT {"written": []}')) | regex_replace('^DOMAINS_RESULT ', '') | from_json).written
+        | length > 0
+
+    # ── the result: the one line the NetBox shell printed with the DOMAINS_RESULT marker (names and actions only) ──
+    - name: "Hold the result line the NetBox shell printed"
+      ansible.builtin.set_fact:
+        # The conditional reads only the branch that ran, so the skipped task's result is never touched.
+        _result_lines: "{{ (_domains_dry if ansible_check_mode else _domains_real).stdout_lines | select('match', '^DOMAINS_RESULT ') | list }}"
+
+    - name: "Require exactly one DOMAINS_RESULT line"
+      ansible.builtin.assert:
+        that: _result_lines | length == 1
+        fail_msg: >-
+          The NetBox shell printed {{ _result_lines | length }} DOMAINS_RESULT line(s), expected exactly 1.
+          Nothing is judged from that output.
+        quiet: true
+
+    - name: "Hold the parsed result (names, slugs and actions)"
+      ansible.builtin.set_fact:
+        _result: "{{ _result_lines[0] | regex_replace('^DOMAINS_RESULT ', '') | from_json }}"
+
+    - name: "Show the result (names, slugs, actions, undeclared names)"
+      ansible.builtin.debug:
+        var: _result
+
+    - name: "Summarise the run (counts)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'check mode: nothing changed; ' if ansible_check_mode else '' }}{{
+          _result.domains | selectattr('action', 'in', ['created', 'would-create']) | list | length }} tag(s)
+          {{ 'would be' if ansible_check_mode else 'were' }} created;
+          {{ _result.domains | selectattr('action', 'in', ['updated', 'would-update']) | list | length }} updated;
+          {{ _result.domains | selectattr('action', 'equalto', 'unchanged') | list | length }} unchanged;
+          {{ _result.undeclared | length }} undeclared domain tag(s) reported, not touched.

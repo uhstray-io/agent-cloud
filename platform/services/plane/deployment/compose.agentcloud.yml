@@ -13,7 +13,8 @@
 #   profiles  Plane switches optional services off with `deploy.replicas: 0`, which
 #             podman-compose 1.6.0 IGNORES (it started a replicas-0 service in a 2026-10-27 test).
 #             A profile nothing activates keeps them off under both providers: Plane AI (pi-*),
-#             the Argus scanner, inbound email and the importer worker.
+#             the Argus scanner, inbound email and the importer worker. Also Plane Runner, which
+#             Plane ships ON: see the runner entry below.
 #   volumes   Plane binds its data under $INSTALL_DIR. Named volumes instead, so the data lives
 #             in the engine, `compose down -v` (clean-service.yml) removes it, and neither the
 #             git update nor the local rsync of the deploy tree can touch it.
@@ -84,7 +85,15 @@ services:
     volumes: !override
       - logs_webhook_consumer:/code/plane/logs
   outbox-poller: *always
-  runner: *always
+  # Off (Plane ships it on): Plane Runner, the custom-script automation engine. Its image
+  # (node-runner-commercial) is built for x86-64-v3 and exits at start with "CPU does not support
+  # x86-64-v3" on every production node that can hold Plane: the node CPU survey (Validate
+  # Proxmox Cluster, Semaphore task 12135, 2026-11-04) found only one v3-capable node, too small
+  # for Plane's 4 vCPU / 8 GB (docs/MISTAKES.md 2.34). Nothing depends on it; the API only holds
+  # RUNNER_BASE_URL. A recreate's --remove-orphans removes an existing runner container (proven
+  # on podman-compose 1.6.0). Turn it back on as `runner: *always` once Plane sits on a node the
+  # Resize VM guard accepts for `vm_cpu: x86-64-v3`.
+  runner: *disabled
   proxy:
     <<: *always
     container_name: plane-proxy

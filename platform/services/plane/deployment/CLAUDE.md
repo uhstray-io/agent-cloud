@@ -35,6 +35,7 @@ reviewed change. The pinned release is `v3.3.3` (Joseph, 2026-10-27).
 |---|---|
 | `restart: always` everywhere; one-shots `"no"` + `agent-cloud.one-shot` | Plane ships `unless-stopped`, which podman's boot unit does not restart |
 | `profiles: ["disabled"]` on Plane AI (`pi-*`), Argus, email and the importer worker | Plane switches them off with `deploy.replicas: 0`, which **podman-compose 1.6.0 ignores** |
+| `profiles: ["disabled"]` on Plane Runner (`runner`), which Plane ships **on** | Its image needs x86-64-v3 and crash-loops on every production node that can hold Plane (node CPU survey, Semaphore task 12135; `docs/MISTAKES.md` 2.34). Plane Runner scripts are unavailable until Plane moves to a v3-capable node; then set it back to `*always` and declare `vm_cpu: x86-64-v3` |
 | Named volumes for every bind mount | `compose down -v` removes them; the deploy tree's git update and rsync never touch data |
 | The proxy publishes plain HTTP on `plane_bind:plane_port` only | TLS is at the platform Caddy; HTTPS and SMTP publishes dropped |
 | `container_name` `plane-api` and `plane-proxy` | Stable names for the health wait, the configuration phase and the local Caddy upstream |

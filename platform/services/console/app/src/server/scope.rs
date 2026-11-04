@@ -6,8 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The Authentik group that sees every tenant. It matches the UI's Settings gate
-/// (`ui/shell.rs`, `is_platform_admin`) and the group declared in
+/// The Authentik group that sees every tenant and the platform-wide pages. It is the group declared in
 /// `platform/services/authentik/deployment/blueprints/platform-groups.yaml`.
 pub const ADMIN_GROUP: &str = "platform-admins";
 

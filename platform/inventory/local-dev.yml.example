@@ -242,6 +242,36 @@ all:
           opa_bind: 127.0.0.1
           opa_port: 8281
 
+    # launch gate — the gate between the agents and Semaphore (skynet-launch-containment, Phase 3). Port 18443
+    # because Caddy holds 127.0.0.1:8443; the container listens on 8443, which the local probes reach by the
+    # network alias. Mirrors bootstrap-local-dev.yml's [launch_gate_svc], which is the authority for the local
+    # Semaphore's inventory. The leaf's dir is <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>.
+    launch_gate_svc:
+      hosts:
+        launch-gate-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: launch-gate
+          monorepo_deploy_path: platform/services/launch-gate/deployment
+          container_engine: podman
+          local_mode: true
+          launch_gate_image: docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+          launch_gate_bind: 127.0.0.1
+          launch_gate_port: 18443
+          launch_gate_semaphore_url: http://local-semaphore:3000
+          # id of the agent-cloud project in local Semaphore
+          launch_gate_semaphore_project: 1
+          launch_gate_opa_url: http://opa:8181
+          dns_site: local
+          dns_zone: agent-cloud.test
+          internal_leaves:
+            - name: launch-gate-server
+              host: launch-gate-local
+              profile: server
+              dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/launch-gate/deployment/certs/launch-gate-server
+              sans: [launch-gate.local.agent-cloud.test]
+              reload: none
+
     # n8n — workflow automation (composable; greenfield locally). Behind Caddy
     # at n8n.agent-cloud.test. The encryption key is stateful (see deploy-n8n.yml).
     n8n_svc:
@@ -633,3 +663,12 @@ all:
           # agent is started by tasks/deploy-orb-agent.yml, carries no compose label, and so
           # is not found by the project selector.
           stop_extra_containers: [netbox-orb-agent]
+          # Business-domain tags (Ensure NetBox Business Domains, plan 17 D37): display names only, one NetBox tag
+          # each (slug `domain-<name>`). The template creates and updates the declared tags and never deletes; a
+          # domain-* tag that is no longer declared is reported by name. Undefined or empty is a visible no-op.
+          # netbox_business_domains:
+          #   - Products
+          #   - Professional Services
+          #   - Automation
+          #   - Administration
+          #   - IT
