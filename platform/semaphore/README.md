@@ -372,6 +372,18 @@ place from OpenBao (`docs/MISTAKES.md` 3.16). Leave it false on every other run.
      --input BAO_VALUE=<value-file> --inventory <approved-id> --url https://semaphore.uhstray.io --apply < <token-file>
    ```
 
+   A multi-line value, such as a PEM private key, cannot be one line, so encode it into the
+   file and add `--set bao_value_encoding=base64` (the default is `plain`). The playbook
+   decodes it before the merge. `tr -d '\n'` makes the file one line whatever line breaks
+   `base64` writes:
+
+   ```bash
+   base64 < <key-file> | tr -d '\n' > <value-file>
+   scripts/semaphore-seed-input.py --template "Seed OpenBao Key" \
+     --set bao_path=services/<svc> --set bao_key=<key> --set bao_value_encoding=base64 \
+     --input BAO_VALUE=<value-file> --inventory <approved-id> --url https://semaphore.uhstray.io --apply < <token-file>
+   ```
+
 The CLI accepts only the input names the template declares and only its survey
 settings. It resolves the template and environment by name and refuses unless they
 are bound to each other, the template still runs from its declared repository record
