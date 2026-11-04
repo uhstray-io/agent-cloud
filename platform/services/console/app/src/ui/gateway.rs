@@ -8,9 +8,9 @@ use dioxus::prelude::*;
 use super::api::{self, Me};
 use super::empty::PageMeta;
 use super::gateway_api::{
-    budget_source_text, budget_text, clients_by_model, last_hour_text, not_ok_message,
-    usage_notice, usage_percent, usage_read_text, GatewayBody, GatewayClient, APPROXIMATE,
-    GATEWAY_PATH,
+    budget_source_text, budget_text, clients_by_model, last_hour_text, last_read_failed_text,
+    not_ok_message, usage_notice, usage_percent, usage_read_text, GatewayBody, GatewayClient,
+    APPROXIMATE, GATEWAY_PATH,
 };
 use super::icons::icon;
 use super::inventory::{admin_next, end_session, keeps_polling_admin, Admin, POLL_MS};
@@ -147,9 +147,10 @@ fn GatewayBodyView(
     }
     let notice = usage_notice(&body.usage, now_ms);
     let usage_read = usage_read_text(now_ms, &body.usage);
+    let failed = last_read_failed_text(Some(reason.as_str()));
     rsx! {
-        if !reason.is_empty() {
-            p { class: "stale", role: "status", "The last read failed: {reason}." }
+        if let Some(line) = failed {
+            p { class: "stale", role: "status", "{line}" }
         }
         match panel {
             Panel::Models => rsx! { ModelTable { clients: body.clients, models: body.models } },

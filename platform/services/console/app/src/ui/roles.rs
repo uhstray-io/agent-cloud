@@ -8,15 +8,15 @@ use dioxus::prelude::*;
 use super::api::{self, Me};
 use super::gateway::poll_gateway;
 use super::gateway_api::{
-    budget_source_text, budget_text, last_hour_text, not_ok_message, usage_notice, usage_percent,
-    usage_read_text, GatewayBody, GatewayClient, Usage, APPROXIMATE,
+    budget_source_text, budget_text, last_hour_text, last_read_failed_text, not_ok_message,
+    usage_notice, usage_percent, usage_read_text, GatewayBody, GatewayClient, Usage, APPROXIMATE,
 };
 use super::icons::icon;
 use super::inventory::Admin;
-use super::roles_api::{role_named, RoleList, ROLES_PATH};
-use super::shell::{is_platform_admin, Ctx, Loaded};
+use super::roles_api::{role_named, role_state, RoleState, ROLES_PATH};
+use super::shell::{is_platform_admin, Ctx};
 use super::status::{Meter, Notice};
-use super::work::{board_items, item_age, Lane, Source, WorkItem, WorkState};
+use super::work::{board_items, item_age, stale_text, Lane, Source, WorkItem, WorkState};
 use super::Route;
 
 /// The Active Work strips that belong to `role`: the board's items, one per job as the board shows them,
@@ -33,14 +33,21 @@ pub fn client_named<'a>(clients: &'a [GatewayClient], role: &str) -> Option<&'a 
     clients.iter().find(|client| client.name == role)
 }
 
-/// Reads the registry's roles once into the shell. Only platform admins call it, since the server refuses
-/// every other caller.
-pub async fn load_roles(mut roles: Signal<Loaded<RoleList>>) {
+/// The banner Active Work shows when its newest poll failed: the reason, and the age of the list it still shows.
+/// `None` when the newest poll succeeded.
+pub fn work_stale_line(
+    now_ms: Option<i64>,
+    updated_at: Option<&str>,
+    stale: Option<&str>,
+) -> Option<String> {
+    stale.map(|reason| stale_text(now_ms, updated_at, reason))
+}
+
+/// Reads the registry's roles once into the shell. Only platform admins call it, since the server refuses every
+/// other caller. The state comes from the status and the body together (`role_state`).
+pub async fn load_roles(mut roles: Signal<RoleState>) {
     let reply = api::request("GET", ROLES_PATH, None).await;
-    match api::parse::<RoleList>(&reply) {
-        Some(list) => roles.set(Loaded::Ready(list)),
-        None => roles.set(Loaded::Failed),
-    }
+    roles.set(role_state(&reply));
 }
 
 /// The role page. Platform admins only: the registry, the work and the gateway answer it shows are all
@@ -82,9 +89,12 @@ fn StepsCard(role: String) -> Element {
     let ctx = use_context::<Ctx>();
     let roles = ctx.roles.read().clone();
     let body = match roles {
-        Loaded::Loading => rsx! { p { class: "empty", "Loading the registry\u{2026}" } },
-        Loaded::Failed => rsx! { p { class: "empty", "The agent roles could not be loaded." } },
-        Loaded::Ready(list) => match role_named(&list, &role) {
+        RoleState::Loading => rsx! { p { class: "empty", "Loading the registry\u{2026}" } },
+        RoleState::Failed => rsx! { p { class: "empty", "The agent roles could not be loaded." } },
+        RoleState::Forbidden => {
+            rsx! { p { class: "empty", "Agent roles are limited to platform administrators." } }
+        }
+        RoleState::Ready(list) => match role_named(&list, &role) {
             Some(found) => rsx! {
                 div { class: "tbl-wrap",
                     table { class: "tbl",
@@ -132,10 +142,20 @@ fn WorkCard(role: String) -> Element {
         WorkState::Shown { list, .. } if list.source == Source::Unconfigured => {
             rsx! { p { class: "empty", "Semaphore connection not configured." } }
         }
-        WorkState::Shown { list, now_ms, .. } => {
+        WorkState::Shown {
+            list,
+            now_ms,
+            stale,
+        } => {
             let items = role_work(&list.items, &role);
             let now_ms = *now_ms;
-            rsx! { WorkTable { items, now_ms } }
+            let stale_line = work_stale_line(now_ms, list.updated_at.as_deref(), stale.as_deref());
+            rsx! {
+                if let Some(line) = stale_line {
+                    p { class: "stale", role: "status", "{line}" }
+                }
+                WorkTable { items, now_ms }
+            }
         }
     };
     rsx! {
@@ -209,12 +229,19 @@ fn GatewayCard(role: String, gateway: Signal<Admin<GatewayBody>>, now_ms: Option
         Admin::Unavailable(reason) => {
             rsx! { p { class: "empty", "The gateway could not be loaded: {reason}." } }
         }
-        Admin::Shown { body, .. } => match not_ok_message(body.state) {
+        Admin::Shown { body, reason } => match not_ok_message(body.state) {
             Some(message) => rsx! { p { class: "empty", "{message}" } },
             None => match client_named(&body.clients, &role) {
-                Some(client) => rsx! {
-                    ClientFacts { client: client.clone(), usage: body.usage.clone(), now_ms }
-                },
+                Some(client) => {
+                    // A failed newer read keeps the last good client. Say so beside it, as the gateway page does.
+                    let failed = last_read_failed_text(reason.as_deref());
+                    rsx! {
+                        if let Some(line) = failed {
+                            p { class: "stale", role: "status", "{line}" }
+                        }
+                        ClientFacts { client: client.clone(), usage: body.usage.clone(), now_ms }
+                    }
+                }
                 None => rsx! { p { class: "empty", "No gateway client named {role}." } },
             },
         },
@@ -343,5 +370,29 @@ mod tests {
         );
         assert!(client_named(&clients, "alp").is_none());
         assert!(client_named(&clients, "beta").is_none());
+    }
+
+    #[test]
+    fn a_stale_work_list_names_its_reason_and_the_age_it_still_shows() {
+        use crate::ui::work::parse_rfc3339_ms;
+        let now = parse_rfc3339_ms("2026-10-26T12:05:00Z");
+        assert_eq!(
+            work_stale_line(
+                now,
+                Some("2026-10-26T12:00:00Z"),
+                Some("Semaphore answered HTTP 500")
+            )
+            .as_deref(),
+            Some("Stale \u{2014} last update 5m ago: Semaphore answered HTTP 500")
+        );
+        assert_eq!(
+            work_stale_line(now, Some("2026-10-26T12:00:00Z"), None),
+            None,
+            "a successful poll is not stale"
+        );
+        assert_eq!(
+            work_stale_line(now, None, Some("boom")).as_deref(),
+            Some("Stale \u{2014} no update yet: boom")
+        );
     }
 }

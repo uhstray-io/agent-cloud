@@ -11,7 +11,7 @@ use super::api::{self, Account, Claims, Me, NamedRef, TenantList, Tree};
 use super::icons::icon;
 use super::inventory::{self, Snapshot};
 use super::roles::load_roles;
-use super::roles_api::RoleList;
+use super::roles_api::RoleState;
 use super::scope::{self, Scope, ScopeBar};
 use super::work::{self, WorkState};
 use super::Route;
@@ -39,7 +39,7 @@ pub struct Ctx {
     /// The inventory of `tenant`. The inventory poll and a tenant switch write it; the Phase 3 pages read it.
     pub inventory: Signal<Loaded<Snapshot>>,
     /// The agent roles of the registry (D40). Read once by platform admins; the sidebar and the role page read it.
-    pub roles: Signal<Loaded<RoleList>>,
+    pub roles: Signal<RoleState>,
 }
 
 #[component]
@@ -51,7 +51,7 @@ pub fn Shell() -> Element {
     let scope = use_signal(Scope::default);
     let work = use_signal(|| WorkState::Loading);
     let inventory = use_signal(|| Loaded::Loading);
-    let roles = use_signal(|| Loaded::Loading);
+    let roles = use_signal(|| RoleState::Loading);
     let ctx = use_context_provider(|| Ctx {
         me,
         tenants,
@@ -304,12 +304,15 @@ fn RoleLinks() -> Element {
     let ctx = use_context::<Ctx>();
     let roles = ctx.roles.read().clone();
     match roles {
-        Loaded::Loading => rsx! { p { class: "side-note", "Loading roles\u{2026}" } },
-        Loaded::Failed => rsx! { p { class: "side-note", "Roles unavailable" } },
-        Loaded::Ready(list) if list.roles.is_empty() => {
+        RoleState::Loading => rsx! { p { class: "side-note", "Loading roles\u{2026}" } },
+        RoleState::Failed => rsx! { p { class: "side-note", "Roles unavailable" } },
+        RoleState::Forbidden => {
+            rsx! { p { class: "side-note", "Agent roles are limited to platform administrators." } }
+        }
+        RoleState::Ready(list) if list.roles.is_empty() => {
             rsx! { p { class: "side-note", "No roles in the registry" } }
         }
-        Loaded::Ready(list) => rsx! {
+        RoleState::Ready(list) => rsx! {
             for role in list.roles.iter() {
                 Link {
                     key: "{role.name}",

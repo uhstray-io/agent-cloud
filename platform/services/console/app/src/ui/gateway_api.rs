@@ -143,6 +143,14 @@ pub fn usage_percent(tokens: Option<u64>, budget: u64) -> Option<f64> {
     Some((tokens as f64 * 100.0 / budget as f64).min(100.0))
 }
 
+/// The line a gateway page shows when its newest read failed and the answer on screen is the last good one. `None`
+/// when the read did not fail. Both the gateway page and the role page show it.
+pub fn last_read_failed_text(reason: Option<&str>) -> Option<String> {
+    reason
+        .filter(|text| !text.is_empty())
+        .map(|text| format!("The last read failed: {text}."))
+}
+
 /// The age of the shown figures, for the header and the client card: `usage read 3m ago`. `None` before any
 /// good read. Without a clock the stamp itself shows, as the Secrets page shows an unreadable time.
 pub fn usage_read_text(now_ms: Option<i64>, usage: &Usage) -> Option<String> {
@@ -463,5 +471,19 @@ mod tests {
             "no earlier figures, so no age"
         );
         assert_eq!(usage_read_text(now, &no_good), None);
+    }
+
+    #[test]
+    fn a_failed_newer_read_says_so_and_a_clean_one_says_nothing() {
+        assert_eq!(
+            last_read_failed_text(Some("Grafana did not answer in time")).as_deref(),
+            Some("The last read failed: Grafana did not answer in time.")
+        );
+        assert_eq!(last_read_failed_text(None), None);
+        assert_eq!(
+            last_read_failed_text(Some("")),
+            None,
+            "an empty reason is no failure"
+        );
     }
 }
