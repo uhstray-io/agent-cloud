@@ -3482,6 +3482,14 @@ templates:
         description: "Type the declared vm_vmid. Anything else refuses. The VM is SHUT DOWN for the move when it is running. No default on purpose."
         type: string
         required: true
+      - name: start_after
+        title: "Start after the move"
+        description: >-
+          true (default): the guest ends RUNNING on its declared node, including one that was stopped before the run.
+          false: a stopped guest stays stopped; a running guest is always started again after the move.
+        type: string
+        required: false
+        default_value: "true"
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
