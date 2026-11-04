@@ -39,7 +39,8 @@
 # is one line (scripts/semaphore-seed-input.py refuses a newline), and a PEM private key is
 # multi-line, so such a value is staged as base64 and decoded here, before the merge. The
 # base64 form is checked before the login (standard alphabet, a length that is a multiple of
-# four, a non-empty decode), and the value merged is the decoded text, never the base64.
+# four, a non-empty decode, decoded bytes that are UTF-8 text), and the value merged is the
+# decoded text, never the base64.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -104,11 +105,12 @@
 
     # base64 checks: each rule is its own task, so the task NAME names the refused rule. A
     # no_log result hides the fail_msg, so the name is the only readable part. They run in
-    # this order, so the decode runs only on input that passed the first two.
+    # this order, so each decode runs only on input that passed the checks before it. \Z, not $: a
+    # trailing newline satisfies $ (Python matches before a final newline), and \Z does not.
     - name: "Refuse a BAO_VALUE with characters outside standard base64 (rule only; value not shown)"
       ansible.builtin.assert:
         that:
-          - _bao_value is match('^[A-Za-z0-9+/]+={0,2}$')
+          - _bao_value is match('^[A-Za-z0-9+/]+={0,2}\Z')
       no_log: true
       when: _bao_value_encoding == 'base64' and not (bao_verify_access_only | default(false) | bool)
 
@@ -123,6 +125,18 @@
       ansible.builtin.assert:
         that:
           - _bao_value_stored | length > 0
+      no_log: true
+      when: _bao_value_encoding == 'base64' and not (bao_verify_access_only | default(false) | bool)
+
+    # The last check. Ansible's b64decode decodes with surrogateescape: a byte that is not
+    # UTF-8 becomes a lone surrogate U+DC80-U+DCFF, not an error. Without this check such a
+    # value (e.g. /w== is 0xFF) would log in and be written as junk. A round trip
+    # (b64encode of the decoded text == the input) does NOT catch it: the surrogate encodes
+    # back to the same byte, so the round trip holds.
+    - name: "Refuse a BAO_VALUE that does not decode to UTF-8 text (rule only; value not shown)"
+      ansible.builtin.assert:
+        that:
+          - _bao_value_stored is not search('[\udc80-\udcff]')
       no_log: true
       when: _bao_value_encoding == 'base64' and not (bao_verify_access_only | default(false) | bool)
 

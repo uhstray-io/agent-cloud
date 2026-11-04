@@ -28,6 +28,7 @@ ENCODED = base64.b64encode(BLOCK.encode()).decode()
 
 RULE_CHARS = "Refuse a BAO_VALUE with characters outside standard base64 (rule only; value not shown)"
 RULE_LENGTH = "Refuse a BAO_VALUE whose length is not a multiple of four (rule only; value not shown)"
+RULE_UTF8 = "Refuse a BAO_VALUE that does not decode to UTF-8 text (rule only; value not shown)"
 ENCODING = "Validate the value encoding"
 LOGIN = "Authenticate to OpenBao (AppRole)"
 
@@ -116,6 +117,7 @@ def test_base64_is_decoded_and_the_decoded_text_is_what_gets_merged(tmp_path):
     assert "created" in output
     for line in BLOCK.splitlines():
         assert line not in output  # the decoded text is never printed
+    assert ENCODED not in output  # nor the encoded form
 
 
 @needs_ansible
@@ -145,6 +147,8 @@ def test_base64_merges_the_decoded_text_beside_existing_siblings(tmp_path):
     ("QUJDQQ===", RULE_CHARS),
     # Standard alphabet, but five characters: only the length rule refuses it.
     ("QUJDQ", RULE_LENGTH),
+    # A trailing newline: "$" would accept it (Python matches before a final newline), "\Z" refuses it.
+    ("QUJDQQ=\n", RULE_CHARS),
 ])
 def test_malformed_base64_is_refused_by_name_before_the_login(tmp_path, value, rule):
     code, output, state, requests = seed(tmp_path, value=value, settings={"bao_value_encoding": "base64"})
@@ -152,6 +156,35 @@ def test_malformed_base64_is_refused_by_name_before_the_login(tmp_path, value, r
     assert failing_task(output) == rule
     assert LOGIN not in output
     assert requests == []  # not even the AppRole login
+
+
+@needs_ansible
+@pytest.mark.parametrize("value", [
+    # /w== is the byte 0xFF, and 4pg= is the truncated sequence E2 98: neither is UTF-8.
+    # Ansible's b64decode turns each into a lone surrogate instead of failing, so without
+    # the UTF-8 rule both would log in and be written as junk.
+    "/w==",
+    "4pg=",
+])
+def test_base64_that_is_not_utf8_text_is_refused_by_name_before_the_login(tmp_path, value):
+    code, output, state, requests = seed(tmp_path, value=value, settings={"bao_value_encoding": "base64"})
+    assert code != 0, output
+    assert failing_task(output) == RULE_UTF8
+    assert LOGIN not in output
+    assert requests == []  # not even the AppRole login
+
+
+@needs_ansible
+@pytest.mark.parametrize("value,text", [
+    # Multi-byte UTF-8 must still pass: w6k= is e-acute (C3 A9), 8J+YgA== is an emoji (F0 9F 98 80).
+    ("w6k=", "é"),
+    ("8J+YgA==", "\U0001f600"),
+])
+def test_base64_utf8_text_is_accepted_and_stored_decoded(tmp_path, value, text):
+    code, output, state, requests = seed(tmp_path, value=value, settings={"bao_value_encoding": "base64"})
+    assert code == 0, output
+    assert state["data"] == {KEY: text}
+    assert writes(requests) == [("POST", f"/v1/secret/data/{PATH}")]
 
 
 @needs_ansible
