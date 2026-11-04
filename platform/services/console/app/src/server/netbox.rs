@@ -9,6 +9,11 @@
 //!   does not name the requested site or cluster is dropped and counted in `dropped_mismatched`.
 //!   Tenant isolation therefore holds even when NetBox ignores a filter.
 //! - `fetch_prefixes` reads every prefix, paging with `offset` up to `PREFIX_PAGE_CAP` pages.
+//! - `fetch_domains` reads the NetBox tags and keeps the business domains: the tags whose slug
+//!   starts with `DOMAIN_SLUG_PREFIX` (D37). NetBox tags are global, so the domains are
+//!   platform-wide. It is a third read, called on its own: a failure here never fails the site
+//!   read or the prefix read. The inventory keeps the last good list and says why it did not
+//!   refresh (`server/inventory.rs`, `DomainRead`).
 //!
 //! A list that reports a next page fails the site read with `Truncated` rather than showing a
 //! partial inventory as complete. Of a VM's custom fields only the three `ac_*` workflow fields
@@ -28,6 +33,13 @@ pub const PAGE_LIMIT: &str = "1000";
 
 /// Prefix pages read per refresh. A prefix list longer than this is marked truncated.
 pub const PREFIX_PAGE_CAP: usize = 20;
+
+/// Tag pages read per refresh. A tag list longer than this fails the read rather than showing a
+/// partial set of domains.
+pub const TAG_PAGE_CAP: usize = 10;
+
+/// The slug prefix that makes a NetBox tag a business domain (D37).
+pub const DOMAIN_SLUG_PREFIX: &str = "domain-";
 
 /// The site read: what the tenant views join. Keyed by site slug. A slug NetBox does not hold
 /// has no entry, which is an unmapped site, not a read failure.
@@ -79,7 +91,12 @@ pub struct NbVm {
     pub disk_mb: Option<u64>,
     /// The primary address as NetBox holds it, prefix length included. Never the other addresses.
     pub primary_ip: Option<String>,
+    /// The tag names, as NetBox holds them.
     pub tags: Vec<String>,
+    /// The slugs of the tags that have one, in NetBox's order. A tag with no slug is in `tags` but
+    /// not here, so this list is not index-aligned with `tags`. A business domain is matched by
+    /// slug, never by name.
+    pub tag_slugs: Vec<String>,
     /// `None` when the VM carries none of the workflow fields, so it is not a service.
     pub workflow: Option<Workflow>,
 }
@@ -101,6 +118,22 @@ pub struct NbDevice {
     /// The device role's name.
     pub role: Option<String>,
     pub status: Option<String>,
+}
+
+/// A business-domain tag: a NetBox tag whose slug starts with `DOMAIN_SLUG_PREFIX`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Domain {
+    pub name: String,
+    pub slug: String,
+    /// The colour as the tag holds it, or empty when it holds none. The format is unverified
+    /// against a live NetBox; the browser draws a swatch only for six hex digits.
+    pub color: String,
+}
+
+/// True when a NetBox tag slug names a business domain. The match is on the prefix alone, so
+/// `domainx`, `domain` and `not-domain-x` are not domains.
+pub fn is_domain_slug(slug: &str) -> bool {
+    slug.starts_with(DOMAIN_SLUG_PREFIX)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -178,6 +211,24 @@ pub async fn fetch_all(
         duplicate_cluster_names,
         dropped_mismatched: dropped,
     })
+}
+
+/// Reads the NetBox tags and keeps the business domains, sorted by name. The tag list is not
+/// filtered by NetBox (no lookup is sent): the prefix test runs here, on every tag NetBox returns.
+/// A tag list longer than `TAG_PAGE_CAP` pages fails the read, as a truncated site list does.
+/// `fetch_all` does not call this: the tag read stands alone.
+pub async fn fetch_domains(
+    http: &reqwest::Client,
+    config: &NetboxConfig,
+) -> Result<Vec<Domain>, FetchError> {
+    let (tags, truncated) =
+        read_pages::<TagRow>(http, config, "/api/extras/tags/", TAG_PAGE_CAP).await?;
+    if truncated {
+        return Err(FetchError::Truncated);
+    }
+    let mut domains: Vec<Domain> = tags.into_iter().filter_map(domain_from).collect();
+    domains.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.slug.cmp(&b.slug)));
+    Ok(domains)
 }
 
 /// Reads one site and returns it with the number of rows dropped for not matching the query.
@@ -268,21 +319,35 @@ pub async fn fetch_prefixes(
     http: &reqwest::Client,
     config: &NetboxConfig,
 ) -> Result<PrefixData, FetchError> {
-    let mut prefixes = Vec::new();
+    let (rows, truncated) =
+        read_pages::<PrefixRow>(http, config, "/api/ipam/prefixes/", PREFIX_PAGE_CAP).await?;
+    Ok(PrefixData {
+        prefixes: rows.into_iter().map(prefix_from).collect(),
+        truncated,
+    })
+}
+
+/// Reads a list by `offset` pages, at most `cap` of them. The flag is true when NetBox still named
+/// a next page after the cap, or after a page that held no rows to advance the offset. The `next`
+/// link is not followed, so the bearer never goes to an address the server supplied.
+async fn read_pages<T: DeserializeOwned>(
+    http: &reqwest::Client,
+    config: &NetboxConfig,
+    path: &str,
+    cap: usize,
+) -> Result<(Vec<T>, bool), FetchError> {
+    let mut rows = Vec::new();
     let mut offset = 0usize;
-    for _ in 0..PREFIX_PAGE_CAP {
+    for _ in 0..cap {
         let mut query = vec![("limit", PAGE_LIMIT.to_string())];
         if offset > 0 {
             query.push(("offset", offset.to_string()));
         }
-        let page: Page<PrefixRow> = get_page(http, config, "/api/ipam/prefixes/", &query).await?;
+        let page: Page<T> = get_page(http, config, path, &query).await?;
         let got = page.results.len();
-        prefixes.extend(page.results.into_iter().map(prefix_from));
+        rows.extend(page.results);
         if page.next.is_none() {
-            return Ok(PrefixData {
-                prefixes,
-                truncated: false,
-            });
+            return Ok((rows, false));
         }
         if got == 0 {
             // A next page with no rows cannot advance the offset, so stop here.
@@ -290,10 +355,7 @@ pub async fn fetch_prefixes(
         }
         offset += got;
     }
-    Ok(PrefixData {
-        prefixes,
-        truncated: true,
-    })
+    Ok((rows, true))
 }
 
 /// One list page, as NetBox returns it.
@@ -416,6 +478,16 @@ struct AddressRef {
 #[derive(Deserialize)]
 struct TagRef {
     name: String,
+    /// The tag's slug. Absent in a row that names no slug, so that tag matches no domain.
+    slug: Option<String>,
+}
+
+/// A NetBox tag in the tags list. Nullable fields are `Option`, as elsewhere in this file.
+#[derive(Deserialize)]
+struct TagRow {
+    name: Option<String>,
+    slug: Option<String>,
+    color: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -481,6 +553,7 @@ struct SlugRef {
 }
 
 fn vm_from(row: VmRow) -> NbVm {
+    let tags = row.tags.unwrap_or_default();
     NbVm {
         name: row.name,
         status: row
@@ -491,14 +564,21 @@ fn vm_from(row: VmRow) -> NbVm {
         memory_mb: row.memory,
         disk_mb: row.disk,
         primary_ip: row.primary_ip.and_then(|ip| ip.address),
-        tags: row
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tag| tag.name)
-            .collect(),
+        tags: tags.iter().map(|tag| tag.name.clone()).collect(),
+        tag_slugs: tags.iter().filter_map(|tag| tag.slug.clone()).collect(),
         workflow: Workflow::from_fields(row.custom_fields.unwrap_or_default()),
     }
+}
+
+/// The domain a tag names, or `None` when its slug is not a domain slug. A tag with no name
+/// is named by its slug.
+fn domain_from(row: TagRow) -> Option<Domain> {
+    let slug = row.slug.filter(|slug| is_domain_slug(slug))?;
+    Some(Domain {
+        name: row.name.unwrap_or_else(|| slug.clone()),
+        slug,
+        color: row.color.unwrap_or_default(),
+    })
 }
 
 fn device_from(row: DeviceRow) -> NbDevice {
@@ -624,14 +704,29 @@ pub mod fixtures {
     pub const CLUSTERS_TRUNCATED: &str = r#"{"count":2,"next":"https://netbox.test/api/virtualization/clusters/?offset=1000","previous":null,
         "results":[{"id":9,"name":"pve-big","site":{"id":99,"name":"Big","slug":"big-site"},"type":{"id":1,"name":"Proxmox"}}]}"#;
 
+    /// Domain tags, as NetBox's tags list returns them. Only the `domain-` slugs are domains:
+    /// `domainx`, `domain` and `not-domain-x` look close and must not be. The list is out of
+    /// name order on purpose, so the sort is read.
+    pub const TAGS_ALL: &str = r#"{"count":7,"next":null,"previous":null,"results":[
+        {"id":1,"name":"tududi-sync","slug":"tududi-sync","color":"9e9e9e"},
+        {"id":2,"name":"Products","slug":"domain-products","color":"2196f3"},
+        {"id":3,"name":"IT","slug":"domain-it","color":"4caf50"},
+        {"id":4,"name":"Professional Services","slug":"domain-professional-services","color":"ff9800"},
+        {"id":5,"name":"Domain notes","slug":"domainx","color":"000000"},
+        {"id":6,"name":"Bare","slug":"domain","color":null},
+        {"id":7,"name":"Not a domain","slug":"not-domain-x","color":""}
+    ]}"#;
+
     /// Five VMs of cluster 7, covering every RAG rule: `tududi` has a failed step, `gateway`
     /// is stopped while NetBox says active, `planned-vm` is planned, `wiki` is clean and
     /// running, `ghost` has no live match. `vault_note` must never leave the console.
+    /// `tududi` carries the IT domain tag; `wiki` carries two; `planned-vm` carries a
+    /// `domain-ghost` tag that NetBox's tag list does not hold, so it is no domain.
     pub const VMS_CLUSTER7: &str = r#"{"count":5,"next":null,"previous":null,"results":[
         {"id":101,"name":"tududi","status":{"value":"active","label":"Active","id":1},
          "vcpus":2.0,"memory":4096,"disk":40960,
          "primary_ip":{"id":9,"address":"198.51.100.5/24","family":{"value":4,"label":"IPv4"}},
-         "tags":[{"id":1,"name":"tududi-sync","slug":"tududi-sync"}],
+         "tags":[{"id":1,"name":"tududi-sync","slug":"tududi-sync"},{"id":3,"name":"IT","slug":"domain-it"}],
          "cluster":{"id":7,"name":"pve-prod"},
          "custom_fields":{"ac_workflow_status":{"step-a":"pass","step-b":"fail"},
                           "ac_failed_steps":"step-b","ac_last_run":"2026-10-26T12:00:00Z",
@@ -639,10 +734,12 @@ pub mod fixtures {
         {"id":102,"name":"gateway","status":{"value":"active"},"vcpus":1.0,"memory":2048,"disk":20480,
          "primary_ip":null,"tags":[],"cluster":{"id":7,"name":"pve-prod"},"custom_fields":{}},
         {"id":103,"name":"planned-vm","status":{"value":"planned"},"vcpus":1.0,"memory":1024,"disk":10240,
-         "primary_ip":null,"tags":[],"cluster":{"id":7,"name":"pve-prod"},
+         "primary_ip":null,"tags":[{"id":8,"name":"Ghost","slug":"domain-ghost"}],"cluster":{"id":7,"name":"pve-prod"},
          "custom_fields":{"ac_workflow_status":{"step-a":"pass"},"ac_failed_steps":"","ac_last_run":null}},
         {"id":104,"name":"wiki","status":{"value":"active"},"vcpus":2.0,"memory":4096,"disk":30720,
-         "primary_ip":{"id":10,"address":"198.51.100.8/24"},"tags":[],
+         "primary_ip":{"id":10,"address":"198.51.100.8/24"},
+         "tags":[{"id":2,"name":"Products","slug":"domain-products"},
+                 {"id":4,"name":"Professional Services","slug":"domain-professional-services"}],
          "cluster":{"id":7,"name":"pve-prod"},"custom_fields":{}},
         {"id":105,"name":"ghost","status":{"value":"active"},"vcpus":null,"memory":null,"disk":null,
          "primary_ip":null,"tags":null,"cluster":{"id":7,"name":"pve-prod"},"custom_fields":null}
@@ -693,6 +790,15 @@ pub mod fixtures {
         pub lab_prod_cluster_duplicate: Arc<AtomicBool>,
         /// When non-zero, the prefix list is this many synthetic rows, paged by `offset`.
         pub prefix_total: Arc<AtomicUsize>,
+        /// Refuse only the tags list with 403, as a token that lacks the tag grant would.
+        pub fail_tags: Arc<AtomicBool>,
+        /// Answer only the tags list with a 200 whose body is not JSON.
+        pub tags_garbage: Arc<AtomicBool>,
+        /// Answer the tags list with no tags at all.
+        pub tags_empty: Arc<AtomicBool>,
+        /// When non-zero, the tags list is this many synthetic tags, paged by `offset`. Only the
+        /// last one is a domain (`domain-late`), so it is found only by reading the last page.
+        pub tag_total: Arc<AtomicUsize>,
     }
 
     fn auth(headers: &HeaderMap) -> String {
@@ -840,6 +946,47 @@ pub mod fixtures {
         ))
     }
 
+    async fn tags(State(mock): State<Mock>, headers: HeaderMap, Query(q): Q) -> Response {
+        if let Some(refused) = refuse(&mock, &headers) {
+            return refused;
+        }
+        if mock.fail_tags.load(Ordering::SeqCst) {
+            return (StatusCode::FORBIDDEN, "tag boom").into_response();
+        }
+        if mock.tags_garbage.load(Ordering::SeqCst) {
+            return answer("<html>not json</html>");
+        }
+        if mock.tags_empty.load(Ordering::SeqCst) {
+            return answer(EMPTY);
+        }
+        let total = mock.tag_total.load(Ordering::SeqCst);
+        if total == 0 {
+            return answer(TAGS_ALL);
+        }
+        let offset: usize = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(25);
+        let end = (offset + limit).min(total);
+        let rows: Vec<String> = (offset..end)
+            .map(|i| {
+                let (name, slug) = if i + 1 == total {
+                    ("Late".to_string(), "domain-late".to_string())
+                } else {
+                    (format!("Tag {i}"), format!("tag-{i}"))
+                };
+                format!(r#"{{"id":{i},"name":"{name}","slug":"{slug}","color":"00ff00"}}"#)
+            })
+            .collect();
+        let next = if end < total {
+            format!("\"https://netbox.test/api/extras/tags/?offset={end}&limit={limit}\"")
+        } else {
+            "null".to_string()
+        };
+        answer(format!(
+            r#"{{"count":{total},"next":{next},"previous":null,"results":[{}]}}"#,
+            rows.join(",")
+        ))
+    }
+
     pub fn router(mock: Mock) -> Router {
         Router::new()
             .route("/api/dcim/sites/", get(sites))
@@ -847,6 +994,7 @@ pub mod fixtures {
             .route("/api/virtualization/virtual-machines/", get(vms))
             .route("/api/dcim/devices/", get(devices))
             .route("/api/ipam/prefixes/", get(prefixes))
+            .route("/api/extras/tags/", get(tags))
             .with_state(mock)
     }
 
@@ -934,7 +1082,8 @@ mod tests {
         assert_eq!(tududi.memory_mb, Some(4096));
         assert_eq!(tududi.disk_mb, Some(40960));
         assert_eq!(tududi.primary_ip.as_deref(), Some("198.51.100.5/24"));
-        assert_eq!(tududi.tags, ["tududi-sync"]);
+        assert_eq!(tududi.tags, ["tududi-sync", "IT"]);
+        assert_eq!(tududi.tag_slugs, ["tududi-sync", "domain-it"]);
         let workflow = tududi.workflow.as_ref().expect("workflow");
         assert_eq!(
             workflow.steps.get("step-b").map(String::as_str),
@@ -1160,6 +1309,131 @@ mod tests {
         .await
         .expect_err("must fail");
         assert_eq!(err, FetchError::Connect);
+    }
+
+    fn names_and_slugs(domains: &[Domain]) -> Vec<(&str, &str)> {
+        domains
+            .iter()
+            .map(|d| (d.name.as_str(), d.slug.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn only_a_domain_prefixed_slug_is_a_domain() {
+        assert!(is_domain_slug("domain-it"));
+        assert!(is_domain_slug("domain-professional-services"));
+        assert!(!is_domain_slug("domainx"), "no hyphen, no domain");
+        assert!(!is_domain_slug("domain"), "the bare word is no domain");
+        assert!(!is_domain_slug("not-domain-x"), "the prefix must lead");
+        assert!(!is_domain_slug("tududi-sync"));
+    }
+
+    #[tokio::test]
+    async fn the_domains_are_the_domain_slugged_tags_sorted_by_name_with_their_colour() {
+        let addr = serve(router(Mock::default())).await;
+        let domains = fetch_domains(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect("fetch");
+        assert_eq!(
+            names_and_slugs(&domains),
+            [
+                ("IT", "domain-it"),
+                ("Products", "domain-products"),
+                ("Professional Services", "domain-professional-services"),
+            ],
+            "domain- slugs only, by name"
+        );
+        assert_eq!(domains[0].color, "4caf50");
+        assert_eq!(domains[2].color, "ff9800");
+    }
+
+    #[tokio::test]
+    async fn no_domain_tags_is_an_empty_list_not_a_failure() {
+        let mock = Mock::default();
+        mock.tags_empty.store(true, Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let domains = fetch_domains(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect("fetch");
+        assert!(domains.is_empty());
+        let data = fetch_all(
+            &reqwest::Client::new(),
+            &config_for(addr),
+            &slugs(&["dc-1"]),
+        )
+        .await
+        .expect("fetch");
+        assert!(data.sites.contains_key("dc-1"), "the sites still read");
+    }
+
+    #[tokio::test]
+    async fn a_domain_on_a_later_tag_page_is_read() {
+        let mock = Mock::default();
+        mock.tag_total.store(2500, Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let domains = fetch_domains(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect("fetch");
+        assert_eq!(names_and_slugs(&domains), [("Late", "domain-late")]);
+    }
+
+    #[tokio::test]
+    async fn a_tag_list_past_the_page_cap_fails_the_read() {
+        let mock = Mock::default();
+        mock.tag_total
+            .store(TAG_PAGE_CAP * 1000 + 1, Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let err = fetch_domains(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect_err("must fail");
+        assert_eq!(
+            err,
+            FetchError::Truncated,
+            "a partial domain list is never shown"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_tag_read_is_its_own_error_and_the_site_read_is_whole() {
+        let mock = Mock::default();
+        mock.fail_tags.store(true, Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let config = config_for(addr);
+        let err = fetch_domains(&reqwest::Client::new(), &config)
+            .await
+            .expect_err("the tag read is refused");
+        assert_eq!(err, FetchError::Status(403));
+        assert!(!err.to_string().contains("tag boom"));
+        let data = fetch_all(&reqwest::Client::new(), &config, &slugs(&["dc-1"]))
+            .await
+            .expect("the site read does not depend on the tag read");
+        assert!(data.sites.contains_key("dc-1"));
+    }
+
+    #[tokio::test]
+    async fn a_tag_body_that_is_not_json_is_a_decode_error() {
+        let mock = Mock::default();
+        mock.tags_garbage.store(true, Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let err = fetch_domains(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect_err("must fail");
+        assert_eq!(err, FetchError::Decode);
+    }
+
+    #[test]
+    fn a_vm_tag_keeps_its_slug_beside_its_name_and_a_slugless_tag_is_name_only() {
+        let row: VmRow = serde_json::from_str(
+            r#"{"name":"vm","tags":[{"id":1,"name":"IT","slug":"domain-it"},{"id":2,"name":"Old"}]}"#,
+        )
+        .expect("vm row");
+        let vm = vm_from(row);
+        assert_eq!(vm.tags, ["IT", "Old"]);
+        assert_eq!(
+            vm.tag_slugs,
+            ["domain-it"],
+            "a tag with no slug matches no domain"
+        );
     }
 
     #[tokio::test]
