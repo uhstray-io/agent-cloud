@@ -4,6 +4,8 @@
 
 use serde::Deserialize;
 
+use super::work::age_text;
+
 /// The admin-only policy answer.
 pub const POLICY_PATH: &str = "/v1/policies";
 
@@ -105,6 +107,15 @@ pub fn kind_label(kind: &str) -> &str {
         "opa-data" => "OPA data",
         "openbao" => "OpenBao policy",
         other => other,
+    }
+}
+
+/// When the list was read, as the header and the stale banner say it: "Read 4m ago" against the client
+/// clock, or "Read at <stamp>" when the clock or the stamp cannot be read.
+pub fn read_label(now_ms: Option<i64>, stamp: &str) -> String {
+    match age_text(now_ms, stamp) {
+        Some(age) => format!("Read {age}"),
+        None => format!("Read at {stamp}"),
     }
 }
 
@@ -226,6 +237,19 @@ mod tests {
         assert_eq!(kind_label("opa-data"), "OPA data");
         assert_eq!(kind_label("openbao"), "OpenBao policy");
         assert_eq!(kind_label("mystery"), "mystery");
+    }
+
+    #[test]
+    fn the_read_age_is_relative_to_the_client_clock_and_falls_back_to_the_stamp() {
+        // 2026-11-04T10:00:00Z, four minutes earlier on the client clock.
+        let stamp = "2026-11-04T10:00:00Z";
+        let read_at = 1_793_786_400_000_i64;
+        assert_eq!(read_label(Some(read_at + 240_000), stamp), "Read 4m ago");
+        assert_eq!(read_label(None, stamp), "Read at 2026-11-04T10:00:00Z");
+        assert_eq!(
+            read_label(Some(read_at), "not a time"),
+            "Read at not a time"
+        );
     }
 
     #[test]

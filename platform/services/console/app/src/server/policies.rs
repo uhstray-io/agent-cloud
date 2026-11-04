@@ -78,6 +78,12 @@ pub struct PoliciesBody {
     pub error: Option<String>,
 }
 
+/// A failure reason without its final full stop. The reasons GitHub's refusals carry end in one, and the
+/// sentence the page shows adds its own, so a reason is never shown with two.
+fn reason_text(reason: &str) -> &str {
+    reason.trim_end_matches('.')
+}
+
 /// The sentence a read cut short by `MAX_FILES` shows. It names the bound the list was cut at.
 fn truncated_sentence() -> String {
     format!("More than {MAX_FILES} policy files; the first {MAX_FILES} are shown.")
@@ -129,9 +135,12 @@ impl PoliciesCache {
     fn error_sentence(&self) -> Option<String> {
         match (&self.failure, &self.good) {
             (Some(reason), Some(_)) => Some(format!(
-                "The newest policy read failed: {reason}. Showing the last good read."
+                "The newest policy read failed: {}. Showing the last good read.",
+                reason_text(reason)
             )),
-            (Some(reason), None) => Some(format!("The policy read failed: {reason}.")),
+            (Some(reason), None) => {
+                Some(format!("The policy read failed: {}.", reason_text(reason)))
+            }
             (None, Some(good)) if good.truncated => Some(truncated_sentence()),
             (None, _) => None,
         }
@@ -509,6 +518,32 @@ mod tests {
             Some("The policy read failed: GitHub answered HTTP 401.")
         );
         assert!(body.files.is_empty() && body.refreshed_at.is_none());
+    }
+
+    #[test]
+    fn a_reason_that_already_ends_in_a_full_stop_is_shown_with_one() {
+        let refused = "GitHub refused the console token (HTTP 403): the App is not permitted to read this repository.";
+        let mut cache = PoliciesCache::new(true);
+        cache.record_error(refused.into());
+        assert_eq!(
+            cache.body().error.as_deref(),
+            Some("The policy read failed: GitHub refused the console token (HTTP 403): the App is not permitted to read this repository.")
+        );
+
+        let mut cache = PoliciesCache::new(true);
+        cache.record_ok(
+            &source(),
+            Listing {
+                files: Vec::new(),
+                truncated: false,
+            },
+            "2026-11-04T10:00:00Z".into(),
+        );
+        cache.record_error(refused.into());
+        assert_eq!(
+            cache.body().error.as_deref(),
+            Some("The newest policy read failed: GitHub refused the console token (HTTP 403): the App is not permitted to read this repository. Showing the last good read.")
+        );
     }
 
     #[test]

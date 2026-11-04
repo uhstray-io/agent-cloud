@@ -14,7 +14,7 @@
 
 use std::fmt;
 
-use reqwest::header::{ACCEPT, USER_AGENT};
+use reqwest::header::{HeaderMap, ACCEPT, USER_AGENT};
 use reqwest::Url;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -130,7 +130,14 @@ pub struct Listing {
 /// Why one read failed. Fixed text only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchError {
+    /// Any refusal the console does not name below: the HTTP status only.
     Status(u16),
+    /// 401: the token is expired or not valid.
+    Unauthorized,
+    /// 403 without a rate-limit header: the App may not read this repository.
+    Forbidden,
+    /// 403 with the quota spent (`x-ratelimit-remaining: 0`) or a `retry-after` header.
+    RateLimited,
     Timeout,
     Connect,
     Other,
@@ -151,6 +158,15 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FetchError::Status(code) => write!(f, "GitHub answered HTTP {code}"),
+            FetchError::Unauthorized => f.write_str(
+                "GitHub refused the console token (HTTP 401): it is expired or invalid. Check that Refresh Console GitHub Token is running.",
+            ),
+            FetchError::Forbidden => f.write_str(
+                "GitHub refused the console token (HTTP 403): the App is not permitted to read this repository.",
+            ),
+            FetchError::RateLimited => f.write_str(
+                "GitHub rate-limited the console (HTTP 403); the next read tries again.",
+            ),
             FetchError::Timeout => f.write_str("GitHub did not answer in time"),
             FetchError::Connect => f.write_str("cannot connect to GitHub"),
             FetchError::Other => f.write_str("the GitHub request failed"),
@@ -170,6 +186,27 @@ impl fmt::Display for FetchError {
             }
         }
     }
+}
+
+/// The error for a refused request. Only the status and two headers are read: the body is never
+/// echoed. A 403 is a rate limit when the quota is spent or `retry-after` is set; any other 403 is
+/// a permission refusal.
+fn refusal(status: reqwest::StatusCode, headers: &HeaderMap) -> FetchError {
+    match status.as_u16() {
+        401 => FetchError::Unauthorized,
+        403 if rate_limited(headers) => FetchError::RateLimited,
+        403 => FetchError::Forbidden,
+        code => FetchError::Status(code),
+    }
+}
+
+/// True when GitHub says the quota is spent or asks the caller to wait.
+fn rate_limited(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-ratelimit-remaining")
+        .and_then(|value| value.to_str().ok())
+        == Some("0")
+        || headers.contains_key("retry-after")
 }
 
 /// reqwest's own Display names the request URL, so the error is classified, not shown (as access.rs does).
@@ -268,7 +305,7 @@ impl Reader<'_> {
             .map_err(transport_error)?;
         let status = response.status();
         if !status.is_success() {
-            return Err(FetchError::Status(status.as_u16()));
+            return Err(refusal(status, response.headers()));
         }
         Ok(response)
     }
@@ -409,7 +446,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use dioxus::server::axum::extract::{Path, Query, State};
-    use dioxus::server::axum::http::{HeaderMap, StatusCode};
+    use dioxus::server::axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+    use dioxus::server::axum::response::{IntoResponse, Response};
     use dioxus::server::axum::routing::get;
     use dioxus::server::axum::{Json, Router};
     use serde_json::{json, Value};
@@ -436,6 +474,8 @@ mod tests {
         seen: Mutex<Vec<(String, String)>>,
         /// Requests whose `Authorization` was not the expected bearer.
         unauthorized: Mutex<usize>,
+        /// Headers sent with every refusal, as (name, value).
+        fail_headers: Mutex<Vec<(String, String)>>,
     }
 
     fn record(fake: &Fake, path: &str, query: &str) {
@@ -445,47 +485,56 @@ mod tests {
             .push((path.to_string(), query.to_string()));
     }
 
-    fn check_auth(fake: &Fake, headers: &HeaderMap) -> Option<StatusCode> {
+    /// A refusal the fake sends: the status, the JSON body `denied` and the headers the test set.
+    fn refusal(status: StatusCode, headers: &[(String, String)]) -> Response {
+        let mut response = (status, Json(json!({"message": "denied"}))).into_response();
+        for (name, value) in headers {
+            response.headers_mut().insert(
+                HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+        response
+    }
+
+    /// The refusal this request gets, if any: a wrong bearer is a 401; otherwise the status and
+    /// headers the test set for every request.
+    fn refuse(fake: &Fake, headers: &HeaderMap) -> Option<Response> {
         let expected = format!("Bearer {TOKEN}");
         let presented = headers
             .get("authorization")
             .and_then(|value| value.to_str().ok());
         if presented != Some(expected.as_str()) {
             *fake.unauthorized.lock().expect("unauthorized") += 1;
-            return Some(StatusCode::UNAUTHORIZED);
+            return Some(refusal(StatusCode::UNAUTHORIZED, &[]));
         }
         let failing = *fake.fail_with.lock().expect("fail_with");
-        failing.map(|code| StatusCode::from_u16(code).expect("status"))
+        let extra = fake.fail_headers.lock().expect("fail_headers").clone();
+        failing.map(|code| refusal(StatusCode::from_u16(code).expect("status"), &extra))
     }
 
     async fn fake_commits(
         State(fake): State<Arc<Fake>>,
         headers: HeaderMap,
         Query(query): Query<BTreeMap<String, String>>,
-    ) -> (StatusCode, Json<Value>) {
-        let seen_query = flat_query(&query);
-        record(&fake, "commits", &seen_query);
-        if let Some(status) = check_auth(&fake, &headers) {
-            return (status, Json(json!({"message": "denied"})));
+    ) -> Response {
+        record(&fake, "commits", &flat_query(&query));
+        if let Some(response) = refuse(&fake, &headers) {
+            return response;
         }
         if let Some(path) = query.get("path") {
             let commit = fake.commits.lock().expect("commits").get(path).cloned();
-            return (
-                StatusCode::OK,
-                Json(json!(commit.into_iter().collect::<Vec<_>>())),
-            );
+            return Json(json!(commit.into_iter().collect::<Vec<_>>())).into_response();
         }
-        (
-            StatusCode::OK,
-            Json(json!([{
-                "sha": SHA_TIP,
-                "commit": {
-                    "message": "feat(policy): tip\n\nbody",
-                    "committer": {"date": "2026-11-01T00:00:00Z"},
-                    "tree": {"sha": TREE_SHA}
-                }
-            }])),
-        )
+        Json(json!([{
+            "sha": SHA_TIP,
+            "commit": {
+                "message": "feat(policy): tip\n\nbody",
+                "committer": {"date": "2026-11-01T00:00:00Z"},
+                "tree": {"sha": TREE_SHA}
+            }
+        }]))
+        .into_response()
     }
 
     async fn fake_tree(
@@ -493,10 +542,10 @@ mod tests {
         headers: HeaderMap,
         Path((_owner, _name, tree)): Path<(String, String, String)>,
         Query(query): Query<BTreeMap<String, String>>,
-    ) -> (StatusCode, Json<Value>) {
+    ) -> Response {
         record(&fake, &format!("tree/{tree}"), &flat_query(&query));
-        if let Some(status) = check_auth(&fake, &headers) {
-            return (status, Json(json!({"message": "denied"})));
+        if let Some(response) = refuse(&fake, &headers) {
+            return response;
         }
         let entries: Vec<Value> = fake
             .entries
@@ -506,10 +555,7 @@ mod tests {
             .map(|(path, kind)| json!({"path": path, "type": kind, "mode": "100644", "sha": "x"}))
             .collect();
         let truncated = *fake.truncated.lock().expect("truncated");
-        (
-            StatusCode::OK,
-            Json(json!({"sha": tree, "truncated": truncated, "tree": entries})),
-        )
+        Json(json!({"sha": tree, "truncated": truncated, "tree": entries})).into_response()
     }
 
     async fn fake_contents(
@@ -517,18 +563,18 @@ mod tests {
         headers: HeaderMap,
         Path((_owner, _name, path)): Path<(String, String, String)>,
         Query(query): Query<BTreeMap<String, String>>,
-    ) -> (StatusCode, String) {
+    ) -> Response {
         record(&fake, &format!("contents/{path}"), &flat_query(&query));
-        if let Some(status) = check_auth(&fake, &headers) {
-            return (status, "denied".to_string());
+        if let Some(response) = refuse(&fake, &headers) {
+            return response;
         }
         let raw = headers.get("accept").and_then(|value| value.to_str().ok()) == Some(RAW_ACCEPT);
         if !raw {
-            return (StatusCode::NOT_ACCEPTABLE, "not raw".to_string());
+            return (StatusCode::NOT_ACCEPTABLE, "not raw".to_string()).into_response();
         }
         match fake.texts.lock().expect("texts").get(&path) {
-            Some(text) => (StatusCode::OK, text.clone()),
-            None => (StatusCode::NOT_FOUND, "missing".to_string()),
+            Some(text) => (StatusCode::OK, text.clone()).into_response(),
+            None => (StatusCode::NOT_FOUND, "missing".to_string()).into_response(),
         }
     }
 
@@ -948,12 +994,10 @@ mod tests {
         assert_eq!(err, FetchError::TreeTruncated);
     }
 
-    #[tokio::test]
-    async fn a_refused_request_names_its_status_and_never_the_token() {
-        let fake = seeded();
-        *fake.fail_with.lock().expect("fail_with") = Some(401);
+    /// One listing against the fake, with the refusal the test set. Returns the error.
+    async fn refused_listing(fake: &Arc<Fake>) -> FetchError {
         let api = fake_github(fake.clone()).await;
-        let err = list(
+        list(
             &reqwest::Client::new(),
             &api,
             &Secret::new(TOKEN),
@@ -962,10 +1006,79 @@ mod tests {
             200,
         )
         .await
-        .expect_err("refused");
-        assert_eq!(err, FetchError::Status(401));
-        assert_eq!(err.to_string(), "GitHub answered HTTP 401");
+        .expect_err("the fake refused the request")
+    }
+
+    #[tokio::test]
+    async fn a_server_error_names_its_status_and_never_the_token() {
+        let fake = seeded();
+        *fake.fail_with.lock().expect("fail_with") = Some(500);
+        let err = refused_listing(&fake).await;
+        assert_eq!(err, FetchError::Status(500));
+        assert_eq!(err.to_string(), "GitHub answered HTTP 500");
         assert!(!err.to_string().contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_401_names_the_expired_token_and_the_refresh_task() {
+        let fake = seeded();
+        *fake.fail_with.lock().expect("fail_with") = Some(401);
+        let err = refused_listing(&fake).await;
+        assert_eq!(err, FetchError::Unauthorized);
+        assert_eq!(
+            err.to_string(),
+            "GitHub refused the console token (HTTP 401): it is expired or invalid. Check that Refresh Console GitHub Token is running."
+        );
+        assert!(!err.to_string().contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_403_without_a_rate_limit_names_the_missing_permission() {
+        let fake = seeded();
+        *fake.fail_with.lock().expect("fail_with") = Some(403);
+        let err = refused_listing(&fake).await;
+        assert_eq!(err, FetchError::Forbidden);
+        assert_eq!(
+            err.to_string(),
+            "GitHub refused the console token (HTTP 403): the App is not permitted to read this repository."
+        );
+        assert!(!err.to_string().contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_403_with_no_quota_left_is_a_rate_limit() {
+        let fake = seeded();
+        *fake.fail_with.lock().expect("fail_with") = Some(403);
+        *fake.fail_headers.lock().expect("fail_headers") =
+            vec![("x-ratelimit-remaining".into(), "0".into())];
+        let err = refused_listing(&fake).await;
+        assert_eq!(err, FetchError::RateLimited);
+        assert_eq!(
+            err.to_string(),
+            "GitHub rate-limited the console (HTTP 403); the next read tries again."
+        );
+        assert!(!err.to_string().contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_403_with_retry_after_is_a_rate_limit() {
+        let fake = seeded();
+        *fake.fail_with.lock().expect("fail_with") = Some(403);
+        *fake.fail_headers.lock().expect("fail_headers") =
+            vec![("retry-after".into(), "60".into())];
+        let err = refused_listing(&fake).await;
+        assert_eq!(err, FetchError::RateLimited);
+        assert!(!err.to_string().contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_403_with_quota_left_is_still_a_permission_refusal() {
+        let fake = seeded();
+        *fake.fail_with.lock().expect("fail_with") = Some(403);
+        *fake.fail_headers.lock().expect("fail_headers") =
+            vec![("x-ratelimit-remaining".into(), "4999".into())];
+        let err = refused_listing(&fake).await;
+        assert_eq!(err, FetchError::Forbidden);
     }
 
     #[tokio::test]

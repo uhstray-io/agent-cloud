@@ -10,8 +10,8 @@ use super::icons::icon;
 use super::inventory::{admin_next, end_session, keeps_polling_admin, Admin, POLL_MS};
 use super::inventory_api;
 use super::policy_api::{
-    kind_label, not_ok_message, opa_files, openbao_files, subtitle, PoliciesBody, PolicyFile,
-    POLICY_PATH,
+    kind_label, not_ok_message, opa_files, openbao_files, read_label, subtitle, PoliciesBody,
+    PolicyFile, POLICY_PATH,
 };
 use super::shell::Ctx;
 use super::status::Notice;
@@ -74,6 +74,13 @@ pub fn Policy() -> Element {
         },
         _ => POLICY.purpose.to_string(),
     };
+    let read = match &shown {
+        Admin::Shown { body, .. } => body
+            .refreshed_at
+            .as_deref()
+            .map(|stamp| read_label(now_ms, stamp)),
+        _ => None,
+    };
     rsx! {
         div { class: "view",
             header { class: "view-h",
@@ -81,6 +88,9 @@ pub fn Policy() -> Element {
                 span { class: "authority", "Source of truth: {POLICY.authority}" }
                 button { class: "btn", disabled: true, title: "{PROPOSE_TITLE}", "Propose a change" }
                 p { "{lede}" }
+                if let Some(read) = read {
+                    p { "{read}." }
+                }
             }
             PolicyView { state: shown, now_ms }
         }
@@ -118,7 +128,11 @@ fn PolicyBodyView(body: PoliciesBody, reason: String, now_ms: Option<i64>) -> El
     if let Some(message) = not_ok_message(body.state, body.error.as_deref()) {
         return rsx! { Notice { message } };
     }
-    let banner = body.error.clone();
+    // The stale banner names the read the list is from, so an admin sees how old the shown list is.
+    let banner = body.error.clone().map(|line| match &body.refreshed_at {
+        Some(stamp) => format!("{line} {}.", read_label(now_ms, stamp)),
+        None => line,
+    });
     let opa = opa_files(&body.files);
     let openbao = openbao_files(&body.files);
     rsx! {
