@@ -159,6 +159,9 @@
                       e["verb"] = "create"
                   else:
                       tag = Tag.objects.get(slug=e["slug"])
+                      # NetBox's edit view and API both snapshot before they modify, so the changelog row carries
+                      # the before-values (prechange_data). Without this the update row shows no "before".
+                      tag.snapshot()
                       tag.name = e["name"]
                       tag.description = DESCRIPTION
                       e["verb"] = "update"

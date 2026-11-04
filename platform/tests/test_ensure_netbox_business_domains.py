@@ -296,13 +296,15 @@ def _persist():
 atexit.register(_persist)
 
 
-def _record(action, pk):
+def _record(action, pk, prechange=None):
     # NetBox records a change only inside a request (netbox/core/signals.py), so with no request set, none is kept.
+    # prechange is the snapshot taken before the change (NetBox's prechange_data); None when there was no snapshot.
     request = CURRENT["request"]
     if request is None or os.environ.get("FAKE_NO_CHANGELOG"):
         return
     STATE["changes"].append({"app_label": "extras", "model": "tag", "changed_object_id": pk, "action": action,
-                             "user_name": request.user.username, "request_id": str(request.id)})
+                             "user_name": request.user.username, "request_id": str(request.id),
+                             "prechange": prechange})
 
 
 def _matches(row, lookups):
@@ -378,8 +380,15 @@ class Tag:
         # NetBox's full_clean is not modelled: the tests are about the body's ORM calls.
         return None
 
+    def snapshot(self):
+        # As ChangeLoggingMixin.snapshot (netbox/netbox/models/features.py, v4.5.0): the state kept for the changelog.
+        data = object.__getattribute__(self, "_data")
+        before = {key: copy.deepcopy(data[key]) for key in ("name", "slug", "description")}
+        object.__setattr__(self, "_prechange", before)
+
     def save(self):
         data = object.__getattribute__(self, "_data")
+        prechange = object.__getattribute__(self, "__dict__").get("_prechange")
         if os.environ.get("FAKE_SAVE_RENAME"):
             data["name"] = data["name"] + "~"
         rows = STATE["tags"]
@@ -395,7 +404,7 @@ class Tag:
         for index, row in enumerate(rows):
             if row["id"] == data["id"]:
                 rows[index] = copy.deepcopy(data)
-                _record("update", data["id"])
+                _record("update", data["id"], prechange)
                 return
         raise RuntimeError("save of a missing tag")
 
@@ -664,6 +673,7 @@ def test_a_missing_domain_tag_is_created_with_the_declared_fields_and_logged_und
         ("create", 1, "extras", "tag")
     ]
     assert rows[0]["request_id"], "the write must carry a request id"
+    assert rows[0]["prechange"] is None, "a create has no before-state"
 
 
 @pytest.mark.parametrize(
@@ -681,6 +691,11 @@ def test_a_declared_tag_whose_name_or_description_differs_is_updated_and_logged(
     assert after["tags"] == [_tag(5, "Products", "domain-products")]
     rows = [row for row in after["changes"] if row["user_name"] == ACCOUNT]
     assert [(r["action"], r["changed_object_id"]) for r in rows] == [("update", 5)]
+    # The update row must carry the before-values: NetBox fills prechange_data only from a snapshot taken before the
+    # change. Without the snapshot the row shows nothing for "before".
+    assert rows[0]["prechange"] is not None, "an update row must carry the before-values (NetBox snapshot)"
+    assert rows[0]["prechange"]["name"] == stored["name"]
+    assert rows[0]["prechange"]["description"] == stored["description"]
 
 
 def test_an_identical_tag_is_unchanged_and_writes_nothing_and_creates_no_account(tmp_path):
@@ -863,3 +878,24 @@ def test_a_string_declaration_is_refused_before_the_shell_runs(tmp_path):
     assert "must be a list of display names" in out
     assert not (_stub(tmp_path) / "received.log").exists()
     assert after == before
+
+
+def _recap_changed(out):
+    # The nb host's recap line as the stdout callback prints it: "<host> : ok=N changed=M ..." (the same pattern
+    # test_apply_firewall_convergence.py parses).
+    match = re.search(r"^nb\s*:.*changed=(\d+)", out, re.M)
+    assert match, out
+    return int(match.group(1))
+
+
+@NEEDS_ANSIBLE
+def test_a_second_run_against_the_first_runs_state_changes_nothing(tmp_path):
+    extra = {"netbox_business_domains": ["Products"]}
+    proc, out, once = _ansible(tmp_path, _state(), extra=extra)
+    assert proc.returncode == 0, out
+    assert _recap_changed(out) == 1, out
+    assert [t["slug"] for t in once["tags"]] == ["domain-products"]
+    proc, out, twice = _ansible(tmp_path, once, extra=extra)
+    assert proc.returncode == 0, out
+    assert _recap_changed(out) == 0, out
+    assert twice == once
