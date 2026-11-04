@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) | Unverified claim | 3 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-04: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) | Unverified claim | 4 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
@@ -1181,7 +1181,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 3** — 2026-11-02, 2026-11-03, 2026-11-04
+**Occurrences: 4** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-04
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1225,6 +1225,20 @@ Why the rule did not fire: it names briefs and plans about code, and a task list
 rather than as a body to read. **Proposed guard** (count 3): a Stop hook that, when a reply
 characterises a numbered OpenSpec task ("source-only", "needs nothing", "done"), requires a read of
 that task's whole block in `tasks.md` earlier in the turn, and otherwise prompts to read it first.
+
+**Occurrence 4 — 2026-11-04.** Briefing the playbook that creates the Dispatch Console's business-domain
+tags in NetBox, I told the worker to copy "how `ensure-netbox-prefix.yml` gets the NetBox URL and token from
+OpenBao", and to use the same token. I had read that playbook's name and its template entry, not its body.
+It reads no token at all: it runs `manage.py shell` inside the NetBox container
+(`platform/playbooks/ensure-netbox-prefix.yml:28-57`). The brief also told the worker to stop if no token
+could write tags, a check built on the same wrong premise. The worker read the file, found both
+contradictions and stopped before writing anything; the re-brief uses the Django shell pattern the file
+actually follows. Why the rule did not fire: the brief was written in a batch of five, and this one cited a
+file as a pattern to copy without the read that the other four briefs had behind them. The Stop-hook guard
+proposed at occurrence 3 would not catch this case, because the claim was in a brief, not a reply about a
+task list. **Proposed guard, extended:** a PreToolUse hook on Agent dispatches that extracts every
+repository path a brief names as a pattern to copy (`PATTERN TO COPY`, "copy how", "like `<path>`") and
+requires a Read or Bash read of that path earlier in the session, refusing the dispatch otherwise.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
