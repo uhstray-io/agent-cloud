@@ -507,6 +507,10 @@ bootstrap step. See the [operating guide](platform/semaphore/README.md).
   write and the approved `--inventory` id is required to seed. Both resolve their target and run
   their read-only preflight through `scripts/semaphore_seed.py`. Procedure: the
   [operating guide](platform/semaphore/README.md).
+- `scripts/semaphore-sync-inventory.py` — preview (default) or `--apply` the canonical inventory-sync
+  play against an existing Semaphore inventory record with the operator's own token on stdin; the
+  payload reaches Ansible through a private named pipe, never argv, environment or disk. Procedure:
+  the [operating guide](platform/semaphore/README.md).
 - `set-semaphore-branch.yml` — **deprecated** in favour of the above. It flipped one shared
   record's `git_branch`, which is global mutable state: concurrent testers overwrite each other
   and later runs silently use whatever branch was left set. Kept only as a manual one-record fix.
