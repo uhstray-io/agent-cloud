@@ -25,8 +25,8 @@ The playbook headers hold the behaviour, the refusals and the order of the steps
 No environment runs the gate yet. The open tasks of the `skynet-launch-containment` change
 (`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) are:
 
-- the local-dev inventory and bootstrap entries (3.4). Until local-dev declares the `launch_gate_svc` group, `Deploy launch-gate (Local)`
-  refuses at its pre-flight,
+- the local-dev wiring (3.4) is in the repository (see "Local-dev" below). It is not bootstrapped, deployed or
+  proven here yet,
 - skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),
 - the production host, firewall rules, the `svc-launch-gate` team member, and the rollout (5.1-5.5).
 
@@ -93,6 +93,31 @@ caller, in sorted order, from `secrets['caller_<name>_token']`.
   directory. A renewal must not recreate the container. A changed bundle does recreate it, because the OPA
   client reads its CA bundle once, when it is constructed, at start.
 - The bundle is the only `certs/` file in the digest. Hashing all of `certs/` would make every renewal a restart.
+
+## Local-dev
+
+Declared in `platform/playbooks/bootstrap-local-dev.yml` (`[launch_gate_svc]`, the local Semaphore's inventory) and
+mirrored in `platform/inventory/local-dev.yml.example`. `Deploy launch-gate (Local)` and
+`Provision launch-gate Semaphore Access (Local)` are in `platform/semaphore/templates-local.yml`.
+
+- The published port is 18443 on 127.0.0.1, because Caddy holds 8443 on the Mac. The container still listens on 8443.
+- The TLS name is `launch-gate.local.agent-cloud.test` (`dns_site` local, `dns_zone` the local zone). `compose.local.yml`
+  makes it a network alias on `local-dev`. The Phase 3 probes run inside the Semaphore container and dial that name on
+  8443 with no `--resolve`: the published port is on the Mac's loopback, which that container cannot reach. Production
+  keeps `--resolve` to the declared bind.
+- The local process runs as uid 1001 gid 0 (`compose.local.yml`), the uid of the Semaphore container, which writes
+  the leaf's 0600 key. `cap_drop: ALL` would keep root from reading it.
+- The local Semaphore gets openssl only after a bootstrap re-run. `tasks/issue-internal-leaf.yml` makes the key and
+  request with openssl on the consumer, which for this group is that container. The image has none (measured in a
+  throwaway container from `docker.io/semaphoreui/semaphore:v2.19.11`).
+- The leaf is declared on `launch_gate_svc:vars`. The deploy's assert and its mint read it on the consumer.
+
+**Local renewal is done by the deploy.** Local-dev has no `Renew Internal Certs` run, and the renewal planner reads
+`hostvars[_ca_host].internal_leaves` (the CA host's, not this group's), so it never sees this leaf. A local Clean Deploy
+keeps `certs/` (clean-service removes the checkout only in production). The leaf lives 720h (`stepca_leaf_dur`
+default). So the deploy itself checks it: in local-dev, `openssl x509 -checkend 604800` on `current/cert.pem`, and a
+leaf with under 7 days left, or none yet, is issued again (`_mint_reissue`). Re-run `Deploy launch-gate (Local)` at
+least weekly, or after a long break, to keep it current. Production keeps an issued leaf; Renew Internal Certs renews it.
 
 ## Allowlist
 
