@@ -229,8 +229,9 @@ This answer has its own shape, not the common envelope. It carries no per-author
 
 ## Grafana links
 
-The console links out to Grafana and never calls it. `src/server/grafana.rs` builds the URLs from
-the dashboards in `platform/services/o11y/deployment/config/grafana/dashboards/*.json`, which
+The console links out to Grafana, and it makes one read of Grafana's API for the gateway usage
+(below). `src/server/grafana.rs` builds the deep links from the dashboards in
+`platform/services/o11y/deployment/config/grafana/dashboards/*.json`, which
 declare these uids and variables:
 
 | Dashboard | uid | Variables | Used for |
@@ -244,6 +245,31 @@ declare these uids and variables:
 - Conformance: `<base>/d/service-conformance/service-deployment-conformance`.
 - A VM gets a `grafana_url` whether or not it is a service. What the dashboard shows for a name
   with no data is unverified: no live Grafana was read.
+
+## Gateway usage (D39)
+
+`GET /v1/gateway` (platform admins) carries the gateway's last-hour token use per client. Each
+client has `tokens_last_hour`: the figure under its name, or `null` when no read has finished or
+the name is not in the read's result. The top-level `usage` block is `{state, refreshed_at,
+error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GRAFANA_TOKEN`), `loading` (before the first
+read finishes) or `error` (the newest read failed). `refreshed_at` is the last good read's time.
+`error` is the sentence the page shows, or `null`.
+
+The read runs in the background when `CONSOLE_GRAFANA_TOKEN` and `CONSOLE_GRAFANA_URL` are both set.
+The first read runs at once, then one every 5 minutes. Each read is one instant query through
+Grafana's data-source proxy, `/api/datasources/proxy/uid/prometheus/api/v1/query` (the `prometheus`
+datasource uid), with the Viewer token as a bearer. The PromQL is `sum by (identity)
+(increase(agentgateway_gen_ai_client_token_usage_sum{job="agentgateway"}[1h]))`. In the answer, each
+series' `metric.identity` names a client, and `value[1]`, a string, is its token count, rounded to a
+whole number. A series with no identity, or with a sample that is not a finite non-negative number,
+gives its client no figure. An identity named twice in one answer refuses the whole answer.
+
+The figure is approximate. It is the metric of the same traffic. The gateway enforces its own
+rolling budget in its own Postgres, which this read does not see, and the LLM access page says so.
+
+A failed read keeps the last good figures and says so in `error`. The reason is fixed text: no URL,
+no response body and no token. The origin must be `https://`, or cleartext to a loopback or RFC1918
+host. The console refuses any other origin at startup, and checks the origin again before each read.
 
 ## RAG (one rule, `inventory::rag`)
 
@@ -279,7 +305,8 @@ A skipped step counts as settled. `stopped` while NetBox says `planned` is `ambe
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | all-or-none; sent as `Authorization: PVEAPIToken=<id>=<secret>` |
 | `CONSOLE_PROXMOX_CA_FILE` | optional PEM bundle added as roots for the Proxmox client only; counts toward the group, so alone it names `CONSOLE_PROXMOX_URL` as missing |
 | `CONSOLE_FLOWS_FILE` | optional JSON array of flow entries |
-| `CONSOLE_GRAFANA_URL` | optional Grafana origin for deep links. Same guard as the other URLs: `https://`, or `http://` only to loopback or RFC1918. Trailing slash trimmed. Unset leaves every link `null` |
+| `CONSOLE_GRAFANA_URL` | optional Grafana origin for deep links and the usage read. Same guard as the other URLs: `https://`, or `http://` only to loopback or RFC1918. Trailing slash trimmed. Unset leaves every link `null` and runs no usage read |
+| `CONSOLE_GRAFANA_TOKEN` | optional Grafana API token, a Viewer service account's (D32), for the usage read (D39). Requires `CONSOLE_GRAFANA_URL`, which alone it names as missing. Unset: `usage.state` is `unconfigured` |
 
 - Cleartext `http://` is accepted only when the host NetBox would connect to, as `reqwest::Url`
   parses it, is `localhost`, an IPv4 loopback or RFC1918 address, or an IPv6 loopback address. A

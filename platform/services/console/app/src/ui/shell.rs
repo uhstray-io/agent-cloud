@@ -10,6 +10,8 @@ use dioxus::prelude::*;
 use super::api::{self, Account, Claims, Me, NamedRef, TenantList, Tree};
 use super::icons::icon;
 use super::inventory::{self, Snapshot};
+use super::roles::load_roles;
+use super::roles_api::RoleState;
 use super::scope::{self, Scope, ScopeBar};
 use super::work::{self, WorkState};
 use super::Route;
@@ -36,6 +38,8 @@ pub struct Ctx {
     pub work: Signal<WorkState>,
     /// The inventory of `tenant`. The inventory poll and a tenant switch write it; the Phase 3 pages read it.
     pub inventory: Signal<Loaded<Snapshot>>,
+    /// The agent roles of the registry (D40). Read once by platform admins; the sidebar and the role page read it.
+    pub roles: Signal<RoleState>,
 }
 
 #[component]
@@ -47,6 +51,7 @@ pub fn Shell() -> Element {
     let scope = use_signal(Scope::default);
     let work = use_signal(|| WorkState::Loading);
     let inventory = use_signal(|| Loaded::Loading);
+    let roles = use_signal(|| RoleState::Loading);
     let ctx = use_context_provider(|| Ctx {
         me,
         tenants,
@@ -55,6 +60,7 @@ pub fn Shell() -> Element {
         scope,
         work,
         inventory,
+        roles,
     });
 
     use_effect(move || {
@@ -178,13 +184,18 @@ fn SignIn() -> Element {
 #[component]
 fn Workspace(account: Account) -> Element {
     let ctx = use_context::<Ctx>();
+    let admin = is_platform_admin(&account.claims);
     // Only a signed-in shell polls Active Work, so a signed-out visitor never sends the request.
     // `use_hook` runs its closure once, on the first render of this instance. `use_effect`
     // would run it again whenever a signal read in its body changed, and each run would
     // start another poll loop. The poll's own waits are in the browser (`api::sleep_unless_hidden`).
+    // The agent roles are read once, and only for a platform admin: the server refuses everyone else.
     use_hook(move || {
         spawn(work::poll(ctx.work));
         spawn(inventory::poll(ctx));
+        if admin {
+            spawn(load_roles(ctx.roles));
+        }
     });
     let no_access = has_no_tenant_access(&ctx.tenants.read());
     // The outlet stays in both cases, so the profile still works without a tenant.
@@ -225,6 +236,7 @@ fn NoTenantAccess() -> Element {
 fn Sidebar(account: Account) -> Element {
     let name = display_name(&account.claims);
     let initials = initials(&name);
+    let admin = is_platform_admin(&account.claims);
     let ctx = use_context::<Ctx>();
     let attention = work::attention(&ctx.work.read());
     rsx! {
@@ -250,8 +262,10 @@ fn Sidebar(account: Account) -> Element {
                 NavItem { to: Route::AiGateway {}, icon_name: "door-open", label: "AI Gateway" }
                 NavItem { to: Route::LlmAccess {}, icon_name: "message-square-lock", label: "LLM access" }
                 NavItem { to: Route::CiCd {}, icon_name: "git-pull-request-arrow", label: "CI/CD" }
-                div { class: "grp", "Agent roles" }
-                p { class: "side-note", "Arrives in Phase 5" }
+                if admin {
+                    div { class: "grp", "Agent roles" }
+                    RoleLinks {}
+                }
             }
             // Both settings pages show to every signed-in user. Each page reads only what the
             // caller may see (the tenant tree, the tenant's inventory), and says why a control is
@@ -281,6 +295,35 @@ fn Sidebar(account: Account) -> Element {
                 }
             }
         }
+    }
+}
+
+/// One link per agent role, from the roles the shell read. Only shown to platform admins.
+#[component]
+fn RoleLinks() -> Element {
+    let ctx = use_context::<Ctx>();
+    let roles = ctx.roles.read().clone();
+    match roles {
+        RoleState::Loading => rsx! { p { class: "side-note", "Loading roles\u{2026}" } },
+        RoleState::Failed => rsx! { p { class: "side-note", "Roles unavailable" } },
+        RoleState::Forbidden => {
+            rsx! { p { class: "side-note", "Agent roles are limited to platform administrators." } }
+        }
+        RoleState::Ready(list) if list.roles.is_empty() => {
+            rsx! { p { class: "side-note", "No roles in the registry" } }
+        }
+        RoleState::Ready(list) => rsx! {
+            for role in list.roles.iter() {
+                Link {
+                    key: "{role.name}",
+                    to: Route::RoleDetail { role: role.name.clone() },
+                    class: "nav-link",
+                    active_class: "active",
+                    {icon("bot")}
+                    span { "{role.name}" }
+                }
+            }
+        },
     }
 }
 
@@ -411,6 +454,12 @@ pub fn initials(name: &str) -> String {
     letters.to_uppercase()
 }
 
+/// The Agent roles nav and the role pages show only for members of `platform-admins` (D40). The UI
+/// hides them as a convenience; the server's admin gate on `/v1/roles` and `/v1/work` is the control.
+pub fn is_platform_admin(claims: &Claims) -> bool {
+    claims.groups.iter().any(|group| group == "platform-admins")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +478,26 @@ mod tests {
             email: email.map(str::to_string),
             groups: groups.iter().map(|g| g.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn only_an_exact_platform_admins_member_sees_the_agent_roles() {
+        assert!(is_platform_admin(&claims(
+            "a",
+            None,
+            None,
+            None,
+            &["ops", "platform-admins"]
+        )));
+        assert!(!is_platform_admin(&claims(
+            "b",
+            None,
+            None,
+            None,
+            &["platform-admins-old"]
+        )));
+        assert!(!is_platform_admin(&claims("c", None, None, None, &["ops"])));
+        assert!(!is_platform_admin(&claims("d", None, None, None, &[])));
     }
 
     #[test]
