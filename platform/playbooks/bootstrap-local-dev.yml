@@ -993,10 +993,12 @@
     # openssl: tasks/issue-internal-leaf.yml makes each leaf's key and request with openssl ON THE CONSUMER, which
     # for launch_gate_svc (and every local leaf) is this container. The image has no openssl (measured in a
     # throwaway --rm container on docker.io/semaphoreui/semaphore:v2.19.11, uid 1001 gid 0, Alpine 3.21.7).
+    # `set -e`: with two `||` guards joined by `;` the exit status would be the openssl half's alone, so a failed
+    # podman install would pass silently. With it, a failed `apk add` of either fails the task.
     - name: "Install podman and openssl inside Semaphore (root; podman drives the mounted socket)"
       ansible.builtin.command: >-
         podman exec --user root {{ _sem_name }} sh -c
-        "command -v podman >/dev/null || apk add --no-cache podman; command -v openssl >/dev/null || apk add --no-cache openssl"
+        "set -e; command -v podman >/dev/null || apk add --no-cache podman; command -v openssl >/dev/null || apk add --no-cache openssl"
       register: _sem_podman
       changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
       when: not ansible_check_mode

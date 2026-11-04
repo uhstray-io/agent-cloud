@@ -36,6 +36,25 @@ assert "command -v openssl >/dev/null || apk add --no-cache openssl" in cmd, cmd
 PY
 }
 
+@test "launch-gate local: a failed podman install fails the step even when openssl is already present" {
+  # Run the step's own shell script against a PATH holding only a stub apk that fails for podman and an openssl
+  # that is "present": the guard order must not let the openssl half's success hide the podman failure.
+  local inner stub="$BATS_TEST_TMPDIR/bin"
+  inner="$(python3 - "$BOOTSTRAP" <<'PY'
+import re, sys, yaml
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[0]["tasks"]
+[task] = [t for t in tasks if isinstance(t, dict) and str(t.get("name", "")).startswith("Install podman and openssl inside Semaphore")]
+print(re.search(r'sh -c\s+"(.*)"\s*$', task["ansible.builtin.command"], re.S).group(1))
+PY
+)"
+  mkdir -p "$stub"
+  printf '#!/bin/sh\ncase "$*" in *podman*) exit 1;; esac\nexit 0\n' > "$stub/apk"
+  printf '#!/bin/sh\nexit 0\n' > "$stub/openssl"
+  chmod +x "$stub/apk" "$stub/openssl"
+  run env PATH="$stub" /bin/sh -c "$inner"
+  [ "$status" -ne 0 ]
+}
+
 # ── bootstrap: the local inventory declares launch_gate_svc (decision 2) ──────────────────────────────────────────
 
 @test "launch-gate local: the local inventory's launch_gate_svc carries the decided values, with no underscore variable" {
@@ -235,4 +254,17 @@ PY
   assert_grep -qF 'argv: [openssl, x509, -checkend, "604800", -noout, -in, "{{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}/current/cert.pem"]' "$DEPLOY"
   assert_grep -qF '_mint_reissue: "{{ _launch_gate_local_mode and (_launch_gate_leaf_fresh.rc | default(0)) != 0 }}"' "$DEPLOY"
   refute_grep -qF '_mint_reissue: false' "$DEPLOY"
+}
+
+@test "launch-gate local: the leaf-validity check runs only in local-dev, and also under --check" {
+  # Without check_mode false a dry run skips it, rc defaults to 0, and an expired local leaf reads as kept.
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+[task] = [t for t in play["tasks"] if t.get("name") == "Local-dev: is the gate's leaf valid for at least 7 more days"]
+assert task["when"] == "_launch_gate_local_mode", task.get("when")
+assert task["check_mode"] is False, task.get("check_mode")
+assert task["changed_when"] is False and task["failed_when"] is False, task
+assert task["register"] == "_launch_gate_leaf_fresh", task["register"]
+PY
 }
