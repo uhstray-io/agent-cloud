@@ -531,6 +531,14 @@ templates:
         required: false
         default_value: "false"
 
+  # Converge the business-domain tags (plan 17, D37) declared in inventory as netbox_business_domains on the
+  # netbox_svc host. No survey: the list is inventory, never a launch-time value. Creates a missing domain-* tag,
+  # sets the name and description of a declared one that differs, never deletes; an undeclared domain-* tag is
+  # reported by name. Dry run (check mode) reports would-create and would-update and writes nothing.
+  - name: Ensure NetBox Business Domains
+    playbook: platform/playbooks/ensure-netbox-business-domains.yml
+    dev_variant: true
+
   # Converge the conformance collector's NetBox custom fields to their declaration
   # (platform/workflows/service-onboarding/netbox-custom-fields.yml). Idempotent;
   # "Dry run" reports without writing.
