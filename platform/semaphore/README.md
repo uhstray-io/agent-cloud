@@ -232,7 +232,8 @@ pins the repository config and redacting callback, enables supported module
 pipelining, and disables kept remote files. The local Ansible child has a fixed
 five-minute deadline; on timeout, apply reports an uncertain write outcome for
 read-only reconciliation. Child output is captured and only a fixed outcome is
-printed. The script never creates records or changes key bindings.
+printed. SIGTERM and SIGHUP are handled like Ctrl-C: the child is stopped and the fixed
+interrupted outcome is printed. The script never creates records or changes key bindings.
 
 ```sh
 python3 scripts/semaphore-sync-inventory.py \

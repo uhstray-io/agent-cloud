@@ -324,10 +324,18 @@ def _gone_within(pid, limit=3):
 
 
 @pytest.mark.parametrize(
+    "sent",
+    [
+        pytest.param(signal.SIGINT, id="SIGINT"),
+        pytest.param(signal.SIGTERM, id="SIGTERM"),
+        pytest.param(signal.SIGHUP, id="SIGHUP"),
+    ],
+)
+@pytest.mark.parametrize(
     ("options", "expected"),
     [([], "no write was requested"), (["--apply"], "write outcome is uncertain")],
 )
-def test_interrupt_stops_child_and_reports_fixed_outcome(tmp_path, options, expected):
+def test_interrupt_stops_child_and_reports_fixed_outcome(tmp_path, options, expected, sent):
     pidfile = tmp_path / "owned-child.pid"
     driver, env = _deadline_driver(
         tmp_path,
@@ -352,8 +360,8 @@ def test_interrupt_stops_child_and_reports_fixed_outcome(tmp_path, options, expe
     )
     try:
         child_pid = _wait_for_pid(pidfile)
-        # The child is in its own session, so only the driver receives this signal, as a terminal Ctrl-C would.
-        os.kill(process.pid, signal.SIGINT)
+        # The child has its own session, so only the driver gets this signal, as Ctrl-C, hang-up or SIGTERM would.
+        os.kill(process.pid, sent)
         stdout, stderr = process.communicate(timeout=10)
         child_gone = _gone_within(child_pid)
     finally:
@@ -661,6 +669,35 @@ def test_defined_empty_or_nonstring_sync_token_never_falls_back_to_environment(t
     )
     assert result.returncode != 0
     assert state["gets"] == state["puts"] == 0
+    assert_clean(result)
+
+
+@pytest.mark.parametrize(
+    "semaphore_url",
+    ["http://example.invalid", "http://user:pw@127.0.0.1:1", "https://user:pw@127.0.0.1:9"],
+)
+def test_sync_token_route_refuses_cleartext_transport_before_any_request(tmp_path, semaphore_url):
+    # The canonical play runs directly because the frontend hides child output. Only the transport
+    # check can print this message, and it runs before any request, so example.invalid is never contacted.
+    source = tmp_path / "preflight-inventory.yml"
+    source.write_text(VALID)
+    payload = tmp_path / "preflight-extra-vars.json"
+    payload.write_text(json.dumps({
+        "sync_inventory_token": TOKEN, "semaphore_url": semaphore_url, "semaphore_project_id": 1,
+        "inventory_name": "production", "inventory_source": str(source),
+    }))
+    env = _sync_env(tmp_path, Path(ansible_bin("ansible-playbook")).parent, "preflight")
+    env.pop("SEMAPHORE_TOKEN", None)
+    env["ANSIBLE_CONFIG"] = str(ROOT / "ansible.cfg")
+    env["ANSIBLE_STDOUT_CALLBACK"] = "redact_requests"
+    env["ANSIBLE_CALLBACK_PLUGINS"] = str(ROOT / "callback_plugins")
+    result = subprocess.run(
+        [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--check",
+         "--extra-vars", "@" + str(payload)],
+        text=True, capture_output=True, env=env, cwd=ROOT, check=False,
+    )
+    assert result.returncode != 0
+    assert "Set semaphore_url or SEMAPHORE_URL to HTTPS or loopback HTTP" in result.stdout + result.stderr
     assert_clean(result)
 
 

@@ -90,6 +90,27 @@ def release_payload_writer(fifo_path: str, writer: threading.Thread) -> None:
     writer.join(timeout=CHILD_CLEANUP_TIMEOUT_SECONDS)
 
 
+def _raise_interrupt(_signum: int, _frame: object) -> None:
+    """Turn a termination signal into the KeyboardInterrupt arm that stops the child."""
+    raise KeyboardInterrupt
+
+
+def install_interrupt_handlers() -> dict[int, object]:
+    """Route SIGTERM and SIGHUP to the Ctrl-C path and return the handlers they replace.
+
+    The child has its own session, so neither signal reaches it from the terminal or a supervisor.
+    signal.signal works only on the main thread; an in-process caller on another thread keeps its handlers.
+    """
+    previous: dict[int, object] = {}
+    if threading.current_thread() is not threading.main_thread():
+        return previous
+    for name in ("SIGTERM", "SIGHUP"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            previous[signum] = signal.signal(signum, _raise_interrupt)
+    return previous
+
+
 def fail(apply: bool, check_text: str, apply_lead: str, code: int = 1) -> int:
     """Print the one fixed failure message for this mode and return its exit code."""
     print(check_text if not apply else f"{apply_lead} {UNCERTAIN}", file=sys.stderr)
@@ -139,6 +160,7 @@ def main() -> int:
     fifo_dir = None
     fifo_path = None
     writer = None
+    previous_handlers: dict[int, object] = {}
     try:
         try:
             fifo_dir = tempfile.mkdtemp(prefix="semaphore-sync-inventory-")
@@ -155,6 +177,7 @@ def main() -> int:
         if not args.apply:
             argv.append("--check")
         child_env = ansible_child_environment()
+        previous_handlers = install_interrupt_handlers()
         try:
             child = subprocess.Popen(
                 argv,
@@ -190,7 +213,7 @@ def main() -> int:
                 "Inventory synchronization did not complete.",
             )
         except KeyboardInterrupt:
-            # The child has its own session, so the terminal's SIGINT never reaches it. Stop it here.
+            # The child has its own session, so SIGINT, SIGTERM and SIGHUP never reach it directly. Stop it here.
             stop_child_group(child)
             return fail(
                 args.apply,
@@ -243,6 +266,9 @@ def main() -> int:
                 os.rmdir(fifo_dir)
             except OSError:
                 pass
+        for signum, handler in previous_handlers.items():
+            if handler is not None:
+                signal.signal(signum, handler)
 
 
 if __name__ == "__main__":
