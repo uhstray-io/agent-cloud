@@ -1729,7 +1729,7 @@ with an interpolated value and whose haystack is captured output, held in a know
 includes the shared transport and parsed-inventory preflight under `when: sync_inventory_token is
 defined`. The only checks on it were BATS greps (`platform/tests/test_semaphore_repositories.bats:187-188`)
 for `sync_inventory_token is defined` and `tasks/runtime-preflight.yml` anywhere in the file. The
-independent review changed the condition to `when: false and sync_inventory_token is defined`: both
+independent review prefixed that condition with `false and`, disabling the include: both
 greps still matched, and all 35 Python tests still passed, so a token could have gone to a cleartext
 URL with the suite green. Fixed in `d6746d3d` by a behavioural test that runs the play with the token
 against `http://example.invalid` and URLs carrying credentials, and requires the preflight's fixed
