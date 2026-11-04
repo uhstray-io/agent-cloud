@@ -19,6 +19,7 @@ import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
 from jinja2 import Environment
+from strict_chain import assert_strict_chain
 
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
@@ -4752,9 +4753,11 @@ def test_o11y_tls_preflight_accepts_synthetic_pairs_and_refuses_invalid_identity
         serial_dir.mkdir()
         key, csr = serial_dir / "key.pem", serial_dir / "request.csr"
         cert, ext = serial_dir / "cert.pem", serial_dir / "extensions.cnf"
+        # Python 3.13+ VERIFY_X509_STRICT rejects a CA-signed leaf without an Authority Key Identifier.
         ext.write_text(
             f"subjectAltName=DNS:{san}\nextendedKeyUsage={eku}\n"
-            "basicConstraints=critical,CA:FALSE\nkeyUsage=digitalSignature\n",
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=digitalSignature\n"
+            "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
             encoding="utf-8",
         )
         subprocess.run([
@@ -4765,6 +4768,7 @@ def test_o11y_tls_preflight_accepts_synthetic_pairs_and_refuses_invalid_identity
             "openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_cert), "-CAkey", str(ca_key),
             "-CAcreateserial", "-days", "2", "-extfile", str(ext), "-out", str(cert),
         ], check=True, capture_output=True)
+        assert_strict_chain(ca_cert, cert)
         os.chmod(key, 0o600)
         (directory / "current").symlink_to("01")
         declarations.append({

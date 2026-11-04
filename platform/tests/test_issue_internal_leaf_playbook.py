@@ -13,6 +13,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
+from strict_chain import assert_strict_chain
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/issue-internal-leaf.yml"
 SITE = {"dns_site": "dc1", "dns_zone": "example.internal", "openbao_addr": "https://bao.example.test"}
@@ -172,13 +173,16 @@ def _chain(tmp: Path, eku: str) -> Path:
         _ossl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1",
               "-subj", "/CN=test root", "-keyout", "root.key", "-out", "root.pem",
               "-addext", "basicConstraints=critical,CA:true", "-addext", "keyUsage=critical,keyCertSign", cwd=ca)
+    # Python 3.13+ VERIFY_X509_STRICT rejects a CA-signed leaf without an Authority Key Identifier.
     (ca / f"{eku}.ext").write_text(
         f"basicConstraints=CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage={eku}\n"
-        "subjectAltName=DNS:probe.gateway.dc1.example.internal\n")
+        "subjectAltName=DNS:probe.gateway.dc1.example.internal\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n")
     _ossl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=probe",
           "-keyout", f"{eku}.key", "-out", f"{eku}.csr", cwd=ca)
     _ossl("x509", "-req", "-in", f"{eku}.csr", "-CA", "root.pem", "-CAkey", "root.key", "-CAcreateserial",
           "-days", "1", "-extfile", f"{eku}.ext", "-out", f"{eku}.pem", cwd=ca)
+    assert_strict_chain(ca / "root.pem", ca / f"{eku}.pem")
     return ca
 
 
@@ -282,13 +286,17 @@ def test_the_leftover_count_covers_every_temporary_name_the_ca_side_tasks_write(
 def test_inspect_verifies_a_leaf_issued_through_an_intermediate(tmp_path):
     # step ca sign returns the leaf followed by the intermediate; the root alone is trusted.
     ca = _chain(tmp_path, "clientAuth")  # makes the root
-    (ca / "inter.ext").write_text("basicConstraints=critical,CA:true,pathlen:0\nkeyUsage=critical,keyCertSign\n")
+    # The intermediate is CA-signed too: strict verification needs its AKI, and the SKI is what the leaf's keyid names.
+    (ca / "inter.ext").write_text("basicConstraints=critical,CA:true,pathlen:0\nkeyUsage=critical,keyCertSign\n"
+                                  "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n")
     _ossl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=inter",
           "-keyout", "inter.key", "-out", "inter.csr", cwd=ca)
     _ossl("x509", "-req", "-in", "inter.csr", "-CA", "root.pem", "-CAkey", "root.key", "-CAcreateserial",
           "-days", "1", "-extfile", "inter.ext", "-out", "inter.pem", cwd=ca)
+    assert_strict_chain(ca / "root.pem", ca / "inter.pem")
     _ossl("x509", "-req", "-in", "clientAuth.csr", "-CA", "inter.pem", "-CAkey", "inter.key", "-CAcreateserial",
           "-days", "1", "-extfile", "clientAuth.ext", "-out", "leaf.pem", cwd=ca)
+    assert_strict_chain(ca / "root.pem", ca / "leaf.pem", untrusted=ca / "inter.pem")
     serial = tmp_path / "leaf" / "0A1B"
     serial.mkdir(parents=True)
     (serial / "cert.pem").write_text((ca / "leaf.pem").read_text() + (ca / "inter.pem").read_text())
