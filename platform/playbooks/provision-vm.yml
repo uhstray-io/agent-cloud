@@ -1130,11 +1130,6 @@
   vars:
     # Undefined only when a dry run stopped before the read-back: a VM awaiting its migration.
     _pv_s: "{{ _pv_step | default({'skip': true, 'errors': [], 'vmid': none, 'node': none, 'onboot': none}) }}"
-    # The cpu key is recorded only when this run declares a model, so an undeclared VM's evidence
-    # keeps its three keys.
-    _pv_evidence: >-
-      {{ {'vmid': _pv_s.vmid, 'node': _pv_s.node, 'onboot': _pv_s.onboot}
-         | combine({'cpu': _pv_s.cpu | default(none)} if (_pv_s.cpu_declared | default(false) | bool) else {}) }}
   tasks:
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
@@ -1144,7 +1139,10 @@
         step_result_status: >-
           {{ 'skip' if (_pv_s.skip | bool)
              else ('pass' if (_pv_s.errors | length == 0) else 'fail') }}
-        step_result_evidence: "{{ _pv_evidence }}"
+        step_result_evidence:
+          vmid: "{{ _pv_s.vmid }}"
+          node: "{{ _pv_s.node }}"
+          onboot: "{{ _pv_s.onboot }}"
         step_result_error: "{{ _pv_s.errors | join('; ') }}"
         step_result_undo: Destroy VM
 

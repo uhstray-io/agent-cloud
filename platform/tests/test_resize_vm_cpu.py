@@ -293,7 +293,8 @@ def rightsize(tmp_path, want, cfg_cpu):
 
 def test_rightsize_passes_when_the_reread_model_is_the_declared_one(tmp_path):
     result = rightsize(tmp_path, "x86-64-v3", "x86-64-v3")
-    assert result == {"errors": [], "evidence": {"cores": 4, "memory_mb": 8192, "disk_gb": 32, "cpu": "x86-64-v3"}}
+    # The model is judged in the errors; the evidence keys stay the registry's (test_workflow_registry.py).
+    assert result == {"errors": [], "evidence": {"cores": 4, "memory_mb": 8192, "disk_gb": 32}}
 
 
 def test_rightsize_fails_on_a_different_reread_model_and_names_it(tmp_path):
@@ -306,7 +307,7 @@ def test_rightsize_reads_an_absent_model_as_the_default(tmp_path):
     assert rightsize(tmp_path, "x86-64-v3", None)["errors"] == ["cpu default, declared x86-64-v3"]
 
 
-def test_rightsize_records_no_cpu_key_for_an_unmanaged_vm(tmp_path):
+def test_rightsize_ignores_the_model_of_an_unmanaged_vm(tmp_path):
     result = rightsize(tmp_path, "", "x86-64-v2-AES")
     assert result == {"errors": [], "evidence": {"cores": 4, "memory_mb": 8192, "disk_gb": 32}}
 
@@ -337,18 +338,3 @@ def test_provision_reports_a_read_back_model_that_differs(tmp_path):
 
 def test_provision_ignores_the_model_when_none_is_declared(tmp_path):
     assert provision_decide(tmp_path, "x86-64-v2-AES", "") == {"errors": [], "cpu_declared": False}
-
-
-def provision_evidence(tmp_path, pv_s):
-    play = next(p for p in playbook_yaml.plays(PROVISION) if "_pv_evidence" in (p.get("vars") or {}))
-    rc, out = run_play(tmp_path, {"_pv_s": pv_s, "_pv_evidence": play["vars"]["_pv_evidence"]},
-                       [{"ansible.builtin.debug": {"msg": "RESULT={{ {'evidence': _pv_evidence} | to_json }}"}}])
-    assert rc == 0, out
-    return result_line(out)["evidence"]
-
-
-def test_provision_evidence_records_the_model_only_when_declared(tmp_path):
-    base = {"vmid": 215, "node": "n", "onboot": "1"}
-    assert provision_evidence(tmp_path, {**base, "cpu": "x86-64-v3", "cpu_declared": True}) == {**base, "cpu": "x86-64-v3"}
-    assert provision_evidence(tmp_path, {**base, "cpu": "x86-64-v2-AES", "cpu_declared": False}) == base
-    assert provision_evidence(tmp_path, base) == base

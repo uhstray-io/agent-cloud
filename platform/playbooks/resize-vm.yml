@@ -727,12 +727,12 @@
         step_result_service: "{{ target_service | default('') }}"
         step_result_step: vm-rightsize
         step_result_status: "{{ 'pass' if (_rs_errors | length == 0) else 'fail' }}"
-        # The model is recorded only when this run declares one, so an unmanaged VM's evidence
-        # keeps its three keys.
-        step_result_evidence: >-
-          {{ {'cores': _rs_after.cores | default(none), 'memory_mb': _rs_after.memory | default(none),
-              'disk_gb': _rs_have_disk_gb}
-             | combine({'cpu': _rs_after.cpu | default(none)} if (_want_cpu | default('') | string | length > 0) else {}) }}
+        # The CPU model is judged in _rs_errors, not recorded here: the registry fixes each step's
+        # evidence keys (workflows/service-onboarding, test_workflow_registry.py).
+        step_result_evidence:
+          cores: "{{ _rs_after.cores | default(none) }}"
+          memory_mb: "{{ _rs_after.memory | default(none) }}"
+          disk_gb: "{{ _rs_have_disk_gb }}"
         step_result_error: "{{ _rs_errors | join('; ') }}"
 
     - name: "Fail when the VM does not match its declared spec"
