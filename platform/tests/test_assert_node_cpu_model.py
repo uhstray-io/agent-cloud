@@ -18,6 +18,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE_FILE = ROOT / "platform/playbooks/tasks/assert-node-cpu-model.yml"
+FLAGS_FILE = ROOT / "platform/playbooks/vars/proxmox-cpu-model-flags.yml"
 
 # Proxmox's x86-64-v3 flags (CPUConfig.pm:75-79), in /proc/cpuinfo spelling: sse4.1 -> sse4_1.
 V3_FLAGS = ["aes", "popcnt", "pni", "sse4_1", "sse4_2", "ssse3", "avx", "avx2", "bmi1", "bmi2",
@@ -45,6 +46,10 @@ def run_node_check(tmp_path, want, cpuinfo, node="pve-node", pve_host=None):
         play_vars["_ncm_status"] = {"json": {"data": {"cpuinfo": cpuinfo}}}
     play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
              "vars": play_vars, "tasks": tasks}]
+    # playbook_dir is the play file's directory (a play-level value is ignored), so the task's
+    # include of vars/ resolves against a symlink to the real flag file.
+    (tmp_path / "vars").mkdir()
+    (tmp_path / "vars" / FLAGS_FILE.name).symlink_to(FLAGS_FILE)
     play_file = tmp_path / "node-check.yml"
     play_file.write_text(yaml.safe_dump(play, sort_keys=False))
     proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play_file)], capture_output=True,
@@ -148,3 +153,15 @@ def test_the_task_file_reads_the_node_once_only_for_v3_and_v4_and_never_shows_th
         if "ansible.builtin.set_fact" in task or "ansible.builtin.uri" in task:
             continue
         assert "_ncm_status" not in json.dumps(task), task.get("name")
+
+
+def test_the_flag_lists_come_from_the_shared_vars_file():
+    # The lists are one file, shared with proxmox-validate.yml's CPU level report. The task file
+    # carries no inline copy, and the file carries exactly Proxmox's v3 list and the v4 extras.
+    tasks = yaml.safe_load(NODE_FILE.read_text())
+    include = next(task for task in tasks if "ansible.builtin.include_vars" in task)
+    assert include["ansible.builtin.include_vars"]["file"] == "{{ playbook_dir }}/vars/proxmox-cpu-model-flags.yml"
+    text = NODE_FILE.read_text()
+    assert "'avx512f'" not in text and "'sse4_1'" not in text  # no inline copy of either list
+    flags = yaml.safe_load(FLAGS_FILE.read_text())["proxmox_cpu_level_flags"]
+    assert flags == {3: V3_FLAGS, 4: V4_EXTRA}

@@ -1,0 +1,18 @@
+---
+# proxmox-cpu-model-flags.yml — the CPU flags a node must report for each x86-64 level a Proxmox VM
+# CPU model can name, in /proc/cpuinfo spelling. Shared by tasks/assert-node-cpu-model.yml (refuses a
+# model the node cannot provide) and proxmox-validate.yml (reports each online node's level).
+#
+# AUTHORITY: Proxmox's own model definition, the x86-64-v3 and x86-64-v4 entries in qemu-server's
+# src/PVE/QemuServer/CPUConfig.pm (lines 75-83). Proxmox writes QEMU spellings (sse4.1, sse4.2); the
+# lists below are the kernel's /proc names (arch/x86/include/asm/cpufeatures.h): sse4.1 is sse4_1.
+# pni is SSE3 and abm is LZCNT.
+#
+# KEYS are the level. `3` is the full x86-64-v3 list. `4` holds ONLY the flags that level 4 adds on
+# top of v3: a node backs v4 when it reports the `3` list AND the `4` list. The keys are integers.
+#
+# There is no list for a level below 3. proxmox-validate.yml reports a node that lacks the v3 flags
+# as level 2, which means "below v3" only. It is not a check of x86-64-v2.
+proxmox_cpu_level_flags:
+  3: [aes, popcnt, pni, sse4_1, sse4_2, ssse3, avx, avx2, bmi1, bmi2, f16c, fma, abm, movbe, xsave]
+  4: [avx512f, avx512bw, avx512cd, avx512dq, avx512vl]
