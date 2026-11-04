@@ -5,8 +5,9 @@
 # cannot answer a survey, and reconcile-plane-members.yml is read-only unless `apply` is true, so
 # a schedule on that template would only ever report. This wrapper sets `apply` for the imported
 # plays instead. Everything else is the reconcile's own: the mass-removal refusal still holds
-# (an apply that would remove more than half the workspace, or with no desired members, is refused
-# unless allow_mass_removal=true, which this wrapper never sets), --check still never applies, and
+# (an apply that would remove more than one person and more than half the removable roster, or
+# remove anyone while no member is desired, is refused unless allow_mass_removal=true, which this
+# wrapper never sets; reconcile_members.py), --check still never applies, and
 # an explicit `-e apply=false` still wins over this play-level value.
 #
 # Registered on a schedule only after a production apply succeeded (Semaphore task 11753,
