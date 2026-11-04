@@ -147,3 +147,8 @@ setup() {
   [ "$(readlink "$DEPLOY_DIR/AGENTS.md")" = "CLAUDE.md" ]
   [ -f "$DEPLOY_DIR/CLAUDE.md" ]
 }
+
+@test "launch-gate: an init process runs as PID 1, so a stop delivers SIGTERM instead of waiting out the timeout" {
+  # Python as PID 1 ignores SIGTERM; the first local deploy's stop ended in SIGKILL (exit 137) after 10 s.
+  assert_grep -qxF '    init: true' "$DEPLOY_DIR/compose.yml"
+}

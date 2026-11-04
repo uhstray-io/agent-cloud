@@ -21,6 +21,10 @@ services:
     container_name: launch-gate
     # Podman's boot unit starts only `restart: always` containers (test_restart_policy.bats).
     restart: always
+    # An init process as PID 1: Python as PID 1 ignores SIGTERM (the kernel gives PID 1 no default handler), so a
+    # stop waited out the 10 s timeout and ended in SIGKILL (exit 137, seen on the first local deploy). With init
+    # the gate gets the signal and exits at once.
+    init: true
     ports:
       # The :- defaults keep an unset inventory on loopback.
       - "${LAUNCH_GATE_BIND:-127.0.0.1}:${LAUNCH_GATE_PORT:-8443}:8443"

@@ -6,7 +6,7 @@ stdlib Python HTTPS service in `app/launch_gate.py`. An agent (skynet, later the
 requested agent, and that the template is on the allowlist. It then asks OPA for a decision and creates the
 Semaphore task only on an allow. Full design and the check order: `plan/development/openspec/changes/skynet-launch-containment/design.md`.
 
-## Status: deploy playbooks and templates; not deployed
+## Status: deployed and validated in local-dev; not deployed in production
 
 The container files are in this directory. This directory does not deploy anything by itself. The playbooks that
 deploy it are in `platform/playbooks/`, and their Semaphore templates are declared in `platform/semaphore/templates.yml`
@@ -25,8 +25,8 @@ The playbook headers hold the behaviour, the refusals and the order of the steps
 No environment runs the gate yet. The open tasks of the `skynet-launch-containment` change
 (`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) are:
 
-- the local-dev wiring (3.4) is in the repository (see "Local-dev" below). It is not bootstrapped, deployed or
-  proven here yet,
+- the local-dev wiring (3.4) is done: local-dev was bootstrapped from dev and the gate deployed and validated there
+  on 2026-11-04 (local Semaphore tasks 11594 and 11596; the 3.8 scenarios passed against the live gate),
 - skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),
 - the production host, firewall rules, the `svc-launch-gate` team member, and the rollout (5.1-5.5).
 
