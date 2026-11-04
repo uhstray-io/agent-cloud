@@ -13,7 +13,7 @@
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
 **Date:** 2026-04-07
-**Status:** Production DEPLOYED 2026-10-29 (own VM, step-ca server TLS, firewall-admitted callers); read-only bundle since 2026-10-31; decisions-and-health-only authorization since 2026-11-01 (task 11154); skynet's call path proven (Deploy skynet task 11156); current with `dev` policy as of 2026-11-03 (task 11933). See "Production deployment" below.
+**Status:** Production DEPLOYED 2026-10-29 (own VM, step-ca server TLS, firewall-admitted callers); read-only bundle since 2026-10-31; decisions-and-health-only authorization since 2026-11-01 (task 11154); skynet's call path proven (Deploy skynet task 11156); current with `dev` policy as of 2026-11-03 (task 11933); the workflow's service-validate step passes (task 12048). See "Production deployment" below.
 Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
 local pattern (`platform/services/opa/deployment/`, `deploy-opa.yml`, `opa_svc`
 inventory group, "Deploy OPA (Local)" Semaphore template). Unauthenticated
@@ -929,9 +929,10 @@ Each step runs through Semaphore, check mode first.
 13. [x] Redeploy with bundle mode (P6, #805): `Deploy OPA (Dev)` check mode (task 11117), then real (task 11119). The TLS write probe passed: production OPA refused `PUT /v1/data` with 400 `invalid_parameter`. Allow and deny decisions were verified over TLS, and `opa test --bundle` passed 101/101.
 14. [x] Authorization policy (#810): `Deploy OPA (Dev)` check mode (task 11153), then real (task 11154, 2026-11-01), at `7f671690`. Over TLS, allow and deny decisions verified; a policy write, a data read and a decision with `?explain=full` each refused with 401; `opa test --bundle` 117/117.
 15. [x] Launch-input bounds (#829): `Deploy OPA (Dev)` check mode (task 11931), then real (task 11933), at `03ea6c6f`, so production runs the current `dev` policy. The same TLS checks passed as in step 14; `opa test --bundle` 160/160. The new deny rules apply only to a `semaphore` `run_task` request carrying `settings` (`agent_actions.rego`, the three `deny_reasons` rules after the bare-name comment); skynet's client has no `settings` field in its input contract (skynet `src/skynet/policy/opa.py`, `main` at `9168d6c`), so its decisions are unchanged.
+16. [x] Access and boot persistence through the service deployment workflow (2026-10-29/30, recorded 2026-11-03 from Semaphore's task history): `Generate Service SSH Key (Dev)` (tasks 10266, 10270), `Distribute SSH Keys (Dev)` (10272, 10273; 10271, launched with `target_service=opa` instead of `opa_svc`, failed), `Back Up Service SSH Key (Dev)` (10275, 10276), `Verify Host Access (Dev)` (10277, 10279), `Harden SSH (Dev)` (10284, 10285), `Ensure Service Persistence (Dev)` (10382, 10383), `Verify Service Persistence (Dev)` (10385) and `Snapshot Access (Dev)` (10386), all successful. `Resize VM (Dev)` without a reboot (10793) reported 2 cores, 2048 MB and a 20G disk, matching the declaration.
+17. [x] Service-validate (agent-cloud #847, site-config #144): `Verify Service Health (Dev)` check mode (task 12047), then real (task 12048), both `pass` with health status 200. The probe runs on the OPA host with curl, verifying the leaf against the step-ca bundle the deploy places, with the certificate's name pinned to the bind address (`health_ca_path`, `health_resolve_address`).
 
 **Known gaps:**
-- `Verify Service Health` is not declared for OPA. Its `uri` probe has no server-name override, and the name does not resolve on the OPA host. The deploy's own verify covers `/health`.
 - A first check-mode deploy on a fresh VM fails at the health probe: `deploy.sh` is skipped in check mode, so no container is running yet. The first dry run proves only the guards and the placement.
 
 <!-- ======================= source: MAIN-BRANCH-PROTECTION-PLAN.md ======================= -->
