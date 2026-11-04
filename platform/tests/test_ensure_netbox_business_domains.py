@@ -161,7 +161,12 @@ def test_an_empty_declaration_ends_the_play_visibly_and_a_non_list_is_refused():
     assert _module(end) == "meta" and _args(end) == "end_host" and end["when"] == "_domains | length == 0"
     refuse = _named("Refuse a declaration that is not a list of non-blank names")
     assert _module(refuse) == "assert"
-    for condition in ("_domains is sequence", "_domains is not string", "reject('equalto', '')"):
+    for condition in (
+        "_domains is sequence",
+        "_domains is not string",
+        "_domains is not mapping",
+        "reject('equalto', '')",
+    ):
         assert condition in json.dumps(_args(refuse)["that"]), condition
 
 
@@ -254,7 +259,8 @@ def test_the_visible_output_is_names_and_actions_only():
         text = json.dumps({k: v for k, v in t.items() if k != "name"})
         for word in ("custom_field", "vcpus", "comments", "primary_ip", "token", "description"):
             assert word not in text, (t.get("name"), word)
-    assert "print(json.dumps(result, sort_keys=True))" in BODY
+    assert "print(MARKER + json.dumps(result, sort_keys=True))" in BODY
+    assert re.findall(r'^MARKER = "([^"]+)"$', BODY, re.M) == ["DOMAINS_RESULT "]
 
 
 # --- static: the template ---------------------------------------------------------------------------------------
@@ -536,9 +542,17 @@ import os
 import sys
 
 _script = sys.stdin.read()
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "received.log"), "a") as fh:
+HERE = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(HERE, "received.log"), "a") as fh:
     fh.write(_script + "\\n<<END>>\\n")
+if os.environ.get("FAKE_SILENT"):
+    sys.stdout = open(os.devnull, "w")
 exec(compile(_script, "<shell>", "exec"), {"__name__": "__main__"})
+if os.environ.get("FAKE_TRAILING_NOISE"):
+    noise = "Warning: a line the shell printed after the result"
+    with open(os.path.join(HERE, "noise.log"), "w") as fh:
+        fh.write(noise)
+    print(noise)
 """
 
 MODULES = {
@@ -590,7 +604,8 @@ def _run_body(tmp_path, state, *, dry_run, domains=(), env=None):
         check=False,
         timeout=120,
     )
-    result = json.loads(proc.stdout.splitlines()[-1]) if proc.stdout.strip() else None
+    marked = [line for line in proc.stdout.splitlines() if line.startswith("DOMAINS_RESULT ")]
+    result = json.loads(marked[0][len("DOMAINS_RESULT ") :]) if len(marked) == 1 else None
     return proc, result, json.loads(state_file.read_text())
 
 
@@ -809,7 +824,7 @@ def test_a_run_with_nothing_to_write_creates_no_account(tmp_path):
 # --- through the real playbook: ansible-playbook, a fake container engine, the same stub ------------------------
 
 
-def _ansible(tmp_path, state, *, check=False, extra=None):
+def _ansible(tmp_path, state, *, check=False, extra=None, env_extra=None):
     root = _stub(tmp_path)
     state_file = tmp_path / "state.json"
     state_file.write_text(json.dumps(state, sort_keys=True))
@@ -834,6 +849,7 @@ def _ansible(tmp_path, state, *, check=False, extra=None):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     env["FAKE_NETBOX_STATE"] = str(state_file)
+    env.update(env_extra or {})
     proc = subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=300)
     return proc, proc.stdout + proc.stderr, json.loads(state_file.read_text())
 
@@ -899,3 +915,85 @@ def test_a_second_run_against_the_first_runs_state_changes_nothing(tmp_path):
     assert proc.returncode == 0, out
     assert _recap_changed(out) == 0, out
     assert twice == once
+
+
+def test_the_result_is_one_marked_line_required_exactly_once():
+    # The play finds the result among any other output by its marker, and refuses unless exactly one line carries it.
+    parse = _named("Hold the result line the NetBox shell printed")["ansible.builtin.set_fact"]
+    assert "select('match', '^DOMAINS_RESULT ')" in parse["_result_lines"]
+    require = _named("Require exactly one DOMAINS_RESULT line")
+    assert _args(require)["that"] == "_result_lines | length == 1"
+    assert (
+        "printed {{ _result_lines | length }} DOMAINS_RESULT line(s), expected exactly 1" in _args(require)["fail_msg"]
+    )
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["check-mode", "real"])
+@pytest.mark.parametrize(
+    "name, slug_length, refused",
+    [("A" * 93, 100, False), ("A" * 95, 102, True), ("A" * 101, 108, True)],
+    ids=["slug-exactly-100-allowed", "slug-102-refused", "name-101-refused"],
+)
+def test_a_name_or_slug_over_100_characters_is_refused_before_any_write(tmp_path, name, slug_length, refused, dry_run):
+    before = _state()
+    proc, result, after = _run_body(tmp_path, before, dry_run=dry_run, domains=[name])
+    if refused:
+        assert proc.returncode != 0, proc.stdout
+        assert "NetBox allows 100 for each" in proc.stderr
+        assert after == before
+    else:
+        assert proc.returncode == 0, proc.stderr
+        assert result["domains"] == [
+            {"name": name, "slug": "domain-" + name.lower(), "action": "would-create" if dry_run else "created"}
+        ]
+        assert len(result["domains"][0]["slug"]) == slug_length
+
+
+@NEEDS_ANSIBLE
+def test_a_95_character_name_with_a_102_character_slug_is_refused_in_check_mode(tmp_path):
+    before = _state()
+    proc, out, after = _ansible(tmp_path, before, check=True, extra={"netbox_business_domains": ["A" * 95]})
+    assert proc.returncode != 0, out
+    assert "102-character slug" in out
+    assert after == before
+
+
+@NEEDS_ANSIBLE
+def test_a_mapping_declaration_is_refused_before_the_shell_runs(tmp_path):
+    before = _state()
+    proc, out, after = _ansible(tmp_path, before, extra={"netbox_business_domains": {"Products": 1}})
+    assert proc.returncode != 0, out
+    assert "must be a list of display names" in out
+    assert not (_stub(tmp_path) / "received.log").exists()
+    assert after == before
+
+
+@NEEDS_ANSIBLE
+def test_a_trailing_line_after_the_result_does_not_break_the_parse(tmp_path):
+    proc, out, after = _ansible(
+        tmp_path,
+        _state(),
+        extra={"netbox_business_domains": ["Products"]},
+        env_extra={"FAKE_TRAILING_NOISE": "1"},
+    )
+    assert proc.returncode == 0, out
+    # Ansible shows a successful run's stdout only as the parsed result, so the noise line is proved by the shim's own
+    # log, which proves the line was printed after the result.
+    assert "after the result" in (_stub(tmp_path) / "noise.log").read_text()
+    assert [t["slug"] for t in after["tags"]] == ["domain-products"]
+    assert '"action": "created"' in out
+
+
+@NEEDS_ANSIBLE
+def test_a_shell_that_prints_no_result_line_fails_with_a_named_message(tmp_path):
+    before = _state()
+    proc, out, after = _ansible(
+        tmp_path,
+        before,
+        check=True,
+        extra={"netbox_business_domains": ["Products"]},
+        env_extra={"FAKE_SILENT": "1"},
+    )
+    assert proc.returncode != 0, out
+    assert "printed 0 DOMAINS_RESULT line(s), expected exactly 1" in out
+    assert after == before

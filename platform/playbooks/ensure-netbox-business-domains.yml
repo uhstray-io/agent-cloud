@@ -15,7 +15,9 @@
 # Create: name, slug, description "Business domain (Dispatch Console, plan 17 D37)", color 607d8b.
 # Update: a tag found by slug whose name or description differs gets the declared name and description. Its color is
 # set on create only; a later color change is not converged. An identical tag is left alone.
-# Refused before any write: a declared name already held by a tag under another slug (NetBox names are unique).
+# Refused before any write: a declared name already held by a tag under another slug (NetBox names are unique); a
+# name or slug over 100 characters (NetBox's Tag max_length, django-taggit 6.1.0); a mapping, which Jinja's `sequence`
+# test accepts, so the list check alone would read it as its keys.
 #
 # Runs on the netbox_svc host through the NetBox Django shell, in the exec pattern of provision-netbox-automation-token.yml
 # and reconcile-netbox-duplicate-vms.yml. There is NO API token and no OpenBao read: the script has the shell's authority,
@@ -81,6 +83,7 @@
       SLUG_PREFIX = "domain-"
       DESCRIPTION = "Business domain (Dispatch Console, plan 17 D37)"
       COLOR = "607d8b"
+      MARKER = "DOMAINS_RESULT "
 
 
       def slug_of(name):
@@ -99,6 +102,11 @@
               if not isinstance(name, str) or not name.strip():
                   raise RuntimeError("a declared business domain is blank or not a string")
               slug = slug_of(name)
+              # NetBox's Tag name and slug are each max_length 100 (django-taggit 6.1.0, TagBase, the version NetBox
+              # v4.5.0 pins). A longer one fails at the database, so it is refused here, before any write, dry or real.
+              if len(name) > 100 or len(slug) > 100:
+                  raise RuntimeError("declared business domain %r gives a %d-character name and a %d-character slug; "
+                                     "NetBox allows 100 for each" % (name, len(name), len(slug)))
               if slug in by_slug:
                   raise RuntimeError("two declared business domains give one slug: %r and %r" % (by_slug[slug], name))
               by_slug[slug] = name
@@ -198,7 +206,8 @@
               "undeclared": stale,
               "written": written,
           }
-          print(json.dumps(result, sort_keys=True))
+          # The marker lets the play find this line among any other output the shell prints (ansible parses it back).
+          print(MARKER + json.dumps(result, sort_keys=True))
 
 
       ensure()
@@ -224,6 +233,7 @@
         that:
           - _domains is sequence
           - _domains is not string
+          - _domains is not mapping
           - (_domains | select('string') | list | length) == (_domains | length)
           - (_domains | map('trim') | reject('equalto', '') | list | length) == (_domains | length)
         fail_msg: "netbox_business_domains must be a list of display names, for example [Products, IT]."
@@ -256,13 +266,31 @@
         PYSCRIPT
       register: _domains_real
       when: not ansible_check_mode
-      changed_when: _domains_real.rc == 0 and (_domains_real.stdout_lines | last | from_json).written | length > 0
+      # Changed only when this run wrote a tag. A missing marker line reads as "no writes" here; the result check below
+      # then fails the play with its own message, so the changed flag never decides a failed run.
+      changed_when: >-
+        _domains_real.rc == 0 and
+        ((_domains_real.stdout_lines | select('match', '^DOMAINS_RESULT ') | list | last
+          | default('DOMAINS_RESULT {"written": []}')) | regex_replace('^DOMAINS_RESULT ', '') | from_json).written
+        | length > 0
 
-    # ── the result: the last line the NetBox shell printed (names and actions only) ──────────
-    - name: "Hold the parsed result (names, slugs and actions)"
+    # ── the result: the one line the NetBox shell printed with the DOMAINS_RESULT marker (names and actions only) ──
+    - name: "Hold the result line the NetBox shell printed"
       ansible.builtin.set_fact:
         # The conditional reads only the branch that ran, so the skipped task's result is never touched.
-        _result: "{{ (_domains_dry if ansible_check_mode else _domains_real).stdout_lines | last | from_json }}"
+        _result_lines: "{{ (_domains_dry if ansible_check_mode else _domains_real).stdout_lines | select('match', '^DOMAINS_RESULT ') | list }}"
+
+    - name: "Require exactly one DOMAINS_RESULT line"
+      ansible.builtin.assert:
+        that: _result_lines | length == 1
+        fail_msg: >-
+          The NetBox shell printed {{ _result_lines | length }} DOMAINS_RESULT line(s), expected exactly 1.
+          Nothing is judged from that output.
+        quiet: true
+
+    - name: "Hold the parsed result (names, slugs and actions)"
+      ansible.builtin.set_fact:
+        _result: "{{ _result_lines[0] | regex_replace('^DOMAINS_RESULT ', '') | from_json }}"
 
     - name: "Show the result (names, slugs, actions, undeclared names)"
       ansible.builtin.debug:
