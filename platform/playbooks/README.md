@@ -276,7 +276,7 @@ untouched for explicit cleanup after the new token is confirmed.
 | `check-discovery.yml` | Read-only Docker incident evidence with exact revision/log-window guards; no GPS writes, restart or mint. Always refuses recovery acceptance; verify installed revision |
 | `inspect-discovery-metadata.yml` | Controller-only allowlisted metadata read using existing runtime authentication and fixed loopback destination; no VM access or template writes |
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |
-| `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM |
+| `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM (CPU model from `vm_cpu` when declared; otherwise the template's) |
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
 | `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name), and report each online node's capacity (live use, configured guest commitment, free VM storage), most free memory first, for placing a new VM |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
@@ -340,7 +340,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 |----------|---------|
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
 | `install-qemu-guest-agent.yml` | Install `qemu-guest-agent` on existing VMs (idempotent); refuses a VM without the Proxmox guest-agent channel. Enable that channel first with `resize-vm.yml`, which converges `agent=1` (a running VM needs `allow_reboot=true` to pick it up) |
-| `resize-vm.yml` | Converge a live VM's cores/memory/disk and its guest-agent option (`agent=1`, per-host opt-out `vm_agent: false`) to its declaration; grow-only disk, opt-in reboot, and a run without `allow_reboot` is a safe preview |
+| `resize-vm.yml` | Converge a live VM's cores/memory/disk and its guest-agent option (`agent=1`, per-host opt-out `vm_agent: false`) to its declaration, plus the CPU model when the host declares `vm_cpu` (a named `x86-64-v3`/`v4` model is refused unless the node reports the flags it needs, `tasks/assert-node-cpu-model.yml`); grow-only disk, opt-in reboot, and a run without `allow_reboot` is a safe preview |
 | `attach-pbs-data-disk.yml` | Re-run the pinned thick-LVM preflight, then attach only the declared PBS VM's 512-GiB `scsi1` virtual disk through the Proxmox API; check mode is read-only and config-digest guarded |
 | `prepare-pbs-guest-data-disk.yml` | Require the VMID-derived `ac-pbs-data-<vmid>` whole-disk serial and exact size, refuse nonblank/ambiguous devices, create ext4 only on that guest virtual disk, mount by UUID at `/srv/pbs-data`, and verify readback; check mode reads and validates only |
 | `configure-pbs.yml` | Install and configure PBS on the one declared Debian guest through an explicit private repository-channel choice; re-prove the serial-pinned UUID mount and shared no-follow datastore-path containment before writes, then verify PBS health and datastore policy |
