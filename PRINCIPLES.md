@@ -323,7 +323,11 @@ persist. Tagging reversibility makes the one-way risk visible at launch, not aft
 Caddy is the sole HTTPS ingress and only TLS terminator. Internal traffic is plain HTTP unless a
 backend protocol genuinely requires TLS (prefer the internal CA over `tls_insecure_skip_verify`).
 Plain-HTTP backends are permitted **only** on a host where `apply-firewall.yml`'s default-deny-inbound
-(except Caddy + mgmt SSH) is applied and verified by `validate-all.yml`.
+(except Caddy + mgmt SSH) is applied and verified. The verification is the playbook's own: after
+converging it re-reads `ufw show added` and asserts every declared rule landed and no stale tagged
+rule or declared SSH allow is missing, forces a fresh SSH handshake through the live firewall, and
+raises a per-host verdict that the run fails unless UFW is active with default-deny incoming
+(`validate-all.yml` checks service health only and performs no firewall check).
 *Why: terminating once keeps the cert surface to one place and avoids unrotated self-signed sprawl.
 But "trusted network" is a security claim only a firewall can back. As-built caveat (updated
 2026-10-27): the host firewall is applied through Semaphore on the DNS, internal-CA, o11y and CI-runner
