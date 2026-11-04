@@ -79,13 +79,14 @@
       when: _url | length > 0 and not (_health_curl_wanted | bool)
 
     # curl, not uri, when a CA bundle or a pinned address is declared: uri cannot pin a name to an
-    # address. argv, never a shell string. No --fail: a 503 must reach the verdict as 503.
+    # address. argv, never a shell string; the URL goes after --url, so one that starts with '-' is
+    # never read as an option. No --fail: a 503 must reach the verdict as 503.
     - name: "Probe the declared health path through curl (CA bundle or pinned address)"
       ansible.builtin.command:
         argv: "{{ ['curl', '--silent', '--show-error', '--output', '/dev/null', '--write-out', '%{http_code}', '--max-time', '10']
                   + (['--cacert', health_ca_path | string] if (health_ca_path | default('', true) | length > 0) else [])
                   + (['--resolve', _url_host ~ ':' ~ _url_port ~ ':' ~ (health_resolve_address | string)] if (health_resolve_address | default('', true) | length > 0) else [])
-                  + [_url] }}"
+                  + ['--url', _url] }}"
       register: _health_curl
       changed_when: false
       failed_when: false

@@ -288,3 +288,5 @@ def test_a_pinned_address_needs_an_http_url_with_a_host(tmp_path):
     )
     assert done.returncode != 0
     assert "health_resolve_address needs an http or https health URL with a host, not /health" in done.stdout
+    # The contract error is the whole verdict: no probe ran, so there is no "answered" line.
+    assert "answered" not in done.stdout
