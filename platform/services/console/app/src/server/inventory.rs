@@ -25,7 +25,7 @@ use super::api::{error, unauthenticated};
 use super::auth;
 use super::grafana;
 use super::netbox::{
-    self, Domain, NbCluster, NbDevice, NbPrefix, NbVm, NetboxData, PrefixData, Workflow,
+    self, Domain, FetchError, NbCluster, NbDevice, NbPrefix, NbVm, NetboxData, PrefixData, Workflow,
 };
 use super::proxmox::{self, ProxmoxData, PveGuest, PveNode};
 use super::scope::{is_platform_admin, Site, Tenant};
@@ -84,12 +84,32 @@ impl<T> SourceState<T> {
     }
 }
 
+/// The business-domain read, kept apart from every other NetBox read. A failed read keeps the last
+/// good list and sets `error`. It never touches the NetBox source, so the sites, VMs and prefixes
+/// stay as they were read, and a tenant's envelope never says NetBox failed for a tag.
+#[derive(Default)]
+pub struct DomainRead {
+    /// The last good list, sorted by name. Empty before the first good read.
+    pub domains: Vec<Domain>,
+    /// The admin-facing sentence for the last failed read, or `None` after a good one.
+    pub error: Option<String>,
+}
+
+impl DomainRead {
+    fn record_ok(&mut self, domains: Vec<Domain>) {
+        self.domains = domains;
+        self.error = None;
+    }
+}
+
 /// Both authorities as the refresh task leaves them.
 pub struct InventoryCache {
     pub netbox: SourceState<NetboxData>,
     /// The prefix read, kept apart from the site read: a prefix failure never touches the
     /// tenant views, and a site failure never touches `/v1/network`.
     pub netbox_prefixes: SourceState<PrefixData>,
+    /// The business-domain tags, kept apart from the site read and from the prefixes.
+    pub netbox_domains: DomainRead,
     pub proxmox: SourceState<ProxmoxData>,
 }
 
@@ -107,6 +127,7 @@ impl InventoryCache {
         Self {
             netbox: configured_state(netbox_configured),
             netbox_prefixes: configured_state(netbox_configured),
+            netbox_domains: DomainRead::default(),
             proxmox: if proxmox_configured {
                 SourceState::awaiting_first_refresh()
             } else {
@@ -142,6 +163,10 @@ pub struct Diagnostics {
     /// Why the Proxmox cluster name is unknown, when its read failed: the failure's text and
     /// HTTP code, never a URL or a body. The cluster view then lists only the placed nodes.
     pub cluster_name_error: Option<String>,
+    /// Why the business domains did not refresh, when the tag read failed: one sentence, with
+    /// the HTTP code when there is one, and whether the last good domains are shown. `null`
+    /// after a good read. The NetBox source stays `ok`.
+    pub domains_error: Option<String>,
 }
 
 fn diagnostics(cache: &InventoryCache) -> Diagnostics {
@@ -157,6 +182,7 @@ fn diagnostics(cache: &InventoryCache) -> Diagnostics {
             .as_ref()
             .and_then(|data| data.cluster_name_error.as_ref())
             .map(ToString::to_string),
+        domains_error: cache.netbox_domains.error.clone(),
     }
 }
 
@@ -244,20 +270,15 @@ pub struct InventoryBody {
     #[serde(flatten)]
     pub meta: Meta,
     /// The business-domain tags NetBox holds, sorted by name. Platform-wide: NetBox tags are
-    /// global, so every tenant gets the same list. Empty before the first NetBox read, and when
-    /// NetBox holds no `domain-` tag.
+    /// global, so every tenant gets the same list. Empty before the first good tag read, and when
+    /// NetBox holds no `domain-` tag. A failed tag read keeps the last good list.
     pub domains: Vec<Domain>,
     pub sites: Vec<SiteView>,
 }
 
-/// The business domains the last good NetBox read holds.
+/// The business domains the last good tag read holds.
 fn domains_of(cache: &InventoryCache) -> Vec<Domain> {
-    cache
-        .netbox
-        .data
-        .as_ref()
-        .map(|data| data.domains.clone())
-        .unwrap_or_default()
+    cache.netbox_domains.domains.clone()
 }
 
 /// One scope site, joined. `mapped` is false when the site has no `netbox_site` or NetBox
@@ -484,6 +505,8 @@ pub fn unique_guest<'a>(name: &str, guests: &'a [PveGuest]) -> Option<&'a PveGue
 struct Join<'a> {
     netbox: Option<&'a NetboxData>,
     proxmox: Option<&'a ProxmoxData>,
+    /// The last good business-domain list. Read apart from `netbox`, so it is here, not there.
+    domains: &'a [Domain],
     stale: bool,
     grafana: Option<&'a str>,
     /// Platform admins see node metrics; everyone else sees names and status.
@@ -495,6 +518,7 @@ impl<'a> Join<'a> {
         Join {
             netbox: cache.netbox.data.as_ref(),
             proxmox: cache.proxmox.data.as_ref(),
+            domains: &cache.netbox_domains.domains,
             stale: cache.stale(),
             grafana,
             admin,
@@ -602,13 +626,11 @@ fn cluster_view(cluster: &NbCluster, join: &Join<'_>) -> ClusterView {
 /// The declared business domains this VM carries, by slug, in the order NetBox lists them. The
 /// match is on the tag's slug. A VM tagged with a domain the list does not hold gets none for it.
 fn vm_domains(vm: &NbVm, join: &Join<'_>) -> Vec<String> {
-    join.netbox.map_or_else(Vec::new, |data| {
-        data.domains
-            .iter()
-            .filter(|domain| vm.tag_slugs.contains(&domain.slug))
-            .map(|domain| domain.slug.clone())
-            .collect()
-    })
+    join.domains
+        .iter()
+        .filter(|domain| vm.tag_slugs.contains(&domain.slug))
+        .map(|domain| domain.slug.clone())
+        .collect()
 }
 
 fn vm_view(vm: &NbVm, live: Option<&PveGuest>, join: &Join<'_>) -> VmView {
@@ -837,6 +859,20 @@ pub async fn refresh(app: &AppState) {
                 cache.netbox_prefixes.record_error(text);
             }
         }
+        drop(cache);
+
+        // Its own read, apart from the sites and the prefixes: a failure keeps the last good
+        // domains and sets the admin-facing reason. It never marks the NetBox source.
+        let result = netbox::fetch_domains(&app.http, config).await;
+        let mut cache = app.inventory.write().await;
+        match result {
+            Ok(domains) => cache.netbox_domains.record_ok(domains),
+            Err(err) => {
+                let text = domains_error_text(&err, !cache.netbox_domains.domains.is_empty());
+                log_failure("NetBox tags", cache.netbox_domains.error.as_deref(), &text);
+                cache.netbox_domains.error = Some(text);
+            }
+        }
     }
     if let Some(config) = &app.config.proxmox {
         let result = proxmox::fetch(&app.proxmox_http, config).await;
@@ -850,6 +886,21 @@ pub async fn refresh(app: &AppState) {
             }
         }
     }
+}
+
+/// The sentence an admin reads when the tag read fails. It names the failure, with the HTTP code
+/// when there is one, and says which domains are shown. It carries no body and no URL.
+fn domains_error_text(err: &FetchError, last_good: bool) -> String {
+    let reason = match err {
+        FetchError::Status(code) => format!("HTTP {code}"),
+        other => other.to_string(),
+    };
+    let shown = if last_good {
+        "Showing the last good domains."
+    } else {
+        "Showing no domains."
+    };
+    format!("NetBox tags could not be read: {reason}. {shown}")
 }
 
 /// One line per distinct failure, not one per refresh while it lasts.
@@ -1972,21 +2023,150 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_tag_read_marks_netbox_failed_and_names_no_body() {
+    async fn a_refused_tag_read_leaves_netbox_ok_and_names_the_failure_to_admins_only() {
         let mock = nb::Mock::default();
         mock.fail_tags
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let (state, _, _) = live_state_using(mock, None).await;
-        let (base, cookie) = signed_in(state, &["ops"]).await;
-        let (status, text) = get_json(&base, Some(&cookie), "/v1/tenants/acme/inventory").await;
+        let (member_url, member_cookie) = signed_in(state.clone(), &["ops"]).await;
+        let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
+
+        let (status, text) = get_json(
+            &member_url,
+            Some(&member_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
         assert_eq!(status, 200, "{text}");
-        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
-        assert_eq!(body["source"]["netbox"], "error");
-        assert_eq!(body["error"]["netbox"], "NetBox answered HTTP 500");
-        assert_eq!(body["stale"], true);
-        assert_eq!(body["domains"], serde_json::json!([]));
+        let member: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            member["source"]["netbox"], "ok",
+            "a refused tag read is not a NetBox failure"
+        );
+        assert!(member["error"]["netbox"].is_null());
+        assert_eq!(member["stale"], false);
+        assert_eq!(member["sites"].as_array().expect("sites").len(), 3);
+        assert_eq!(
+            vm_named(&member, "tududi")["rag"],
+            "red",
+            "the VMs still join"
+        );
+        assert_eq!(member["domains"], serde_json::json!([]));
+        assert!(
+            member.get("diagnostics").is_none(),
+            "a member is never told why"
+        );
+        assert!(!text.contains("diagnostics"), "{text}");
         assert!(!text.contains("tag boom"), "{text}");
         assert!(!text.contains(nb::TOKEN), "{text}");
+
+        let (status, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        assert_eq!(status, 200, "{text}");
+        let admin: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(admin["source"]["netbox"], "ok");
+        assert_eq!(
+            admin["diagnostics"]["domains_error"],
+            "NetBox tags could not be read: HTTP 403. Showing no domains."
+        );
+        assert_eq!(admin["diagnostics"]["dropped_mismatched"], 1, "unchanged");
+    }
+
+    #[tokio::test]
+    async fn a_failed_tag_read_keeps_the_last_good_domains_and_recovery_clears_the_reason() {
+        let (state, nb_mock, _) = live_state().await;
+        let (admin_url, admin_cookie) = signed_in(state.clone(), &["platform-admins"]).await;
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let good: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(good["domains"].as_array().expect("domains").len(), 3);
+        assert!(good["diagnostics"]["domains_error"].is_null());
+
+        nb_mock
+            .fail_tags
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        refresh(&state).await;
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let failing: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(failing["source"]["netbox"], "ok");
+        assert_eq!(
+            failing["domains"], good["domains"],
+            "the last good list is kept"
+        );
+        assert_eq!(
+            failing["diagnostics"]["domains_error"],
+            "NetBox tags could not be read: HTTP 403. Showing the last good domains."
+        );
+
+        nb_mock
+            .fail_tags
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        refresh(&state).await;
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let recovered: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(
+            recovered["diagnostics"]["domains_error"].is_null(),
+            "a good read clears the reason"
+        );
+        assert_eq!(recovered["domains"], good["domains"]);
+    }
+
+    #[tokio::test]
+    async fn a_tag_list_past_the_page_cap_is_a_tags_reason_not_a_netbox_failure() {
+        let mock = nb::Mock::default();
+        mock.tag_total.store(
+            crate::server::netbox::TAG_PAGE_CAP * 1000 + 1,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        let (state, _, _) = live_state_using(mock, None).await;
+        let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
+        let (_, text) = get_json(
+            &admin_url,
+            Some(&admin_cookie),
+            "/v1/tenants/acme/inventory",
+        )
+        .await;
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["source"]["netbox"], "ok");
+        assert_eq!(body["domains"], serde_json::json!([]));
+        assert_eq!(
+            body["diagnostics"]["domains_error"],
+            "NetBox tags could not be read: NetBox list has more than one page. Showing no domains."
+        );
+    }
+
+    #[test]
+    fn the_domains_reason_names_the_failure_and_what_is_shown() {
+        assert_eq!(
+            domains_error_text(&FetchError::Status(403), true),
+            "NetBox tags could not be read: HTTP 403. Showing the last good domains."
+        );
+        assert_eq!(
+            domains_error_text(&FetchError::Status(403), false),
+            "NetBox tags could not be read: HTTP 403. Showing no domains."
+        );
+        assert_eq!(
+            domains_error_text(&FetchError::Timeout, false),
+            "NetBox tags could not be read: NetBox request timed out. Showing no domains."
+        );
     }
 
     #[tokio::test]

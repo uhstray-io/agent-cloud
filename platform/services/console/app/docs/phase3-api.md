@@ -61,6 +61,11 @@ use this envelope; its shape is under `GET /v1/flows` below.
   be read (for example `Proxmox answered HTTP 500`). It names the failure and its HTTP code, never a
   URL or a response body. The source stays `ok`; the node lists then fall back to the placed nodes.
   Platform admins only, like the rest of `diagnostics`.
+- `diagnostics.domains_error` is `null`, or one sentence saying the tag read failed and which
+  domains are shown, for example `NetBox tags could not be read: HTTP 403. Showing the last good
+  domains.` (or `Showing no domains.` when no good list exists). It carries the HTTP code, or the
+  fixed failure text, and never a body or a URL. It is `null` again after a good read. Platform
+  admins only. A tenant member's envelope never carries it.
 
 The envelope is per authority, not single, so the UI can say which source is down.
 
@@ -112,13 +117,14 @@ The envelope is per authority, not single, so the UI can say which source is dow
 - `domains` are the business domains NetBox holds (D37): the NetBox tags whose slug starts with
   `domain-`, each as `{name, slug, color}`, sorted by name. `color` is the colour the tag holds, or `""`;
   the browser draws a swatch only for six hex digits. NetBox tags are global, so the list is platform-wide and every
-  tenant gets the same one. It is `[]` before the first NetBox read, and when NetBox holds no
+  tenant gets the same one. It is `[]` before the first good tag read, and when NetBox holds no
   `domain-` tag. The tag read (`GET /api/extras/tags/`) sends no lookup filter: it pages with
   `offset` at 1000 a page, up to 10 pages, and a list longer than that fails the NetBox read as
   truncated, so a partial domain list is never shown. It does not follow the `next` link.
   A tag whose slug does not start with `domain-` (`domainx`, `domain`, `not-domain-x`) is no domain.
-  The tag read is part of the NetBox site read: when it fails, the whole NetBox read fails as any
-  failed read does. `source.netbox` is `error`, and the last good data is kept, domains included.
+  The tag read stands apart from the site read and from the prefix read. When it fails, `domains`
+  keeps the last good list, and `source.netbox`, `error.netbox`, `stale` and the sites and VMs are
+  unchanged. A failed tag read is never a NetBox failure.
 - `mapped` is `false` when the site declares no `netbox_site`, or NetBox holds no site with that
   slug, or NetBox is unconfigured or has no data. An unmapped site has `clusters: []` and
   `devices: []`.

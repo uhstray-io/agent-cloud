@@ -136,7 +136,7 @@ The window is Semaphore's newest 200 tasks of the project (`tasks/last`). A run 
 
 ## Inventory (NetBox and Proxmox, read-only, Phase 3)
 
-The server reads NetBox (sites, clusters, VMs, devices, prefixes, tags) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The tags read keeps the business domains: NetBox tags whose slug starts with `domain-` (D37). NetBox tags are global, so the domains are platform-wide and every tenant gets the same list. The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
+The server reads NetBox (sites, clusters, VMs, devices, prefixes, tags) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The tags read keeps the business domains: NetBox tags whose slug starts with `domain-` (D37). It stands apart from the site and prefix reads: a refused or failed tag read never fails the NetBox source. It keeps the last good domains and sets `diagnostics.domains_error` for platform admins. NetBox tags are global, so the domains are platform-wide and every tenant gets the same list. The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
 
 | Source | Credential | Read |
 |--------|------------|------|

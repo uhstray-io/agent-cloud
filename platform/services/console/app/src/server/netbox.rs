@@ -9,9 +9,11 @@
 //!   does not name the requested site or cluster is dropped and counted in `dropped_mismatched`.
 //!   Tenant isolation therefore holds even when NetBox ignores a filter.
 //! - `fetch_prefixes` reads every prefix, paging with `offset` up to `PREFIX_PAGE_CAP` pages.
-//! - `fetch_domains` (inside `fetch_all`) reads the NetBox tags and keeps the business domains:
-//!   the tags whose slug starts with `DOMAIN_SLUG_PREFIX` (D37). NetBox tags are global, so the
-//!   domains are platform-wide.
+//! - `fetch_domains` reads the NetBox tags and keeps the business domains: the tags whose slug
+//!   starts with `DOMAIN_SLUG_PREFIX` (D37). NetBox tags are global, so the domains are
+//!   platform-wide. It is a third read, called on its own: a failure here never fails the site
+//!   read or the prefix read. The inventory keeps the last good list and says why it did not
+//!   refresh (`server/inventory.rs`, `DomainRead`).
 //!
 //! A list that reports a next page fails the site read with `Truncated` rather than showing a
 //! partial inventory as complete. Of a VM's custom fields only the three `ac_*` workflow fields
@@ -44,9 +46,6 @@ pub const DOMAIN_SLUG_PREFIX: &str = "domain-";
 #[derive(Debug, Clone, Default)]
 pub struct NetboxData {
     pub sites: BTreeMap<String, NbSite>,
-    /// The business-domain tags NetBox holds, sorted by name. Read with the sites, so one failed
-    /// read keeps the last good domains like the rest of this data.
-    pub domains: Vec<Domain>,
     /// VM names held by more than one VM across every declared site, in any tenant. A name in
     /// this set gets no live join, because a guess could show another site's host.
     pub ambiguous_vm_names: BTreeSet<String>,
@@ -204,10 +203,8 @@ pub async fn fetch_all(
     }
     let ambiguous_vm_names = duplicate_vm_names(&sites);
     let duplicate_cluster_names = duplicate_cluster_names(&sites);
-    let domains = fetch_domains(http, config).await?;
     Ok(NetboxData {
         sites,
-        domains,
         ambiguous_vm_names,
         duplicate_cluster_names,
         dropped_mismatched: dropped,
@@ -217,7 +214,8 @@ pub async fn fetch_all(
 /// Reads the NetBox tags and keeps the business domains, sorted by name. The tag list is not
 /// filtered by NetBox (no lookup is sent): the prefix test runs here, on every tag NetBox returns.
 /// A tag list longer than `TAG_PAGE_CAP` pages fails the read, as a truncated site list does.
-async fn fetch_domains(
+/// `fetch_all` does not call this: the tag read stands alone.
+pub async fn fetch_domains(
     http: &reqwest::Client,
     config: &NetboxConfig,
 ) -> Result<Vec<Domain>, FetchError> {
@@ -790,8 +788,10 @@ pub mod fixtures {
         pub lab_prod_cluster_duplicate: Arc<AtomicBool>,
         /// When non-zero, the prefix list is this many synthetic rows, paged by `offset`.
         pub prefix_total: Arc<AtomicUsize>,
-        /// Fail only the tags list.
+        /// Refuse only the tags list with 403, as a token that lacks the tag grant would.
         pub fail_tags: Arc<AtomicBool>,
+        /// Answer only the tags list with a 200 whose body is not JSON.
+        pub tags_garbage: Arc<AtomicBool>,
         /// Answer the tags list with no tags at all.
         pub tags_empty: Arc<AtomicBool>,
         /// When non-zero, the tags list is this many synthetic tags, paged by `offset`. Only the
@@ -949,7 +949,10 @@ pub mod fixtures {
             return refused;
         }
         if mock.fail_tags.load(Ordering::SeqCst) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "tag boom").into_response();
+            return (StatusCode::FORBIDDEN, "tag boom").into_response();
+        }
+        if mock.tags_garbage.load(Ordering::SeqCst) {
+            return answer("<html>not json</html>");
         }
         if mock.tags_empty.load(Ordering::SeqCst) {
             return answer(EMPTY);
@@ -1326,11 +1329,11 @@ mod tests {
     #[tokio::test]
     async fn the_domains_are_the_domain_slugged_tags_sorted_by_name_with_their_colour() {
         let addr = serve(router(Mock::default())).await;
-        let data = fetch_all(&reqwest::Client::new(), &config_for(addr), &[])
+        let domains = fetch_domains(&reqwest::Client::new(), &config_for(addr))
             .await
             .expect("fetch");
         assert_eq!(
-            names_and_slugs(&data.domains),
+            names_and_slugs(&domains),
             [
                 ("IT", "domain-it"),
                 ("Products", "domain-products"),
@@ -1338,8 +1341,8 @@ mod tests {
             ],
             "domain- slugs only, by name"
         );
-        assert_eq!(data.domains[0].color, "4caf50");
-        assert_eq!(data.domains[2].color, "ff9800");
+        assert_eq!(domains[0].color, "4caf50");
+        assert_eq!(domains[2].color, "ff9800");
     }
 
     #[tokio::test]
@@ -1347,6 +1350,10 @@ mod tests {
         let mock = Mock::default();
         mock.tags_empty.store(true, Ordering::SeqCst);
         let addr = serve(router(mock)).await;
+        let domains = fetch_domains(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect("fetch");
+        assert!(domains.is_empty());
         let data = fetch_all(
             &reqwest::Client::new(),
             &config_for(addr),
@@ -1354,7 +1361,6 @@ mod tests {
         )
         .await
         .expect("fetch");
-        assert!(data.domains.is_empty());
         assert!(data.sites.contains_key("dc-1"), "the sites still read");
     }
 
@@ -1363,10 +1369,10 @@ mod tests {
         let mock = Mock::default();
         mock.tag_total.store(2500, Ordering::SeqCst);
         let addr = serve(router(mock)).await;
-        let data = fetch_all(&reqwest::Client::new(), &config_for(addr), &[])
+        let domains = fetch_domains(&reqwest::Client::new(), &config_for(addr))
             .await
             .expect("fetch");
-        assert_eq!(names_and_slugs(&data.domains), [("Late", "domain-late")]);
+        assert_eq!(names_and_slugs(&domains), [("Late", "domain-late")]);
     }
 
     #[tokio::test]
@@ -1375,7 +1381,7 @@ mod tests {
         mock.tag_total
             .store(TAG_PAGE_CAP * 1000 + 1, Ordering::SeqCst);
         let addr = serve(router(mock)).await;
-        let err = fetch_all(&reqwest::Client::new(), &config_for(addr), &[])
+        let err = fetch_domains(&reqwest::Client::new(), &config_for(addr))
             .await
             .expect_err("must fail");
         assert_eq!(
@@ -1386,19 +1392,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_tag_read_fails_the_whole_netbox_read_without_the_body() {
+    async fn a_refused_tag_read_is_its_own_error_and_the_site_read_is_whole() {
         let mock = Mock::default();
         mock.fail_tags.store(true, Ordering::SeqCst);
         let addr = serve(router(mock)).await;
-        let err = fetch_all(
-            &reqwest::Client::new(),
-            &config_for(addr),
-            &slugs(&["dc-1"]),
-        )
-        .await
-        .expect_err("must fail");
-        assert_eq!(err, FetchError::Status(500));
+        let config = config_for(addr);
+        let err = fetch_domains(&reqwest::Client::new(), &config)
+            .await
+            .expect_err("the tag read is refused");
+        assert_eq!(err, FetchError::Status(403));
         assert!(!err.to_string().contains("tag boom"));
+        let data = fetch_all(&reqwest::Client::new(), &config, &slugs(&["dc-1"]))
+            .await
+            .expect("the site read does not depend on the tag read");
+        assert!(data.sites.contains_key("dc-1"));
+    }
+
+    #[tokio::test]
+    async fn a_tag_body_that_is_not_json_is_a_decode_error() {
+        let mock = Mock::default();
+        mock.tags_garbage.store(true, Ordering::SeqCst);
+        let addr = serve(router(mock)).await;
+        let err = fetch_domains(&reqwest::Client::new(), &config_for(addr))
+            .await
+            .expect_err("must fail");
+        assert_eq!(err, FetchError::Decode);
     }
 
     #[test]
